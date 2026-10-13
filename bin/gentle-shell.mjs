@@ -113,7 +113,7 @@ function resolveBundledCli() {
 	const expectedEntry = join(root, "dist", "index.js");
 	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
-		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		metadata.bin?.pi !== "dist/bundle/cli.js" || typeof metadata.version !== "string") {
 		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
 	}
 	const cliPath = join(root, metadata.bin.pi);
@@ -213,7 +213,15 @@ function probePiVersionCached(runtime, configPath) {
 	}
 	const probed = probePiVersion(runtime);
 	if (probed.ok && identity !== undefined) {
-		writeRawConfig(configPath, recordPiVersion(readRawConfig(configPath), runtime.command, identity, probed.version));
+		// Best-effort (#2096): a read-only or symlinked config.json, or a lost
+		// race with another concurrent launch's atomic rename, must never turn
+		// an otherwise-successful launch into a failure just to persist a cache
+		// entry. Worst case here is simply paying for the real spawn again.
+		try {
+			writeRawConfig(configPath, recordPiVersion(readRawConfig(configPath), runtime.command, identity, probed.version));
+		} catch {
+			// swallow: see comment above.
+		}
 	}
 	return probed;
 }

@@ -450,10 +450,14 @@ function isFileIdentity(value: unknown): value is FileIdentity {
 	return typeof record.dev === "number" && typeof record.ino === "number" && typeof record.size === "number" && typeof record.mtimeMs === "number";
 }
 
+// A cached version string that VERSION_PATTERN cannot parse is treated the
+// same as a missing entry (a cache miss, re-probe), never trusted as-is and
+// never a hard failure — a malformed write must never make a launch that
+// used to succeed fail outright.
 function isCachedPiVersion(value: unknown): value is CachedPiVersion {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value as Record<string, unknown>;
-	return typeof record.version === "string" && isFileIdentity(record);
+	return typeof record.version === "string" && VERSION_PATTERN.test(record.version) && isFileIdentity(record);
 }
 
 // Tolerant like provisionedEntry above: a missing, non-object, or malformed

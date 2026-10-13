@@ -106,6 +106,23 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	assert.match(override.stdout, /pi 0\.99\.2/);
 });
 
+test("an adjacent package.json with a non-string version fails closed with a clean message, not a crash", (t) => {
+	const f = standaloneLauncher(t);
+	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
+	writeFileSync(join(peer, "dist", "index.js"), "");
+	writePiScript(join(peer, "dist", "bundle", "cli.js"), "0.99.1");
+	writeFileSync(
+		join(peer, "package.json"),
+		JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" }, version: 1 }),
+	);
+	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
+	assert.equal(result.status, 1);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /Unsupported adjacent Pi package entry\/name\/bin metadata/);
+	assert.doesNotMatch(result.stderr, /TypeError|is not a function/);
+});
+
 // --- pi version probe cache (env/path runtimes, #2096) ---------------------
 
 test("a cache hit for an env-override pi skips the real version spawn on the next launch", (t) => {
@@ -147,6 +164,64 @@ test("a malformed pi version cache entry in config.json is tolerated and just re
 	const result = run(env, ["--version"]);
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /pi 0\.99\.5/);
+});
+
+test("a cached entry with an unparseable version re-probes instead of failing the launch", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	mkdirSync(dirname(configPath), { recursive: true });
+	const s = statSync(command);
+	writeFileSync(
+		configPath,
+		JSON.stringify({ piVersionProbeCache: { [command]: { dev: s.dev, ino: s.ino, size: s.size, mtimeMs: s.mtimeMs, version: "garbage" } } }),
+	);
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 0\.99\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "an unparseable cached version is a miss, not a trusted result");
+});
+
+test("an unwritable config.json never fails an env-override launch; the cache write is best-effort", (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configDir = join(f.home, ".gentle-shell");
+	const configPath = join(configDir, "config.json");
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(configPath, JSON.stringify({ home: "isolated" }));
+	const before = readFileSync(configPath, "utf8");
+	if (process.platform === "win32") spawnSync("attrib", ["+R", configPath]);
+	else chmodSync(configDir, 0o555);
+	t.after(() => {
+		if (process.platform === "win32") spawnSync("attrib", ["-R", configPath]);
+		else chmodSync(configDir, 0o755);
+	});
+	for (let i = 0; i < 2; i++) {
+		const result = run(env, ["--version"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /pi 0\.99\.5/);
+	}
+	assert.equal(readFileSync(configPath, "utf8"), before, "a failed cache write never corrupts or replaces the existing config");
+});
+
+test("concurrent first launches with an env-override pi all succeed despite a config.json write race", async (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const codes = await Promise.all(
+		Array.from(
+			{ length: 8 },
+			() =>
+				new Promise<number | null>((resolve) => {
+					const child = spawn(process.execPath, [binPath, "--version"], { env, stdio: "ignore" });
+					child.on("close", resolve);
+				}),
+		),
+	);
+	assert.deepEqual(codes, Array(8).fill(0));
+	JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
 });
 
 // The launcher's own gentle-pi version, exactly as `ownPackageVersion()` in

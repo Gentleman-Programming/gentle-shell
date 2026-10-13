@@ -1412,3 +1412,31 @@ test("Windows source build bounds go install separately from the Go toolchain pr
 	assert.ok(probes.length >= 2, "go version probes must run");
 	for (const probe of probes) assert.equal(probe.options.timeout, 120_000, `go ${probe.arguments_.join(" ")} keeps the probe bound`);
 });
+
+test("download reports progress per chunk with the declared total", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-progress-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const request = (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		const response = Object.assign(new PassThrough(), { statusCode: 200, headers: { "content-length": "6" } });
+		queueMicrotask(() => { callback(response); response.write("abc"); response.end("def"); });
+		return pendingRequest();
+	};
+	const seen: Array<{ received: number; total: number | undefined }> = [];
+	await downloadGentleAiAsset("https://example.invalid/archive", join(directory, "archive"), 1024, 0, { request, maxAttempts: 1, retryDelayMs: 0, onProgress: (progress: { received: number; total: number | undefined }) => seen.push(progress) });
+	assert.deepEqual(seen, [{ received: 3, total: 6 }, { received: 6, total: 6 }]);
+	assert.equal(await readFile(join(directory, "archive"), "utf8"), "abcdef");
+});
+
+test("download reports an unknown total as undefined and a throwing reporter never breaks it", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-progress-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const request = (_url: URL, _options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		const response = Object.assign(new PassThrough(), { statusCode: 200, headers: {} });
+		queueMicrotask(() => { callback(response); response.end("xy"); });
+		return pendingRequest();
+	};
+	const totals: Array<number | undefined> = [];
+	await downloadGentleAiAsset("https://example.invalid/archive", join(directory, "archive"), 1024, 0, { request, maxAttempts: 1, retryDelayMs: 0, onProgress: ({ total }: { total: number | undefined }) => { totals.push(total); throw new Error("reporter bug"); } });
+	assert.deepEqual(totals, [undefined]);
+	assert.equal(await readFile(join(directory, "archive"), "utf8"), "xy");
+});

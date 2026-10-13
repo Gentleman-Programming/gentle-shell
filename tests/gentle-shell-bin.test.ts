@@ -3692,3 +3692,26 @@ test("a launched env carries its own config scope to Pi, and a sharing env clear
 	assert.deepEqual(last(["--env", "plain", "-p", "hi"]), { home: null, own: null });
 	assert.deepEqual(last(["-p", "hi"]), { home: null, own: null }, "the base home never inherits env scope");
 });
+
+test("envs config refuses a symlinked env or gentle-ai folder and leaves the target untouched", (t) => {
+	const f = fixture(t);
+	const shared = join(f.root, "base-config");
+	const env = { ...f.env, GENTLE_PI_CONFIG_HOME: shared };
+	mkdirSync(shared, { recursive: true });
+	writeFileSync(join(shared, "persona.json"), '{"persona":"shared"}');
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(env, ["envs", "new", "linked"]).status, 0);
+	symlinkSync(shared, join(envs, "linked", "gentle-ai"));
+	const refused = run(env, ["envs", "config", "linked", "--own", "persona", "--empty"]);
+	assert.notEqual(refused.status, 0);
+	assert.match(refused.stderr, /refusing/);
+	assert.equal(readFileSync(join(shared, "persona.json"), "utf8"), '{"persona":"shared"}', "the shared config is never touched");
+	assert.equal(existsSync(join(envs, "linked", ".gentle-shell-env.json")), false);
+	const outside = join(f.root, "outside-env");
+	mkdirSync(outside);
+	symlinkSync(outside, join(envs, "aliased"));
+	const aliased = run(env, ["envs", "config", "aliased", "--own", "persona"]);
+	assert.notEqual(aliased.status, 0);
+	assert.match(aliased.stderr, /refusing/);
+	assert.deepEqual(readdirSync(outside), []);
+});

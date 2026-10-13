@@ -67,9 +67,14 @@ const INSTALL_LEVEL_CALLS = new Set<string>([]);
 test("every config-home read names its category (drift guard)", () => {
 	const root = new URL("..", import.meta.url);
 	const offenders: string[] = [];
-	for (const dir of ["lib", "extensions"]) {
-		for (const name of readdirSync(new URL(`${dir}/`, root))) {
-			if (!name.endsWith(".ts")) continue;
+	// Recursive: config-home reads also live in subfolders such as extensions/history.
+	for (const top of ["lib", "extensions"]) {
+		for (const entry of readdirSync(new URL(`${top}/`, root), { recursive: true }) as string[]) {
+			const rel = entry.split("\\").join("/");
+			if (!rel.endsWith(".ts")) continue;
+			const slash = rel.lastIndexOf("/");
+			const dir = slash < 0 ? top : `${top}/${rel.slice(0, slash)}`;
+			const name = slash < 0 ? rel : rel.slice(slash + 1);
 			const source = readFileSync(new URL(`${dir}/${name}`, root), "utf8");
 			source.split("\n").forEach((line, index) => {
 				if (/export function gentlePiConfigHome/.test(line)) return;

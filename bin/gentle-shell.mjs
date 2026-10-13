@@ -731,7 +731,19 @@ function sharedConfigHome() {
 // become own (a copy from the base home or another env, or empty), then
 // persists the scope. Sharing a category again keeps its own files on disk.
 function applyEnvScope(root, name, flags) {
-	const dir = envDir(root, name);
+	// Same guard as rename/delete: a managed, real env directory, and an own
+	// config folder that is never a link (seeding would write through it).
+	const dir = assertManagedEnvDir(root, name);
+	const ownDir = join(dir, "gentle-ai");
+	let ownStat;
+	try {
+		ownStat = lstatSync(ownDir);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	if (ownStat !== undefined && (ownStat.isSymbolicLink() || !ownStat.isDirectory())) {
+		throw new Error(`refusing to touch ${ownDir}: not a real directory`);
+	}
 	const current = readEnvScope(dir);
 	const plan = planScopeChange({ current, own: flags.own, share: flags.share, seed: flags.empty ? { kind: "empty" } : { kind: "copy", from: flags.from } });
 	let sourceDirFor = () => sharedConfigHome();

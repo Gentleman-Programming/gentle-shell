@@ -571,21 +571,21 @@ test("recordProvisioned overwrites an existing marker for the same home", () => 
 test("resolvePiRuntime prefers GENTLE_SHELL_PI over every other source", () => {
 	const runtime = resolvePiRuntime({
 		env: { GENTLE_SHELL_PI: "/opt/pi/pi" },
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => "/usr/bin/pi",
 		nodeExecPath: "/usr/bin/node",
 	});
 	assert.deepEqual(runtime, { kind: "env", command: "/opt/pi/pi", args: [] });
 });
 
-test("resolvePiRuntime falls back to the bundled CLI run with the current node", () => {
+test("resolvePiRuntime falls back to the bundled CLI run with the current node, carrying its version so main() never has to spawn just to read it", () => {
 	const runtime = resolvePiRuntime({
 		env: {},
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => "/usr/bin/pi",
 		nodeExecPath: "/usr/bin/node",
 	});
-	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] });
+	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"], version: "1.2.3" });
 });
 
 test("resolvePiRuntime falls back to pi on PATH when nothing else resolves", () => {
@@ -611,11 +611,11 @@ test("resolvePiRuntime returns undefined when no source resolves", () => {
 test("resolvePiRuntime treats an empty GENTLE_SHELL_PI as unset", () => {
 	const runtime = resolvePiRuntime({
 		env: { GENTLE_SHELL_PI: "" },
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => undefined,
 		nodeExecPath: "/usr/bin/node",
 	});
-	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] });
+	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"], version: "1.2.3" });
 });
 
 test("missingPiMessage names the three resolution options", () => {

@@ -5,6 +5,7 @@ import { stripVTControlCharacters } from "node:util";
 import { validRecordedScope, type RecordedScope } from "./orchestrator-scope.ts";
 import { projectCatalog } from "./orchestrator-catalog.ts";
 import { decodePublishedState, type PublishedState } from "./orchestrator-state.ts";
+import { decodeTaskAliases, type TaskAliases } from "./orchestrator-alias.ts";
 
 // Same-profile OS-user trust boundary, not an authorization channel. POSIX modes
 // restrict newly created storage; Windows deployments must supply their own ACLs.
@@ -31,6 +32,7 @@ export interface Activity { tasks: { summary: ActivityInput["task"]; thread: {
 } }[] }
 export interface Target { sessionHash: string; incarnation: string }
 export interface DiscoveryMetadata {
+	aliases?: TaskAliases;
 	state?: PublishedState;
 	scope?: RecordedScope;
 	activation: string;
@@ -95,7 +97,7 @@ function validTarget(value: Target) {
 		&& typeof value.incarnation === "string" && UUID.test(value.incarnation);
 }
 function validDiscovery(d: unknown): d is DiscoveryMetadata {
-	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted", ...["scope", "state"].filter(k => Object.hasOwn(d, k))])
+	return object(d) && keys(d, ["activation", "workspace", "tasks", "omitted", ...["scope", "state", "aliases"].filter(k => Object.hasOwn(d, k))])
 		&& typeof d.activation === "string" && HASH.test(d.activation)
 		&& typeof d.workspace === "string" && d.workspace === label(d.workspace) && integer(d.omitted)
 		&& Array.isArray(d.tasks) && d.tasks.length <= 8 && d.tasks.every((t: unknown) => object(t)
@@ -268,9 +270,10 @@ export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | u
 		if (!object(value) || !keys(value, ["schema", "sessionHash", "incarnation", "generation", "metadata"])
 			|| value.schema !== 1 || value.sessionHash !== h.sessionHash || value.incarnation !== h.incarnation
 			|| value.generation !== h.generation || !validDiscovery(value.metadata)) return undefined;
-		const { scope, state, ...legacy } = value.metadata;
+		const { scope, state, aliases: rawAliases, ...legacy } = value.metadata;
 		const decoded = decodePublishedState(state);
-		return { ...legacy, ...(validRecordedScope(scope) ? { scope } : {}), ...(decoded ? { state: decoded } : {}) };
+		const aliases = decodeTaskAliases(rawAliases);
+		return { ...legacy, ...(aliases ? { aliases } : {}), ...(validRecordedScope(scope) ? { scope } : {}), ...(decoded ? { state: decoded } : {}) };
 	} catch { return undefined; }
 }
 
@@ -327,7 +330,10 @@ export class PresencePublisher {
 			tasks: input.tasks.slice(0, 8).map(t => ({ id: label(t.id), label: label(t.label), status: t.status, workspace: workspace(t.cwd) })),
 			omitted: Math.max(0, input.tasks.length - 8) };
 		const state = decodePublishedState(input.state);
-		if (state?.sessionId === peer.sessionId) discovery.state = state;
+		if (state?.sessionId === peer.sessionId) {
+			discovery.state = state;
+			if (state.aliases) discovery.aliases = structuredClone(state.aliases);
+		}
 		if (input.scope && validRecordedScope(input.scope)) {
 			discovery.scope = structuredClone(input.scope);
 			// Leave explicit gaps instead of publishing a sidecar readers cannot fit.

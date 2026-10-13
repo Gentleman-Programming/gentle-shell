@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 import {
 	GENTLE_AI_INSTALL_METHOD,
 	GENTLE_AI_WINDOWS_SOURCE_MODULE,
@@ -14,6 +14,8 @@ import {
 	isWindowsGoSumdbSourceTarget,
 	resolveGentleAiReleaseAsset,
 } from "../scripts/gentle-ai-installer.mjs";
+import { engramPinVersion } from "../scripts/installer-downloads.mjs";
+import { bundledGentlePiConfigHome, bundledPiConfigDir, bundledPiConfigParent, runningBundledPrefix } from "./gentle-shell-bundled.mjs";
 import { fileURLToPath } from "node:url";
 
 export const GENTLE_AI_BINARY_MISSING_CODE = "package-local-binary-missing";
@@ -46,6 +48,84 @@ export function gentleAiBinaryPath(
 	);
 }
 
+// ---------------------------------------------------------------------------
+// Bundled isolation (S9). The bundled launcher (bin/gentle-shell.mjs) gives Pi
+// and setup GENTLE_SHELL_PREFIX, its prefix. Every gentle-ai run a bundled
+// gentle-pi starts gets Gentle AI's own variables (gentle-ai #5462): its state,
+// backups and telemetry under <prefix>/gentle-ai, the gentle-pi config folder
+// <prefix>/config/gentle-ai for its persona and background subagent files
+// (and, for Gentle AI 4.0.0, GENTLE_PI_CONFIG_HOME=<prefix>/config), the pinned
+// Engram in runtime/ with no Engram acquisition or dependency probe, and no
+// self-update. They are never put in Pi's own environment: the agent's shell
+// inherits it, and a gentle-ai the user runs there stays the user's. A
+// gentle-ai release without #5462 ignores them.
+// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+export function bundledGentleAiPaths(prefix        , platform         = process.platform)                       {
+	const path = platform === "win32" ? win32 : posix;
+	return {
+		home: path.join(prefix, "gentle-ai"),
+		piConfigParent: bundledPiConfigParent(prefix, platform),
+		piConfig: bundledPiConfigDir(prefix, platform),
+		engram: path.join(prefix, "runtime", `engram-${engramPinVersion}`, platform === "win32" ? "engram.exe" : "engram"),
+	};
+}
+
+/**
+ * `env` plus GENTLE_AI_HOME, GENTLE_AI_PI_CONFIG_DIR, GENTLE_AI_ENGRAM_BIN
+ * (only when the pinned Engram is published), GENTLE_AI_NO_SELF_UPDATE=1 and
+ * GENTLE_PI_CONFIG_HOME (the parent of GENTLE_AI_PI_CONFIG_DIR)
+ * when this gentle-pi runs from the valid bundled install GENTLE_SHELL_PREFIX
+ * names (runningBundledPrefix). Otherwise `env` itself, unchanged: a gentle-pi
+ * installed elsewhere (the user's own, started from the agent's shell, which
+ * inherits the variable) keeps its own Gentle AI.
+ */
+export function gentleAiIsolationEnv(
+	env                   ,
+	options                                              = {},
+)                    {
+	const platform = options.platform ?? process.platform;
+	const prefix = runningBundledPrefix(env, { packageRoot: options.packageRoot, platform });
+	if (prefix === undefined) return env;
+	const paths = bundledGentleAiPaths(prefix, platform);
+	let engram = false;
+	try {
+		engram = lstatSync(paths.engram).isFile();
+	} catch {
+		// Not published (a prefix from before Engram shipped): Gentle AI gets none.
+	}
+	// Gentle AI 4.0.0 ignores GENTLE_AI_ENGRAM_BIN and looks `engram` up on PATH
+	// first, then falls back to Homebrew (`brew tap`, #2105): the pinned one goes first.
+	const pathKey = Object.keys(env).find((name) => name.toUpperCase() === "PATH") ?? (platform === "win32" ? "Path" : "PATH");
+	const pathModule = platform === "win32" ? win32 : posix;
+	const path = engram
+		? { [pathKey]: [pathModule.dirname(paths.engram), ...(env[pathKey] ?? "").split(pathModule.delimiter).filter((entry) => entry.length > 0)].join(pathModule.delimiter) }
+		: {};
+	return {
+		...env,
+		...path,
+		GENTLE_AI_HOME: paths.home,
+		GENTLE_AI_PI_CONFIG_DIR: paths.piConfig,
+		...(engram ? { GENTLE_AI_ENGRAM_BIN: paths.engram } : {}),
+		GENTLE_AI_NO_SELF_UPDATE: "1",
+		// Gentle AI 4.0.0 knows no GENTLE_AI_PI_CONFIG_DIR: it writes gentle-pi's
+		// background-subagents policy to <GENTLE_PI_CONFIG_HOME>/gentle-ai, the same
+		// folder. Only these Gentle AI processes get it, never Pi or its shell.
+		GENTLE_PI_CONFIG_HOME: paths.piConfigParent,
+	};
+}
+
 function sha256(value        )         {
 	return createHash("sha256").update(value).digest("hex");
 }
@@ -56,7 +136,8 @@ function sha256(value        )         {
 // Two explicit activation paths, in precedence order:
 //   1. GENTLE_PI_GENTLE_AI_DEV_BINARY (session override, absolute path), then
 //   2. the persistent registration file at
-//      <GENTLE_PI_CONFIG_HOME|~/.pi/gentle-ai>/dev-binary.json with the strict
+//      <config home>/dev-binary.json (a bundled prefix's gentle-pi, else
+//      GENTLE_PI_CONFIG_HOME, else ~/.pi/gentle-ai) with the strict
 //      shape {"schema":"gentle-pi.dev-binary/v1","path":"<absolute path>"}.
 //
 // The registration deliberately pins no digest: it is the unpinned field-test
@@ -114,7 +195,7 @@ function ambientDevBinaryEnvironment()                               {
 }
 
 export function gentleAiDevBinaryRegistrationPath(environment                               = ambientDevBinaryEnvironment())         {
-	const configHome = environment.env.GENTLE_PI_CONFIG_HOME ?? join(environment.home, ".pi", "gentle-ai");
+	const configHome = bundledGentlePiConfigHome(environment.env) ?? environment.env.GENTLE_PI_CONFIG_HOME ?? join(environment.home, ".pi", "gentle-ai");
 	return join(configHome, "dev-binary.json");
 }
 
@@ -269,6 +350,30 @@ function sameFile(before                              , after                   
 	return before.dev === after.dev && before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs;
 }
 
+// Reading and hashing the whole binary on every native call is expensive, and
+// on Windows antivirus scans each read. The digest is reused only while the
+// file keeps its full identity; any rewrite changes ctime, which callers cannot
+// set, so a replaced binary is always hashed again. Keyed per reader so an
+// injected reader never sees another reader's digest.
+const binaryDigestCache = new WeakMap                                                                                               ();
+
+function binaryIdentity(path        )         {
+	const details = lstatSync(path, { bigint: true });
+	return [details.dev, details.ino, details.size, details.mtimeNs, details.ctimeNs].join(":");
+}
+
+function binaryDigest(path        , readBinary                          )         {
+	let entries = binaryDigestCache.get(readBinary);
+	if (entries === undefined) binaryDigestCache.set(readBinary, entries = new Map());
+	const identity = binaryIdentity(path);
+	const cached = entries.get(path);
+	if (cached?.identity === identity) return cached.sha256;
+	const digest = sha256(readBinary(path));
+	if (binaryIdentity(path) === identity) entries.set(path, { identity, sha256: digest });
+	else entries.delete(path);
+	return digest;
+}
+
 export function resolveGentleAiBinary(
 	packageRoot = dirname(dirname(fileURLToPath(import.meta.url))),
 	platform = process.platform,
@@ -297,7 +402,7 @@ export function resolveGentleAiBinary(
 		const beforeManifest = lstatSync(manifestPath);
 		const manifestContents = readFileSync(manifestPath, "utf8");
 		const manifest = JSON.parse(manifestContents)                           ;
-		const binarySha256 = sha256(readBinary(binaryPath));
+		const binarySha256 = binaryDigest(binaryPath, readBinary);
 		const expected = expectedRuntimeManifest(platform, binarySha256, manifest);
 		if (!isCanonicalManifest(manifestContents, manifest, expected)) throw new Error("invalid runtime integrity manifest");
 		const afterBinary = lstatSync(binaryPath);

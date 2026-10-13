@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { ExecFileAdapter, ExecFileResult } from "../lib/native-review-cli.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import {
 	decodeTelemetryTriggerDecision,
 	shouldTriggerTelemetry,
@@ -409,4 +410,29 @@ test("/gentle:telemetry rejects an unknown sub-action without calling the binary
 	assert.equal(requests.length, 0);
 	assert.equal(notifications.length, 1);
 	assert.equal(notifications[0].severity, "warning");
+});
+
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("spawnTelemetryTrigger: gentle-ai gets Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = fakeSpawn();
+	spawnTelemetryTrigger({ executable: "/opt/gentle-ai/gentle-ai", cwd: "/work", env, spawn: bundled.spawn });
+	assert.equal(bundled.calls[0].options.env?.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.calls[0].options.env?.GENTLE_AI_NO_SELF_UPDATE, "1");
+	const ordinary = fakeSpawn();
+	const plain = { PATH: "/usr/bin" };
+	spawnTelemetryTrigger({ executable: "/opt/gentle-ai/gentle-ai", cwd: "/work", env: plain, spawn: ordinary.spawn });
+	assert.equal(ordinary.calls[0].options.env, plain);
 });

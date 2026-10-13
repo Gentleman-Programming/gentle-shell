@@ -1,7 +1,7 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { basename } from "node:path";
-import { CHANGE_STATUS, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
+import { basename, posix } from "node:path";
+import { CHANGE_STATUS, DIFF_TOO_LARGE, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
 // Gentle Shell changes overlay: a framed two-pane view with the working
@@ -37,7 +37,7 @@ const ROLE = {
 } as const;
 
 const HEADER_PREFIXES = ["diff --git", "index ", "--- ", "+++ ", "new file mode", "deleted file mode", "similarity index", "rename from", "rename to", "Binary files"];
-const LIST_MAX_WIDTH = 36;
+const LIST_MAX_WIDTH = 48;
 const LIST_RATIO = 0.35;
 const CHROME_ROWS = 3;
 const MIN_BODY_ROWS = 1;
@@ -67,12 +67,15 @@ export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
 	return lines;
 }
 
+// New files are two distinct states: `A` is tracked and staged, `U` is still
+// untracked. Git's own `??` reads as a broken value in a status column, so the
+// list names the state instead of echoing the plumbing code.
 const FILE_STATUS = {
 	[CHANGE_STATUS.MODIFIED]: "M",
 	[CHANGE_STATUS.ADDED]: "A",
 	[CHANGE_STATUS.DELETED]: "D",
 	[CHANGE_STATUS.RENAMED]: "R",
-	[CHANGE_STATUS.UNTRACKED]: "??",
+	[CHANGE_STATUS.UNTRACKED]: "U",
 } as const;
 
 function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
@@ -80,8 +83,32 @@ function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
 	return `${theme.fg(ROLE.ADDED, `+${file.added}`)} ${theme.fg(ROLE.REMOVED, `-${file.deleted}`)}`;
 }
 
+// The name leads and the directory trails, so a narrow list clips the
+// directory instead of the part that identifies the file.
 function fileLabel(file: ChangedFile, theme: ChangesViewTheme, hovered: boolean, idleRole: string): string {
-	return `${paintHoverable(theme, `${FILE_STATUS[file.status]} ${displayText(file.path)}`, hovered, idleRole)}  ${fileCounts(file, theme)}`;
+	const directory = posix.dirname(file.path.replace(/\\/g, "/"));
+	const label = `${paintHoverable(theme, `${FILE_STATUS[file.status]} ${displayText(posix.basename(file.path.replace(/\\/g, "/")))}`, hovered, idleRole)}  ${fileCounts(file, theme)}`;
+	return directory === "." ? label : `${label}  ${theme.fg(ROLE.EMPTY, displayText(directory))}`;
+}
+
+// The diff pane's first row: the selected file's full path, clipped from the
+// left so the file name always stays visible.
+const PATH_HEADER_ROWS = 1;
+
+function pathHeader(file: ChangedFile, theme: ChangesViewTheme, width: number): string {
+	const status = `${FILE_STATUS[file.status]} `;
+	let path = displayText(file.path);
+	const room = Math.max(1, width - visibleWidth(status));
+	if (visibleWidth(path) > room) {
+		const characters = [...path];
+		while (characters.length > 0 && visibleWidth(`…${characters.join("")}`) > room) characters.shift();
+		path = `…${characters.join("")}`;
+	}
+	return theme.fg(ROLE.SELECTED, status + path);
+}
+
+function diffRows(bodyRows: number): number {
+	return Math.max(MIN_BODY_ROWS, bodyRows - PATH_HEADER_ROWS);
 }
 
 function fit(text: string, width: number): string {
@@ -90,10 +117,11 @@ function fit(text: string, width: number): string {
 }
 
 // Both standalone files and the worktree accordion use the original frame.
-function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title: string, leftLine: (row: number) => string, rightLines: string[], keys: string): string[] {
+function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title: string, leftLine: (row: number) => string, diffLines: string[], keys: string, headerFile?: ChangedFile): string[] {
 	const inner = Math.max(8, width - 2);
 	const listWidth = Math.min(LIST_MAX_WIDTH, Math.floor(inner * LIST_RATIO));
 	const diffWidth = inner - listWidth - 4;
+	const rightLines = headerFile ? [pathHeader(headerFile, theme, diffWidth), ...diffLines] : diffLines;
 	const titleText = truncateToWidth(title, inner - 4, "…");
 	const top = theme.fg(ROLE.FRAME, "╭─ ") + theme.fg(ROLE.TITLE, titleText) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(titleText) - 3)}╮`);
 	const body: string[] = [];
@@ -292,7 +320,7 @@ export class WorktreeChangesView {
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, "j/k select   enter toggle/open   ← parent/fold   ctrl+j/k scroll   r refresh   esc close");
 		this.pointerLayout = pointerLayout(width, height);
-		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys);
+		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file);
 	}
 
 	invalidate(): void {
@@ -406,8 +434,8 @@ export class ChangesView {
 		// the scroll keys are checked before the open key; a real Enter is CR.
 		if (data === "j" || matchesKey(data, Key.down)) this.select(this.selected + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(this.selected - 1);
-		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(this.bodyRows());
-		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-this.bodyRows());
+		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(diffRows(this.bodyRows()));
+		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-diffRows(this.bodyRows()));
 		else if (data === "o" || matchesKey(data, Key.enter)) {
 			const file = this.model.files[this.selected];
 			if (file) this.deps.onOpen(file);
@@ -464,7 +492,7 @@ export class ChangesView {
 		this.fileScroll = this.clampFileScroll(this.fileScroll, rows);
 		const keys = KEYS.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, key === "esc" ? (this.deps.backLabel ?? label) : label)}`).join("   ");
 		this.pointerLayout = pointerLayout(width, rows);
-		return renderPanes(width, rows, theme, `✎ Changes · ${changesSummary(this.model)}`, (row) => this.fileLine(row), this.visibleDiff(rows), keys);
+		return renderPanes(width, rows, theme, `✎ Changes · ${changesSummary(this.model)}`, (row) => this.fileLine(row), this.visibleDiff(rows), keys, this.model.files[this.selected]);
 	}
 
 	invalidate(): void {
@@ -500,8 +528,9 @@ export class ChangesView {
 		const lines = this.diffs.get(file.path);
 		if (!lines) return [];
 		if (lines.length === 0) return [this.deps.theme.fg(ROLE.EMPTY, EMPTY_DIFF)];
-		this.diffScroll = Math.min(this.diffScroll, Math.max(0, lines.length - rows));
-		return lines.slice(this.diffScroll, this.diffScroll + rows);
+		const visible = diffRows(rows);
+		this.diffScroll = Math.min(this.diffScroll, Math.max(0, lines.length - visible));
+		return lines.slice(this.diffScroll, this.diffScroll + visible);
 	}
 
 	private select(index: number): void {
@@ -534,7 +563,7 @@ export class ChangesView {
 		const file = this.model.files[this.selected];
 		const lines = file ? this.diffs.get(file.path) : undefined;
 		if (!lines) return false;
-		const next = Math.max(0, Math.min(Math.max(0, lines.length - rows), this.diffScroll + Math.trunc(delta)));
+		const next = Math.max(0, Math.min(Math.max(0, lines.length - diffRows(rows)), this.diffScroll + Math.trunc(delta)));
 		if (next === this.diffScroll) return false;
 		this.diffScroll = next;
 		return true;
@@ -557,7 +586,8 @@ export class ChangesView {
 		void this.deps.loadDiff(file).then(
 			(text) => {
 				if (this.disposed) return;
-				this.diffs.set(file.path, colorDiff(text, this.deps.theme));
+				// An oversized diff arrives as one plain line pointing at the editor.
+				this.diffs.set(file.path, text === DIFF_TOO_LARGE ? [this.deps.theme.fg(ROLE.EMPTY, text)] : colorDiff(text, this.deps.theme));
 				this.deps.requestRender();
 			},
 			() => {

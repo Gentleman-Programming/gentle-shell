@@ -211,6 +211,8 @@ function nativeHarness(statuses: readonly ReviewStatusV3[], unachievableResponde
 		native: undefined as unknown as NativeReviewCli,
 	};
 	harness.native = {
+		start: async () => { throw new Error("unexpected START"); },
+		reviewStatus: async () => { throw new Error("unexpected compact STATUS"); },
 		targetStatus: async (request) => {
 			harness.statusCalls.push({ cwd: request.cwd, ...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }), ...(request.agent === undefined ? {} : { agent: request.agent }) });
 			const next = harness.statusQueue.shift();
@@ -436,7 +438,7 @@ test("Pi-authored review documents are rejected at the capture input boundary", 
 	assert.equal(relayCalls, 0);
 });
 
-function groupInputs(lineageId: string, revision = SHA): ReviewCollectInputV3[] { return ["review-risk", "review-resilience", "review-readability", "review-reliability"].map((lens, order) => relayCollectInput(lineageId, lens, order, true, "provider", revision)); }
+function groupInputs(lineageId: string, revision = SHA): ReviewCollectInputV3[] { return (["review-risk", "review-resilience", "review-readability", "review-reliability"] as const).map((lens, order) => relayCollectInput(lineageId, lens, order, true, "provider", revision)); }
 
 async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input, index) => index % 2 === 0 ? input : JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native, undefined, undefined, undefined, false, modelRegistry) as Record<string, unknown>; }
 

@@ -111,7 +111,7 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.doesNotMatch(appended, /If tests exist, use strict TDD/);
 	assert.match(appended, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
 	assert.doesNotMatch(appended, /Prefer SDD\/OpenSpec artifacts/);
-	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.2\.0\)/);
+	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.3\.0\)/);
 	assert.ok(appended.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
 	assert.match(appended, /call `gentle_review` with {"operation":"inspect"}/);
 	assert.match(appended, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);

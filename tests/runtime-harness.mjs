@@ -390,7 +390,24 @@ async function run() {
 	assert.ok(flags.has("no-skill-registry"), "missing no-skill-registry flag");
 	assert.ok(hooks.has("session_start"), "missing session_start hook");
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
-	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
+	assert.ok(hooks.has("input"), "missing live input provenance hook");
+	for (const text of [
+		"/sdd-init", "/sdd-continue", "/sdd-status", "/gentle-sdd-init",
+		"/gentle-sdd-continue", "/gentle-sdd-status", "/gentle:install-sdd",
+		"/gentle:sdd-preflight", "/gentle-ai:install-sdd", "/gentle-ai:sdd-preflight",
+		"/gentle-ai:sdd-status", "/gentle-ai:sdd-continue",
+		"Inspect this project without changing files.", "/ordinary-unregistered-command",
+	]) {
+		const event = { text, source: "interactive", images: [] };
+		const before = structuredClone(event);
+		const emittedBefore = emittedEvents.length;
+		for (const handler of hooks.get("input")) {
+			assert.deepEqual(await handler(event, createCtx(ROOT)), { action: "continue" },
+				`input must pass through without slash interception: ${text}`);
+		}
+		assert.deepEqual(event, before, "input text and attachments must remain unchanged");
+		assert.equal(emittedEvents.length, emittedBefore, "input must not dispatch slash logic");
+	}
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
 	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
@@ -1019,8 +1036,8 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
-			"isolated package installation must activate only the explorer inspection tools",
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"] },
+			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(
 			join(globalAgentHome, "agents", "review-risk.md"),
@@ -1317,15 +1334,15 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
-		const explicitInheritClearsAgent = await readFile(
+		const savedInheritPreservesAgent = await readFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(explicitInheritClearsAgent, /model:/);
-		const explicitInheritClearsProfiles = JSON.parse(
+		assert.match(savedInheritPreservesAgent, /model: global\/provider-model/);
+		const savedInheritPreservesProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(explicitInheritClearsProfiles.model_profiles, undefined);
+		assert.equal(savedInheritPreservesProfiles.model_profiles["sdd-apply"].model, "global/provider-model");
 	} finally {
 		await rm(legacyModelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1347,10 +1364,12 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(staleSettingsOnlyCwd, true));
-		const staleOnlyClearedProfiles = JSON.parse(
+		const staleOnlyPreservedProfiles = JSON.parse(
 			await readFile(globalSubagentsPath, "utf8"),
 		);
-		assert.equal(staleOnlyClearedProfiles.model_profiles, undefined);
+		assert.deepEqual(staleOnlyPreservedProfiles.model_profiles, {
+			worker: { model: "stale/model", effort: "high" },
+		});
 	} finally {
 		await rm(staleSettingsOnlyCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1566,22 +1585,29 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const clearedProfiles = JSON.parse(
+		// gentle-ai#4946: startup/reload never treats persisted inherit as
+		// deletion approval, including for previously materialized routing.
+		// Explicit panel saves and confirmed profile replacement still clear.
+		const preservedClearProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(clearedProfiles.model_profiles, undefined);
+		assert.equal(
+			preservedClearProfiles.model_profiles.worker.model,
+			"existing/model",
+		);
+		assert.equal(preservedClearProfiles.model_profiles.worker.effort, "high");
 		const unchangedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(unchangedProjectWorker, /model: existing\/project-worker/);
 		assert.match(unchangedProjectWorker, /thinking: high/);
-		const clearedProjectSubagentWorker = await readFile(
+		const preservedClearProjectSubagentWorker = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /model:/);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /thinking:/);
+		assert.match(preservedClearProjectSubagentWorker, /model: existing\/project-subagent-worker/);
+		assert.match(preservedClearProjectSubagentWorker, /thinking: medium/);
 
 		await writeFile(
 			globalModelsPath,

@@ -139,18 +139,23 @@ const DUE_REVIEW_REASONS: readonly ReviewDueReason[] = [REVIEW_DUE_REASON.HIGH_R
 
 /**
  * Rejects a review_due/review_due_reason/consumed combination the native
- * schema can never produce. `already_reviewed` takes precedence exactly when
- * the candidate is consumed, so the two must agree in both directions. A
- * contradictory envelope is never trusted, least of all as closure evidence.
- * Envelopes without the pair (older binaries) are not checked here.
+ * schema can never produce. A consumed candidate must report
+ * `already_reviewed`, but that reason can also describe an acknowledged
+ * committed predecessor followed by a passive delta (#1954). It does not
+ * prove this exact candidate was consumed; preserve native's explicit false.
+ * Native v2 requires consumed, so missing evidence with already_reviewed is
+ * still rejected. Envelopes without the pair (older binaries) are unchecked.
  */
 function validateReviewDueConsistency(reviewDue: boolean, reviewDueReason: ReviewDueReason, candidate: ReviewAssessmentCandidate): void {
 	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
 		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
 	}
 	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
-	if (alreadyReviewed !== (candidate.consumed === true)) {
-		throw new TypeError("review assessment review_due_reason already_reviewed must be reported exactly when candidate.consumed is true");
+	if (candidate.consumed === true && !alreadyReviewed) {
+		throw new TypeError("review assessment candidate.consumed true requires review_due_reason already_reviewed");
+	}
+	if (alreadyReviewed && candidate.consumed === undefined) {
+		throw new TypeError("review assessment review_due_reason already_reviewed requires explicit candidate.consumed evidence");
 	}
 }
 
@@ -410,59 +415,33 @@ function nonClosedOutcomeClause(outcome: NativeReviewOutcome): string {
 }
 
 /**
- * Computes who verifies a delegated writer's change, exactly as
- * gentle-pi#662/#668 specify:
+ * Computes who verifies a delegated writer's change. Verification follows the
+ * native risk tier whatever the RDD line and native review outcome
+ * (verify-always-rdd-high S1, superseding the gentle-pi#662/#668 on-path): the
+ * native review is an additional outside view and never replaces or skips the
+ * tier's verification. `nativeReviewOutcome` only shapes the reason text.
  *
- * - `rdd: "on"` AND the native review reached `NATIVE_REVIEW_OUTCOME.CLOSED`
- *   for this candidate: the writer self-verifies and no independent verifier
- *   runs, because the closed native review is the check -- except `passive`,
- *   which gets a structural readback by the parent instead.
- * - `rdd: "on"` with any other outcome (`declined`, `unavailable`, or the
- *   fail-closed `unknown` default for an omitted/unrecognized outcome): the
- *   `on` branch never held for this candidate, so the risk-gated path below
- *   applies exactly as `off` -- declining a review is candidate-scoped and
- *   never lowers the bar below the RDD-off path.
- * - `rdd: "off"` or `"unknown"` (both gate identically, so an unknown RDD line
- *   never lowers a tier relative to `off`; `nativeReviewOutcome` is ignored
- *   entirely on these lines):
- *   - `passive`: structural readback by the parent only; no verifier, no
- *     tests.
- *   - `medium`: the writer self-verifies; a separate independent verifier
- *     runs only when `writerProfile` is `"small"` -- the small-model bias
- *     raises the tier by one for verification purposes (medium -> high). An
- *     unknown or omitted writer profile resolves to `"small"` before it
- *     reaches this function (see `resolveWriterProfile`), so an unrecognized
- *     profile never lowers a tier below what a known small model would get.
- *   - `high` or `unassessable` (a failed or unrecognized native assessment is
- *     always treated as high): the writer self-verifies and an independent
- *     verifier always runs.
+ * - `passive`: structural readback by the parent only; no verifier, no tests.
+ * - `medium`: the writer self-verifies; a separate independent verifier runs
+ *   only when `writerProfile` is `"small"` -- the small-model bias raises the
+ *   tier by one for verification purposes (medium -> high). An unknown or
+ *   omitted writer profile resolves to `"small"` before it reaches this
+ *   function (see `resolveWriterProfile`), so an unrecognized profile never
+ *   lowers a tier below what a known small model would get.
+ * - `high` or `unassessable` (a failed or unrecognized native assessment is
+ *   always treated as high): the writer self-verifies and an independent
+ *   verifier always runs.
  */
 export function verificationPlan(input: VerificationPlanInput): VerificationPlan {
 	const { rddLine, risk, writerProfile } = input;
 
 	if (rddLine === RDD_LINE.ON) {
 		const outcome = input.nativeReviewOutcome ?? NATIVE_REVIEW_OUTCOME.UNKNOWN;
-		if (outcome === NATIVE_REVIEW_OUTCOME.CLOSED) {
-			if (risk === VERIFICATION_TIER.PASSIVE) {
-				return Object.freeze({
-					writerSelfVerification: false,
-					structuralReadbackOnly: true,
-					independentVerifier: false,
-					reason: "receipt-driven development is on and the native review closed for this candidate; the assessment also reports passive risk: a structural readback by the parent replaces both the writer's self-verification and any separate verifier.",
-				});
-			}
-			return Object.freeze({
-				writerSelfVerification: true,
-				structuralReadbackOnly: false,
-				independentVerifier: false,
-				reason: "receipt-driven development is on and the native review closed for this candidate: the writer's self-verification is the record and the closed native review was the independent check the writer cannot influence, so no separate verifier is required.",
-			});
-		}
-		// The on branch holds only while the native review reaches a terminal
-		// outcome for this candidate. Anything else -- declined, unavailable, or
-		// unknown -- falls back to the exact same risk-gated path as off.
+		const clause = outcome === NATIVE_REVIEW_OUTCOME.CLOSED
+			? "the native review closed for this candidate"
+			: nonClosedOutcomeClause(outcome);
 		return riskGatedPlan(
-			`receipt-driven development is on, but ${nonClosedOutcomeClause(outcome)}, so the risk-gated path applies exactly as receipt-driven development off, and`,
+			`receipt-driven development is on and ${clause}; the native review is an additional outside view that never replaces verification, so the risk-gated path applies exactly as receipt-driven development off, and`,
 			risk,
 			writerProfile,
 		);

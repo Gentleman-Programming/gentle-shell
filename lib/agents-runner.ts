@@ -1,10 +1,12 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { tmpdir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
+import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
@@ -17,12 +19,12 @@ import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-su
 // and enforces an inactivity watchdog per task.
 
 export interface ChildLike {
-	pid: number | undefined;
+	pid?: number;
 	connected?: boolean;
-	stdin: Writable;
-	stdout: Readable;
+	stdin: Writable | null;
+	stdout: Readable | null;
 	stderr: Readable | null | undefined;
-	stdio?: Array<Duplex | null | undefined>;
+	stdio?: Array<Readable | Writable | null | undefined>;
 	kill(signal?: NodeJS.Signals): boolean;
 	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
 	disconnect?(): void;
@@ -36,6 +38,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
+	windowsHide?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -127,8 +130,16 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// Untrusted narrowing intent; paths come only from matching host provenance.
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
+	// Host-computed launch-layer token for the card (#2180): which profile layer
+	// supplied `model` (`binding`, `frozen:*`, `pin:*`, `declaration`, `profile`,
+	// `definition`, `default`). Same host-only provenance as `extensionPaths`:
+	// never derived from tool input or agent definitions.
+	modelSource?: string;
+	// Same host-only provenance as extensionPaths (#1690).
+	noExtensions?: boolean;
 	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
 	// queued or running it claims them in `cwd`; run() rejects an overlapping
 	// claim (gentle-shell#1731). Read-only agents leave this unset.
@@ -224,6 +235,8 @@ const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
+/** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
+export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
@@ -263,14 +276,53 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
+// The --tools value, or undefined when Pi keeps its default tools.
+function requestedTools(request: TaskRequest): string | undefined {
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	return tools.length > 0 ? tools.join(",") : undefined;
+}
+
+const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
+
+/** Resolve one already installed, explicitly requested package. Pi's own loader
+ * follows its manifest and supplies SDK aliases; no install or ambient discovery. */
+function requestedWebPackagePaths(request: TaskRequest): string[] {
+	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
+	try {
+		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
+			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
+			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");
+		}
+		const manager = new DefaultPackageManager({
+			cwd: request.cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const installed = manager.getInstalledPath("npm:pi-web-access", "user");
+		return installed ? [realpathSync(installed)] : [];
+	} catch {
+		// Missing/incompatible package remains an observable child capability gap.
+		return [];
+	}
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
+	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
+	for (const packagePath of requestedWebPackagePaths(request)) {
+		const injected = extensionPaths.some(path => {
+			try { return realpathSync(resolve(request.cwd, path)) === packagePath; }
+			catch { return false; }
+		});
+		if (!injected) extensionPaths.push(packagePath);
+	}
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
-	if (tools.length > 0) args.push("--tools", tools.join(","));
+	const tools = requestedTools(request);
+	if (tools !== undefined) args.push("--tools", tools);
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);
 	} else if (request.agent.instructions.length > 0) {
@@ -360,6 +412,8 @@ export class AgentRunner {
 			startedAt: null,
 			endedAt: null,
 			model: formatModelRef(request.model),
+			// Copied, never recomputed: the layer token was resolved once at the seam (#2180).
+			...(request.modelSource === undefined ? {} : { modelSource: request.modelSource }),
 			thinking: request.thinking,
 			sessionPath: request.resumeSessionPath ?? null,
 			error: null,
@@ -493,6 +547,9 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		const tools = requestedTools(request);
+		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
+		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
@@ -519,6 +576,7 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
+				windowsHide: true,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
@@ -544,7 +602,7 @@ export class AgentRunner {
 		}
 		this.live.set(id, live);
 		const permissionPipe = child.stdio?.[3];
-		if (hasParentPermissionChannel && permissionPipe !== undefined && permissionPipe !== null) {
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
 			live.permissionBroker = new ParentStandingReviewPermissionBroker(
 				{ readable: permissionPipe, writable: permissionPipe },
 				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
@@ -562,6 +620,11 @@ export class AgentRunner {
 			try { request.onLaunch?.(); }
 			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
 		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
 		child.stdin.on("error", () => {});
 		this.armStall(id, live);
 		const lines = new JsonLines((value) => this.receive(id, request, value));
@@ -572,7 +635,6 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code, signal) => this.exited(id, code, signal));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -742,7 +804,7 @@ export class AgentRunner {
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
 		try {
-			live.child.stdin.write(`${JSON.stringify(payload)}\n`);
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
 		} catch {
 			// the child is gone; the exit handler settles the task
 		}

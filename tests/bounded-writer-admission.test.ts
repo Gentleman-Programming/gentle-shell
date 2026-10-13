@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
-import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, bindSessionRepositoryPreparation, boundSessionRepositoryAuthorityCurrent, captureBoundSessionRepositoryAuthority, isDevelopmentSurface, prepareBoundSessionRepository, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
 test("development admission excludes sensitive, config and bookkeeping surfaces structurally", () => {
@@ -92,6 +92,30 @@ test("explicit review protects canonical HOME aliases, filesystem root and sensi
 		catch { /* The public boundary can reject before returning an envelope. */ }
 	}
 	assert.equal(calls, 0, "no native STATUS against protected directories");
+});
+
+// A Git repository created in HOME, an ancestor of it, or a broad user folder
+// turns every later Git call in the user's tree into a scan of everything
+// below it (a Windows user measured ~47s startups). Bootstrap refuses them.
+test("native bootstrap refuses HOME ancestors and broad user folders but keeps project folders", t => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "bootstrap-broad-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const home = join(root, "home");
+	const broad = ["Documents", "Desktop", "Downloads", "OneDrive", "OneDrive - Contoso", join("OneDrive", "Documents")];
+	for (const folder of [...broad, join("Documents", "project"), "project"]) mkdirSync(join(home, folder), { recursive: true });
+	for (const target of [root, home, ...broad.map(folder => join(home, folder))]) assert.equal(safeBootstrapDirectory(target, { home }), undefined, target);
+	for (const target of [join(home, "project"), join(home, "Documents", "project")]) assert.equal(safeBootstrapDirectory(target, { home }), target, target);
+});
+
+test("native bootstrap compares HOME case-insensitively on Windows only", t => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "bootstrap-case-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const home = join(root, "home");
+	mkdirSync(join(home, "project"), { recursive: true });
+	const differentlyCasedHome = home.toUpperCase();
+	assert.equal(safeBootstrapDirectory(home, { home: differentlyCasedHome, platform: "win32" }), undefined);
+	assert.equal(safeBootstrapDirectory(home, { home: differentlyCasedHome, platform: "linux" }), home);
+	assert.equal(safeBootstrapDirectory(join(home, "project"), { home: differentlyCasedHome, platform: "win32" }), join(home, "project"));
 });
 
 // gentle-shell#1713: a writer continuation without its own section was

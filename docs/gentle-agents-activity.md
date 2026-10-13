@@ -34,19 +34,71 @@ isolation, ownership locks, or exclusive access.
 
 ### Declare a recognizable subject
 
-When starting a task or delegation, call `orchestrator_session_id` with a short,
-non-sensitive `subject`; no peer survey or additional model call is needed. The tool
-returns the stable routing ID and current canonical alias. It uses Pi's
-`setSessionName` only when the canonical name is empty, preserving existing names
-and later human renames. Subjects are control-stripped, whitespace-normalized, and
-bounded to 120 Unicode characters. Do not supply arbitrary prompts or secrets.
+Before delegation or cross-session coordination, call `orchestrator_session_id`
+with a short, non-sensitive `subject`. Do not require a subject declaration for small direct tasks;
+no peer survey or additional model call is needed. The tool
+returns the stable routing ID, **Current alias (CURRENT TASK)**, **Initial alias
+(FIRST TASK)**, and separate human **Session name**. An explicit `subject` updates
+Current even when the session is named; Initial retains the first explicit topic
+on the active branch. It uses Pi's `setSessionName` only when the canonical name
+is empty, preserving existing names and later human renames. Human renames do not
+change task aliases. Subjects are control-stripped, whitespace-normalized, and
+bounded to 120 Unicode characters; invalid types and surrogates are rejected.
+Do not supply arbitrary prompts or secrets.
 Aliases are display hints, never authentication or routing identities.
+
+Aliases are optional envelope metadata in the existing branch-local state record,
+restored with `getBranch()` on start/reload/tree navigation. State replacement or
+withdrawal preserves them; no subject preserves both. Subject-only declarations
+preserve state contents, recorded cwd and `recordedAt`: old progress is not a fresh
+status update. Publish subject and state together when changing work. New records
+use null/null until the first declaration; legacy records without aliases keep
+Initial unknown, including when a later Current topic is declared. Names and private
+history never supply missing initial topics. Abandoned branches are not inspected.
+
+Activation-bound discovery and metadata consultation expose `aliases.initialAlias`
+and `aliases.currentAlias` separately from the legacy human `label`. Ordinary list
+text shows both; classified session work search uses Current as its display/search
+label, falling back to the legacy label when unknown. Aliases never change catalog
+pagination identity or routing. Invalid alias metadata is withheld without hiding
+legacy activity; existing whole-record and sidecar byte bounds still apply.
 
 Presence reads the current canonical Pi name on its existing five-second heartbeat,
 including idle `/name` or session-picker renames; declaration refreshes it immediately.
 An unnamed session retains its workspace-basename display fallback. Session replacement
 or shutdown disposes the previous publisher; a stale name source stops publication.
 Headers remain unchanged; the optional sidecar now also carries `scope`.
+
+### Read orchestrator tool cards
+
+All four `orchestrator_*` tools use compact operation cards in the terminal.
+Expand a completed card to see labelled fields and nested sections rather than
+raw JSON or duplicated result dumps; collapse it to return to the summary.
+Empty request blocks are omitted. Session identity cards separate the current
+task aliases, human session name, requested subject, and stable routing ID.
+Initial/current aliases remain unknown for legacy history rather than being
+inferred from the human name. Requests matching the returned current alias are
+not repeated. Older identity results retain their preserved-alias explanation.
+Alias and subject values use accent; labels and the preserved-name note use
+muted, while the routing ID uses dim. Plain text is wrapped before these colors
+are applied, preserving the same height even in narrow terminals.
+Discovery overviews show at most six records, one physical table row each,
+with short display IDs, workspace basenames, and task counts (`+` marks omitted
+tasks; `?` means the count is unknown). Sessions without recent metadata are
+counted together, not expanded into empty records. Classified-work overviews
+use the same row limit and retain non-exhaustive coverage limits. Long cells
+are clipped rather than wrapped, keeping completed overviews within 16 terminal
+rows including its card frame. Short IDs and basenames are display hints,
+never routing selectors or repository identity: use a full session ID with
+`orchestrator_consult` or targeted `orchestrator_list` for detailed context.
+Overview headers use the theme's tool-title color and bold when available;
+aliases use accent, IDs use dim, and workspace/work values use muted. Quantities
+use the numeric color; zero stays muted and unknown task counts use warning.
+Limits use warning, while extra-record and missing-metadata notices remain muted.
+These roles create visual hierarchy, not a green/live reachability indication,
+and are recomputed when rendered so theme changes do not leave stale colors.
+Consultation is not an owner reply; queued messages are not read or delivery
+receipts. Complete model-facing output and permissions remain unchanged.
 
 ### Publish curated state (Refs #1702; first slice)
 
@@ -214,9 +266,24 @@ are unchanged; caller replacement prevents a stale `recorded` result.
 Call `orchestrator_consult` with required stable `recipient_session_id`, optional
 `kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
 No free-form question, owner request, human picker or read-consent dialog is used
-for this profile's explicitly published data. Use `orchestrator_session_id.state`
-to publish short updates before delegation or meaningful progress milestones when
-helpful; do not add a model turn solely to publish or emit per-tool/token updates.
+for this profile's explicitly published data. Publish `subject` and `state` together
+before work beyond small direct tasks; update at task changes and completion. Keep
+small direct tasks exempt. Batch with setup/progress; do not add a model turn solely
+to publish or emit per-tool/token updates.
+
+Use `objective` for the goal, `progress` for current and next scope, and `blockers`
+for anything preventing progress. Use `state.work` for relevant area/topic and
+exact repository-qualified issue/PR refs;
+classify delegated work through `subagent_run.work`. A state object replaces the
+snapshot, so include every field that should remain public. At completion, publish
+the outcome and next scope or withdraw the state with `null`; do not leave completed
+work described as active.
+
+Peers read this snapshot while the owner is busy, without an owner reply or waiting
+for idle. Use metadata consultation before sending a question; contact the owner
+only when the published context cannot answer it or an owner decision is needed.
+A search with no matches does not establish that nobody else is working on the feature:
+unknown, stale, unclassified and omitted scope must remain explicit.
 
 The JSON receipt is deeply detached and frozen in-process, at most 16 KiB. It
 contains public label/workspace, owned task summaries, recorded scope, one catalog

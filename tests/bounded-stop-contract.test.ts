@@ -35,7 +35,7 @@ function closeStep(persona: (typeof personas)[number]): string {
 
 test("T23(a): a partial or blocked writer gets the one correction, then Needs your decision, never more verify", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
-		"A `partial` or `blocked` writer report gets only this correction, never an extra verify run (overriding the Verification rule's on-demand verify)",
+		"A `partial` or `blocked` writer report gets only this correction, never an extra verify run beyond the risk tier's verifier",
 		"partial, blocked, unavailable, or exhausted proof left after it becomes that one **Needs your decision**",
 	], "verification correction bound");
 	for (const persona of personas) {

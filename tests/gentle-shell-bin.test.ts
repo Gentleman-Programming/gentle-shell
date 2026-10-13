@@ -127,22 +127,22 @@ test("an adjacent package.json with a non-string version fails closed with a cle
 
 test("a cache hit for an env-override pi skips the real version spawn on the next launch", (t) => {
 	const f = fixture(t);
-	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	const first = run(env, ["--version"]);
 	assert.equal(first.status, 0, first.stderr);
-	assert.match(first.stdout, /pi 0\.99\.5/);
+	assert.match(first.stdout, /pi 1\.2\.5/);
 	assert.equal(readFileSync(log, "utf8").length, 1, "first launch spawns the probe once");
 
 	const second = run(env, ["--version"]);
 	assert.equal(second.status, 0, second.stderr);
-	assert.match(second.stdout, /pi 0\.99\.5/);
+	assert.match(second.stdout, /pi 1\.2\.5/);
 	assert.equal(readFileSync(log, "utf8").length, 1, "the cached version is reused instead of spawning again");
 });
 
 test("a changed script behind an unchanged .cmd wrapper still invalidates the cache on Windows", { skip: process.platform !== "win32" }, (t) => {
 	const f = fixture(t);
-	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	assert.equal(run(env, ["--version"]).status, 0);
 	assert.equal(readFileSync(log, "utf8").length, 1);
@@ -153,11 +153,11 @@ test("a changed script behind an unchanged .cmd wrapper still invalidates the ca
 		script,
 		[
 			"#!/usr/bin/env node",
-			"// version 0.99.6",
+			"// version 1.2.6",
 			"import { appendFileSync } from 'node:fs';",
 			`appendFileSync(${JSON.stringify(log)}, "x");`,
 			"const args = process.argv.slice(2);",
-			`if (args.includes("--version")) { console.log("0.99.6"); }`,
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
 			"process.exit(0);",
 			"",
 		].join("\n"),
@@ -166,39 +166,39 @@ test("a changed script behind an unchanged .cmd wrapper still invalidates the ca
 
 	const result = run(env, ["--version"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.6/);
+	assert.match(result.stdout, /pi 1\.2\.6/);
 	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed only by the unchanged wrapper must not reuse the old version");
 });
 
 test("a changed pi binary at the same path invalidates the cache and re-probes", (t) => {
 	const f = fixture(t);
-	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	assert.equal(run(env, ["--version"]).status, 0);
 	assert.equal(readFileSync(log, "utf8").length, 1);
 
-	writeCountingPiScript(f.root, "0.99.6");
+	writeCountingPiScript(f.root, "1.2.6");
 	const result = run(env, ["--version"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.6/);
+	assert.match(result.stdout, /pi 1\.2\.6/);
 	assert.equal(readFileSync(log, "utf8").length, 2, "a changed binary re-probes instead of trusting the stale cache");
 });
 
 test("a malformed pi version cache entry in config.json is tolerated and just re-probes", (t) => {
 	const f = fixture(t);
-	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	const configPath = join(f.home, ".gentle-shell", "config.json");
 	mkdirSync(dirname(configPath), { recursive: true });
 	writeFileSync(configPath, JSON.stringify({ piVersionProbeCache: "not-an-object" }));
 	const result = run(env, ["--version"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.5/);
+	assert.match(result.stdout, /pi 1\.2\.5/);
 });
 
 test("a cached entry with an unparseable version re-probes instead of failing the launch", (t) => {
 	const f = fixture(t);
-	const { command, log } = writeCountingPiScript(f.root, "0.99.5");
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	const configPath = join(f.home, ".gentle-shell", "config.json");
 	mkdirSync(dirname(configPath), { recursive: true });
@@ -209,13 +209,13 @@ test("a cached entry with an unparseable version re-probes instead of failing th
 	);
 	const result = run(env, ["--version"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /pi 0\.99\.5/);
+	assert.match(result.stdout, /pi 1\.2\.5/);
 	assert.equal(readFileSync(log, "utf8").length, 1, "an unparseable cached version is a miss, not a trusted result");
 });
 
 test("an unwritable config.json never fails an env-override launch; the cache write is best-effort", (t) => {
 	const f = fixture(t);
-	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	const configDir = join(f.home, ".gentle-shell");
 	const configPath = join(configDir, "config.json");
@@ -231,14 +231,14 @@ test("an unwritable config.json never fails an env-override launch; the cache wr
 	for (let i = 0; i < 2; i++) {
 		const result = run(env, ["--version"]);
 		assert.equal(result.status, 0, result.stderr);
-		assert.match(result.stdout, /pi 0\.99\.5/);
+		assert.match(result.stdout, /pi 1\.2\.5/);
 	}
 	assert.equal(readFileSync(configPath, "utf8"), before, "a failed cache write never corrupts or replaces the existing config");
 });
 
 test("concurrent first launches with an env-override pi all succeed despite a config.json write race", async (t) => {
 	const f = fixture(t);
-	const { command } = writeCountingPiScript(f.root, "0.99.5");
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
 	const env = { ...f.env, GENTLE_SHELL_PI: command };
 	const codes = await Promise.all(
 		Array.from(

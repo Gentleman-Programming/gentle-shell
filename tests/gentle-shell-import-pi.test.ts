@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatImportPiReport, importPi } from "../lib/gentle-shell-import-pi.ts";
+import { formatImportPiReport, importPi, nodeImportPiFs } from "../lib/gentle-shell-import-pi.ts";
 
 // `gentle-shell home import-pi` core: real temp directories, never the real
 // ~/.pi or ~/.gentle-shell. Credential contents never appear in assertions.
@@ -163,6 +163,22 @@ test("settings: an unreadable settings.json is reported per item while the other
 		assert.match(formatImportPiReport(result, { source: f.source, target: f.target, dryRun: false }).join("\n"), /settings\.json: failed/);
 	} finally {
 		chmodSync(settings, 0o600);
+	}
+});
+
+test("a destination that cannot be classified is one failed item while the other items still run", (t) => {
+	const f = fixture(t);
+	seedSource(f.source);
+	const blocked = join(f.target, "auth.json");
+	const fs = { ...nodeImportPiFs, kind: (path: string) => {
+		if (path === blocked) throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: "ENOTDIR" });
+		return nodeImportPiFs.kind(path);
+	} };
+	for (const dryRun of [true, false]) {
+		const result = importPi({ source: f.source, target: f.target, dryRun, fs });
+		assert.equal(statusOf(result, "auth.json"), "failed", `dryRun=${dryRun}`);
+		assert.equal(statusOf(result, "mcp.json"), dryRun ? "would copy" : "copied");
+		assert.equal(result.failed, true);
 	}
 });
 

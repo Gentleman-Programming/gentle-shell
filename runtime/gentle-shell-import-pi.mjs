@@ -126,14 +126,15 @@ function importFile(name        , mode                    , input               
 	const { fs } = input;
 	const from = join(input.source, name);
 	const to = join(input.target, name);
-	const kind = fs.kind(from);
-	if (kind === "missing") return { item: name, status: "not found" };
-	if (kind !== "file") return { item: name, status: "skipped", detail: "not a regular file" };
-	if (fs.kind(to) !== "missing") return { item: name, status: "present" };
-	const copyMode = mode ?? fs.mode(from);
-	const detail = `${copyMode.toString(8).padStart(4, "0")}`;
-	if (input.dryRun) return { item: name, status: "would copy", detail };
+	// Classification can throw too (ENOTDIR under a file): one failed item, never an aborted report.
 	try {
+		const kind = fs.kind(from);
+		if (kind === "missing") return { item: name, status: "not found" };
+		if (kind !== "file") return { item: name, status: "skipped", detail: "not a regular file" };
+		if (fs.kind(to) !== "missing") return { item: name, status: "present" };
+		const copyMode = mode ?? fs.mode(from);
+		const detail = `${copyMode.toString(8).padStart(4, "0")}`;
+		if (input.dryRun) return { item: name, status: "would copy", detail };
 		fs.copyNew(from, to, copyMode);
 		return { item: name, status: "copied", detail };
 	} catch (error) {

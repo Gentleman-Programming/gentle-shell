@@ -128,13 +128,19 @@ function toolContext(context: ExtensionContext): ExtensionToolContext {
 async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-agent-home-"));
-	// Isolates both the model-config sweep and the dev-binary registration
-	// lookup from this machine's real ~/.pi/gentle-ai, so `session_start`'s
-	// unrelated notifications never leak into these assertions.
-	process.env.GENTLE_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-config-home-"));
+	const created: string[] = [];
+	const tempDirectory = async (prefix: string) => {
+		const directory = await mkdtemp(join(tmpdir(), prefix));
+		created.push(directory);
+		return directory;
+	};
 	try {
-		const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-cwd-"));
+		process.env.GENTLE_PI_AGENT_HOME = await tempDirectory("gentle-pi-session-baseline-agent-home-");
+		// Isolates both the model-config sweep and the dev-binary registration
+		// lookup from this machine's real ~/.pi/gentle-ai, so `session_start`'s
+		// unrelated notifications never leak into these assertions.
+		process.env.GENTLE_PI_CONFIG_HOME = await tempDirectory("gentle-pi-session-baseline-config-home-");
+		const cwd = await tempDirectory("gentle-pi-session-baseline-cwd-");
 		if (initializeGit) childProcess.execFileSync("git", ["init", "--quiet", cwd]);
 		await mkdir(join(cwd, "src"));
 		await writeFile(join(cwd, "src/example.ts"), "export const value = 1;");
@@ -144,6 +150,7 @@ async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, ini
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		for (const directory of created) await rm(directory, { recursive: true, force: true });
 	}
 }
 
@@ -301,6 +308,15 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		if (changedTarget) assert.ok(String(reminders[0]?.message.content).includes(nextTarget));
 	});
 }
+
+test("withSessionStartEnv removes the temp directories it creates", async () => {
+	let created: string[] = [];
+	await withSessionStartEnv(async (cwd) => {
+		created = [cwd, process.env.GENTLE_PI_AGENT_HOME!, process.env.GENTLE_PI_CONFIG_HOME!];
+		for (const directory of created) assert.equal(existsSync(directory), true);
+	});
+	assert.deepEqual(created.filter((directory) => existsSync(directory)), []);
+});
 
 test("passive session events outside Git with RDD off never invoke native STATUS or initialize Git", async () => {
 	await withSessionStartEnv(async (cwd) => {

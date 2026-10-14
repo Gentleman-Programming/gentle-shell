@@ -156,7 +156,6 @@ export class McpDetailView {
 			}),
 			"",
 			"↑/↓ move · enter open/run · esc close",
-			"live status · reconnect · sign in: /mcp",
 		];
 	}
 

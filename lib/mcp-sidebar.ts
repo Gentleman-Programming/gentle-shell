@@ -122,27 +122,36 @@ export function patchMcpServersFile(
 	name: string,
 	patch: { enabled?: boolean },
 	options: { asOverride?: boolean; keepEnabled?: boolean } = {},
-): string {	let doc: { mcpServers: Record<string, McpRawEntry> };
+): string {
+	let doc: Record<string, unknown>;
 	let indent = "  ";
 	if (raw === undefined || raw.trim() === "") {
 		doc = { mcpServers: {} };
 	} else {
 		indent = detectIndent(raw);
-		doc = JSON.parse(raw) as { mcpServers: Record<string, McpRawEntry> };
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("MCP config is not a JSON object; refusing to rewrite it.");
+		}
+		doc = parsed as Record<string, unknown>;
+		if (doc.mcpServers !== undefined && (typeof doc.mcpServers !== "object" || doc.mcpServers === null || Array.isArray(doc.mcpServers))) {
+			doc.mcpServers = {};
+		}
 		doc.mcpServers ??= {};
 	}
+	const servers = doc.mcpServers as Record<string, McpRawEntry>;
 	if (options.asOverride) {
-		const current = doc.mcpServers[name] ?? {};
-		doc.mcpServers[name] = { ...current, ...patch };
-		if (patch.enabled === true && !options.keepEnabled) delete (doc.mcpServers[name] as Record<string, unknown>).enabled;
-		if (Object.keys(doc.mcpServers[name]!).length === 0) delete doc.mcpServers[name];
+		const current = servers[name] ?? {};
+		servers[name] = { ...current, ...patch };
+		if (patch.enabled === true && !options.keepEnabled) delete (servers[name] as Record<string, unknown>).enabled;
+		if (Object.keys(servers[name]!).length === 0) delete servers[name];
 	} else {
-		const current = doc.mcpServers[name] ?? {};
+		const current = servers[name] ?? {};
 		const next = { ...current, ...patch };
 		if (patch.enabled === true) delete next.enabled;
-		doc.mcpServers[name] = next;
+		servers[name] = next;
 	}
-	return JSON.stringify({ mcpServers: doc.mcpServers }, undefined, indent);
+	return JSON.stringify(doc, undefined, indent);
 }
 
 export interface McpCardOptions {

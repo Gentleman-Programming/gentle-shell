@@ -3,7 +3,7 @@ import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
@@ -137,6 +137,7 @@ import {
 	type McpDetailActionId,
 } from "../lib/mcp-sidebar.ts";
 import { buildMcpSession, type McpSessionEntry } from "../lib/mcp-session.ts";
+import { writeMcpJsonFile } from "../lib/mcp-config-file.ts";
 import { McpDetailView, type McpDetailResult } from "../lib/mcp-detail-view.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
@@ -1464,19 +1465,18 @@ async function applyMcpToggle(
 	try {
 		if (action === "disable") {
 			const path = target.hasOverride ? projectPath : definingPath;
-			await writeFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: false }, { asOverride: target.hasOverride }));
+			await writeMcpJsonFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: false }, { asOverride: target.hasOverride }));
 			ctx.ui.notify(`Disabled "${target.name}" (saved to ${path}). Applies to new sessions; /mcp manages the live connection.`, "info");
 		} else if (action === "enable") {
 			const path = target.hasOverride ? projectPath : definingPath;
-			await writeFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: true }, { asOverride: target.hasOverride }));
+			await writeMcpJsonFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: true }, { asOverride: target.hasOverride }));
 			ctx.ui.notify(`Enabled "${target.name}" (saved to ${path}). Applies to new sessions; /mcp manages the live connection.`, "info");
 		} else if (action === "disable-project") {
 			if (!trusted) {
 				ctx.ui.notify("Project overrides need a trusted project.", "warning");
 				return;
 			}
-			await mkdir(dirname(projectPath), { recursive: true });
-			await writeFile(projectPath, patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: false }, { asOverride: true }));
+			await writeMcpJsonFile(projectPath, patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: false }, { asOverride: true }));
 			ctx.ui.notify(`Disabled "${target.name}" in this project (saved to ${projectPath}). Applies to new sessions.`, "info");
 		} else if (action === "enable-project") {
 			if (!trusted) {
@@ -1484,8 +1484,7 @@ async function applyMcpToggle(
 				return;
 			}
 			const definingEnabled = parseMcpServers(await readRaw(definingPath))[target.name]?.enabled !== false;
-			await mkdir(dirname(projectPath), { recursive: true });
-			await writeFile(
+			await writeMcpJsonFile(
 				projectPath,
 				definingEnabled
 					? patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: true }, { asOverride: true })
@@ -2081,10 +2080,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			};
 			const mcpEntries = (): McpSessionEntry[] => {
 				const allTools = pi.getAllTools();
-				const toolNames = allTools.map((tool) => tool.name);
+				const tools = allTools.map((tool) => ({ name: tool.name, description: tool.description }));
 				const registered = pi.getMcpServers().map((server) => server.name);
 				const globalPath = join(getAgentDir(), "mcp.json");
 				const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
+				// Pi itself ignores the project file for untrusted projects;
+				// the card must not show servers Pi would never load.
+				const trusted = ctx.isProjectTrusted();
 				const readRaw = (path: string): string | undefined => {
 					try {
 						return readFileSync(path, "utf8");
@@ -2092,14 +2094,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						return undefined;
 					}
 				};
-				const key = `${mcpStatKey(globalPath)}|${mcpStatKey(projectPath)}|${toolNames.join(",")}|${registered.join(",")}`;
+				const key = `${mcpStatKey(globalPath)}|${mcpStatKey(projectPath)}|${trusted}|${registered.join(",")}|${JSON.stringify(tools)}`;
 				if (key === mcpCacheKey) return mcpCache;
 				mcpCache = buildMcpSession({
 					globalPath,
 					projectPath,
 					globalRaw: readRaw(globalPath),
-					projectRaw: readRaw(projectPath),
-					tools: allTools.map((tool) => ({ name: tool.name, description: tool.description })),
+					projectRaw: trusted ? readRaw(projectPath) : undefined,
+					tools,
 					registered,
 				});
 				mcpCacheKey = key;

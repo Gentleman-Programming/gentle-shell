@@ -150,6 +150,24 @@ test("malformed config parses to empty", () => {
 	assert.deepEqual(parseMcpServers(undefined), {});
 });
 
+test("patch preserves other top-level keys", () => {
+	const raw = `{"version": 1, "mcpServers": {"stitch": {"url": "https://x"}}}`;
+	const next = JSON.parse(patchMcpServersFile(raw, "stitch", { enabled: false }, {}));
+	assert.equal(next.version, 1);
+	assert.equal(next.mcpServers.stitch.enabled, false);
+});
+
+test("patch rejects garbage instead of clobbering it", () => {
+	assert.throws(() => patchMcpServersFile("{oops", "stitch", { enabled: false }, {}));
+	assert.throws(() => patchMcpServersFile(`"just a string"`, "stitch", { enabled: false }, {}));
+});
+
+test("patch defaults non-object mcpServers without losing siblings", () => {
+	const next = JSON.parse(patchMcpServersFile(`{"mcpServers": [], "other": true}`, "stitch", { enabled: false }, { asOverride: true }));
+	assert.deepEqual(next.mcpServers.stitch, { enabled: false });
+	assert.equal(next.other, true);
+});
+
 test("row normalization strips frames, margins and markers", () => {
 	assert.equal(normalizeMcpRow("  │ • stitch — Disabled · 0 tools │  "), "• stitch — Disabled · 0 tools");
 	assert.equal(normalizeMcpRow("│ ▸ ← Back │"), "← Back");

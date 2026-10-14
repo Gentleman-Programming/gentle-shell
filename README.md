@@ -503,7 +503,13 @@ gentle-shell setup
 ```bash
 # Make --link the default
 gentle-shell home link
+
+# Or keep the separate home and copy your pi sign-ins into it
+gentle-shell home import-pi --dry-run
+gentle-shell home import-pi
 ```
+
+`gentle-shell home import-pi` copies `auth.json` (kept private, `0600`) and `mcp.json` from your pi home into the separate home, plus your default provider, model and thinking level when that home has none. It never overwrites a file or setting, never copies packages, extensions, caches or chats, and never changes your pi home. The tradeoff: `--link` shares one credential store with pi, while `import-pi` makes a second copy, so a provider that rotates refresh tokens may sign one of the two out; run `/login` again there.
 
 Every other argument is forwarded to pi unchanged, for example `gentle-shell --mode rpc` or `gentle-shell -p "..."`. Full flags, env vars, and modes: **[launcher reference](docs/readme-reference.md#gentle-shell-launcher)**.
 

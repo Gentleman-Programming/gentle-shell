@@ -202,7 +202,7 @@ gentle-shell
 gentle-shell --link
 ```
 
-`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)). `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default. Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
+`gentle-shell` alone starts in its own home, `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)). `gentle-shell --link` reuses `~/.pi/agent` as-is. Run `gentle-shell home link` to make `--link` the default, or `gentle-shell home import-pi` to copy your pi sign-ins into the separate home instead ([`home` subcommand](#home-subcommand-and-gentle-shellconfigjson)). Full flags, env vars, and modes: [gentle-shell launcher](#gentle-shell-launcher).
 
 ### Path B: inside an existing pi
 
@@ -358,6 +358,15 @@ persona files.
 ### `home` subcommand and `~/.gentle-shell/config.json`
 
 `gentle-shell home` alone prints the effective mode and directory (`<mode> <dir>`) without persisting anything. `gentle-shell home link`, `gentle-shell home isolated`, or `gentle-shell home <path>` persists that choice to `~/.gentle-shell/config.json` as `{"home": "link" | "isolated" | "<path>"}`, so a later plain `gentle-shell` picks it up; a flag on a given invocation still overrides the persisted config without rewriting it.
+
+`gentle-shell [--isolated | --home <path>] home import-pi [--dry-run]` copies your pi sign-ins into a separate home instead of sharing them with `--link`. The source is your own pi home, resolved like `--link` (`GENTLE_SHELL_USER_PI_HOME`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent`); the target is the resolved home (a flag, then the persisted choice, then the isolated default). It copies only:
+
+- `auth.json`, written with mode `0600`, and `mcp.json`, with its source mode, each only when the target has no such file;
+- `defaultProvider`, `defaultModel` and `defaultThinkingLevel` from the source `settings.json`, each only when the target `settings.json` lacks that key. Every other target key stays as it was; the file is rewritten atomically, and only when a key is added.
+
+It never overwrites, never follows a symbolic link, never copies `packages`, `extensions`, `theme`, `npmCommand`, caches (`mcp-cache.json`, `mcp-npx-cache.json`), `AGENTS.md` or sessions, and never writes to the source. A target that does not exist yet (or is empty) is first set up exactly as a first launch would ([first run](#first-run-in-an-isolated-or-custom-home)), so the imported files never make it look foreign and the next launch still provisions it. It prints one line per item (`copied`, `already present, kept`, `not found`, `skipped: <reason>`, `failed: <reason>`) and a summary; `--dry-run` prints the same plan and writes nothing. It exits 0 when it succeeds or has nothing to do, 1 when a write fails (items already copied stay) or when the target is your pi home itself (`--link`, or a `--home` pointing at it), and 2 on any other argument. Running it again is safe.
+
+Tradeoff: `--link` shares one credential store with pi; `import-pi` duplicates it. A provider that rotates refresh tokens on use may sign out whichever copy refreshes second; run `/login` again in that home.
 
 ### Managing packages
 
@@ -574,7 +583,7 @@ refusals and exit codes: [Removing Gentle Shell](gentle-shell-uninstall.md).
 
 ### First run in an isolated or custom home
 
-The first time `gentle-shell` resolves to an isolated or `--home <path>` home that does not already exist, it creates the directory, writes `"tuiMode": "fullscreen"` and, unless the home's `settings.json` already declares one, `"theme": "Gentleman-Cute"` into its `settings.json`, writes a small ownership marker file at `<home>/.gentle-shell-home` (a one-line JSON object naming the `gentle-pi` version that created it), and prints one hint to stderr pointing at `--link`. A `--link` home is never bootstrapped this way — it is assumed to already exist as your pi agent home. Later runs against the same home skip the write and the hint. The default theme is also re-applied after automatic or manual setup if gentle-ai's own managed install wrote a different theme into a home that had none before that run; a home (or `--link`) that already declares its own theme is never touched.
+The first time `gentle-shell` resolves to an isolated or `--home <path>` home that does not already exist, it creates the directory, writes `"tuiMode": "fullscreen"` and, unless the home's `settings.json` already declares one, `"theme": "Gentleman-Cute"` into its `settings.json`, writes a small ownership marker file at `<home>/.gentle-shell-home` (a one-line JSON object naming the `gentle-pi` version that created it), and prints one hint to stderr pointing at `--link` (and at `gentle-shell home import-pi` when your pi home has an `auth.json`). A `--link` home is never bootstrapped this way — it is assumed to already exist as your pi agent home. Later runs against the same home skip the write and the hint. The default theme is also re-applied after automatic or manual setup if gentle-ai's own managed install wrote a different theme into a home that had none before that run; a home (or `--link`) that already declares its own theme is never touched.
 
 Right after that bootstrap, and on every later launch, a plain `gentle-shell` against an isolated or `--home <path>` home (never `--link`, and never a pi subcommand like `gentle-shell install/remove/list/...`) also runs the same flow as `gentle-shell setup` automatically before starting pi, so you never have to know `setup` exists. It runs when the home has never been provisioned, was provisioned with a gentle-ai pin different from the package-local pin this `gentle-pi` ships — for example after upgrading `gentle-pi` to a version pinned to a newer gentle-ai — or was provisioned by a different `gentle-pi` version than the one now running — for example after `npm i -g gentle-pi` upgrades the launcher itself, so the home re-syncs to match it. A completed run is recorded as `provisioned: {"<realpath of the home>": {"gentleAi": "<pin>", "gentlePi": "<running gentle-pi version>", "at": "<ISO timestamp>"}}` in the launcher's config.json (`~/.gentle-shell/config.json` by default, or `GENTLE_SHELL_CONFIG` when overridden — see "Environment variables" above), preserving every other key already in that file (including the persisted `home` mode and any other home's marker). A marker written before this `gentlePi` field existed always counts as needing provisioning too, so the very next launch backfills it.
 

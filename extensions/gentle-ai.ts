@@ -2942,7 +2942,7 @@ interface OverlayComponent {
 
 type ModelPanelResult =
 	| { type: "save"; config: AgentModelConfig }
-	// `save`, then snapshot saved agent routing and the live orchestrator into
+	// `save`, then snapshot saved agent routing and the chosen orchestrator into
 	// the current profile without changing the global orchestrator defaults.
 	| { type: "save-profile"; config: AgentModelConfig }
 	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
@@ -2951,6 +2951,7 @@ type ModelPanelResult =
 	| { type: "cancel" };
 
 const SET_ALL_AGENTS = "Set all agents";
+const LEAVE_ORCHESTRATOR_UNTOUCHED = "leave untouched";
 
 const PANEL_TONE = {
 	BORDER: "border",
@@ -2981,6 +2982,7 @@ class SddModelPanel implements OverlayComponent {
 	private query = "";
 	private readonly draft: AgentModelConfig;
 	private readonly rows: string[];
+	private readonly agents: string[];
 	private readonly modelOptions: string[];
 	private readonly done: (result: ModelPanelResult) => void;
 	private readonly theme: Theme | undefined;
@@ -2999,7 +3001,8 @@ class SddModelPanel implements OverlayComponent {
 		terminalRows?: () => number,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
-		this.rows = [SET_ALL_AGENTS, ...agents];
+		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
+		this.agents = [...agents];
 		this.modelOptions = modelOptions;
 		this.done = done;
 		this.theme = theme;
@@ -3122,6 +3125,7 @@ class SddModelPanel implements OverlayComponent {
 		}
 		if (matchesKey(data, "e")) {
 			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
+			if (this.selectedRow === PROFILE_ORCHESTRATOR_KEY && !this.draft[this.selectedRow]?.model) return;
 			this.mode = "effort";
 			this.effortCursor = 0;
 			return;
@@ -3203,7 +3207,7 @@ class SddModelPanel implements OverlayComponent {
 				return;
 			}
 			this.applyModelSelection(
-				selected === INHERIT_MODEL ? undefined : selected,
+				selected === INHERIT_MODEL || selected === LEAVE_ORCHESTRATOR_UNTOUCHED ? undefined : selected,
 			);
 			this.mode = "agents";
 			return;
@@ -3217,7 +3221,7 @@ class SddModelPanel implements OverlayComponent {
 	private applyModelSelection(model: string | undefined): void {
 		const row = this.rows[this.cursor];
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setModel(name, model);
+			for (const name of this.agents) this.setModel(name, model);
 			return;
 		}
 		if (!row) return;
@@ -3227,7 +3231,7 @@ class SddModelPanel implements OverlayComponent {
 	private applyThinkingSelection(thinking: ThinkingLevel | undefined): void {
 		const row = this.selectedRow;
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setThinking(name, thinking);
+			for (const name of this.agents) this.setThinking(name, thinking);
 			return;
 		}
 		this.setThinking(row, thinking);
@@ -3236,13 +3240,17 @@ class SddModelPanel implements OverlayComponent {
 	private applyInherit(): void {
 		const row = this.rows[this.cursor];
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.clearEntry(name);
+			for (const name of this.agents) this.clearEntry(name);
 			return;
 		}
 		if (row) this.clearEntry(row);
 	}
 
 	private setModel(name: string, model: string | undefined): void {
+		if (name === PROFILE_ORCHESTRATOR_KEY && model === undefined) {
+			delete this.draft[name];
+			return;
+		}
 		const current = this.draft[name] ?? {};
 		if (model === undefined) delete current.model;
 		else current.model = model;
@@ -3251,6 +3259,7 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private setThinking(name: string, thinking: ThinkingLevel | undefined): void {
+		if (name === PROFILE_ORCHESTRATOR_KEY && !this.draft[name]?.model) return;
 		const current = this.draft[name] ?? {};
 		if (thinking === undefined) delete current.thinking;
 		else current.thinking = thinking;
@@ -3259,13 +3268,17 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private clearEntry(name: string): void {
-		this.draft[name] = {};
+		if (name === PROFILE_ORCHESTRATOR_KEY) delete this.draft[name];
+		else this.draft[name] = {};
 	}
 
 	private filteredModelOptions(): string[] {
+		const options = this.selectedRow === PROFILE_ORCHESTRATOR_KEY
+			? this.modelOptions.map((option) => option === INHERIT_MODEL ? LEAVE_ORCHESTRATOR_UNTOUCHED : option)
+			: this.modelOptions;
 		const query = this.query.trim().toLowerCase();
-		if (!query) return this.modelOptions;
-		return this.modelOptions.filter((option) =>
+		if (!query) return options;
+		return options.filter((option) =>
 			option.toLowerCase().includes(query),
 		);
 	}
@@ -3322,13 +3335,13 @@ class SddModelPanel implements OverlayComponent {
 		// longer fits the minimum width once the profile key joins the save keys.
 		lines.push(
 			line(
-				`j/k scroll • enter model/save • e effort • i ${isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
+				`j/k scroll • enter model/save • e effort • i ${this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY ? LEAVE_ORCHESTRATOR_UNTOUCHED : isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
 				"muted",
 			),
 		);
 		lines.push(
 			line(
-				`x export • r restore • ctrl+s save • u capture session in "${this.profileLabel}" • esc back`,
+				`x export • r restore • ctrl+s save agents • u save choice in "${this.profileLabel}" • esc back`,
 				"muted",
 			),
 		);
@@ -3428,11 +3441,9 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private renderSetAllLabel(row: string): string {
-		const models = this.rows
-			.slice(1)
+		const models = this.agents
 			.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
-		const efforts = this.rows
-			.slice(1)
+		const efforts = this.agents
 			.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
 		const firstModel = models[0] ?? "inherit";
 		const firstEffort = efforts[0] ?? "inherit";
@@ -3449,6 +3460,9 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private renderAgentLabel(row: string): string {
+		if (row === PROFILE_ORCHESTRATOR_KEY && !this.draft[row]?.model) {
+			return `${this.renderText(row.padEnd(20), "text")} ${this.renderText(LEAVE_ORCHESTRATOR_UNTOUCHED, "status")}`;
+		}
 		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
 		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
 		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
@@ -3523,7 +3537,10 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		);
 		return;
 	}
-	let config = savedConfig.status === "valid" ? savedConfig.config : {};
+	let config = savedConfig.status === "valid" ? cloneModelConfig(savedConfig.config) : {};
+	// The live capture is only the initial choice. Reopens carry the draft, including absence.
+	delete config[PROFILE_ORCHESTRATOR_KEY];
+	config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
 	const profileLabel = describeCurrentProfileTarget(resolveCurrentProfileTarget(ctx.cwd));
 	let result = await showSddModelPanel(ctx, config, profileLabel);
 	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
@@ -3554,7 +3571,10 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 					result = await showSddModelPanel(ctx, config, profileLabel);
 					continue;
 				}
-				config = restored;
+				const orchestratorChoice = config[PROFILE_ORCHESTRATOR_KEY];
+				config = cloneModelConfig(restored);
+				delete config[PROFILE_ORCHESTRATOR_KEY];
+				if (orchestratorChoice) config[PROFILE_ORCHESTRATOR_KEY] = orchestratorChoice;
 				try {
 					const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
 					ctx.ui.notify([
@@ -3616,18 +3636,21 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		result = await showSddModelPanel(ctx, config, profileLabel);
 	}
 	if (result.type !== "save" && result.type !== "save-profile") return;
-	writeModelConfig(ctx.cwd, result.config);
-	const applyResult = await applyModelConfigAsync(ctx.cwd, result.config);
+	// The panel's orchestrator is snapshot-only, never a global agent route.
+	const routing = cloneModelConfig(result.config);
+	delete routing[PROFILE_ORCHESTRATOR_KEY];
+	writeModelConfig(ctx.cwd, routing);
+	const applyResult = await applyModelConfigAsync(ctx.cwd, routing);
 	ctx.ui.notify(
 		[
 			"el Gentleman global model config saved.",
 			`Global config: ${modelConfigPath(ctx.cwd)}`,
 			`Agents updated: ${applyResult.updated}`,
-			...describeModelConfig(ctx.cwd, result.config),
+			...describeModelConfig(ctx.cwd, routing),
 		].join("\n"),
 		"info",
 	);
-	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, pi);
+	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, result.config[PROFILE_ORCHESTRATOR_KEY]);
 }
 
 /** The profile `u` in `/gentle:models` writes to, and why it is that one. */
@@ -3659,11 +3682,10 @@ function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined):
 
 /**
  * The second half of `u` captures saved global agent routing (never the pin)
- * and the live session orchestrator. Without a live model it falls back to
- * persisted settings. The global save has already been reported, so every
- * outcome here speaks only about the profile.
+ * and the explicit panel choice, including key absence. The global save has
+ * already been reported, so every outcome here speaks only about the profile.
  */
-function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: ExtensionAPI): void {
+function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, orchestrator: AgentRoutingEntry | undefined): void {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -3673,16 +3695,9 @@ function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: Extensi
 		);
 		return;
 	}
-	const snapshot = profileSnapshotFrom(
-		readGlobalEffectiveModelConfig(ctx.cwd),
-		readOrchestratorSettings(orchestratorSettingsPath()),
-	);
-	if (ctx.model) {
-		snapshot[PROFILE_ORCHESTRATOR_KEY] = {
-			model: `${ctx.model.provider}/${ctx.model.id}`,
-			thinking: pi.getThinkingLevel(),
-		};
-	}
+	const snapshot = cloneModelConfig(readGlobalEffectiveModelConfig(ctx.cwd));
+	delete snapshot[PROFILE_ORCHESTRATOR_KEY];
+	if (orchestrator?.model) snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...orchestrator };
 	if (read.status === "missing") {
 		// The same seed `/gentle:profiles` performs on its first open, so pressing
 		// `u` before ever opening that panel lands on the same "current" profile.
@@ -10300,7 +10315,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.registerCommand("gentle:models", {
-		description: "Configure global per-agent models for el Gentleman.",
+		description: "Configure global agent models and choose a profile orchestrator.",
 		handler: async (_args, ctx) => {
 			await handleModelsCommand(ctx, pi);
 		},

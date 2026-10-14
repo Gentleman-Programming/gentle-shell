@@ -89,7 +89,7 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		"5. **Writer rule**",
 		"6. **Incident rule**",
 		"7. **Context backstop**",
-		"open product or design decision",
+		"costly gaps blocking now or a foreseeable later task",
 		"high risk",
 		"never by file count",
 		// gentle-shell#1731: the writer fires on reasons, not on size alone.
@@ -134,9 +134,11 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
 	// gentle-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
-	"orchestrator-delegation.md": 20_800,
+	// odd-gap-driven-clarification S3 (user decision): canonical grouped-questionnaire Ask trigger (20,800 -> 20,900 B).
+	"orchestrator-delegation.md": 20_900,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
-	"orchestrator-tracking.md": 12_600,
+	// odd-gap-driven-clarification S2 (user decision): canonical gap-analysis paragraph (12,600 -> 14,100 B).
+	"orchestrator-tracking.md": 14_100,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { YoloSessionPolicy, YOLO_DIRECTIVE, updateYoloPrompt, registerYoloSessionPolicy, discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewSessionIdentity } from "../lib/review-session-standing-permission.ts";
@@ -56,4 +58,14 @@ test("active-only structured directive qualifies defaults and is removed from re
 	assert.match(YOLO_DIRECTIVE, /credentials/);
 	updateYoloPrompt(options, false);
 	assert.equal(options.appendSystemPrompt, "existing harness");
+});
+
+// YOLO grants permissions only; it never licenses skipping clarification of
+// costly gaps (odd/tasks/odd-gap-driven-clarification.md, S7).
+test("YOLO directive and docs grant permissions without waiving clarification", () => {
+	const removed = "Make ordinary reversible implementation choices without needless interviews.";
+	assert.ok(!YOLO_DIRECTIVE.includes(removed), "YOLO directive must not waive clarification");
+	const docs = readFileSync(join(import.meta.dirname, "..", "docs", "yolo-mode.md"), "utf8");
+	assert.doesNotMatch(docs, /reversible implementation choices without needless interviews/i);
+	assert.match(YOLO_DIRECTIVE, /standing permission instead of repeated permission questions\./);
 });

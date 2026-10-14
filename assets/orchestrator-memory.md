@@ -9,7 +9,10 @@ For large authorized organic implementation (Task Size in `orchestrator.md`), th
 1. A header of two or three lines: objective, branch, delivery strategy, and test runner.
 2. `## Specs`: numbered `S1`..`Sn` requirements, constraints, and acceptance criteria with their checks. Quote the user's exact strings, error messages, commands, and examples verbatim, in the user's language; you may number and order them, but never summarize or reword those fragments. Do not add requirements the user never asked for; mark assumptions as assumptions.
 3. `## Tasks`: one line per task, using stable task IDs, with its linked `S#`, route (inline or delegated), status, and commit identity or RED/GREEN evidence.
-4. `## Log`: the logbook. `L1` holds the user's original request verbatim; later user corrections are logged verbatim with their date. Problem analysis, rationale for meaningful accepted changes, verification evidence, progress, and next step go here. Routine corrections stay brief; no exhaustive decision journal.
+4. `## Future` holds ideas the user explicitly defers; they never become `S#` or tasks.
+5. `## Log`: the logbook. `L1` holds the user's original request verbatim; later user corrections are logged verbatim with their date. Problem analysis, rationale for meaningful accepted changes, verification evidence, progress, and next step go here. Routine corrections stay brief; no exhaustive decision journal.
+
+When the user frames something as a later idea, do not implement or prepare it: record it under `## Future` in the current feature document, let it inform choices that would otherwise block it, and surface it only at that feature's close, on its resume, and when new work touches the same area; the user plans, keeps, or discards each item. Small work without a document reports a deferred idea in its closing report.
 
 Mirror the full current document and repository-relative file locator, not only a summary or completion notice. Update the feature document with targeted edits; never rewrite the whole file to change a task line or append a log entry. When a code-execution tool such as `codemode` is available, refresh the Engram mirror inside one script that reads the file and saves its content, so the document is never re-emitted as output tokens.
 

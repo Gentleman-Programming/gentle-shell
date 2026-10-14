@@ -36,9 +36,9 @@ test("research uses adaptive evidence gathering and existing general workers onl
 	containsAll(delegation, [
 		"problem, intended outcome, constraints, and current evidence",
 		"no fixed questionnaire or mandatory rounds",
-		"one focused user question",
+		"The parent owns product and foundation decisions.",
 		"stop and wait",
-		"workers return gaps to the parent",
+		"Workers return gaps to the parent rather than assuming choices.",
 		"available authorized documentation/web tools",
 		"prefer primary sources",
 		"URLs or code locations",
@@ -49,6 +49,38 @@ test("research uses adaptive evidence gathering and existing general workers onl
 		"do not create a specialized agent or create a new workflow",
 		"no new persistence or readiness machinery",
 	]);
+});
+
+// odd/tasks/odd-gap-driven-clarification.md: the harness asked one question at
+// a time, only for product decisions, so it silently assumed scope, stack,
+// architecture, data, deployment, and credentials, and implemented deferred
+// ideas right away. These canonical texts mirror gentle-ai byte-identical.
+const GAP_STEP_3 = "3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty. From the exploration, list the gaps the request and the repository leave open, and ask only those that block now or a foreseeable later task and are costly to undo (scope, stack, architecture, data, deployment, security-relevant configuration); answer the rest from evidence or record a visible default assumption. Ask them in one grouped questionnaire, a question alone first only when its answer changes the others; then stop and wait. Use at most one scoped read-only assumption challenge for a high-consequence unproven premise.";
+const GAP_DETAIL = "The parent owns product and foundation decisions. After exploring, list the gaps the request, the repository, and the installed tools leave open, and classify each: answered by evidence, do not ask; blocks now or a foreseeable later task and is costly to undo once code depends on it (scope or audience, stack, architecture, data store, deployment target, security-relevant configuration), ask; cheap to change, choose a sensible default and record it as a visible assumption the user can correct. Ask about a later task upfront as a possibility, record the answer with the condition it depends on, and ask again only if that condition changes. Clarification is complete when no costly blocking gap remains, not when every gap is closed; when more than about five gaps qualify, ask the root decision (objective or scope) first. Use the structured question tool when available: group independent questions into one questionnaire, and ask a question alone first only when its answer changes the others. Each question offers the recommended option with its reason, a relevant alternative, \"Decide for me\" (choose and record the assumption), and \"Explain each option\" (explain each option didactically, then ask only that question again); free text stays available. When a better result needs a tool that is not installed, recommend it as an option in that questionnaire and never install without consent. Never leave generated services with empty or default credentials: generate secrets into an ignored environment file and commit only a placeholder example. Workers return gaps to the parent rather than assuming choices.";
+const GAP_ASK = "open gaps that block now or a foreseeable later task and are costly to undo get one grouped questionnaire (a question alone first only when its answer changes the others); stop and wait";
+const FUTURE_SECTION = "`## Future` holds ideas the user explicitly defers; they never become `S#` or tasks.";
+const FUTURE_DETAIL = "When the user frames something as a later idea, do not implement or prepare it: record it under `## Future` in the current feature document, let it inform choices that would otherwise block it, and surface it only at that feature's close, on its resume, and when new work touches the same area; the user plans, keeps, or discards each item. Small work without a document reports a deferred idea in its closing report.";
+const FUTURE_CLOSE = "7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. Present the feature's `## Future` items and let the user plan, keep, or discard each.";
+
+test("clarification is gap-driven and grouped instead of one focused question", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const prompt = __testing.buildGentlePrompt(persona);
+		containsAll(prompt, [GAP_STEP_3, FUTURE_SECTION, FUTURE_CLOSE]);
+		assert.ok(prompt.includes("route, commit); `## Future`; `## Log` last"), `[${persona}] step 5 must order Tasks, Future, Log`);
+	}
+	containsAll(delegation, [GAP_DETAIL, `1. **Ask:** ${GAP_ASK}.`]);
+	// The always-on core carries a condensed row within its byte budget; the
+	// delegation module above carries the canonical trigger.
+	containsAll(core, ["1. **Ask** — costly gaps blocking now or a foreseeable later task → grouped questionnaire; stop and wait."]);
+	containsAll(memory, [FUTURE_SECTION, FUTURE_DETAIL]);
+	const memoryOrder = ["3. `## Tasks`:", `4. ${FUTURE_SECTION}`, "5. `## Log`:"].map((heading) => memory.indexOf(heading));
+	assert.ok(memoryOrder.every((index, i) => index !== -1 && (i === 0 || index > memoryOrder[i - 1])), "memory structure must order Tasks, Future, Log");
+	for (const [surface, text] of [["core", core], ["delegation", delegation], ["memory", memory], ["extension", wrapper]] as const) {
+		assert.ok(!text.includes("one focused user question"), `${surface} keeps the retired one-question rule`);
+		assert.ok(!text.includes("one focused question"), `${surface} keeps the retired one-question rule`);
+		assert.ok(!text.includes("The parent owns product decisions:"), `${surface} keeps the retired product-only ownership`);
+		assert.ok(!text.includes("open product or design decision"), `${surface} keeps the retired Ask trigger`);
+	}
 });
 
 test("task sizing is explicitly advisory and forwarded without cosmetic savings", () => {

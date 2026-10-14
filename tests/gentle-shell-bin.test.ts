@@ -3580,3 +3580,50 @@ test("envs lists the base home first and stars exactly what a plain launch opens
 	assert.deepEqual(starred(), ["[base]"]);
 	assert.equal(opened(), f.gentleShellHome);
 });
+
+// The envs manager needs a TTY. Like the bundled startup-offer test, a
+// preload makes stdin/stdout report a TTY with a no-op raw mode, and the
+// keys arrive as stdin input; the manager handles them in order.
+function runManager(env: NodeJS.ProcessEnv, keys: string) {
+	const preload = `
+		Object.defineProperty(process.stdin, 'isTTY', {value:true});
+		Object.defineProperty(process.stdout, 'isTTY', {value:true});
+		process.stdin.setRawMode = (raw) => { process.stdin.isRaw = raw; };
+	`;
+	return spawnSync(process.execPath, [binPath, "envs"], {
+		env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,${encodeURIComponent(preload)}`.trim() },
+		encoding: "utf8", input: keys, timeout: 15000,
+	});
+}
+
+test("the envs manager renames, sets the default and deletes envs on disk", (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	for (const name of ["a", "b"]) assert.equal(run(f.env, ["envs", "new", name]).status, 0);
+	// Entries: base (default), a, b. Rename a -> alpha, make it the default, then delete b
+	// (a wrong confirmation first, which must not delete anything).
+	const keys = ["j", "r", "\x7f", "alpha", "\r", "s", "j", "d", "x", "\r", "\x7f", "b", "\r", "q"].join("");
+	const result = runManager(f.env, keys);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readdirSync(envs).sort(), ["alpha"]);
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	assert.equal(config.home, join(envs, "alpha"), "the default follows the renamed env");
+	// Keys arriving together redraw once at the end, so disk and config are the evidence.
+	assert.match(result.stdout, /\x1b\[\?1049l/, "the terminal is restored");
+});
+
+test("the envs manager never lists or touches a symlinked env", (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "real"]).status, 0);
+	const outside = join(f.root, "outside");
+	mkdirSync(outside);
+	writeFileSync(join(outside, "keep.txt"), "keep");
+	symlinkSync(outside, join(envs, "linked"));
+	// Entries: base, real. Two downs stay on real; delete it, then quit.
+	const result = runManager(f.env, ["j", "j", "d", "real", "\r", "q"].join(""));
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stdout, /\blinked\b/);
+	assert.equal(readFileSync(join(outside, "keep.txt"), "utf8"), "keep");
+	assert.deepEqual(readdirSync(envs), ["linked"]);
+});

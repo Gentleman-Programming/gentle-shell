@@ -370,16 +370,23 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:animations",
 		"gentle:vim",
 		"gentle:telemetry",
-		"gentle:banner",
-		"gentle:banner-color",
-		"gentle:toggle-rose",
-		"gentle:toggle-text-logo",
 		"gentle:dev-binary",
 	]);
 	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);
+});
+
+// #1664: banner settings live under Customization > Banner; the palette keeps
+// one route while the slash commands stay registered for compatibility.
+test("banner settings have one palette route and keep their slash commands", () => {
+	const banner = ["gentle:banner", "gentle:banner-color", "gentle:toggle-rose", "gentle:toggle-text-logo"];
+	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
+	for (const command of banner) assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
+	assert.ok(catalogCommands.includes("gentle:customize"));
+	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
+	for (const command of banner) assert.match(source, new RegExp(`"${command}"`), `${command} stays registered`);
 });
 
 test("retired SDD commands are absent from the palette and extension registrations", () => {

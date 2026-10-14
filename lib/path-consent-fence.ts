@@ -1,6 +1,7 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Deliberately ephemeral, mirroring ForeignTargetGrants: no session entry or
 // disk persistence can restore consent, and grants never cross sessions.
@@ -46,13 +47,26 @@ export function collectStringPaths(value: unknown, key?: string): string[] {
 	return Object.entries(value).flatMap(([entryKey, entryValue]) => collectStringPaths(entryValue, entryKey));
 }
 
-// Canonical form for consent comparisons: ~ expanded, resolved against cwd,
-// and symlink-resolved through the deepest existing ancestor so not-yet-
+// Match Pi's resolveToCwd spelling contract before filesystem resolution.
+// Do not trim or rewrite POSIX backslashes: the tools do neither. Regression
+// tests use Pi's actual write executor to detect normalization drift.
+function normalizeToolPath(raw: string): string {
+	let path = raw.replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ").replace(/^@/, "");
+	if (process.platform === "win32" && path.startsWith("/") && !path.startsWith("//") && !path.includes("\\")) {
+		const drive = path.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+		if (drive) path = `${drive[1].toUpperCase()}:\\${drive[2]?.replaceAll("/", "\\") ?? ""}`;
+	}
+	if (path === "~") return homedir();
+	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) return join(homedir(), path.slice(2));
+	return path.startsWith("file://") ? fileURLToPath(path) : path;
+}
+
+// Canonical form for consent comparisons: tool-normalized, resolved against
+// cwd, and symlink-resolved through the deepest existing ancestor so not-yet-
 // written targets still classify. Dangling links resolve to their destination;
 // unreadable or cyclic paths throw rather than inventing a consent target.
 export function canonicalizeTarget(raw: string, cwd: string): string {
-	const trimmed = raw.trim().replace(/\\/g, "/");
-	const expanded = trimmed === "~" || trimmed.startsWith("~/") ? homedir() + trimmed.slice(1) : trimmed;
+	const expanded = normalizeToolPath(raw);
 	const absolute = resolve(isAbsolute(expanded) ? expanded : resolve(cwd, expanded));
 	let probe = absolute;
 	const missing: string[] = [];

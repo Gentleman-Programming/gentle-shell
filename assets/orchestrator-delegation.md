@@ -65,23 +65,27 @@ Before work beyond small direct tasks, publish own `state` with `subject` via `o
 | Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
 | Bash for state (`git`, `gh`) | ✅ | — |
 | Focused test and suite of the change being made | ✅ once each | — |
-| High-risk change, or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
+| Named high-risk item (assess `escalate`), or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
 
 Use the platform's native bounded worker for delegated-direct work.
 
 Keep each delegated writer bounded, with a short synthesized handoff. Delegation is mandatory only when a mechanism's own trigger fires, and remains an ODD implementation route.
 
-#### Mandatory Delegation Triggers
+#### Delegation Triggers
 
-These are parent-orchestrator routing boundaries; do not pass these rules to child agents as permission to orchestrate. These triggers are mandatory, not advisory. When one fires, stop and delegate through the runtime's subagent mechanism before continuing; executing past a fired trigger inline is a routing defect even if the work succeeds. Delegation keeps the parent context thin enough to orchestrate; it does not slow the work down.
+These are parent-orchestrator routing boundaries; do not pass these rules to child agents as permission to orchestrate. Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline. When one fires, stop and delegate through the runtime's subagent mechanism before continuing; executing past a fired trigger inline is a routing defect even if the work succeeds. Delegation keeps the parent context thin enough to orchestrate; it does not slow the work down.
 
 1. **Ask:** an open product or design decision gets one focused user question; stop and wait. When answered, re-evaluate task size.
-2. **Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls totaling ~10k tokens, using grep and line ranges, never whole large files. When understanding needs more reading or more than ~5 sequential lookups, delegate one scout/explorer that returns a handoff of at most ~2k tokens with `path:line` evidence before deciding or writing anything. Never force delegation for a small targeted question. The parent does not re-read what the handoff covered, except a single spot check. With the handoff, re-evaluate task size; an understood change continues inline.
-3. **Verification rule** (gentle-pi#661/#662, RDD-aware): a high-risk change (Task Size) gets an independent `gentle-ai-verify` run after the change's own checks; otherwise whoever made the change runs its focused test and suite inline, small tasks included. The normative on/off/unknown routing is stated once in `orchestrator-verification.md`; reference it, do not restate it.
+2. **Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls totaling ~10k tokens, using grep and line ranges, never whole large files. When understanding needs more reading or more than ~5 sequential lookups, delegate one scout/explorer that returns a handoff of at most ~2k tokens with `path:line` evidence before deciding or writing anything. Never force delegation for a small targeted question. The parent does not re-read what the handoff covered, except a single spot check. With the handoff, re-evaluate task size; an understood change continues inline. Never explore to read files you will read anyway before writing inline.
+3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included. The normative on/off/unknown routing is stated once in `orchestrator-verification.md`; reference it, do not restate it.
 4. **Track:** a large task gets the feature document, Engram mirror, `todo`, and work-unit commits (`orchestrator-memory.md`).
-5. **Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger. Delegate one bounded writer per unit only for a named reason: (a) parallelism — 2+ independent units with disjoint files, each clearly heavier than starting a subagent; medium tasks included; (b) context — the Context backstop below. Without a reason, the parent works inline, following the logbook (feature document, mirror, `todo`, work-unit commits).
+5. **Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger. Delegate one bounded writer per unit only for a named reason: (a) parallelism — 2+ independent units of behavior with disjoint edit surfaces, each needing several minutes of work (several files or ~100+ changed lines; a subagent spends 1-2 minutes reading before it writes), launched together; (b) context — the Context backstop below. A unit is one independent piece of behavior with its code, tests, and docs together: never split one behavior into test, docs, and code writers; a delivery that depends on another is not independent; several small independent changes run inline, one after another. Never for a price ratio. Without a reason, the parent works inline, following the logbook (feature document, mirror, `todo`, work-unit commits).
 6. **Incident rule:** after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 7. **Context backstop:** when the parent context passes ~150k tokens, pause and delegate the next bounded unit of work. Always keep command output bounded in the parent (counts, `--stat`, `tail`).
+
+**Invariants:** whoever writes, inline or delegated, reuses the existing function for shared state and keeps its invariants (ordering, uniqueness, validation, normalization); writer prompts name those helpers (`orchestrator-writer.md`).
+
+**Differential check (PRESERVE):** forward the harness test-first policy's differential check to writers: existing commands that share the changed code, previous code vs the change; an unrequested difference is a regression.
 
 **Preparation trigger:** when the Writer rule delegates a write, reading that prepares it, and broad research or context compression, delegate together with or ahead of the write instead of filling the parent context. Inline writes read inline.
 
@@ -95,10 +99,10 @@ For a large task's bounded writes, prefer the installed package-owned `gentle-ai
 
 Once a trigger fires, the parent MUST delegate through the best available subagent runtime. Prefer `subagent_run` when present; otherwise use Pi's native `Agent` or another available delegation mechanism. Do not replace a required delegation with inline execution. Do not inject these as child-agent permission to spawn subagents; children receive concrete role work and must not orchestrate.
 
-The canonical Writer rule under Mandatory Delegation Triggers overrides this general runtime preference.
+The canonical Writer rule under Delegation Triggers overrides this general runtime preference.
 
 1. **Evidence-budget rule**: when the reading exceeds the evidence budget, launch `scout`, `context-builder`, or the closest read-only mapping subagent with fresh context and a narrow mapping task that returns a handoff of at most ~2k tokens with `path:line` evidence. Route generic exploration first to the installed package-owned `gentle-ai-explore`; if missing or unusable, use native `Agent` with the same read-only mapping task and report the fallback.
-2. **Writer rule**: follow the canonical Writer rule under Mandatory Delegation Triggers.
+2. **Writer rule**: follow the canonical Writer rule under Delegation Triggers.
 3. **Incident rule**: after wrong `cwd`, accidental repository/worktree mutation, failed merge recovery, confusing test command, or environment workaround, stop and diagnose the incident separately before resuming.
 4. **Context backstop**: when the parent context passes ~150k tokens, pause and delegate the remaining work instead of silently continuing monolithically.
 5. **Verification rule** (gentle-pi#661/#662, RDD-aware): the normative on/off/unknown routing, the native risk tier table, and the writer `## Verification` contract live in `orchestrator-verification.md`; load it when this rule fires or a delegated writer returns.
@@ -119,7 +123,7 @@ Use the configured subagent runtime when available. Prefer the `subagent_*` tool
 
 A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell, HTTP or MCP work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; a fired trigger is never replaced by inline work.
 
-For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.
+For bounded writes, follow the canonical Writer rule under Delegation Triggers.
 
 <!-- gentle-pi:background-subagents -->
 #### Background Subagent Policy
@@ -141,9 +145,9 @@ Waiting on CI, a build, or a server is not delegation: use `bash_background` wit
 
 For generic mapping, follow the Evidence-budget rule under Pi Trigger Runtime Bindings.
 
-The canonical Writer rule under Mandatory Delegation Triggers overrides the general runtime preference above.
+The canonical Writer rule under Delegation Triggers overrides the general runtime preference above.
 
-Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Mandatory Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`, and the `gentle_review` `assess` operation's returned plan decides whether `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting) also runs, by native risk tier and whatever the rendered `Receipt-driven development:` line reads, instead of a blanket non-trivial rule (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
+Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`, and the `gentle_review` `assess` operation's returned plan decides whether `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting) also runs, by a named `escalate` item and whatever the rendered `Receipt-driven development:` line reads, instead of a blanket non-trivial rule (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 
 #### Key Learnings closing block
 

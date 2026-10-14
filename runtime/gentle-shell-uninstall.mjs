@@ -264,6 +264,14 @@ async function planSelfUninstall(input                    , configHome        , 
 		{ path: gentleAiState, label: "Gentle AI's state", inside: true },
 	];
 	const defaultConfigHome = canonical(join(homedir, ".pi", "gentle-ai"));
+	// #2201: the standalone launcher keeps the isolated home's config in a
+	// gentle-ai folder next to it (standaloneConfigHome). Next to the default
+	// home it lies inside ~/.gentle-shell and is Gentle Shell's by location;
+	// next to a GENTLE_SHELL_HOME it may be anyone's, so it is only listed.
+	// When GENTLE_PI_CONFIG_HOME names it, the config home's rules apply instead.
+	const defaultHome = resolve(isolated) === resolve(join(homedir, ".gentle-shell", "agent"));
+	const ownConfig = join(dirname(isolated), "gentle-ai");
+	const ownConfigSeparate = comparable(canonical(ownConfig), platform) !== comparable(canonical(configHome), platform);
 	const candidates = [
 		{
 			who: env.GENTLE_SHELL_HOME ? `GENTLE_SHELL_HOME points at ${isolated}` : `The isolated home ${isolated}`,
@@ -279,6 +287,12 @@ async function planSelfUninstall(input                    , configHome        , 
 			allowedInsidePi: defaultConfigHome,
 		},
 		{ who: `The launcher folder ${shellDirectory}`, path: shellDirectory, guards, allowedInsidePi: undefined },
+		...(defaultHome && ownConfigSeparate ? [{
+			who: `Gentle Shell's config folder ${ownConfig}`,
+			path: ownConfig,
+			guards: [...guards, { path: configHome, label: "the Gentle AI config home", inside: true }],
+			allowedInsidePi: undefined,
+		}] : []),
 	];
 	for (const candidate of candidates) {
 		const real = canonical(candidate.path);
@@ -313,11 +327,14 @@ async function planSelfUninstall(input                    , configHome        , 
 
 	// The default isolated home is Gentle Shell's by location; a GENTLE_SHELL_HOME
 	// directory only with the launcher's ownership marker or setup record.
-	const defaultHome = resolve(isolated) === resolve(join(homedir, ".gentle-shell", "agent"));
 	const owned = defaultHome || inspect(join(isolated, HOME_OWNERSHIP_MARKER), "file") === "ok"
 		|| provisionedEntry(launcherConfig, isolatedReal) !== undefined;
 	if (owned || inspect(isolated, "dir") !== "ok") consider({ path: isolated, label: "isolated home: its sign-ins, chats and settings", kind: "dir" });
 	else plan.kept.push(`${isolated}: not created by Gentle Shell (no ${HOME_OWNERSHIP_MARKER} marker or setup record)`);
+	if (defaultHome && ownConfigSeparate) consider({ path: ownConfig, label: "Gentle Shell's own configuration: profiles, banner and other preferences", kind: "dir" });
+	else if (ownConfigSeparate && inspect(ownConfig, "dir") !== "missing") {
+		plan.kept.push(`${ownConfig}: next to GENTLE_SHELL_HOME, so it may not be Gentle Shell's; remove it yourself if it holds only Gentle Shell settings`);
+	}
 	consider({ path: configPath, label: "launcher settings", kind: "file" });
 
 	for (const name of SHARED_CONFIG_FILES) {

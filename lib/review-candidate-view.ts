@@ -1,6 +1,6 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, type Stats } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -650,6 +650,32 @@ function makeReadonly(root: string, entries: readonly CandidateViewEntry[]): voi
 	for (const directory of candidateDirectories(root, entries)) chmodSync(directory, 0o555);
 }
 
+// macOS File Provider (iCloud-synced Desktop/Documents) asynchronously resets
+// directory modes to exactly 0700 while leaving file modes intact, so a view
+// made read-only at creation later reads as writable. Only that exact shape on
+// a directory this user owns is re-tightened; any group or other bit still
+// refuses. Owner-only write grants nothing a same-user process could not do by
+// chmod anyway, and the caller then proves the directory holds exactly the
+// frozen children, closing the ignored-file injection the untracked scan misses.
+function repairFileProviderDirectoryMode(directory: string, metadata: Stats, platform: NodeJS.Platform): boolean {
+	if (platform === "win32" || !metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o7777) !== 0o700) return false;
+	if (typeof process.getuid !== "function" || metadata.uid !== process.getuid()) return false;
+	chmodSync(directory, 0o555);
+	return true;
+}
+
+function expectedDirectoryChildren(root: string, entries: readonly CandidateViewEntry[]): ReadonlyMap<string, ReadonlySet<string>> {
+	const children = new Map<string, Set<string>>([[root, new Set([".git"])]]);
+	for (const entry of entries) {
+		for (let path = join(root, entry.path); path !== root && isWithin(root, path); path = dirname(path)) {
+			const parent = dirname(path);
+			if (!children.has(parent)) children.set(parent, new Set());
+			children.get(parent)!.add(basename(path));
+		}
+	}
+	return children;
+}
+
 function makeWritableForCleanup(path: string): void {
 	const entry = lstatSync(path, { throwIfNoEntry: false });
 	if (!entry || entry.isSymbolicLink()) return;
@@ -1050,8 +1076,16 @@ function assertRecordSafe(record: CandidateViewRecord, platform: NodeJS.Platform
 	if (!isWithin(record.parent, root) || !existsSync(root)) throw new CandidateViewError("candidate view is missing or moved");
 	const rootStat = lstatSync(root);
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || realpathSync(root) !== root) throw new CandidateViewError("candidate view root is unsafe");
+	let expectedChildren: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 	for (const directory of candidateDirectories(root, record.entries)) {
-		const metadata = lstatSync(directory);
+		let metadata = lstatSync(directory);
+		if (repairFileProviderDirectoryMode(directory, metadata, platform)) {
+			expectedChildren ??= expectedDirectoryChildren(root, record.entries);
+			const expected = expectedChildren.get(directory) ?? new Set<string>();
+			const actual = readdirSync(directory);
+			if (actual.length !== expected.size || actual.some((name) => !expected.has(name))) throw new CandidateViewError("candidate view directory contains unexpected entries");
+			metadata = lstatSync(directory);
+		}
 		if (!metadata.isDirectory() || metadata.isSymbolicLink() || (metadata.mode & 0o222) !== 0) throw new CandidateViewError("candidate view directory is unsafe or writable");
 	}
 	const gitFile = lstatSync(join(root, ".git"));

@@ -36,6 +36,7 @@ Do not read persistent memory for context. The parent selects and forwards relev
 
 - Keep one focused write thread. Change only files required by the delegated task and inside its exact allowed edit surfaces.
 - Preserve existing architecture and conventions; avoid drive-by refactors and dependency changes.
+- Before you create or change shared state (a record, list entry, file, or setting that other commands also create or read), find the existing function that already does it and reuse it, keeping every invariant it enforces (ordering, uniqueness, validation, normalization). Never re-implement that step inline with a different shape.
 - Use `find` for scoped file discovery. Do not assume an unsupported `glob` tool exists.
 - Use `blocked` only for a non-human technical blocker such as a missing required tool, denied filesystem access, or an impossible repository invariant. Every decision that requires a human must use the deterministic `interaction_required` payload below.
 - Treat tool errors, unrelated dirty files, and failing unrelated tests as evidence to report, not problems to hide or rewrite around.
@@ -61,12 +62,16 @@ Apply the ODD test-first policy by default for behavior changes with applicable 
 
 1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it.
 2. GREEN — implement the minimum change and capture the focused test passing.
-3. PRESERVE — For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). These are expected to pass, so they need no RED run.
+3. PRESERVE — For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). These are expected to pass, so they need no RED run. Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (`git stash` or a copy of HEAD) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
 For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.
 
 Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing. Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.
+
+Test scratch lives outside the worktree: tests and commands keep temporary state in a fresh system temp directory (`mktemp -d`, `mkdtemp`) and never point `TMPDIR` or a cache directory into the repository. When state must live inside the worktree, use an excluded path that the test removes before it ends. Tests delete the temp directories they create in teardown; name any scratch directory you created outside the worktree in `risks` so the parent removes it. Never leave tool caches or scratch paths in the change.
+
+Before returning, `git status --short` shows no tool cache or scratch path (for example `.codegraph/` or a test temp directory); name any that remains in `risks` instead of deleting it.
 
 ## Verification
 

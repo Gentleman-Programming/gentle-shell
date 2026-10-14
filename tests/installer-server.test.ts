@@ -934,6 +934,10 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	for (const [step, detail, expected] of [
 		["install-global", ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.", guidance.failed["install-global"]],
 		["install-global", rateLimited, guidance.githubRateLimit],
+		// Windows code integrity (Smart App Control) refused the gentle-ai.exe the postinstall built.
+		["install-global", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		["install-version", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		["install-version", "ERR_PNPM_FETCH_401 GET https://npm.acme.dev/x: Unauthorized", guidance.failed["install-version"]],
 		["install-shell-main", mainLimited, guidance.githubRateLimit],
 		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 500)", guidance.failed["install-shell-main"]],
 		["build-gentle-ai-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-ai (HTTP 403)", guidance.githubRateLimit],
@@ -957,6 +961,10 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	assert.match(guidance.githubRateLimit, /GitHub/);
 	assert.match(guidance.githubRateLimit, /hour/);
 	assert.doesNotMatch(guidance.githubRateLimit, /gentle-shell setup|token|credential|password|log in|sign in/i);
+	assert.match(guidance.codeIntegrityBlocked, /Smart App Control/);
+	assert.match(guidance.codeIntegrityBlocked, /WSL/);
+	assert.match(guidance.codeIntegrityBlocked, /cannot be turned back on/);
+	assert.doesNotMatch(guidance.codeIntegrityBlocked, /network|registry/);
 	assert.match(guidance.goDestinationConflict, /earlier/);
 	assert.match(guidance.goDestinationConflict, /Remove that folder/);
 	assert.doesNotMatch(guidance.goDestinationConflict, /network/);

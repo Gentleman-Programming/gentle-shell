@@ -239,7 +239,7 @@ const FAKE_PI = [
 	"const args = process.argv.slice(2);",
 	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram@0.4.2' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
 	" const home = process.env.PI_CODING_AGENT_DIR; const metadata = join(home, 'npm/node_modules/gentle-engram/package.json'); mkdirSync(dirname(metadata), {recursive:true});",
-	" writeFileSync(metadata, JSON.stringify({name:'gentle-engram',version:'0.4.2',engram:{startupPolicy:1}}));",
+	" writeFileSync(metadata, JSON.stringify({name:'gentle-engram',version:'0.4.2',engram:{startupPolicy:1,...(process.env.FIXTURE_OWNED_COMPANION === '0' ? {} : {sessionOwned:1})}}));",
 	" const path = join(home,'settings.json'); let settings={}; try {settings=JSON.parse(readFileSync(path,'utf8'));} catch {}",
 	" if (process.env.FIXTURE_INSTALL_CAPABILITY !== 'metadata-only') { const packages = settings.packages ?? []; const index = packages.findIndex(p => /^npm:gentle-engram(?:@|$)/.test(typeof p === 'string' ? p : p.source));",
 	" if (index < 0) packages.push(args[1]); else packages[index] = typeof packages[index] === 'string' ? args[1] : {...packages[index], source:args[1]}; settings.packages = packages; writeFileSync(path, JSON.stringify(settings)); }",
@@ -255,7 +255,7 @@ const FAKE_PI = [
 	" }",
 	"}",
 	"const pick = ['PATH', 'GENTLE_SHELL_PI', 'GENTLE_PI_AGENTS_PI', 'PI_SKIP_VERSION_CHECK', 'npm_config_prefix', 'npm_config_registry', 'NODE_OPTIONS', 'PI_CODING_AGENT_DIR',",
-	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK'];",
+	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_SERVER_MODE', 'ENGRAM_SOCKET', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK'];",
 	"const record = join(process.env.GENTLE_SHELL_PREFIX ?? '', 'config', 'engram-provenance.json');",
 	"const provenance = (() => { try { return JSON.parse(readFileSync(record, 'utf8')); } catch { return null; } })();",
 	"console.log(JSON.stringify({ cli: process.argv[1], args, provenance, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }));",
@@ -264,6 +264,7 @@ const FAKE_PI = [
 ].join("\n");
 const FIXTURE_CORE = [
 	"#!/bin/sh",
+	'if [ "$1" = --help ] && [ "$FIXTURE_OWNED_CORE" != 0 ]; then echo "  serve --session-owned  Private ephemeral HTTP server"; exit 0; fi',
 	'if [ "$1" != instance-id ]; then echo engram; exit 0; fi',
 	'[ -z "$FIXTURE_PROVISION_ENV" ] || env > "$FIXTURE_PROVISION_ENV"',
 	'[ -z "$FIXTURE_INSTANCE_ID_FAIL" ] || exit 3',
@@ -457,8 +458,168 @@ test("provenance mismatches disable memory behind the guard: instance, core dige
 		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
 		const seen = lastLaunch(result);
 		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN], ["disabled", prefix.guard], name);
-		assert.match(result.stderr, /memory disabled.*could not verify.*compatibility.*Back up/s, name);
+		assert.match(result.stderr, name === "core digest" ? /memory disabled.*bundled core changed.*memory migrate --confirm-quiescent/s : /memory disabled.*could not verify.*compatibility.*Back up/s, name);
 	}
+});
+
+function migrationFixture(t: TestContext, outcome = "success") {
+	const prefix = bundledPrefix(t);
+	assert.equal(prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID }).status, 0);
+	const source = join(prefix.home, ".engram");
+	writeFileSync(join(source, "config.json"), '{"preserved":true}\n');
+	const originalRecord = readFileSync(provenancePath(prefix), "utf8");
+	const sourceBytes = readFileSync(join(source, "engram.db"));
+	const invocation = join(prefix.home, "migration-invoked");
+	writeFileSync(prefix.engram, `#!${process.execPath}\nimport {cpSync,writeFileSync} from 'node:fs';\nconst args=process.argv.slice(2);\nif(args[0]==='--help'){console.log(${JSON.stringify(outcome === "unsupported" ? "Commands: compatibility" : "  migrate-copy --data-dir <absolute-source> --output-dir <new-absolute-destination> --confirm-quiescent --json\n  serve --session-owned  Private ephemeral HTTP server")});process.exit(0);}\nwriteFileSync(${JSON.stringify(invocation)},JSON.stringify({args,token:process.env.GH_TOKEN,cloud:process.env.ENGRAM_CLOUD_TOKEN}));\nif(args[0]!=='migrate-copy') process.exit(2);\nconst source=args[args.indexOf('--data-dir')+1],output=args[args.indexOf('--output-dir')+1];\nif(${JSON.stringify(outcome)}==='failure'){process.stderr.write('migration rejected\\n');process.exit(1);}\ncpSync(source,output,{recursive:true});\nconsole.log(JSON.stringify({source_dir:source,output_dir:output,instance_id:${JSON.stringify(outcome === "wrong-identity" ? OTHER_STORE_ID : STORE_ID)},migration_completed:true}));\n`, { mode: 0o700 });
+	return { ...prefix, source, originalRecord, sourceBytes, invocation };
+}
+
+test("bundled local memory selects a verified session-owned provider instead of a detached shared server", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.engram]);
+	const seen = lastLaunch(result);
+	assert.equal(seen.env.ENGRAM_SERVER_MODE, "session-owned");
+	assert.equal(seen.env.ENGRAM_URL, undefined);
+	assert.equal(seen.env.ENGRAM_SOCKET, undefined);
+	assert.equal(seen.provenance.instanceId, STORE_ID);
+});
+
+test("missing private capabilities never silently fall back or provision a store", { skip: posixHost }, (t) => {
+	for (const env of [{ FIXTURE_OWNED_CORE: "0" }, { FIXTURE_OWNED_COMPANION: "0" }]) {
+		const prefix = bundledPrefix(t);
+		const result = prefix.run([], { ...env, FIXTURE_CREATE_STORE: STORE_ID });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+		assert.match(result.stderr, /session-owned.*supporting published/s);
+		assert.equal(existsSync(join(prefix.home, ".engram")), false);
+		assert.equal(existsSync(provenancePath(prefix)), false);
+	}
+});
+
+test("every selected companion must advertise private support, including mixed local and npm selections", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const local = join(prefix.home, "legacy-companion");
+	mkdirSync(local);
+	writeFileSync(join(local, "package.json"), JSON.stringify({ name: "gentle-engram", engram: { startupPolicy: 1 } }));
+	writeFileSync(prefix.metadata, JSON.stringify({ name: "gentle-engram", engram: { startupPolicy: 1, sessionOwned: 1 } }));
+	const settings = join(prefix.home, ".gentle-shell", "agent", "settings.json");
+	const selected = JSON.stringify({ packages: [local, "npm:gentle-engram@0.4.2"] });
+	writeFileSync(settings, selected);
+	const result = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+	assert.match(result.stderr, /session-owned.*supporting published/s);
+	assert.deepEqual(JSON.parse(readFileSync(settings, "utf8")).packages, JSON.parse(selected).packages);
+	assert.equal(existsSync(join(prefix.home, ".engram")), false);
+	assert.equal(existsSync(provenancePath(prefix)), false);
+});
+
+test("explicit empty or conflicting private modes remain invalid without provisioning", { skip: posixHost }, (t) => {
+	for (const mode of ["", "shared", " "]) {
+		const prefix = bundledPrefix(t);
+		const result = prefix.run([], { ENGRAM_SERVER_MODE: mode, FIXTURE_CREATE_STORE: STORE_ID });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+		assert.equal(lastLaunch(result).env.ENGRAM_SERVER_MODE, mode);
+		assert.match(result.stderr, /explicit ENGRAM_SERVER_MODE.*unset.*session-owned/s);
+		assert.equal(existsSync(join(prefix.home, ".engram")), false);
+		assert.equal(existsSync(provenancePath(prefix)), false);
+	}
+});
+
+test("an explicit Engram socket remains untouched and is never probed", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([], { ENGRAM_SOCKET: "/fixture/selected.sock", FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+	assert.equal(lastLaunch(result).env.ENGRAM_SOCKET, "/fixture/selected.sock");
+	assert.equal(existsSync(join(prefix.home, ".engram")), false);
+});
+
+test("a stopped Shell store with a changed core gets migration guidance, not a server upgrade guess", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t);
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+	assert.match(result.stderr, /bundled core changed/);
+	assert.match(result.stderr, /gentle-shell memory migrate --confirm-quiescent/);
+	assert.equal(existsSync(prefix.invocation), false);
+	assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+	assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+});
+
+test("memory migrate explicitly promotes a verified copy and retains the original store", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t);
+	const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1", GH_TOKEN: "fixture-secret", ENGRAM_CLOUD_TOKEN: "fixture-cloud" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	const receipt = JSON.parse(result.stdout);
+	assert.deepEqual(Object.keys(receipt).sort(), ["backup_dir", "instance_id", "status"]);
+	assert.equal(receipt.status, "migrated");
+	assert.equal(receipt.instance_id, STORE_ID);
+	assert.deepEqual(readFileSync(join(receipt.backup_dir, "engram.db")), prefix.sourceBytes);
+	assert.equal(readFileSync(join(receipt.backup_dir, "config.json"), "utf8"), '{"preserved":true}\n');
+	assert.equal(readFileSync(join(prefix.source, "config.json"), "utf8"), '{"preserved":true}\n');
+	assert.deepEqual(JSON.parse(readFileSync(provenancePath(prefix), "utf8")), { schema: 1, dataDir: prefix.source, instanceId: STORE_ID, coreSha256: sha256File(prefix.engram) });
+	const invoked = JSON.parse(readFileSync(prefix.invocation, "utf8"));
+	assert.equal(invoked.args[0], "migrate-copy");
+	assert.equal(invoked.token, undefined);
+	assert.equal(invoked.cloud, undefined);
+	assert.equal(existsSync(join(prefix.root, "config", "engram-migration.json")), false);
+	assert.deepEqual(memoryOf(prefix.run([])), ["allow", prefix.engram]);
+});
+
+test("memory migrate rejects missing confirmation and malformed flags without invoking Engram", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t);
+	for (const args of [["memory", "migrate"], ["memory", "migrate", "--confirm-quiescent", "--unknown"], ["memory", "migrate", "--confirm-quiescent", "--confirm-quiescent"]]) {
+		const result = prefix.run(args, { FIXTURE_NO_PROBE: "1" });
+		assert.equal(result.status, 2, result.stderr);
+		assert.equal(result.stdout, "");
+		assert.equal(result.stderr, "Usage: gentle-shell memory migrate --confirm-quiescent\nStop every Engram client before running this command.\n");
+		assert.equal(existsSync(prefix.invocation), false);
+		assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+		assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+	}
+});
+
+test("memory migrate never sends an unknown command to an older bundled core", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t, "unsupported");
+	const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 1, result.stderr);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /does not support migrate-copy/);
+	assert.equal(existsSync(prefix.invocation), false);
+	assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+	assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+});
+
+test("memory migrate refuses provider failure and mismatched evidence without changing provenance or source", { skip: posixHost }, (t) => {
+	for (const outcome of ["failure", "wrong-identity"]) {
+		const prefix = migrationFixture(t, outcome);
+		const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1" });
+		assert.equal(result.status, 1, result.stderr);
+		assert.equal(result.stdout, "");
+		assert.match(result.stderr, /^gentle-shell: memory migration failed:/);
+		assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+		assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+		assert.equal(existsSync(join(prefix.root, "config", "engram-migration.json")), false);
+	}
+});
+
+test("an interrupted memory promotion blocks fresh provisioning until recovery", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	mkdirSync(join(prefix.root, "config"), { recursive: true });
+	const marker = join(prefix.root, "config", "engram-migration.json");
+	writeFileSync(marker, '{"interrupted":true}\n');
+	const result = prefix.run([], { FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard]);
+	assert.match(result.stderr, /incomplete memory migration/);
+	assert.equal(existsSync(join(prefix.home, ".engram")), false);
+	assert.equal(readFileSync(marker, "utf8"), '{"interrupted":true}\n');
+	assert.equal(existsSync(provenancePath(prefix)), false);
 });
 
 test("public help explains compatibility evidence without promising update recovery", { skip: posixHost }, (t) => {
@@ -497,7 +658,8 @@ test("a listening server is reused for Shell's store only with the recorded /hea
 		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
 		const seen = lastLaunch(result);
 		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL],
-			[policy, policy === "allow" ? prefix.engram : prefix.guard, undefined], name);
+			[policy, prefix.guard, policy === "allow" ? "http://127.0.0.1:7437" : undefined], name);
+		assert.equal(seen.env.ENGRAM_SERVER_MODE, undefined, name);
 	}
 });
 
@@ -720,8 +882,9 @@ test("capability readback also requires Pi to declare the selected pinned compan
 	const result = prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "metadata-only" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stderr, /startupPolicy/);
-	// Only the identity Shell provisions before Pi: no database is opened.
-	assert.deepEqual(readdirSync(join(prefix.home, ".engram")), [".instance-id"]);
+	// Unverified companion capability cannot authorize even fresh provisioning.
+	assert.equal(existsSync(join(prefix.home, ".engram")), false);
+	assert.equal(existsSync(provenancePath(prefix)), false);
 });
 
 test("pinning preserves resource filters and unrelated settings and does not reinstall next launch", { skip: posixHost }, (t) => {

@@ -1232,6 +1232,29 @@ test("quiet tool rendering preserves complete expanded text and delegates saniti
 	assert.doesNotMatch(image, /\x1b/);
 });
 
+test("quiet tool rendering re-renders expanded read-with-image results without crashing when lastComponent is passed (#1620)", () => {
+	const tools = registeredQuietTools();
+	const readTool = tools.get("read");
+	const result = {
+		content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+		details: { path: "image.png" },
+	};
+	const context = { args: { path: "image.png" }, cwd: "/repo", showImages: false, isError: false };
+
+	const initialComponent = readTool.renderResult(result, { expanded: true, isPartial: false }, passthroughTheme, context);
+	const initialOutput = renderToString(initialComponent);
+	assert.ok(initialOutput.includes(imageFallback("image/png")));
+
+	const reRenderComponent = readTool.renderResult(
+		result,
+		{ expanded: true, isPartial: false },
+		passthroughTheme,
+		{ ...context, lastComponent: initialComponent },
+	);
+	const reRenderOutput = renderToString(reRenderComponent);
+	assert.ok(reRenderOutput.includes(imageFallback("image/png")));
+});
+
 test("quiet tool rendering preserves directional visual preview rows at narrow widths", () => {
 	const tools = registeredQuietTools();
 	const bash = tools.get("bash");

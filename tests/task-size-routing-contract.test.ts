@@ -80,7 +80,8 @@ test("AC3: small work runs its checks inline and keeps test-first", () => {
 test("AC4: each mechanism turns on only by its own trigger and size is re-evaluated after", () => {
 	const triggers = sectionOf(core, "## Mechanisms");
 	for (const clause of [
-		"each mechanism turns on only by its own trigger",
+		// Writer-rule fix: a trigger holds only when its condition truly holds.
+		"each mechanism turns on only when its own trigger condition truly holds",
 		"re-evaluate task size",
 		"1. **Ask**",
 		"2. **Evidence-budget rule**",
@@ -90,7 +91,8 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		"6. **Incident rule**",
 		"7. **Context backstop**",
 		"open product or design decision",
-		"high risk",
+		// Verification by named risk: rule 3 names the escalated high-risk item.
+		"named high-risk item (assess `escalate`)",
 		"never by file count",
 		// gentle-shell#1731: the writer fires on reasons, not on size alone.
 		"never by file count or a large task alone",
@@ -134,15 +136,21 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
 	// gentle-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
-	"orchestrator-delegation.md": 20_800,
+	// S9 canon change: conditional triggers, behavior-unit writer threshold, named-risk verifier, invariants,
+	// and the PRESERVE differential pointer mirrored from gentle-ai 5f6faa16 (20,800 -> 21,900 B).
+	"orchestrator-delegation.md": 21_900,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
 	"orchestrator-tracking.md": 12_600,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
-	"orchestrator-verification.md": 7_300,
-	"orchestrator-writer.md": 4_500,
+	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
+	"orchestrator-verification.md": 7_500,
+	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
+	// invariants to reuse): 4,500 -> 5,300 B.
+	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).
+	"orchestrator-writer.md": 5_500,
 	"orchestrator-prompts.md": 13_000,
 };
 
@@ -216,8 +224,10 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 test("T6: each delegation module carries its own clauses and names the modules it depends on", () => {
 	const placement: Record<string, readonly string[]> = {
 		"orchestrator-tracking.md": ["#### Authorization and progress", "Delivery follows work units", "Raise a candidate you know is high risk"],
+		// The tier table header lost "Native risk" with verification by named
+		// risk: the high row is reached only through escalate, not a native tier.
 		"orchestrator-verification.md": [
-			"| Native risk tier | Verification (any RDD state) |",
+			"| Tier | Verification (any RDD state) |",
 			"## Agent escalation (gentle-shell#1494)",
 			"## Parallel review protocol (gentle-shell#1731)",
 		],

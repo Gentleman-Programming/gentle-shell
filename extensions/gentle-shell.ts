@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
+import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
@@ -31,7 +32,6 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
-import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
 import { isNanAdaptiveReasoningModel } from "../lib/nan-provider.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
@@ -180,7 +180,7 @@ export type ActiveProfileReader = (() => string | undefined) & {
 // Unbound reads retain the global file-identity cache, including atomic replacements.
 // Bound reads are snapshots: no filesystem or Git work is done during a frame.
 export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env): ActiveProfileReader {
-	const path = profilesFilePath(bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"));
+	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
 	let bound = false;
@@ -215,7 +215,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
 			sessionId,
 			cwd,
-			configHome: bundledGentlePiConfigHome(env) ?? env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai"),
+			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
 		}));
@@ -1223,8 +1223,6 @@ const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
-const OVERLAY_HEIGHT_RATIO = 0.8;
-const OVERLAY_MIN_ROWS = 8;
 
 export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity): GitRunner {
 	// Pi exec cannot replace the inherited environment. Use argv directly and
@@ -1329,6 +1327,8 @@ interface OverlayDeps {
 }
 
 // The overlay polls each root's Git state while it is open; diffs load lazily.
+// Like Gentle Agents it takes the whole terminal, and the native fullscreen
+// wrapper keeps mouse dispatch on the view while it owns the keyboard.
 async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Promise<void> {
 	let host: ExternalEditorHost | undefined;
 	let view: WorktreeChangesView | undefined;
@@ -1346,16 +1346,18 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 				host = tui;
 				view = new WorktreeChangesView(deps.worktrees(), {
 					theme,
-					rows: () => Math.max(OVERLAY_MIN_ROWS, Math.floor(tui.terminal.rows * OVERLAY_HEIGHT_RATIO)),
+					rows: () => Math.max(0, tui.terminal.rows),
 					loadDiff: deps.loadDiff,
 					onOpen: (root, file) => close({ root, file }),
 					onRefresh: () => void refresh().catch(() => {}),
 					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 				});
-				return view;
+				const interaction = createNativeFullscreenInteraction({ keyboardTarget: view, requestRender: () => tui.requestRender() });
+				interaction.addChild(view);
+				return interaction;
 			},
-			{ overlay: true, overlayOptions: { width: "92%", anchor: "center" } },
+			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
 		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");

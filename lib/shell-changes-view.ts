@@ -67,12 +67,15 @@ export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
 	return lines;
 }
 
+// New files are two distinct states: `A` is tracked and staged, `U` is still
+// untracked. Git's own `??` reads as a broken value in a status column, so the
+// list names the state instead of echoing the plumbing code.
 const FILE_STATUS = {
 	[CHANGE_STATUS.MODIFIED]: "M",
 	[CHANGE_STATUS.ADDED]: "A",
 	[CHANGE_STATUS.DELETED]: "D",
 	[CHANGE_STATUS.RENAMED]: "R",
-	[CHANGE_STATUS.UNTRACKED]: "??",
+	[CHANGE_STATUS.UNTRACKED]: "U",
 } as const;
 
 function fileCounts(file: ChangedFile, theme: ChangesViewTheme): string {
@@ -113,18 +116,41 @@ function fit(text: string, width: number): string {
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-// Both standalone files and the worktree accordion use the original frame.
-function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title: string, leftLine: (row: number) => string, diffLines: string[], keys: string, headerFile?: ChangedFile): string[] {
+// One geometry feeds both rendering and pointer hit-testing, so clicks stay
+// aligned with what is painted. Diff-only drops the list column and its
+// separator; its empty list zone receives no pointer events.
+interface PaneLayout {
+	inner: number;
+	listWidth: number;
+	diffWidth: number;
+	listStart: number;
+	listEnd: number;
+	diffStart: number;
+	diffEnd: number;
+}
+
+function paneLayout(width: number, diffOnly: boolean): PaneLayout {
 	const inner = Math.max(8, width - 2);
+	if (diffOnly) return { inner, listWidth: 0, diffWidth: inner - 2, listStart: 0, listEnd: 0, diffStart: 2, diffEnd: inner };
 	const listWidth = Math.min(LIST_MAX_WIDTH, Math.floor(inner * LIST_RATIO));
 	const diffWidth = inner - listWidth - 4;
+	return { inner, listWidth, diffWidth, listStart: 2, listEnd: 2 + listWidth, diffStart: 5 + listWidth, diffEnd: 5 + listWidth + diffWidth };
+}
+
+// Both standalone files and the worktree accordion use the original frame.
+function renderPanes(width: number, rows: number, theme: ChangesViewTheme, title: string, leftLine: (row: number) => string, diffLines: string[], keys: string, headerFile?: ChangedFile, diffOnly = false): string[] {
+	const { inner, listWidth, diffWidth } = paneLayout(width, diffOnly);
 	const rightLines = headerFile ? [pathHeader(headerFile, theme, diffWidth), ...diffLines] : diffLines;
 	const titleText = truncateToWidth(title, inner - 4, "…");
 	const top = theme.fg(ROLE.FRAME, "╭─ ") + theme.fg(ROLE.TITLE, titleText) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(titleText) - 3)}╮`);
 	const body: string[] = [];
 	for (let row = 0; row < rows; row += 1) {
-		const left = fit(leftLine(row), listWidth);
 		const right = fit(rightLines[row] ?? "", diffWidth);
+		if (diffOnly) {
+			body.push(`${theme.fg(ROLE.FRAME, "│")} ${right} ${theme.fg(ROLE.FRAME, "│")}`);
+			continue;
+		}
+		const left = fit(leftLine(row), listWidth);
 		body.push(`${theme.fg(ROLE.FRAME, "│")} ${left} ${theme.fg(ROLE.FRAME, "│")} ${right}${theme.fg(ROLE.FRAME, "│")}`);
 	}
 	const keysLine = `${theme.fg(ROLE.FRAME, "│")} ${fit(keys, inner - 2)} ${theme.fg(ROLE.FRAME, "│")}`;
@@ -142,11 +168,9 @@ interface PointerLayout {
 	diffEnd: number;
 }
 
-function pointerLayout(width: number, bodyRows: number): PointerLayout {
-	const inner = Math.max(8, width - 2);
-	const listWidth = Math.min(LIST_MAX_WIDTH, Math.floor(inner * LIST_RATIO));
-	const diffWidth = inner - listWidth - 4;
-	return { width, height: bodyRows + CHROME_ROWS, bodyRows, listStart: 2, listEnd: 2 + listWidth, diffStart: 5 + listWidth, diffEnd: 5 + listWidth + diffWidth };
+function pointerLayout(width: number, bodyRows: number, diffOnly = false): PointerLayout {
+	const { listStart, listEnd, diffStart, diffEnd } = paneLayout(width, diffOnly);
+	return { width, height: bodyRows + CHROME_ROWS, bodyRows, listStart, listEnd, diffStart, diffEnd };
 }
 
 function displayText(text: string): string {
@@ -186,6 +210,8 @@ export class WorktreeChangesView {
 	private disposed = false;
 	private leftPressActive = false;
 	private hoveredIndex: number | undefined;
+	// Not persisted: every opening starts with the file list visible.
+	private diffOnly = false;
 	private readonly expanded = new Set<string>();
 	private readonly previews = new Map<string, { fingerprint: string; view: ChangesView }>();
 
@@ -224,11 +250,25 @@ export class WorktreeChangesView {
 	handleInput(data: string): void {
 		if (this.disposed) return;
 		if (data === "r") return this.deps.onRefresh();
-		if (matchesKey(data, Key.escape) || data === "q") return this.deps.onClose();
+		if (data === "q") return this.deps.onClose();
+		if (matchesKey(data, Key.escape)) {
+			if (!this.diffOnly) return this.deps.onClose();
+			return this.setDiffOnly(false);
+		}
+		if (data === "F") return this.setDiffOnly(!this.diffOnly);
 		const rows = this.visibleRows();
 		const row = rows[this.selected];
 		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("j")) || matchesKey(data, Key.ctrl("k"))) {
 			if (row?.file) this.previews.get(rowKey(row))?.view.handleInput(data);
+			return;
+		}
+		if (this.diffOnly) {
+			// Only files have a diff: j/k walk every file, crossing groups.
+			if (data === "j" || matchesKey(data, Key.down)) this.stepFile(1);
+			else if (data === "k" || matchesKey(data, Key.up)) this.stepFile(-1);
+			else if (row?.file && (data === "o" || matchesKey(data, Key.enter))) return this.deps.onOpen(row.tree.root, row.file);
+			else return;
+			this.deps.requestRender();
 			return;
 		}
 		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + 1));
@@ -315,9 +355,11 @@ export class WorktreeChangesView {
 				: paintHoverable(theme, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`, hovered, idleRole);
 			return `${marker} ${text}`;
 		};
-		const keys = theme.fg(ROLE.KEY_TEXT, "j/k select   enter toggle/open   ← parent/fold   ctrl+j/k scroll   r refresh   esc close");
-		this.pointerLayout = pointerLayout(width, height);
-		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file);
+		const keys = theme.fg(ROLE.KEY_TEXT, this.diffOnly
+			? "j/k file   ctrl+j/k scroll   o open   r refresh   F files   esc files"
+			: "j/k select   enter toggle/open   ← fold   ctrl+j/k scroll   r refresh   F diff only   esc close");
+		this.pointerLayout = pointerLayout(width, height, this.diffOnly);
+		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file, this.diffOnly);
 	}
 
 	invalidate(): void {
@@ -339,6 +381,31 @@ export class WorktreeChangesView {
 	private bodyRows(): number {
 		const rows = typeof this.deps.rows === "function" ? this.deps.rows() : this.deps.rows;
 		return Math.max(MIN_BODY_ROWS, rows - CHROME_ROWS);
+	}
+
+	private setDiffOnly(on: boolean): void {
+		this.diffOnly = on;
+		this.hoveredIndex = undefined;
+		this.pointerLayout = undefined;
+		// A group header has no diff; diff-only starts on the next file.
+		if (on && !this.visibleRows()[this.selected]?.file) this.stepFile(1);
+		this.deps.requestRender();
+	}
+
+	// Move to the next file in the fully expanded order, expanding its group
+	// so the file list shows the same selection after diff-only mode.
+	private stepFile(direction: 1 | -1): void {
+		const all: WorktreeRow[] = this.trees.flatMap((tree) => [{ tree }, ...tree.model.files.map((file) => ({ tree, file }))]);
+		const current = this.visibleRows()[this.selected];
+		let index = current ? all.findIndex((row) => rowKey(row) === rowKey(current)) : -1;
+		do index += direction;
+		while (index >= 0 && index < all.length && !all[index]!.file);
+		const target = all[index];
+		if (!target) return;
+		this.expanded.add(target.tree.root);
+		this.selected = this.visibleRows().findIndex((row) => rowKey(row) === rowKey(target));
+		this.ensureSelectedVisible();
+		this.ensurePreview();
 	}
 
 	private scrollList(delta: number, rows: number): boolean {

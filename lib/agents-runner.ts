@@ -10,7 +10,7 @@ import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskEvent, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
@@ -69,6 +69,13 @@ export interface RunnerLimits {
 	// Longer ceiling used while an announced tool call is in flight. Optional so
 	// callers that only bound silence keep the idle budget as the tool ceiling.
 	toolStallTimeoutMs?: number;
+	// Total-work ceilings. Unlike the silence budgets above, these bound what a
+	// busy child may spend before it stops, so an emitting child is no longer
+	// unbounded. Absent means unbounded, which is the documented default.
+	/** Completed assistant turns the child may finish; reaching it stops the task. */
+	maxTurns?: number;
+	/** Reported tokens the child may accumulate; unreported usage never fires it. */
+	maxTotalTokens?: number;
 }
 
 export interface AskAnswer {
@@ -241,6 +248,18 @@ const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
+// Events that mean the child is still producing work. A ceiling bounds work the
+// child has not finished, so it never fires on the frames that close a turn or a
+// run (turn_end, agent_end, agent_settled) or on the usage frame at a turn's end:
+// a child that finishes exactly at the ceiling must still deliver its report.
+const CEILING_WORK_EVENTS: ReadonlySet<TaskEvent["type"]> = new Set([
+	TASK_EVENT.TEXT,
+	TASK_EVENT.THINKING,
+	TASK_EVENT.TOOL_START,
+	TASK_EVENT.TOOL_UPDATE,
+	TASK_EVENT.TOOL_END,
+	TASK_EVENT.ERROR,
+]);
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -671,6 +690,33 @@ export class AgentRunner {
 		return cleaned ? `; stderr: ${cleaned}` : "";
 	}
 
+	// Total-work ceilings, checked after the frame's events reached the store: the
+	// counters read here are the ones the card shows, so no second accounting path
+	// can drift from the displayed one. No separate case is needed for a task
+	// waiting on a human answer: the store already treats any non-ASK event on a
+	// waiting task as resumed (agents-protocol.ts:426), and only an event that
+	// changes the counters can cross a ceiling, so the crossing frame is itself the
+	// resume. The token ceiling fails open by design: it fires only on tokens the
+	// provider reported, so a gateway that reports none leaves `max_turns` as the
+	// real lever rather than making the budget depend on invented accounting.
+	private checkBudget(id: string, live: LiveTask, events: TaskEvent[]): void {
+		if (live.terminal) return;
+		const task = this.store.get(id);
+		if (!task || isFinished(task.status)) return;
+		// The ceilings bound continued work, not the act of finishing it: a frame
+		// that only closes a turn or a run, or reports usage, must not stop a child
+		// that has already produced its result. The stop lands on the next frame
+		// that shows the child still working.
+		if (!events.some((event) => CEILING_WORK_EVENTS.has(event.type))) return;
+		if (this.limits.maxTurns !== undefined && task.turns >= this.limits.maxTurns) {
+			this.requestStop(id, TASK_STATUS.TIMED_OUT, `reached max_turns ${this.limits.maxTurns} after: ${task.lastStep}`);
+			return;
+		}
+		if (this.limits.maxTotalTokens !== undefined && task.tokens >= this.limits.maxTotalTokens) {
+			this.requestStop(id, TASK_STATUS.TIMED_OUT, `reached max_total_tokens ${this.limits.maxTotalTokens} (${task.tokens} reported) after: ${task.lastStep}`);
+		}
+	}
+
 	// An idle child is bounded by the silence budget; a child whose announced
 	// tool call is still running is live work and bounded by the longer tool
 	// ceiling. These are renewable silence budgets, not total duration limits.
@@ -890,6 +936,9 @@ export class AgentRunner {
 				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
 		}
+		// A settled report or a failing exit already decided this task's outcome; only
+		// a still-running child is subject to the ceilings.
+		if (!live.terminal && events.length > 0) this.checkBudget(id, live, events);
 		if (!live.terminal && progress) this.armStall(id, live);
 	}
 

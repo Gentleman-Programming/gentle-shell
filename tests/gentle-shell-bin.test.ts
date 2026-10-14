@@ -3368,3 +3368,31 @@ test("on a TTY without colors the gentle-shell line has no ANSI styling", { skip
 	const out = runInPty({ ...f.env, GENTLE_SHELL_PI: piScript, PTY_NO_COLOR: "1" }, ["--link"]);
 	assert.ok(out.endsWith(`${PI_HINT}To resume in gentle-shell: gentle-shell --link --session abc\r\n`), JSON.stringify(out));
 });
+
+// #2143: a Gentle AI that honors GENTLE_AI_PI_EXCLUDE_PACKAGES (gentle-ai#5503)
+// never declares npm:gentle-pi, so setup neither runs `pi remove` nor prints
+// the contradictory "removing npm:gentle-pi" line.
+test("gentle-shell setup asks Gentle AI to skip npm:gentle-pi, so nothing is installed only to be removed", (t) => {
+	const f = fixture(t);
+	const gentleAiScript = join(f.root, "fake-gentle-ai.mjs");
+	writeFileSync(gentleAiScript, [
+		"#!/usr/bin/env node",
+		"import { readFileSync, writeFileSync } from 'node:fs';",
+		"import { join } from 'node:path';",
+		"const excluded = (process.env.GENTLE_AI_PI_EXCLUDE_PACKAGES ?? '').split(',').map((entry) => entry.trim());",
+		"const settingsPath = join(process.env.PI_CODING_AGENT_DIR, 'settings.json');",
+		"const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));",
+		"settings.packages = ['npm:gentle-pi', 'npm:pi-btw'].filter((source) => !excluded.includes(source));",
+		"writeFileSync(settingsPath, JSON.stringify(settings));",
+		"process.stdout.write(JSON.stringify({ args: process.argv.slice(2), excluded: process.env.GENTLE_AI_PI_EXCLUDE_PACKAGES ?? null }) + '\\n');",
+		"",
+	].join("\n"));
+	chmodSync(gentleAiScript, 0o755);
+	const result = run({ ...f.env, GENTLE_SHELL_GENTLE_AI_BIN: gentleAiScript }, ["setup"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stderr, /removing npm:gentle-pi/);
+	const lines = result.stdout.trim().split("\n").filter((line) => line.length > 0);
+	assert.equal(lines.length, 1, "no pi remove ran: " + result.stdout);
+	assert.deepEqual(JSON.parse(lines[0]), { args: ["install", "--agent", "pi", "--scope", "global"], excluded: "npm:gentle-pi" });
+});
+

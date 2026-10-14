@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import {
+	GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV,
 	MIN_PI_VERSION,
+	withLauncherPackagesExcluded,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
@@ -2059,3 +2061,18 @@ test("the isolated-home bootstrap creates ~/.gentle-shell as 0700 under umask 00
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+// #2143: Gentle AI installs npm:gentle-pi into the home only for the launcher
+// to remove it again; a Gentle AI with package exclusion (gentle-ai#5503)
+// skips it, and an older one ignores the variable.
+test("withLauncherPackagesExcluded asks Gentle AI to skip npm:gentle-pi, keeping a caller's own exclusions", () => {
+	assert.equal(GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV, "GENTLE_AI_PI_EXCLUDE_PACKAGES");
+	assert.equal(withLauncherPackagesExcluded({ PATH: "/bin" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:pi-btw,npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:gentle-pi, npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi,npm:pi-btw");
+	const input = { PATH: "/bin" };
+	assert.equal(withLauncherPackagesExcluded(input).PATH, "/bin");
+	assert.deepEqual(input, { PATH: "/bin" }, "the caller's env is not mutated");
+});
+

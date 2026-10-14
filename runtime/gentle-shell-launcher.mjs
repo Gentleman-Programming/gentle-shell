@@ -651,6 +651,20 @@ const POST_INSTALL_REMOVAL_PACKAGES                                             
 // bin/gentle-shell.mjs.
 export const POST_INSTALL_REMOVAL_SOURCES                    = POST_INSTALL_REMOVAL_PACKAGES.map((entry) => entry.source);
 
+// #2143: a Gentle AI with package exclusion (gentle-ai#5503) skips these
+// managed Pi packages instead of installing them only for the post-install
+// removal above to delete them. An older Gentle AI ignores the variable (a flag
+// would be rejected), so the removal stays as the fallback. Only sources Gentle
+// AI manages belong here: it rejects any other value.
+export const GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV = "GENTLE_AI_PI_EXCLUDE_PACKAGES";
+const LAUNCHER_EXCLUDED_PI_PACKAGES                    = ["npm:gentle-pi"];
+
+export function withLauncherPackagesExcluded(env                                    )                                     {
+	const own = (env[GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV] ?? "").split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+	const merged = [...own, ...LAUNCHER_EXCLUDED_PI_PACKAGES.filter((source) => !own.includes(source))];
+	return { ...env, [GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV]: merged.join(",") };
+}
+
 // Scans a settings.json `packages` list (same string/object-source parsing
 // as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry
 // whose npm package name matches POST_INSTALL_REMOVAL_PACKAGES, at any

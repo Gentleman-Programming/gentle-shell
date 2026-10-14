@@ -51,6 +51,7 @@ import {
 	parseRawLauncherConfig,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
+	withLauncherPackagesExcluded,
 	postInstallRemovals,
 	provisionedEntry,
 	migrateStandaloneConfig,
@@ -1181,7 +1182,9 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const piLauncherDir = writeSetupPiLauncher(runtime);
-	const env = buildSetupEnv(home, runtime, piLauncherDir);
+	// #2143: a Gentle AI with package exclusion never installs the launcher-owned
+	// gentle-pi; an older one ignores this and runPostInstallCleanup removes it.
+	const env = withLauncherPackagesExcluded(buildSetupEnv(home, runtime, piLauncherDir));
 	const personaSnapshots = setupPersonaPaths(home).map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));

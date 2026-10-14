@@ -7861,6 +7861,20 @@ function isSelectedReviewCapture(value: SelectedReviewCapture | Record<string, u
 
 function captureGroupRejected(reason: string): Record<string, unknown> { return captureBindingRejected(reason, true); }
 
+function captureGroupStatusFailure(error: unknown): Record<string, unknown> {
+	return {
+		...captureGroupRejected(error instanceof Error ? error.message : String(error)),
+		outcome: "native-status-failed",
+		// Only project the decoded native envelope, never arbitrary error fields.
+		// Group mutation reporting belongs to its submitted-reviewer progress.
+		...(error instanceof NativeReviewIntegrationError ? {
+			native_failure: error.failureEnvelope.raw,
+			replayability: error.failureEnvelope.replayability,
+			next_action: error.failureEnvelope.nextAction,
+		} : {}),
+	};
+}
+
 function hasExactReviewCaptureSuffix(status: ReviewStatusV3, expected: readonly string[]): boolean {
 	const current = status.nextTransition?.kind === "collect"
 		? (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation === "review.capture-result").map(canonicalReviewCaptureBinding)
@@ -8167,7 +8181,7 @@ async function executeReviewCaptureGroupOperation(
 		if (negotiated.transport !== undefined) return hostTransportUnavailable("gentle_review_capture_group", negotiated.transport);
 		status = negotiated.status!;
 	} catch (error) {
-		return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed" };
+		return captureGroupStatusFailure(error);
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!isSelectedReviewCaptureGroup(group)) return group;
@@ -8213,7 +8227,7 @@ async function executeReviewCaptureGroupOperation(
 			if (!hasExactReviewCaptureSuffix(negotiated.status!, canonicalBindings.slice(index))) return { ...captureGroupAuthorityDrift(negotiated.status!), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 			current = selectExactReviewCapture(negotiated.status!, parameters.lineageId, canonicalBindings[index]!);
 		} catch (error) {
-			return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed", ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
+			return { ...captureGroupStatusFailure(error), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		}
 		if (!isSelectedReviewCapture(current)) return { ...captureGroupRejected(String(current.reason ?? "current STATUS rejected a reviewer binding")), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		try {

@@ -1406,9 +1406,9 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 
 // MCP sidebar detail: tools, state and file-level enable/disable with the
 // same semantics as /mcp (Disable persists to the defining mcp.json, project
-// variants write a project override). The live connection itself is owned by
-// pi's MCP extension, so the overlay also offers opening /mcp for live
-// actions like reconnect and sign in.
+// variants write a project override). Live-only actions (reconnect, sign in)
+// have no public API, so the overlay names /mcp for those instead of faking
+// them.
 async function showMcpDetail(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -2063,100 +2063,102 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			};
-		const part = sidebarPart(tui, "footer", bottomBar, {
-			digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
-			render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
-			invalidate() {},
-		});
-		// MCP rail part: a collapsible server list fed by the
-		// same mcp.json files pi loads, joined with live tool names. The
-		// arrow toggles; clicking a server opens its detail overlay.
-		const mcpStatKey = (path: string): string => {
-			try {
-				const stat = statSync(path);
-				return `${stat.mtimeMs}:${stat.size}`;
-			} catch {
-				return "missing";
-			}
-		};
-		const mcpEntries = (): McpSessionEntry[] => {
-			const allTools = pi.getAllTools();
-			const toolNames = allTools.map((tool) => tool.name);
-			const registered = pi.getMcpServers().map((server) => server.name);
-			const globalPath = join(getAgentDir(), "mcp.json");
-			const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
-			const readRaw = (path: string): string | undefined => {
+			const part = sidebarPart(tui, "footer", bottomBar, {
+				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
+				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
+				invalidate() {},
+			});
+			// MCP rail part: a collapsible server list fed by the
+			// same mcp.json files pi loads, joined with live tool names. The
+			// arrow toggles; clicking a server opens its detail overlay.
+			const mcpStatKey = (path: string): string => {
 				try {
-					return readFileSync(path, "utf8");
+					const stat = statSync(path);
+					return `${stat.mtimeMs}:${stat.size}`;
 				} catch {
-					return undefined;
+					return "missing";
 				}
 			};
-			const key = `${mcpStatKey(globalPath)}|${mcpStatKey(projectPath)}|${toolNames.join(",")}|${registered.join(",")}`;
-			if (key === mcpCacheKey) return mcpCache;
-			mcpCache = buildMcpSession({
-				globalPath,
-				projectPath,
-				globalRaw: readRaw(globalPath),
-				projectRaw: readRaw(projectPath),
-				tools: allTools.map((tool) => ({ name: tool.name, description: tool.description })),
-				registered,
+			const mcpEntries = (): McpSessionEntry[] => {
+				const allTools = pi.getAllTools();
+				const toolNames = allTools.map((tool) => tool.name);
+				const registered = pi.getMcpServers().map((server) => server.name);
+				const globalPath = join(getAgentDir(), "mcp.json");
+				const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
+				const readRaw = (path: string): string | undefined => {
+					try {
+						return readFileSync(path, "utf8");
+					} catch {
+						return undefined;
+					}
+				};
+				const key = `${mcpStatKey(globalPath)}|${mcpStatKey(projectPath)}|${toolNames.join(",")}|${registered.join(",")}`;
+				if (key === mcpCacheKey) return mcpCache;
+				mcpCache = buildMcpSession({
+					globalPath,
+					projectPath,
+					globalRaw: readRaw(globalPath),
+					projectRaw: readRaw(projectPath),
+					tools: allTools.map((tool) => ({ name: tool.name, description: tool.description })),
+					registered,
+				});
+				mcpCacheKey = key;
+				return mcpCache;
+			};
+			const mcpRefresh = () => {
+				bustMcpCache();
+				invalidateSidebar(tui);
+				tui.requestRender();
+			};
+			const mcpCard = {
+				render: (width: number) => renderMcpCard(mcpEntries(), { collapsed: mcpCollapsed }, theme, width),
+				invalidate() {},
+			};
+			const mcpRegion = new NativePointerRegion(mcpCard, {
+				onClick(event) {
+					if (event.button !== "left") return undefined;
+					const entries = mcpEntries();
+					if (entries.length === 0) return undefined;
+					const width = event.width;
+					if (event.y === panelHeaderRow(theme, width, CARD_TONE.INFO)) {
+						mcpCollapsed = !mcpCollapsed;
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					if (mcpCollapsed) {
+						mcpCollapsed = false;
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					const bodyStart = panelHeaderRow(theme, width, CARD_TONE.INFO) + (panelExtraRows(theme, width, CARD_TONE.INFO) > 0 ? 2 : 1);
+					const lines = renderMcpCard(entries, { collapsed: false }, theme, width);
+					// Substring with both delimiters: immune to frames and float
+					// margins, while `• name —` can never shadow a longer name.
+					const rowText = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!);
+					const rowOf = (name: string): boolean => rowText.includes(`• ${name} —`);
+					const byIndex = entries[event.y - bodyStart];
+					const target = byIndex && rowOf(byIndex.name)
+						? byIndex
+						: entries.find((entry) => rowOf(entry.name));
+					if (!target) return undefined;
+					void showMcpDetail(pi, ctx, target, mcpRefresh);
+					return { handled: true };
+				},
 			});
-			mcpCacheKey = key;
-			return mcpCache;
-		};
-		const mcpRefresh = () => {
-			bustMcpCache();
-			invalidateSidebar(tui);
-			tui.requestRender();
-		};
-		const mcpCard = {
-			render: (width: number) => renderMcpCard(mcpEntries(), { collapsed: mcpCollapsed }, theme, width),
-			invalidate() {},
-		};
-		const mcpRegion = new NativePointerRegion(mcpCard, {
-			onClick(event) {
-				if (event.button !== "left") return undefined;
-				const entries = mcpEntries();
-				if (entries.length === 0) return undefined;
-				const width = event.width;
-				if (event.y === panelHeaderRow(theme, width, CARD_TONE.INFO)) {
-					mcpCollapsed = !mcpCollapsed;
-					invalidateSidebar(tui);
-					tui.requestRender();
-					return { handled: true, render: true };
-				}
-				if (mcpCollapsed) {
-					mcpCollapsed = false;
-					invalidateSidebar(tui);
-					tui.requestRender();
-					return { handled: true, render: true };
-				}
-				const bodyStart = panelHeaderRow(theme, width, CARD_TONE.INFO) + (panelExtraRows(theme, width, CARD_TONE.INFO) > 0 ? 2 : 1);
-				const lines = renderMcpCard(entries, { collapsed: false }, theme, width);
-				// Substring with both delimiters: immune to frames and float
-				// margins, while `• name —` can never shadow a longer name.
-				const rowText = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!);
-				const rowOf = (name: string): boolean => rowText.includes(`• ${name} —`);
-				const byIndex = entries[event.y - bodyStart];
-				const target = byIndex && rowOf(byIndex.name)
-					? byIndex
-					: entries.find((entry) => rowOf(entry.name));
-				if (!target) return undefined;
-				void showMcpDetail(pi, ctx, target, mcpRefresh);
-				return { handled: true };
-			},
-		});
-		const mcpPart = sidebarPart(tui, "mcp", {
-			render: (width: number) => mcpRegion.render(width),
-			invalidate() {},
-			dispose() {},
-		}, {
-			digest: () => JSON.stringify([mcpEntries(), mcpCollapsed]),
-			render: (width) => mcpRegion.render(width),
-			handleMouse: (event) => mcpRegion.handleMouse(event),
-			invalidate() {},
-		});
+			const mcpPart = sidebarPart(tui, "mcp", {
+				render: (width: number) => mcpRegion.render(width),
+				invalidate() {},
+				dispose() {},
+			}, {
+				// Compact digest: names, states and counts repaint the rail;
+				// full descriptions only matter inside the on-demand overlay.
+				digest: () => JSON.stringify([mcpEntries().map((entry) => [entry.name, entry.status, entry.toolCount, entry.enabled]), mcpCollapsed]),
+				render: (width) => mcpRegion.render(width),
+				handleMouse: (event) => mcpRegion.handleMouse(event),
+				invalidate() {},
+			});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.

@@ -1,0 +1,211 @@
+import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
+
+export type McpSidebarStatus = "connected" | "disabled" | "connecting";
+
+export interface McpSidebarServer {
+	name: string;
+	enabled: boolean;
+}
+
+export interface McpSidebarEntry extends McpSidebarServer {
+	toolCount: number;
+	status: McpSidebarStatus;
+}
+
+// Namespace of a server's tools: `mcp__<server>` with `-` replaced by `_`,
+// mirroring pi's mcpNamespace without importing the runtime.
+function mcpNamespace(server: string): string {
+	return `mcp__${server.replace(/-/g, "_")}__`;
+}
+
+export function buildMcpSidebarEntries(
+	servers: McpSidebarServer[],
+	toolNames: string[],
+): McpSidebarEntry[] {
+	return servers.map((server) => {
+		const prefix = mcpNamespace(server.name);
+		const toolCount = toolNames.filter((tool) => tool.startsWith(prefix)).length;
+		const status: McpSidebarStatus = !server.enabled
+			? "disabled"
+			: toolCount > 0
+				? "connected"
+				: "connecting";
+		return { ...server, toolCount, status };
+	});
+}
+
+export function mcpStatusLabel(status: McpSidebarStatus): string {
+	return status === "connected" ? "Connected" : status === "disabled" ? "Disabled" : "Connecting";
+}
+
+// Config-file layer: mirrors pi's mcp.json shape without importing its
+// internals (loadMcpConfig is not part of pi's public exports). A project
+// entry without command/url/type overrides only enabled/exposure of the
+// global server with the same name.
+
+export type McpConfigScope = "global" | "project";
+
+export interface McpConfiguredServer {
+	name: string;
+	enabled: boolean;
+	scope: McpConfigScope;
+	hasOverride: boolean;
+}
+
+type McpRawEntry = Record<string, unknown>;
+
+function isFullEntry(raw: McpRawEntry): boolean {
+	return raw.command !== undefined || raw.url !== undefined || raw.type !== undefined;
+}
+
+function readEnabled(raw: McpRawEntry | undefined): boolean {
+	return raw?.enabled === false ? false : true;
+}
+
+export function mergeMcpServers(
+	globalServers: Record<string, McpRawEntry>,
+	projectServers: Record<string, McpRawEntry> = {},
+): McpConfiguredServer[] {
+	const names = [...new Set([...Object.keys(globalServers), ...Object.keys(projectServers)])].sort();
+	return names.map((name) => {
+		const global = globalServers[name];
+		const project = projectServers[name];
+		if (project !== undefined && (global === undefined || isFullEntry(project))) {
+			return { name, enabled: readEnabled(project), scope: "project" as const, hasOverride: false };
+		}
+		if (global === undefined) {
+			return { name, enabled: readEnabled(project), scope: "global" as const, hasOverride: true };
+		}
+		return {
+			name,
+			enabled: project !== undefined && project.enabled !== undefined ? readEnabled(project) : readEnabled(global),
+			scope: "global" as const,
+			hasOverride: project !== undefined,
+		};
+	});
+}
+
+function detectIndent(raw: string): string {
+	const match = raw.match(/\n(\s+)"mcpServers"/);
+	if (match) return `${match[1]}  `;
+	const line = raw.match(/\n(\s+)\S/);
+	return line ? `${line[1]}  ` : "  ";
+}
+
+export function parseMcpServers(raw: string | undefined): Record<string, Record<string, unknown>> {
+	if (raw === undefined || raw.trim() === "") return {};
+	try {
+		const doc = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
+		return doc.mcpServers ?? {};
+	} catch {
+		return {};
+	}
+}
+
+export function patchMcpServersFile(
+	raw: string | undefined,
+	name: string,
+	patch: { enabled?: boolean },
+	options: { asOverride?: boolean; keepEnabled?: boolean } = {},
+): string {	let doc: { mcpServers: Record<string, McpRawEntry> };
+	let indent = "  ";
+	if (raw === undefined || raw.trim() === "") {
+		doc = { mcpServers: {} };
+	} else {
+		indent = detectIndent(raw);
+		doc = JSON.parse(raw) as { mcpServers: Record<string, McpRawEntry> };
+		doc.mcpServers ??= {};
+	}
+	if (options.asOverride) {
+		const current = doc.mcpServers[name] ?? {};
+		doc.mcpServers[name] = { ...current, ...patch };
+		if (patch.enabled === true && !options.keepEnabled) delete (doc.mcpServers[name] as Record<string, unknown>).enabled;
+		if (Object.keys(doc.mcpServers[name]!).length === 0) delete doc.mcpServers[name];
+	} else {
+		const current = doc.mcpServers[name] ?? {};
+		const next = { ...current, ...patch };
+		if (patch.enabled === true) delete next.enabled;
+		doc.mcpServers[name] = next;
+	}
+	return JSON.stringify({ mcpServers: doc.mcpServers }, undefined, indent);
+}
+
+export interface McpCardOptions {
+	collapsed: boolean;
+}
+
+function mcpSummary(entries: McpSidebarEntry[]): string {
+	const connected = entries.filter((entry) => entry.status === "connected").length;
+	const disabled = entries.filter((entry) => entry.status === "disabled").length;
+	const connecting = entries.length - connected - disabled;
+	const parts = [
+		...(connected ? [`${connected} connected`] : []),
+		...(connecting ? [`${connecting} connecting`] : []),
+		...(disabled ? [`${disabled} disabled`] : []),
+	];
+	return parts.join(" · ") || `${entries.length} servers`;
+}
+
+export function renderMcpCard(
+	entries: McpSidebarEntry[],
+	options: McpCardOptions,
+	theme: CardTheme,
+	width: number,
+): string[] {
+	if (entries.length === 0) return [];
+	const control = options.collapsed ? "▸ Expand" : "▾ Collapse";
+	const body = options.collapsed
+		? [mcpSummary(entries)]
+		: entries.map((entry) => `• ${entry.name} — ${mcpStatusLabel(entry.status)} · ${entry.toolCount} ${entry.toolCount === 1 ? "tool" : "tools"}`);
+	return renderCard(
+		{ title: `MCP ${control}`, subtitle: mcpSummary(entries), body, tone: CARD_TONE.INFO },
+		theme,
+		width,
+		{ expanded: true, panel: true },
+	);
+}
+
+// Detail overlay actions: same semantics as /mcp (Disable persists to the
+// defining mcp.json, project variants write a project override). Extension
+// servers have no file to patch, so they only open the manager.
+
+export type McpDetailActionId = "disable" | "disable-project" | "enable" | "enable-project" | "open-manager";
+
+export interface McpDetailAction {
+	id: McpDetailActionId;
+	label: string;
+	hint: string;
+}
+
+const OPEN_MANAGER_ACTION: McpDetailAction = {
+	id: "open-manager",
+	label: "Open /mcp manager",
+	hint: "live status · reconnect · sign in",
+};
+
+export function buildExtensionDetailActions(): McpDetailAction[] {
+	return [OPEN_MANAGER_ACTION];
+}
+
+export function buildMcpDetailActions(
+	server: McpConfiguredServer,
+	options: { projectTrusted: boolean },
+): McpDetailAction[] {
+	const actions: McpDetailAction[] = [];
+	const fileHint = server.scope === "project" ? "saved to the project mcp.json" : "saved to the global mcp.json";
+	if (server.enabled) {
+		actions.push({ id: "disable", label: "Disable", hint: fileHint });
+		if (options.projectTrusted && server.scope === "global") {
+			actions.push({ id: "disable-project", label: "Disable in this project", hint: "saved to the project mcp.json" });
+		}
+	} else if (server.scope === "global" && server.hasOverride) {
+		actions.push({ id: "enable-project", label: "Enable in this project", hint: "removes the project override" });
+	} else {
+		actions.push({ id: "enable", label: "Enable", hint: fileHint });
+		if (options.projectTrusted && server.scope === "global") {
+			actions.push({ id: "enable-project", label: "Enable only in this project", hint: "saved to the project mcp.json" });
+		}
+	}
+	actions.push(OPEN_MANAGER_ACTION);
+	return actions;
+}

@@ -1,9 +1,9 @@
-import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, getAgentDir, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, decodeKittyPrintable, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
@@ -14,7 +14,7 @@ import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, Worktree
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, panelExtraRows, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
@@ -125,6 +125,19 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
+import {
+	buildExtensionDetailActions,
+	buildMcpDetailActions,
+	mcpStatusLabel,
+	parseMcpServers,
+	patchMcpServersFile,
+	renderMcpCard,
+	type McpDetailActionId,
+} from "../lib/mcp-sidebar.ts";
+import { buildMcpSession, type McpSessionEntry } from "../lib/mcp-session.ts";
+import { McpDetailView, type McpDetailResult } from "../lib/mcp-detail-view.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -1391,6 +1404,105 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: 
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
 }
 
+// MCP sidebar detail: tools, state and file-level enable/disable with the
+// same semantics as /mcp (Disable persists to the defining mcp.json, project
+// variants write a project override). The live connection itself is owned by
+// pi's MCP extension, so the overlay also offers opening /mcp for live
+// actions like reconnect and sign in.
+async function showMcpDetail(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	target: McpSessionEntry,
+	refresh: () => void,
+): Promise<void> {
+	if (!ctx.hasUI) return;
+	const trusted = ctx.isProjectTrusted();
+	const actions = target.scope === "extension"
+		? buildExtensionDetailActions()
+		: buildMcpDetailActions(
+			{ name: target.name, enabled: target.enabled, scope: target.scope, hasOverride: target.hasOverride },
+			{ projectTrusted: trusted },
+		);
+	const result = await ctx.ui.custom<McpDetailResult>(
+		(tui, theme, _keybindings, done) => new McpDetailView(
+			{
+				name: target.name,
+				statusLabel: mcpStatusLabel(target.status),
+				toolCount: target.toolCount,
+				scopeLabel: target.scope,
+				source: target.source,
+				tools: target.tools,
+			},
+			actions,
+			withOverlayRepaint(tui, done),
+			theme,
+		),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
+	);
+	if (result?.type !== "run") return;
+	if (result.action === "open-manager") {
+		pi.sendUserMessage("/mcp", { expandPromptTemplates: true });
+		return;
+	}
+	await applyMcpToggle(ctx, target, result.action, trusted, refresh);
+}
+
+async function applyMcpToggle(
+	ctx: ExtensionContext,
+	target: McpSessionEntry,
+	action: McpDetailActionId,
+	trusted: boolean,
+	refresh: () => void,
+): Promise<void> {
+	const globalPath = join(getAgentDir(), "mcp.json");
+	const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
+	const definingPath = target.scope === "project" ? projectPath : globalPath;
+	const readRaw = async (path: string): Promise<string | undefined> => {
+		try {
+			return await readFile(path, "utf8");
+		} catch {
+			return undefined;
+		}
+	};
+	try {
+		if (action === "disable") {
+			const path = target.hasOverride ? projectPath : definingPath;
+			await writeFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: false }, { asOverride: target.hasOverride }));
+			ctx.ui.notify(`Disabled "${target.name}" (saved to ${path}). Applies to new sessions; /mcp manages the live connection.`, "info");
+		} else if (action === "enable") {
+			const path = target.hasOverride ? projectPath : definingPath;
+			await writeFile(path, patchMcpServersFile(await readRaw(path), target.name, { enabled: true }, { asOverride: target.hasOverride }));
+			ctx.ui.notify(`Enabled "${target.name}" (saved to ${path}). Applies to new sessions; /mcp manages the live connection.`, "info");
+		} else if (action === "disable-project") {
+			if (!trusted) {
+				ctx.ui.notify("Project overrides need a trusted project.", "warning");
+				return;
+			}
+			await mkdir(dirname(projectPath), { recursive: true });
+			await writeFile(projectPath, patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: false }, { asOverride: true }));
+			ctx.ui.notify(`Disabled "${target.name}" in this project (saved to ${projectPath}). Applies to new sessions.`, "info");
+		} else if (action === "enable-project") {
+			if (!trusted) {
+				ctx.ui.notify("Project overrides need a trusted project.", "warning");
+				return;
+			}
+			const definingEnabled = parseMcpServers(await readRaw(definingPath))[target.name]?.enabled !== false;
+			await mkdir(dirname(projectPath), { recursive: true });
+			await writeFile(
+				projectPath,
+				definingEnabled
+					? patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: true }, { asOverride: true })
+					: patchMcpServersFile(await readRaw(projectPath), target.name, { enabled: true }, { asOverride: true, keepEnabled: true }),
+			);
+			ctx.ui.notify(`Enabled "${target.name}" in this project (saved to ${projectPath}). Applies to new sessions.`, "info");
+		}
+	} catch (error) {
+		ctx.ui.notify(`Could not update the MCP config: ${error instanceof Error ? error.message : String(error)}`, "error");
+		return;
+	}
+	refresh();
+}
+
 function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true, grouped: (width: number) => boolean = () => false): void {
 	if (!visible || model.files.length === 0) {
 		ctx.ui.setWidget(CHANGES_WIDGET_KEY, undefined);
@@ -1797,6 +1909,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let visualSettings = resolveVisualSettings(animationOptions).settings;
 	let sidebarTui: TUI | undefined;
 	let groupedChangesOwner: (width: number) => boolean = () => false;
+	// MCP rail part: collapsed flag and file/tool memo live in the extension
+	// closure (not the pure card model) so they survive setFooter re-runs.
+	let mcpCollapsed = false;
+	let mcpCacheKey = "";
+	let mcpCache: McpSessionEntry[] = [];
+	const bustMcpCache = () => {
+		mcpCacheKey = "";
+	};
 	const refreshVisual = () => {
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
@@ -1946,11 +2066,96 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			};
-			const part = sidebarPart(tui, "footer", bottomBar, {
-				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
-				invalidate() {},
+		const part = sidebarPart(tui, "footer", bottomBar, {
+			digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
+			render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
+			invalidate() {},
+		});
+		// MCP rail part: a collapsible Opencode-style server list fed by the
+		// same mcp.json files pi loads, joined with live tool names. The
+		// arrow toggles; clicking a server opens its detail overlay.
+		const mcpStatKey = (path: string): string => {
+			try {
+				const stat = statSync(path);
+				return `${stat.mtimeMs}:${stat.size}`;
+			} catch {
+				return "missing";
+			}
+		};
+		const mcpEntries = (): McpSessionEntry[] => {
+			const toolNames = pi.getAllTools().map((tool) => tool.name);
+			const registered = pi.getMcpServers().map((server) => server.name);
+			const globalPath = join(getAgentDir(), "mcp.json");
+			const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
+			const readRaw = (path: string): string | undefined => {
+				try {
+					return readFileSync(path, "utf8");
+				} catch {
+					return undefined;
+				}
+			};
+			const key = `${mcpStatKey(globalPath)}|${mcpStatKey(projectPath)}|${toolNames.join(",")}|${registered.join(",")}`;
+			if (key === mcpCacheKey) return mcpCache;
+			mcpCache = buildMcpSession({
+				globalPath,
+				projectPath,
+				globalRaw: readRaw(globalPath),
+				projectRaw: readRaw(projectPath),
+				toolNames,
+				registered,
 			});
+			mcpCacheKey = key;
+			return mcpCache;
+		};
+		const mcpRefresh = () => {
+			bustMcpCache();
+			invalidateSidebar(tui);
+			tui.requestRender();
+		};
+		const mcpCard = {
+			render: (width: number) => renderMcpCard(mcpEntries(), { collapsed: mcpCollapsed }, theme, width),
+			invalidate() {},
+		};
+		const mcpRegion = new NativePointerRegion(mcpCard, {
+			onClick(event) {
+				if (event.button !== "left") return undefined;
+				const entries = mcpEntries();
+				if (entries.length === 0) return undefined;
+				const width = event.width;
+				if (event.y === panelHeaderRow(theme, width, CARD_TONE.INFO)) {
+					mcpCollapsed = !mcpCollapsed;
+					invalidateSidebar(tui);
+					tui.requestRender();
+					return { handled: true, render: true };
+				}
+				if (mcpCollapsed) {
+					mcpCollapsed = false;
+					invalidateSidebar(tui);
+					tui.requestRender();
+					return { handled: true, render: true };
+				}
+				const bodyStart = panelHeaderRow(theme, width, CARD_TONE.INFO) + (panelExtraRows(theme, width, CARD_TONE.INFO) > 0 ? 2 : 1);
+				const lines = renderMcpCard(entries, { collapsed: false }, theme, width);
+				const rowText = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!);
+				const byIndex = entries[event.y - bodyStart];
+				const target = byIndex && rowText.includes(byIndex.name)
+					? byIndex
+					: entries.find((entry) => rowText.includes(entry.name));
+				if (!target) return undefined;
+				void showMcpDetail(pi, ctx, target, mcpRefresh);
+				return { handled: true };
+			},
+		});
+		const mcpPart = sidebarPart(tui, "mcp", {
+			render: (width: number) => mcpRegion.render(width),
+			invalidate() {},
+			dispose() {},
+		}, {
+			digest: () => JSON.stringify([mcpEntries(), mcpCollapsed]),
+			render: (width) => mcpRegion.render(width),
+			handleMouse: (event) => mcpRegion.handleMouse(event),
+			invalidate() {},
+		});
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
@@ -1994,7 +2199,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); mcpPart.dispose(); mcpRegion.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(

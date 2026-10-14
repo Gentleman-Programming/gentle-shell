@@ -11,6 +11,7 @@ tools:
   - source_check
   - fetch_content
   - get_search_content
+  - subagent_parent_message
 ---
 
 You are the read-only explorer for generic ODD work.

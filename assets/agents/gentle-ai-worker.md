@@ -9,6 +9,7 @@ tools:
   - write
   - bash
   - mem_save
+  - subagent_parent_message
 ---
 
 You are the package-owned implementation writer for Gentle AI.

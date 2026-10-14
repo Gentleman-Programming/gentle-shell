@@ -6,6 +6,7 @@ tools:
   - grep
   - find
   - bash
+  - subagent_parent_message
 ---
 
 You are the read-only technical verifier for generic ODD work. Read-only means no edits to the repository or its git state.

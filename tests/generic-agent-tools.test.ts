@@ -5,9 +5,9 @@ import test from "node:test";
 
 const agents = join(process.cwd(), "assets", "agents");
 const roles: Record<string, string[]> = {
-	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"],
-	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
-	"gentle-ai-verify.md": ["read", "grep", "find", "bash"],
+	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "subagent_parent_message"],
+	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save", "subagent_parent_message"],
+	"gentle-ai-verify.md": ["read", "grep", "find", "bash", "subagent_parent_message"],
 };
 
 function tools(file: string): string[] {
@@ -34,11 +34,11 @@ const REQUIRED_CAPABILITY_POLICY = [
 	"Return a structured capability-gap result that names the missing operation or tool, lists the required steps you could not complete, records independent work actually completed, and suggests a route that has the needed capability. For background tasks, send that handoff to the parent immediately with `subagent_parent_message`. Do not report the task as complete while a required step remains impossible.",
 ].join("\n");
 
-test("generic ODD agents declare exact role tool allowlists without child delegation", () => {
+test("generic ODD agents declare exact role tool allowlists without child-task access", () => {
 	for (const [file, expected] of Object.entries(roles)) {
 		assert.ok(existsSync(join(agents, file)), `${file} must exist`);
 		assert.deepEqual(tools(file), expected);
-		assert.ok(tools(file).every(tool => !tool.startsWith("subagent_")));
+		assert.deepEqual(tools(file).filter(tool => tool.startsWith("subagent_")), ["subagent_parent_message"]);
 	}
 });
 

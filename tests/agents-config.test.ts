@@ -220,6 +220,41 @@ test("resolveAgentProfile prefers the profile, then the definition, then the def
 	assert.deepEqual(resolveAgentProfile(bare, parseAgentsConfig(undefined, undefined)).source, { model: "unresolved", thinking: "unresolved" });
 });
 
+test("resolveAgentProfile resolves short role alias keys (issue #2196)", () => {
+	const workerAgent = parseAgentDefinition("---\nname: gentle-ai-worker\n---\nbody", "/x/gentle-ai-worker.md", "global");
+	assert.ok(!("error" in workerAgent));
+	// 1. Profile keyed with short name "worker" routes "gentle-ai-worker"
+	const configShort = parseAgentsConfig({ model_profiles: { worker: { model: "anthropic/claude-3-7-sonnet", effort: "high" } } }, undefined);
+	assert.deepEqual(resolveAgentProfile(workerAgent, configShort), {
+		model: { provider: "anthropic", id: "claude-3-7-sonnet" },
+		thinking: "high",
+		source: { model: "profile", thinking: "profile" },
+	});
+
+	// 2. Profile keyed with prefixed name "gentle-ai-worker" routes an agent named "worker"
+	const shortNamedAgent = parseAgentDefinition("---\nname: worker\n---\nbody", "/x/worker.md", "global");
+	assert.ok(!("error" in shortNamedAgent));
+	const configPrefixed = parseAgentsConfig({ model_profiles: { "gentle-ai-worker": { model: "anthropic/claude-3-7-sonnet", effort: "high" } } }, undefined);
+	assert.deepEqual(resolveAgentProfile(shortNamedAgent, configPrefixed), {
+		model: { provider: "anthropic", id: "claude-3-7-sonnet" },
+		thinking: "high",
+		source: { model: "profile", thinking: "profile" },
+	});
+
+	// 3. Exact key takes precedence over alias if both exist, but falls back to alias for unset fields
+	const configBoth = parseAgentsConfig({
+		model_profiles: {
+			"gentle-ai-worker": { effort: "max" },
+			worker: { model: "anthropic/claude-3-5-haiku", effort: "low" },
+		},
+	}, undefined);
+	assert.deepEqual(resolveAgentProfile(workerAgent, configBoth), {
+		model: { provider: "anthropic", id: "claude-3-5-haiku" },
+		thinking: "max",
+		source: { model: "profile", thinking: "profile" },
+	});
+});
+
 test("a pinned profile replaces subagent routing and leaves every other default alone", () => {
 	const global = parseAgentsConfig(
 		{

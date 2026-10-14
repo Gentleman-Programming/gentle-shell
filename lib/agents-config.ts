@@ -316,15 +316,33 @@ function pick<T>(candidates: Array<[T | undefined, ProfileSource]>): [T | undefi
 	return candidates.find(([value]) => value !== undefined) ?? [undefined, PROFILE_SOURCE.UNRESOLVED];
 }
 
+const GENTLE_AI_ROLE_PREFIX = "gentle-ai-";
+
+/**
+ * Role keys to inspect in model profiles: the exact agent name first, followed by
+ * its prefix-stripped or prefix-added alias (e.g. `gentle-ai-worker` <-> `worker`).
+ */
+export function modelProfileLookupKeys(name: string): string[] {
+	if (name.startsWith(GENTLE_AI_ROLE_PREFIX)) {
+		return [name, name.slice(GENTLE_AI_ROLE_PREFIX.length)];
+	}
+	return [name, `${GENTLE_AI_ROLE_PREFIX}${name}`];
+}
+
 export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig): ResolvedProfile {
-	const profile = config.modelProfiles[agent.name];
+	const keys = modelProfileLookupKeys(agent.name);
+	const profiles = keys
+		.map((key) => config.modelProfiles[key])
+		.filter((p): p is ModelProfile => p !== undefined);
+	const profileModel = profiles.find((p) => p.model !== undefined)?.model;
+	const profileThinking = profiles.find((p) => p.thinking !== undefined)?.thinking;
 	const [model, modelSource] = pick<ModelRef>([
-		[profile?.model, PROFILE_SOURCE.PROFILE],
+		[profileModel, PROFILE_SOURCE.PROFILE],
 		[agent.model, PROFILE_SOURCE.DEFINITION],
 		[config.defaultModel, PROFILE_SOURCE.DEFAULT],
 	]);
 	const [thinking, thinkingSource] = pick<ThinkingLevel>([
-		[profile?.thinking, PROFILE_SOURCE.PROFILE],
+		[profileThinking, PROFILE_SOURCE.PROFILE],
 		[agent.thinking, PROFILE_SOURCE.DEFINITION],
 		[config.defaultThinking, PROFILE_SOURCE.DEFAULT],
 	]);

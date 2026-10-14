@@ -175,6 +175,7 @@ import {
 	spawnTelemetryTrigger,
 	type TelemetryTriggerSpawn,
 } from "../lib/telemetry-trigger.ts";
+import { modelProfileLookupKeys } from "../lib/agents-config.ts";
 import {
 	createNativeReviewCli,
 	createNodeExecFileAdapter,
@@ -2216,6 +2217,15 @@ function routingEntryFromModelProfile(value: unknown): AgentRoutingEntry | undef
 	return entry && !isClearRoutingEntry(entry) ? entry : undefined;
 }
 
+function lookupSubagentModelProfile(profiles: Record<string, unknown>, agentName: string): unknown {
+	for (const key of modelProfileLookupKeys(agentName)) {
+		if (Object.hasOwn(profiles, key) && profiles[key] !== undefined) {
+			return profiles[key];
+		}
+	}
+	return undefined;
+}
+
 function mergeMaterializedRouting(
 	profile: AgentRoutingEntry | undefined,
 	frontmatter: AgentRoutingEntry | undefined,
@@ -2265,7 +2275,7 @@ function readMaterializedRoutingEntry(
 		profiles = readSubagentModelProfiles(profilesPath);
 		profilesByPath.set(profilesPath, profiles);
 	}
-	const fromProfile = routingEntryFromModelProfile(profiles[agent.name]);
+	const fromProfile = routingEntryFromModelProfile(lookupSubagentModelProfile(profiles, agent.name));
 	if (!agent.filePath || !existsSync(agent.filePath)) return fromProfile;
 	try {
 		return mergeMaterializedRouting(fromProfile, readFrontmatterRouting(readFileSync(agent.filePath, "utf8")));
@@ -2285,7 +2295,7 @@ async function readMaterializedRoutingEntryAsync(
 		profiles = await readSubagentModelProfilesAsync(profilesPath);
 		profilesByPath.set(profilesPath, profiles);
 	}
-	const fromProfile = routingEntryFromModelProfile(profiles[agent.name]);
+	const fromProfile = routingEntryFromModelProfile(lookupSubagentModelProfile(profiles, agent.name));
 	if (!agent.filePath || !(await pathExists(agent.filePath))) return fromProfile;
 	try {
 		return mergeMaterializedRouting(fromProfile, readFrontmatterRouting(await readFile(agent.filePath, "utf8")));

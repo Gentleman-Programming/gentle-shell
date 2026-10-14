@@ -3117,6 +3117,20 @@ for (const reader of ["readEffectiveModelConfig", "readEffectiveModelConfigAsync
 			thinking: "low",
 		});
 	});
+
+	test(`${reader} resolves short role alias keys in subagents.json (issue #2196)`, async (t) => {
+		const fixture = routingConsumerFixture(t, ["gentle-ai-worker"]);
+		writeMarkdown(join(fixture.root, ".pi", "agents", "gentle-ai-worker.md"), "---\nname: gentle-ai-worker\ndescription: Worker\n---\nbody\n");
+		writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+			model_profiles: { worker: { model: "anthropic/claude-3-7-sonnet", effort: "high" } },
+		})}\n`);
+
+		const effective = await __testing[reader](fixture.root);
+		assert.deepEqual(JSON.parse(JSON.stringify(effective["gentle-ai-worker"])), {
+			model: "anthropic/claude-3-7-sonnet",
+			thinking: "high",
+		});
+	});
 }
 
 test("effective routing prefers models.json over the materialized stores", (t) => {

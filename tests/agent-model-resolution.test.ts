@@ -52,6 +52,20 @@ test("the effective worker model comes from the global subagent profile", () => 
 	);
 });
 
+test("the effective worker model resolves when configured under the short alias key (issue #2196)", () => {
+	const f = fixture("short-alias-profile");
+	f.writeAgent("gentle-ai-worker");
+	f.writeSubagents({ model_profiles: { worker: { model: "anthropic/claude-3-7-sonnet" } } });
+	assert.deepEqual(
+		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
+		{ agent: "gentle-ai-worker", model: { provider: "anthropic", id: "claude-3-7-sonnet" }, inherited: false },
+	);
+	assert.deepEqual(
+		resolveEffectiveAgentModel("worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
+		{ agent: "worker", model: { provider: "anthropic", id: "claude-3-7-sonnet" }, inherited: false },
+	);
+});
+
 test("a repository profile pin replaces global routing for the effective worker model", () => {
 	const f = fixture("pinned-profile");
 	f.writeAgent("gentle-ai-worker");

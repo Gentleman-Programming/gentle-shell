@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -433,6 +433,7 @@ async function openInitializedHelper(agentHome: string, options: Readonly<{ diag
 		shutdown: () => request("shutdown"),
 		presence: (operation: "record" | "publish" | "list" | "resolve" | "remove" | "listen" | "stop-listener", values: Record<string, unknown> = {}) => request(operation, values),
 		invalidStartSchema: async () => { child.stdin.write(`${JSON.stringify({ requestId: `invalid-${frames.length + 1}`, operation: "start", extra: true })}\n`); await exitWithin(); },
+		terminate: async () => { child.kill(); assert.equal(await waitForChildClose(lifecycle, deadlines.killMs), true); return lifecycle.exitCode; },
 		closeInput: closeWithStreamCheck,
 	};
 }
@@ -1067,6 +1068,12 @@ test("Windows-native presence publishes, resolves, lists, and removes only its o
 	const agentHome = join(root, "profile", "agent");
 	await mkdir(join(agentHome, "gentle-agents"), { recursive: true });
 	const held = await openInitializedHelper(agentHome, { diagnostics });
+	const pipes: ReturnType<typeof createServer>[] = [];
+	const listen = async (endpoint: string) => {
+		const pipe = createServer((socket) => socket.destroy());
+		pipes.push(pipe);
+		await new Promise<void>((resolve, reject) => { pipe.once("error", reject); pipe.listen(endpoint, resolve); });
+	};
 	try {
 		const recorded = await held.presence("record", { sessionId: "session-a", createdAt: 1 });
 		assert.equal(recorded.ok, true);
@@ -1074,12 +1081,14 @@ test("Windows-native presence publishes, resolves, lists, and removes only its o
 		assert.deepEqual(Object.keys(record).sort(), ["createdAt", "endpoint", "sessionId", "version"]);
 		assert.equal(record.sessionId, "session-a");
 		assert.match(record.endpoint as string, /^\\\\\.\\pipe\\gentle-pi-[0-9a-f]{32}$/);
+		await listen(record.endpoint as string);
 		assert.equal((await held.presence("publish", { record })).ok, true);
 		assert.equal((await held.presence("publish", { record })).error, "busy", "no-replace collision preserves the published record");
 		assert.deepEqual(requirePublicPresenceResult(await held.presence("list")), { records: [record] }, "an omitted excludeSessionId lists one record");
 		const secondReply = await held.presence("record", { sessionId: "session-b", createdAt: 2 });
 		assert.equal(secondReply.ok, true);
 		const secondRecord = secondReply.result as Record<string, unknown>;
+		await listen(secondRecord.endpoint as string);
 		assert.equal((await held.presence("publish", { record: secondRecord })).ok, true);
 		assert.deepEqual(requirePublicPresenceResult(await held.presence("list")), { records: [record, secondRecord] }, "an omitted excludeSessionId lists multiple records");
 		assert.deepEqual(requirePublicPresenceResult(await held.presence("list", { excludeSessionId: "session-b" })), { records: [record] }, "a valid excludeSessionId is honored");
@@ -1092,7 +1101,55 @@ test("Windows-native presence publishes, resolves, lists, and removes only its o
 		assert.deepEqual(requirePublicPresenceResult(await held.presence("list")), { records: [record] }, "the replacement retains the public record and accepted ACL");
 		assert.equal((await held.presence("remove", { record })).error, "unsafe", "a replacement with identical public bytes and ACL is not owned");
 		await stat(publishedPath);
-	} finally { await held.closeInput(); }
+	} finally {
+		await held.closeInput();
+		await Promise.all(pipes.map((pipe) => new Promise<void>((resolve) => pipe.close(() => resolve()))));
+	}
+});
+
+test("Windows-native discovery reclaims an orphan without deleting a resumed activation", { skip: process.platform !== "win32", timeout: 40_000 }, async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), "gentle-pi-stale-presence-"));
+	const agentHome = join(root, "profile", "agent");
+	await mkdir(join(agentHome, "gentle-agents"), { recursive: true });
+	const previous = await openInitializedHelper(agentHome, { diagnostics: t });
+	try {
+		const old = requirePublicPresenceResult(await previous.presence("listen", { sessionId: "resumed", createdAt: 1 })) as Record<string, unknown>;
+		// Forced termination is a test fixture for an orphan, not a claim about
+		// the original event in issue #1846.
+		assert.notEqual(await previous.terminate(), 0);
+		assert.equal(await probeWindowsNativeEndpoint(old.endpoint as string), "ENOENT");
+		await withInitializedHelpers([agentHome, agentHome], async ([resumed, observer]) => {
+			assert.equal((requirePublicPresenceResult(await observer.enumerate()) as { entries: number }).entries, 1);
+			const current = requirePublicPresenceResult(await resumed.presence("listen", { sessionId: "resumed", createdAt: 2 })) as Record<string, unknown>;
+			assert.notEqual(current.endpoint, old.endpoint);
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [current] });
+			assert.equal((requirePublicPresenceResult(await observer.enumerate()) as { entries: number }).entries, 1, "the old identity is reclaimed, not merely hidden by the newer record");
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("resolve", { sessionId: "resumed" })), current);
+			assert.equal((await resumed.presence("stop-listener", { record: current })).ok, true);
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [] }, "the old activation must not reappear after clean shutdown");
+			assert.equal((await observer.presence("resolve", { sessionId: "resumed" })).error, "not_found");
+			assert.equal((requirePublicPresenceResult(await observer.enumerate()) as { entries: number }).entries, 0);
+		}, { diagnostics: t });
+	} finally { await previous.closeInput(); }
+});
+
+test("Windows-native discovery preserves a busy endpoint without connecting or mutating its record", { skip: process.platform !== "win32", timeout: 30_000 }, async (t) => {
+	const root = await mkdtemp(join(os.tmpdir(), "gentle-pi-busy-presence-"));
+	const agentHome = join(root, "profile", "agent");
+	await mkdir(join(agentHome, "gentle-agents"), { recursive: true });
+	await withInitializedHelpers([agentHome, agentHome], async ([owner, observer]) => {
+		const record = requirePublicPresenceResult(await owner.presence("listen", { sessionId: "busy", createdAt: 1 })) as Record<string, unknown>;
+		const sockets: Awaited<ReturnType<typeof openWindowsNativePipe>>[] = [];
+		try {
+			for (let index = 0; index < 4; index++) sockets.push(await openWindowsNativePipe(record.endpoint as string));
+			const before = requirePublicPresenceResult(await observer.enumerate());
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [record] });
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("resolve", { sessionId: "busy" })), record);
+			assert.deepEqual(requirePublicPresenceResult(await observer.enumerate()), before);
+			assert.equal((await owner.presence("stop-listener", { record })).ok, true);
+			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [] });
+		} finally { for (const socket of sockets) socket.destroy(); }
+	}, { diagnostics: t });
 });
 
 test("Windows-native owned publication removes its unchanged rooted record", { skip: process.platform !== "win32", timeout: 30_000 }, async (t) => {

@@ -1,5 +1,6 @@
 import { chmodSync, closeSync, linkSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { detectJsonFormatting } from "./gentle-shell-launcher.ts";
 
 // `gentle-shell home import-pi`: a one-time, opt-in copy of the user's pi
 // sign-ins and MCP servers into a separate Gentle Shell home, as an
@@ -59,11 +60,17 @@ function writeTemp(path: string, data: string | Buffer, mode: number): string {
 	const temp = tempPathFor(path);
 	const fd = openSync(temp, "wx", mode);
 	try {
-		writeFileSync(fd, data);
-	} finally {
-		closeSync(fd);
+		try {
+			writeFileSync(fd, data);
+		} finally {
+			closeSync(fd);
+		}
+		chmodSync(temp, mode); // the umask must not change the mode
+	} catch (error) {
+		// A partial copy may hold credentials: never leave it behind.
+		removeQuietly(temp);
+		throw error;
 	}
-	chmodSync(temp, mode); // the umask must not change the mode
 	return temp;
 }
 
@@ -134,6 +141,15 @@ function importFile(name: string, mode: number | undefined, input: { source: str
 }
 
 function importSettings(input: { source: string; target: string; dryRun: boolean; fs: ImportPiFs }): ImportPiItem[] {
+	try {
+		return planAndWriteSettings(input);
+	} catch (error) {
+		// An unreadable settings.json stays one failed item, never an aborted report.
+		return [{ item: "settings.json", status: "failed", detail: reason(error) }];
+	}
+}
+
+function planAndWriteSettings(input: { source: string; target: string; dryRun: boolean; fs: ImportPiFs }): ImportPiItem[] {
 	const { fs } = input;
 	const from = join(input.source, "settings.json");
 	const to = join(input.target, "settings.json");
@@ -144,7 +160,8 @@ function importSettings(input: { source: string; target: string; dryRun: boolean
 	if (source === undefined) return [{ item: "settings.json", status: "skipped", detail: `${from} is not a JSON object` }];
 	const targetKind = fs.kind(to);
 	if (targetKind !== "missing" && targetKind !== "file") return [{ item: "settings.json", status: "skipped", detail: `${to} is not a regular file` }];
-	const target = targetKind === "missing" ? {} : parseObject(fs.readText(to));
+	const targetText = targetKind === "missing" ? undefined : fs.readText(to);
+	const target = targetText === undefined ? {} : parseObject(targetText);
 	if (target === undefined) return [{ item: "settings.json", status: "skipped", detail: `${to} is not a JSON object` }];
 
 	const items: ImportPiItem[] = [];
@@ -161,7 +178,10 @@ function importSettings(input: { source: string; target: string; dryRun: boolean
 	}
 	if (input.dryRun || Object.keys(added).length === 0) return items;
 	try {
-		fs.writeAtomic(to, `${JSON.stringify({ ...target, ...added }, null, 2)}\n`);
+		// Keep the target's own indentation and trailing-newline style.
+		const style = targetText === undefined ? { indent: undefined, trailingNewline: true } : detectJsonFormatting(targetText);
+		const body = JSON.stringify({ ...target, ...added }, null, style.indent ?? 2);
+		fs.writeAtomic(to, style.trailingNewline ? `${body}\n` : body);
 		return items;
 	} catch (error) {
 		const detail = reason(error);

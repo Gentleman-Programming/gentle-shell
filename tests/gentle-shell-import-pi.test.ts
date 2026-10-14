@@ -138,6 +138,34 @@ test("settings: copies only the default provider/model/thinking keys absent in t
 	}, null, 2)}\n`);
 });
 
+test("settings: the target keeps its own indentation and trailing-newline style", (t) => {
+	const f = fixture(t);
+	seedSource(f.source);
+	writeFileSync(join(f.target, "settings.json"), `{\n\t"tuiMode": "fullscreen",\n\t"zeta": 1\n}`);
+	importPi({ source: f.source, target: f.target, dryRun: false });
+	assert.equal(readFileSync(join(f.target, "settings.json"), "utf8"), JSON.stringify({
+		tuiMode: "fullscreen", zeta: 1, defaultProvider: "anthropic", defaultModel: "claude-opus-5-5", defaultThinkingLevel: "high",
+	}, null, "\t"));
+});
+
+test("settings: an unreadable settings.json is reported per item while the other items still run", (t) => {
+	if (process.platform === "win32" || process.getuid?.() === 0) return t.skip("needs POSIX permissions as a non-root user");
+	const f = fixture(t);
+	seedSource(f.source);
+	const settings = join(f.target, "settings.json");
+	writeFileSync(settings, "{}\n");
+	chmodSync(settings, 0o000);
+	try {
+		const result = importPi({ source: f.source, target: f.target, dryRun: false });
+		assert.equal(statusOf(result, "auth.json"), "copied");
+		assert.equal(statusOf(result, "settings.json"), "failed");
+		assert.equal(result.failed, true);
+		assert.match(formatImportPiReport(result, { source: f.source, target: f.target, dryRun: false }).join("\n"), /settings\.json: failed/);
+	} finally {
+		chmodSync(settings, 0o600);
+	}
+});
+
 test("settings: a missing target settings.json gets only the allowlisted keys", (t) => {
 	const f = fixture(t);
 	seedSource(f.source);

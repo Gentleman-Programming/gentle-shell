@@ -1153,7 +1153,7 @@ export function planSpawn(input: PlanSpawnInput): SpawnPlan {
 // formatting as practical instead of imposing its own. `indent` is
 // `undefined` for compact (no-whitespace) JSON, matching what
 // `JSON.stringify(value)` (no third argument) produces.
-function detectJsonFormatting(text: string): { indent: string | undefined; trailingNewline: boolean } {
+export function detectJsonFormatting(text: string): { indent: string | undefined; trailingNewline: boolean } {
 	const match = text.match(/\{\r?\n([ \t]+)/);
 	return { indent: match ? match[1] : undefined, trailingNewline: text.endsWith("\n") };
 }

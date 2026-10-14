@@ -1029,6 +1029,13 @@ again, or add `$PNPM_HOME/bin` to PATH manually. For `acquire-go`, a detail
 starting with `Conflicting Go destination: ` selects
 `guidance.goDestinationConflict`: a folder from an earlier, interrupted run is in
 the way and is never replaced; remove that folder and run the installer again.
+For `install-version` and `install-global`, a detail with `spawn UNKNOWN` selects
+`guidance.codeIntegrityBlocked`: libuv reports a Windows code integrity refusal
+(Smart App Control, CodeIntegrity event 3077) of the `gentle-ai.exe` that
+gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
+exception, so the guidance offers WSL or turning Smart App Control off (on
+Windows 11 it cannot be turned back on without reinstalling Windows) instead of
+network and registry advice.
 `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their

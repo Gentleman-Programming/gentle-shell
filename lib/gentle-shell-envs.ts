@@ -279,6 +279,13 @@ export function seedOperations(input: {
 	return operations;
 }
 
+// Categories that need a seed when they become own: a category whose own
+// files were kept on disk when it was shared again is reused, never seeded
+// over, so an earlier own copy is not lost.
+export function categoriesToSeed(categories: readonly ConfigCategory[], targetDir: string, exists: (path: string) => boolean): ConfigCategory[] {
+	return categories.filter((category) => !CONFIG_CATEGORY_FILES[category].some((file) => exists(join(targetDir, file))));
+}
+
 export const CONFIG_CATEGORY_LABELS: Readonly<Record<ConfigCategory, string>> = Object.freeze({
 	models: "models & profiles",
 	persona: "persona",

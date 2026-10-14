@@ -3715,3 +3715,35 @@ test("envs config refuses a symlinked env or gentle-ai folder and leaves the tar
 	assert.match(aliased.stderr, /refusing/);
 	assert.deepEqual(readdirSync(outside), []);
 });
+
+test("re-owning a category reuses its kept own copy instead of seeding over it", (t) => {
+	const f = fixture(t);
+	const base = join(f.root, "base-config");
+	const env = { ...f.env, GENTLE_PI_CONFIG_HOME: base };
+	mkdirSync(base, { recursive: true });
+	writeFileSync(join(base, "persona.json"), '{"persona":"base"}');
+	assert.equal(run(env, ["envs", "new", "a", "--own", "persona"]).status, 0);
+	const own = join(f.home, ".gentle-shell", "envs", "a", "gentle-ai", "persona.json");
+	writeFileSync(own, '{"persona":"edited"}');
+	assert.equal(run(env, ["envs", "config", "a", "--share", "persona"]).status, 0);
+	assert.equal(run(env, ["envs", "config", "a", "--own", "persona", "--empty"]).status, 0);
+	assert.equal(readFileSync(own, "utf8"), '{"persona":"edited"}', "the kept own copy is reused");
+});
+
+test("envs new rejects scope flags without --own and leaves no half-created env", (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	for (const flags of [["--empty"], ["--share", "persona"], ["--from", "x"]]) {
+		const result = run(f.env, ["envs", "new", "lonely", ...flags]);
+		assert.equal(result.status, 2, flags.join(" "));
+		assert.match(result.stderr, /--own/);
+		assert.equal(existsSync(join(envs, "lonely")), false, flags.join(" "));
+	}
+	// A seed that fails (the source file is a directory, so the copy throws) rolls the new env back.
+	assert.equal(run(f.env, ["envs", "new", "src"]).status, 0);
+	mkdirSync(join(envs, "src", "gentle-ai", "persona.json"), { recursive: true });
+	writeFileSync(join(envs, "src", ".gentle-shell-env.json"), '{"schema":1,"own":["persona"]}');
+	const failed = run(f.env, ["envs", "new", "rolled", "--own", "persona", "--from", "src"]);
+	assert.notEqual(failed.status, 0);
+	assert.equal(existsSync(join(envs, "rolled")), false, "a failed seed leaves no env behind");
+});

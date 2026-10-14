@@ -261,3 +261,10 @@ test("summarizeEnv carries the env's own config categories to the gate", () => {
 	assert.deepEqual(summarizeEnv({ name: "w", dir: "/e/w", isDefault: false, sessionCount: 0, own: ["persona"] }).own, ["persona"]);
 	assert.deepEqual(summarizeEnv({ name: "w", dir: "/e/w", isDefault: false, sessionCount: 0 }).own, []);
 });
+
+test("categoriesToSeed skips categories that already have own files kept on disk", async () => {
+	const { categoriesToSeed } = await import("../lib/gentle-shell-envs.ts");
+	const kept = (path: string) => path === join("/t", "persona.json");
+	assert.deepEqual(categoriesToSeed(["persona", "appearance"], "/t", kept), ["appearance"]);
+	assert.deepEqual(categoriesToSeed(["persona"], "/t", () => false), ["persona"]);
+});

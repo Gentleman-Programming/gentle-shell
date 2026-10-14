@@ -108,6 +108,7 @@ import {
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 import {
+	categoriesToSeed,
 	describeEnvScope,
 	ENV_SCOPE_FILE,
 	parseEnvScope,
@@ -755,8 +756,9 @@ function applyEnvScope(root, name, flags) {
 		sourceDirFor = (category) => (fromOwn.includes(category) ? join(fromDir, "gentle-ai") : shared);
 	}
 	const targetDir = join(dir, "gentle-ai");
-	if (plan.seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
-	for (const op of seedOperations({ categories: plan.seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
+	const seed = categoriesToSeed(plan.seed, targetDir, existsSync);
+	if (seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+	for (const op of seedOperations({ categories: seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
 		if (op.kind === "copy") copyFileSync(op.from, op.to);
 		else rmSync(op.path, { force: true });
 	}
@@ -935,11 +937,20 @@ async function handleEnvsCommand(commandArgs) {
 		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
 		const flags = parseScopeFlags(flagArgs);
 		if (flags.error !== undefined) fail(`gentle-shell: ${flags.error}`, 2);
+		// A new env starts sharing everything: only --own makes the others meaningful.
+		if (flags.own.length === 0 && (flags.share.length > 0 || flags.from !== undefined || flags.empty)) {
+			fail("gentle-shell: --share, --from and --empty need --own on envs new", 2);
+		}
 		if (flags.from !== undefined && !existsSync(envDir(root, flags.from))) fail(`gentle-shell: unknown env "${flags.from}"`, 2);
+		let created;
 		try {
-			process.stdout.write(`Created env ${name} at ${await createEnv(root, name)}\n`);
-			if (flags.own.length > 0) process.stdout.write(`Config: ${describeEnvScope(applyEnvScope(root, name, flags).next)}\n`);
+			created = await createEnv(root, name);
+			const scope = flags.own.length > 0 ? applyEnvScope(root, name, flags) : undefined;
+			process.stdout.write(`Created env ${name} at ${created}\n`);
+			if (scope) process.stdout.write(`Config: ${describeEnvScope(scope.next)}\n`);
 		} catch (error) {
+			// All or nothing: an env whose scope could not be applied is removed again.
+			if (created !== undefined) rmSync(created, { recursive: true, force: true });
 			fail(`gentle-shell: ${error.message}`, error.usage ? 2 : 1);
 		}
 		return undefined;
@@ -1055,10 +1066,15 @@ async function runEnvsManager(root) {
 	const apply = async (state, effect) => {
 		try {
 			if (effect.kind === "create") {
-				await createEnv(root, effect.name);
-				const scopeNote = effect.own.length > 0
-					? ` Config: ${describeEnvScope(applyEnvScope(root, effect.name, { own: effect.own, share: [], from: effect.from, empty: effect.empty === true }).next)}.`
-					: "";
+				const created = await createEnv(root, effect.name);
+				let scopeNote = "";
+				try {
+					if (effect.own.length > 0) scopeNote = ` Config: ${describeEnvScope(applyEnvScope(root, effect.name, { own: effect.own, share: [], from: effect.from, empty: effect.empty === true }).next)}.`;
+				} catch (error) {
+					// All or nothing, like `envs new`: never leave a half-configured env.
+					rmSync(created, { recursive: true, force: true });
+					throw error;
+				}
 				return reload(`Created ${effect.name}.${scopeNote} Press enter to launch it (first launch installs the companion packages).`, effect.name);
 			}
 			if (effect.kind === "scope") {

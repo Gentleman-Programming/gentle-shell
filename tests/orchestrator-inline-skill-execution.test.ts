@@ -208,7 +208,14 @@ async function proveInlineSkillContractGap(): Promise<void> {
 					});
 					stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message });
 				} else {
-					const text = `Probe result under the fixture contract.\n${FIXTURE_MARKER}\nSkill applied (inline): ${FIXTURE_SKILL_NAME}`;
+					// Emit the marker only when the read tool result actually delivered it,
+					// so the final reply depends on the executed read, not on the script.
+					const readResult = context.messages.find(
+						(entry): entry is ToolResultMessage =>
+							entry.role === "toolResult" && entry.toolCallId === "call-348-skill-read",
+					);
+					const deliveredMarker = readResult && JSON.stringify(readResult.content).includes(FIXTURE_MARKER) ? FIXTURE_MARKER : "contract marker unavailable";
+					const text = `Probe result under the fixture contract.\n${deliveredMarker}\nSkill applied (inline): ${FIXTURE_SKILL_NAME}`;
 					message.content.push({ type: "text", text });
 					stream.push({ type: "text_start", contentIndex: 0, partial: message });
 					stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
@@ -381,10 +388,21 @@ async function proveInlineSkillContractGap(): Promise<void> {
 			.filter((block): block is { type: "text"; text: string } => block.type === "text")
 			.map((block) => block.text)
 			.join("\n");
-		assert.ok(finalText.includes(FIXTURE_MARKER), "final reply must carry the skill's contract marker");
+		const secondRequestRead = providerRequests[1].messages.find(
+			(entry): entry is ToolResultMessage => entry.role === "toolResult" && entry.toolCallId === skillRead.id,
+		);
 		assert.ok(
-			finalText.includes(`Skill applied (inline): ${FIXTURE_SKILL_NAME}`),
-			"final reply must close with the inline attribution line",
+			secondRequestRead && JSON.stringify(secondRequestRead.content).includes(FIXTURE_MARKER),
+			"the final provider call must receive the read result carrying the contract marker",
+		);
+		assert.ok(finalText.includes(FIXTURE_MARKER), "final reply must carry the skill's contract marker");
+		const attribution = `Skill applied (inline): ${FIXTURE_SKILL_NAME}`;
+		const finalLines = finalText.trimEnd().split(/\r?\n/);
+		assert.equal(finalLines.at(-1), attribution, "final reply must close with the inline attribution line");
+		assert.equal(
+			finalLines.filter((line) => line === attribution).length,
+			1,
+			"the inline attribution line must appear exactly once",
 		);
 
 		console.log(

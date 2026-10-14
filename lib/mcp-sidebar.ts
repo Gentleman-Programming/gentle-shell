@@ -1,4 +1,5 @@
 import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
+import { stripAnsi } from "./terminal-theme.ts";
 
 export type McpSidebarStatus = "connected" | "disabled" | "connecting";
 
@@ -32,6 +33,20 @@ export function buildMcpSidebarEntries(
 				: "connecting";
 		return { ...server, toolCount, status };
 	});
+}
+
+// Click matching reads rendered rows, which carry the card frame
+// (`│`/`▎`), the float style's transparent margins (spaces), and possibly a
+// `▸` selection marker. Normalize all of that away so matching works in
+// every style; matching itself stays exact (`• name —`, `label —`) so
+// "Disable" never shadows "Disable in this project".
+export function normalizeMcpRow(row: string): string {
+	let text = stripAnsi(row).trim();
+	for (;;) {
+		const next = text.replace(/^[│▎] /, "").replace(/^▸ /, "").replace(/ [│▎]$/, "");
+		if (next === text) return text;
+		text = next.trim();
+	}
 }
 
 export function mcpStatusLabel(status: McpSidebarStatus): string {

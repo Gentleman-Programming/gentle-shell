@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildExtensionDetailActions, buildMcpDetailActions, buildMcpSidebarEntries, mergeMcpServers, parseMcpServers, patchMcpServersFile, renderMcpCard } from "../lib/mcp-sidebar.ts";
+import { buildExtensionDetailActions, buildMcpDetailActions, buildMcpSidebarEntries, mergeMcpServers, normalizeMcpRow, parseMcpServers, patchMcpServersFile, renderMcpCard } from "../lib/mcp-sidebar.ts";
 
 // Pure MCP sidebar model: configured servers joined with live tool names.
 // Rendering is pure so it can be verified without a TUI.
@@ -148,6 +148,13 @@ test("keepEnabled preserves an explicit true override", () => {
 test("malformed config parses to empty", () => {
 	assert.deepEqual(parseMcpServers("{oops"), {});
 	assert.deepEqual(parseMcpServers(undefined), {});
+});
+
+test("row normalization strips frames, margins and markers", () => {
+	assert.equal(normalizeMcpRow("  │ • stitch — Disabled · 0 tools │  "), "• stitch — Disabled · 0 tools");
+	assert.equal(normalizeMcpRow("│ ▸ ← Back │"), "← Back");
+	assert.equal(normalizeMcpRow("  ▎ code — x  "), "code — x");
+	assert.equal(normalizeMcpRow("plain"), "plain");
 });
 
 test("enabled global server offers disable plus project disable when trusted", () => {

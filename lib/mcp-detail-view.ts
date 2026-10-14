@@ -1,7 +1,6 @@
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
-import { stripAnsi } from "./terminal-theme.ts";
-import type { McpDetailAction, McpDetailActionId } from "./mcp-sidebar.ts";
+import { normalizeMcpRow, type McpDetailAction, type McpDetailActionId } from "./mcp-sidebar.ts";
 
 export type McpDetailResult = { type: "run"; action: McpDetailActionId } | { type: "close" };
 
@@ -77,7 +76,7 @@ export class McpDetailView {
 		// Rows render as `<label> — <detail>` inside the card frame (or a `▸ `
 		// marker without a background); match the full label so "Disable"
 		// never shadows "Disable in this project".
-		const text = stripAnsi(row).replace(/^[│▎] /, "").replace(/^▸ /, "").replace(/ [│▎]$/, "").trimEnd();
+		const text = normalizeMcpRow(row);
 		const index = this.selectables().findIndex((selectable) => {
 			const label = this.selectableLabel(selectable);
 			return label !== "" && (text === label || text.startsWith(`${label} —`));

@@ -2133,8 +2133,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				}
 				const bodyStart = panelHeaderRow(theme, width, CARD_TONE.INFO) + (panelExtraRows(theme, width, CARD_TONE.INFO) > 0 ? 2 : 1);
 				const lines = renderMcpCard(entries, { collapsed: false }, theme, width);
-				const frame = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!).replace(/^[│▎] /, "").replace(/^▸ /, "");
-				const rowOf = (name: string): boolean => frame === name || frame.startsWith(`• ${name} —`);
+				// Substring with both delimiters: immune to frames and float
+				// margins, while `• name —` can never shadow a longer name.
+				const rowText = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!);
+				const rowOf = (name: string): boolean => rowText.includes(`• ${name} —`);
 				const byIndex = entries[event.y - bodyStart];
 				const target = byIndex && rowOf(byIndex.name)
 					? byIndex

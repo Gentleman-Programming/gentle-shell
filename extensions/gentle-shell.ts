@@ -1418,9 +1418,9 @@ async function showMcpDetail(
 	if (!ctx.hasUI) return;
 	const trusted = ctx.isProjectTrusted();
 	const actions = target.scope === "extension"
-		? buildExtensionDetailActions()
+		? buildExtensionDetailActions(target.toolCount)
 		: buildMcpDetailActions(
-			{ name: target.name, enabled: target.enabled, scope: target.scope, hasOverride: target.hasOverride },
+			{ name: target.name, enabled: target.enabled, scope: target.scope, hasOverride: target.hasOverride, toolCount: target.toolCount },
 			{ projectTrusted: trusted },
 		);
 	const result = await ctx.ui.custom<McpDetailResult>(
@@ -1431,6 +1431,7 @@ async function showMcpDetail(
 				toolCount: target.toolCount,
 				scopeLabel: target.scope,
 				source: target.source,
+				enabled: target.enabled,
 				tools: target.tools,
 			},
 			actions,

@@ -160,33 +160,48 @@ test("row normalization strips frames, margins and markers", () => {
 test("enabled global server offers disable plus project disable when trusted", () => {
 	assert.deepEqual(
 		buildMcpDetailActions(
-			{ name: "stitch", enabled: true, scope: "global", hasOverride: false },
+			{ name: "stitch", enabled: true, scope: "global", hasOverride: false, toolCount: 2 },
 			{ projectTrusted: true },
 		).map((action) => action.id),
-		["disable", "disable-project"],
+		["tools", "disable", "disable-project"],
 	);
 });
 
 test("enabled global server offers only disable when untrusted", () => {
 	assert.deepEqual(
 		buildMcpDetailActions(
-			{ name: "stitch", enabled: true, scope: "global", hasOverride: false },
+			{ name: "stitch", enabled: true, scope: "global", hasOverride: false, toolCount: 2 },
 			{ projectTrusted: false },
 		).map((action) => action.id),
-		["disable"],
+		["tools", "disable"],
 	);
 });
 
 test("override-disabled server offers enable in project", () => {
 	assert.deepEqual(
 		buildMcpDetailActions(
-			{ name: "stitch", enabled: false, scope: "global", hasOverride: true },
+			{ name: "stitch", enabled: false, scope: "global", hasOverride: true, toolCount: 0 },
 			{ projectTrusted: true },
 		).map((action) => action.id),
-		["enable-project"],
+		["tools", "enable-project"],
 	);
 });
 
-test("extension servers carry no file actions", () => {
-	assert.deepEqual(buildExtensionDetailActions(), []);
+test("extension servers only list tools", () => {
+	assert.deepEqual(buildExtensionDetailActions(3), [
+		{ id: "tools", label: "Tools", hint: "3 tools" },
+	]);
+});
+
+test("tools action hint counts tools, or asks to enable", () => {
+	const enabled = buildMcpDetailActions(
+		{ name: "s", enabled: true, scope: "global", hasOverride: false, toolCount: 1 },
+		{ projectTrusted: false },
+	)[0];
+	const disabled = buildMcpDetailActions(
+		{ name: "s", enabled: false, scope: "global", hasOverride: false, toolCount: 0 },
+		{ projectTrusted: false },
+	)[0];
+	assert.equal(enabled?.hint, "1 tool");
+	assert.equal(disabled?.hint, "enable to view");
 });

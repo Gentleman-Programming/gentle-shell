@@ -180,11 +180,13 @@ export function renderMcpCard(
 	);
 }
 
-// Detail overlay actions: same semantics as /mcp (Disable persists to the
-// defining mcp.json, project variants write a project override). Extension
-// servers have no file to patch, so they only open the manager.
+// Detail overlay actions: Tools opens the in-panel tools screen; Disable
+// persists to the defining mcp.json and project variants write a project
+// override (same file semantics as /mcp). Live actions (reconnect, sign in)
+// have no public API, so the overlay names /mcp for those instead of faking
+// them. Extension servers have no file to patch: Tools only.
 
-export type McpDetailActionId = "disable" | "disable-project" | "enable" | "enable-project";
+export type McpDetailActionId = "tools" | "disable" | "disable-project" | "enable" | "enable-project";
 
 export interface McpDetailAction {
 	id: McpDetailActionId;
@@ -192,21 +194,23 @@ export interface McpDetailAction {
 	hint: string;
 }
 
-// Detail overlay actions carry /mcp file semantics (Disable persists to the
-// defining mcp.json, project variants write a project override). Live
-// actions (reconnect, sign in) have no public API, so the overlay points at
-// /mcp with a hint instead of emulating it. Extension servers have no file
-// to patch, so they carry no actions.
+function toolLabel(toolCount: number): string {
+	return `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
+}
 
-export function buildExtensionDetailActions(): McpDetailAction[] {
-	return [];
+export function buildExtensionDetailActions(toolCount: number): McpDetailAction[] {
+	return [{ id: "tools", label: "Tools", hint: toolLabel(toolCount) }];
 }
 
 export function buildMcpDetailActions(
-	server: McpConfiguredServer,
+	server: McpConfiguredServer & { toolCount: number },
 	options: { projectTrusted: boolean },
 ): McpDetailAction[] {
-	const actions: McpDetailAction[] = [];
+	const actions: McpDetailAction[] = [{
+		id: "tools",
+		label: "Tools",
+		hint: server.enabled ? toolLabel(server.toolCount) : "enable to view",
+	}];
 	const fileHint = server.scope === "project" ? "saved to the project mcp.json" : "saved to the global mcp.json";
 	if (server.enabled) {
 		actions.push({ id: "disable", label: "Disable", hint: fileHint });

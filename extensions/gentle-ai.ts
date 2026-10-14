@@ -7,7 +7,7 @@ import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProf
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
-import { collectStringPaths, evaluatePathFence, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
+import { collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
 import { registeredRootsForSession, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -2046,6 +2046,21 @@ async function confirmOutsideBoundaryTargets(
 	if (decision.kind === "pass") return undefined;
 	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
 	if (!sessionKey) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
+	const cwd = ctx.cwd;
+	// Snapshot every target, not just ungranted outside paths. A changed target
+	// must not inherit this approval even if another call already granted it.
+	const currentTargets = (): string[] => {
+		const paths = collectStringPaths(input);
+		return resolveOutsidePaths(paths.length > 0 ? paths : ["."], cwd, []);
+	};
+	let targetsBeforeConfirmation: string[];
+	try {
+		targetsBeforeConfirmation = currentTargets();
+	} catch {
+		return { block: true, reason: "Gentle AI safety policy cannot safely resolve the requested path." };
+	}
+	const changedTargetReason = "Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.";
+	let targetChanged = false;
 	const requestId = randomUUID();
 	const emitPermissionRequest = (state: "waiting" | "approved" | "denied"): void => {
 		events.emit("pi-permission-system:permission-request", {
@@ -2063,6 +2078,18 @@ async function confirmOutsideBoundaryTargets(
 	herdrLifecycle.begin();
 	try {
 		approved = (await ctx.ui.confirm("Allow access outside the project root?", decision.targets.join("\n"))) === true;
+		if (approved) {
+			try {
+				const targetsAfterConfirmation = currentTargets();
+				targetChanged = ctx.cwd !== cwd || ctx.sessionManager !== manager || manager.getSessionId?.() !== sessionKey
+					|| targetsAfterConfirmation.length !== targetsBeforeConfirmation.length
+					|| targetsAfterConfirmation.some((target, index) => target !== targetsBeforeConfirmation[index])
+					|| decision.targets.some((target) => !targetsAfterConfirmation.includes(target));
+			} catch {
+				targetChanged = true;
+			}
+			if (targetChanged) approved = false;
+		}
 	} catch (error) {
 		confirmationFailed = true;
 		confirmationError = error;
@@ -2074,7 +2101,10 @@ async function confirmOutsideBoundaryTargets(
 		}
 	}
 	if (confirmationFailed) throw confirmationError;
+	if (targetChanged) return { block: true, reason: changedTargetReason };
 	if (approved) {
+		// Revalidation closes the dialog window, not the later pathname/open
+		// race. This consent hook is not an OS-level filesystem sandbox.
 		grants.grant(sessionKey, decision.targets);
 		return undefined;
 	}

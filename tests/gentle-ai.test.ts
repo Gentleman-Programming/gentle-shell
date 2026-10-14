@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
+import { pathToFileURL } from "node:url";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 import type {
@@ -3980,6 +3981,112 @@ function fenceFixture(t: import("node:test").TestContext) {
 	execFileSync("git", ["-C", dir, "init", "--initial-branch=main", `--template=${empty}`, repo], { env, stdio: ["ignore", "pipe", "pipe"] });
 	return { repo, sibling };
 }
+
+function pathFenceHook() {
+	type Handler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
+	const handlers = new Map<string, Handler>();
+	const states: string[] = [];
+	const pi = {
+		on(name: string, handler: Handler) { handlers.set(name, handler); },
+		events: { emit(channel: string, data: unknown) {
+			if (channel === "pi-permission-system:permission-request") states.push((data as { state: string }).state);
+		} },
+		registerCommand() {}, registerTool() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	return { toolCall: handlers.get("tool_call")!, states };
+}
+
+const changedPathReason = "Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.";
+
+test("path fence checks @ and file URLs against the actual built-in write target", async (t) => {
+	for (const spelling of ["at-prefix", "file-url"]) {
+		await t.test(spelling, async (t) => {
+			const f = fenceFixture(t);
+			const { toolCall, states } = pathFenceHook();
+			const destination = join(f.sibling, "notes.txt");
+			writeFileSync(destination, "before");
+			const path = spelling === "at-prefix" ? `@${destination}` : pathToFileURL(destination).href;
+			const previews: string[] = [];
+			let approve = false;
+			const ctx = {
+				cwd: f.repo, hasUI: true,
+				ui: { confirm: async (_title: string, preview: string) => { previews.push(preview); return approve; } },
+				sessionManager: { getSessionId: () => "normalized-fence", getEntries: () => [] },
+			} as unknown as ExtensionContext;
+			const input = { path, content: "approved write" };
+			for (const toolName of ["read", "write", "edit", "grep", "find", "ls"]) {
+				const blocked = await toolCall({ toolName, input }, { ...ctx, hasUI: false });
+				assert.equal(blocked?.block, true, `${toolName} fails closed headless`);
+				assert.equal(blocked?.reason, `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${destination}. Ask the user for an explicit safer plan.`);
+			}
+			assert.deepEqual(previews, []);
+			assert.deepEqual(states, []);
+			assert.equal(readFileSync(destination, "utf8"), "before");
+			assert.deepEqual(await toolCall({ toolName: "write", input }, ctx), {
+				block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed.",
+			});
+			assert.deepEqual(previews, [destination]);
+			assert.deepEqual(states, ["waiting", "denied"]);
+			assert.equal(readFileSync(destination, "utf8"), "before");
+			assert.equal((await toolCall({ toolName: "write", input }, { ...ctx, hasUI: false }))?.block, true, "denial stores no grant");
+			approve = true;
+			assert.equal(await toolCall({ toolName: "write", input }, ctx), undefined);
+			await createWriteToolDefinition(f.repo).execute("normalized-write", input, undefined, undefined, {
+				...ctx, tools: [], executeTool: async () => { throw new Error("Built-in write must not invoke nested tools"); },
+			});
+			assert.equal(readFileSync(destination, "utf8"), "approved write", "Pi uses the target named in the consent prompt");
+			assert.equal(previews.length, 2);
+			assert.deepEqual(states, ["waiting", "denied", "waiting", "approved"]);
+			assert.equal(await toolCall({ toolName: "read", input: { path: destination } }, { ...ctx, hasUI: false }), undefined, "grant matches the real target");
+		});
+	}
+});
+
+test("path fence blocks a symlink retargeted while confirmation is pending without granting either target", async (t) => {
+	const f = fenceFixture(t);
+	const { toolCall, states } = pathFenceHook();
+	const original = join(f.sibling, "original.txt");
+	const replacement = join(f.sibling, "replacement.txt");
+	const alias = join(f.repo, "alias.txt");
+	writeFileSync(original, "original before");
+	writeFileSync(replacement, "replacement before");
+	try { symlinkSync(original, alias, "file"); } catch (error) {
+		if (["EPERM", "EACCES", "ENOTSUP"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+			t.skip("Platform cannot create file symlinks without additional privileges"); return;
+		}
+		throw error;
+	}
+	const previews: string[] = [];
+	let retarget = true;
+	const ctx = {
+		cwd: f.repo, hasUI: true,
+		ui: { confirm: async (_title: string, preview: string) => {
+			previews.push(preview);
+			if (retarget) { rmSync(alias); symlinkSync(replacement, alias, "file"); }
+			return true;
+		} },
+		sessionManager: { getSessionId: () => "retargeted-fence", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	const input = { path: alias, content: "approved write" };
+	assert.deepEqual(await toolCall({ toolName: "write", input }, ctx), { block: true, reason: changedPathReason });
+	assert.deepEqual(previews, [original]);
+	assert.deepEqual(states, ["waiting", "denied"], "changed target is not reported as approved");
+	for (const path of [original, replacement]) {
+		assert.equal((await toolCall({ toolName: "write", input: { path, content: input.content } }, { ...ctx, hasUI: false }))?.block, true, "changed approval stores no grant");
+	}
+	assert.equal(readFileSync(original, "utf8"), "original before");
+	assert.equal(readFileSync(replacement, "utf8"), "replacement before");
+	retarget = false;
+	assert.equal(await toolCall({ toolName: "write", input }, ctx), undefined, "fresh stable consent proceeds");
+	await createWriteToolDefinition(f.repo).execute("retargeted-write", input, undefined, undefined, {
+		...ctx, tools: [], executeTool: async () => { throw new Error("Built-in write must not invoke nested tools"); },
+	});
+	assert.equal(readFileSync(original, "utf8"), "original before");
+	assert.equal(readFileSync(replacement, "utf8"), "approved write");
+	assert.deepEqual(previews, [original, replacement]);
+	assert.deepEqual(states, ["waiting", "denied", "waiting", "approved"]);
+});
 
 test("path fence confirms outside targets with absolute names and grants per session", async (t) => {
 	const f = fenceFixture(t);

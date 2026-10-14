@@ -162,10 +162,8 @@ test("patch rejects garbage instead of clobbering it", () => {
 	assert.throws(() => patchMcpServersFile(`"just a string"`, "stitch", { enabled: false }, {}));
 });
 
-test("patch defaults non-object mcpServers without losing siblings", () => {
-	const next = JSON.parse(patchMcpServersFile(`{"mcpServers": [], "other": true}`, "stitch", { enabled: false }, { asOverride: true }));
-	assert.deepEqual(next.mcpServers.stitch, { enabled: false });
-	assert.equal(next.other, true);
+test("patch rejects non-object mcpServers instead of replacing them", () => {
+	assert.throws(() => patchMcpServersFile(`{"mcpServers": [], "other": true}`, "stitch", { enabled: false }, { asOverride: true }));
 });
 
 test("row normalization strips frames, margins and markers", () => {

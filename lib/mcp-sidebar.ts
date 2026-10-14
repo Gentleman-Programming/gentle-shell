@@ -135,7 +135,7 @@ export function patchMcpServersFile(
 		}
 		doc = parsed as Record<string, unknown>;
 		if (doc.mcpServers !== undefined && (typeof doc.mcpServers !== "object" || doc.mcpServers === null || Array.isArray(doc.mcpServers))) {
-			doc.mcpServers = {};
+			throw new Error('MCP config "mcpServers" is not an object; refusing to rewrite it.');
 		}
 		doc.mcpServers ??= {};
 	}

@@ -1458,8 +1458,12 @@ async function applyMcpToggle(
 	const readRaw = async (path: string): Promise<string | undefined> => {
 		try {
 			return await readFile(path, "utf8");
-		} catch {
-			return undefined;
+		} catch (error) {
+			// Only a missing file means "no config yet". Any other failure
+			// must abort the toggle: patching from scratch and renaming over
+			// the existing file would silently drop its settings.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
 		}
 	};
 	try {

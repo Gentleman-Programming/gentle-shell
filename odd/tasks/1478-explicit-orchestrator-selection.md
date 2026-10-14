@@ -14,9 +14,9 @@ S8. Delivery authorization retained from compacted history: local commits, norma
 
 ## Tasks
 T1 | S1–S8 | inline | done | Clean branch and specification prepared before source writes; commit `0950626ce`; local and Engram readbacks observed.
-T2 | S1–S5,S7 | inline | in_progress | Reopened for accepted review5516238606: reproduce stored absence/pair via public commands, preserve target profile initialization. Prior implementation7c271be94 remains baseline.
-T3 | S1–S7 | inline checks + independent verifier | pending | Reopened for changed S7; prior independent9/9+6/6 and probe8afc42774 do not verify the new default.
-T4 | S6,S8 | inline delivery | pending | Update existingPR2214 after new checks; prior head2a75b42c0/CIgreen is not proof of the correction. type:feature still requires maintainer; no merge/force push.
+T2 | S1–S5,S7 | inline | done | Correctioncommit e8ec70ecf8138b0f136b4fb287aba88b9bb3cc18: RED2fail/2pass→GREEN4/4; parent133+18tests PASS, typecheck0/runtime15matches, diffcheck/self-review PASS. Existing contracts retained outside accepted S7.
+T3 | S1–S7 | inline checks + independent verifier | done | Verifiedworkunit e8ec70ecf: independentmv85y6nz-c-t9xv S1–S5/revisedS7 PASS/no blockers, isolated207/207exit0; exact parent spotcheck207/207exit0. S6 delivery parent-owned; evidence recorded by verification commit.
+T4 | S6,S8 | inline delivery | in_progress | Update existingPR2214 and reviewer/issue explanations after verified e8ec70ecf. Oldhead2a75CI is historical; newheadCI pending after normal forkpush. type:feature requires maintainer; no merge/force push.
 
 ## Log
 L1. Current user request verbatim: "Review the delivered subagent output and continue." Earlier session authorization survives as compacted context, not reconstructed verbatim quotations.
@@ -55,3 +55,4 @@ L33. Read-only queue refresh:job-25 exactsame56IDs/noneadded-or-removed/limit200
 
 L34. User correction verbatim: "dale, resolvamos 2214 entonces". Review5516238606 is COMMENTED, not a formal rejection/approval. Accepted target-profile entry/absence initialization supersedes old S7 live-first default. Reuse active-absence and pinned-pair public tests as RED cases; retain no-target/live and missing-store/settings fallbacks. Forecast ~370–395 authored lines overall by extending existing tests, not dropping coverage; measure before delivery. No profiles-s selector or apply rewrite.
 L35. Correction evidence: public-command REDexit1 (active absence + pinned stored pair fail; fallbacklive/settings2pass); same4GREENexit0. Parent gentle-ai suite133/133exit0, adjacentpreservation/orchestratorsuite18/18exit0; the gentle-ai suite emits an existing non-Git fixture diagnostic on stderr, not a test failure. job31 typecheck0/no regressions and runtime15matches exit0. ASSESS medium→highitem3(shared u default), independentVerifier required, reviewDuefalse/under_budget; no nativeSTART. Source self-review and diffcheck pass.
+L36. T3 complete: independent mv85y6nz-c-t9xv PASS/no blockers S1–S5/revisedS7, S6 delivery parent-owned; git-archive e8ec70ecf scratch207/207exit0, no retries/skips. Parent exact four-file spotcheck207/207exit0. Existing nonGit fixture stderr retained in both runs; no unexpected mutations. Verifier lacked memory tools, parent persisted evidence. Overall authored diff stays below400; no chain/exception needed.

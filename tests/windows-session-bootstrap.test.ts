@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, stat } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { FIXED_WINDOWS_POWERSHELL, WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseEvent, parseWindowsHostFrame } from "../lib/windows-session-transport.ts";
@@ -1139,16 +1140,31 @@ test("Windows-native discovery preserves a busy endpoint without connecting or m
 	await mkdir(join(agentHome, "gentle-agents"), { recursive: true });
 	await withInitializedHelpers([agentHome, agentHome], async ([owner, observer]) => {
 		const record = requirePublicPresenceResult(await owner.presence("listen", { sessionId: "busy", createdAt: 1 })) as Record<string, unknown>;
+		const probe = await openWindowsNativeAvailabilityProbe(record.endpoint as string);
 		const sockets: Awaited<ReturnType<typeof openWindowsNativePipe>>[] = [];
+		const assertBusy = async () => {
+			// WaitNamedPipe times out with ERROR_SEM_TIMEOUT when all instances are occupied.
+			assert.deepEqual(await probe.check(), { available: false, code: 121 });
+		};
 		try {
+			assert.deepEqual(await probe.check(), { available: true, code: 0 });
 			for (let index = 0; index < 4; index++) sockets.push(await openWindowsNativePipe(record.endpoint as string));
+			await assertBusy();
 			const before = requirePublicPresenceResult(await observer.enumerate());
+			await assertBusy();
 			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [record] });
+			await assertBusy();
 			assert.deepEqual(requirePublicPresenceResult(await observer.presence("resolve", { sessionId: "busy" })), record);
+			await assertBusy();
 			assert.deepEqual(requirePublicPresenceResult(await observer.enumerate()), before);
+			await assertBusy();
 			assert.equal((await owner.presence("stop-listener", { record })).ok, true);
+			assert.deepEqual(await probe.check(), { available: false, code: 2 });
 			assert.deepEqual(requirePublicPresenceResult(await observer.presence("list")), { records: [] });
-		} finally { for (const socket of sockets) socket.destroy(); }
+		} finally {
+			for (const socket of sockets) socket.destroy();
+			await probe.close();
+		}
 	}, { diagnostics: t });
 });
 
@@ -1554,6 +1570,36 @@ test("packed lifecycle source uses the exported phase sequence", async (t) => {
 	assert.doesNotMatch(source, /createRegistry\(agentHome,[\s\S]{0,160}(?:startupDeadlineMs|rpcDeadlineMs)/);
 	assert.doesNotMatch(source, /Object\.defineProperty\(candidate|Host\.prototype|windowsRegistryObservation\.restore|let expected = "start"/);
 });
+
+async function openWindowsNativeAvailabilityProbe(endpoint: string) {
+	const script = fileURLToPath(new URL("fixtures/windows-pipe-availability.ps1", import.meta.url));
+	const child = spawn(FIXED_WINDOWS_POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", script, "-Endpoint", endpoint], { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+	const lifecycle = observeChildLifecycle(child);
+	const output = createInterface({ input: child.stdout, crlfDelay: Infinity });
+	const lines = output[Symbol.asyncIterator]();
+	child.stderr.resume();
+	const next = async (deadlineMs: number) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const line = await Promise.race([
+				lines.next(),
+				new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Windows native availability probe did not reply")), deadlineMs); }),
+			]);
+			assert.equal(line.done, false, "the availability probe must return a result");
+			return JSON.parse(line.value!) as Record<string, unknown>;
+		} finally { clearTimeout(timer); }
+	};
+	const close = async () => {
+		try {
+			child.stdin.end();
+			await settleOwnedChild(child, lifecycle, { terminateMs: 2_500, killMs: 2_500 });
+			assert.equal(lifecycle.exitCode, 0, "the availability probe must exit cleanly");
+		} finally { output.close(); }
+	};
+	try { assert.deepEqual(await next(25_000), { ready: true }); }
+	catch (error) { try { await close(); } catch { /* preserve the startup failure */ } throw error; }
+	return { check: async () => { child.stdin.write("probe\n"); return next(3_000); }, close };
+}
 
 function openWindowsNativePipe(endpoint: string) {
 	return new Promise<ReturnType<typeof createConnection>>((resolve, reject) => {

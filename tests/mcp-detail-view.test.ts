@@ -23,12 +23,15 @@ const info: McpDetailInfo = {
 	toolCount: 15,
 	scopeLabel: "global",
 	source: "/home/marcos/.pi/mcp.json",
-	tools: ["generate", "exposure"],
+	tools: [
+		{ name: "generate", description: "Generate UI from text" },
+		{ name: "exposure", description: "Read the exposure" },
+	],
 };
 
 const actions: McpDetailAction[] = [
 	{ id: "disable", label: "Disable", hint: "saved to the global mcp.json" },
-	{ id: "open-manager", label: "Open /mcp manager", hint: "live status" },
+	{ id: "disable-project", label: "Disable in this project", hint: "saved to the project mcp.json" },
 ];
 
 function collect(info: McpDetailInfo, inputs: string[]): McpDetailResult[] {
@@ -38,38 +41,11 @@ function collect(info: McpDetailInfo, inputs: string[]): McpDetailResult[] {
 	return results;
 }
 
-test("detail shows status, tools and actions", () => {
-	const view = new McpDetailView(info, actions, () => {}, plainTheme);
-	const text = view.render(60).join("\n");
-	assert.match(text, /stitch/);
-	assert.match(text, /Connected/);
-	assert.match(text, /15 tools/);
-	assert.match(text, /generate/);
-	assert.match(text, /Disable/);
-	assert.match(text, /Open \/mcp manager/);
-});
-
-test("enter runs the highlighted action", () => {
-	assert.deepEqual(collect(info, [ENTER]), [{ type: "run", action: "disable" }]);
-});
-
-test("down then enter runs the second action", () => {
-	assert.deepEqual(collect(info, [DOWN, ENTER]), [{ type: "run", action: "open-manager" }]);
-});
-
-test("up at the top stays on the first action", () => {
-	assert.deepEqual(collect(info, [UP, ENTER]), [{ type: "run", action: "disable" }]);
-});
-
-test("escape closes without running", () => {
-	assert.deepEqual(collect(info, [ESCAPE]), [{ type: "close" }]);
-});
-
 function mouseClick(view: McpDetailView, label: string): void {
 	const width = 60;
 	const lines = view.render(width);
 	const y = lines.findIndex((line) => line.includes(label));
-	assert.ok(y >= 0, `action row "${label}" renders`);
+	assert.ok(y >= 0, `row "${label}" renders`);
 	view.handleMouse({
 		type: "click",
 		button: "left",
@@ -85,26 +61,81 @@ function mouseClick(view: McpDetailView, label: string): void {
 	});
 }
 
+test("detail shows status, tools and actions", () => {
+	const view = new McpDetailView(info, actions, () => {}, plainTheme);
+	const text = view.render(60).join("\n");
+	assert.match(text, /stitch/);
+	assert.match(text, /Connected/);
+	assert.match(text, /15 tools/);
+	assert.match(text, /generate/);
+	assert.match(text, /Generate UI from text/);
+	assert.match(text, /Disable/);
+	assert.match(text, /Disable in this project/);
+});
+
+test("enter on the first row opens the tool, escape goes back", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	view.handleInput(ENTER);
+	assert.match(view.render(60).join("\n"), /Generate UI from text/);
+	assert.deepEqual(results, []);
+	view.handleInput(ESCAPE);
+	assert.match(view.render(60).join("\n"), /Disable/);
+	assert.deepEqual(results, []);
+});
+
+test("keyboard reaches actions past the tools", () => {
+	assert.deepEqual(collect(info, [DOWN, DOWN, ENTER]), [{ type: "run", action: "disable" }]);
+});
+
+test("third row runs the second action", () => {
+	assert.deepEqual(collect(info, [DOWN, DOWN, DOWN, ENTER]), [{ type: "run", action: "disable-project" }]);
+});
+
+test("up at the top stays on the first tool", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	view.handleInput(UP);
+	view.handleInput(ENTER);
+	assert.match(view.render(60).join("\n"), /Generate UI from text/);
+	assert.deepEqual(results, []);
+});
+
+test("escape on the server screen closes without running", () => {
+	assert.deepEqual(collect(info, [ESCAPE]), [{ type: "close" }]);
+});
+
 test("clicking an action runs it", () => {
 	const results: McpDetailResult[] = [];
 	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
-	mouseClick(view, "Open /mcp manager");
-	assert.deepEqual(results, [{ type: "run", action: "open-manager" }]);
+	mouseClick(view, "Disable in this project");
+	assert.deepEqual(results, [{ type: "run", action: "disable-project" }]);
+});
+
+test("clicking a tool drills in, clicking back returns", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	mouseClick(view, "exposure");
+	assert.match(view.render(60).join("\n"), /Read the exposure/);
+	assert.deepEqual(results, []);
+	mouseClick(view, "Back");
+	assert.match(view.render(60).join("\n"), /Disable/);
+	assert.deepEqual(results, []);
 });
 
 test("clicking empty space runs nothing", () => {
 	const results: McpDetailResult[] = [];
 	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
-	const before = view.render(60).length;
+	const lines = view.render(60);
 	view.handleMouse({
 		type: "click",
 		button: "left",
 		x: 2,
-		y: before,
+		y: lines.length,
 		screenX: 2,
-		screenY: before,
+		screenY: lines.length,
 		width: 60,
-		height: before,
+		height: lines.length,
 		shift: false,
 		alt: false,
 		ctrl: false,

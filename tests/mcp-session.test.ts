@@ -11,7 +11,7 @@ test("joins configured servers with tool counts", () => {
 		projectPath: PROJECT,
 		globalRaw: `{"mcpServers": {"codegraph": {"command": "x"}, "stitch": {"url": "https://x", "enabled": false}}}`,
 		projectRaw: undefined,
-		toolNames: ["mcp__codegraph__search"],
+		tools: [{ name: "mcp__codegraph__search", description: "Search code" }],
 		registered: [],
 	});
 	assert.deepEqual(entries, [
@@ -23,7 +23,7 @@ test("joins configured servers with tool counts", () => {
 			source: GLOBAL,
 			toolCount: 1,
 			status: "connected",
-			tools: ["search"],
+			tools: [{ name: "search", description: "Search code" }],
 		},
 		{
 			name: "stitch",
@@ -44,14 +44,14 @@ test("project overrides flip enabled and tools use short names", () => {
 		projectPath: PROJECT,
 		globalRaw: `{"mcpServers": {"stitch": {"url": "https://x"}}}`,
 		projectRaw: `{"mcpServers": {"stitch": {"enabled": false}}}`,
-		toolNames: ["mcp__stitch__generate"],
+		tools: [{ name: "mcp__stitch__generate", description: "Generate UI" }],
 		registered: [],
 	});
 	assert.equal(entries.length, 1);
 	assert.equal(entries[0]?.enabled, false);
 	assert.equal(entries[0]?.hasOverride, true);
 	assert.equal(entries[0]?.status, "disabled");
-	assert.deepEqual(entries[0]?.tools, ["generate"]);
+	assert.deepEqual(entries[0]?.tools, [{ name: "generate", description: "Generate UI" }]);
 });
 
 test("extension servers without config join as extension scope", () => {
@@ -60,7 +60,7 @@ test("extension servers without config join as extension scope", () => {
 		projectPath: PROJECT,
 		globalRaw: undefined,
 		projectRaw: undefined,
-		toolNames: ["mcp__jira__list"],
+		tools: [{ name: "mcp__jira__list", description: "List issues" }],
 		registered: ["jira"],
 	});
 	assert.deepEqual(entries, [
@@ -72,7 +72,7 @@ test("extension servers without config join as extension scope", () => {
 			source: "extension",
 			toolCount: 1,
 			status: "connected",
-			tools: ["list"],
+			tools: [{ name: "list", description: "List issues" }],
 		},
 	]);
 });
@@ -83,7 +83,7 @@ test("malformed files degrade to empty instead of throwing", () => {
 		projectPath: PROJECT,
 		globalRaw: "{oops",
 		projectRaw: undefined,
-		toolNames: [],
+		tools: [],
 		registered: [],
 	});
 	assert.deepEqual(entries, []);

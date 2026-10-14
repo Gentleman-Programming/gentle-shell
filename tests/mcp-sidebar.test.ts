@@ -156,7 +156,7 @@ test("enabled global server offers disable plus project disable when trusted", (
 			{ name: "stitch", enabled: true, scope: "global", hasOverride: false },
 			{ projectTrusted: true },
 		).map((action) => action.id),
-		["disable", "disable-project", "open-manager"],
+		["disable", "disable-project"],
 	);
 });
 
@@ -166,7 +166,7 @@ test("enabled global server offers only disable when untrusted", () => {
 			{ name: "stitch", enabled: true, scope: "global", hasOverride: false },
 			{ projectTrusted: false },
 		).map((action) => action.id),
-		["disable", "open-manager"],
+		["disable"],
 	);
 });
 
@@ -176,13 +176,10 @@ test("override-disabled server offers enable in project", () => {
 			{ name: "stitch", enabled: false, scope: "global", hasOverride: true },
 			{ projectTrusted: true },
 		).map((action) => action.id),
-		["enable-project", "open-manager"],
+		["enable-project"],
 	);
 });
 
-test("extension servers only open the manager", () => {
-	assert.deepEqual(
-		buildExtensionDetailActions().map((action) => action.id),
-		["open-manager"],
-	);
+test("extension servers carry no file actions", () => {
+	assert.deepEqual(buildExtensionDetailActions(), []);
 });

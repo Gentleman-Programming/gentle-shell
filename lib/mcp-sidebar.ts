@@ -169,7 +169,7 @@ export function renderMcpCard(
 // defining mcp.json, project variants write a project override). Extension
 // servers have no file to patch, so they only open the manager.
 
-export type McpDetailActionId = "disable" | "disable-project" | "enable" | "enable-project" | "open-manager";
+export type McpDetailActionId = "disable" | "disable-project" | "enable" | "enable-project";
 
 export interface McpDetailAction {
 	id: McpDetailActionId;
@@ -177,14 +177,14 @@ export interface McpDetailAction {
 	hint: string;
 }
 
-const OPEN_MANAGER_ACTION: McpDetailAction = {
-	id: "open-manager",
-	label: "Open /mcp manager",
-	hint: "live status · reconnect · sign in",
-};
+// Detail overlay actions carry /mcp file semantics (Disable persists to the
+// defining mcp.json, project variants write a project override). Live
+// actions (reconnect, sign in) have no public API, so the overlay points at
+// /mcp with a hint instead of emulating it. Extension servers have no file
+// to patch, so they carry no actions.
 
 export function buildExtensionDetailActions(): McpDetailAction[] {
-	return [OPEN_MANAGER_ACTION];
+	return [];
 }
 
 export function buildMcpDetailActions(
@@ -206,6 +206,5 @@ export function buildMcpDetailActions(
 			actions.push({ id: "enable-project", label: "Enable only in this project", hint: "saved to the project mcp.json" });
 		}
 	}
-	actions.push(OPEN_MANAGER_ACTION);
 	return actions;
 }

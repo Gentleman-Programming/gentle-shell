@@ -16,31 +16,40 @@ export interface McpSessionInput {
 	projectPath: string;
 	globalRaw: string | undefined;
 	projectRaw: string | undefined;
-	toolNames: string[];
+	tools: McpSessionTool[];
 	/** Servers registered via pi.registerMcpServer(). */
 	registered: string[];
+}
+
+export interface McpSessionTool {
+	name: string;
+	description: string;
 }
 
 export interface McpSessionEntry extends McpSidebarEntry {
 	scope: "global" | "project" | "extension";
 	hasOverride: boolean;
 	source: string;
-	/** Short tool names (the mcp__<server>__ prefix stripped). */
-	tools: string[];
+	/** Short tool names (the mcp__<server>__ prefix stripped) with descriptions. */
+	tools: McpSessionTool[];
 }
 
-function shortTools(server: string, toolNames: string[]): string[] {
+function shortTools(server: string, tools: McpSessionTool[]): McpSessionTool[] {
 	const prefix = `mcp__${server.replace(/-/g, "_")}__`;
-	return toolNames.filter((tool) => tool.startsWith(prefix)).map((tool) => tool.slice(prefix.length)).sort();
+	return tools
+		.filter((tool) => tool.name.startsWith(prefix))
+		.map((tool) => ({ name: tool.name.slice(prefix.length), description: tool.description }))
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function buildMcpSession(input: McpSessionInput): McpSessionEntry[] {
 	const configured = mergeMcpServers(parseMcpServers(input.globalRaw), parseMcpServers(input.projectRaw));
 	const configuredNames = new Set(configured.map((server) => server.name));
 	const extra = [...new Set(input.registered)].filter((name) => !configuredNames.has(name)).sort();
+	const toolNames = input.tools.map((tool) => tool.name);
 	const base = buildMcpSidebarEntries(
 		[...configured.map(({ name, enabled }) => ({ name, enabled })), ...extra.map((name) => ({ name, enabled: true }))],
-		input.toolNames,
+		toolNames,
 	);
 	const byName = new Map(base.map((entry) => [entry.name, entry]));
 	return [
@@ -52,7 +61,7 @@ export function buildMcpSession(input: McpSessionInput): McpSessionEntry[] {
 				scope: server.scope,
 				hasOverride: server.hasOverride,
 				source: server.scope === "project" ? input.projectPath : input.globalPath,
-				tools: shortTools(server.name, input.toolNames),
+				tools: shortTools(server.name, input.tools),
 			};
 		}),
 		...extra.map((name) => {
@@ -63,7 +72,7 @@ export function buildMcpSession(input: McpSessionInput): McpSessionEntry[] {
 				scope: "extension" as const,
 				hasOverride: false,
 				source: "extension",
-				tools: shortTools(name, input.toolNames),
+				tools: shortTools(name, input.tools),
 			};
 		}),
 	];

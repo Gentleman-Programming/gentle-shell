@@ -1440,10 +1440,6 @@ async function showMcpDetail(
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type !== "run") return;
-	if (result.action === "open-manager") {
-		pi.sendUserMessage("/mcp", { expandPromptTemplates: true });
-		return;
-	}
 	await applyMcpToggle(ctx, target, result.action, trusted, refresh);
 }
 
@@ -2083,7 +2079,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 		};
 		const mcpEntries = (): McpSessionEntry[] => {
-			const toolNames = pi.getAllTools().map((tool) => tool.name);
+			const allTools = pi.getAllTools();
+			const toolNames = allTools.map((tool) => tool.name);
 			const registered = pi.getMcpServers().map((server) => server.name);
 			const globalPath = join(getAgentDir(), "mcp.json");
 			const projectPath = join(ctx.sessionManager.getCwd(), ".pi", "mcp.json");
@@ -2101,7 +2098,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				projectPath,
 				globalRaw: readRaw(globalPath),
 				projectRaw: readRaw(projectPath),
-				toolNames,
+				tools: allTools.map((tool) => ({ name: tool.name, description: tool.description })),
 				registered,
 			});
 			mcpCacheKey = key;
@@ -2136,11 +2133,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				}
 				const bodyStart = panelHeaderRow(theme, width, CARD_TONE.INFO) + (panelExtraRows(theme, width, CARD_TONE.INFO) > 0 ? 2 : 1);
 				const lines = renderMcpCard(entries, { collapsed: false }, theme, width);
-				const rowText = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!);
+				const frame = lines[event.y] === undefined ? "" : stripAnsi(lines[event.y]!).replace(/^[│▎] /, "").replace(/^▸ /, "");
+				const rowOf = (name: string): boolean => frame === name || frame.startsWith(`• ${name} —`);
 				const byIndex = entries[event.y - bodyStart];
-				const target = byIndex && rowText.includes(byIndex.name)
+				const target = byIndex && rowOf(byIndex.name)
 					? byIndex
-					: entries.find((entry) => rowText.includes(entry.name));
+					: entries.find((entry) => rowOf(entry.name));
 				if (!target) return undefined;
 				void showMcpDetail(pi, ctx, target, mcpRefresh);
 				return { handled: true };

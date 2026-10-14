@@ -3049,6 +3049,64 @@ for (const [name, key] of [["ctrl+s", "\x13"], ["cancel", "\x1b"]]) {
 	});
 }
 
+for (const action of ["bulk inherit", "custom", "export/restore"]) {
+	for (const leaveUntouched of [false, true]) {
+		test(`models choice survives ${action} with ${leaveUntouched ? "no key" : "explicit pair"}`, async (t) => {
+			const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+			writeSettings();
+			fixture.setLiveModel("openai", "alpha", "high");
+			writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" } } }, "team");
+			writeFileSync(fixture.globalPath, JSON.stringify({ worker: { model: "openai/alpha" } }));
+			const settingsBefore = readFileSync(settingsPath, "utf8");
+			if (action === "custom") fixture.answerInputs("openai/alpha");
+			let visits = 0;
+			const assertChoice = (panel: RoutingConsumerPanel) => {
+				assert.match(renderComponent(panel), leaveUntouched
+					? /orchestrator\s+leave untouched/
+					: /orchestrator\s+model=openai\/beta, effort=low/);
+			};
+			fixture.onInput((panel) => {
+				visits++;
+				assert.ok(visits <= 3, "reopens must be bounded");
+				if (visits === 1) {
+					chooseOrchestrator(panel);
+					if (leaveUntouched) panel.handleInput("i");
+					else {
+						chooseModel(panel, "beta");
+						chooseEffort(panel, "low");
+					}
+					assertChoice(panel);
+					if (action === "bulk inherit") {
+						panel.handleInput("g");
+						panel.handleInput("i");
+						assertChoice(panel);
+						panel.handleInput("u");
+					} else if (action === "custom") {
+						panel.handleInput("g");
+						for (let step = 0; step < 4; step++) panel.handleInput("j");
+						assert.match(renderComponent(panel), /▸ worker/);
+						panel.handleInput("c");
+					} else panel.handleInput("x");
+				} else {
+					assertChoice(panel);
+					panel.handleInput(action === "export/restore" && visits === 2 ? "r" : "u");
+				}
+			});
+			await fixture.run("gentle:models");
+			const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
+			assert.equal(Object.hasOwn(profile, "orchestrator"), !leaveUntouched);
+			if (!leaveUntouched) assert.deepEqual(profile.orchestrator, { model: "openai/beta", thinking: "low" });
+			assert.deepEqual(profile.worker, action === "bulk inherit" ? {} : { model: "openai/alpha" });
+			assert.equal(Object.hasOwn(JSON.parse(readFileSync(fixture.globalPath, "utf8")), "orchestrator"), false);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+			assert.deepEqual(fixture.liveSwitches, []);
+			assert.equal(fixture.notifications.some((entry) => entry.severity === "warning"), false);
+			assert.equal(visits, action === "bulk inherit" ? 1 : action === "custom" ? 2 : 3);
+			assert.equal(fixture.confirmCalls.length, action === "export/restore" ? 1 : 0);
+		});
+	}
+}
+
 // /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
 // by a snapshot of saved agent routing and the explicitly chosen orchestrator.
 function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {

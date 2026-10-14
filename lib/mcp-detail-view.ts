@@ -1,5 +1,6 @@
-import { isKeyRelease, matchesKey, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { isKeyRelease, matchesKey, visibleWidth, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
+import { stripAnsi } from "./terminal-theme.ts";
 import type { McpDetailAction, McpDetailActionId } from "./mcp-sidebar.ts";
 
 export type McpDetailResult = { type: "run"; action: McpDetailActionId } | { type: "close" };
@@ -36,6 +37,25 @@ export class McpDetailView {
 	}
 
 	invalidate(): void {}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const lines = this.render(event.width);
+		const row = lines[event.y];
+		if (row === undefined) return undefined;
+		const text = stripAnsi(row);
+		const index = this.actions.findIndex((action) => text.includes(action.label));
+		if (index < 0) return undefined;
+		if (event.type === "move") {
+			if (index === this.selected) return { handled: true };
+			this.selected = index;
+			return { handled: true, render: true };
+		}
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		this.selected = index;
+		const action = this.actions[index];
+		if (action) this.finish({ type: "run", action: action.id });
+		return { handled: true };
+	}
 
 	handleInput(data: string): void {
 		if (this.completed || isKeyRelease(data)) return;

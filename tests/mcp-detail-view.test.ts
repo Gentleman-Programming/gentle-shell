@@ -64,3 +64,50 @@ test("up at the top stays on the first action", () => {
 test("escape closes without running", () => {
 	assert.deepEqual(collect(info, [ESCAPE]), [{ type: "close" }]);
 });
+
+function mouseClick(view: McpDetailView, label: string): void {
+	const width = 60;
+	const lines = view.render(width);
+	const y = lines.findIndex((line) => line.includes(label));
+	assert.ok(y >= 0, `action row "${label}" renders`);
+	view.handleMouse({
+		type: "click",
+		button: "left",
+		x: 2,
+		y,
+		screenX: 2,
+		screenY: y,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+}
+
+test("clicking an action runs it", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	mouseClick(view, "Open /mcp manager");
+	assert.deepEqual(results, [{ type: "run", action: "open-manager" }]);
+});
+
+test("clicking empty space runs nothing", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	const before = view.render(60).length;
+	view.handleMouse({
+		type: "click",
+		button: "left",
+		x: 2,
+		y: before,
+		screenX: 2,
+		screenY: before,
+		width: 60,
+		height: before,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.deepEqual(results, []);
+});

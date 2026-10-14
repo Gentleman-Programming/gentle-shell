@@ -3691,10 +3691,17 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		return;
 	}
 	let config = savedConfig.status === "valid" ? cloneModelConfig(savedConfig.config) : {};
-	// The live capture is only the initial choice. Reopens carry the draft, including absence.
+	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	const target = resolveCurrentProfileTarget(ctx.cwd, store);
+	// Existing profiles own the initial choice, including absence. Reopens keep the draft.
 	delete config[PROFILE_ORCHESTRATOR_KEY];
-	config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
-	const profileLabel = describeCurrentProfileTarget(resolveCurrentProfileTarget(ctx.cwd));
+	if (store.status === "valid" && target && hasOwnProfile(store.file.profiles, target.name)) {
+		const entry = store.file.profiles[target.name][PROFILE_ORCHESTRATOR_KEY];
+		if (entry) config[PROFILE_ORCHESTRATOR_KEY] = { ...entry };
+	} else {
+		config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
+	}
+	const profileLabel = describeCurrentProfileTarget(target);
 	let result = await showSddModelPanel(ctx, config, profileLabel);
 	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
 		config = cloneModelConfig(result.config);

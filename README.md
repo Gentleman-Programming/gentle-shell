@@ -4,6 +4,8 @@
   <img src="docs/assets/brand/gentle-shell-banner.gif" width="1200" alt="gentle-shell — Ecosystem, Agent, One shell">
 </div>
 
+<p align="center"><a href="README.es.md">Leer en español</a></p>
+
 <h1 align="center">gentle-shell™</h1>
 
 <p align="center"><strong>Your coding agent for controlled development in the workspace you lead.</strong></p>

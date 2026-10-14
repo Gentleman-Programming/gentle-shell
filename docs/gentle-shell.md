@@ -90,9 +90,10 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 
 ### Browse changes
 
-`/gentle:changes` or `alt+g` opens the two-pane viewer. Worktrees are accordion groups on the left; each file row leads with its status marker (`M` modified, `A` new and staged, `U` new and untracked, `D` deleted, `R` renamed), then its name, its line counts and its directory. Selecting a file shows its full path on the first row of the right pane (clipped from the left so the name stays visible) and its diff against HEAD below it; untracked files show their full content.
+`/gentle:changes` or `alt+g` opens the two-pane viewer full screen, like Gentle Agents. Worktrees are accordion groups on the left; each file row leads with its status marker (`M` modified, `A` new and staged, `U` new and untracked, `D` deleted, `R` renamed), then its name, its line counts and its directory. Selecting a file shows its full path on the first row of the right pane (clipped from the left so the name stays visible) and its diff against HEAD below it; untracked files show their full content.
 
 - `j`/`k` or arrows navigate. On a group, Enter, Space or Right expands it; Left returns to its parent or collapses it. `ctrl+j/k` or Page Up/Down scroll the diff; Escape or `q` closes.
+- `F` toggles diff-only mode at any width: the file list and its separator hide so the diff uses the full width. There `j`/`k` still move between files (across worktrees; the path row shows which), the scroll keys and the wheel scroll the diff, `o`/Enter and `r` keep working, the first Escape returns to the file list, and `q` closes. Every opening starts with the file list visible.
 - Fullscreen left-click selects files; mouse wheels scroll the file list and diff independently. Hovering an unselected row (worktree or file, in either pane's list) paints it in the same shared hover role every clickable surface in the shell uses; it never opens or selects the file, and never overrides the already-selected row's own role.
 - Opening, pressing `r`, and the overlay's refresh cadence re-read each root's Git status; a same-line-count edit reloads the open diff.
 - On a file, `o` or Enter opens the actual current file in `$VISUAL` or `$EDITOR`, with its worktree as cwd.

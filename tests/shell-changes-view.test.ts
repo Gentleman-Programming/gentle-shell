@@ -4,6 +4,7 @@ import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@
 import { CHANGE_STATUS, DIFF_TOO_LARGE, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { WorktreeChangesView, ChangesView, colorDiff, type ChangesViewDeps } from "../lib/shell-changes-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 
 // The changes overlay: files on the left, the selected file's diff on the
 // right, keys at the bottom. Rendering is pure; git access is injected.
@@ -756,4 +757,139 @@ test("ChangesView.update keeps the selected file, reloads moved diffs, and survi
 	assert.match(plain[1], /working tree is clean/);
 	component.handleInput("j");
 	component.handleInput("o");
+});
+
+// Diff-only mode (F): the file column and its separator leave so the diff
+// spans the whole inner width; j/k still walk files, esc returns first.
+function diffOnlyView(overrides: { rows?: number; loadDiff?: (root: string, target: ChangedFile) => Promise<string> } = {}) {
+	const trees = [
+		{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) },
+		{ root: "/linked", branch: "agent", model: changesModel([file("c.ts", 1, 0)]) },
+	];
+	const events: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: plainTheme, rows: overrides.rows ?? 10,
+		loadDiff: overrides.loadDiff ?? (async (root, target) => `+${root}:${target.path} ${"x".repeat(80)}`),
+		onOpen: (root, target) => { events.push(`open:${root}:${target.path}`); },
+		onClose: () => { events.push("close"); },
+		onRefresh: () => { events.push("refresh"); },
+		requestRender() {},
+	});
+	return { component, events };
+}
+
+test("F hides the file list and its separator so the diff spans the full inner width", async () => {
+	const { component } = diffOnlyView();
+	component.handleInput("\r");
+	component.handleInput("j");
+	await settle();
+	const normal = component.render(100);
+	assert.match(normal[1]!, /^│ +▾ main · main +│ M a\.ts +│$/, "the normal view keeps the two-pane layout");
+	assert.match(stripAnsi(normal[2]!), /^│ ▸   M a\.ts .*│ \+\/main:a\.ts x+…│$/, "the narrow diff pane clips a long line");
+	assert.match(normal[8]!, /F diff only/);
+	component.handleInput("F");
+	await settle();
+	const wide = component.render(100);
+	assert.equal(wide.length, 10);
+	for (const line of wide) assert.equal(visibleWidth(line), 100);
+	assert.match(wide[1]!, /^│ M a\.ts +│$/, "the path header starts at the frame edge");
+	assert.equal(wide[2]!, `│ ${`+/main:a.ts ${"x".repeat(80)}`.padEnd(96)} │`, "the diff uses the full inner width");
+	assert.doesNotMatch(wide.slice(1, 8).join("\n"), /main · main|│.*│.*│/, "no list column and no separator remain");
+	assert.match(wide[8]!, /F files/);
+	component.handleInput("F");
+	assert.match(component.render(100)[1]!, /▾ main · main/, "F toggles back to the file list");
+});
+
+test("j/k in diff-only mode walk files across worktrees and the path header follows", async () => {
+	const { component } = diffOnlyView();
+	component.handleInput("F");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M a\.ts +│$/, "entering on a group header jumps to its first file");
+	component.handleInput("j");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M b\.ts +│$/);
+	component.handleInput("j");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M c\.ts +│$/, "j crosses into the next worktree's files");
+	assert.match(component.render(100)[2]!, /\+\/linked:c\.ts/);
+	component.handleInput("j");
+	assert.match(component.render(100)[1]!, /^│ M c\.ts +│$/, "the last file stays selected");
+	component.handleInput("k");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M b\.ts +│$/);
+	component.handleInput("j");
+	component.handleInput("\x1b");
+	assert.match(component.render(100).join("\n"), /▸   M c\.ts/, "the files view shows the file chosen in diff-only mode");
+});
+
+test("esc leaves diff-only mode before closing; q, o and r keep working there", async () => {
+	const { component, events } = diffOnlyView();
+	component.handleInput("F");
+	component.handleInput("\x1b");
+	assert.deepEqual(events, [], "the first esc only returns to the file list");
+	assert.match(component.render(100)[1]!, /main · main/);
+	component.handleInput("\x1b");
+	assert.deepEqual(events, ["close"]);
+	component.handleInput("F");
+	component.handleInput("o");
+	component.handleInput("r");
+	component.handleInput("q");
+	assert.deepEqual(events, ["close", "open:/main:a.ts", "refresh", "close"]);
+});
+
+test("diff-only mode has no list mouse zone; the wheel scrolls the widened diff", async () => {
+	const long = Array.from({ length: 30 }, (_, index) => `+line ${index}`).join("\n");
+	const { component } = diffOnlyView({ rows: 8, loadDiff: async () => `@@ -0,0 +1,30 @@\n${long}` });
+	component.handleInput("F");
+	await settle();
+	component.render(80);
+	assert.equal(component.handleMouse(mouseButton("move", "none", 3, 2, 8)), undefined, "no hover target");
+	assert.equal(component.handleMouse(mouseButton("click", "left", 3, 2, 8)), undefined, "no click target");
+	assert.match(component.render(80)[1]!, /^│ M a\.ts +│$/, "a click where the list was does not select");
+	assert.deepEqual(component.handleMouse(mouse("wheel", 3, 2, 3, 8)), { handled: true, render: true });
+	assert.doesNotMatch(component.render(80)[2]!, /@@/, "the left edge now scrolls the diff");
+	component.handleInput("\x1b");
+	component.render(80);
+	assert.deepEqual(component.handleMouse(mouse("click", 3, 3, undefined, 8)), { handled: true, render: true }, "leaving diff-only restores the list zone");
+	assert.match(component.render(80)[3]!, /▸   M b\.ts/);
+});
+
+test("the native fullscreen wrapper keeps keyboard, hover, click and wheel on the changes view", async () => {
+	let onInput: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(input: Parameters<Terminal["start"]>[0]) { onInput = input; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 80; }, get rows() { return 8; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const long = Array.from({ length: 30 }, (_, index) => `+line ${index}`).join("\n");
+	let renders = 0;
+	const trees = [{ root: "/main", branch: "main", model: changesModel([file("a.ts", 1, 0), file("b.ts", 1, 0)]) }];
+	const component = new WorktreeChangesView(trees, {
+		theme: { fg: (color: string, text: string) => color === "warning" ? `\x1b[33m${text}\x1b[39m` : text }, rows: 8, loadDiff: async () => `@@ -0,0 +1,30 @@\n${long}`,
+		onOpen() {}, onClose() {}, onRefresh() {}, requestRender() {},
+	});
+	const interaction = createNativeFullscreenInteraction({ keyboardTarget: component, requestRender: () => { renders++; } });
+	interaction.addChild(component);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	tui.setLayoutRoot(interaction);
+	tui.start();
+	interaction.handleInput("\r");
+	assert.ok(renders > 0, "keys reach the view and request a render");
+	tui.renderNow(true);
+	try {
+		onInput?.("\x1b[<35;4;4M");
+		assert.match(interaction.render(80)[3]!, /\x1b\[33mM b\.ts/, "hover paints the row under the pointer");
+		onInput?.("\x1b[<0;4;4M");
+		onInput?.("\x1b[<0;4;4m");
+		assert.match(stripAnsi(interaction.render(80)[3]!), /▸   M b\.ts/, "a click selects the file");
+		await settle();
+		tui.renderNow(true);
+		onInput?.("\x1b[<65;60;3M");
+		assert.doesNotMatch(stripAnsi(interaction.render(80)[2]!), /@@/, "the wheel scrolls the diff");
+		interaction.handleInput("F");
+		tui.renderNow(true);
+		onInput?.("\x1b[<0;4;3M");
+		onInput?.("\x1b[<0;4;3m");
+		assert.match(stripAnsi(interaction.render(80)[1]!), /^│ M b\.ts +│$/, "diff-only mode ignores clicks where the list was");
+	} finally {
+		tui.stop();
+	}
 });

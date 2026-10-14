@@ -135,8 +135,7 @@ test("clicking Disable runs it", () => {
 	assert.deepEqual(results, [{ type: "run", action: "disable" }]);
 });
 
-test("clicking empty space runs nothing", () => {
-	const results: McpDetailResult[] = [];
+test("clicking empty space runs nothing", () => {	const results: McpDetailResult[] = [];
 	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
 	const lines = view.render(60);
 	view.handleMouse({
@@ -192,4 +191,21 @@ test("long tool rows truncate instead of wrapping", () => {
 	view.handleInput(ENTER);
 	const text = view.render(40).join("\n");
 	assert.match(text, /query_docs — .*…/);
+});
+
+test("clicking the esc-back hint goes back", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	view.handleInput(ENTER);
+	assert.match(view.render(60).join("\n"), /Tools of stitch/);
+	mouseClick(view, "esc back");
+	assert.match(view.render(60).join("\n"), /Disable —/);
+	assert.deepEqual(results, []);
+});
+
+test("clicking the esc-close hint closes", () => {
+	const results: McpDetailResult[] = [];
+	const view = new McpDetailView(info, actions, (result) => results.push(result), plainTheme);
+	mouseClick(view, "esc close");
+	assert.deepEqual(results, [{ type: "close" }]);
 });

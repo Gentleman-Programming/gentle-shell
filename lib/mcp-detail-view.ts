@@ -81,16 +81,29 @@ export class McpDetailView {
 			const label = this.selectableLabel(selectable);
 			return label !== "" && (text === label || text.startsWith(`${label} —`));
 		});
-		if (index < 0) return undefined;
-		if (event.type === "move") {
-			if (index === this.selected) return { handled: true };
+		if (index >= 0) {
+			if (event.type === "move") {
+				if (index === this.selected) return { handled: true };
+				this.selected = index;
+				return { handled: true, render: true };
+			}
+			if (event.type !== "click" || event.button !== "left") return undefined;
 			this.selected = index;
-			return { handled: true, render: true };
+			this.activate(this.selectables()[index]);
+			return { handled: true };
 		}
-		if (event.type !== "click" || event.button !== "left") return undefined;
-		this.selected = index;
-		this.activate(this.selectables()[index]);
-		return { handled: true };
+		// Footer hints act with the mouse exactly as labeled.
+		if (event.type === "click" && event.button === "left") {
+			if (text.includes("esc back")) {
+				this.up();
+				return { handled: true, render: true };
+			}
+			if (text.includes("esc close")) {
+				this.finish({ type: "close" });
+				return { handled: true };
+			}
+		}
+		return undefined;
 	}
 
 	render(width: number): string[] {

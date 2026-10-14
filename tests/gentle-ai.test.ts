@@ -2962,7 +2962,7 @@ test("models explicit orchestrator choice wins over live/defaults and agent bulk
 	fixture.setLiveModel("openai", "alpha", "high");
 	writeStore({ team: { orchestrator: { model: "nan/glm5.3", thinking: "max" } } }, "team");
 	fixture.onInput((panel) => {
-		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/alpha, effort=high/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=nan\/glm5.3, effort=max/);
 		chooseOrchestrator(panel);
 		chooseModel(panel, "beta");
 		chooseEffort(panel, "low");
@@ -3119,7 +3119,7 @@ function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
 	panel.handleInput("u");
 }
 
-test("u saves global routing and captures live session orchestrator instead of defaults", async (t) => {
+test("u preserves an active profile's absent orchestrator when editing agents", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
@@ -3130,6 +3130,7 @@ test("u saves global routing and captures live session orchestrator instead of d
 	}, "team");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: team/);
+		assert.match(renderComponent(panel), /orchestrator\s+leave untouched/);
 		assert.match(renderComponent(panel), /u save choice in "team"/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
@@ -3139,8 +3140,8 @@ test("u saves global routing and captures live session orchestrator instead of d
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "openai/alpha", thinking: "low" },
 	});
+	assert.deepEqual(fixture.liveSwitches, []);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "global defaults remain unchanged");
 	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
 	assert.equal(store.active, "team");
@@ -3155,17 +3156,19 @@ test("u saves global routing and captures live session orchestrator instead of d
 	);
 });
 
-test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
-	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
+test("u preserves the pinned profile's stored orchestrator instead of live or active values", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
-	fixture.setLiveModel("openai", "beta", "medium");
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
-		other: { worker: { model: "openai/beta", thinking: "high" } },
+		other: { worker: { model: "openai/beta", thinking: "high" }, orchestrator: { model: "openai/beta", thinking: "high" } },
 	}, "team");
 	writePin(localPinPath, "other");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: other \(pinned\)/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/beta, effort=high/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -3174,8 +3177,10 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "openai/beta", thinking: "medium" },
+		orchestrator: { model: "openai/beta", thinking: "high" },
 	});
+	assert.deepEqual(fixture.liveSwitches, []);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "team");
 	assert.ok(
@@ -3187,10 +3192,12 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 test("u keeps the global save and reports when no profile is current", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({ team: { worker: { model: "openai/beta" } } });
 	const before = readFileSync(storePath, "utf8");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: none/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/alpha, effort=low/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -3209,6 +3216,7 @@ test("u seeds the profiles store the way /gentle:profiles does when it is missin
 	assert.equal(existsSync(storePath), false);
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: none/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=nan\/deepseek-v4-flash, effort=high/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");

@@ -6,6 +6,7 @@ import { buildMcpDetailActions } from "../lib/mcp-sidebar.ts";
 const ENTER = "\r";
 const ESCAPE = "\x1b";
 const DOWN = "\x1b[B";
+const UP = "\x1b[A";
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -152,4 +153,43 @@ test("clicking empty space runs nothing", () => {
 		ctrl: false,
 	});
 	assert.deepEqual(results, []);
+});
+
+test("hovering never reflows the panel", () => {
+	const longInfo: McpDetailInfo = {
+		...info,
+		tools: [{ name: "query_docs", description: "Retrieves and queries up-to-date documentation and code examples from Context7 for any programming library or framework, even well-known ones." }],
+	};
+	const widths = [40, 60, 80];
+	for (const width of widths) {
+		const view = new McpDetailView(longInfo, actions, () => {}, plainTheme);
+		const serverCounts = new Set<number>();
+		for (const input of [DOWN, DOWN, DOWN, DOWN, UP, UP]) {
+			view.handleInput(input);
+			serverCounts.add(view.render(width).length);
+		}
+		assert.equal(serverCounts.size, 1, `server screen stable at width ${width}`);
+		view.handleInput(ENTER);
+		const toolsCounts = new Set<number>();
+		for (const input of [DOWN, DOWN, UP]) {
+			view.handleInput(input);
+			toolsCounts.add(view.render(width).length);
+		}
+		assert.equal(toolsCounts.size, 1, `tools screen stable at width ${width}`);
+	}
+});
+
+test("long tool rows truncate instead of wrapping", () => {
+	const view = new McpDetailView(
+		{
+			...info,
+			tools: [{ name: "query_docs", description: "Retrieves and queries up-to-date documentation and code examples from Context7." }],
+		},
+		actions,
+		() => {},
+		plainTheme,
+	);
+	view.handleInput(ENTER);
+	const text = view.render(40).join("\n");
+	assert.match(text, /query_docs — .*…/);
 });

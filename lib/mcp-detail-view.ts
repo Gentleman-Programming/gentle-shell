@@ -1,5 +1,5 @@
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
+import { CARD_TONE, panelInnerWidth, renderCard, type CardTheme } from "./shell-card.ts";
 import { normalizeMcpRow, type McpDetailAction, type McpDetailActionId } from "./mcp-sidebar.ts";
 
 export type McpDetailResult = { type: "run"; action: Exclude<McpDetailActionId, "tools"> } | { type: "close" };
@@ -94,8 +94,11 @@ export class McpDetailView {
 	}
 
 	render(width: number): string[] {
-		const inner = Math.max(1, width - 4);
-		const body = this.screen.kind === "tool" ? this.toolBody(inner) : this.screen.kind === "tools" ? this.toolsBody(inner) : this.serverBody(inner);
+		// Selectable rows are always truncated to one physical line in every
+		// state: hovering must restyle, never reflow, or the rows below jump
+		// and the overlay repaints over stale content.
+		const fit = Math.max(1, panelInnerWidth(this.theme, width, CARD_TONE.INFO));
+		const body = this.screen.kind === "tool" ? this.toolBody(fit) : this.screen.kind === "tools" ? this.toolsBody(fit) : this.serverBody(fit);
 		return renderCard(
 			{ title: `MCP server ${this.info.name}`, body, tone: CARD_TONE.INFO },
 			this.theme,
@@ -124,8 +127,10 @@ export class McpDetailView {
 
 	private serverBody(inner: number): string[] {
 		const current = this.selectables()[this.selected];
-		const row = (selectable: Selectable, text: string): string =>
-			current !== undefined && sameSelectable(current, selectable) ? this.highlight(text, inner) : text;
+		const row = (selectable: Selectable, text: string): string => {
+			const line = singleLine(text, inner);
+			return current !== undefined && sameSelectable(current, selectable) ? this.highlight(line, inner) : line;
+		};
 		return [
 			`State: ${this.info.statusLabel} · ${this.info.toolCount} ${this.info.toolCount === 1 ? "tool" : "tools"} · ${this.info.scopeLabel}`,
 			this.info.source,
@@ -155,7 +160,7 @@ export class McpDetailView {
 			rows.push(CONNECTING_TOOLS_NOTICE);
 		} else {
 			for (const [index, tool] of this.info.tools.entries()) {
-				const text = `${tool.name} — ${firstLine(tool.description)}`;
+				const text = singleLine(`${tool.name} — ${firstLine(tool.description)}`, inner);
 				rows.push(current !== undefined && sameSelectable(current, { kind: "tool", index }) ? this.highlight(text, inner) : text);
 			}
 		}
@@ -213,9 +218,11 @@ export class McpDetailView {
 	}
 
 	private highlight(text: string, inner: number): string {
-		const clipped = truncateToWidth(text, inner, "…");
-		const padded = clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped)));
-		return this.theme.bg?.("selectedBg", padded) ?? this.theme.fg("accent", `▸ ${text}`);
+		const fit = Math.max(1, inner);
+		const bar = this.theme.bg?.("selectedBg", text + " ".repeat(Math.max(0, fit - visibleWidth(text))));
+		// Without a selection background the `▸ ` marker costs two cells:
+		// truncating for it keeps the highlighted row on one line too.
+		return bar ?? this.theme.fg("accent", `▸ ${truncateToWidth(text, Math.max(1, fit - 2), "…")}`);
 	}
 }
 
@@ -223,6 +230,10 @@ export type { TUI };
 
 function firstLine(description: string): string {
 	return description.split("\n")[0] ?? "";
+}
+
+function singleLine(text: string, fit: number): string {
+	return truncateToWidth(text, Math.max(1, fit), "…");
 }
 
 function sameSelectable(a: Selectable, b: Selectable): boolean {

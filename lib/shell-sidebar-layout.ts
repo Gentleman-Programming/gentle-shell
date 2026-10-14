@@ -216,7 +216,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const style = cardStyle();
-		const parts = [...state.parts.entries()];
+		const parts = [...state.parts.entries()].filter(([key]) => key !== "mcp" || state.visibility?.mcp === true);
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const unchanged = prepared?.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
@@ -235,7 +235,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "mcp", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const sections = ["footer", "mcp", "agents", "todo"].filter((key) => (key !== "mcp" || state.visibility?.mcp === true) && (key !== "todo" || state.visibility?.todo !== false)).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);

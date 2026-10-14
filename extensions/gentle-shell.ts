@@ -1920,7 +1920,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const refreshVisual = () => {
 		visualSettings = resolveVisualSettings(animationOptions).settings;
 		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
-		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
+		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo, mcp: visualSettings.visibility.mcp };
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	};
@@ -2028,7 +2028,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			sidebarTui = tui;
-			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
+			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo, mcp: visualSettings.visibility.mcp };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a

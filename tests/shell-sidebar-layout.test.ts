@@ -756,6 +756,36 @@ test("native transcript and sidebar keep separate scroll routing across resize, 
 // when a sibling section's digest ticks — only the whole rail's assembled
 // `lines`/`hits` are rebuilt from the (possibly cached) per-section lines.
 
+test("MCP visibility is opt-in, switches live and preserves section caching", (t) => {
+	const f = fixture();
+	let footerDigest = "one";
+	let mcpRenders = 0;
+	let mcpDigests = 0;
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} }, {
+		digest: () => footerDigest, render: () => ["Status"], invalidate() {},
+	});
+	sidebarPart(f.tui, "mcp", { render: () => ["MCP"], invalidate() {} }, {
+		digest: () => { mcpDigests++; return "stable"; },
+		render: () => { mcpRenders++; return ["MCP servers"]; }, invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+	assert.doesNotMatch(rail(f).render(50).join("\n"), /MCP servers/);
+	assert.equal(mcpRenders, 0);
+	assert.equal(mcpDigests, 0);
+	sidebarState(f.tui).visibility = { mcp: true };
+	invalidateSidebar(f.tui);
+	assert.match(rail(f).render(50).join("\n"), /MCP servers/);
+	assert.equal(mcpRenders, 1);
+	footerDigest = "two";
+	assert.match(rail(f).render(50).join("\n"), /MCP servers/);
+	assert.equal(mcpRenders, 1, "footer changes do not re-render MCP");
+	sidebarState(f.tui).visibility = { mcp: false };
+	invalidateSidebar(f.tui);
+	const previousDigests = mcpDigests;
+	assert.doesNotMatch(rail(f).render(50).join("\n"), /MCP servers/);
+	assert.equal(mcpDigests, previousDigests);
+});
+
 test("a footer digest change does not re-render Agents or TODO", (t) => {
 	const f = fixture();
 	let footerLabel = "one";

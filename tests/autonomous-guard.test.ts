@@ -20,6 +20,9 @@ test("YOLO waives reversible push and rebase segments after full evaluation (#21
 		"git push origin main && gh pr create --fill", "cd sub && git push", "git push origin main; git status",
 		"git rebase main", "git rebase origin/main", "git rebase --onto main feature~3 feature", "git rebase --continue", "git rebase --abort", "git rebase --autostash main",
 		"git fetch origin && git rebase origin/main && git push",
+		// Output-only redirections never change what the segment does, so agents that append them are not re-prompted.
+		"git push origin main 2>&1", "git push -q origin main 2>&1 | tail -3", "git push 2>/dev/null", "git push origin main >/dev/null 2>&1",
+		"git push origin main &>/dev/null", "git rebase main 2>&1", "git add -A && git commit -m x && git push -u origin feature/test 2>&1",
 		"git\tpush\torigin\tmain", "git -C dir rebase main", "command git push origin main", "env -i git push origin main", "GIT_AUTHOR_NAME=x git push origin main",
 	]) {
 		assert.equal(isReversibleYoloCommand(command, evaluateGuardedCommand(command, config)), true, command);
@@ -32,6 +35,9 @@ test("YOLO waives reversible push and rebase segments after full evaluation (#21
 		`sh -c 'git push origin main'`, `git push origin main && sh -c "psql -c 'DROP TABLE users'"`,
 		"git push origin main && find data -delete", "git push origin main && rm -r data", "git push origin main && git stash drop", "git push origin main && git reset --hard",
 		"git rebase -i HEAD~3", "git rebase --interactive main", "git rebase -x 'make test' main", "git rebase --exec 'make test' main",
+		// Redirections that write to a file or read input are not output-only, so they keep the confirmation.
+		"git push origin main > out.txt", "git push origin main 2> err.log", "git push origin main >> log", "git push origin main < input",
+		"git push origin main 2>&1 extra", "git push origin main 2>&1 > out.txt", "git push origin main >&3",
 		"git commit -m x", "git status",
 		// Global git options that run or redirect code are not inspected by the segment grammar, so they never qualify.
 		"git -c core.sshCommand=evil push origin main", "git --exec-path=/evil push origin main", "git --git-dir=/x push origin main", "git -C dir rebase -i main",

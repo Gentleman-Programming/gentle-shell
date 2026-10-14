@@ -18,6 +18,8 @@ export const installerPaths = Object.freeze([
   "scripts/main-channel.mjs",
   "scripts/installer-windows.mjs",
   "scripts/installer-windows-artifacts.json",
+  "scripts/bundled-wizard.mjs",
+  "scripts/bundled-install.mjs",
   "scripts/bootstrap.sh",
   "scripts/bootstrap.cmd",
   "assets/install-wizard/index.html",
@@ -83,7 +85,12 @@ export const requiredPaths = [
   "lib/child-package-injection.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
+  "lib/gentle-shell-bundled.ts",
+  "lib/gentle-shell-startup-update.ts",
+  "lib/gentle-shell-update-panel.ts",
+  "lib/gentle-shell-startup-flow.ts",
   "lib/gentle-shell-resume-hint.ts",
+  "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
@@ -95,7 +102,13 @@ export const requiredPaths = [
 	"runtime/child-package-injection.mjs",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-bundled.mjs",
+	"runtime/gentle-shell-startup-update.mjs",
+	"runtime/gentle-shell-update-panel.mjs",
+	"runtime/gentle-shell-startup-flow.mjs",
 	"runtime/gentle-shell-resume-hint.mjs",
+	"runtime/gentle-shell-uninstall.mjs",
+	"runtime/gentle-shell-import-pi.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/status-timing-diagnostics.mjs",
 	"runtime/review-integration-v2.mjs",
@@ -384,7 +397,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.0.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.1.1 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -429,7 +442,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.0.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.1.1 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

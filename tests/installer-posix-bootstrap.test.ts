@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readdirSync, rmSync, lstatSync, unlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import test, { type TestContext } from "node:test";
-import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools } from "../scripts/installer-downloads.mjs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { crc32, deflateRawSync, gzipSync } from "node:zlib";
+import { artifactFor, verifiedDownload, compatibleEngine, ensurePnpm, launchWizard, bootstrap, removeOwnedTools, acquireGo, installedGo } from "../scripts/installer-downloads.mjs";
 
 const script = resolve("scripts/bootstrap.sh");
 const helper = resolve("scripts/installer-downloads.mjs");
@@ -98,6 +101,54 @@ test("download helper fails closed on integrity, empty body and adapter failure"
 		await assert.rejects(verifiedDownload("pnpm", { download }), /Download|integrity/);
 	}
 });
+/** A local server that, like dl.google.com, gzips the body when the client accepts it. */
+async function compressingServer(bytes: Buffer, always = false) {
+	const { createServer } = await import("node:http");
+	const seen: string[] = [];
+	const server = createServer((request, response) => {
+		const accepted = String(request.headers["accept-encoding"] ?? "");
+		seen.push(accepted);
+		if (always || /gzip/.test(accepted)) {
+			const body = gzipSync(bytes);
+			response.writeHead(200, { "content-encoding": "gzip", "content-length": String(body.length) });
+			response.end(body);
+		} else {
+			response.writeHead(200, { "content-length": String(bytes.length) });
+			response.end(bytes);
+		}
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
+	const { port } = server.address() as { port: number };
+	return { url: `http://127.0.0.1:${port}/go.zip`, seen, close: () => new Promise((done) => server.close(done)) };
+}
+function localArtifact(url: string, bytes: Buffer) {
+	return () => ({ url, size: bytes.length, maxBytes: bytes.length, integrity: `sha256-${createHash("sha256").update(bytes).digest("hex")}` });
+}
+
+test("the real download asks for the identity encoding, so a server that would gzip the archive sends it whole", async () => {
+	const bytes = Buffer.concat([Buffer.from("PK\u0003\u0004"), Buffer.alloc(4096, 7)]);
+	const server = await compressingServer(bytes);
+	try {
+		const result = await verifiedDownload("go", { artifact: localArtifact(server.url, bytes) });
+		assert.deepEqual(result, bytes);
+		assert.deepEqual(server.seen, ["identity"]);
+	} finally { await server.close(); }
+});
+
+test("an encoded response is refused with its cause instead of being reported as truncated", async () => {
+	const bytes = Buffer.alloc(4096, 9);
+	const server = await compressingServer(bytes, true);
+	try {
+		await assert.rejects(verifiedDownload("go", { artifact: localArtifact(server.url, bytes) }),
+			(error: Error) => error.message === "Download failed" && /encoded/.test(String((error.cause as Error)?.message)));
+	} finally { await server.close(); }
+});
+
+test("a failed download keeps the transport error as its cause", async () => {
+	await assert.rejects(verifiedDownload("pnpm", { download: async () => { throw new Error("socket hang up"); } }),
+		(error: Error) => error.message === "Download failed" && (error.cause as Error)?.message === "socket hang up");
+});
+
 test("download helper validates bytes before returning them", async () => {
 	const bytes = Buffer.from("verified fixture");
 	let observed = "";
@@ -113,7 +164,7 @@ test("download helper validates bytes before returning them", async () => {
 posixTest("compatible existing tools are reused with whitespace and Unicode paths", () => {
 	const f = fixture();
 	try {
-		f.addNode(); f.addPnpm("12.0.0"); f.wizard();
+		f.addNode(); f.addPnpm("11.5.0"); f.wizard();
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /wizard-child:/);
@@ -188,7 +239,7 @@ for (const extra of [{ FAKE_HASH: "0".repeat(64) }, { DOWNLOAD_STATUS: "18" }, {
 		} finally { f.cleanup(); }
 	});
 }
-for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
+for (const version of ["v24.1.0-rc.1", "v25.00.1", "banana"]) {
 	posixTest(`existing Node ${version} is rejected without replacement`, () => {
 		const f = fixture();
 		try {
@@ -200,6 +251,20 @@ for (const version of ["v22.18.0", "v24.1.0-rc.1", "v25.00.1", "banana"]) {
 		} finally { f.cleanup(); }
 	});
 }
+posixTest("an older stable Node is left unchanged and a verified Node runs the helper and wizard instead", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		const older = `#!/bin/sh\nif [ "$1" = --version ]; then echo v22.18.0; else echo user-node-ran >&2; exit 9; fi\n`;
+		writeFileSync(join(f.bin, "node"), older, { mode: 0o755 });
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+		assert.doesNotMatch(result.stderr, /user-node-ran/);
+		assert.equal(readFileSync(join(f.bin, "node"), "utf8"), older);
+		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
+	} finally { f.cleanup(); }
+});
 posixTest("existing pnpm with unknown engine blocks instead of acquisition", () => {
 	const f = fixture();
 	try {
@@ -250,34 +315,74 @@ posixTest("a pnpm shim without a cmd-shim target still blocks", () => {
 const nativeHeaders: Record<string, number[]> = {
 	"Mach-O 64-bit": [0xcf, 0xfa, 0xed, 0xfe], "Mach-O universal": [0xca, 0xfe, 0xba, 0xbe], ELF: [0x7f, 0x45, 0x4c, 0x46],
 };
-function standalonePnpm(f: ReturnType<typeof fixture>, header: number[], linked = false) {
+function standalonePnpm(f: ReturnType<typeof fixture>, header: number[], linked = false, padding = 64) {
 	const installs = join(f.root, "mise/installs/pnpm/10.27.0");
 	mkdirSync(installs, { recursive: true });
 	const binary = join(installs, "pnpm");
-	writeFileSync(binary, Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+	writeFileSync(binary, Buffer.concat([Buffer.from(header), Buffer.alloc(padding)]), { mode: 0o755 });
 	if (linked) symlinkSync(binary, join(f.bin, "pnpm"));
-	else writeFileSync(join(f.bin, "pnpm"), Buffer.concat([Buffer.from(header), Buffer.alloc(64)]), { mode: 0o755 });
+	else writeFileSync(join(f.bin, "pnpm"), Buffer.concat([Buffer.from(header), Buffer.alloc(padding)]), { mode: 0o755 });
 }
 const standaloneProcess = (version: string, calls: string[][] = []) => (_command: string, args: string[]) => {
 	calls.push(args);
 	return args.at(-1) === "--version" ? version : " --global ";
 };
 posixTest("a standalone native pnpm (mise, pnpm installer) is reused after version and capability proof", async () => {
+	// A real executable is far larger than the 64 KiB a shim may have; only scripts are read as shims.
 	for (const [label, header] of Object.entries(nativeHeaders)) {
-		for (const linked of [false, true]) {
+		for (const [linked, padding] of [[false, 64], [true, 64], [false, 128 * 1024]] as const) {
 			const f = fixture();
 			try {
-				standalonePnpm(f, header, linked);
+				standalonePnpm(f, header, linked, padding);
 				const calls: string[][] = [];
 				const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: {
-					process: standaloneProcess("10.27.0", calls), download: () => { throw new Error("must not download"); },
+					process: standaloneProcess("11.5.0", calls), download: () => { throw new Error("must not download"); },
 				} });
-				assert.equal(result.acquired, false, `${label} linked=${linked}`);
-				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked}`);
+				assert.equal(result.acquired, false, `${label} linked=${linked} padding=${padding}`);
+				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} linked=${linked} padding=${padding}`);
 				assert.deepEqual(readdirSync(f.home), [], "no private tooling is created");
 			} finally { f.cleanup(); }
 		}
 	}
+});
+posixTest("an existing pnpm of another major, older than the pin or engine-incompatible is left unchanged and the verified pnpm is acquired", async () => {
+	for (const [version, engine] of [["10.27.0", ">=18.12"], ["11.0.0", ">=22.13"], ["12.0.0", ">=22.13"], ["11.5.0", ">=99.0.0"]]) {
+		const f = fixture();
+		try {
+			f.addPnpm(version, engine);
+			const metadata = readFileSync(join(f.root, "pnpm package/package.json"), "utf8");
+			const adapters = acquisitionAdapters();
+			const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters });
+			assert.equal(result.acquired, true, version);
+			assert.ok(result.env.PATH.startsWith(`${join(f.home, "pnpm/bin")}:`), version);
+			assert.equal(readFileSync(join(f.root, "pnpm package/package.json"), "utf8"), metadata);
+			assert.ok(lstatSync(join(f.bin, "pnpm")).isSymbolicLink());
+			assert.ok(adapters.calls.every((call) => !call.startsWith(join(f.bin, "pnpm"))), version);
+		} finally { f.cleanup(); }
+	}
+	// A standalone native pnpm (mise) of another major: only its version is read.
+	const f = fixture();
+	try {
+		standalonePnpm(f, nativeHeaders.ELF);
+		const calls: string[][] = [];
+		const adapters = acquisitionAdapters();
+		const standalone = { ...adapters, process: (command: string, args: string[]) => command === join(f.bin, "pnpm")
+			? standaloneProcess("10.27.0", calls)(command, args) : adapters.process(command, args) };
+		const result = await ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: standalone });
+		assert.equal(result.acquired, true);
+		assert.deepEqual(calls, [["--version"]]);
+	} finally { f.cleanup(); }
+});
+posixTest("the bootstrap claims private tools for the verified pnpm when the existing one is incompatible", async () => {
+	const f = fixture();
+	try {
+		f.addPnpm("10.27.0", ">=18.12");
+		writeFileSync(join(f.bundle, "bin/gentle-shell-install.mjs"), "import { writeFileSync } from 'node:fs';\n" +
+			`writeFileSync(${JSON.stringify(join(f.root, "wizard-path"))}, process.env.PATH);\n`);
+		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
+		assert.match(readFileSync(join(f.root, "wizard-path"), "utf8"), /^[^:]*\.gentle-shell-bootstrap-tools\.[^:]*\/pnpm\/bin:/);
+		assert.deepEqual(readdirSync(f.home), [], "the helper-created tools are removed after the wizard");
+	} finally { f.cleanup(); }
 });
 posixTest("a standalone native pnpm without a semver version or global capability still blocks", async () => {
 	const f = fixture();
@@ -287,7 +392,7 @@ posixTest("a standalone native pnpm without a semver version or global capabilit
 		for (const version of ["", "10.27", "not pnpm", "10.27.0-beta.1"]) {
 			await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters(standaloneProcess(version)) }), /pnpm version rejected/, version);
 		}
-		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters((_c, args) => args.at(-1) === "--version" ? "10.27.0" : "no global flag") }),
+		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: adapters((_c, args) => args.at(-1) === "--version" ? "11.5.0" : "no global flag") }),
 			/pnpm global-install capability evidence missing/);
 	} finally { f.cleanup(); }
 });
@@ -298,6 +403,138 @@ posixTest("a script pnpm without a package is not treated as standalone", async 
 		await assert.rejects(ensurePnpm({ tools: f.home, env: { PATH: f.bin }, nodeVersion: "24.21.0", adapters: { process: () => { throw new Error("must not run"); } } }),
 			/package engine evidence missing/);
 	} finally { f.cleanup(); }
+});
+// $PNPM_HOME layouts captured from real macOS installs (get.pnpm.io + `pnpm setup`,
+// `pnpm self-update`, `pnpm add -g`), shims trimmed to the lines naming the target.
+interface PnpmHomeLayout {
+	bin: string; target: string; shim: (home: string) => string; native: boolean;
+	pkg?: { dir: string; json: Record<string, unknown> }; store?: string;
+}
+const setupShim = (target: string) => (home: string) => `#!/bin/sh\nbasedir_abs=$(CDPATH= cd -P -- "$basedir" && pwd -P) || exit $?\nbasedir="$basedir_abs"\n\n` +
+	`exec "$basedir_abs/../${target}"   "$@"\nexit $?\n# cmd-shim-target=${home}/${target}\n`;
+const legacyShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\n\n"$basedir/${target}"   "$@"\nexit $?\n`;
+const addGlobalShim = (target: string) => () => `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\n\nif [ -x "$basedir/node" ]; then\n` +
+	`  exec "$basedir/node"  "$basedir/${target}" "$@"\nelse\n  exec node  "$basedir/${target}" "$@"\nfi\n`;
+const pnpmHomeLayouts: Record<string, PnpmHomeLayout & { version: string; outcome: "reused" | "acquired" }> = {
+	"pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)": {
+		bin: "bin", target: "global/v11/933b1afb/node_modules/@pnpm/exe/pnpm", shim: setupShim("global/v11/933b1afb/node_modules/@pnpm/exe/pnpm"),
+		native: true, store: "store/v11/links/@pnpm/exe/directory/643afacf/node_modules/@pnpm/exe",
+		pkg: { dir: "global/v11/933b1afb/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 self-update to 11 (@pnpm/exe in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm", shim: legacyShim(".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe/pnpm"),
+		native: true, pkg: { dir: ".tools/@pnpm+exe/11.28.2/node_modules/@pnpm/exe", json: { name: "@pnpm/exe", version: "11.28.2" } },
+		version: "11.28.2", outcome: "reused",
+	},
+	"pnpm 10 setup (bare executable in $PNPM_HOME/.tools)": {
+		bin: "", target: ".tools/pnpm-exe/10.34.6/pnpm", shim: legacyShim(".tools/pnpm-exe/10.34.6/pnpm"), native: true,
+		version: "10.34.6", outcome: "acquired",
+	},
+	"pnpm 12 setup (native pnpm package without engines)": {
+		bin: "bin", target: "global/v11/82859147/node_modules/pnpm/pnpm", shim: setupShim("global/v11/82859147/node_modules/pnpm/pnpm"),
+		native: true, pkg: { dir: "global/v11/82859147/node_modules/pnpm", json: { name: "pnpm", version: "12.10.1", bin: { pnpm: "pnpm", pn: "pnpm" } } },
+		version: "12.10.1", outcome: "acquired",
+	},
+	"pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)": {
+		bin: "", target: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs", shim: addGlobalShim("global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm/bin/pnpm.cjs"),
+		native: false, pkg: { dir: "global/5/.pnpm/pnpm@10.34.6/node_modules/pnpm", json: { name: "pnpm", version: "10.34.6", engines: { node: ">=18.12" } } },
+		version: "10.34.6", outcome: "acquired",
+	},
+};
+function pnpmHome(f: ReturnType<typeof fixture>, layout: PnpmHomeLayout) {
+	const home = join(f.root, "Library/pnpm");
+	const dir = join(home, layout.bin);
+	const target = join(home, layout.target);
+	mkdirSync(dir, { recursive: true });
+	if (layout.store) {
+		// pnpm 11 links the global package directory into its store.
+		mkdirSync(join(home, layout.store), { recursive: true });
+		mkdirSync(dirname(dirname(target)), { recursive: true });
+		symlinkSync(join(home, layout.store), dirname(target));
+	} else mkdirSync(dirname(target), { recursive: true });
+	if (layout.pkg) {
+		mkdirSync(join(home, layout.pkg.dir), { recursive: true });
+		writeFileSync(join(home, layout.pkg.dir, "package.json"), JSON.stringify(layout.pkg.json));
+	}
+	writeFileSync(target, layout.native ? Buffer.concat([Buffer.from(nativeHeaders["Mach-O 64-bit"]), Buffer.alloc(64)]) : "#!/usr/bin/env node\n", { mode: 0o755 });
+	writeFileSync(join(dir, "pnpm"), layout.shim(home), { mode: 0o755 });
+	return { shim: join(dir, "pnpm"), env: { PATH: `${dir}:${f.bin}` } };
+}
+posixTest("pnpm installed in $PNPM_HOME by pnpm itself is recognized behind its shim", async () => {
+	for (const [label, layout] of Object.entries(pnpmHomeLayouts)) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const calls: string[][] = [];
+			const acquisition = acquisitionAdapters();
+			const adapters = { ...acquisition, process: (command: string, args: string[]) => command === shim
+				? standaloneProcess(layout.version, calls)(command, args) : acquisition.process(command, args) };
+			const result = await ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters });
+			assert.equal(result.acquired, layout.outcome === "acquired", label);
+			if (layout.outcome === "reused") assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], label);
+			// An incompatible JS pnpm is judged by its package; a native one only by --version.
+			else assert.deepEqual(calls, layout.native ? [["--version"]] : [], label);
+		} finally { f.cleanup(); }
+	}
+});
+// A shim is read whole up to 64 KiB, so a target named after the first 4 KiB is still found.
+const paddedShim = (shim: (home: string) => string, size: number) => (home: string) => {
+	const [first, ...rest] = shim(home).split("\n");
+	const text = [first, ...rest].join("\n");
+	return `${first}\n${"#".repeat(Math.max(0, size - Buffer.byteLength(text) - 1))}\n${rest.join("\n")}`;
+};
+posixTest("a $PNPM_HOME shim larger than 4 KiB keeps its target; one above 64 KiB fails closed", async () => {
+	const setup = pnpmHomeLayouts["pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)"];
+	const legacy = pnpmHomeLayouts["pnpm 10 self-update to 11 (@pnpm/exe in $PNPM_HOME/.tools)"];
+	for (const [label, layout] of [["cmd-shim-target comment", setup], ["single basedir target", legacy]] as const) {
+		for (const size of [4097, 64 * 1024]) {
+			const f = fixture();
+			try {
+				const { shim, env } = pnpmHome(f, { ...layout, shim: paddedShim(layout.shim, size) });
+				assert.equal(readFileSync(shim).length, size, label);
+				const calls: string[][] = [];
+				const adapters = { process: (command: string, args: string[]) => {
+					if (command !== shim) throw new Error("must not run");
+					return standaloneProcess(layout.version, calls)(command, args);
+				}, download: () => { throw new Error("must not download"); } };
+				const result = await ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters });
+				assert.equal(result.acquired, false, `${label} ${size}`);
+				assert.deepEqual(calls, [["--version"], ["help", "add"], ["help", "bin"]], `${label} ${size}`);
+			} finally { f.cleanup(); }
+		}
+		const f = fixture();
+		try {
+			const { env } = pnpmHome(f, { ...layout, shim: paddedShim(layout.shim, 64 * 1024 + 1) });
+			const adapters = { process: () => { throw new Error("must not run"); }, download: () => { throw new Error("must not download"); } };
+			await assert.rejects(ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters }), /pnpm compatibility is unknown: shim larger than 64 KiB/, label);
+			assert.deepEqual(readdirSync(f.home), [], label);
+		} finally { f.cleanup(); }
+	}
+});
+posixTest("pnpm behind a $PNPM_HOME shim still fails closed without matching evidence", async () => {
+	const setup = pnpmHomeLayouts["pnpm 11 setup or self-update (@pnpm/exe in $PNPM_HOME/bin)"];
+	const addGlobal = pnpmHomeLayouts["pnpm 10 add -g pnpm (JS package in $PNPM_HOME/global/5)"];
+	const missing = legacyShim(".tools/pnpm-exe/10.34.6/pnpm");
+	const ambiguous = () => `${legacyShim(".tools/a/pnpm")()}"$basedir/.tools/b/pnpm" "$@"\n`;
+	const cases: [string, PnpmHomeLayout, string | undefined, RegExp][] = [
+		["native version differs from its package", setup, "11.27.0", /pnpm version rejected/],
+		["JS target not named pnpm", { ...addGlobal, pkg: { dir: addGlobal.pkg!.dir, json: { ...addGlobal.pkg!.json, name: "not-pnpm" } } }, undefined, /package engine evidence missing/],
+		["target missing", { bin: "", target: "elsewhere/pnpm", shim: missing, native: true }, undefined, /package engine evidence missing/],
+		["two targets", { bin: "", target: ".tools/a/pnpm", shim: ambiguous, native: true }, undefined, /package engine evidence missing/],
+	];
+	for (const [label, layout, version, error] of cases) {
+		const f = fixture();
+		try {
+			const { shim, env } = pnpmHome(f, layout);
+			const adapters = { process: (command: string, args: string[]) => {
+				if (command !== shim || version === undefined) throw new Error("must not run");
+				return standaloneProcess(version)(command, args);
+			}, download: () => { throw new Error("must not download"); } };
+			await assert.rejects(ensurePnpm({ tools: f.home, env, nodeVersion: "24.21.0", adapters }), error, label);
+			assert.deepEqual(readdirSync(f.home), [], label);
+		} finally { f.cleanup(); }
+	}
 });
 posixTest("missing required shell utility is named", () => {
 	const f = fixture();
@@ -667,4 +904,298 @@ posixTest("failed pnpm download never reaches archive/process adapters", async (
 		assert.equal(processes, 0);
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
+});
+
+// --- Pinned Go toolchain: official go.dev archives, verified, extracted in process ---------------
+const goPins = {
+	"darwin-arm64": ["go1.25.14.darwin-arm64.tar.gz", "5b26c0b6f308240fca2614fb02f622cfcc8c0cc3b69c78bba4845489a4590259", 58123934],
+	"darwin-x64": ["go1.25.14.darwin-amd64.tar.gz", "b09087a67d5792a8b0fcbf74212d62560c94ac8a8fd750ff920d8cb5f1e20118", 60622678],
+	"linux-x64": ["go1.25.14.linux-amd64.tar.gz", "a21ae5633a269bcd7e90cf767e48225633795e99d831742cbf3397064fee7712", 59909419],
+	"linux-arm64": ["go1.25.14.linux-arm64.tar.gz", "9bf234ea70ffec9347fdf6b22ce4add51717d3386a38a441e8c8743fceb5eaee", 57360344],
+	"win32-x64": ["go1.25.14.windows-amd64.zip", "119044a92b3987c341cd6aebb256676dd4780d292f7b4e72a3e9976677841697", 67591780],
+	"win32-arm64": ["go1.25.14.windows-arm64.zip", "96fb31ae26b288b5311bd31d8252d4a62c8a661e4dbb64d504cc646e4d10a57f", 64735369],
+} as const;
+for (const [target, [file, sha256, size]] of Object.entries(goPins)) {
+	test(`fixed Go descriptor for ${target} is the go.dev archive and checksum`, () => {
+		const [platform, arch] = target.split("-");
+		const artifact = artifactFor("go", platform, arch);
+		assert.equal(artifact.version, "1.25.14");
+		assert.equal(artifact.url, `https://dl.google.com/go/${file}`);
+		assert.equal(artifact.integrity, `sha256-${sha256}`);
+		assert.equal(artifact.size, size);
+	});
+}
+test("Go has no descriptor for other targets", () => {
+	for (const [platform, arch] of [["linux", "ia32"], ["freebsd", "x64"], ["win32", "ia32"]]) {
+		assert.throws(() => artifactFor("go", platform, arch), /Unsupported/);
+	}
+});
+
+// The Engram release the bundled install ships (S9), from its checksums.txt and
+// the GitHub asset digests; every archive was downloaded and re-hashed.
+const engramPins = {
+	"darwin-arm64": ["darwin_arm64.tar.gz", "d0aa59c9a83d17ae3fc7f5dd31fdab6a26fd8c00fc5e692195753cd0719294f7", 7470202],
+	"darwin-x64": ["darwin_amd64.tar.gz", "3c5bdc73d226af5629cf4f4a781e223142e37c1ebb443c4b596f2e284352e381", 7961674],
+	"linux-x64": ["linux_amd64.tar.gz", "715fda625556e46d65ddb4526bb7f88a3fee5339ca3c44ce44cc652f17fa57f1", 7821191],
+	"linux-arm64": ["linux_arm64.tar.gz", "3309e9c0bbb539d183fd5aa9f9a13cd7aa0e81ec2512b5bedefb8b2bdd35b3e5", 7176726],
+	"win32-x64": ["windows_amd64.zip", "3065736ec7ff8137eb3fc607275f542ea13bb743a5157318c8a8770f11ce3289", 8021225],
+	"win32-arm64": ["windows_arm64.zip", "7463872a85a5e5434cf958bdffc71dda1926bced30d3b6b38c80fec9bb98fbba", 7231641],
+} as const;
+test("fixed Engram descriptors are the GitHub release archives and checksums, and nothing else", () => {
+	for (const [target, [suffix, sha256, size]] of Object.entries(engramPins)) {
+		const [platform, arch] = target.split("-");
+		const artifact = artifactFor("engram", platform, arch);
+		assert.equal(artifact.version, "3.4.0");
+		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.4.0/engram_3.4.0_${suffix}`);
+		assert.equal(artifact.integrity, `sha256-${sha256}`);
+		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
+		// GitHub serves release assets from its asset hosts.
+		assert.deepEqual(artifact.redirectHosts, ["objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
+	}
+	for (const [platform, arch] of [["linux", "ia32"], ["freebsd", "x64"], ["win32", "ia32"]]) {
+		assert.throws(() => artifactFor("engram", platform, arch), /Unsupported/);
+	}
+});
+
+function tarHeader(name: string, size: number, { type = "0", mode = 0o644, link = "", prefix = "" } = {}) {
+	const header = Buffer.alloc(512);
+	header.write(name, 0, 100, "utf8");
+	header.write(`${mode.toString(8).padStart(7, "0")}\0`, 100);
+	header.write("0000000\0", 108);
+	header.write("0000000\0", 116);
+	header.write(`${size.toString(8).padStart(11, "0")}\0`, 124);
+	header.write("00000000000\0", 136);
+	header.write("        ", 148);
+	header.write(type, 156);
+	header.write(link, 157);
+	header.write("ustar\0", 257);
+	header.write("00", 263);
+	header.write(prefix, 345);
+	let sum = 0;
+	for (const byte of header) sum += byte;
+	header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
+	return header;
+}
+type GoEntry = { name: string; body?: string; type?: string; mode?: number; link?: string; prefix?: string };
+function tarEntry({ name, body = "", ...options }: GoEntry) {
+	const data = Buffer.from(body);
+	return Buffer.concat([tarHeader(name, data.length, options), data, Buffer.alloc((512 - (data.length % 512)) % 512)]);
+}
+function paxPath(path: string) {
+	const record = (length: number) => `${length} path=${path}\n`;
+	let length = Buffer.byteLength(record(0));
+	while (Buffer.byteLength(record(length)) !== length) length = Buffer.byteLength(record(length));
+	return tarEntry({ name: "go/PaxHeaders.0/x", type: "x", body: record(length) });
+}
+const goTarGz = (...entries: Buffer[]) => gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
+function goZip(files: Array<{ name: string; body: string; mode?: number }>) {
+	const locals: Buffer[] = [];
+	const centrals: Buffer[] = [];
+	let offset = 0;
+	for (const { name, body, mode = 0o100644 } of files) {
+		const data = deflateRawSync(Buffer.from(body));
+		const nameBytes = Buffer.from(name);
+		const local = Buffer.alloc(30);
+		local.writeUInt32LE(0x04034b50, 0);
+		local.writeUInt16LE(20, 4);
+		local.writeUInt16LE(0x800, 6);
+		local.writeUInt16LE(8, 8);
+		local.writeUInt32LE(crc32(Buffer.from(body)), 14);
+		local.writeUInt32LE(data.length, 18);
+		local.writeUInt32LE(Buffer.byteLength(body), 22);
+		local.writeUInt16LE(nameBytes.length, 26);
+		const central = Buffer.alloc(46);
+		central.writeUInt32LE(0x02014b50, 0);
+		central.writeUInt16LE((3 << 8) | 20, 4);
+		central.writeUInt16LE(20, 6);
+		central.writeUInt16LE(0x800, 8);
+		central.writeUInt16LE(8, 10);
+		central.writeUInt32LE(crc32(Buffer.from(body)), 16);
+		central.writeUInt32LE(data.length, 20);
+		central.writeUInt32LE(Buffer.byteLength(body), 24);
+		central.writeUInt16LE(nameBytes.length, 28);
+		central.writeUInt32LE((mode << 16) >>> 0, 38);
+		central.writeUInt32LE(offset, 42);
+		locals.push(local, nameBytes, data);
+		centrals.push(central, nameBytes);
+		offset += local.length + nameBytes.length + data.length;
+	}
+	const directory = Buffer.concat(centrals);
+	const end = Buffer.alloc(22);
+	end.writeUInt32LE(0x06054b50, 0);
+	end.writeUInt16LE(files.length, 8);
+	end.writeUInt16LE(files.length, 10);
+	end.writeUInt32LE(directory.length, 12);
+	end.writeUInt32LE(offset, 16);
+	return Buffer.concat([...locals, directory, end]);
+}
+const goVersionFile = "go1.25.14\ntime 2026-10-01T00:00:00Z\n";
+const goTree = (extra: Buffer[] = []) => goTarGz(
+	tarEntry({ name: "go/", type: "5", mode: 0o755 }),
+	tarEntry({ name: "go/VERSION", body: goVersionFile }),
+	tarEntry({ name: "go/bin/go", body: "#!/bin/sh\necho 'go version go1.25.14 darwin/arm64'\n", mode: 0o755 }),
+	tarEntry({ name: "long-name-with-a-ustar-prefix.go", prefix: "go/src/internal/trace/testdata/generators", body: "package x\n" }),
+	paxPath("go/test/fixedbugs/issue27836.dir/\u00defoo.go"),
+	tarEntry({ name: "go/test/fixedbugs/issue27836.dir/foo.go", body: "package foo\n" }),
+	...extra);
+/** Trusted test adapters standing in for the pinned download: the fixture's own size and hash. */
+function goAdapters(bytes: Buffer, counter = { downloads: 0 }) {
+	return {
+		artifact: (name: string, platform: string, arch: string) => ({ ...artifactFor(name, platform, arch), size: bytes.length, maxBytes: bytes.length,
+			integrity: `sha256-${createHash("sha256").update(bytes).digest("hex")}` }),
+		download: async () => { counter.downloads += 1; return bytes; },
+	};
+}
+function goRoot() {
+	const base = mkdtempSync(join(realpathSync(tmpdir()), "pinned-go-"));
+	return { base, root: join(base, "config", "tools", "go"), cleanup: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+test("the pinned Go is verified, extracted in process and published once into the installer's own directory", async () => {
+	const r = goRoot();
+	try {
+		const counter = { downloads: 0 };
+		const result = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		const published = join(r.root, "1.25.14");
+		assert.deepEqual(result, { goPath: join(published, "go", "bin", "go"), version: "1.25.14", acquired: true });
+		assert.equal(readFileSync(join(published, "go", "VERSION"), "utf8"), goVersionFile);
+		assert.equal(readFileSync(join(published, "go/src/internal/trace/testdata/generators/long-name-with-a-ustar-prefix.go"), "utf8"), "package x\n");
+		assert.equal(readFileSync(join(published, "go/test/fixedbugs/issue27836.dir/\u00defoo.go"), "utf8"), "package foo\n");
+		assert.equal(existsSync(join(published, "go/test/fixedbugs/issue27836.dir/foo.go")), false);
+		if (process.platform !== "win32") {
+			assert.equal(lstatSync(result.goPath).mode & 0o777, 0o755);
+			assert.equal(lstatSync(join(published, "go", "VERSION")).mode & 0o777, 0o644);
+			assert.equal(lstatSync(published).mode & 0o077, 0);
+		}
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"], "no staging directory is left behind");
+		assert.equal(installedGo(r.root, "darwin", "arm64"), result.goPath);
+		// A later run reuses the published copy: no download, nothing replaced.
+		const again = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) });
+		assert.deepEqual(again, { ...result, acquired: false });
+		assert.equal(counter.downloads, 1);
+		// The marker names the exact pinned archive, so another target's copy is not reused.
+		assert.equal(installedGo(r.root, "linux", "x64"), null);
+	} finally { r.cleanup(); }
+});
+
+test("the Windows Go zip is extracted in process into go\\bin\\go.exe", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ", mode: 0o100755 },
+			{ name: "go/src/cmd/go/main.go", body: "package main\n" }]);
+		const result = await acquireGo({ root: r.root, platform: "win32", arch: "x64", adapters: goAdapters(bytes) });
+		assert.equal(result.goPath, join(r.root, "1.25.14", "go", "bin", "go.exe"));
+		assert.equal(readFileSync(result.goPath, "utf8"), "MZ");
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go/src/cmd/go/main.go"), "utf8"), "package main\n");
+	} finally { r.cleanup(); }
+});
+
+test("a Go download with the wrong size or checksum fails closed before anything is extracted", async () => {
+	const r = goRoot();
+	try {
+		const bytes = goTree();
+		const wrongHash = { ...goAdapters(bytes), digest: () => Buffer.alloc(32) };
+		const wrongSize = { ...goAdapters(bytes), download: async () => Buffer.concat([bytes, Buffer.from("x")]) };
+		const truncated = { ...goAdapters(bytes), download: async () => bytes.subarray(1) };
+		for (const [adapters, cause] of [[wrongHash, /integrity/], [wrongSize, /size/], [truncated, /size/]] as const) {
+			await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters }),
+				(error: Error) => /Go verified acquisition failed/.test(error.message) && cause.test(String((error.cause as Error)?.message)));
+			assert.deepEqual(existsSync(r.root) ? readdirSync(r.root) : [], []);
+		}
+		// The production descriptor is the exact pinned size: anything else is rejected.
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: { download: async () => bytes } }),
+			/Go verified acquisition failed/);
+	} finally { r.cleanup(); }
+});
+
+test("an unsafe Go archive fails closed and publishes nothing", async () => {
+	const unsafe: Array<[string, Buffer]> = [
+		["traversal", goTree([tarEntry({ name: "go/../escape", body: "x" })])],
+		["absolute", goTree([tarEntry({ name: "/go/escape", body: "x" })])],
+		["outside go/", goTree([tarEntry({ name: "other/file", body: "x" })])],
+		["backslash", goTree([tarEntry({ name: "go\\..\\escape", body: "x" })])],
+		["symlink", goTree([tarEntry({ name: "go/link", type: "2", link: "/etc/passwd" })])],
+		["hard link", goTree([tarEntry({ name: "go/hard", type: "1", link: "go/VERSION" })])],
+		["duplicate", goTree([tarEntry({ name: "go/VERSION", body: "go1.25.14\n" })])],
+		["unknown pax key", goTree([tarEntry({ name: "go/PaxHeaders.0/y", type: "x", body: "19 linkpath=/etc/x\n" }), tarEntry({ name: "go/y", body: "y" })])],
+		["missing go binary", goTarGz(tarEntry({ name: "go/VERSION", body: goVersionFile }))],
+		["other version", goTarGz(tarEntry({ name: "go/VERSION", body: "go1.25.13\n" }), tarEntry({ name: "go/bin/go", body: "x", mode: 0o755 }))],
+		["not a tar", gzipSync(Buffer.from("not a tar archive"))],
+		["zip symlink", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/link", body: "/etc", mode: 0o120777 }])],
+		["zip traversal", goZip([{ name: "go/VERSION", body: goVersionFile }, { name: "go/bin/go.exe", body: "MZ" }, { name: "go/../../escape", body: "x" }])],
+	];
+	for (const [label, bytes] of unsafe) {
+		const r = goRoot();
+		try {
+			const platform = label.startsWith("zip") ? "win32" : "darwin";
+			await assert.rejects(acquireGo({ root: r.root, platform, arch: "arm64", adapters: goAdapters(bytes) }), /Go verified acquisition failed/, label);
+			assert.deepEqual(readdirSync(r.root), [], label);
+			assert.equal(existsSync(join(r.base, "escape")), false, label);
+		} finally { r.cleanup(); }
+	}
+});
+
+test("an existing Go destination the installer did not publish is never replaced", async () => {
+	const r = goRoot();
+	try {
+		mkdirSync(join(r.root, "1.25.14", "go", "bin"), { recursive: true });
+		writeFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "user's own");
+		const counter = { downloads: 0 };
+		// The cause names the folder in the way, so the wizard can say which one to remove.
+		await assert.rejects(acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree(), counter) }),
+			(error: Error) => /Go verified acquisition failed/.test(error.message) &&
+				(error.cause as Error)?.message === `Conflicting Go destination: ${join(r.root, "1.25.14")}`);
+		assert.equal(counter.downloads, 0, "nothing is downloaded next to a conflicting folder");
+		assert.equal(readFileSync(join(r.root, "1.25.14", "go", "bin", "go"), "utf8"), "user's own");
+		assert.deepEqual(readdirSync(r.root), ["1.25.14"]);
+		assert.equal(installedGo(r.root, "darwin", "arm64"), null);
+	} finally { r.cleanup(); }
+});
+
+test("the pinned Go destination appears only complete and marked, so an interrupted run never leaves it half published", async () => {
+	const r = goRoot();
+	const destination = join(r.root, "1.25.14");
+	const marker = join(destination, ".gentle-shell-go");
+	const violations: string[] = [];
+	const originals = { mkdirSync: fs.mkdirSync, renameSync: fs.renameSync, writeFileSync: fs.writeFileSync };
+	// Every filesystem mutation is a point where the process could die: after each
+	// one, the destination is either absent or already carries its marker.
+	for (const name of Object.keys(originals) as Array<keyof typeof originals>) {
+		(fs as Record<string, unknown>)[name] = (...args: unknown[]) => {
+			const result = (originals[name] as (...a: unknown[]) => unknown)(...args);
+			if (existsSync(destination) && !existsSync(marker)) violations.push(`${name} ${String(args[0])}`);
+			return result;
+		};
+	}
+	syncBuiltinESMExports();
+	try {
+		// A staging directory left by an earlier interrupted run does not get in the way.
+		mkdirSync(join(r.root, ".stage-interrupted", "go"), { recursive: true, mode: 0o700 });
+		const result = await acquireGo({ root: r.root, platform: "darwin", arch: "arm64", adapters: goAdapters(goTree()) });
+		assert.equal(result.acquired, true);
+		assert.deepEqual(violations, []);
+		assert.equal(readFileSync(marker, "utf8"), `${artifactFor("go", "darwin", "arm64").url}\n`);
+		if (process.platform !== "win32") assert.equal(lstatSync(destination).mode & 0o077, 0);
+		assert.equal(installedGo(r.root, "darwin", "arm64"), result.goPath);
+	} finally {
+		Object.assign(fs, originals);
+		syncBuiltinESMExports();
+		r.cleanup();
+	}
+});
+
+// CI runs the "native Windows" lane on windows-latest and requires every one of
+// those tests to pass with 0 skips: its count is the real number of native tests,
+// the literal ones plus one per pre-Node process primitive mode.
+test("the CI native Windows gate requires exactly the native tests the Windows bootstrap suite defines", () => {
+	const source = readFileSync(new URL("./installer-windows-bootstrap.test.ts", import.meta.url), "utf8");
+	const literal = source.match(/^test\("native Windows[^"]*"/gm)?.length ?? 0;
+	const modes = /^const probeModes = \[([^\]]*)\] as const;$/m.exec(source)?.[1].split(",").filter((mode) => mode.trim().length > 0).length ?? 0;
+	assert.ok(/^for \(const mode of probeModes\) \{\n\ttest\(`native Windows: /m.test(source.slice(source.indexOf("const probeModes"))));
+	const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+	const gate = /\[int\]\$passes\.Groups\[1\]\.Value -ne (\d+) -or/.exec(ci);
+	assert.ok(gate, "the gate compares the passed count exactly");
+	assert.ok(/\[int\]\$skips\.Groups\[1\]\.Value -ne 0/.test(ci), "0 skips stays required");
+	assert.equal(literal + modes, 38);
+	assert.equal(Number(gate[1]), literal + modes);
 });

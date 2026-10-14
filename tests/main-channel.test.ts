@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import test from "node:test";
 import {
 	CHANNEL_SCHEMA,
@@ -16,8 +16,10 @@ import {
 	packMainShell,
 	readChannel,
 	resolveMainCommit,
+	runUpgrade,
 	writeChannel,
 } from "../scripts/main-channel.mjs";
+import { artifactFor } from "../scripts/installer-downloads.mjs";
 
 const SHELL_SHA = "6e7e3a18f794223396527a54c7c36d19c7d236c6";
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
@@ -86,7 +88,7 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 		};
 		const run = async (command: string, argv: string[], options: Call["options"]) => {
 			calls.push({ command, argv, options });
-			if (command === "tar") {
+			if (argv[0] === "-xzf") {
 				const target = argv[argv.indexOf("-C") + 1];
 				writeFileSync(join(target, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0",
 					scripts: { prepack: "pnpm test", prepare: "x", postinstall: "node scripts/install-gentle-ai.mjs" } }));
@@ -110,6 +112,56 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 		assert.equal(packed.scripts.prepare, undefined);
 		assert.equal(packed.scripts.postinstall, "node scripts/install-gentle-ai.mjs");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "main", ".source")), false, "the extracted source is removed");
+	} finally { s.cleanup(); }
+});
+
+// Run 38061123855: with Git for Windows' usr\bin first on PATH, MSYS tar reads `D:\...` as a remote host.
+test("on Windows the source archive is extracted by System32's tar.exe by absolute path; POSIX keeps tar from PATH", async () => {
+	const windowsTar = win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+	for (const [platform, expected] of [["win32", windowsTar], ["linux", "tar"], ["darwin", "tar"]]) {
+		const s = sandbox();
+		try {
+			const extracts: string[] = [];
+			const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("archive").buffer });
+			const run = async (command: string, argv: string[], options: Call["options"]) => {
+				if (argv[0] === "-xzf") {
+					extracts.push(command);
+					writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0" }));
+				} else {
+					writeFileSync(join(argv[argv.indexOf("--pack-destination") + 1], "gentle-pi-4.0.0-main.6e7e3a18f794.tgz"), "tgz");
+					assert.ok(options.cwd);
+				}
+				return { code: 0, stdout: "" };
+			};
+			await packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises, platform });
+			assert.deepEqual(extracts, [expected], platform);
+		} finally { s.cleanup(); }
+	}
+});
+
+test("a failed source extraction or Go build keeps the command's bounded stderr tail as the error's cause", async () => {
+	const s = sandbox();
+	try {
+		const tail = "tar (child): Cannot connect to D: resolve failed\ntar: Error is not recoverable: exiting now\n";
+		const requested: Array<number | undefined> = [];
+		const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("archive").buffer });
+		const tar = async (_command: string, _argv: string[], options: { stderrTail?: number }) => {
+			requested.push(options.stderrTail);
+			return { code: 2, stdout: "", stderrTail: tail };
+		};
+		await assert.rejects(packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run: tar, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises, platform: "linux" }),
+			(error: MainChannelError) => error.code === "main-shell-pack-failed" && error.cause instanceof Error && error.cause.message === tail.trim());
+		const go = "go: downloading github.com/gentleman-programming/gentle-ai/v4\ngo: verifying module: checksum mismatch\n";
+		const build = async (_command: string, _argv: string[], options: { stderrTail?: number }) => {
+			requested.push(options.stderrTail);
+			return { code: 1, stdout: "", stderrTail: go };
+		};
+		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "linux", goPath: "/go/bin/go", run: build, fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-gentle-ai-build-failed" && error.cause instanceof Error && error.cause.message === go.trim());
+		assert.deepEqual(requested, [4096, 4096]);
+		// Without any stderr the error has no cause, as before.
+		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "linux", goPath: "/go/bin/go", run: async () => ({ code: 1, stdout: "" }), fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-gentle-ai-build-failed" && error.cause === undefined);
 	} finally { s.cleanup(); }
 });
 
@@ -181,4 +233,112 @@ test("the owner of an installation is pnpm under PNPM_HOME, npm only inside npm'
 		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
 	}
 	assert.equal(installOwner({ pnpmHome: null, npmRoot: null, packageRoot: "/u/.local/lib/node_modules/gentle-pi" }), null);
+});
+
+test("installOwner attributes another named package, such as the scoped Pi, the same way", () => {
+	const roots = { pnpmHome: "/u/Library/pnpm", npmRoot: "/u/.local/lib/node_modules", name: "@earendil-works/pi-coding-agent" };
+	assert.equal(installOwner({ ...roots, packageRoot: "/u/.local/lib/node_modules/@earendil-works/pi-coding-agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "/u/Library/pnpm/global/v11/x/node_modules/@earendil-works/pi-coding-agent" }), "pnpm");
+	for (const packageRoot of ["/u/.local/lib/node_modules/gentle-pi", "/u/.local/lib/node_modules/@earendil-works",
+		"/u/.local/share/mise/installs/pi/lib/node_modules/@earendil-works/pi-coding-agent"]) {
+		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
+	}
+});
+
+test("installOwner follows Windows paths on any host: backslashes and case-insensitive roots", () => {
+	const roots = { pnpmHome: "C:\\Users\\u\\AppData\\Local\\pnpm", npmRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules",
+		name: "@earendil-works/pi-coding-agent", platform: "win32" };
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "c:\\users\\U\\appdata\\roaming\\NPM\\Node_Modules\\@Earendil-Works\\Pi-Coding-Agent" }), "npm");
+	assert.equal(installOwner({ ...roots, packageRoot: "C:\\Users\\u\\AppData\\Local\\PNPM\\global\\v11\\x\\node_modules\\@earendil-works\\pi-coding-agent" }), "pnpm");
+	for (const packageRoot of ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\other\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules", "D:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent",
+		"C:\\Users\\u\\AppData\\Local\\pnpm"]) {
+		assert.equal(installOwner({ ...roots, packageRoot }), null, packageRoot);
+	}
+	// POSIX paths keep their exact case.
+	assert.equal(installOwner({ pnpmHome: null, npmRoot: "/u/lib/node_modules", packageRoot: "/u/lib/node_modules/Gentle-Pi", platform: "linux" }), null);
+});
+
+// `gentle-shell upgrade --channel main` after the installer provided its own pinned Go.
+const NEW_AI = "2222222222222222222222222222222222222222";
+/** A main install whose Gentle Shell is current, so only Gentle AI is rebuilt with Go. */
+async function upgradeWorld({ userGo = null as string | null, pinned = false, acquireFails = false }) {
+	const s = sandbox();
+	const goDirectory = join(s.home, ".pi", "gentle-ai", "tools", "go", "1.25.14");
+	const pinnedGo = join(goDirectory, "go", "bin", "go");
+	if (pinned) {
+		mkdirSync(join(goDirectory, "go", "bin"), { recursive: true, mode: 0o700 });
+		chmodSync(goDirectory, 0o700);
+		writeFileSync(pinnedGo, "#!/bin/sh\n", { mode: 0o755 });
+		writeFileSync(join(goDirectory, ".gentle-shell-go"), `${artifactFor("go", "darwin", "arm64").url}\n`);
+	}
+	await writeChannel(s.ctx, { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA }, fsPromises);
+	const calls: Call[] = [];
+	const fetch = async (url: string) => ({ ok: true, status: 200, text: async () => (url.endsWith("/gentle-ai/commits/main") ? NEW_AI : SHELL_SHA) });
+	const run = async (command: string, argv: string[], options: Call["options"]) => {
+		calls.push({ command, argv, options });
+		if (command === "/usr/bin/go" && argv[0] === "version") return { code: 0, stdout: `go version ${userGo === "devel" ? "devel go1.26-abc" : `go${userGo}`} darwin/arm64\n` };
+		if (argv[0] === "install") {
+			mkdirSync(options.env!.GOBIN, { recursive: true });
+			writeFileSync(join(options.env!.GOBIN, "gentle-ai"), "#!/bin/sh\n", { mode: 0o755 });
+			return { code: 0, stdout: "" };
+		}
+		return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${NEW_AI.slice(0, 12)}\n` };
+	};
+	const which = async (name: string) => (name === "pnpm" || (name === "go" && userGo !== null) ? `/usr/bin/${name}` : null);
+	// The verified download itself is acquireGo's (installer-downloads tests); here it only publishes the pinned path.
+	const acquired: string[] = [];
+	const acquireGo = async () => {
+		acquired.push(pinnedGo);
+		// As acquireGo fails: wrapped, with the reason as its cause.
+		if (acquireFails) throw new Error("Go verified acquisition failed; nothing was published", { cause: new Error("Conflicting Go destination: /x") });
+		return { goPath: pinnedGo, version: "1.25.14", acquired: true };
+	};
+	const upgrade = () => runUpgrade({ args: ["--channel", "main"], ctx: s.ctx, platform: "darwin", arch: "arm64", packageRoot: join(s.root, "pkg"),
+		currentVersion: "4.0.0-main.6e7e3a18f794", adapters: { fetch, run, fs: fsPromises, which, acquireGo }, out: () => {} });
+	const builtWith = () => calls.find((call) => call.argv[0] === "install")?.command;
+	return { ...s, calls, pinnedGo, upgrade, builtWith, acquired };
+}
+
+test("upgrading main uses the installer's pinned Go when the user's Go is missing, older or cannot be checked, and leaves the user's Go as it is", posixOnly, async () => {
+	for (const userGo of [null, "1.24.0", "devel"]) {
+		const w = await upgradeWorld({ userGo, pinned: true });
+		try {
+			assert.equal(await w.upgrade(), 0);
+			assert.equal(w.builtWith(), w.pinnedGo, String(userGo));
+			// The user's Go only reported its version.
+			assert.deepEqual(w.calls.filter((call) => call.command === "/usr/bin/go").map((call) => call.argv), userGo ? [["version"]] : []);
+			assert.deepEqual(w.acquired, [], "an already published pinned Go is reused");
+		} finally { w.cleanup(); }
+	}
+});
+
+test("upgrading main keeps using a user's Go that meets the requirement, even next to the pinned Go", posixOnly, async () => {
+	const w = await upgradeWorld({ userGo: "1.26.0", pinned: true });
+	try {
+		assert.equal(await w.upgrade(), 0);
+		assert.equal(w.builtWith(), "/usr/bin/go");
+	} finally { w.cleanup(); }
+});
+
+test("upgrading main without a usable Go downloads the installer's pinned Go once, only to build", posixOnly, async () => {
+	for (const userGo of [null, "1.24.0", "devel"]) {
+		const w = await upgradeWorld({ userGo });
+		try {
+			assert.equal(await w.upgrade(), 0);
+			assert.deepEqual(w.acquired, [w.pinnedGo], String(userGo));
+			assert.equal(w.builtWith(), w.pinnedGo, String(userGo));
+			assert.deepEqual(w.calls.filter((call) => call.command === "/usr/bin/go").map((call) => call.argv), userGo ? [["version"]] : []);
+		} finally { w.cleanup(); }
+	}
+});
+
+test("upgrading main stops before building when the pinned Go cannot be downloaded", posixOnly, async () => {
+	const w = await upgradeWorld({ userGo: "devel", acquireFails: true });
+	try {
+		await assert.rejects(w.upgrade(), (error: MainChannelError) => error.code === "main-requires-tools" &&
+			error.message.includes("Go 1.25.14") && error.message.includes("Conflicting Go destination: /x") && !error.message.includes("network"));
+		assert.equal(w.builtWith(), undefined);
+	} finally { w.cleanup(); }
 });

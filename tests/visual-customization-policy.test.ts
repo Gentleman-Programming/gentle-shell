@@ -13,7 +13,7 @@ test("missing settings use responsive defaults and return independent copies", (
 		assert.equal(DEFAULT_VISUAL_SETTINGS.statusPlacement, "auto");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.headerPlacement, "top");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.density, "comfortable");
-		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true });
+		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true });
 		resolved.settings.visibility.agents = false;
 		assert.equal(DEFAULT_VISUAL_SETTINGS.visibility.agents, true);
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.agents, true);
@@ -29,13 +29,13 @@ test("strict versioned parsing rejects malformed and partial settings", () => {
 });
 
 test("Sections rows follow one ordered key list that covers every visibility key", () => {
-	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails"]);
+	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"]);
 	assert.deepEqual([...VISUAL_SECTION_KEYS].sort(), Object.keys(DEFAULT_VISUAL_SETTINGS.visibility).sort());
 });
 
 test("settings saved before the rdd section existed load as valid with rdd shown", () => {
 	const legacy = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
-	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false } };
+	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(legacy)), expected);
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ ...legacy, visibility: { ...expected.visibility, rdd: false } })), { ...expected, visibility: { ...expected.visibility, rdd: false } });
 	for (const visibility of [{ ...legacy.visibility, extra: true }, { ...legacy.visibility, rdd: "no" }, { ...legacy.visibility, todo: "yes" }, { agents: true, todo: true, usageCost: true, modelDetails: true, rdd: true }]) {
@@ -50,6 +50,35 @@ test("settings saved before the rdd section existed load as valid with rdd shown
 		const { rdd: _rdd, ...legacyVisibility } = expected.visibility;
 		assert.throws(() => writeVisualSettings({ ...expected, visibility: legacyVisibility } as typeof expected), /Invalid visual settings/);
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("settings saved before contextWarning existed load it shown and preserve rdd", () => {
+	// Both historical shapes: the earliest pre-rdd visibility and the previous-current shape that
+	// already had rdd but not contextWarning. Only the missing added keys default to shown.
+	const shared = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS };
+	const preRdd = { ...shared, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
+	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preRdd)), { ...DEFAULT_VISUAL_SETTINGS,
+		visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+	const preContext = { ...shared, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
+	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preContext)), { ...DEFAULT_VISUAL_SETTINGS,
+		visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+	const withoutRdd = { ...shared, visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } };
+	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(withoutRdd)), { ...DEFAULT_VISUAL_SETTINGS,
+		visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } });
+});
+
+test("a present non-boolean added key in a partial legacy shape is rejected before default fill", () => {
+	// Missing added keys default to shown, but a key that is present must already be a
+	// boolean: `null` (or any other value) must not be silently coerced by the fill.
+	const base = { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true };
+	for (const visibility of [{ ...base, rdd: null }, { ...base, contextWarning: null }]) {
+		assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility })), undefined,
+			`${JSON.stringify(visibility)} must stay invalid`);
+	}
+	const previousCurrent = structuredClone(DEFAULT_VISUAL_SETTINGS) as unknown as { visibility: Record<string, unknown> };
+	delete previousCurrent.visibility.contextWarning;
+	previousCurrent.visibility.rdd = null;
+	assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...previousCurrent })), undefined);
 });
 
 test("an unreadable settings path is a read error, not malformed content", () => {

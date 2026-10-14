@@ -266,3 +266,95 @@ jobs:
           # The tag the publish job verified against protected main, not the raw input.
           RELEASE_TAG: ${{ needs.publish.outputs.tag }}
         run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}"/installers/* --repo "${GITHUB_REPOSITORY}" --clobber
+
+  distribution:
+    # The release distribution (S3): gentle-pi at the verified tag and the exact
+    # Pi, with the pnpm-lock.yaml our pinned pnpm resolves for them. It needs the
+    # npm publication, since gentle-pi@<version> must resolve from the registry.
+    needs: publish
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Build the distribution assets
+        env:
+          # The tag the publish job verified against protected main, not the raw input.
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+        run: node scripts/build-distribution.mjs build --shell "${RELEASE_TAG#v}" --out "${RUNNER_TEMP}/distribution"
+
+      - name: Keep the assets for verification
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: gentle-shell-distribution
+          path: ${{ runner.temp }}/distribution/
+          if-no-files-found: error
+          retention-days: 7
+
+  distribution-verify:
+    # The exact assets install with --frozen-lockfile on every system, with our
+    # pinned Node and pnpm (and Go on Windows), and the launcher runs them.
+    needs: distribution
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Fetch the distribution assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gentle-shell-distribution
+          path: ${{ runner.temp }}/distribution
+
+      - name: Install them frozen and run the launcher
+        shell: bash
+        run: node scripts/build-distribution.mjs verify --assets "${RUNNER_TEMP}/distribution"
+
+  distribution-assets:
+    # Attached only after every verify lane passed, with stable names.
+    needs: [publish, distribution-verify]
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the verified distribution assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gentle-shell-distribution
+          path: ${{ runner.temp }}/distribution
+
+      - name: Attach the distribution assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+        run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}/distribution/gentle-shell-distribution.json" "${RUNNER_TEMP}/distribution/gentle-shell-distribution-lock.yaml" --repo "${GITHUB_REPOSITORY}" --clobber

@@ -137,10 +137,34 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Run installer suites
-        run: node --experimental-strip-types --test tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+      # The native Windows source-build test needs a local Go at the repository minimum.
+      - name: Setup Go (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.25.14"
+          cache: false
 
-      # The native tests skip off Windows; here every one must run and pass.
+      # #2121: a test-file process intermittently aborts at exit (0xC0000409) with
+      # no message. Windows Error Reporting keeps a dump of any node.exe crash,
+      # uploaded below only when the job fails, to find its cause.
+      - name: Capture node.exe crash dumps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:RUNNER_TEMP "node-dumps"
+          New-Item -ItemType Directory -Force $dumps | Out-Null
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\node.exe"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
+
+      - name: Run installer suites
+        run: node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
+
+      # The native tests skip off Windows; here every one must run and pass: exactly
+      # the 38 native tests (30 literal tests plus 8 process primitive modes) that
+      # tests/installer-windows-bootstrap.test.ts defines, with 0 skips.
       - name: Require native Windows installer tests
         if: runner.os == 'Windows'
         shell: pwsh
@@ -152,4 +176,13 @@ jobs:
           $text = $output -join "`n"
           $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
           $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
-          if (!$passes.Success -or [int]$passes.Groups[1].Value -lt 14 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }
+          if (!$passes.Success -or [int]$passes.Groups[1].Value -ne 38 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }
+
+      - name: Upload node.exe crash dumps (Windows, on failure)
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: node-crash-dumps
+          path: ${{ runner.temp }}/node-dumps
+          if-no-files-found: ignore
+          retention-days: 14

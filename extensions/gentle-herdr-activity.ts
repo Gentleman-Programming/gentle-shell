@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { activitySummary, ActivityPublisher, createActivityColumns, metadataTransport } from "../lib/herdr-activity.ts";
+import { activitySummary, ActivityPublisher, createActivityColumns, herdrDetected, metadataTransport } from "../lib/herdr-activity.ts";
 import { replayTodo, type TodoState } from "../lib/shell-todo.ts";
 
 interface ActivityOptions {
@@ -15,8 +15,7 @@ interface ActivityOptions {
 export function createHerdrActivityExtension(options: ActivityOptions = {}) {
 	return (pi: ExtensionAPI): void => {
 		const env = options.env ?? process.env;
-		if (env.GENTLE_PI_AGENTS_CHILD === "1" || env.HERDR_ENV !== "1" ||
-			!env.HERDR_PANE_ID?.trim() || !env.HERDR_SOCKET_PATH?.trim()) return;
+		if (env.GENTLE_PI_AGENTS_CHILD === "1" || !herdrDetected(env)) return;
 		const isSocket = options.isSocket ?? ((path: string) => {
 			try { return statSync(path).isSocket(); } catch { return false; }
 		});

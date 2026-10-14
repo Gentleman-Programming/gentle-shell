@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { CommandPalette, commandsKey, rankPaletteGroups, type CommandPaletteGroup, type CommandPaletteItem, type CommandPaletteResult, type CommandPaletteTheme } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups, COMMAND_PALETTE_CATALOG } from "../lib/command-palette-catalog.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import startupBanner from "../extensions/startup-banner.ts";
 
 // Command palette: a pure, curated, grouped overlay component for
 // `/gentle:commands` and its `alt+k` shortcut. These tests drive ranking,
@@ -136,7 +138,7 @@ const GROUPS: CommandPaletteGroup[] = [
 	},
 	{
 		title: "Session",
-		items: [{ command: "gentle:changes", label: "Browse captured changes", shortcut: "alt+g" }],
+		items: [{ command: "gentle:changes", label: "Browse changes", shortcut: "alt+g" }],
 	},
 ];
 
@@ -245,9 +247,9 @@ test("render shows group titles and one row per item, with the shortcut right-al
 	assert.match(lines, /Session/);
 	assert.match(lines, /Assign models and effort/);
 	assert.match(lines, /Agent-model profiles/);
-	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse captured changes"));
-	assert.ok(changesLine, "expected a row for Browse captured changes");
-	assert.match(changesLine!, /Browse captured changes[\s\S]*alt\+g/);
+	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse changes"));
+	assert.ok(changesLine, "expected a row for Browse changes");
+	assert.match(changesLine!, /Browse changes[\s\S]*alt\+g/);
 });
 
 test("render omits the shortcut column for an item without one", () => {
@@ -370,16 +372,24 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:animations",
 		"gentle:vim",
 		"gentle:telemetry",
-		"gentle:banner",
-		"gentle:banner-color",
-		"gentle:toggle-rose",
-		"gentle:toggle-text-logo",
 		"gentle:dev-binary",
 	]);
 	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);
+});
+
+// #1664: banner settings live under Customization > Banner; the palette keeps
+// one route while the slash commands stay registered for compatibility.
+test("banner settings have one palette route and keep their slash commands", () => {
+	const banner = ["gentle:banner", "gentle:banner-color", "gentle:toggle-rose", "gentle:toggle-text-logo"];
+	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
+	for (const command of banner) assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
+	assert.ok(catalogCommands.includes("gentle:customize"));
+	const registered: string[] = [];
+	startupBanner({ on() {}, registerCommand(name: string) { registered.push(name); }, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	for (const command of banner) assert.ok(registered.includes(command), `${command} stays registered`);
 });
 
 test("retired SDD commands are absent from the palette and extension registrations", () => {

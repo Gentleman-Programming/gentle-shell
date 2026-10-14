@@ -8,6 +8,7 @@ export interface OrchestratorCandidate {
 	reachability: "unknown";
 	freshness: "unknown" | "recent" | "stale";
 	label?: string;
+	aliases?: DiscoveryMetadata["aliases"];
 	workspace?: string;
 	tasks?: DiscoveryMetadata["tasks"];
 	omitted?: number;
@@ -39,7 +40,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		if (!header.recent) return { ...unknown, freshness: "stale" };
 		const catalog = readCatalog(profile, header, metadata.activation, selection?.recipientSessionId === sessionId ? selection.cursor : undefined);
 		return { ...unknown, ...(catalog.page ? { catalog: catalog.page } : { catalogUnavailable: catalog.unavailable }), freshness: "recent", label: header.label, workspace: metadata.workspace,
-			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.scope ? { scope: metadata.scope } : {}),
+			tasks: metadata.tasks, omitted: metadata.omitted, ...(metadata.aliases ? { aliases: metadata.aliases } : {}), ...(metadata.scope ? { scope: metadata.scope } : {}),
 			...(selection?.consultation ? { publication: { incarnation: header.incarnation, activation: metadata.activation, heartbeat: header.heartbeat } } : {}),
 			...(selection?.includeWork && metadata.state?.sessionId === sessionId
 				? { workRecord: { work: metadata.state.state?.work ?? null, recordedAt: metadata.state.recordedAt } } : {}),

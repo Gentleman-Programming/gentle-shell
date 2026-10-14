@@ -35,6 +35,8 @@ version_ok() {
         }
     }'
 }
+# Any stable version at all: version_ok against 0.0.0 accepts exactly those.
+stable_version() { version_ok "$1" 0.0.0; }
 # A stock POSIX watchdog avoids assuming GNU timeout on macOS.
 # These fixed prerequisite probes get an unignorable deadline, not graceful TERM.
 # Signal only our direct child PID; do not kill inherited process groups.
@@ -82,11 +84,16 @@ make_tools() {
     owned=1
     printf '%s\n' 'gentle-pi prerequisite tooling only' > "$tools/.bootstrap-owned" || fail 'Cannot mark tooling ownership'
 }
+acquire_node=1
 if command -v node >/dev/null 2>&1; then
     node=$(command -v node)
     version=$(bounded 10 "$node" --version 2>/dev/null) || fail 'Existing Node version probe failed'
-    version_ok "$version" "$minimum" || fail 'Existing Node is incompatible or unknown; refusing replacement'
-else
+    if version_ok "$version" "$minimum"; then acquire_node=0
+    # An older stable Node is left as it is: the verified Node below runs the
+    # installer instead, exactly as when Node is absent.
+    elif ! stable_version "$version"; then fail 'Existing Node is incompatible or unknown; refusing replacement'; fi
+fi
+if [ "$acquire_node" = 1 ]; then
     os=$(uname -s)
     arch=$(uname -m)
     case "$os" in Darwin) os=darwin;; Linux) os=linux;; *) fail 'Unsupported POSIX platform';; esac

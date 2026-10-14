@@ -103,6 +103,25 @@ function beginArguments(child: FakeChild, timestamp = 1000): void {
 	child.emit(argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }));
 }
 
+test("parent source passages reach the economical explorer through the existing context handoff", async () => {
+	const h = harness();
+	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
+	const task = h.runner.run(request({
+		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		prompt: "Compare the supplied passage with local source; do not browse.",
+		context,
+		model: { provider: "offline", id: "configured-small" },
+		thinking: "low",
+	}));
+	await tick();
+	const command = h.children[0].written.find(command => command.type === "prompt");
+	assert.equal(command?.message, `Compare the supplied passage with local source; do not browse.\n\n## Context\n${context}`);
+	assert.ok(h.spawnOptions[0].args.includes("offline/configured-small:low"));
+	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,codegraph,subagent_parent_message");
+	h.runner.cancel(task.id);
+	await tick();
+});
+
 test("fresh argument streaming renews idle liveness without execution or provisional usage", async () => {
 	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
 	const task = h.runner.run(request());
@@ -599,6 +618,21 @@ test("runner captures resolved model and effort, retaining omitted launch values
 	h.runner.cancel(task.id);
 });
 
+test("record creation copies the launch-layer model source next to the model (#2180)", () => {
+	const sourced = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const sourcedTask = sourced.runner.run(request({ modelSource: "binding" }));
+	assert.equal(sourced.store.get(sourcedTask.id)?.modelSource, "binding", "the record keeps the host-computed layer next to the resolved model");
+	sourced.runner.cancel(sourcedTask.id);
+
+	// The absence contract: a request without a model source (older callers,
+	// peers) records no field at all, so the card renders exactly as before.
+	const plain = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const plainTask = plain.runner.run(request());
+	assert.equal(plain.store.get(plainTask.id)?.modelSource, undefined);
+	assert.equal("modelSource" in (plain.store.get(plainTask.id) as TaskRecord), false, "no modelSource key is recorded when the launch did not name a layer");
+	plain.runner.cancel(plainTask.id);
+});
+
 test("runner delivers each response combination once at finish, never attributing launch selection", async () => {
 	const snapshots: NonNullable<Parameters<NonNullable<RunnerHooks["onFinish"]>>[1]>[] = [];
 	const h = harness({ exitOnKill: false, state: { model: { provider: "anthropic", id: "launch" }, thinkingLevel: "max" },
@@ -1013,7 +1047,7 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	assert.deepEqual(launches, [{
 		command: "pi-fixture",
 		args: ["--from-host", "--mode", "rpc", "--session-dir", "/sessions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."],
-		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }, detached, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }, detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 	}]);
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
@@ -1123,6 +1157,8 @@ test("AgentRunner platform matrix scopes permission fd3 transport", async () => 
 			await tick();
 			const launch = launches[0];
 			assert.ok(launch, `${platform} ${eligible ? "eligible" : "ineligible"} child launches`);
+			assert.equal(launch.windowsHide, true, `${platform} children hide console windows regardless of permission eligibility`);
+			assert.equal(launch.detached, platform !== "win32", "only non-Windows children use detached process groups");
 			assert.equal(launch.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD, eligible ? "3" : undefined, "only eligible children receive the fd3 marker");
 			assert.deepEqual(launch.stdio, eligible ? ["pipe", "pipe", "pipe", platform === "win32" ? "overlapped" : "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"]);
 			assert.equal(launch.stdio?.indexOf("ipc"), eligible ? 4 : 3, "messaging IPC follows fd3 only for eligible children");

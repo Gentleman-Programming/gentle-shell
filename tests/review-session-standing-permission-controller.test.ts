@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -18,6 +19,16 @@ import {
 	formatReviewConsentUi,
 	presentReviewConsentUi,
 } from "../lib/review-consent-ui.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
 
 function consentFixture(): Record<string, unknown> {
 	const path = join(process.cwd(), "tests", "fixtures", "devbinary", "consent-v3.captured.json");
@@ -42,7 +53,7 @@ function nonPiV3Consent() {
 }
 
 function consentCustom(select: (title: string, options: string[]) => Promise<string | undefined>) {
-	return async (factory: (...args: never[]) => unknown) => {
+	return async (factory: (...args: unknown[]) => unknown) => {
 		let result: unknown;
 		const component = factory(
 			{ terminal: { rows: 24 }, requestRender() {} },
@@ -173,10 +184,12 @@ function siblingWorktree(t: test.TestContext, parentRoot: string): string {
 
 function startStatus(cwd: string, intendedUntracked: readonly string[] = []): ReviewStatusV3 {
 	const views = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const candidate = views.create({
 		contributorRoot: cwd,
 		...(intendedUntracked.length === 0 ? {} : { intendedUntracked }),
 	});
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",
@@ -241,10 +254,10 @@ function piConsent() {
 	const decoded = consent();
 	return {
 		...decoded,
-		choices: decoded.choices.map((choice) => ({
-			...choice,
-			invocation: choice.invocation.replace(" --consent ", " --agent pi --consent "),
-		})) as typeof decoded.choices,
+		choices: [
+			{ ...decoded.choices[0], invocation: decoded.choices[0].invocation.replace(" --consent ", " --agent pi --consent ") },
+			{ ...decoded.choices[1], invocation: decoded.choices[1].invocation.replace(" --consent ", " --agent pi --consent ") },
+		] as const,
 	};
 }
 
@@ -623,7 +636,7 @@ test("a package-owned child replays its exact pending ordinary grant from a sibl
 	const parentToChild = new PassThrough();
 	const broker = new ParentStandingReviewPermissionBroker(
 		{ readable: childToParent, writable: parentToChild },
-		(repositoryIdentity) => repositoryIdentity === parentIdentity.repositoryIdentity && parentManager.getSessionId() === "parent-session" && hasReviewSessionPermission(parentIdentity),
+		(repositoryIdentity) => repositoryIdentity === parentIdentity.repositoryIdentity && parentIdentity.sessionManager.getSessionId() === "parent-session" && hasReviewSessionPermission(parentIdentity),
 	);
 	const childPermission = new ChildStandingReviewPermissionClient(
 		{ readable: parentToChild, writable: childToParent },

@@ -16,6 +16,8 @@ import { basename, delimiter, dirname, join, normalize, relative, resolve, sep }
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
+import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 
 const REGISTRY_REL_PATH = ".atl/skill-registry.md";
 const CACHE_REL_PATH = ".atl/.skill-registry.cache.json";
@@ -318,6 +320,9 @@ interface RegenResult {
 }
 
 const execFileAsync = promisify(execFile);
+// A tracking check that cannot answer (for example a repository rooted at HOME)
+// fails closed through the ordinary detection-failure path instead of hanging.
+let gitTimeoutMs = 5000;
 
 // A failed Git lookup is genuinely non-Git only when no ancestor has metadata.
 // lstat also detects dangling redirects; permission failures remain fail-closed.
@@ -351,6 +356,7 @@ async function automaticWriteWarning(
 		const { stdout } = await execFileAsync("git", ["ls-files", "--cached", "-z", "--", ...targets], {
 			cwd,
 			env: { ...process.env, LC_ALL: "C" },
+			timeout: gitTimeoutMs,
 		});
 		tracked = stdout.split("\0").filter(Boolean);
 	} catch (error) {
@@ -490,6 +496,17 @@ async function regenerateRegistry(
 }
 
 const watchedCwds = new Set<string>();
+// Startup regeneration runs after session_start returns; watcher refreshes
+// wait for it so an older startup scan never overwrites a newer refresh.
+const pendingStartups = new Map<string, Promise<void>>();
+let startupGeneration = 0;
+
+// A repository rooted at HOME (or a broad user folder) makes every Git call
+// scan the user's whole tree. gentle-ai owns the single user-facing warning.
+function repositoryRootedAtHome(cwd: string): boolean {
+	const root = resolveSessionWorktree(cwd, cwd)?.root;
+	return root !== undefined && isHomeOrBroadUserDirectory(root);
+}
 
 function isTruthyEnv(value: string | undefined): boolean {
 	return value === "1" || value === "true" || value === "yes" || value === "on";
@@ -531,7 +548,7 @@ function extensionSourcePath(source: string): string | undefined {
 function shouldSkipDuplicateExtensionLoad(
 	source = import.meta.url,
 	cwd = process.cwd(),
-	state = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
+	state: SkillRegistryExtensionGlobal = globalThis as typeof globalThis & SkillRegistryExtensionGlobal,
 ): boolean {
 	const currentPath = extensionSourcePath(source);
 	const projectLocalPath = comparablePath(join(cwd, "extensions", "skill-registry.ts"));
@@ -576,6 +593,7 @@ async function startSkillRegistryWatcher(
 		timer = setTimeout(() => {
 			void (async () => {
 				try {
+					await pendingStartups.get(cwd);
 					const result = await regenerateRegistry(cwd, false);
 					if (result.warning) notify(result.warning, "warning");
 					if (result.regenerated) {
@@ -623,12 +641,21 @@ export const __testing = {
 	activeWatcherCount() {
 		return activeWatchers.size;
 	},
+	async startupSettled(): Promise<void> {
+		await Promise.all(pendingStartups.values());
+	},
+	setGitTimeoutMs(ms: number): number {
+		const previous = gitTimeoutMs;
+		gitTimeoutMs = ms;
+		return previous;
+	},
 };
 
 export default function (pi: ExtensionAPI) {
 	if (shouldSkipDuplicateExtensionLoad()) return;
 
 	pi.on("session_shutdown", () => {
+		startupGeneration += 1;
 		closeSkillRegistryWatchers();
 	});
 
@@ -640,53 +667,71 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (shouldSkipSkillRegistryStartup(pi)) return;
+		if (repositoryRootedAtHome(ctx.cwd)) return;
+		const cwd = ctx.cwd;
+		const generation = startupGeneration;
 		const notifyWarning = (message: string) => {
 			if (ctx.hasUI) ctx.ui.notify(message, "warning");
 		};
+		const regenerate = async () => {
+			if (generation !== startupGeneration) return;
+			try {
+				const ignoreWarning = await ensureAtlIgnored(cwd);
+				if (ignoreWarning) notifyWarning(ignoreWarning);
+				const quarantinedLegacy = await quarantineLegacyProjectRegistry(cwd, notifyWarning);
+				const result = await regenerateRegistry(cwd, quarantinedLegacy);
+				if (result.warning) notifyWarning(result.warning);
+				if (result.regenerated && ctx.hasUI) {
+					ctx.ui.notify(
+						`Skill registry refreshed (${result.skillCount} skills)`,
+						"info",
+					);
+				}
+				if (quarantinedLegacy && ctx.hasUI) {
+					ctx.ui.notify(
+						"Disabled stale project-local skill registry extension; using package registry with project skills first.",
+						"warning",
+					);
+				}
+				if (quarantinedLegacy) {
+					setTimeout(() => {
+						if (generation !== startupGeneration) return;
+						void (async () => {
+							try {
+								const result = await regenerateRegistry(cwd, true);
+								if (result.warning) notifyWarning(result.warning);
+							} catch (error) {
+								notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+							}
+						})();
+					}, WATCH_DEBOUNCE_MS);
+				}
+			} catch (error) {
+				if (ctx.hasUI) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(
+						`Skill registry refresh failed: ${message}`,
+						"warning",
+					);
+				}
+			}
+		};
+		// Pi awaits session_start handlers one after another, so the Git tracking
+		// checks and the skill scan run after startup instead of inside it.
+		const startup = new Promise<void>((resolve) => setImmediate(resolve))
+			.then(regenerate)
+			.catch(() => { /* A replaced session's stale UI must not surface here. */ })
+			.finally(() => { if (pendingStartups.get(cwd) === startup) pendingStartups.delete(cwd); });
+		pendingStartups.set(cwd, startup);
 		try {
-			const ignoreWarning = await ensureAtlIgnored(ctx.cwd);
-			if (ignoreWarning) notifyWarning(ignoreWarning);
-			const quarantinedLegacy = await quarantineLegacyProjectRegistry(ctx.cwd, notifyWarning);
-			const result = await regenerateRegistry(ctx.cwd, quarantinedLegacy);
-			if (result.warning) notifyWarning(result.warning);
-			if (result.regenerated && ctx.hasUI) {
-				ctx.ui.notify(
-					`Skill registry refreshed (${result.skillCount} skills)`,
-					"info",
-				);
-			}
-			if (quarantinedLegacy && ctx.hasUI) {
-				ctx.ui.notify(
-					"Disabled stale project-local skill registry extension; using package registry with project skills first.",
-					"warning",
-				);
-			}
 			if (ctx.hasUI) {
-				await startSkillRegistryWatcher(ctx.cwd, (message, level = "info") => {
+				await startSkillRegistryWatcher(cwd, (message, level = "info") => {
 					ctx.ui.notify(message, level);
 				});
 			}
-			if (quarantinedLegacy) {
-				setTimeout(() => {
-					void (async () => {
-						try {
-							const result = await regenerateRegistry(ctx.cwd, true);
-							if (result.warning) notifyWarning(result.warning);
-						} catch (error) {
-							notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-						}
-					})();
-				}, WATCH_DEBOUNCE_MS);
-			}
 		} catch (error) {
-			if (ctx.hasUI) {
-				const message =
-					error instanceof Error ? error.message : String(error);
-				ctx.ui.notify(
-					`Skill registry refresh failed: ${message}`,
-					"warning",
-				);
-			}
+			notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	});
 

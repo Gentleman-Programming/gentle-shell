@@ -34,7 +34,7 @@ A task is **small** when all three hold:
 
 The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (several sessions, external waits, separate deliverables, requirements compaction could lose); large tasks get ODD tracking and workers only by the Writer rule, else inline.
 
-Small path: inline (one understood change may span files); observe RED inline before the fix; run the focused test and the suite inline, once each. No explore, worker, or verifier; no feature document, mirror, or commits unless the user asks; `todo` optional. It needs no lazy asset.
+Small path: inline (parent; `bash_background` policy); observe RED inline before the fix; run the focused test and the suite inline, once each. No explore, worker, or verifier; no feature document, mirror, or commits unless the user asks; `todo` optional. It needs no lazy asset.
 
 **High risk**: a mistake would be hard to detect, hard to undo, or reaches beyond the change: (1) data or irreversible effects (migrations, rewriting or deleting stored data, format changes, writing data without validation; not saving new records); (2) security (auth, permissions, credentials, secrets, guards, sandbox); (3) changing or removing contracts others already consume (public API, CLI flags, config formats, exports, mirrored prompts; not adding a flag, command or optional field; requested changes are not; unrequested breaks in shared code are); (4) concurrency; (5) delivery or environment (installers, release, CI, deploy, dependencies); (6) no test would catch a regression in what changes. Count "unclear" as high only when a bounded look cannot tell whether (1)-(5) apply. When RDD is on and native assess returns a tier, that tier wins.
 
@@ -50,13 +50,13 @@ Before launching bounded writer (`gentle-ai-worker` or `worker`), derive nonempt
 
 ## Mechanisms
 
-Mandatory Delegation Triggers — each mechanism turns on only by its own trigger and is then mandatory (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report fallback). When it resolves, re-evaluate task size.
+Delegation Triggers — each mechanism turns on only when its own trigger condition truly holds, and only then is it mandatory; no trigger holds by default, and when in doubt work inline (prefer `subagent_run`; role missing/unusable: native `Agent`, same read-only constraints; report fallback). When it resolves, re-evaluate task size.
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check only; never for reading before an inline write.
-3. **Verification rule** — high risk → independent `gentle-ai-verify` after the change's own checks (`orchestrator-verification.md`); otherwise checks run inline.
+3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`, as rarely as possible; else inline; gates/overengineering: `orchestrator-verification.md`.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
-5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units, disjoint files, each heavier than a subagent start, launched together in background, else inline; Context backstop.
+5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units of behavior (separate features or fixes that do not depend on each other), each heavier than a subagent start (a subagent spends one to two minutes reading before it writes, so a unit qualifies only when it needs several minutes of work: several files or roughly 100+ changed lines; a small change to one module or one command is done inline even when several such changes are independent), launched together in background, else inline; Context backstop. Tests, docs, and code of the same behavior are one unit, never separate writers; a delivery that depends on an earlier one is not independent.
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.
 7. **Context backstop** — parent context past ~150k tokens → delegate the next bounded unit. Bound command output (counts, `--stat`, `tail`).
 

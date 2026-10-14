@@ -16,8 +16,8 @@
 // The live resolution applies only in `follow` mode (GENTLE_PI_PROFILE_FOLLOW=1,
 // for CI and headless runs), in subagent children (their routing comes from the
 // parent through --model), and when no session id is available. In `follow`
-// mode the orchestrator still comes from the startup profile while children
-// follow later defaults: an accepted, documented limitation.
+// mode the orchestrator is still chosen at startup while children follow later
+// defaults: an accepted, documented limitation.
 //
 // The frozen state is in-process only, like the explicit binding of slice 2: it
 // lives on `globalThis` behind a `Symbol.for` key because Pi evaluates this
@@ -27,9 +27,9 @@
 // `gentle-pi.session-profile/v1` entry with origin `local | repo | global` is
 // the integration point with slice 3b-i.
 import { createHash } from "node:crypto";
+import { normalizeModelConfig, type AgentModelConfig } from "./model-routing-authority.ts";
 import { profileRoleEntries, profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { readProfilePinStatus, resolveProfilePin, resolveUnversionedProjectProfile } from "./agent-profile-pin.ts";
-import type { AgentModelConfig } from "./model-routing-authority.ts";
 import { readSessionProfileBinding } from "./session-profile-binding.ts";
 import type { WorktreeIdentity, WorktreeResolver } from "./session-worktree-registry.ts";
 
@@ -114,19 +114,14 @@ function isChildSession(env: NodeJS.ProcessEnv): boolean {
  * is never part of the routing. `undefined` means no layer has a profile.
  */
 export function resolveInheritedProfile(options: InheritedProfileOptions): InheritedProfile | undefined {
-	// One worktree lookup serves both the pin layers and the non-Git check.
-	let resolved = false;
-	let identity: WorktreeIdentity | undefined;
-	const resolveWorktree: WorktreeResolver | undefined = options.resolveWorktree === undefined ? undefined : (cwd, base) => {
-		if (!resolved) {
-			resolved = true;
-			identity = options.resolveWorktree!(cwd, base);
-		}
-		return identity;
-	};
-	const pin = resolveProfilePin({ cwd: options.cwd, configHome: options.configHome, resolveWorktree });
-	if (pin !== undefined) return { name: pin.profile, origin: pin.source, modelProfiles: pin.modelProfiles };
-	if (readProfilePinStatus(options.cwd, resolveWorktree) === undefined) {
+	// One worktree lookup serves both the pin layers and the non-Git check,
+	// whether the caller passes a resolver or the pin module's default runs.
+	const status = readProfilePinStatus(options.cwd, options.resolveWorktree);
+	if (status !== undefined) {
+		const identity: WorktreeIdentity = { root: status.root, commonDir: status.commonDir };
+		const pin = resolveProfilePin({ cwd: options.cwd, configHome: options.configHome, resolveWorktree: () => identity });
+		if (pin !== undefined) return { name: pin.profile, origin: pin.source, modelProfiles: pin.modelProfiles };
+	} else {
 		const declaration = resolveUnversionedProjectProfile(options.cwd, options.configHome);
 		if (declaration !== undefined) return { name: declaration.profile, origin: "repo", modelProfiles: declaration.modelProfiles };
 	}
@@ -247,6 +242,7 @@ function describe(profile: InheritedProfile | undefined): string {
  */
 export function inheritedProfileDriftNotice(options: SessionProfileOptions): string | undefined {
 	const resolution = resolveSessionProfile(options);
+	if (resolution.kind === "explicit") return bindingDefinitionDriftNotice(options, resolution);
 	if (resolution.kind !== "inherited") return undefined;
 	const current = resolveInheritedProfile(options);
 	const key = fingerprint(current);
@@ -257,6 +253,34 @@ export function inheritedProfileDriftNotice(options: SessionProfileOptions): str
 	seen.add(key);
 	notified.set(options.sessionId!, seen);
 	return `el Gentleman: the default profile changed to ${describe(current)}, this session keeps ${describe(resolution.profile)}. Press Enter on a profile in /gentle:profiles to adopt it.`;
+}
+
+// gentle-shell#2228: an explicit binding re-copies the profile definition at
+// selection, so later edits to that entry in profiles.json no-op silently until
+// the operator re-Enters. The same once-per-change fingerprint machine as the
+// inherited notice names the drift; the comparison never adopts the edit.
+function bindingDefinitionDriftNotice(
+	options: SessionProfileOptions,
+	resolution: { kind: "explicit"; name: string; modelProfiles: AgentModelConfig },
+): string | undefined {
+	const file = readProfilesFileResult(profilesFilePath(options.configHome));
+	if (file.status !== "valid") return undefined;
+	const definition = file.file.profiles[resolution.name];
+	if (definition === undefined) return undefined;
+	// Both sides normalize through the store's own route normalizer: a bound
+	// snapshot taken from the panel holds normalized routes, while raw string
+	// forms from other callers must hash equal to the same definition.
+	const normalized = (config: AgentModelConfig) =>
+		Object.fromEntries(Object.entries(config).map(([agent, route]) => [agent, normalizeModelConfig(route)]));
+	const key = createHash("sha256").update(stableJson({ modelProfiles: normalized(definition) })).digest("hex");
+	const current = createHash("sha256").update(stableJson({ modelProfiles: normalized(resolution.modelProfiles) })).digest("hex");
+	if (key === current) return undefined;
+	const notified = registry().notified;
+	const seen = notified.get(options.sessionId!) ?? new Set<string>();
+	if (seen.has(key)) return undefined;
+	seen.add(key);
+	notified.set(options.sessionId!, seen);
+	return `el Gentleman: the profile definition changed to "${resolution.name}" (profiles.json), this session keeps the binding from selection. Press Enter on a profile in /gentle:profiles to adopt it.`;
 }
 
 /** Testing-only reset of every frozen snapshot and drift memory. */

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,10 +14,14 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	createWindowsProcessTreeKiller,
+	windowsTaskkillPath,
+	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -552,6 +556,85 @@ test("native consent completion decodes START/v4 and replays its provider argv u
 	assert.deepEqual(queue.calls[0]?.arguments, consent.choices[0].invocation.split(" ").slice(1));
 });
 
+// Builds a Pi-bound consent/v3 envelope whose choices carry `--lenses-reason`
+// rendered exactly as `rendered`, plus the argv Pi must replay for the granted
+// choice when that rendering splits into `reason`.
+function consentWithLensReason(rendered: string, reason: string): { consent: ReturnType<typeof decodeReviewConsentV3>; expected: readonly string[] } {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	const expected: string[][] = [];
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		const bound = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --lenses-reason REASON --consent ");
+		choice.invocation = bound.replace("REASON", () => rendered);
+		expected.push(bound.split(" ").slice(1).map((word) => word === "REASON" ? reason : word));
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	assert.ok(consent.choices[0].invocation.includes(` --lenses-reason ${rendered} `));
+	return { consent, expected: expected[0]! };
+}
+
+// Answers the granted choice and proves Pi launched the package binary exactly
+// once with the exact argv, through execFile and never through a shell.
+async function assertLensReasonReplay(rendered: string, reason: string): Promise<void> {
+	const { consent, expected } = consentWithLensReason(rendered, reason);
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.deepEqual(queue.calls[0]?.arguments, expected);
+	const replayed = queue.calls[0]?.arguments ?? [];
+	const reasonIndex = replayed.indexOf("--lenses-reason");
+	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
+}
+
+// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
+test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
+	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
+});
+
+test("native consent answer treats a backslash before an apostrophe outside quotes as an escaped apostrophe", async () => {
+	await assertLensReasonReplay("package\\'s", "package's");
+});
+
+test("native consent answer treats a backslash before a double quote outside quotes as an escaped double quote", async () => {
+	await assertLensReasonReplay('say\\"x\\"', 'say"x"');
+});
+
+test("native consent answer joins a token across a backslash-escaped space outside quotes", async () => {
+	await assertLensReasonReplay("touched\\ parser", "touched parser");
+});
+
+test("native consent answer keeps a backslash before any other character verbatim outside quotes", async () => {
+	await assertLensReasonReplay("C:\\repo", "C:\\repo");
+	await assertLensReasonReplay("\\\\server\\share", "\\\\server\\share");
+	await assertLensReasonReplay("touched\\nparser", "touched\\nparser");
+});
+
+test("native consent answer keeps single quotes literal around double quotes and backslashes", async () => {
+	await assertLensReasonReplay("'say \"x\" and \\y'", 'say "x" and \\y');
+	await assertLensReasonReplay("'touched the package\\'", "touched the package\\");
+});
+
+test("native consent answer keeps backslashes verbatim inside double quotes", async () => {
+	await assertLensReasonReplay('"C:\\repo\\"', "C:\\repo\\");
+});
+
+test("native consent answer still rejects an unterminated quote before launching the provider", async () => {
+	for (const rendered of ["'touched the package'\\''s parser", "'touched the package", '"say x']) {
+		const { consent } = consentWithLensReason(rendered, "unused");
+		const queue = queuedAdapter([]);
+		await assert.rejects(
+			() => client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" }),
+			(error: unknown) => error instanceof TypeError && error.message === "Native consent invocation has invalid quoting",
+		);
+		assert.deepEqual(queue.calls, []);
+	}
+});
+
 test("native START refuses invalid committed-range and target bindings before STATUS", async () => {
 	for (const request of [
 		{ cwd: "/repo", baseRef: "origin/main" },
@@ -720,6 +803,76 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	});
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+});
+
+// On Windows, killing gentle-ai alone leaves its git children running against
+// the repository index; abort and timeout must take the whole tree down.
+test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
+	const killed: number[] = [];
+	const killProcessTree = (pid: number) => { killed.push(pid); process.kill(pid); };
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree });
+	const request = { file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), maxBufferBytes: 1024 };
+
+	const controller = new AbortController();
+	const aborted = adapter({ ...request, timeoutMs: 30_000, signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 1, "abort kills the tree once");
+
+	const timedOut = await adapter({ ...request, timeoutMs: 50 });
+	assert.equal(timedOut.timedOut, true);
+	assert.equal(killed.length, 2, "timeout kills the tree once");
+
+	const preAborted = new AbortController();
+	preAborted.abort();
+	await assert.rejects(adapter({ ...request, timeoutMs: 30_000, signal: preAborted.signal }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 2, "an already-aborted call spawns nothing");
+
+	const finished = await adapter({ ...request, arguments: ["-p", "'done'"], timeoutMs: 30_000 });
+	assert.deepEqual([finished.exitCode, finished.stdout.trim(), finished.timedOut], [0, "done", false]);
+	assert.equal(killed.length, 2, "a call that finishes kills nothing");
+});
+
+// taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
+// still hold, through a direct kill of gentle-ai itself.
+test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+	const startedAt = Date.now();
+	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
+	assert.equal(result.timedOut, true);
+	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
+// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
+// after gentle-ai itself exits; the deadline must still hold.
+test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const pidFile = join(directory, "descendant.pid");
+	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
+	try {
+		const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+		const startedAt = Date.now();
+		const pending = adapter({ file: process.execPath, arguments: ["-e", script], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 300 });
+		const result = await Promise.race([pending, new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 6_000).unref())]);
+		assert.notEqual(result, "unsettled", "the call settles while the descendant still holds the pipes");
+		if (result === "unsettled") return;
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 4_000, `settled after ${Date.now() - startedAt}ms`);
+	} finally {
+		try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* Already gone. */ }
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// A bare "taskkill" resolves from the current directory first on Windows, so a
+// repository shipping its own taskkill.exe would run on any abort or timeout.
+test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {
+	const calls: Array<{ file: string; args: readonly string[]; cwd: string }> = [];
+	const kill = createWindowsProcessTreeKiller({ SystemRoot: "D:\\Windows" }, (file, args, options) => { calls.push({ file, args, cwd: options.cwd }); return { on() {} }; });
+	kill(42);
+	assert.deepEqual(calls, [{ file: "D:\\Windows\\System32\\taskkill.exe", args: ["/pid", "42", "/T", "/F"], cwd: "D:\\Windows\\System32" }]);
+	assert.equal(windowsTaskkillPath({}), "C:\\Windows\\System32\\taskkill.exe");
+	assert.equal(windowsTaskkillPath({ SystemRoot: "relative\\dir" }), "C:\\Windows\\System32\\taskkill.exe", "a relative SystemRoot is never trusted");
 });
 
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {
@@ -965,4 +1118,29 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 		() => client(queuedAdapter([{ stdout: "", stderr: "Error: approved acknowledgement names no live compact authority\n", exitCode: 1 }]).adapter).acknowledgeApproved({ argumentTokens: ACKNOWLEDGEMENT_TOKENS, cwd: "/repo", binding: ACKNOWLEDGED_BINDING }),
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT,
 	);
+});
+
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
+
+test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = gentleAiProcessEnvironment(env);
+	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
+	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
 });

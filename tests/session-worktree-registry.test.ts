@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { SessionWorktreeRegistry, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
+import { SessionWorktreeRegistry, clearSessionWorktreeMemo, memoizeWorktreeResolver, resolveSessionWorktree, resolveSessionWorktreeWithGit, SESSION_WORKTREE_ENTRY, toolWorktreePath, worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
+import { sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 
 // All Git and session writes belong to unique fixtures, never the live clone.
 function fixture(t: test.TestContext) {
@@ -48,6 +50,8 @@ test("canonical roots include cwd, dedupe aliases immediately and reject unrelat
 	assert.deepEqual(registry.roots(), [f.main, f.linked]);
 	assert.equal(h.session.getEntries().length, 2);
 	assert.throws(() => registry.register(f.other, "explicit"), /same Git clone/);
+	// The refusal names the runnable exit for an independent repository (#1915).
+	assert.throws(() => registry.register(f.other, "explicit"), /subagent_run with repository_root/);
 	assert.throws(() => registry.register(join(f.dir, "missing"), "explicit"), /worktree/);
 	assert.equal(resolveSessionWorktree(f.alias, f.main)?.root, f.linked);
 });
@@ -250,4 +254,55 @@ test("nearest-repository resolution: an inner repo's files never resolve to an o
 	const outerFile = join(f.outer, "README.md");
 	writeFileSync(outerFile, "outer\n");
 	assert.equal(resolveSessionWorktree("README.md", f.outer)?.root, f.outer);
+});
+
+// S4 (odd/tasks/startup-home-repo-and-changes.md): every extension resolves the
+// same (cwd, cwd) identity during startup. Count the real Git children through
+// the public resolver, not through an injected seam.
+function countGitSpawns(t: test.TestContext): () => number {
+	let spawns = 0;
+	const original = childProcess.execFileSync;
+	childProcess.execFileSync = ((...args: Parameters<typeof original>) => { if (args[0] === "git") spawns++; return original(...args); }) as typeof original;
+	syncBuiltinESMExports();
+	t.after(() => { childProcess.execFileSync = original; syncBuiltinESMExports(); });
+	return () => spawns;
+}
+
+test("repeated startup resolutions of one cwd share a single Git resolution", (t) => {
+	const f = fixture(t);
+	clearSessionWorktreeMemo();
+	const spawns = countGitSpawns(t);
+	const first = resolveSessionWorktree(f.main, f.main);
+	for (let i = 0; i < 5; i++) assert.deepEqual(resolveSessionWorktree(f.main, f.main), first);
+	assert.equal(spawns(), 2, "one resolution is two rev-parse children");
+	clearSessionWorktreeMemo();
+	resolveSessionWorktree(f.main, f.main);
+	assert.equal(spawns(), 4, "explicit invalidation forces a fresh resolution");
+});
+
+test("memoized identity still observes removal, nested repositories and expiry", (t) => {
+	const f = fixture(t);
+	let now = 0;
+	const resolver = memoizeWorktreeResolver(resolveSessionWorktreeWithGit, { ttlMs: 1000, now: () => now });
+	const authority = sessionRepositoryAuthority(f.main, resolver);
+	const nested = join(f.main, "nested");
+	mkdirSync(nested);
+	assert.equal(resolver(nested, f.main)?.root, f.main);
+	execFileSync("git", ["init", "--quiet", nested], { env: worktreeGitEnvironment(), stdio: "pipe" });
+	assert.equal(resolver(nested, f.main)?.root, realpathSync(nested), "a new nested .git below the cached root is observed");
+	assert.equal(authority(), true);
+	rmSync(join(f.main, ".git"), { recursive: true, force: true });
+	assert.equal(resolver(f.main, f.main), undefined, "a removed clone is never served from the memo");
+	assert.equal(authority(), false, "drift checks still see the removal");
+	let calls = 0;
+	const counted = memoizeWorktreeResolver((path, cwd) => { calls++; return resolveSessionWorktreeWithGit(path, cwd); }, { ttlMs: 1000, now: () => now });
+	counted(f.other, f.other);
+	counted(f.other, f.other);
+	assert.equal(calls, 1);
+	now = 1001;
+	counted(f.other, f.other);
+	assert.equal(calls, 2, "expired entries resolve again");
+	counted(join(f.dir, "empty"), f.dir);
+	counted(join(f.dir, "empty"), f.dir);
+	assert.equal(calls, 4, "a missing repository is never memoized, so bootstrap is observed at once");
 });

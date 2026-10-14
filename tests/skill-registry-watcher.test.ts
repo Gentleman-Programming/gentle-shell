@@ -58,6 +58,7 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			};
 			try {
 				await events.get("session_start")(undefined, ctx);
+				await __testing.startupSettled(); // Startup regeneration runs after session_start returns.
 				assert.ok(userWatcher, "fixture must start the real recursive user watcher");
 				const initialWatchers = __testing.activeWatcherCount();
 				assert.equal(initialWatchers, 2);
@@ -101,6 +102,7 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			}
 			assert.equal(__testing.activeWatcherCount(), 0);
 			await events.get("session_start")(undefined, ctx);
+			await __testing.startupSettled();
 			assert.equal(__testing.activeWatcherCount(), 2, "a later session must rewatch the failed root");
 			await events.get("session_shutdown")(undefined, ctx);
 			assert.equal(__testing.activeWatcherCount(), 0);

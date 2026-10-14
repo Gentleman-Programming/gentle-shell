@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="400" viewBox="0 0 1000 400" role="img" aria-labelledby="measured-title measured-desc">
+  <title id="measured-title">Measured effect of proportional routing</title>
+  <desc id="measured-desc">Before and after proportional routing on a local benchmark with hidden acceptance suites, single runs, API-equivalent cost. A 3-line bug in one function went from 335 s, 56 turns and $0.339 to 77 s, 10 turns and $0.105 inline with no subagents. A bug rooted in shared logic went from 479 s and $0.361 to 276 s and $0.207 with one explorer. A high-risk data migration went from 559 s and $0.403 with a feedback round to 539 s and $0.555, accepted on the first round with one independent verifier.</desc>
+  <defs>
+    <linearGradient id="measured-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="measured-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="measured-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="measured-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <linearGradient id="measured-bar" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c46b9e"/><stop offset="1" stop-color="#f095c8"/></linearGradient>
+    <pattern id="measured-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="measured-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="measured-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
+    <marker id="measured-arrow-soft" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#d7a0b8"/></marker>
+  </defs>
+  <rect width="1000" height="400" rx="24" fill="url(#measured-bg)"/>
+  <rect width="1000" height="400" rx="24" fill="url(#measured-dots)"/>
+  <rect width="1000" height="400" rx="24" fill="url(#measured-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="399" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">MEASURED</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">single runs (n=1) · API-equivalent cost · local hidden-suite benchmark</text>
+    <text x="36" y="114" fill="#fbeff5" font-size="15.5" font-weight="650">3-line bug in one function</text>
+    <rect x="36" y="126" width="146" height="18" rx="9" fill="#f095c8" fill-opacity="0.26"/>
+    <text x="109.0" y="139" fill="#f5b8da" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">inline, no subagents</text>
+    <rect x="330" y="100" width="208" height="16" rx="8" fill="#ffffff" fill-opacity="0.09"/>
+    <text x="548" y="112" fill="#8e7987" font-size="12.5">335 s · 56 turns · $0.339</text>
+    <rect x="330" y="126" width="48" height="16" rx="8" fill="url(#measured-bar)"/>
+    <text x="388" y="138" fill="#fbeff5" font-size="12.5" font-weight="650">77 s · 10 turns · $0.105</text>
+    <text x="36" y="206" fill="#fbeff5" font-size="15.5" font-weight="650">Bug rooted in shared logic</text>
+    <rect x="36" y="218" width="93" height="18" rx="9" fill="#f095c8" fill-opacity="0.26"/>
+    <text x="82.6" y="231" fill="#f5b8da" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">one explorer</text>
+    <rect x="330" y="192" width="297" height="16" rx="8" fill="#ffffff" fill-opacity="0.09"/>
+    <text x="637" y="204" fill="#8e7987" font-size="12.5">479 s · $0.361</text>
+    <rect x="330" y="218" width="171" height="16" rx="8" fill="url(#measured-bar)"/>
+    <text x="511" y="230" fill="#fbeff5" font-size="12.5" font-weight="650">276 s · $0.207</text>
+    <text x="36" y="298" fill="#fbeff5" font-size="15.5" font-weight="650">Data migration (high risk)</text>
+    <rect x="36" y="310" width="172" height="18" rx="9" fill="#f095c8" fill-opacity="0.26"/>
+    <text x="122.2" y="323" fill="#f5b8da" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">one independent verifier</text>
+    <rect x="330" y="284" width="347" height="16" rx="8" fill="#ffffff" fill-opacity="0.09"/>
+    <text x="687" y="296" fill="#8e7987" font-size="12.5">559 s · $0.403 · needed a feedback round</text>
+    <rect x="330" y="310" width="334" height="16" rx="8" fill="url(#measured-bar)"/>
+    <text x="674" y="322" fill="#fbeff5" font-size="12.5" font-weight="650">539 s · $0.555 · accepted on the first round</text>
+    <rect x="36" y="364" width="14" height="10" rx="5" fill="#ffffff" fill-opacity="0.09"/>
+    <text x="58" y="373" fill="#a8939f" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="start">before</text>
+    <rect x="122" y="364" width="14" height="10" rx="5" fill="url(#measured-bar)"/>
+    <text x="144" y="373" fill="#a8939f" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="start">after proportional routing</text>
+    <text x="964" y="373" fill="#8e7987" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="end">bar length = wall-clock time</text>
+  </g>
+</svg>

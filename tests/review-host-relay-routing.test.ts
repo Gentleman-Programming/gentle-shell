@@ -10,9 +10,10 @@ import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } 
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { GENTLE_AI_DEV_BINARY_ENV, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { NativeReviewIntegrationError } from "../lib/native-review-cli.ts";
 import type { NativeReviewCli, NativeReviewUnachievableLensCaptureArtifact, NativeReviewUnachievableLensCaptureRequest } from "../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
-import { decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import { decodeReviewFailureV2, decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
 
 // One-slot capture routing: the host relay runs only when the selected
@@ -443,6 +444,60 @@ function groupInputs(lineageId: string, revision = SHA): ReviewCollectInputV3[] 
 async function runCaptureGroup(cwd: string, harness: RoutingHarness, lineageId: string, inputs: readonly ReviewCollectInputV3[], reviewerRunAcknowledged = true, modelRegistry?: InProcessReviewerRegistry): Promise<Record<string, unknown>> { return await __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input, index) => index % 2 === 0 ? input : JSON.stringify(input)), reviewerRunAcknowledged }, cwd, harness.native, undefined, undefined, undefined, false, modelRegistry) as Record<string, unknown>; }
 
 function prepared(request: ReviewHostRelayRequest) { return { request, promptByteLength: 64, resultByteLength: 32 }; }
+
+for (const failAt of [0, 1, 2]) {
+	for (const typed of [true, false]) {
+		test(`group STATUS failure at call ${failAt} preserves ${typed ? "native diagnostics" : "untyped compatibility"} and submission progress`, async (t) => {
+			t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+			const cwd = repository(t), lineageId = "relay-group-status-failure", inputs = groupInputs(lineageId);
+			const failure = decodeReviewFailureV2({
+				schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2",
+				operation: "review.status", phase: "native_running", code: "aggregate_budget_exceeded",
+				message: "The negotiated review operation exceeded its aggregate time budget.",
+				mutation_outcome: "not_started", authority_applicability: "current_target",
+				retry_safe: false, replayability: "manual_action_required", required_inputs: [],
+				next_action: "explicit-maintainer-action", cause: "STATUS budget exhausted",
+				context: { binding_revision: { expected: SHA, current: SHA } },
+			});
+			const error = Object.assign(typed ? new NativeReviewIntegrationError(failure) : new Error(failure.message), { stderr: "PRIVATE_PROCESS_BYTES" });
+			const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+			let calls = 0, launches = 0, submissions = 0;
+			harness.native.targetStatus = async () => {
+				const call = calls++;
+				if (call === failAt) throw error;
+				return finalizeStatus(lineageId, inputs.slice(Math.max(0, call - 1)));
+			};
+			__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => {
+				launches += requests.length;
+				return requests.map(prepared);
+			}, async (result) => {
+				submissions += 1;
+				return { promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" };
+			});
+
+			const result = await runCaptureGroup(cwd, harness, lineageId, inputs);
+			assert.equal(result.outcome, "native-status-failed");
+			assert.equal(result.reason, failure.message);
+			assert.equal(calls, failAt + 1, "no retry after failed STATUS");
+			assert.equal(launches, failAt === 0 ? 0 : 4);
+			assert.equal(submissions, Math.max(0, failAt - 1));
+			assert.equal(result.mutation_performed, failAt === 2);
+			assert.equal(result.mutation_outcome, failAt === 2 ? "partial" : "none");
+			if (failAt > 0) {
+				assert.equal(result.prepared_reviewers, 4);
+				assert.equal(result.submitted_reviewers, failAt - 1);
+			}
+			assert.equal(JSON.stringify(result).includes("PRIVATE_PROCESS_BYTES"), false);
+			if (typed) {
+				assert.deepEqual(result.native_failure, failure.raw);
+				assert.equal(result.next_action, failure.nextAction);
+				assert.equal(result.replayability, failure.replayability);
+			} else {
+				for (const key of ["native_failure", "next_action", "replayability"]) assert.equal(key in result, false);
+			}
+		});
+	}
+}
 
 test("grouped capture forecasts once, reaches a four-reviewer barrier, and reconciles unclosed submissions", async (t) => {
 	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());

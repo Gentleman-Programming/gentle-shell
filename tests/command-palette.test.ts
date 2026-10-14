@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { CommandPalette, commandsKey, rankPaletteGroups, type CommandPaletteGroup, type CommandPaletteItem, type CommandPaletteResult, type CommandPaletteTheme } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups, COMMAND_PALETTE_CATALOG } from "../lib/command-palette-catalog.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import startupBanner from "../extensions/startup-banner.ts";
 
 // Command palette: a pure, curated, grouped overlay component for
 // `/gentle:commands` and its `alt+k` shortcut. These tests drive ranking,
@@ -385,8 +387,9 @@ test("banner settings have one palette route and keep their slash commands", () 
 	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
 	for (const command of banner) assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
 	assert.ok(catalogCommands.includes("gentle:customize"));
-	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
-	for (const command of banner) assert.match(source, new RegExp(`"${command}"`), `${command} stays registered`);
+	const registered: string[] = [];
+	startupBanner({ on() {}, registerCommand(name: string) { registered.push(name); }, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	for (const command of banner) assert.ok(registered.includes(command), `${command} stays registered`);
 });
 
 test("retired SDD commands are absent from the palette and extension registrations", () => {

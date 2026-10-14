@@ -44,7 +44,7 @@ flowchart TD
     B -->|Yes| D[Explore existing code and requirements]
     D --> E{Named uncertainty and research selected?}
     E -->|Yes| F[Adaptive read-only research with existing workers]
-    E -->|No| G[Resolve real product decisions only]
+    E -->|No| G[Ask costly blocking gaps, grouped]
     F --> G
     G --> H{High-consequence unproven premise?}
     H -->|Yes| I[One independent assumption challenge]

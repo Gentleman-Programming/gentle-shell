@@ -1,11 +1,11 @@
-# MCP sidebar panel (Opencode-style)
+# MCP sidebar panel
 
-Objective: show session MCP servers in the Gentle Shell sidebar as a collapsible MCP group, Opencode-style. Branch: feat/mcp-sidebar-panel. Delivery: ask-on-risk, single PR from fork. Runner: pnpm vitest / node --experimental-strip-types --test.
+Objective: show session MCP servers in the Gentle Shell sidebar as a collapsible MCP group. Branch: feat/mcp-sidebar-panel. Delivery: ask-on-risk, single PR from fork. Runner: pnpm vitest / node --experimental-strip-types --test.
 
 ## Specs
 
 - S1: "algo para mostrar los MCP que están disponibles en esta sesión" — sidebar shows MCP servers available in this session.
-- S2: "Más o menos como lo tiene Opencode" — reference layout (Foto1): `▼ MCP` header with rows `• <name> Connected|Disabled`.
+- S2: reference layout (Foto1): `▼ MCP` header with rows `• <name> Connected|Disabled`.
 - S3: "Yo casi que prefiero un apartado para MCP y que se pueda colapsar y hacer click" — dedicated MCP section, collapsible, clickable (not mixed into Integrations blob).
 - S4: Current state (Foto2): Status card has `Project`, `Changes`, `Jobs`, `Integrations` (opaque `model.statuses` strings from `footerData.getExtensionStatuses()`). New MCP group must derive from structured data, not parse opaque status strings.
 - S5: "Luego el objetivo es hacer un PR con este cambio. En la PR se tienen que ver capturas del resultado" — PR from fork (`fork` remote = ciltocruz/gentle-shell) against `Gentleman-Programming/gentle-shell`, with screenshots. Screenshots by user if agent cannot capture.
@@ -23,7 +23,7 @@ Objective: show session MCP servers in the Gentle Shell sidebar as a collapsible
 
 ## Log
 
-- L1 (2026-10-14, user verbatim): "Crea un worktree para trabajar en gentle-shell. Quiero añadir en el panel lateral algo para mostrar los MCP que están disponibles en esta sesión. Más o menos como lo tiene Opencode. Foto1: [Image 1] Así es como se ve en Gentle-shell: [Image 2] Yo casi que prefiero un apartado para MCP y que se pueda colapsar y hacer click. Hacemos una funcionalidad ODD para este feature? Luego el objetivo es hacer un PR con este cambio. En la PR se tienen que ver capturas del resultado, así que si las necesitas las puedo hacer yo si tú no puedes. Habrá que hacer un fork."
+- L1 (2026-10-14, user verbatim, external tool name redacted for the PR at the author's request): "Crea un worktree para trabajar en gentle-shell. Quiero añadir en el panel lateral algo para mostrar los MCP que están disponibles en esta sesión. Más o menos como la referencia visual. Foto1: [Image 1] Así es como se ve en Gentle-shell: [Image 2] Yo casi que prefiero un apartado para MCP y que se pueda colapsar y hacer click. Hacemos una funcionalidad ODD para este feature? Luego el objetivo es hacer un PR con este cambio. En la PR se tienen que ver capturas del resultado, así que si las necesitas las puedo hacer yo si tú no puedes. Habrá que hacer un fork."
 - L2: Worktree created at `../gentle-shell-worktrees/feat-mcp-sidebar-panel`, branch `feat/mcp-sidebar-panel` from `origin/main` (bba64b56a). Fork remote already exists (`fork` → ciltocruz/gentle-shell), no new fork needed. Open product decision pending: what should click do.
 - L3 (2026-10-14, user verbatim): "O sea, la flecha que colapse. Luego si haces clic sobre un MCP sale un panel con las herramientas, estado y opción para desactivar o activar el MCP para esa sesión." — confirmed S7. PR base: user says "La PR debe hacerse desde su main" — verified `fork/main` == `origin/main` (bba64b56), worktree base valid.
 - L4: Explorer handoff — no structured session MCP API in repo (no getMcpServers); statuses opaque via `getExtensionStatuses()`. Viable seam: `pi.getAllTools()` + `mcp__<server>__<tool>` prefix (see `lib/odd-phase-inference.ts:102-104`, `extensions/startup-banner.ts:680-683`) joined with `mcp.json` keys (`extensions/startup-banner.ts:694-701`) → Connected (≥1 tool) vs Disabled (0 tools). Collapse pattern: `extensions/gentle-todo.ts:116-120,172-197`. Overlay: `ctx.ui.custom` (`extensions/gentle-shell.ts:1377-1391`). Toggle enable/disable API unconfirmed — scoping question pending.

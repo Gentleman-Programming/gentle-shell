@@ -2068,7 +2068,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 			invalidate() {},
 		});
-		// MCP rail part: a collapsible Opencode-style server list fed by the
+		// MCP rail part: a collapsible server list fed by the
 		// same mcp.json files pi loads, joined with live tool names. The
 		// arrow toggles; clicking a server opens its detail overlay.
 		const mcpStatKey = (path: string): string => {

@@ -404,7 +404,11 @@ export function createCandidateOwner(commonDir: string, root: string, platform: 
 }
 
 function readOwner(commonDir: string, root: string, platform: NodeJS.Platform = process.platform): CandidateViewOwner {
-	const parent = assertCandidateOwnerParent(commonDir, platform);
+	return readOwnerInParent(commonDir, root, assertCandidateOwnerParent(commonDir, platform), platform);
+}
+
+// The caller owns the parent attestation. File privacy and owner bindings stay fresh.
+function readOwnerInParent(commonDir: string, root: string, parent: string, platform: NodeJS.Platform): CandidateViewOwner {
 	if (!UUID.test(basename(root)) || root !== join(parent, basename(root))) throw new Error("Candidate owner escaped parent");
 	regular(markerPath(root), true, platform);
 	const owner = JSON.parse(readFileSync(markerPath(root), "utf8")) as CandidateViewOwner;
@@ -496,7 +500,9 @@ export function sweepCandidateOwners(commonDir: string, git: Git, makeWritable: 
 		for (const name of readdirSync(parent)) {
 			if (!name.endsWith(".owner.json")) continue;
 			try {
-				const owner = readOwner(commonDir, join(parent, name.slice(0, -11)), platform);
+				// Reuse the boundary only for this read-only walk, never across sweeps.
+				// Removal still revalidates the parent at every existing race boundary.
+				const owner = readOwnerInParent(commonDir, join(parent, name.slice(0, -11)), parent, platform);
 				if (dead(owner)) removeCandidateOwner(owner, git, makeWritable, true, platform);
 			} catch { /* Unknown, legacy, unsafe, unregistered, and contended entries survive. */ }
 		}

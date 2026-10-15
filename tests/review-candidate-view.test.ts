@@ -190,6 +190,74 @@ test("private candidate owner revalidates every Windows ancestor replacement bou
 	assert.deepEqual(checked, [commonDir, control, parent]);
 });
 
+test("Windows orphan sweep validates ancestors once and every owner marker on each sweep", (t) => {
+	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "gentle-ai"), parent = join(control, "candidate-views");
+	mkdirSync(parent, { recursive: true });
+	const markers: string[] = [];
+	for (let index = 0; index < 30; index++) {
+		const uuid = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+		const root = join(parent, uuid), marker = ownerMarker(root);
+		writeFileSync(marker, JSON.stringify({ version: 1, uuid, token: uuid, pid: process.pid, host: null, root, commonDir }), { mode: 0o600 });
+		markers.push(marker);
+	}
+	const before = markers.map((marker) => readFileSync(marker, "utf8"));
+	const checked: string[] = [];
+	const gitCalls: string[][] = [];
+	setWindowsAclAuthorityForTesting((path) => checked.push(path));
+	t.after(() => setWindowsAclAuthorityForTesting());
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		gitCalls.push([...args]);
+		return execFileSync(file, args, options);
+	}, "win32");
+	for (let sweep = 0; sweep < 2; sweep++) {
+		checked.length = 0;
+		registry.sweepOrphans(cwd);
+		assert.deepEqual(checked.slice(0, 3), [commonDir, control, parent]);
+		assert.equal(checked.length, 3 + markers.length, "ancestor checks must not scale with marker count or survive across sweeps");
+		assert.deepEqual(checked.slice(3).sort(), [...markers].sort(), "each marker still needs its own ACL check");
+		assert.deepEqual(markers.map((marker) => readFileSync(marker, "utf8")), before);
+		assert.deepEqual(readdirSync(parent).sort(), markers.map((marker) => marker.slice(parent.length + 1)).sort());
+	}
+	assert.equal(gitCalls.length, 2);
+	assert.ok(gitCalls.every((args) => args.includes("rev-parse") && !args.includes("remove")));
+	assert.equal(readFileSync(join(cwd, "tracked.txt"), "utf8"), "base\n");
+});
+
+test("Windows orphan sweep preserves rejected boundaries and owner markers", (t) => {
+	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "gentle-ai"), parent = join(control, "candidate-views");
+	mkdirSync(parent, { recursive: true });
+	const markers = [0, 1].map((index) => {
+		const uuid = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+		const root = join(parent, uuid), marker = ownerMarker(root);
+		writeFileSync(marker, JSON.stringify({ version: 1, uuid, token: uuid, pid: process.pid, host: null, root, commonDir }), { mode: 0o600 });
+		return marker;
+	});
+	const before = markers.map((marker) => readFileSync(marker, "utf8"));
+	const checked: string[] = [];
+	let rejected = control;
+	setWindowsAclAuthorityForTesting((path) => {
+		checked.push(path);
+		if (path === rejected) throw new Error("fixture rejected ACL");
+	});
+	t.after(() => setWindowsAclAuthorityForTesting());
+	const gitCalls: string[][] = [];
+	const registry = new CandidateViewRegistry((file, args, options) => {
+		gitCalls.push([...args]);
+		return execFileSync(file, args, options);
+	}, "win32");
+	for (const path of [control, markers[0]!]) {
+		rejected = path;
+		checked.length = 0;
+		assert.doesNotThrow(() => registry.sweepOrphans(cwd));
+		assert.deepEqual(checked, path === control ? [commonDir, control] : [commonDir, control, parent, ...markers]);
+		assert.deepEqual(markers.map((marker) => readFileSync(marker, "utf8")), before);
+		assert.equal(readdirSync(parent).length, markers.length);
+	}
+	assert.equal(gitCalls.length, 2);
+	assert.ok(gitCalls.every((args) => args.includes("rev-parse") && !args.includes("remove")));
+	assert.equal(readFileSync(join(cwd, "tracked.txt"), "utf8"), "base\n");
+});
+
 test("private candidate owner rejects a controlled foreign Windows owner", { skip: process.platform !== "win32" }, (t) => {
 	const path = mkdtempSync(join(tmpdir(), "gentle-pi-foreign-owner-"));
 	t.after(() => rmSync(path, { recursive: true, force: true }));

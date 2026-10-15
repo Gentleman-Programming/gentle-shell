@@ -954,6 +954,20 @@ test("bundled: a Pi home inside the prefix is protected, except the session's ow
 	} finally { w.cleanup(); }
 });
 
+test("bundled: a symlinked named envs root whose target a removal holds refuses the whole run", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const target = join(w.prefix, "versions", "envs");
+		write(join(target, "work", ".gentle-shell-home"));
+		const link = join(w.base, "linked-envs");
+		symlinkSync(target, link);
+		assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: { GENTLE_SHELL_ENVS_DIR: link } }), 1);
+		assert.match(w.err.join("\n"), /your named envs/);
+		bundledUntouched(w);
+		assert.equal(existsSync(join(target, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
 test("bundled: in a terminal one question confirms, the shared home is asked separately and kept by default; EOF cancels and Ctrl-C aborts", posixOnly, async () => {
 	const cancelled = bundledWorld();
 	try {

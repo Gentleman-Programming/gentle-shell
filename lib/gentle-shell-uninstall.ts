@@ -705,7 +705,12 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	consider(join(shellHome, "agent"), "your sign-ins, chats, settings and extensions", "dir", plan.shared);
 	consider(join(shellHome, "config.json"), "the launcher's settings", "file", plan.shared);
 	const namedEnvs = envsRoot(env, homedir);
-	const hasNamedEnvs = inspect(namedEnvs, "dir") === "ok";
+	const namedEnvsState = inspect(namedEnvs, "dir");
+	const hasNamedEnvs = namedEnvsState === "ok";
+	// A symlinked root still holds the user's envs: guard and list its real
+	// target too. Only a real folder counts as a known prefix entry; a link
+	// there stays foreign and so keeps the prefix.
+	const guardsNamedEnvs = hasNamedEnvs || (namedEnvsState === "symlink" && inspect(canonical(namedEnvs), "dir") === "ok");
 	const known = new Set([...BUNDLED_OWN.map((item) => item.name), ...(windows ? [BUNDLED_WINDOWS_MARKER.name] : []),
 		...(same(canonical(shellHome), real) ? ["agent", "config.json"] : []),
 		// Named envs are user data that may share the prefix folder: kept, and
@@ -718,7 +723,7 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	}
 	plan.removeRoot = !foreign;
 
-	if (hasNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
+	if (guardsNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
 	for (const removal of [...plan.own, ...plan.shared]) {
 		const reason = collision(canonical(removal.path), guards, platform);
 		if (reason) plan.refusals.push(`${removal.path} would be removed, but it ${reason}; refusing to remove anything.`);
@@ -726,7 +731,7 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 
 	plan.notTouched.push({ path: piHome, label: "your Pi home" }, { path: join(homedir, ".pi", "gentle-ai"), label: "Gentle AI's configuration for Pi" },
 		{ path: join(homedir, ".gentle-ai"), label: "Gentle AI's own state" }, { path: join(homedir, ".engram"), label: "Engram's memory" });
-	if (hasNamedEnvs) plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
+	if (guardsNamedEnvs) plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
 	if (env.GENTLE_SHELL_HOME && !same(canonical(env.GENTLE_SHELL_HOME), canonical(join(shellHome, "agent")))) {
 		plan.notTouched.push({ path: env.GENTLE_SHELL_HOME, label: "the Gentle Shell home GENTLE_SHELL_HOME names" });
 	}

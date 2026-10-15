@@ -892,6 +892,8 @@ test("regular-mode bar names the env right after the brand and keeps it when nar
 	assert.ok(line.startsWith("✿ gentle shell ⟡ env work ⟡ ~/work/gentle-pi main"), line);
 	const [narrow] = renderShellBar(model({ env: "work" }), plainTheme, 30);
 	assert.match(narrow, /env work/);
+	// Narrower than brand plus env: the brand gives way, never the env.
+	for (const width of [12, 20]) assert.equal(renderShellBar(model({ env: "work" }), plainTheme, width)[0], "env work", `width ${width}`);
 	const [plain] = renderShellBar(model(), plainTheme, 160);
 	assert.doesNotMatch(plain, /env /);
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };

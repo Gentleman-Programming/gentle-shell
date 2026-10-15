@@ -210,6 +210,79 @@ test("a same-size, older-than-wrapper replacement of the wrapped script still in
 	assert.equal(readFileSync(log, "utf8").length, 2, "a same-size, older-mtime replacement of the wrapped script must still invalidate the cache");
 });
 
+test("a quoted .js path on an earlier comment line in the .cmd wrapper is never mistaken for the executed script on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+
+	// A decoy file whose quoted path sits on a `rem` comment line, before the
+	// real invocation line. resolveVersionProbeIdentity's regex scans the
+	// whole wrapper text, so without skipping comment lines it fingerprints
+	// this unrelated, never-changing file instead of the script that
+	// actually runs.
+	const decoyPath = join(f.root, "decoy.js");
+	writeFileSync(decoyPath, "// never executed\n");
+	const wrapperBefore = readFileSync(command, "utf8");
+	writeFileSync(command, wrapperBefore.replace("@echo off\r\n", `@echo off\r\nrem "${decoyPath}"\r\n`));
+
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 1.2.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+
+	// The decoy file itself never changes between launches.
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/, "the wrapped script changed; a decoy quoted .js path on an earlier comment line must not shadow it and keep a stale cache hit");
+	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed on an unrelated decoy comment-line path must not reuse the old version");
+});
+
+for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-js-shim"]) {
+	test(`wrapper cache recognizes only supported execution shapes: ${shape}`, { skip: process.platform !== "win32" }, (t) => {
+		const f = fixture(t);
+		const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+		const script = join(f.root, "counting-pi.mjs");
+		const decoy = join(f.root, "decoy.js");
+		writeFileSync(decoy, "// never executed\n");
+		const actual = join(f.root, "actual.cmd");
+		writeFileSync(actual, `@echo off\r\n"${process.execPath}" "${script}" --version\r\n`);
+		writeFileSync(command, shape === "unreachable"
+			? `@echo off\r\ngoto actual\r\nnode "${decoy}" %*\r\n:actual\r\ncall "${actual}" %*\r\n`
+			: shape === "non-node-variable"
+			? `@echo off\r\nset "_prog=${actual}"\r\n"%_prog%" "${decoy}" %*\r\n`
+			: shape === "npm-cmd-shim"
+			? `@ECHO off\r\nSETLOCAL\r\nSET "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "${script}" %*\r\n`
+			: `@SETLOCAL\r\n@SET "NODE_PATH=${f.root}"\r\n"${process.execPath}" "${script}" %*\r\n`);
+		const env = { ...f.env, GENTLE_SHELL_PI: command };
+		const check = (version: string) => {
+			const result = run(env, ["--version"]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stderr, "");
+			assert.equal(result.stdout, `gentle-shell ${ownGentlePiVersion()}\npi ${version}\nhome isolated ${f.gentleShellHome}\n`);
+		};
+		check("1.2.5");
+		check("1.2.5");
+		const supported = shape === "npm-cmd-shim" || shape === "pnpm-js-shim";
+		assert.equal(readFileSync(log, "utf8").length, supported ? 1 : 2);
+		writeFileSync(script, readFileSync(script, "utf8").replaceAll("1.2.5", "1.2.6") + "\n");
+		check("1.2.6");
+		assert.equal(readFileSync(log, "utf8").length, supported ? 2 : 3);
+	});
+}
+
 test("GENTLE_SHELL_PI as a bare .cmd command name (no directory) never caches, regardless of which cwd/PATH candidate cmd.exe actually runs", { skip: process.platform !== "win32" }, (t) => {
 	const f = fixture(t);
 	const pathRoot = join(f.root, "pathdir");

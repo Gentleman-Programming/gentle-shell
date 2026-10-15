@@ -451,9 +451,34 @@ function resolveVersionProbeIdentity(command) {
 	} catch {
 		return undefined;
 	}
-	const match = /"([^"]+\.(?:m?c?js))"/i.exec(text);
-	if (match === null) return undefined;
-	const targetPath = isAbsolute(match[1]) ? match[1] : resolvePath(dirname(command), match[1]);
+	// Batch is not a format we can safely interpret in general. Only cache
+	// a single quoted script passed directly to a recognizable Node command;
+	// comments, assignments, or multiple script paths must not pick a target.
+	const scripts = [...text.matchAll(/"([^"\r\n]+\.(?:m?c?js))"/gi)];
+	if (scripts.length !== 1) return undefined;
+	const nodeCommand = /^(?:"(?:[^"%\r\n]*[\\/])?node(?:\.exe)?"|node(?:\.exe)?)$/i;
+	let variableIsNode = false;
+	let script;
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim().replace(/^@/, "");
+		if (line === "" || /^(?:echo off|setlocal|exit \/b %errorlevel%)$/i.test(line) || /^rem(?:\s|$)/i.test(line)) continue;
+		if (/^set "NODE_PATH=[^"\r\n]*"$/i.test(line)) continue;
+		const assignment = /^set "_prog=([^"\r\n]+)"$/i.exec(line);
+		if (assignment !== null) {
+			if (!nodeCommand.test(`"${assignment[1]}"`)) return undefined;
+			variableIsNode = true;
+			continue;
+		}
+		// npm's cmd-shim uses this fixed prelude to leave SETLOCAL while
+		// expanding its invocation. Other control flow is not interpreted.
+		const commandLine = line.replace(/^endLocal & goto #_undefined_# 2>NUL \|\| title %COMSPEC% & /i, "");
+		const invocation = /^("[^"\r\n]+"|node(?:\.exe)?)\s+"([^"\r\n]+\.(?:m?c?js))"\s+%\*$/i.exec(commandLine);
+		if (invocation === null || script !== undefined) return undefined;
+		if (!nodeCommand.test(invocation[1]) && !(invocation[1] === '"%_prog%"' && variableIsNode)) return undefined;
+		script = invocation[2];
+	}
+	if (script === undefined || script !== scripts[0][1]) return undefined;
+	const targetPath = isAbsolute(script) ? script : resolvePath(dirname(command), script);
 	let target;
 	try {
 		target = statSync(targetPath);

@@ -3526,6 +3526,25 @@ test("envs new creates a managed, owned env that --env launches into", (t) => {
 	assert.equal(JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR, dir);
 });
 
+test("envs new removes its partial env when bootstrap fails, so a retry succeeds", (t) => {
+	const f = fixture(t);
+	const preload = join(f.root, "fail-marker.cjs");
+	writeFileSync(preload, [
+		"const fs = require('node:fs');",
+		"const { syncBuiltinESMExports } = require('node:module');",
+		"const original = fs.writeFileSync;",
+		"fs.writeFileSync = (path, ...args) => { if (String(path).endsWith('.gentle-shell-home')) throw new Error('marker write failed'); return original(path, ...args); };",
+		"syncBuiltinESMExports();",
+	].join("\n"));
+	const failed = spawnSync(process.execPath, ["--require", preload, binPath, "envs", "new", "work"], { encoding: "utf8", env: f.env });
+	assert.equal(failed.status, 1, failed.stderr);
+	assert.match(failed.stderr, /marker write failed/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "work")), false, "no half-created env is left behind");
+	const retried = run(f.env, ["envs", "new", "work"]);
+	assert.equal(retried.status, 0, retried.stderr);
+	assert.ok(existsSync(join(f.home, ".gentle-shell", "envs", "work", ".gentle-shell-home")));
+});
+
 test("--env never creates an unknown env and rejects invalid names", (t) => {
 	const f = fixture(t);
 	const unknown = run(f.env, ["--env", "nope"]);

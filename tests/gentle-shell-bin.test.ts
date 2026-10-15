@@ -3513,3 +3513,153 @@ test("gentle-shell setup asks Gentle AI to skip npm:gentle-pi, so nothing is ins
 	assert.deepEqual(JSON.parse(lines[0]), { args: ["install", "--agent", "pi", "--scope", "global"], excluded: "npm:gentle-pi" });
 });
 
+// --- named envs (`envs`, `--env`; lib/gentle-shell-envs.ts) -------------------
+
+test("envs new creates a managed, owned env that --env launches into", (t) => {
+	const f = fixture(t);
+	const created = run(f.env, ["envs", "new", "work"]);
+	assert.equal(created.status, 0, created.stderr);
+	const dir = join(f.home, ".gentle-shell", "envs", "work");
+	assert.ok(existsSync(join(dir, ".gentle-shell-home")), "carries the ownership marker");
+	const launched = run(f.env, ["--env", "work", "-p", "hi"]);
+	assert.equal(launched.status, 0, launched.stderr);
+	assert.equal(JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR, dir);
+});
+
+test("envs new removes its partial env when bootstrap fails, so a retry succeeds", (t) => {
+	const f = fixture(t);
+	const preload = join(f.root, "fail-marker.cjs");
+	writeFileSync(preload, [
+		"const fs = require('node:fs');",
+		"const { syncBuiltinESMExports } = require('node:module');",
+		"const original = fs.writeFileSync;",
+		"fs.writeFileSync = (path, ...args) => { if (String(path).endsWith('.gentle-shell-home')) throw new Error('marker write failed'); return original(path, ...args); };",
+		"syncBuiltinESMExports();",
+	].join("\n"));
+	const failed = spawnSync(process.execPath, ["--require", preload, binPath, "envs", "new", "work"], { encoding: "utf8", env: f.env });
+	assert.equal(failed.status, 1, failed.stderr);
+	assert.match(failed.stderr, /marker write failed/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "work")), false, "no half-created env is left behind");
+	const retried = run(f.env, ["envs", "new", "work"]);
+	assert.equal(retried.status, 0, retried.stderr);
+	assert.ok(existsSync(join(f.home, ".gentle-shell", "envs", "work", ".gentle-shell-home")));
+});
+
+test("--env never creates an unknown env and rejects invalid names", (t) => {
+	const f = fixture(t);
+	const unknown = run(f.env, ["--env", "nope"]);
+	assert.equal(unknown.status, 2);
+	assert.match(unknown.stderr, /unknown env "nope"/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "nope")), false);
+	assert.equal(run(f.env, ["envs", "new", "Bad"]).status, 2);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 0);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 1);
+});
+
+test("envs without a TTY lists envs, marks the default, and honors GENTLE_SHELL_ENVS_DIR", (t) => {
+	const f = fixture(t);
+	const envsDir = join(f.root, "custom-envs");
+	const env = { ...f.env, GENTLE_SHELL_ENVS_DIR: envsDir };
+	assert.equal(run(env, ["envs", "new", "a"]).status, 0);
+	assert.equal(run(env, ["envs", "new", "b"]).status, 0);
+	assert.equal(run(env, ["home", join(envsDir, "b")]).status, 0);
+	const listed = run(env, ["envs"]);
+	assert.equal(listed.status, 0, listed.stderr);
+	assert.match(listed.stdout, /^a +\//m);
+	assert.match(listed.stdout, /^b \(default\) +\//m);
+	assert.doesNotMatch(listed.stdout, /^\*/m, "no leading star: the default reads like /gentle:profiles markers");
+	const version = run(env, ["--version"]);
+	assert.match(version.stdout, new RegExp(`home path ${join(envsDir, "b").replace(/[\\.]/g, "\\$&")}`));
+});
+
+test("envs rejects unknown subcommands with usage", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["envs", "bogus"]);
+	assert.equal(result.status, 2);
+	assert.match(result.stderr, /Usage: gentle-shell envs/);
+});
+
+test("envs lists the base home first and stars exactly what a plain launch opens", (t) => {
+	const f = fixture(t);
+	assert.equal(run(f.env, ["envs", "new", "work"]).status, 0);
+	const starred = () => run(f.env, ["envs", "list"]).stdout.split("\n").filter((line) => /^\S+ \(default\)/.test(line)).map((line) => line.split(/\s+/)[0]);
+	const opened = () => JSON.parse(run(f.env, ["-p", "hi"]).stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR;
+	const lines = run(f.env, ["envs", "list"]).stdout.split("\n");
+	assert.match(lines[0], new RegExp(`^\\[base\\] \\(default\\) +${f.gentleShellHome.replace(/[\\.]/g, "\\$&")} `), "base first, default with no config");
+	assert.equal(opened(), f.gentleShellHome);
+
+	assert.equal(run(f.env, ["home", "link"]).status, 0);
+	assert.deepEqual(starred(), [], "link opens none of the listed homes");
+
+	assert.equal(run(f.env, ["home", join(f.home, ".gentle-shell", "envs", "work")]).status, 0);
+	assert.deepEqual(starred(), ["work"]);
+	assert.equal(opened(), join(f.home, ".gentle-shell", "envs", "work"));
+
+	assert.equal(run(f.env, ["home", "isolated"]).status, 0);
+	assert.deepEqual(starred(), ["[base]"]);
+	assert.equal(opened(), f.gentleShellHome);
+});
+
+// The envs manager needs a TTY. Like the bundled startup-offer test, a
+// preload makes stdin/stdout report a TTY with a no-op raw mode, and the
+// keys arrive as stdin input; the manager handles them in order.
+function runManager(env: NodeJS.ProcessEnv, keys: string) {
+	const preload = `
+		Object.defineProperty(process.stdin, 'isTTY', {value:true});
+		Object.defineProperty(process.stdout, 'isTTY', {value:true});
+		process.stdin.setRawMode = (raw) => { process.stdin.isRaw = raw; };
+	`;
+	return spawnSync(process.execPath, [binPath, "envs"], {
+		env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,${encodeURIComponent(preload)}`.trim() },
+		encoding: "utf8", input: keys, timeout: 15000,
+	});
+}
+
+test("the envs manager renames, sets the default and deletes envs on disk", (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	for (const name of ["a", "b"]) assert.equal(run(f.env, ["envs", "new", name]).status, 0);
+	// Entries: base (default), a, b. Rename a -> alpha, make it the default, then delete b
+	// (a wrong confirmation first, which must not delete anything).
+	const keys = ["j", "r", "\x7f", "alpha", "\r", "s", "j", "d", "x", "\r", "\x7f", "b", "\r", "q"].join("");
+	const result = runManager(f.env, keys);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readdirSync(envs).sort(), ["alpha"]);
+	const config = JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
+	assert.equal(config.home, join(envs, "alpha"), "the default follows the renamed env");
+	// Keys arriving together redraw once at the end, so disk and config are the evidence.
+	assert.match(result.stdout, /\x1b\[\?1049l/, "the terminal is restored");
+});
+
+test("the envs manager rolls a rename back when config.json cannot be written", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a non-root POSIX read-only dir" }, (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "a"]).status, 0);
+	// A readable config in a read-only folder: the manager loads, every write fails.
+	const lockedDir = join(f.root, "locked");
+	mkdirSync(lockedDir);
+	writeFileSync(join(lockedDir, "config.json"), "{}\n");
+	chmodSync(lockedDir, 0o500);
+	let result;
+	// Unlocked before the fixture's own cleanup, which runs first.
+	try { result = runManager({ ...f.env, GENTLE_SHELL_CONFIG: join(lockedDir, "config.json") }, ["j", "r", "\x7f", "alpha", "\r", "q"].join("")); }
+	finally { chmodSync(lockedDir, 0o700); }
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readdirSync(envs), ["a"], "the env keeps its old name, matching config.json");
+});
+
+test("the envs manager never lists or touches a symlinked env", (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "real"]).status, 0);
+	const outside = join(f.root, "outside");
+	mkdirSync(outside);
+	writeFileSync(join(outside, "keep.txt"), "keep");
+	symlinkSync(outside, join(envs, "linked"));
+	// Entries: base, real. Two downs stay on real; delete it, then quit.
+	const result = runManager(f.env, ["j", "j", "d", "real", "\r", "q"].join(""));
+	assert.equal(result.status, 0, result.stderr);
+	assert.doesNotMatch(result.stdout, /\blinked\b/);
+	assert.equal(readFileSync(join(outside, "keep.txt"), "utf8"), "keep");
+	assert.deepEqual(readdirSync(envs), ["linked"]);
+});

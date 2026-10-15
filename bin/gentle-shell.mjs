@@ -421,11 +421,23 @@ function probePiVersion(runtime) {
 // indirection like a symlink. statSync on the wrapper alone never changes
 // when only the wrapped script does, so a cache keyed on the wrapper's own
 // identity could keep reusing a version that no longer matches what actually
-// runs. Fold the wrapped script's own identity in when the wrapper's text
-// names one we can find; when it doesn't (an unrecognized wrapper shape),
-// return undefined so the caller never trusts (or writes) a cache entry for
-// it, falling back to a real spawn every time instead of a possibly stale hit.
+// runs. Fold the wrapped script's own identity in (as its own nested
+// dev/ino/size/mtimeMs, never blended into the wrapper's own fields: a
+// same-size, older-than-wrapper replacement of only the wrapped script must
+// still change this identity, which a combined size/max-mtime cannot
+// guarantee) when the wrapper's text names one we can find; when it doesn't
+// (an unrecognized wrapper shape), return undefined so the caller never
+// trusts (or writes) a cache entry for it, falling back to a real spawn
+// every time instead of a possibly stale hit.
+//
+// A bare command name (no path separator, e.g. a literal GENTLE_SHELL_PI="pi")
+// is resolved against PATH by the OS/runtime at spawn time (POSIX execvp
+// semantics), not against the current directory the way statSync below
+// resolves a relative path — so it can name a completely different file than
+// whatever this process actually ends up running. Never trust (or write) a
+// cache entry keyed on such a name; always re-probe instead.
 function resolveVersionProbeIdentity(command) {
+	if (!command.includes("/") && !command.includes("\\")) return undefined;
 	let primary;
 	try {
 		primary = statSync(command);
@@ -448,7 +460,10 @@ function resolveVersionProbeIdentity(command) {
 	} catch {
 		return undefined;
 	}
-	return { dev: primary.dev, ino: primary.ino, size: primary.size + target.size, mtimeMs: Math.max(primary.mtimeMs, target.mtimeMs) };
+	return {
+		dev: primary.dev, ino: primary.ino, size: primary.size, mtimeMs: primary.mtimeMs,
+		target: { dev: target.dev, ino: target.ino, size: target.size, mtimeMs: target.mtimeMs },
+	};
 }
 
 // env/path runtimes have no in-memory version (unlike bundled, #2096), but a

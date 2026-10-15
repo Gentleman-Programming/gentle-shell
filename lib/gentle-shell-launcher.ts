@@ -513,6 +513,13 @@ export interface FileIdentity {
 	ino: number;
 	size: number;
 	mtimeMs: number;
+	// Set only when this identity is for a Windows .cmd/.bat wrapper around a
+	// separate wrapped script: that script's own identity, kept as its own
+	// nested dev/ino/size/mtimeMs rather than blended into the wrapper's own
+	// fields. A same-size, older-than-wrapper replacement of the wrapped script
+	// alone must still change this identity; combining the two files' sizes
+	// and taking the max of their mtimes cannot guarantee that.
+	target?: FileIdentity;
 }
 
 export interface CachedPiVersion extends FileIdentity {
@@ -522,7 +529,8 @@ export interface CachedPiVersion extends FileIdentity {
 function isFileIdentity(value: unknown): value is FileIdentity {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value as Record<string, unknown>;
-	return typeof record.dev === "number" && typeof record.ino === "number" && typeof record.size === "number" && typeof record.mtimeMs === "number";
+	if (typeof record.dev !== "number" || typeof record.ino !== "number" || typeof record.size !== "number" || typeof record.mtimeMs !== "number") return false;
+	return record.target === undefined || isFileIdentity(record.target);
 }
 
 // recordPiVersion only ever writes checkPiVersion's own already-clean "X.Y.Z"
@@ -554,7 +562,9 @@ export function cachedPiVersion(config: RawLauncherConfig, path: string): Cached
 }
 
 export function matchesFileIdentity(cached: FileIdentity, identity: FileIdentity): boolean {
-	return cached.dev === identity.dev && cached.ino === identity.ino && cached.size === identity.size && cached.mtimeMs === identity.mtimeMs;
+	if (cached.dev !== identity.dev || cached.ino !== identity.ino || cached.size !== identity.size || cached.mtimeMs !== identity.mtimeMs) return false;
+	if (cached.target === undefined || identity.target === undefined) return cached.target === identity.target;
+	return matchesFileIdentity(cached.target, identity.target);
 }
 
 // Returns a new config object recording path's freshly probed version and

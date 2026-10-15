@@ -520,10 +520,18 @@ export function checkPiVersion(output        , minimum         = MIN_PI_VERSION)
 
 
 
+
+
+
+
+
+
+
 function isFileIdentity(value         )                        {
 	if (typeof value !== "object" || value === null) return false;
 	const record = value                           ;
-	return typeof record.dev === "number" && typeof record.ino === "number" && typeof record.size === "number" && typeof record.mtimeMs === "number";
+	if (typeof record.dev !== "number" || typeof record.ino !== "number" || typeof record.size !== "number" || typeof record.mtimeMs !== "number") return false;
+	return record.target === undefined || isFileIdentity(record.target);
 }
 
 // recordPiVersion only ever writes checkPiVersion's own already-clean "X.Y.Z"
@@ -555,7 +563,9 @@ export function cachedPiVersion(config                   , path        )        
 }
 
 export function matchesFileIdentity(cached              , identity              )          {
-	return cached.dev === identity.dev && cached.ino === identity.ino && cached.size === identity.size && cached.mtimeMs === identity.mtimeMs;
+	if (cached.dev !== identity.dev || cached.ino !== identity.ino || cached.size !== identity.size || cached.mtimeMs !== identity.mtimeMs) return false;
+	if (cached.target === undefined || identity.target === undefined) return cached.target === identity.target;
+	return matchesFileIdentity(cached.target, identity.target);
 }
 
 // Returns a new config object recording path's freshly probed version and

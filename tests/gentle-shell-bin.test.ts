@@ -170,6 +170,83 @@ test("a changed script behind an unchanged .cmd wrapper still invalidates the ca
 	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed only by the unchanged wrapper must not reuse the old version");
 });
 
+test("a same-size, older-than-wrapper replacement of the wrapped script still invalidates the cache on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	const wrapperBefore = readFileSync(command);
+	const wrapperMtime = statSync(command).mtimeMs;
+
+	// Same byte length as the "1.2.5" script (the version digit position is the
+	// only difference), so a cache keyed on wrapper.size + target.size cannot
+	// tell the two apart by size alone; an explicit older mtime keeps
+	// Math.max(wrapper.mtimeMs, target.mtimeMs) pinned to the wrapper's own,
+	// unchanged value, defeating a blended wrapper+target fingerprint.
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 1.2.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	const olderMtime = new Date(wrapperMtime - 10_000);
+	utimesSync(script, olderMtime, olderMtime);
+	assert.deepEqual(readFileSync(command), wrapperBefore, "the .cmd wrapper itself is untouched");
+	assert.ok(statSync(script).mtimeMs < wrapperMtime, "the replacement script's mtime stays older than the wrapper's");
+
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/, "the cache must track the wrapped script's own identity, not a blend an older-mtime, same-size replacement can hide behind");
+	assert.equal(readFileSync(log, "utf8").length, 2, "a same-size, older-mtime replacement of the wrapped script must still invalidate the cache");
+});
+
+test("GENTLE_SHELL_PI as a bare .cmd command name (no directory) never caches, regardless of which cwd/PATH candidate cmd.exe actually runs", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const pathRoot = join(f.root, "pathdir");
+	mkdirSync(pathRoot, { recursive: true });
+	const onPath = writeCountingPiScript(pathRoot, "1.2.5");
+
+	// A decoy sharing the bare command's exact name, in the directory the
+	// launcher runs from. Whether cmd.exe's own PATH search actually picks this
+	// cwd candidate or the one on PATH depends on the environment (e.g.
+	// NoDefaultCurrentDirectoryInExePath) — this test does not assume either way.
+	// What must hold regardless: a bare command name never gets a cache entry,
+	// because statSync(command) below resolves relative to cwd, which can name
+	// a completely different file than whatever actually runs.
+	const decoyRoot = join(f.root, "decoy-cwd");
+	mkdirSync(decoyRoot, { recursive: true });
+	const inCwd = writeCountingPiScript(decoyRoot, "1.2.7");
+
+	const totalInvocations = () => readFileSync(onPath.log, "utf8").length + readFileSync(inCwd.log, "utf8").length;
+
+	const env = { ...f.env, GENTLE_SHELL_PI: "counting-pi.cmd", PATH: `${pathRoot}${delimiter}${f.env.PATH}` };
+	const first = run(env, ["--version"], { cwd: decoyRoot });
+	assert.equal(first.status, 0, first.stderr);
+	assert.equal(totalInvocations(), 1, "exactly one of the two candidates actually ran");
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+	assert.equal(
+		(config.piVersionProbeCache ?? {})["counting-pi.cmd"],
+		undefined,
+		"a bare command name must never get a cache entry: statSync(command) resolves against cwd, which can name a completely different file than whatever the OS/shell actually runs",
+	);
+
+	const second = run(env, ["--version"], { cwd: decoyRoot });
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(totalInvocations(), 2, "every launch re-probes; a bare name can never trust a cache keyed on the wrong file's identity");
+});
+
 test("a changed pi binary at the same path invalidates the cache and re-probes", (t) => {
 	const f = fixture(t);
 	const { command, log } = writeCountingPiScript(f.root, "1.2.5");

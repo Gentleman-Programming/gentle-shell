@@ -694,6 +694,30 @@ test("matchesFileIdentity is true only for an exact dev+ino+size+mtimeMs match",
 	assert.equal(matchesFileIdentity(cached, { ...identity, ino: 3 }), false);
 });
 
+test("matchesFileIdentity compares a nested .cmd-wrapper target identity on its own, not blended into the wrapper's own fields", () => {
+	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 200, mtimeMs: 500 } };
+	const cached = { ...identity, version: "1.1.0" };
+	assert.equal(matchesFileIdentity(cached, identity), true);
+	assert.equal(matchesFileIdentity(cached, { ...identity, target: { ...identity.target, mtimeMs: 501 } }), false, "a changed target mtime must not match, even though the wrapper's own fields are unchanged");
+	assert.equal(matchesFileIdentity(cached, { ...identity, target: { ...identity.target, size: 201 } }), false);
+	assert.equal(matchesFileIdentity(cached, { dev: 1, ino: 2, size: 100, mtimeMs: 1000 }), false, "a cached target identity must not match an identity with no target at all");
+	assert.equal(matchesFileIdentity({ dev: 1, ino: 2, size: 100, mtimeMs: 1000 }, identity), false, "an identity with a target must not match a cached entry with none");
+});
+
+test("cachedPiVersion accepts a nested .cmd-wrapper target identity and rejects a malformed one", () => {
+	const good = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 50, mtimeMs: 500 }, version: "1.1.0" } } };
+	assert.deepEqual(cachedPiVersion(good, "C:\\pi.cmd"), good.piVersionProbeCache["C:\\pi.cmd"]);
+	const malformed = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4 }, version: "1.1.0" } } };
+	assert.equal(cachedPiVersion(malformed, "C:\\pi.cmd"), undefined);
+});
+
+test("cachedPiVersion rejects a null target, and a legacy entry with no target never matches a wrapper identity with one", () => {
+	const nullTarget = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: null, version: "1.2.5" } } };
+	assert.equal(cachedPiVersion(nullTarget, "C:\\pi.cmd"), undefined);
+	const legacy = { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.2.5" };
+	assert.equal(matchesFileIdentity(legacy, { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 50, mtimeMs: 500 } }), false);
+});
+
 test("recordPiVersion adds a new entry while preserving every other config key, including another path's entry", () => {
 	const config = { home: "isolated", piVersionProbeCache: { "/other/pi": { dev: 9, ino: 9, size: 9, mtimeMs: 9, version: "9.9.9" } } };
 	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000 };

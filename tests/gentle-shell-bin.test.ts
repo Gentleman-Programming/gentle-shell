@@ -3526,6 +3526,25 @@ test("envs new creates a managed, owned env that --env launches into", (t) => {
 	assert.equal(JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR, dir);
 });
 
+test("envs new removes its partial env when bootstrap fails, so a retry succeeds", (t) => {
+	const f = fixture(t);
+	const preload = join(f.root, "fail-marker.cjs");
+	writeFileSync(preload, [
+		"const fs = require('node:fs');",
+		"const { syncBuiltinESMExports } = require('node:module');",
+		"const original = fs.writeFileSync;",
+		"fs.writeFileSync = (path, ...args) => { if (String(path).endsWith('.gentle-shell-home')) throw new Error('marker write failed'); return original(path, ...args); };",
+		"syncBuiltinESMExports();",
+	].join("\n"));
+	const failed = spawnSync(process.execPath, ["--require", preload, binPath, "envs", "new", "work"], { encoding: "utf8", env: f.env });
+	assert.equal(failed.status, 1, failed.stderr);
+	assert.match(failed.stderr, /marker write failed/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "work")), false, "no half-created env is left behind");
+	const retried = run(f.env, ["envs", "new", "work"]);
+	assert.equal(retried.status, 0, retried.stderr);
+	assert.ok(existsSync(join(f.home, ".gentle-shell", "envs", "work", ".gentle-shell-home")));
+});
+
 test("--env never creates an unknown env and rejects invalid names", (t) => {
 	const f = fixture(t);
 	const unknown = run(f.env, ["--env", "nope"]);
@@ -3610,6 +3629,23 @@ test("the envs manager renames, sets the default and deletes envs on disk", (t) 
 	assert.equal(config.home, join(envs, "alpha"), "the default follows the renamed env");
 	// Keys arriving together redraw once at the end, so disk and config are the evidence.
 	assert.match(result.stdout, /\x1b\[\?1049l/, "the terminal is restored");
+});
+
+test("the envs manager rolls a rename back when config.json cannot be written", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a non-root POSIX read-only dir" }, (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "a"]).status, 0);
+	// A readable config in a read-only folder: the manager loads, every write fails.
+	const lockedDir = join(f.root, "locked");
+	mkdirSync(lockedDir);
+	writeFileSync(join(lockedDir, "config.json"), "{}\n");
+	chmodSync(lockedDir, 0o500);
+	let result;
+	// Unlocked before the fixture's own cleanup, which runs first.
+	try { result = runManager({ ...f.env, GENTLE_SHELL_CONFIG: join(lockedDir, "config.json") }, ["j", "r", "\x7f", "alpha", "\r", "q"].join("")); }
+	finally { chmodSync(lockedDir, 0o700); }
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readdirSync(envs), ["a"], "the env keeps its old name, matching config.json");
 });
 
 test("the envs manager never lists or touches a symlinked env", (t) => {

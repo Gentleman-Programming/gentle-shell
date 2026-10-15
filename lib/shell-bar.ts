@@ -529,8 +529,12 @@ export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width
 		segments = buildSegments(compactModel(model), theme, presentation);
 		left = joinSegments(segments, theme);
 	}
+	const brandThenEnv = Boolean(model.env) && presentation?.density !== "minimal";
 	while (segments.length > 1 && visibleWidth(left) > width) {
-		segments.pop();
+		// Down to brand and env, the brand gives way: the env names the home
+		// this session writes to.
+		if (brandThenEnv && segments.length === 2) segments.shift();
+		else segments.pop();
 		left = joinSegments(segments, theme);
 	}
 	return [truncateToWidth(left, width, "…")];

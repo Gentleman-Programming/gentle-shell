@@ -181,6 +181,9 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
+		// As in the header: the env sits beside the brand and, being first, is
+		// never among the trailing segments a narrow line drops.
+		...(model.env ? [`${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}`] : []),
 		location,
 		...(presentation?.visibility.modelDetails === false ? [] : [modelSegment]),
 		...(presentation?.visibility.usageCost === false ? [] : [context, cost, ...(usage ? [usage] : [])]),

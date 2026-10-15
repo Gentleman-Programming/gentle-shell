@@ -801,8 +801,16 @@ async function createEnv(root, name) {
 	if (existsSync(dir)) throw new Error(`env "${name}" already exists`);
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	mkdirSync(dir, { mode: 0o700 });
-	await installIsolatedTuiModeSetting(dir);
-	writeHomeOwnershipMarker({ mode: "path", dir });
+	try {
+		await installIsolatedTuiModeSetting(dir);
+		writeHomeOwnershipMarker({ mode: "path", dir });
+	} catch (error) {
+		// This call created `dir`: a half-bootstrapped env would read as "already
+		// exists" and, once non-empty and unmarked, as a foreign home --env never
+		// provisions. Remove it so `envs new` can simply be retried.
+		rmSync(dir, { recursive: true, force: true });
+		throw error;
+	}
 	return dir;
 }
 

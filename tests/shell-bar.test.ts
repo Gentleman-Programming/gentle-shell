@@ -887,6 +887,17 @@ test("minimal density hides the brand but still names the env", () => {
 	assert.match(text, /^env work/);
 });
 
+test("regular-mode bar names the env right after the brand and keeps it when narrowed", () => {
+	const [line] = renderShellBar(model({ env: "work" }), plainTheme, 160);
+	assert.ok(line.startsWith("✿ gentle shell ⟡ env work ⟡ ~/work/gentle-pi main"), line);
+	const [narrow] = renderShellBar(model({ env: "work" }), plainTheme, 30);
+	assert.match(narrow, /env work/);
+	const [plain] = renderShellBar(model(), plainTheme, 160);
+	assert.doesNotMatch(plain, /env /);
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };
+	assert.match(renderShellBar(model({ env: "work" }), plainTheme, 160, settings)[0]!, /^env work/);
+});
+
 test("sidebar Status card shows the env as its own group above Project", () => {
 	const lines = renderShellSidebarBar(model({ env: "work" }), plainTheme, 60).map((line) => line.replace(/[│▎]/g, "").trim());
 	const env = lines.indexOf("Env");

@@ -299,6 +299,7 @@ An orphan branch with commits and no parent has no branch point to name as `base
 ```bash
 gentle-shell [options] [-- pi-args...]
 gentle-shell home [link|isolated|<path>]
+gentle-shell envs [list | new <name>]
 gentle-shell [home selectors] setup [--dry-run]
 gentle-shell upgrade [--channel release|main]
 gentle-shell upgrade --rollback
@@ -312,12 +313,13 @@ gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 | `--link` | Home is your own pi home: `GENTLE_SHELL_USER_PI_HOME` when a Gentle Shell session recorded it (so `--link` run from inside an isolated session reaches your original pi, not the isolated home), otherwise `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Reuses your existing pi sign-ins, models, and chats; never writes to its `settings.json`. |
 | `--isolated` | Home is `GENTLE_SHELL_HOME` or `~/.gentle-shell/agent`, with its own settings in `~/.gentle-shell/gentle-ai` ([config home](#config-home)); a custom `GENTLE_SHELL_HOME` outside a `.gentle-shell` folder keeps `~/.pi/gentle-ai`. No credential seeding. Default when nothing else is configured. |
 | `--home <path>` | Home is the given directory. |
+| `--env <name>` | Home is the named env `GENTLE_SHELL_ENVS_DIR/<name>` (default `~/.gentle-shell/envs/<name>`). The env must already exist; an unknown name exits 2 instead of creating a new home. See "Named envs" below. |
 | `--package-root <dir>` | Force this directory as the gentle-pi package to load, taking over from any conflicting package the target `settings.json` already declares (see "Loading the package" below). |
 | `--help`, `-h` | Print usage (flags, commands, env vars) and exit 0. |
 | `--version` | Print `gentle-shell <version>`, `pi <version>`, and `home <mode> <dir>`, then exit 0. |
 | `--` | Everything after is forwarded to pi verbatim, even text that looks like a `gentle-shell` flag. |
 
-`--link`, `--isolated`, and `--home` are mutually exclusive; combining two is a usage error, as is `--home` or `--home=` with an empty value. Effective-home precedence: an explicit flag wins, then the persisted `home` subcommand choice, then the `--isolated` default. Every argument gentle-shell does not recognize — `--mode rpc`, `-p "..."`, etc. — is forwarded to pi unchanged.
+`--link`, `--isolated`, `--home`, and `--env` are mutually exclusive; combining two is a usage error, as is `--home` or `--home=` with an empty value. Effective-home precedence: an explicit flag wins, then the persisted `home` subcommand choice, then the `--isolated` default. Every argument gentle-shell does not recognize — `--mode rpc`, `-p "..."`, etc. — is forwarded to pi unchanged.
 
 ### Config home
 
@@ -369,6 +371,19 @@ persona files.
 It never overwrites, never follows a symbolic link, never copies `packages`, `extensions`, `theme`, `npmCommand`, caches (`mcp-cache.json`, `mcp-npx-cache.json`), `AGENTS.md` or sessions, and never writes to the source. A target that does not exist yet (or is empty) is first set up exactly as a first launch would ([first run](#first-run-in-an-isolated-or-custom-home)), so the imported files never make it look foreign and the next launch still provisions it. It prints one line per item (`copied`, `already present, kept`, `not found`, `skipped: <reason>`, `failed: <reason>`) and a summary; `--dry-run` prints the same plan and writes nothing. It exits 0 when it succeeds or has nothing to do, 1 when a write fails (items already copied stay) or when the target is your pi home itself (`--link`, or a `--home` pointing at it), and 2 on any other argument. Running it again is safe.
 
 Tradeoff: `--link` shares one credential store with pi; `import-pi` duplicates it. A provider that rotates refresh tokens on use may sign out whichever copy refreshes second; run `/login` again in that home.
+
+### Named envs (`envs` subcommand, `--env`)
+
+A named env is a separate agent home managed by gentle-shell under `~/.gentle-shell/envs/<name>/` (`GENTLE_SHELL_ENVS_DIR` overrides the root). Each env has its own sign-ins, models, packages, settings, sessions, and subagent history. The directory is the registry: there is no separate list. Names are 1-40 lowercase letters, digits, `.`, `_`, or `-`, starting with a letter or digit.
+
+| Command | Effect |
+| --- | --- |
+| `gentle-shell envs` | Same as `envs list`. |
+| `gentle-shell envs list` | Prints every env and its setup state; `*` marks the default. |
+| `gentle-shell envs new <name>` | Creates the env without launching it. Its first launch installs the companion packages, the same as any new `--home`. |
+| `gentle-shell --env <name> [...]` | Launches, sets up (`--env <name> setup`), or runs pi subcommands (`--env <name> install npm:x`) in that env. |
+
+Inside a session, the header shows `env <name>` right after the brand, and it stays there as the header narrows. The Status card shows an `Env` group with the name, above `Project`. The launcher passes the name to Pi as `GENTLE_SHELL_ENV`, only for a named env, and clears any inherited value for every other home. The default env is stored as the ordinary persisted `home` path, so a plain `gentle-shell` opens it, and `gentle-shell home link|isolated|<path>` replaces it. Envs are separate homes, not sandboxes. They share the repository you work in, `~/.pi/gentle-ai/persona.json`, and `~/.gentle-ai/state.json`, like every other home. Named envs work the same in a bundled (standalone) install. There, the envs root shares `~/.gentle-shell` with the prefix and launches use the bundled Pi. Both `self-uninstall` variants list the envs root once, as "your named envs", under *Not touched*, and never remove it. They also refuse a plan that would remove anything inside it, for example a `GENTLE_SHELL_HOME` that points into an env.
 
 ### Managing packages
 

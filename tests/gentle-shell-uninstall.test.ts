@@ -408,6 +408,45 @@ test("custom --home homes and the user's Pi home are listed as not touched", asy
 	} finally { w.cleanup(); }
 });
 
+test("named envs are listed once as not touched and kept, even as the default or provisioned home", async () => {
+	const w = world();
+	try {
+		const envs = join(w.home, ".gentle-shell", "envs");
+		const work = join(envs, "work");
+		const personal = join(envs, "personal");
+		for (const dir of [work, personal]) write(join(dir, ".gentle-shell-home"));
+		write(w.paths.launcherConfig, JSON.stringify({ home: work, provisioned: { [personal]: { gentleAi: "4.0.0", at: "now" } } }));
+		assert.equal(await w.uninstall(["--yes"]), 0);
+		const plan = w.out.join("\n");
+		assert.ok(plan.includes(`${envs}  (your named envs)`), plan);
+		assert.doesNotMatch(plan, /envs[\\/]work +\(custom --home home\)/);
+		for (const dir of [work, personal]) assert.equal(existsSync(join(dir, ".gentle-shell-home")), true, dir);
+	} finally { w.cleanup(); }
+});
+
+test("a symlinked named envs root is still listed as not touched and kept", posixOnly, async () => {
+	const w = world();
+	try {
+		const real = join(w.root, "real-envs");
+		write(join(real, "work", ".gentle-shell-home"));
+		symlinkSync(real, join(w.home, ".gentle-shell", "envs"));
+		assert.equal(await w.uninstall(["--yes"]), 0);
+		assert.ok(w.out.join("\n").includes(`${join(w.home, ".gentle-shell", "envs")}  (your named envs)`));
+		assert.equal(existsSync(join(real, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
+test("an isolated home inside the named envs is refused, never removed", async () => {
+	const w = world();
+	try {
+		const work = join(w.home, ".gentle-shell", "envs", "work");
+		write(join(work, ".gentle-shell-home"));
+		write(join(work, "auth.json"), "{}");
+		await refused(w, { GENTLE_SHELL_HOME: work }, /your named envs/);
+		assert.equal(existsSync(join(work, "auth.json")), true);
+	} finally { w.cleanup(); }
+});
+
 test("tools the installer may have added are listed with how to remove them, never removed", async () => {
 	for (const platform of ["darwin", "win32"]) {
 		const w = world();
@@ -912,6 +951,20 @@ test("bundled: a Pi home inside the prefix is protected, except the session's ow
 		assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: session }), 0, w.err.join("\n"));
 		assert.equal(existsSync(w.prefix), false);
 		for (const path of w.kept) assert.equal(existsSync(path), true, path);
+	} finally { w.cleanup(); }
+});
+
+test("bundled: a symlinked named envs root whose target a removal holds refuses the whole run", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const target = join(w.prefix, "versions", "envs");
+		write(join(target, "work", ".gentle-shell-home"));
+		const link = join(w.base, "linked-envs");
+		symlinkSync(target, link);
+		assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: { GENTLE_SHELL_ENVS_DIR: link } }), 1);
+		assert.match(w.err.join("\n"), /your named envs/);
+		bundledUntouched(w);
+		assert.equal(existsSync(join(target, "work", ".gentle-shell-home")), true);
 	} finally { w.cleanup(); }
 });
 

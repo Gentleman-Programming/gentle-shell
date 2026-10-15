@@ -105,6 +105,12 @@ import {
 } from "../runtime/gentle-shell-resume-hint.mjs";
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import {
+	envDir,
+	envsRoot,
+	summarizeEnv,
+	validateEnvName,
+} from "../runtime/gentle-shell-envs.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, supportsBundledSessionOwned, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
 import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
@@ -406,6 +412,7 @@ function emptyArgs() {
 		link: false,
 		isolated: false,
 		home: undefined,
+		env: undefined,
 		packageRoot: undefined,
 		help: false,
 		version: false,
@@ -687,6 +694,143 @@ async function handleImportPiCommand(args) {
 	const result = importPi({ source, target: home.dir, dryRun });
 	for (const line of formatImportPiReport(result, { source, target: home.dir, dryRun })) process.stdout.write(`${line}\n`);
 	process.exitCode = result.failed ? 1 : 0;
+}
+
+// --- named envs (`gentle-shell envs`, lib/gentle-shell-envs*.ts) -------------
+
+function currentEnvsRoot() {
+	return envsRoot(process.env, homedir());
+}
+
+function listEnvNames(root) {
+	let entries;
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch (error) {
+		if (error.code === "ENOENT") return [];
+		throw error;
+	}
+	return entries
+		.filter((entry) => entry.isDirectory() && validateEnvName(entry.name) === undefined)
+		.map((entry) => entry.name)
+		.sort();
+}
+
+// Session files live in <home>/sessions/<encoded-cwd>/*.jsonl; two levels
+// are walked, never deeper, so a huge home cannot stall the manager.
+function sessionStats(dir) {
+	let count = 0;
+	let last = 0;
+	const visit = (path, depth) => {
+		let entries;
+		try {
+			entries = readdirSync(path, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const child = join(path, entry.name);
+			if (entry.isDirectory() && depth < 2) visit(child, depth + 1);
+			else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+				count += 1;
+				try {
+					last = Math.max(last, statSync(child).mtimeMs);
+				} catch {
+					// Vanished mid-walk: still counted, just undated.
+				}
+			}
+		}
+	};
+	visit(join(dir, "sessions"), 1);
+	return { count, last: last > 0 ? new Date(last).toISOString() : undefined };
+}
+
+function readTextOrUndefined(path) {
+	try {
+		return readJsonIfExists(path);
+	} catch {
+		return undefined;
+	}
+}
+
+function loadEnvSummaries(root) {
+	const rawConfig = readRawConfig(resolveConfigPath());
+	const defaultHome = typeof rawConfig.home === "string" && rawConfig.home !== "link" && rawConfig.home !== "isolated" ? rawConfig.home : undefined;
+	const defaultReal = defaultHome === undefined ? undefined : safeRealpath(resolvePath(defaultHome));
+	return listEnvNames(root).map((name) => {
+		const dir = envDir(root, name);
+		const real = safeRealpath(dir);
+		const sessions = sessionStats(dir);
+		return summarizeEnv({
+			name,
+			dir,
+			isDefault: defaultReal !== undefined && defaultReal === real,
+			settingsText: readTextOrUndefined(join(dir, "settings.json")),
+			authText: readTextOrUndefined(join(dir, "auth.json")),
+			provisioned: provisionedEntry(rawConfig, real),
+			sessionCount: sessions.count,
+			lastSessionAt: sessions.last,
+		});
+	});
+}
+
+// Same bootstrap a first `--home` launch performs, so the env is owned by
+// gentle-shell and auto-provisions on its first launch.
+async function createEnv(root, name) {
+	const dir = envDir(root, name);
+	if (existsSync(dir)) throw new Error(`env "${name}" already exists`);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	mkdirSync(dir, { mode: 0o700 });
+	try {
+		await installIsolatedTuiModeSetting(dir);
+		writeHomeOwnershipMarker({ mode: "path", dir });
+	} catch (error) {
+		// This call created `dir`: a half-bootstrapped env would read as "already
+		// exists" and, once non-empty and unmarked, as a foreign home --env never
+		// provisions. Remove it so `envs new` can simply be retried.
+		rmSync(dir, { recursive: true, force: true });
+		throw error;
+	}
+	return dir;
+}
+
+function printEnvList(root) {
+	const envs = loadEnvSummaries(root);
+	if (envs.length === 0) {
+		process.stdout.write(`No envs in ${root}. Create one with 'gentle-shell envs new <name>'.\n`);
+		return;
+	}
+	const width = Math.max(...envs.map((env) => env.name.length));
+	for (const env of envs) {
+		process.stdout.write(`${env.isDefault ? "*" : " "} ${env.name.padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
+	}
+}
+
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        list envs\n  envs list   print every env; * marks the default\n  envs new    create an env without launching it";
+
+async function handleEnvsCommand(commandArgs) {
+	const root = currentEnvsRoot();
+	const [sub, ...rest] = commandArgs;
+	if (sub === "list" && rest.length === 0) {
+		printEnvList(root);
+		return;
+	}
+	if (sub === "new" && rest.length === 1) {
+		const invalid = validateEnvName(rest[0]);
+		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		try {
+			process.stdout.write(`Created env ${rest[0]} at ${await createEnv(root, rest[0])}\n`);
+		} catch (error) {
+			fail(`gentle-shell: ${error.message}`, 1);
+		}
+		return;
+	}
+	if (sub === "--help" || sub === "-h") {
+		process.stdout.write(`${ENVS_USAGE}\n`);
+		return;
+	}
+	if (sub !== undefined) fail(`${ENVS_USAGE}`, 2);
+	printEnvList(root);
 }
 
 // Test/development-only override for the setup subcommand's gentle-ai
@@ -1894,6 +2038,10 @@ async function main() {
 		else handleHomeCommand(args.commandArgs);
 		return;
 	}
+	if (args.command === "envs") {
+		await handleEnvsCommand(args.commandArgs);
+		return;
+	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
@@ -1931,6 +2079,11 @@ async function main() {
 	const config = loadConfig();
 	let home = resolveHome({ args, env: process.env, homedir: homedir(), config });
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+	// An explicit --env never creates a home: a typo must not silently become
+	// a new, empty env. A persisted default keeps the ordinary bootstrap.
+	if (args.env !== undefined && !existsSync(home.dir)) {
+		fail(`gentle-shell: unknown env "${args.env}" (${home.dir}).\nCreate it with 'gentle-shell envs new ${args.env}' or manage envs with 'gentle-shell envs'.`, 2);
+	}
 
 	// Version and help runs (Shell's own or forwarded to Pi) never probe Engram,
 	// ensure the companion, print memory notices or touch provenance.

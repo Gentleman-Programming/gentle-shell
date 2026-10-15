@@ -58,6 +58,7 @@ test("parseLauncherArgs returns all-false defaults for an empty argv", () => {
 		link: false,
 		isolated: false,
 		home: undefined,
+		env: undefined,
 		packageRoot: undefined,
 		help: false,
 		version: false,

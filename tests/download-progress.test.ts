@@ -49,3 +49,23 @@ test("createDownloadProgress done without any update writes nothing", () => {
 	createDownloadProgress({ label: "x", write: (text: string) => writes.push(text) }).done();
 	assert.deepEqual(writes, []);
 });
+
+test("formatDownloadProgress keeps the amount and percent visible when the label does not fit", () => {
+	const label = "Downloading Gentle AI v4.1.1";
+	const known = formatDownloadProgress({ label, received: 3 * 1024 * 1024, total: 6 * 1024 * 1024, elapsedMs: 0, width: 23 });
+	assert.ok([...known].length <= 23, known);
+	assert.match(known, /3\.0\/6\.0 MB/);
+	assert.match(known, / 50%/);
+	const unknown = formatDownloadProgress({ label, received: 20 * 1024, total: undefined, elapsedMs: 0, width: 23 });
+	assert.ok([...unknown].length <= 23, unknown);
+	assert.match(unknown, /20 KB/);
+});
+
+test("createDownloadProgress never throws from a failing writer, including on done", () => {
+	let fail = false;
+	const progress = createDownloadProgress({ label: "x", write: () => { if (fail) throw new Error("EPIPE"); } });
+	progress.update({ received: 1, total: 10 });
+	fail = true;
+	assert.doesNotThrow(() => progress.update({ received: 10, total: 10 }));
+	assert.doesNotThrow(() => progress.done());
+});

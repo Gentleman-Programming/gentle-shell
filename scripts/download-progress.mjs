@@ -22,11 +22,17 @@ export function formatDownloadProgress({ label, received, total, elapsedMs, widt
 			? `${(received / MB).toFixed(1)}/${(total / MB).toFixed(1)} MB`
 			: `${Math.round(received / KB)}/${Math.round(total / KB)} KB`
 		: size(received);
-	const parts = [label, amount];
+	const parts = [amount];
 	if (known) parts.push(`${String(Math.min(100, Math.floor((received / total) * 100))).padStart(3)}%`);
-	if (rate > 0) parts.push(`${size(rate)}/s`);
-	const text = parts.join(" ");
-	if (!known) return truncate(text, width);
+	// The rate is the first thing to go when even the bare numbers do not fit.
+	if (rate > 0 && [...parts.join(" ")].length + [...size(rate)].length + 3 <= width) parts.push(`${size(rate)}/s`);
+	const metrics = parts.join(" ");
+	// The moving numbers win over the label on a narrow terminal: the label is
+	// shortened, then dropped, before the amount and percent are ever cut.
+	const room = width - [...metrics].length - 1;
+	if (room < [...label].length) return room >= 1 ? `${truncate(label, room)} ${metrics}` : truncate(metrics, width);
+	const text = `${label} ${metrics}`;
+	if (!known) return text;
 	const barWidth = Math.min(30, width - [...text].length - 3);
 	if (barWidth < 5) return truncate(text, width);
 	const filled = Math.min(barWidth, Math.round((received / total) * barWidth));
@@ -35,7 +41,10 @@ export function formatDownloadProgress({ label, received, total, elapsedMs, widt
 
 // Redraws at most every `intervalMs`, except the completed state, which is
 // always drawn. `done` clears the line once, and only if something was drawn.
-export function createDownloadProgress({ label, write, now = Date.now, width = () => 80, intervalMs = 100 }) {
+export function createDownloadProgress({ label, write: rawWrite, now = Date.now, width = () => 80, intervalMs = 100 }) {
+	// Display only: a failing terminal write (closed pipe, detached tty) must
+	// never change the install result, including during cleanup in `done`.
+	const write = (text) => { try { rawWrite(text); } catch { /* display only */ } };
 	const started = now();
 	let lastDraw;
 	let drawn = false;

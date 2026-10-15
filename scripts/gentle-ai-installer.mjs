@@ -175,7 +175,9 @@ function isRetryableDownloadError(error) { return error && typeof error === "obj
 function downloadHttpError(status) { return Object.assign(new Error(`Gentle AI download failed with HTTP ${status}`), { code: [429, 500, 502, 503, 504].includes(status) ? "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP" : "GENTLE_AI_DOWNLOAD_HTTP" }); }
 export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOWNLOAD_BYTES, redirects = MAX_REDIRECTS, options = {}) {
 	const { request = https.get, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay, onProgress } = options;
-	// A reporter failure must never fail or alter the download itself.
+	// `onProgress({ received, total })` is display-only: `total` is undefined
+	// without a content-length. A reporter failure must never fail or alter the
+	// download itself.
 	const report = (received, total) => { try { onProgress?.({ received, total }); } catch { /* display only */ } };
 	if (![headerTimeoutMs, bodyTimeoutMs, retryDelayMs, maxAttempts].every((value) => Number.isSafeInteger(value) && value >= 0) || maxAttempts < 1) throw new TypeError("Gentle AI download timeout and retry options must be safe non-negative integers");
 	const responseFor = async (currentUrl, remainingRedirects) => {

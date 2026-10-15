@@ -5411,6 +5411,18 @@ test("gentleShell files header usage under the provider that served the response
 	await opened;
 });
 
+test("gentleShell keeps the header provider when no model served the response", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { model: { provider: string } }).model.provider = "anthropic";
+	await fire(handlers, "session_start", ctx);
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.25" } }, { ...ctx, model: undefined });
+	}
+	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25%/);
+});
+
 test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });

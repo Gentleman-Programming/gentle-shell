@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import type { TSchema } from "typebox";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError } from "./native-review-cli.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { measureStatusSidebar } from "./status-timing-diagnostics.ts";
 
 /** Ephemeral display data only; this event grants no review authority. */
 export const REVIEW_SIDEBAR_EVENT = "gentle-ai:review-sidebar";
@@ -163,7 +164,7 @@ export function createReviewSidebarPublisher(pi: ExtensionAPI) {
 	let generation = 0;
 	let scope: ReviewScope | undefined;
 	const publish = (id: string, snapshot: ReviewSidebarSnapshot) => {
-		try { pi.events?.emit(REVIEW_SIDEBAR_EVENT, { sessionId: id, snapshot }); } catch { /* Display only. */ }
+		try { measureStatusSidebar(() => pi.events?.emit(REVIEW_SIDEBAR_EVENT, { sessionId: id, snapshot })); } catch { /* Display only. */ }
 	};
 	return {
 		reset(ctx?: ExtensionContext) {

@@ -90,13 +90,17 @@ test("published notes detach, age independently, and fail unknown without hiding
 	const cache = new OrchestratorStateCache();
 	const manager = { getSessionId: () => "peer", getCwd: () => "/repo", getBranch: () => [] };
 	cache.load(manager);
-	cache.publish(manager, { progress: "Curated" }, () => {}, 1);
+	cache.publish(manager, { progress: "Curated" }, () => {}, 1, "Task A");
 	const state = cache.get(manager)!;
-	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state });
+	const registered = Array.from({ length: 9 }, (_, i) => `/repo-${i}`);
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], registered, state });
 	state.state!.progress = "mutated";
 	publisher.refreshLabel();
 	const selected = () => discoverOrchestrators(profile, [peer], Date.now(), { recipientSessionId: "peer" })[0];
 	assert.equal(selected().state?.state?.progress, "Curated");
+	assert.deepEqual(discoverOrchestrators(profile, [peer])[0].aliases, { initialAlias: "Task A", currentAlias: "Task A" });
+	assert.equal(discoverOrchestrators(profile, [{ ...peer, endpoint: "/replacement" }])[0].aliases, undefined);
+	assert.equal(discoverOrchestrators(profile, [peer], Date.now() + 20_000)[0].aliases, undefined);
 	assert.equal(discoverOrchestrators(profile, [peer])[0].state, undefined, "no-argument listing does not bulk-export notes");
 	assert.equal(selected().state?.recordedAt, 1);
 	assert.equal(selected().state?.ownerReply, false);
@@ -113,9 +117,21 @@ test("published notes detach, age independently, and fail unknown without hiding
 		assert.deepEqual(readActivity(profile, listPresence(profile).entries[0]).activity?.tasks, []);
 		assert.equal(listPresence(profile).entries.length, 1);
 	}
-	cache.publish(manager, null, () => {}, 2);
-	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: cache.get(manager) });
+	const cursor = selected().catalog?.cursor;
+	assert.ok(cursor);
+	cache.publish(manager, undefined, () => {}, 2, "Task B");
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], registered, state: cache.get(manager) });
+	assert.equal(selected().catalog?.cursor, cursor, "topic changes do not rotate catalog tokens");
+	assert.equal(discoverOrchestrators(profile, [peer], Date.now(), { recipientSessionId: "peer", cursor })[0].catalog?.registered[0], "/repo-8");
+	cache.publish(manager, null, () => {}, 3);
+	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], registered, state: cache.get(manager) });
 	assert.equal(selected().state?.state, null);
+	assert.deepEqual(selected().aliases, { initialAlias: "Task A", currentAlias: "Task B" });
+	const valid = JSON.parse(readFileSync(path, "utf8"));
+	writeFileSync(path, JSON.stringify({ ...valid, metadata: { ...valid.metadata, aliases: { currentAlias: "bad\n" } } }));
+	assert.equal(selected().aliases, undefined);
+	assert.equal(selected().workspace, "/repo", "invalid aliases alone do not hide legacy context");
+	assert.deepEqual(readActivity(profile, listPresence(profile).entries[0]).activity?.tasks, []);
 });
 
 for (const failure of ["unwritable", "symlink"] as const) test(`optional catalog ${failure} failure preserves discovery and legacy activity`, { skip: process.platform === "win32" }, (t) => {

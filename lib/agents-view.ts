@@ -143,7 +143,9 @@ function sameItemValue(a: unknown, b: unknown): boolean {
 }
 
 export function taskHeader(task: TaskRecord, now: number): string {
-	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
+	// #2180: the winning profile layer is shown right after the model it supplied;
+	// records without one render exactly as before.
+	const parts = [task.agent, task.status, task.model, ...(task.modelSource === undefined ? [] : [task.modelSource]), task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 

@@ -1,19 +1,19 @@
-# Session-only YOLO permission
+# YOLO permission
 
 > 🚀 **Full speed, destructive actions still ask.** YOLO lets the agent implement, commit, push and open PRs within the already authorized task without asking each time, which suits long autonomous runs. Destructive operations still require fresh confirmation.
 
-Use `/gentle:yolo enable` in the interactive primary Pi TUI to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO defaults **OFF**. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Gentle Shell hides its status layout.
+Use `/gentle:yolo enable` in the interactive primary Pi TUI to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO is **OFF** unless you select it or save YOLO as the user-global default. [Normal, Auto and global defaults](permission-modes.md) are managed separately from the live-session toggle. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Gentle Shell hides its status layout.
 
 | Command | Effect |
 | --- | --- |
-| `/gentle:yolo enable` | Activate for this live session and Git clone. |
-| `/gentle:yolo disable` | Revoke immediately and clear the indicators. |
+| `/gentle:yolo enable` | Select YOLO for this live session and workspace/clone. |
+| `/gentle:yolo disable` | Select Normal immediately and clear the YOLO indicators; saved defaults stay unchanged. |
 | `/gentle:yolo status` | Show the current state without activating. |
 | `/gentle:yolo` | Open a menu titled **🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ON\|OFF)** with `enable`, `disable` and `status`. Cancelling changes nothing. Without an interactive menu UI it behaves like `status`. |
 
 Invalid arguments leave state unchanged.
 
-The Session command palette also includes YOLO. Activation fails closed without an identifiable Git clone, interactive TUI or live session identity. There is no YOLO environment variable, persisted configuration or model-callable activation tool.
+The Session command palette also includes YOLO. Interactive selection requires an eligible primary TUI, live session identity and identifiable workspace. Outside Git, the canonical workspace directory supplies identity. There is no model-callable activation tool. `/gentle:mode default yolo` optionally saves a trusted user-global default for new primary sessions; `/gentle:mode default normal` removes that elevated default. Neither command changes the current mode.
 
 ## Configuration menu path
 
@@ -21,15 +21,15 @@ The Session command palette also includes YOLO. Activation fails closed without 
 2. Select **YOLO: OFF · session only**, immediately after the Vim enable/disable rows.
 3. Press **Enter** or **Space** to toggle the same permission as `/gentle:yolo`. The row updates to **YOLO: ON · session only**; slash changes and revocation also update an open menu.
 
-Navigation, the read-only preview and Escape never grant permission. The preview reminds you that ordinary scoped commits/push/PR are covered, destructive confirmations remain, review consent is unchanged and reload resets the grant. **UNAVAILABLE** means the live primary owner or eligible session/clone cannot be used; selecting it cannot activate YOLO.
+Navigation, the read-only preview and Escape never grant permission. The preview reminds you that ordinary scoped commits/push/PR are covered, destructive confirmations remain, review consent is unchanged and reload resets the live grant. **UNAVAILABLE** means the live primary owner or eligible session/workspace cannot be used; selecting it cannot activate YOLO.
 
-Unlike Vim, this control does not write a global/repository preference, visual profile, prompt-history preference or guardrail setting. Closing the menu removes its observers and cancels unfinished menu activation; it does not revoke an already completed activation. Reload or session replacement invalidates old menu callbacks and resets the permission.
+The live YOLO toggle does not save preferences. The separate **Default permissions** rows can save Normal, Auto or YOLO in the dedicated user-global permission store, never a repository preference or visual profile. **Session permissions** selects the current mode without changing that default. Closing the menu removes its observers and cancels unfinished menu activation; it does not revoke an already completed activation. Reload or session replacement invalidates old menu callbacks and resets the live permission.
 
 ## What activation authorizes
 
 YOLO supplies standing human permission for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation. Its active-only system instruction qualifies the default commit/push/PR confirmation clauses; it also tells the primary agent to make ordinary reversible implementation choices without needless interviews.
 
-Only a single plain `git push` can skip the shell guard's routine default confirmation. Simple remote/ref arguments and `-u`/`--set-upstream` are eligible. Compound commands, wrappers, repository-changing options and other push options conservatively retain normal guard behavior. Full command evaluation, including the recognized data-loss guards, runs first. Explicit push confirmations or blocks in either configuration layer remain restrictions, including when legacy persistent autonomy or its environment override would ignore them. YOLO never changes persistent `autonomousMode`.
+The shell guard's routine default confirmation is skipped for reversible delivery only. Every guarded segment of the command is judged on its own, so `git commit -m "..." && git push -u origin feature`, `git push && gh pr create --fill`, `git -C <dir> push origin main` and `git fetch && git rebase origin/main && git push` run without a prompt, while the other segments keep their ordinary guard (`git push && rm -rf data` still asks for the `rm`). A push segment is eligible with plain remote/ref arguments, `src:dst` refspecs with both sides present, and the options `-u`/`--set-upstream`, `-q`/`--quiet`, `-v`/`--verbose`, `--tags`, `--follow-tags`, `--no-verify` and `--porcelain`. A rebase segment is eligible with plain refs, `--onto`, `--continue`, `--abort`, `--skip` and `--autostash`; it is recoverable from the reflog. Anything that deletes or rewrites a remote ref, publishes, or runs arbitrary commands never qualifies: `--delete`/`-d`, `:branch` and `+branch` refspecs, `--mirror`, `--prune`, `--all`, every force spelling (hard-blocked), `--receive-pack`/`--exec`, `--repo`, `-o`, `sudo`, shell wrappers such as `sh -c`, interactive or `--exec` rebases, `git branch -D`, `pi remove` and `npm publish`. Full command evaluation, including the recognized data-loss guards, runs first. Explicit push or rebase confirmations or blocks in either configuration layer remain restrictions, including when legacy persistent autonomy or its environment override would ignore them. YOLO never changes persistent `autonomousMode`.
 
 ## What still requires a decision
 
@@ -42,9 +42,9 @@ Children retain only their bounded delegated scope. They cannot activate or inhe
 
 ## Lifetime and limits
 
-Permission is in memory in the extension instance, bound to the exact live SessionManager, session ID and canonical Git common-directory identity. Sibling worktrees in one clone may retain it; an unrelated clone or session identity cannot. Scope loss revokes rather than hiding permission until you return.
+Live permission is held in the extension instance, bound to the exact live SessionManager, session ID and canonical Git common-directory identity, or canonical workspace directory outside Git. Sibling worktrees in one clone may retain it; an unrelated workspace or session identity cannot. Scope loss revokes rather than hiding permission until you return.
 
-New, resumed, forked or replaced sessions, shutdown/quit, **reload** and process restart reset YOLO to OFF. Re-activate explicitly after reload. No session entry restores a grant.
+Shutdown, **reload** and session replacement revoke live grants and callbacks. New primary session instances may apply a saved global YOLO default; they never restore a grant from transcript entries. An explicit Normal selection wins over that default in the current session. To keep both this session and future sessions in Normal, use `/gentle:yolo disable` and `/gentle:mode default normal`.
 
 This is permission guidance and shell-guard defense in depth, **not a sandbox or an all-tools safety guarantee**. Detection only covers recognized command forms; scripts, custom tools and prompt injection can bypass semantic guidance. Tools and extensions retain the operating-system permissions of the process. Trusted SDK callers can invoke command handlers and supply interactive contexts; the human command path is not an OS security boundary against those callers. Use OS/container isolation and narrowly scoped credentials when you need an actual containment boundary.
 
@@ -79,6 +79,7 @@ Children receive the lightweight `child-safety.ts` entry alongside `child-contex
 ### Detection limitations
 
 - This is deterministic lexical recognition, **not** shell or SQL evaluation. Aliases, functions, dynamically assembled commands, variable/command expansion inside quoted payloads, unusual wrapper flags, complex heredocs and deeply nested wrappers can evade recognition. Simple recursive removal of a variable target is guarded, but its expanded target cannot reliably be identified as a hard-deny path.
+- Guarded-command confirmations and hard-denied patterns ignore text that only appears as an argument of a known data command (`grep`, `rg`, `cat`, `echo`, `printf`, `head`, `tail`, `jq`, `sort`, `uniq`, `wc` and similar), including the body of a real heredoc fed to one. Searching a file for a push or printing a reset command does not open a dialog. The exemption applies only when every command in the line is such a data command or an inert one (`cd`, `pwd`, `test`, `mkdir`, `touch`), optionally after plain `VAR=value` assignments or a flagless `env`. Anything else anywhere in the line keeps the full lexical match: any other command or wrapper (`sed`, `sh`, `python`, `awk`, `xargs`, `sudo`, `exec`, `at`, `./script`), command or process substitution, a `<<` that is not an unquoted heredoc, and quoting the tokenizer cannot account for. `sed` is excluded because GNU sed can execute its script.
 - Scripts, migration files, redirected SQL files, arbitrary interpreter programs (Python/Node/etc.), encoded payloads and remote execution are not inspected. Non-recursive wildcard deletion, file truncation, other database clients and nontrivial tautological SQL predicates are not comprehensively classified. A `WHERE` clause is not proof of bounded impact.
 - Only `bash` tool calls reach this data-loss boundary, including nested calls dispatched through Pi's tool-event pipeline. Direct process execution, user shell commands, MCP tools and other tools are not covered by these hooks.
 - The older primary regex safeguards remain authoritative and may be more conservative about text than the shared recognizer. Missing or explicitly overridden child extension paths remove the lightweight boundary; a valid package installation must include the safety entry.

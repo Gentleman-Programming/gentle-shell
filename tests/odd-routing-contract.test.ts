@@ -287,9 +287,12 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 	assert.doesNotMatch(core + delegation + worker + support + skill + wrapper, /If tests exist, use strict TDD/i);
 });
 
-test("mandatory delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {
+// S9 canon change (gentle-ai 87a3b2eb): "These triggers are mandatory, not
+// advisory." read as a default to delegate (L8). A trigger is mandatory only
+// once its condition truly holds; none holds by default, inline when in doubt.
+test("delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {
 	for (const clause of [
-		"These triggers are mandatory, not advisory.",
+		"Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline.",
 		"stop and delegate through the runtime's subagent mechanism before continuing",
 		"executing past a fired trigger inline is a routing defect even if the work succeeds",
 		"**Mapping trigger",
@@ -302,12 +305,15 @@ test("mandatory delegation triggers are behavioral in the lazy canonical port an
 		"so skipped delegation is observable instead of silent",
 		"These triggers only choose between direct inline and delegated direct inside ODD",
 	]) {
-		assert.ok(delegation.includes(clause), `lazy canonical port is missing mandatory delegation clause: ${clause}`);
+		assert.ok(delegation.includes(clause), `lazy canonical port is missing delegation clause: ${clause}`);
 	}
+	assert.ok(!delegation.includes("These triggers are mandatory, not advisory"), "the lazy port must not read the triggers as mandatory by default");
 	assert.ok(
-		wrapper.includes("honoring its mandatory delegation triggers"),
-		"the always-on ODD step 6 must honor its mandatory delegation triggers",
+		wrapper.includes("honoring its delegation triggers when their conditions truly hold"),
+		"the always-on ODD step 6 must honor its delegation triggers only when their conditions truly hold",
 	);
+	assert.ok(wrapper.includes("No trigger holds by default and, when in doubt, work inline"), "the always-on ODD step 6 must default to inline");
+	assert.ok(!wrapper.includes("These triggers are mandatory, not advisory"), "the always-on ODD step 6 must not read the triggers as mandatory by default");
 	assert.ok(
 		wrapper.includes("executing past a fired trigger inline is a routing defect"),
 		"the always-on ODD protocol must state that skipping a fired trigger is a routing defect",

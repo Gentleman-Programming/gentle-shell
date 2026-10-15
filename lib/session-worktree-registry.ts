@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export const SESSION_WORKTREE_ENTRY = "gentle-pi.session-worktree/v1";
 export const SESSION_WORKTREE_CHANGED = "gentle-pi:session-worktree-changed";
@@ -23,12 +23,16 @@ export function worktreeGitEnvironment(env: NodeJS.ProcessEnv = process.env): No
 }
 
 // Match Pi's ordinary path spelling; Git, not the argument, establishes identity.
+function canonicalDirectory(path: string, cwd: string): string {
+	let spelling = path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
+	if (spelling === "~" || spelling.startsWith("~/")) spelling = homedir() + spelling.slice(1);
+	const canonical = realpathSync(resolve(cwd, spelling));
+	return statSync(canonical).isDirectory() ? canonical : dirname(canonical);
+}
+
 export function resolveSessionWorktreeWithGit(path: string, cwd: string, run: typeof execFileSync = execFileSync): WorktreeIdentity | undefined {
 	try {
-		let spelling = path.replace(/^@/, "").replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ");
-		if (spelling === "~" || spelling.startsWith("~/")) spelling = homedir() + spelling.slice(1);
-		const canonical = realpathSync(resolve(cwd, spelling));
-		const directory = statSync(canonical).isDirectory() ? canonical : dirname(canonical);
+		const directory = canonicalDirectory(path, cwd);
 		// Ambient Git routing must not redirect a path into another repository.
 		const env = worktreeGitEnvironment();
 		const git = (arg: string) => String(run("git", ["--no-optional-locks", "-C", directory, "rev-parse", "--path-format=absolute", arg], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, env })).replace(/\r?\n$/, "");
@@ -38,7 +42,69 @@ export function resolveSessionWorktreeWithGit(path: string, cwd: string, run: ty
 	}
 }
 
-export const resolveSessionWorktree: WorktreeResolver = resolveSessionWorktreeWithGit;
+// Filesystem identity of everything Git used to answer: no `.git` between the
+// directory and its root, and the same root, `.git` entry and common dir.
+// Undefined when any of it cannot be proven, so the answer is not memoized.
+function worktreeFingerprint(directory: string, identity: WorktreeIdentity): string | undefined {
+	const same = (a: string, b: string) => process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+	try {
+		for (let current = directory; !same(current, identity.root); current = dirname(current)) {
+			if (dirname(current) === current) return undefined;
+			try { lstatSync(join(current, ".git")); return undefined; }
+			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined; }
+		}
+		const marker = lstatSync(join(identity.root, ".git"));
+		const parts = [statSync(identity.root), marker, statSync(identity.commonDir)].map(entry => `${entry.dev}:${entry.ino}`);
+		// A linked worktree's `.git` file can be rewritten in place to another clone.
+		if (marker.isFile()) parts.push(`${marker.size}:${marker.mtimeMs}`);
+		return parts.join("|");
+	} catch {
+		return undefined;
+	}
+}
+
+export interface WorktreeMemoOptions { ttlMs?: number; now?: () => number }
+interface MemoEntry { identity: WorktreeIdentity; directory: string; fingerprint: string; expiresAt: number }
+const memoInvalidators = new Set<() => void>();
+
+// Startup asks the same (cwd, cwd) question from several extensions; each
+// answer costs two synchronous Git children. Only proven repositories are
+// memoized, and every hit re-checks their filesystem identity, so removal,
+// replacement, a nested `.git` and bootstrap (never cached) are seen at once.
+// The TTL bounds what stat cannot see, such as Git config edits.
+export function memoizeWorktreeResolver(resolver: WorktreeResolver, { ttlMs = 5000, now = Date.now }: WorktreeMemoOptions = {}): WorktreeResolver {
+	const memo = new Map<string, MemoEntry>();
+	memoInvalidators.add(() => memo.clear());
+	return (path, cwd) => {
+		const key = `${path}\u0000${cwd}`;
+		const cached = memo.get(key);
+		if (cached && cached.expiresAt > now()) {
+			try {
+				const directory = canonicalDirectory(path, cwd);
+				if (directory === cached.directory && worktreeFingerprint(directory, cached.identity) === cached.fingerprint) return { ...cached.identity };
+			} catch { /* Fall through to a fresh resolution. */ }
+		}
+		memo.delete(key);
+		const identity = resolver(path, cwd);
+		if (!identity) return undefined;
+		try {
+			const directory = canonicalDirectory(path, cwd);
+			const fingerprint = worktreeFingerprint(directory, identity);
+			if (fingerprint !== undefined) {
+				if (memo.size >= 256) memo.clear();
+				memo.set(key, { identity: { ...identity }, directory, fingerprint, expiresAt: now() + ttlMs });
+			}
+		} catch { /* Unprovable identity is returned but never memoized. */ }
+		return identity;
+	};
+}
+
+/** Drops every memoized worktree identity; the next lookup asks Git again. */
+export function clearSessionWorktreeMemo(): void {
+	for (const invalidate of memoInvalidators) invalidate();
+}
+
+export const resolveSessionWorktree: WorktreeResolver = memoizeWorktreeResolver(resolveSessionWorktreeWithGit);
 
 export function toolWorktreePath(name: string, input: Record<string, unknown>): string | undefined {
 	if (!["read", "write", "edit", "grep", "find", "ls"].includes(name)) return undefined;
@@ -82,7 +148,7 @@ export class SessionWorktreeRegistry {
 		if (!this.isCurrent()) throw new Error("Cannot register a worktree for an inactive session.");
 		const identity = this.refreshIdentity();
 		const target = this.resolver(path, this.cwd);
-		if (!target || !identity || target.commonDir !== identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session.");
+		if (!target || !identity || target.commonDir !== identity.commonDir) throw new Error("Select an existing worktree in the same Git clone as this session. To work in an independent Git repository, delegate with subagent_run with repository_root instead; it asks for your consent first.");
 		return target.root;
 	}
 

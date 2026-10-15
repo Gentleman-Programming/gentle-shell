@@ -647,3 +647,23 @@ test("the no-apiKey options shape is identical on the composed-provider and deps
 	assert.deepEqual(providerKeys, completeKeys, "routing through the composed provider must not change which credential fields this module forwards");
 	assert.equal(providerKeys.includes("apiKey"), false, "neither path may carry an apiKey the registry did not resolve");
 });
+
+for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+	for (const composed of [false, true]) {
+		test(`reviewer forwards transport ${transport ?? "absent"} through ${composed ? "composed provider" : "compat completion"} unchanged`, async () => {
+			const model = fakeModel();
+			const registry = fakeRegistry([model]);
+			const captured = capturingComplete(assistantText("review result"));
+			if (composed) registry.getProvider = () => ({
+				streamSimple: (model, context, options) => ({ result: () => captured.complete(model, context, options) }),
+			});
+			const outcome = await runInProcessReviewer(baseRequest({ transport }), { registry, complete: captured.complete });
+			assert.deepEqual(outcome, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+			assert.equal(captured.calls.length, 1);
+			assert.equal(captured.calls[0]!.options?.transport, transport);
+			assert.equal(Object.hasOwn(captured.calls[0]!.options!, "transport"), transport !== undefined);
+			assert.equal(captured.calls[0]!.options?.apiKey, "test-key");
+			assert.equal(captured.calls[0]!.options?.timeoutMs, 30_000);
+		});
+	}
+}

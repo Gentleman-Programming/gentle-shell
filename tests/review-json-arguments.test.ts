@@ -19,6 +19,15 @@ function validate(name: string, args: Record<string, unknown>): any {
 	return validateToolArguments(tools.get(name), { type: "toolCall", id: "json-arguments", name, arguments: args as ToolCall["arguments"] });
 }
 
+test("registered review schemas have plain object parameters with no root-level union combinators (#1698)", () => {
+	for (const [name, tool] of tools) {
+		assert.equal(tool.parameters.type, "object", `${name} parameters must be an object`);
+		assert.equal(tool.parameters.anyOf, undefined, `${name} parameters must not have root-level anyOf`);
+		assert.equal(tool.parameters.oneOf, undefined, `${name} parameters must not have root-level oneOf`);
+		assert.equal(tool.parameters.allOf, undefined, `${name} parameters must not have root-level allOf`);
+	}
+});
+
 test("public Anthropic non-strict adapter preserves the complete review tool declarations", async () => {
 	const model: Model<"anthropic-messages"> = {
 		id: "claude-sonnet-4-20250514", name: "Payload-only model", api: "anthropic-messages", provider: "anthropic",
@@ -100,24 +109,38 @@ test("serialized inputs remain byte-for-byte unchanged at validation and facade 
 	assert.equal(__testing.parseReviewCaptureParameters(validate("gentle_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
 });
 
-test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", () => {
-	for (const value of [[], null, 123, true, false, "123", "null", "[]"]) {
+test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", async () => {
+	for (const value of [[], 123, true, "123", "null", "[]"]) {
 		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
 		}
 		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
 		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
 	}
+	let calls = 0;
+	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
+	for (const value of [null, false]) {
+		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
+			const validated = validate("gentle_review", { operation, input: value });
+			assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
+			await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
+		}
+		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
+		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
+	}
+	assert.equal(calls, 0);
 });
 
-test("all other controller operations keep object input fail-closed in schema and facade", async () => {
-	const operations = tools.get("gentle_review").parameters.anyOf[1].properties.operation.enum;
+test("all other controller operations keep object input fail-closed at the facade boundary (#1698)", async () => {
+	const operations = (tools.get("gentle_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "start" && operation !== "assess" && operation !== "select-intended-untracked");
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
 	for (const operation of operations) {
 		const args = { operation, lineageId: "l", input: { consentBinding: "opaque", answer: "granted" } };
-		assert.throws(() => validate("gentle_review", args), /Validation failed/);
-		await assert.rejects(__testing.executeReviewControllerOperation(args, process.cwd(), native));
+		await assert.rejects(
+			__testing.executeReviewControllerOperation(args, process.cwd(), native),
+			/Review controller input must be a string/,
+		);
 	}
 	assert.equal(calls, 0);
 });

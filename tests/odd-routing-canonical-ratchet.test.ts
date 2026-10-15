@@ -53,19 +53,27 @@ const EXTENSION = "extensions/gentle-ai.ts";
 
 const ANCHORS: readonly RoutingAnchor[] = [
 	{
-		label: "mandatory delegation triggers heading",
-		canonical: "### Mandatory Delegation Triggers",
+		// S9 canon change (gentle-ai 87a3b2eb): the heading dropped "Mandatory";
+		// a trigger is mandatory only once its condition truly holds.
+		label: "delegation triggers heading",
+		canonical: "### Delegation Triggers",
 		mirrors: [
-			{ surface: DELEGATION, includes: "#### Mandatory Delegation Triggers" },
-			{ surface: CORE, includes: "Mandatory Delegation Triggers" },
+			{ surface: DELEGATION, includes: "#### Delegation Triggers" },
+			// Writer-rule fix: the core names them "Delegation Triggers" and says
+			// each holds only when its condition truly holds; the lazy port keeps
+			// the canonical heading.
+			{ surface: CORE, includes: "Delegation Triggers — each mechanism turns on only when its own trigger condition truly holds" },
 		],
 	},
 	{
-		label: "triggers are mandatory, not advisory",
-		canonical: "These triggers are mandatory, not advisory.",
+		// S9 canon change: "These triggers are mandatory, not advisory." read as a
+		// default to delegate (L8); a trigger now holds only when its condition
+		// truly holds, none by default, inline when in doubt.
+		label: "triggers hold only when their condition truly holds",
+		canonical: "Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline.",
 		mirrors: [
-			{ surface: DELEGATION, includes: "These triggers are mandatory, not advisory." },
-			{ surface: EXTENSION, includes: "These triggers are mandatory, not advisory" },
+			{ surface: DELEGATION, includes: "Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline." },
+			{ surface: EXTENSION, includes: "No trigger holds by default and, when in doubt, work inline" },
 		],
 	},
 	{
@@ -94,15 +102,62 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "writer trigger fires only for a large task, never by file count",
-		canonical: "**Writer trigger:** a large task delegates one bounded writer per task; file count never fires this trigger",
-		// Gentle Shell intentionally leads the canon here (gentle-shell#1731): the
-		// writer fires on named reasons (parallelism, context), never on size
-		// alone; T24 turned the price-ratio reason off. The canon port is G1 in
-		// odd/tasks/delegate-for-reason.md.
+		// S9 canon change: exploration never reads files an inline write reads anyway.
+		label: "never explore to read files an inline write reads anyway",
+		canonical: "Never explore to read files you will read anyway before writing inline.",
+		mirrors: [
+			{ surface: DELEGATION, includes: "Never explore to read files you will read anyway before writing inline." },
+			{ surface: CORE, includes: "never for reading before an inline write" },
+		],
+	},
+	{
+		label: "writer trigger fires only for a named reason, never by size or file count",
+		// S9 canon change (gentle-ai 87a3b2eb): the canon caught up with Gentle
+		// Shell (gentle-shell#1731): the writer fires on named reasons
+		// (parallelism, context), never on size alone or a price ratio.
+		canonical: "**Writer trigger:** a writer is delegated only for a named reason, one bounded writer per unit",
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Writer trigger (Writer rule):** a large task alone never delegates, and file count never fires this trigger" },
 			{ surface: CORE, includes: "**Writer rule** — never by file count or a large task alone" },
+		],
+	},
+	{
+		// S9 canon change: a writer unit is one independent behavior with its
+		// code, tests, and docs together, never split across writers.
+		label: "a writer unit is one independent behavior",
+		canonical: "A unit is one independent piece of behavior with its code, tests, and docs together",
+		mirrors: [
+			{ surface: DELEGATION, includes: "A unit is one independent piece of behavior with its code, tests, and docs together" },
+			{ surface: CORE, includes: "Tests, docs, and code of the same behavior are one unit, never separate writers" },
+		],
+	},
+	{
+		// S9 canon change: a unit qualifies only with several minutes of work,
+		// because a subagent spends one to two minutes reading before it writes.
+		label: "a writer unit needs several minutes of work",
+		canonical: "several files or roughly 100+ changed lines",
+		mirrors: [
+			{ surface: DELEGATION, includes: "several files or ~100+ changed lines; a subagent spends 1-2 minutes reading before it writes" },
+			{ surface: CORE, includes: "several files or roughly 100+ changed lines" },
+		],
+	},
+	{
+		// S9 canon change (gentle-ai c3763aa7, C3): whoever writes reuses the
+		// existing shared-state helper and keeps its invariants.
+		label: "writers reuse the existing shared-state function",
+		canonical: "reuses the existing function for shared state",
+		mirrors: [
+			{ surface: DELEGATION, includes: "reuses the existing function for shared state and keeps its invariants (ordering, uniqueness, validation, normalization)" },
+		],
+	},
+	{
+		// S9 canon change (gentle-ai c3763aa7, C8): PRESERVE diffs each existing
+		// command that shares the changed code against the previous code.
+		label: "differential check against the previous code",
+		canonical: "run a differential check",
+		mirrors: [
+			{ surface: DELEGATION, includes: "**Differential check (PRESERVE):**" },
+			{ surface: EXTENSION, includes: "run a differential check" },
 		],
 	},
 	{
@@ -114,11 +169,14 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "verification trigger is reserved for high risk",
-		canonical: "**Verification trigger:** a high-risk change gets an independent verifier",
+		label: "verification trigger is reserved for a named high-risk item",
+		// S9 canon change (gentle-ai 6b9a71ef): only a change whose Risk line
+		// names a high-risk item gets the independent verifier.
+		canonical: "**Verification trigger:** only a change whose Risk line names a high-risk item gets an independent verifier",
 		mirrors: [
-			{ surface: CORE, includes: "**Verification rule** — high risk → independent `gentle-ai-verify`" },
-			{ surface: DELEGATION, includes: "a high-risk change (Task Size) gets an independent `gentle-ai-verify` run" },
+			// Verification by named risk: the core row names the escalate-only verifier.
+			{ surface: CORE, includes: "**Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`" },
+			{ surface: DELEGATION, includes: "only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run" },
 		],
 	},
 	{
@@ -173,9 +231,10 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "ODD step 6 honors its mandatory delegation triggers",
-		canonical: "honoring its mandatory delegation triggers",
-		mirrors: [{ surface: EXTENSION, includes: "honoring its mandatory delegation triggers" }],
+		// S9 canon change: step 6 honors its triggers only when their conditions truly hold.
+		label: "ODD step 6 honors its delegation triggers when their conditions hold",
+		canonical: "honoring its delegation triggers when their conditions truly hold",
+		mirrors: [{ surface: EXTENSION, includes: "honoring its delegation triggers when their conditions truly hold" }],
 	},
 ];
 
@@ -184,7 +243,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 // rows, so they are mirror-only and not fixture-derived anchors.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
-	"**Verification rule** — high risk → independent `gentle-ai-verify`",
+	"**Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`",
 ] as const;
 
 function fixtureBody(): string {

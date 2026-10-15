@@ -12,10 +12,17 @@ import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-cod
 import { discoverYoloUiAdapter, registerYoloSessionPolicy, YOLO_STATUS_KEY, YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
-test("complete Gentle AI extension registers and executes YOLO through the actual SDK loader", async () => {
+// An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
+function isolatedEnv(t: test.TestContext): NodeJS.ProcessEnv {
+	const home = mkdtempSync(join(tmpdir(), "yolo-runtime-config-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	return { GENTLE_PI_CONFIG_HOME: home };
+}
+
+test("complete Gentle AI extension registers and executes YOLO through the actual SDK loader", async t => {
 	const cwd = process.cwd();
 	const runtime = createExtensionRuntime();
-	const extension = await loadExtensionFromFactory(createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} }), cwd, createEventBus(), runtime);
+	const extension = await loadExtensionFromFactory(createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: isolatedEnv(t) }), cwd, createEventBus(), runtime);
 	assert.equal(extension.handlers.get("session_start")?.length, 1, "original startup hook remains the sole handler");
 	assert.equal(extension.handlers.get("session_shutdown")?.length, 1, "original shutdown hook remains the sole handler");
 	const runner = new ExtensionRunner([extension], runtime, cwd, SessionManager.inMemory(cwd), {} as never);
@@ -40,8 +47,9 @@ test("complete Gentle AI extension registers and executes YOLO through the actua
 // Actual SDK factory loader, context/command runner and in-memory SessionManager.
 // Lifecycle events are dispatched through the real runner; the terminal UI is stubbed.
 // No providers, persisted sessions, global assets or real tool execution are needed.
-test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and extension replacement", async () => {
+test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and extension replacement", async t => {
 	const cwd = process.cwd();
+	const env = isolatedEnv(t);
 	const manager = SessionManager.inMemory(cwd);
 	const statuses = new Map<string, string | undefined>();
 	const widgets = new Map<string, unknown>();
@@ -53,7 +61,7 @@ test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and
 	const load = async () => {
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory((pi) => {
-			const yolo = registerYoloSessionPolicy(pi, {});
+			const yolo = registerYoloSessionPolicy(pi, env);
 			// Match production ownership: the host's existing hooks reset the controller.
 			pi.on("session_start", (_event, ctx) => yolo.reset(ctx));
 			pi.on("session_shutdown", (_event, ctx) => yolo.reset(ctx));
@@ -111,12 +119,32 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	const statuses = new Map<string, string | undefined>();
 	const notices: string[] = [];
 	let renders = 0;
+	const renderWaiters = new Set<() => void>();
+	const text = () => view!.render(140).map(stripAnsi).join("\n");
+	// Footer publication precedes the asynchronous authority snapshot refresh.
+	// Observe the requested menu render, not elapsed time after setStatus.
+	const rendered = (expected: RegExp) => new Promise<void>((resolve, reject) => {
+		const check = () => {
+			if (!view || !expected.test(text())) return;
+			clearTimeout(deadline);
+			renderWaiters.delete(check);
+			resolve();
+		};
+		const deadline = setTimeout(() => {
+			renderWaiters.delete(check);
+			reject(new Error(`Menu did not request a render matching ${expected}:\n${text()}`));
+		}, 1_000);
+		renderWaiters.add(check);
+	});
 	runner.setUIContext({
 		theme, getAllThemes: () => [{ name: "dark" }], getTheme: () => theme,
 		notify: (text: string) => notices.push(text), setStatus: (key: string, text?: string) => statuses.set(key, text), setWidget() {},
 		custom(factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Component) {
 			return new Promise<void>(resolve => {
-				view = factory({ terminal: { rows: 30 }, requestRender: () => { renders++; } }, theme, {}, resolve);
+				view = factory({ terminal: { rows: 30 }, requestRender: () => {
+					renders++;
+					for (const check of [...renderWaiters]) check();
+				} }, theme, {}, resolve);
 				opened();
 			});
 		},
@@ -132,15 +160,14 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	await ready; assert.ok(view);
 	for (let i = 0; i < 3; i++) view.handleInput?.("j");
 	view.handleInput?.("\x1b[C"); view.handleInput?.("j"); view.handleInput?.("j");
-	const text = () => view!.render(140).map(stripAnsi).join("\n");
 	assert.match(text(), /YOLO: OFF · session only/);
+	const onRendered = rendered(/YOLO: ON/);
 	view.handleInput?.("\r");
-	for (let i = 0; i < 100 && statuses.get(YOLO_STATUS_KEY) !== YOLO_STATUS_TEXT; i++) await new Promise(resolve => setTimeout(resolve, 10));
+	await onRendered;
 	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
-	await new Promise(resolve => setTimeout(resolve, 30));
 	assert.match(text(), /YOLO: ON/);
-	await command.handler("disable", ctx);
-	await new Promise(resolve => setTimeout(resolve, 30));
+	await Promise.all([rendered(/YOLO: OFF/), command.handler("disable", ctx)]);
+	assert.equal(statuses.get(YOLO_STATUS_KEY), undefined);
 	assert.match(text(), /YOLO: OFF/);
 	for (const width of [1, 20, 45, 60, 140]) assert.ok(view.render(width).every(line => visibleWidth(line) <= width));
 	const adapter = await discoverYoloUiAdapter({

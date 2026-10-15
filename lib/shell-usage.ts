@@ -269,7 +269,7 @@ export function formatReset(resetAt: number | null, now: number): string {
 }
 
 function parseWindow(raw: RawWindow | null | undefined, now: number): UsageWindow | undefined {
-	if (!raw || typeof raw.used_percent !== "number" || typeof raw.limit_window_seconds !== "number") return undefined;
+	if (!raw || !isFiniteNumber(raw.used_percent) || !isFiniteNumber(raw.limit_window_seconds) || raw.limit_window_seconds <= 0) return undefined;
 	const resetAt =
 		typeof raw.reset_at === "number" ? raw.reset_at * 1000 : typeof raw.reset_after_seconds === "number" ? now + raw.reset_after_seconds * 1000 : null;
 	return { label: windowLabel(raw.limit_window_seconds), usedPercent: raw.used_percent, windowSeconds: raw.limit_window_seconds, resetAt };
@@ -297,9 +297,10 @@ export function parseCodexUsage(payload: unknown, now: number): ProviderUsage {
 function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary"): UsageWindow | undefined {
 	const used = Number.parseFloat(headers[`${HEADER_PREFIX}${kind}-used-percent`] ?? "");
 	if (!Number.isFinite(used)) return undefined;
-	const minutes = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-window-minutes`] ?? "", 10);
+	// Missing or invalid duration is not a zero-minute quota or an assumed 5h window.
+	const seconds = Number(headers[`${HEADER_PREFIX}${kind}-window-minutes`]) * MINUTE;
+	if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
 	const resetAt = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-reset-at`] ?? "", 10);
-	const seconds = Number.isFinite(minutes) ? minutes * MINUTE : 0;
 	return { label: windowLabel(seconds), usedPercent: used, windowSeconds: seconds, resetAt: Number.isFinite(resetAt) ? resetAt * 1000 : null };
 }
 

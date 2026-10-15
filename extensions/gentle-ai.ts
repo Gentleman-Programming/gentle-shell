@@ -1935,8 +1935,11 @@ const YOLO_SEGMENT_END_RE = /&&|\|\||;|\||\n|\r/;
 // most a `-C <path>`. Other global options (`-c key=value`, `--exec-path`,
 // `--git-dir`) can run or redirect code, so they keep the confirmation.
 const YOLO_GIT_PREFIX_RE = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s'"`$]*\s+|env\s+(?:-i\s+)?|command\s+)*git(?:\s+-C\s+[^\s'"`$;&|]+)?\s+$/;
-const YOLO_PUSH_SEGMENT_RE = /^push(?:\s+(?:-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*\s*$/;
-const YOLO_REBASE_SEGMENT_RE = /^rebase(?:\s+(?:--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*\s*$/;
+// Output-only redirections an agent routinely appends (`2>&1`, `>/dev/null`) neither write a file nor read input, so they
+// are the only redirections allowed, and only at the end of the segment.
+const YOLO_OUTPUT_ONLY_REDIRECTS_SRC = String.raw`(?:\s+(?:2>&1|&?>\s?/dev/null|2>\s?/dev/null))*`;
+const YOLO_PUSH_SEGMENT_RE = new RegExp(String.raw`^push(?:\s+(?:-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*${YOLO_OUTPUT_ONLY_REDIRECTS_SRC}\s*$`);
+const YOLO_REBASE_SEGMENT_RE = new RegExp(String.raw`^rebase(?:\s+(?:--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*${YOLO_OUTPUT_ONLY_REDIRECTS_SRC}\s*$`);
 
 function yoloGuardedSegment(command: string, triggerIndex: number): string {
 	const rest = command.slice(triggerIndex);

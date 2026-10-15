@@ -26,7 +26,7 @@ export function parseAnimationPolicyFile(raw: string): AnimationPolicy | undefin
 }
 
 export function resolveAnimationPolicy(options: AnimationOptions = {}): AnimationResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "animations.json");
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), "animations.json");
 	try {
 		const policy = parseAnimationPolicyFile(readFileSync(globalFile, "utf8"));
 		return { policy: policy ?? "quality", source: SOURCE.GLOBAL, malformed: policy === undefined, globalFile };
@@ -38,7 +38,7 @@ export function resolveAnimationPolicy(options: AnimationOptions = {}): Animatio
 
 /** Same-directory rename prevents readers from seeing a partially written policy. */
 export function writeAnimationPolicy(policy: AnimationPolicy, options: AnimationOptions = {}): string {
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const path = join(home, "animations.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

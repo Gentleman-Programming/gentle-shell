@@ -1,0 +1,499 @@
+import { BRAND_GLYPH, BRAND_NAME, GENTLE_COLORS, ROSE_ART, type Rgb, truecolor } from "./gentle-brand.ts";
+import { CONFIG_CATEGORIES, type ConfigCategory } from "./gentle-config-scope.ts";
+import { CONFIG_CATEGORY_LABELS, describeEnvScope, type EnvSummary, validateEnvName } from "./gentle-shell-envs.ts";
+
+// The `gentle-shell envs` manager: a pure key parser, reducer and renderer.
+// It is dependency-free on purpose (no pi-tui), because the launcher runs
+// before any Pi runtime is resolved. bin/gentle-shell.mjs owns raw-mode
+// stdin, the alternate screen, and carrying out the returned effects.
+
+export type EnvsKey =
+	| { name: "up" }
+	| { name: "down" }
+	| { name: "left" }
+	| { name: "right" }
+	| { name: "enter" }
+	| { name: "backspace" }
+	| { name: "escape" }
+	| { name: "ctrl-c" }
+	| { name: "char"; char: string };
+
+// `base: true` targets the install's own home (`--isolated`), never an env:
+// an env may even be named like the base entry.
+export type EnvsEffect =
+	| { kind: "quit" }
+	| { kind: "launch"; name: string; base?: true }
+	| { kind: "set-default"; name: string; base?: true }
+	| { kind: "setup"; name: string; base?: true }
+	| { kind: "auth-check"; name: string; base?: true }
+	// own: categories the new env owns; from/empty: where their copies come
+	// from (the base home when neither is set).
+	| { kind: "create"; name: string; own: ConfigCategory[]; from?: string; empty?: true }
+	| { kind: "scope"; name: string; own: ConfigCategory[]; share: ConfigCategory[]; from?: string; empty?: true }
+	| { kind: "rename"; from: string; to: string }
+	| { kind: "delete"; name: string }
+	| { kind: "install"; name: string; source: string; base?: true };
+
+type PromptKind = "create" | "rename" | "delete" | "install";
+
+export interface EnvsPrompt {
+	kind: PromptKind;
+	label: string;
+	value: string;
+	// The env the prompt acts on (rename/delete/install).
+	target?: string;
+	targetBase?: boolean;
+	error?: string;
+}
+
+// The VS Code-like config form: per category, shared with the base home or
+// an own copy; plus where newly own copies come from.
+export type ScopeSource = { kind: "base" } | { kind: "env"; name: string } | { kind: "empty" };
+
+export interface EnvsScopeForm {
+	mode: "create" | "edit";
+	name: string;
+	own: ConfigCategory[];
+	// The scope the env had when the form opened (edit), [] for a new env.
+	initial: ConfigCategory[];
+	source: ScopeSource;
+	// 0..3 the categories, 4 the source row.
+	cursor: number;
+}
+
+export interface EnvsState {
+	envs: EnvSummary[];
+	selected: number;
+	prompt?: EnvsPrompt;
+	scope?: EnvsScopeForm;
+	// One-line status shown above the key hints (results, hints).
+	message?: string;
+}
+
+// `select` names an env, or `{ base: true }` for the base home: an env may
+// share the base entry's display name, so the two are never matched by name.
+export function initialEnvsState(envs: EnvSummary[], message?: string, select?: string | { base: true }): EnvsState {
+	const byName = select === undefined ? -1
+		: typeof select === "string" ? envs.findIndex((e) => !e.base && e.name === select)
+		: envs.findIndex((e) => e.base === true);
+	const byDefault = envs.findIndex((e) => e.isDefault);
+	return { envs, selected: byName >= 0 ? byName : Math.max(0, byDefault), message };
+}
+
+// --- key parsing -------------------------------------------------------------
+
+export function parseKeys(data: string): EnvsKey[] {
+	const keys: EnvsKey[] = [];
+	const chars = [...data];
+	for (let i = 0; i < chars.length; i += 1) {
+		const c = chars[i];
+		if (c === "\x1b") {
+			const next = chars[i + 1];
+			if (next === "[" || next === "O") {
+				// CSI / SS3: parameters, then one final byte in @..~.
+				let j = i + 2;
+				while (j < chars.length && !/[@-~]/.test(chars[j])) j += 1;
+				const sequence = chars.slice(i + 2, j + 1).join("");
+				if (sequence === "A") keys.push({ name: "up" });
+				else if (sequence === "B") keys.push({ name: "down" });
+				else if (sequence === "C") keys.push({ name: "right" });
+				else if (sequence === "D") keys.push({ name: "left" });
+				i = j;
+				continue;
+			}
+			keys.push({ name: "escape" });
+			continue;
+		}
+		if (c === "\r" || c === "\n") keys.push({ name: "enter" });
+		else if (c === "\x7f" || c === "\b") keys.push({ name: "backspace" });
+		else if (c === "\x03") keys.push({ name: "ctrl-c" });
+		else if (c >= " ") keys.push({ name: "char", char: c });
+	}
+	return keys;
+}
+
+// --- reducer -------------------------------------------------------------------
+
+export interface EnvsStep {
+	state: EnvsState;
+	effect?: EnvsEffect;
+}
+
+const EMPTY_HINT = "No env selected: press n to create one.";
+
+function openPrompt(state: EnvsState, prompt: EnvsPrompt): EnvsStep {
+	return { state: { ...state, prompt, message: undefined } };
+}
+
+function reducePrompt(state: EnvsState, prompt: EnvsPrompt, key: EnvsKey): EnvsStep {
+	if (key.name === "escape" || key.name === "ctrl-c") return { state: { ...state, prompt: undefined } };
+	if (key.name === "backspace") return { state: { ...state, prompt: { ...prompt, value: [...prompt.value].slice(0, -1).join(""), error: undefined } } };
+	if (key.name === "char") return { state: { ...state, prompt: { ...prompt, value: prompt.value + key.char, error: undefined } } };
+	if (key.name !== "enter") return { state };
+
+	const fail = (error: string): EnvsStep => ({ state: { ...state, prompt: { ...prompt, error } } });
+	const done = (effect: EnvsEffect): EnvsStep => ({ state: { ...state, prompt: undefined }, effect });
+	const value = prompt.value.trim();
+	const target = prompt.target ?? "";
+
+	if (prompt.kind === "create" || prompt.kind === "rename") {
+		if (prompt.kind === "rename" && value === target) return { state: { ...state, prompt: undefined } };
+		const invalid = validateEnvName(value);
+		if (invalid !== undefined) return fail(invalid);
+		if (state.envs.some((e) => !e.base && e.name === value)) return fail(`env "${value}" already exists`);
+		if (prompt.kind === "create") {
+			// Like a new VS Code profile: choose what to share before creating.
+			return { state: { ...state, prompt: undefined, scope: { mode: "create", name: value, own: [], initial: [], source: { kind: "base" }, cursor: 0 } } };
+		}
+		return done({ kind: "rename", from: target, to: value });
+	}
+	if (prompt.kind === "delete") {
+		if (value !== target) return fail(`type "${target}" to confirm, or esc to cancel`);
+		return done({ kind: "delete", name: target });
+	}
+	if (value.length === 0) return fail("enter a package source, e.g. npm:pi-btw");
+	return done(prompt.targetBase ? { kind: "install", name: target, source: value, base: true } : { kind: "install", name: target, source: value });
+}
+
+// Sources a newly own copy can come from: the base home, every other env, or empty.
+function scopeSources(state: EnvsState, form: EnvsScopeForm): ScopeSource[] {
+	const envs = state.envs.filter((env) => !env.base && env.name !== form.name).map((env): ScopeSource => ({ kind: "env", name: env.name }));
+	return [{ kind: "base" }, ...envs, { kind: "empty" }];
+}
+
+function sameSource(a: ScopeSource, b: ScopeSource): boolean {
+	return a.kind === b.kind && (a.kind !== "env" || (b.kind === "env" && a.name === b.name));
+}
+
+function sourceFields(source: ScopeSource): { from?: string; empty?: true } {
+	return source.kind === "env" ? { from: source.name } : source.kind === "empty" ? { empty: true } : {};
+}
+
+const NOTHING_OWN = "Nothing to copy yet: mark a category as Own copy first (space).";
+
+function reduceScope(state: EnvsState, form: EnvsScopeForm, key: EnvsKey): EnvsStep {
+	const set = (next: Partial<EnvsScopeForm>): EnvsStep => ({ state: { ...state, message: undefined, scope: { ...form, ...next } } });
+	if (key.name === "escape" || key.name === "ctrl-c") return { state: { ...state, scope: undefined } };
+	if (key.name === "up") return set({ cursor: Math.max(0, form.cursor - 1) });
+	if (key.name === "down") return set({ cursor: Math.min(CONFIG_CATEGORIES.length, form.cursor + 1) });
+	const char = key.name === "char" ? key.char : undefined;
+	if (char === "a") return set({ own: form.own.length === CONFIG_CATEGORIES.length ? [] : [...CONFIG_CATEGORIES] });
+	const toggle = char === " " || key.name === "left" || key.name === "right";
+	if (toggle && form.cursor < CONFIG_CATEGORIES.length) {
+		const category = CONFIG_CATEGORIES[form.cursor];
+		const own = form.own.includes(category) ? form.own.filter((c) => c !== category) : [...form.own, category];
+		return set({ own: CONFIG_CATEGORIES.filter((c) => own.includes(c)) });
+	}
+	if (toggle) {
+		// The source only matters for own copies: say so instead of cycling it silently.
+		if (form.own.length === 0) return { state: { ...state, message: NOTHING_OWN } };
+		const sources = scopeSources(state, form);
+		const index = sources.findIndex((source) => sameSource(source, form.source));
+		const step = key.name === "left" ? -1 : 1;
+		return set({ source: sources[(index + step + sources.length) % sources.length] });
+	}
+	if (key.name !== "enter") return { state };
+	const close = { ...state, scope: undefined };
+	if (form.mode === "create") return { state: close, effect: { kind: "create", name: form.name, own: form.own, ...sourceFields(form.source) } };
+	const share = form.initial.filter((c) => !form.own.includes(c));
+	const added = form.own.filter((c) => !form.initial.includes(c));
+	if (share.length === 0 && added.length === 0) {
+		return { state: { ...close, message: `No changes for ${form.name}: mark a category as Own copy, or share one again, to change it.` } };
+	}
+	return { state: close, effect: { kind: "scope", name: form.name, own: added, share, ...(added.length > 0 ? sourceFields(form.source) : {}) } };
+}
+
+export function reduceEnvs(state: EnvsState, key: EnvsKey): EnvsStep {
+	if (state.prompt !== undefined) return reducePrompt(state, state.prompt, key);
+	if (state.scope !== undefined) return reduceScope(state, state.scope, key);
+
+	if (key.name === "ctrl-c" || key.name === "escape") return { state, effect: { kind: "quit" } };
+	const last = state.envs.length - 1;
+	const char = key.name === "char" ? key.char : undefined;
+	if (key.name === "up" || char === "k") return { state: { ...state, selected: Math.max(0, state.selected - 1), message: undefined } };
+	if (key.name === "down" || char === "j") return { state: { ...state, selected: Math.max(0, Math.min(last, state.selected + 1)), message: undefined } };
+	if (char === "q") return { state, effect: { kind: "quit" } };
+	if (char === "n") return openPrompt(state, { kind: "create", label: "New env name", value: "" });
+
+	const current = state.envs[state.selected];
+	const scoped = key.name === "enter" || (char !== undefined && "sparidc".includes(char));
+	if (!scoped) return { state };
+	if (current === undefined) return { state: { ...state, message: EMPTY_HINT } };
+	const name = current.name;
+	const base = current.base ? { base: true as const } : {};
+	if (key.name === "enter") return { state, effect: { kind: "launch", name, ...base } };
+	if (char === "s") return { state, effect: { kind: "set-default", name, ...base } };
+	if (char === "p") return { state, effect: { kind: "setup", name, ...base } };
+	if (char === "a") return { state, effect: { kind: "auth-check", name, ...base } };
+	if (current.base && (char === "r" || char === "d")) {
+		return { state: { ...state, message: "The base home belongs to the install: it can't be renamed or deleted." } };
+	}
+	if (char === "c") {
+		if (current.base) return { state: { ...state, message: "The base home holds the shared configuration every env can reuse; press c on an env to choose what it owns." } };
+		const own = current.own ?? [];
+		return { state: { ...state, message: undefined, scope: { mode: "edit", name, own, initial: own, source: { kind: "base" }, cursor: 0 } } };
+	}
+	if (char === "r") return openPrompt(state, { kind: "rename", label: `Rename "${name}" to`, value: name, target: name });
+	if (char === "i") return openPrompt(state, { kind: "install", label: `Install into "${current.base ? "the base home" : name}"`, value: "", target: name, ...(current.base ? { targetBase: true } : {}) });
+	return openPrompt(state, { kind: "delete", label: `Delete "${name}" and all its data? Type its name`, value: "", target: name });
+}
+
+// --- rendering -----------------------------------------------------------------
+// The envs gate is the first thing a user sees, so it speaks Gentle's visual
+// language: the rose, `✿ Gentle Shell`, rounded `╭─ ✿ Title ─╮` cards like
+// the Status card, the `❯` selection and rose key hints. Every line is
+// exactly the terminal width at most, and the screen is exactly its height.
+
+export interface EnvsRenderOptions {
+	// Truecolor Gentle palette; false renders the same layout in monochrome.
+	color?: boolean;
+	// gentle-pi version shown next to the brand.
+	version?: string;
+}
+
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+
+interface Paint {
+	rose: (text: string) => string;
+	label: (text: string) => string;
+	value: (text: string) => string;
+	frame: (text: string) => string;
+	muted: (text: string) => string;
+	error: (text: string) => string;
+	bold: (text: string) => string;
+}
+
+function painter(color: boolean): Paint {
+	const tone = (rgb: Rgb) => (text: string) => (color ? truecolor(rgb, text) : text);
+	return {
+		rose: tone(GENTLE_COLORS.rose),
+		label: tone(GENTLE_COLORS.label),
+		value: tone(GENTLE_COLORS.value),
+		frame: tone(GENTLE_COLORS.dimRose),
+		muted: tone(GENTLE_COLORS.muted),
+		error: tone(GENTLE_COLORS.error),
+		bold: (text) => (text.length === 0 ? "" : `${BOLD}${text}\x1b[22m`),
+	};
+}
+
+// Visible width: the renderer only emits single-cell characters (ASCII,
+// box drawing, braille, ✿ ❯ ·) outside of its own SGR sequences.
+function visible(text: string): number {
+	return [...text.replace(/\x1b\[[0-9;]*m/g, "")].length;
+}
+
+// Text from the user's own files (paths, package sources, provider ids) is
+// shown as plain text: escape sequences and other control characters are
+// dropped so a file can never move the cursor or retitle the terminal.
+function plain(text: string): string {
+	return text
+		.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
+		.replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+}
+
+function fit(text: string, width: number): string {
+	if (width <= 0) return "";
+	const chars = [...text];
+	if (chars.length <= width) return text;
+	return width === 1 ? "…" : `${chars.slice(0, width - 1).join("")}…`;
+}
+
+function pad(text: string, width: number): string {
+	const fitted = fit(text, width);
+	return fitted + " ".repeat(Math.max(0, width - [...fitted].length));
+}
+
+function center(styled: string, width: number): string {
+	const free = Math.max(0, width - visible(styled));
+	return " ".repeat(Math.floor(free / 2)) + styled;
+}
+
+interface CardRow {
+	// Plain text, fitted to the card's content width before styling.
+	text: string;
+	style?: (text: string) => string;
+}
+
+// A rounded Gentle card exactly `width` columns wide and `height` rows tall.
+function card(title: string, rows: CardRow[], width: number, height: number, paint: Paint): string[] {
+	if (width < 6 || height < 2) return Array.from({ length: Math.max(0, height) }, () => " ".repeat(Math.max(0, width)));
+	const inner = width - 4;
+	const heading = fit(`${BRAND_GLYPH} ${title}`, Math.max(1, width - 6));
+	const top = `${paint.frame("╭─ ")}${paint.rose(paint.bold(heading))}${paint.frame(` ${"─".repeat(Math.max(0, width - 5 - [...heading].length))}╮`)}`;
+	const bottom = paint.frame(`╰${"─".repeat(width - 2)}╯`);
+	const body: string[] = [];
+	for (let index = 0; index < height - 2; index += 1) {
+		const row = rows[index];
+		const text = pad(row?.text ?? "", inner);
+		body.push(`${paint.frame("│")} ${row?.style ? row.style(text) : text} ${paint.frame("│")}`);
+	}
+	return [top, ...body, bottom];
+}
+
+function detailRows(env: EnvSummary | undefined, inner: number, paint: Paint): CardRow[] {
+	if (env === undefined) return [
+		{ text: "No envs yet.", style: paint.bold },
+		{ text: "" },
+		{ text: "Press n to create your first env.", style: paint.label },
+	];
+	const sessions = `${env.sessionCount} session${env.sessionCount === 1 ? "" : "s"}${env.lastSessionAt ? ` · last ${env.lastSessionAt.slice(0, 16).replace("T", " ")}` : ""}`;
+	// Labels in the rose label tone, values plain: one styled span per row.
+	const field = (label: string, value: string): CardRow => {
+		const head = `${label.padEnd(10)}`;
+		const text = pad(`${head}${value}`, inner);
+		return { text, style: (fitted) => `${paint.label(fitted.slice(0, head.length))}${fitted.slice(head.length)}` };
+	};
+	return [
+		...(env.base ? [{ text: "The install's own home, as before envs (--isolated).", style: paint.label }] : []),
+		...(env.isDefault ? [{ text: "Default: a plain gentle-shell opens it", style: paint.rose }] : []),
+		field("Path", plain(env.dir)),
+		field("Setup", env.setUp === false ? "not set up yet" : plain(env.provisioned)),
+		field("Sessions", sessions),
+		field("Sign-ins", env.providers.length > 0 ? env.providers.map(plain).join(", ") : "none yet: /login inside the session"),
+		field("Config", env.base ? "the shared configuration envs can reuse" : describeEnvScope(env.own ?? [])),
+		field("Packages", env.packages.length > 0 ? `${env.packages.length}` : env.setUp === false ? "installed when you first open it" : "none"),
+		...env.packages.map((source) => ({ text: `  · ${plain(source)}`, style: paint.muted })),
+	];
+}
+
+// The VS Code-like config form, drawn in place of the detail card.
+const CATEGORY_TITLES: Readonly<Record<ConfigCategory, string>> = Object.freeze({
+	models: "Models & profiles",
+	persona: "Persona",
+	appearance: "Appearance",
+	behavior: "Behavior",
+});
+
+function sourceLabel(source: ScopeSource): string {
+	return source.kind === "base" ? `${BRAND_NAME} base` : source.kind === "env" ? `env ${source.name}` : "Empty (defaults)";
+}
+
+function scopeRows(form: EnvsScopeForm, paint: Paint): CardRow[] {
+	const row = (selected: boolean, label: string, value: string, width = 20): CardRow => {
+		const text = `${selected ? "❯" : " "} ${label.padEnd(width)}${value}`;
+		return { text, style: selected ? (fitted: string) => paint.rose(paint.bold(fitted)) : undefined };
+	};
+	return [
+		{ text: "Mark categories as Own copy (space),", style: paint.label },
+		{ text: "then choose where their copies come from.", style: paint.label },
+		{ text: "" },
+		...CONFIG_CATEGORIES.map((category, index) => row(form.cursor === index, CATEGORY_TITLES[category], form.own.includes(category) ? "Own copy" : "Shared with base")),
+		{ text: "" },
+		form.own.length === 0
+			// Inactive until something is own: nothing would be copied yet.
+			? { ...row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", "— mark a category as Own copy first", 21), style: paint.muted }
+			: row(form.cursor === CONFIG_CATEGORIES.length, "New own copies from", sourceLabel(form.source), 21),
+		{ text: "" },
+		{ text: "Shared follows the base home live; an own copy diverges.", style: paint.muted },
+	];
+}
+
+const SCOPE_HINTS: Array<[string, string]> = [["↑↓", "move"], ["space", "toggle"], ["←→", "change"], ["a", "all"], ["esc", "cancel"]];
+
+const HINTS: Array<[string, string]> = [
+	["enter", "open"], ["n", "new"], ["r", "rename"], ["d", "delete"], ["s", "default"],
+	["p", "setup"], ["i", "install"], ["a", "sign-ins"], ["c", "config"], ["q", "quit"],
+];
+
+// Wrapped, never truncated: every action stays discoverable at any width.
+function hintLines(width: number, paint: Paint, hints: Array<[string, string]> = HINTS): string[] {
+	const lines: string[] = [];
+	let parts: string[] = [];
+	let used = 0;
+	for (const [key, action] of hints) {
+		const size = `${key} ${action}`.length;
+		const extra = (parts.length > 0 ? 3 : 0) + size;
+		if (parts.length > 0 && used + extra > width) {
+			lines.push(parts.join(paint.muted(" · ")));
+			parts = [];
+			used = 0;
+		}
+		parts.push(`${paint.rose(paint.bold(key))} ${paint.label(action)}`);
+		used += (parts.length > 1 ? 3 : 0) + size;
+	}
+	if (parts.length > 0) lines.push(parts.join(paint.muted(" · ")));
+	return lines;
+}
+
+export function renderEnvsScreen(state: EnvsState, width: number, height: number, options: EnvsRenderOptions = {}): string[] {
+	const w = Math.max(1, Math.floor(width));
+	const h = Math.max(1, Math.floor(height));
+	const paint = painter(options.color === true);
+
+	// Footer: status or prompt, then the key hints.
+	// Centered under the cards; the prompt is the one left-aligned exception.
+	const footer: string[] = [];
+	if (state.prompt !== undefined) {
+		const p = state.prompt;
+		footer.push(`${paint.rose(paint.bold("❯"))} ${paint.bold(fit(`${p.label}: ${p.value}`, Math.max(0, w - 3)))}${paint.rose("▏")}`);
+		footer.push(p.error === undefined ? center(paint.muted(fit("enter confirm · esc cancel", w)), w) : center(paint.error(fit(p.error, w)), w));
+	} else if (state.scope !== undefined) {
+		const hints: Array<[string, string]> = [...SCOPE_HINTS.slice(0, 4), ["enter", state.scope.mode === "create" ? "create" : "apply"], SCOPE_HINTS[4]];
+		footer.push(state.message === undefined ? "" : center(paint.value(fit(state.message, w)), w));
+		footer.push(...hintLines(Math.min(w, 110), paint, hints).map((line) => center(line, w)));
+	} else {
+		footer.push(state.message === undefined ? "" : center(paint.value(fit(state.message, w)), w));
+		footer.push(...hintLines(Math.min(w, 110), paint).map((line) => center(line, w)));
+	}
+
+	// Header: the rose when there is room for it and the cards, then the brand.
+	const title = `${paint.rose(paint.bold(`${BRAND_GLYPH} ${BRAND_NAME}`))}${options.version ? paint.muted(` v${fit(options.version, 20)}`) : ""}`;
+	const subtitle = paint.label("Choose an environment to open");
+	const header: string[] = [];
+	const art = ROSE_ART.map((line) => line.replace(/\s+$/u, ""));
+	const artWidth = Math.max(...art.map((line) => [...line].length));
+	if (h >= art.length + 16 && w >= artWidth + 4) {
+		const lead = Math.floor((w - artWidth) / 2);
+		header.push(...art.map((line) => " ".repeat(lead) + paint.rose(line)), "");
+	}
+	if (h >= 10) header.push(center(title, w), center(subtitle, w), "");
+	else header.push(fit(`${BRAND_GLYPH} ${BRAND_NAME}`, w) === `${BRAND_GLYPH} ${BRAND_NAME}` ? title : paint.rose(fit(`${BRAND_GLYPH} ${BRAND_NAME}`, w)));
+
+	// The cards fit their content (with a little air) instead of the whole
+	// screen, and the block is centered both ways: a gate, not a log.
+	const blockWidth = Math.min(w, 110);
+	const lead = " ".repeat(Math.floor((w - blockWidth) / 2));
+	const selectedEnv = state.envs[state.selected];
+	const sideBySide = blockWidth >= 56;
+	// Wide enough for the longest entry (marker and `(default)` included), within bounds.
+	const longest = Math.max(0, ...state.envs.map((env) => [...(env.base ? `${BRAND_NAME} base` : env.name)].length + (env.isDefault ? " (default)".length : 0)));
+	const listWidth = sideBySide ? Math.min(Math.max(20, Math.floor(blockWidth * 0.3), longest + 6), 40, blockWidth - 30) : blockWidth;
+	const detailWidth = blockWidth - listWidth - 1;
+	const form = state.scope;
+	const details = form !== undefined ? scopeRows(form, paint) : detailRows(selectedEnv, Math.max(1, detailWidth - 4), paint);
+	const contentRows = Math.max(state.envs.length || 1, sideBySide ? details.length : 0) + 2;
+	const available = Math.max(0, h - header.length - footer.length);
+	const bodyHeight = Math.min(available, Math.max(6, contentRows + 1));
+	const body: string[] = [];
+	if (bodyHeight >= 3 && blockWidth >= 6) {
+		const visibleRows = bodyHeight - 2;
+		// Keep the selection visible when the list is taller than the card.
+		const offset = Math.max(0, Math.min(state.selected - visibleRows + 1, state.envs.length - visibleRows));
+		const listRows: CardRow[] = state.envs.slice(offset, offset + visibleRows).map((env, index) => {
+			const selected = index + offset === state.selected;
+			// The default reads like the /gentle:profiles markers: `name (default)`.
+			const text = `${selected ? "❯" : " "} ${env.base ? `${BRAND_NAME} base` : env.name}${env.isDefault ? " (default)" : ""}`;
+			return { text, style: selected ? (fitted: string) => paint.rose(paint.bold(fitted)) : undefined };
+		});
+		if (state.envs.length === 0) listRows.push({ text: "  (none)", style: paint.muted });
+		const list = card("Envs", listRows, listWidth, bodyHeight, paint);
+		if (sideBySide) {
+			const title = form !== undefined ? `${form.mode === "create" ? "New env" : "Config"} · ${form.name}` : selectedEnv === undefined ? "Welcome" : selectedEnv.base ? "Base home" : selectedEnv.name;
+			const detail = card(title, details, detailWidth, bodyHeight, paint);
+			for (let row = 0; row < bodyHeight; row += 1) body.push(`${lead}${list[row]} ${detail[row]}`);
+		} else {
+			body.push(...list.map((line) => lead + line));
+		}
+	}
+	if (state.prompt !== undefined) footer[0] = lead + footer[0];
+	// One composition, centered vertically: brand, cards, status and hints.
+	const block = [...header, ...body, ...footer];
+	const spare = Math.max(0, h - block.length);
+	const above = Math.floor(spare / 2);
+	const composed = [...Array.from({ length: above }, () => ""), ...block, ...Array.from({ length: spare - above }, () => "")];
+	const clip = (line: string) => (visible(line) > w ? fit(line.replace(/\x1b\[[0-9;]*m/g, ""), w) : line);
+	const all = composed.length > h ? [...composed.slice(0, Math.max(0, h - footer.length)), ...footer].slice(-h) : composed;
+	return all.map(clip).map((line) => (line.includes("\x1b[") ? `${line}${RESET}` : line));
+}

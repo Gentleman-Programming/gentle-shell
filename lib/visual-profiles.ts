@@ -101,7 +101,7 @@ export function parseVisualProfilesFile(raw: string): VisualProfile[] | undefine
 }
 
 export function readVisualProfiles(options: Options = {}): VisualProfilesResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "visual-profiles.json");
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), "visual-profiles.json");
 	let fd: number | undefined;
 	try {
 		try {
@@ -153,7 +153,7 @@ function existing(options: Options): VisualProfile[] {
 }
 
 function write(profiles: VisualProfile[], options: Options): string {
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const path = join(home, "visual-profiles.json");
 	const data = `${JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles })}\n`;
 	if (Buffer.byteLength(data) > MAX_BYTES) {

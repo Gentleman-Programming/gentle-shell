@@ -234,7 +234,7 @@ export class AutoPermissionRuntime {
   options: {configHome?: string; retryDelaysMs?: number[]} = {}) {
   this.pi=pi;this.modes=modes;this.classifier=classifier;
   this.memory=new AutoPermissionMemory(()=>pi.getAllTools?.() ?? []);
-  this.configHome = resolve(options.configHome ?? gentlePiConfigHome());
+  this.configHome = resolve(options.configHome ?? gentlePiConfigHome(undefined, "behavior"));
   this.retryDelaysMs = options.retryDelaysMs ?? PROVIDER_RETRY_DELAYS_MS;
  }
  private retryDelaysMs: number[];

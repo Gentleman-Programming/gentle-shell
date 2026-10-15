@@ -32,7 +32,7 @@ export function parseCardStyleFile(raw: string): CardStyle | undefined {
 }
 
 export function resolveCardStyle(options: CardStyleOptions = {}): CardStyleResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_STYLE_FILE);
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), CARD_STYLE_FILE);
 	try {
 		const style = parseCardStyleFile(readFileSync(globalFile, "utf8"));
 		return { style: style ?? CARD_STYLE.FLOAT, source: "global_file", malformed: style === undefined, globalFile };
@@ -44,7 +44,7 @@ export function resolveCardStyle(options: CardStyleOptions = {}): CardStyleResol
 
 export function writeCardStyle(style: CardStyle, options: CardStyleOptions = {}): string {
 	if (!isCardStyle(style)) throw new TypeError("Invalid card style");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const current = resolveCardStyle({ gentlePiConfigHome: home });
 	if (current.malformed) throw new Error(`Cannot update malformed or unreadable card style preference: ${current.globalFile}`);
 	const path = current.globalFile;

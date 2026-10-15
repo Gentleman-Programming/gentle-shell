@@ -8,13 +8,13 @@ const eligible = {
 };
 
 test("ordinary bundled interactive launch and resume are eligible", () => {
-	for (const argv of [[], ["--resume"], ["-r"], ["--continue"], ["-c"]]) {
+	for (const argv of [[], ["--resume"], ["-r"], ["--continue"], ["-c"], ["--env", "work"]]) {
 		assert.equal(shouldCheckStartupUpdate({ ...eligible, args: parseLauncherArgs(argv) }), true);
 	}
 });
 
 test("commands, overrides, non-TTY runs and child/offline opt-outs are excluded", () => {
-	for (const argv of [["upgrade"], ["home"], ["setup"], ["install", "npm:x"], ["--help"], ["--version"], ["--package-root", "/custom"]]) {
+	for (const argv of [["upgrade"], ["home"], ["envs"], ["setup"], ["install", "npm:x"], ["--help"], ["--version"], ["--package-root", "/custom"]]) {
 		assert.equal(shouldCheckStartupUpdate({ ...eligible, args: parseLauncherArgs(argv) }), false, argv.join(" "));
 	}
 	for (const overrides of [{ bundled: false }, { inputTTY: false }, { outputTTY: false }, { args: { ...eligible.args, error: "invalid arguments" } }]) {

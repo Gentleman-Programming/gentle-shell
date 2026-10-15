@@ -8,7 +8,8 @@ const source = readFileSync(join(root, "extensions/gentle-agents.ts"), "utf8");
 const sessionTool = source.match(/name: "orchestrator_session_id",\s*label: "[^"]+",\s*description: ("(?:[^"\\]|\\.)*")/);
 assert.ok(sessionTool, "Registered session tool exposes its publication contract");
 const description: string = JSON.parse(sessionTool[1]);
-const guidance = readFileSync(join(root, "assets/orchestrator-delegation.md"), "utf8");
+// S11 T2: state publication is reference material; the delegation card only points at it.
+const guidance = readFileSync(join(root, "assets/orchestrator-delegation-reference.md"), "utf8");
 const docs = readFileSync(join(root, "docs/gentle-agents-activity.md"), "utf8");
 
 test("shipped guidance publishes status before work and refreshes task transitions", () => {

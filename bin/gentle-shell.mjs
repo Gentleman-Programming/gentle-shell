@@ -53,6 +53,7 @@ import {
 	parseRawLauncherConfig,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
+	withLauncherPackagesExcluded,
 	postInstallRemovals,
 	provisionedEntry,
 	migrateStandaloneConfig,
@@ -61,9 +62,12 @@ import {
 	resolveHome,
 	resolvePiRuntime,
 	restoreJsonField,
+	separateHomeHint,
 	shellQuote,
 	standaloneConfigHome,
+	userPiHome,
 } from "../runtime/gentle-shell-launcher.mjs";
+import { formatImportPiReport, importPi } from "../runtime/gentle-shell-import-pi.mjs";
 import {
 	BUNDLED_VERIFY_ENV,
 	bundledEngramSchema,
@@ -773,6 +777,42 @@ function handleHomeCommand(commandArgs) {
 	process.exit(0);
 }
 
+// `gentle-shell [home selectors] home import-pi [--dry-run]`: copies the
+// user's pi sign-ins, MCP servers and default model into the resolved
+// separate home (lib/gentle-shell-import-pi.ts). A home that is new or empty
+// is first bootstrapped exactly as a first launch would, so the files this
+// adds never make it look foreign to auto-provisioning (homeIsForeign).
+async function handleImportPiCommand(args) {
+	const options = args.commandArgs.slice(1);
+	if (options.some((option) => option !== "--dry-run")) fail("gentle-shell home import-pi accepts only --dry-run. Run 'gentle-shell --help'.", 2);
+	const dryRun = options.includes("--dry-run");
+	let home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+	const source = resolvePath(userPiHome(process.env, homedir()));
+	const refusal = "Choose a separate home with --isolated or --home <path>.";
+	if (home.mode === "link") {
+		fail(`gentle-shell home import-pi: the selected home is your pi home itself (--link), so there is nothing to import. ${refusal}`, 1);
+	}
+	if ([source, join(homedir(), ".pi", "agent")].some((piHome) => safeRealpath(piHome) === safeRealpath(home.dir))) {
+		fail(`gentle-shell home import-pi: ${home.dir} is your pi home itself, so there is nothing to import. ${refusal}`, 1);
+	}
+	if (homeNeedsBootstrap(home.dir)) {
+		if (dryRun) {
+			process.stdout.write(`Would prepare ${home.dir} as a new Gentle Shell home\n`);
+		} else {
+			try {
+				await bootstrapOwnedHome(home);
+			} catch (error) {
+				fail(`gentle-shell home import-pi: could not prepare ${home.dir} (${error.message}); nothing was imported`, 1);
+			}
+			process.stdout.write(`Prepared ${home.dir} as a new Gentle Shell home\n`);
+		}
+	}
+	const result = importPi({ source, target: home.dir, dryRun });
+	for (const line of formatImportPiReport(result, { source, target: home.dir, dryRun })) process.stdout.write(`${line}\n`);
+	process.exitCode = result.failed ? 1 : 0;
+}
+
 // Test/development-only override for the setup subcommand's gentle-ai
 // executable path. Lets a test point at a stub script (or a deliberately
 // missing path) without touching the real pinned .gentle-ai/v<version>/gentle-ai
@@ -1305,7 +1345,9 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs }) {
 
 	const setupArgs = ["install", "--agent", "pi", "--scope", "global", ...(dryRun ? ["--dry-run"] : [])];
 	const piLauncherDir = writeSetupPiLauncher(runtime);
-	const env = buildSetupEnv(home, runtime, piLauncherDir);
+	// #2143: a Gentle AI with package exclusion never installs the launcher-owned
+	// gentle-pi; an older one ignores this and runPostInstallCleanup removes it.
+	const env = withLauncherPackagesExcluded(buildSetupEnv(home, runtime, piLauncherDir));
 	const personaSnapshots = setupPersonaPaths(home).map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
@@ -1556,6 +1598,25 @@ function homeOwnershipMarkerPath(home) {
 function writeHomeOwnershipMarker(home) {
 	const content = JSON.stringify({ createdBy: "gentle-shell", version: ownPackageVersion() });
 	writeFileSync(homeOwnershipMarkerPath(home), `${content}\n`, "utf8");
+}
+
+// The isolated/--home bootstrap: the first launch's own (main, below) and
+// `home import-pi`'s before it adds files to a new or empty home.
+async function bootstrapOwnedHome(home) {
+	// 0700: under umask 002 a default mode would leave ~/.gentle-shell group-writable,
+	// which the bundled install's prefix claim must tighten or refuse.
+	mkdirSync(home.dir, { recursive: true, mode: 0o700 });
+	await installIsolatedTuiModeSetting(home.dir);
+	writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
+}
+
+function homeNeedsBootstrap(dir) {
+	if (!existsSync(dir)) return true;
+	try {
+		return isDirectory(dir) && readdirSync(dir).length === 0;
+	} catch {
+		return false;
+	}
 }
 
 // `homeHadContentBeforeBootstrap` must be read by the caller (main, below)
@@ -1953,7 +2014,8 @@ async function main() {
 		process.exit(0);
 	}
 	if (args.command === "home") {
-		handleHomeCommand(args.commandArgs);
+		if (args.commandArgs[0] === "import-pi") await handleImportPiCommand(args);
+		else handleHomeCommand(args.commandArgs);
 		return;
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
@@ -2023,7 +2085,11 @@ async function main() {
 	// is the redundant cost issue #2096 reports, so only env/path runtimes
 	// (which have no such in-memory source) still pay for a real probe.
 	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersionCached(runtime, resolveConfigPath());
-	if (!versionCheck.ok) fail(versionCheck.message, 1);
+	// A managed self update is how an old Pi gets replaced, so the minimum-version
+	// gate must not block it; everything else still requires the minimum.
+	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined
+		&& (await import("../scripts/pi-update.mjs")).managedUpdatePlan(args.passthrough).self;
+	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
 		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
@@ -2073,12 +2139,9 @@ async function main() {
 	// Isolated-home bootstrap: only on a home gentle-shell has not seen before
 	// (link never bootstraps — it reuses the user's own pi agent home as-is).
 	if ((home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) {
-		// 0700: under umask 002 a default mode would leave ~/.gentle-shell group-writable,
-		// which the bundled install's prefix claim must tighten or refuse.
-		mkdirSync(home.dir, { recursive: true, mode: 0o700 });
-		await installIsolatedTuiModeSetting(home.dir);
-		writeHomeOwnershipMarker(home); // R3-001: lets a failed first auto-provision attempt still be retried later
-		process.stderr.write(`gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.\n`);
+		await bootstrapOwnedHome(home);
+		const piSignIns = existsSync(join(userPiHome(process.env, homedir()), "auth.json"));
+		process.stderr.write(`${separateHomeHint(home, { piSignIns })}\n`);
 	}
 
 	// #2201: the standalone isolated home's own config folder, seeded once from

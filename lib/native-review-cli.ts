@@ -119,7 +119,8 @@ export interface NativeReviewCli {
 	// Read-only risk assessment (gentle-ai#4295, landing in parallel with
 	// gentle-pi#662). Same plain-versioned shape as reviewMode/reviewStatus:
 	// an older binary without the verb, or any other process/decode failure,
-	// rejects the returned promise -- callers fail closed to `high` risk.
+	// rejects the returned promise -- callers report the tier as `unassessable`, which informs
+	// the verification plan but never adds an independent verifier by itself.
 	assess?(request: NativeReviewAssessRequest): Promise<ReviewAssessmentV1>;
 }
 

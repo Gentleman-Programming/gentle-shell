@@ -112,7 +112,7 @@ Tasks are sized by understanding, risk, and resumability: work you could finish 
 
 Bring in help without losing the thread. Focused package-owned Pi agents can map a codebase, implement a bounded change, or verify it, while one parent stays accountable for the scope, the decisions, and the final summary.
 
-The parent delegates for a reason, not for size. Understanding that outgrows one inline batch (about 3 calls and 10k tokens) gets one read-only explorer; two or more independent units with disjoint edit surfaces get parallel writers; a high-risk change gets an independent verifier; a long session hands its next unit to a fresh worker. Without a named reason the parent works inline — file count and task size never decide the route.
+The parent delegates for a reason, not for size. Understanding that outgrows one inline batch (about 3 calls and 10k tokens) gets one read-only explorer; two or more independent units of behavior, each big enough to outweigh a subagent's start-up and with disjoint edit surfaces, get parallel writers; a change that touches a named high-risk item gets an independent verifier, whatever model wrote it; a long session hands its next unit to a fresh worker. Without a named reason the parent works inline — file count and task size never decide the route.
 
 **[Docs →](docs/readme-reference.md#how-the-harness-decides-what-to-do)**
 
@@ -141,7 +141,7 @@ Against the same model in Codex CLI, with blind review of every solution, Gentle
 
 Review the exact change, not a moving target. Native review keeps one candidate in view, returns risk-scoped evidence, and can surface a bounded correction path. You still decide what happens next in your repository.
 
-Review is proportionate: verification follows the risk tier in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
+Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
 > ℹ️ **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
@@ -182,7 +182,7 @@ A bare terminal answers "what is the agent doing?" only with scrollback. gentle-
 
 <img width="100%" src="docs/assets/features/changes-view.png" alt="Gentle Changes viewer: worktree accordion with per-file status on the left, the diff against HEAD with line counts on the right, and a keyboard hint row">
 
-You should not have to run `git status` in every worktree to find out what your agents left behind. Gentle Changes shows the current Git state — working tree against HEAD, untracked files included — of your session's repository plus every worktree its subagents used, one group per root. Commit and it disappears; remove a worktree and its group goes with it. Nothing runs at startup; `alt+g` opens a two-pane viewer with per-file line counts and lazy diffs, and `o` drops the real file into your editor.
+You should not have to run `git status` in every worktree to find out what your agents left behind. Gentle Changes shows the current Git state — working tree against HEAD, untracked files included — of your session's repository plus every worktree its subagents used, one group per root. Commit and it disappears; remove a worktree and its group goes with it. Nothing runs at startup; `alt+g` opens a full-screen two-pane viewer with per-file line counts and lazy diffs, `F` hides the file list to read the diff at full width, and `o` drops the real file into your editor.
 
 **[Docs →](docs/gentle-shell.md#browse-changes)**
 
@@ -503,7 +503,13 @@ gentle-shell setup
 ```bash
 # Make --link the default
 gentle-shell home link
+
+# Or keep the separate home and copy your pi sign-ins into it
+gentle-shell home import-pi --dry-run
+gentle-shell home import-pi
 ```
+
+`gentle-shell home import-pi` copies `auth.json` (kept private, `0600`) and `mcp.json` from your pi home into the separate home, plus your default provider, model and thinking level when that home has none. It never overwrites a file or setting, never copies packages, extensions, caches or chats, and never changes your pi home. The tradeoff: `--link` shares one credential store with pi, while `import-pi` makes a second copy, so a provider that rotates refresh tokens may sign one of the two out; run `/login` again there.
 
 Every other argument is forwarded to pi unchanged, for example `gentle-shell --mode rpc` or `gentle-shell -p "..."`. Full flags, env vars, and modes: **[launcher reference](docs/readme-reference.md#gentle-shell-launcher)**.
 

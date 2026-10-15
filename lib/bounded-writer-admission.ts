@@ -79,6 +79,50 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 	return { block: true, reason: `${WRITER_EDIT_SURFACE_REJECTION} ${parsed.problem} Resend the same task text unchanged except for that section; never shorten or re-summarize it.` };
 }
 
+// Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still
+// started two writers for ~35-line units). A generic writer launch is admitted only for a task of an existing ODD
+// feature document, or when the parent's measured context reaches the context backstop. Judgment Day fix agents
+// and continuations keep their own protocols.
+export const WRITER_CONTEXT_BACKSTOP_TOKENS = 150_000;
+// A line that starts with `Spec:` (optionally as a list item), names an odd/tasks document, and names a task
+// `T<n>` later on the same line: covers the canon (`, T2, S3-S4`), the delegation card (`(read until "## Log").
+// Do T2; S3.`), and comma-free forms (`.md T1 S1;`). A mention inside prose does not start the line.
+const FEATURE_DOCUMENT_TASK = /^[ \t]*(?:[-*+][ \t]+)?Spec:[ \t]*`?(odd\/tasks\/[^\s,`()]+\.md)`?[^\n]*?\bT\d+\b/gm;
+export const WRITER_FEATURE_DOCUMENT_REJECTION =
+	"Writers run only for a task of an existing ODD feature document (`Spec: odd/tasks/<feature>.md, T<n>` in the task) or when your measured context reaches the context backstop. This unit has neither: write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers.";
+
+function featureDocumentExists(root: string, relativePath: string): boolean {
+	// Resolve symlinks on both sides so a document linked from outside the root, or an odd/tasks directory linked
+	// elsewhere, never admits a writer; the document must be a regular file under <root>/odd/tasks.
+	try {
+		const realRoot = realpathSync(resolve(root));
+		const tasksDir = realpathSync(resolve(realRoot, "odd", "tasks"));
+		const target = realpathSync(resolve(realRoot, relativePath));
+		const inTasks = relative(tasksDir, target);
+		if (relative(realRoot, tasksDir).startsWith("..") || !inTasks || inTasks.startsWith("..") || isAbsolute(inTasks)) return false;
+		return statSync(target).isFile();
+	} catch {
+		return false;
+	}
+}
+
+export function rejectUndocumentedWriterLaunch(
+	input: unknown,
+	options: { root: string; contextTokens: number | null | undefined },
+): { block: true; reason: string } | undefined {
+	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const record = input as Record<string, unknown>;
+	if (typeof record.agent !== "string" || !isGenericBoundedWriter(record.agent)) return undefined;
+	for (const value of [record.task, record.context]) {
+		if (typeof value !== "string") continue;
+		for (const match of value.matchAll(FEATURE_DOCUMENT_TASK)) {
+			if (featureDocumentExists(options.root, match[1])) return undefined;
+		}
+	}
+	if (typeof options.contextTokens === "number" && options.contextTokens >= WRITER_CONTEXT_BACKSTOP_TOKENS) return undefined;
+	return { block: true, reason: WRITER_FEATURE_DOCUMENT_REJECTION };
+}
+
 // A continuation resumes the same delegated task, so a writer follow-up that
 // carries no section of its own inherits the surfaces its original launch was
 // admitted with. A follow-up that carries the heading is validated as written,

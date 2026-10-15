@@ -63,6 +63,8 @@ import {
 	separateHomeHint,
 	shellQuote,
 	standaloneConfigHome,
+	launchConfigHome,
+	baseConfigHome,
 	userPiHome,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { formatImportPiReport, importPi } from "../runtime/gentle-shell-import-pi.mjs";
@@ -719,13 +721,15 @@ function readEnvScope(dir) {
 	return parseEnvScope(readTextOrUndefined(join(dir, ENV_SCOPE_FILE)));
 }
 
-// The shared (base) Gentle config home, exactly as a Pi process of this
-// install resolves it without env scope: the bundled prefix's config, then
-// GENTLE_PI_CONFIG_HOME, then ~/.pi/gentle-ai.
+// The shared (base) Gentle config home, exactly as a Pi process launched in
+// a named env resolves it without env scope: the bundled prefix's config,
+// then GENTLE_PI_CONFIG_HOME, then the base isolated home's own folder
+// (~/.gentle-shell/gentle-ai, #2201), then ~/.pi/gentle-ai.
 function sharedConfigHome() {
 	const install = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs });
 	if (install) return bundledPiConfigDir(install.root);
-	return process.env.GENTLE_PI_CONFIG_HOME || join(homedir(), ".pi", "gentle-ai");
+	if (process.env.GENTLE_PI_CONFIG_HOME) return process.env.GENTLE_PI_CONFIG_HOME;
+	return baseConfigHome(process.env, homedir()) ?? join(homedir(), ".pi", "gentle-ai");
 }
 
 // Applies --own/--share/--from/--empty to one env: seeds the categories that
@@ -757,12 +761,25 @@ function applyEnvScope(root, name, flags) {
 	}
 	const targetDir = join(dir, "gentle-ai");
 	const seed = categoriesToSeed(plan.seed, targetDir, existsSync);
-	if (seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
-	for (const op of seedOperations({ categories: seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
-		if (op.kind === "copy") copyFileSync(op.from, op.to);
-		else rmSync(op.path, { force: true });
+	const createdTargetDir = seed.length > 0 && !existsSync(targetDir);
+	const copied = [];
+	try {
+		if (seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+		for (const op of seedOperations({ categories: seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
+			if (op.kind === "copy") {
+				copyFileSync(op.from, op.to);
+				copied.push(op.to);
+			} else rmSync(op.path, { force: true });
+		}
+		writeFileAtomically(join(dir, ENV_SCOPE_FILE), serializeEnvScope(plan.next), { mode: 0o600 });
+	} catch (error) {
+		// A seeded category had no own files before this call (categoriesToSeed),
+		// so what it copied is all there is: a partial copy left behind would
+		// read as a kept own copy next time and never be seeded again.
+		for (const path of copied) rmSync(path, { force: true });
+		if (createdTargetDir) rmSync(targetDir, { recursive: true, force: true });
+		throw error;
 	}
-	writeFileAtomically(join(dir, ENV_SCOPE_FILE), serializeEnvScope(plan.next), { mode: 0o600 });
 	return plan;
 }
 
@@ -1329,9 +1346,10 @@ function buildSetupEnv(home, runtime, piLauncherDir) {
 		GENTLE_PI_AGENT_HOME: home.dir,
 		PATH: [...(piLauncherDir ? [piLauncherDir] : []), dirname(runtime.command), process.env.PATH ?? ""].join(delimiter),
 	};
-	// #2201: the isolated home's own config folder, given to Gentle AI the
-	// bundled way (gentleAiIsolationEnv); never an outer session's marker.
-	const configHome = standaloneConfigHome(home);
+	// #2201: the isolated home's own config folder (shared by named envs),
+	// given to Gentle AI the bundled way (gentleAiIsolationEnv); never an
+	// outer session's marker.
+	const configHome = launchConfigHome(home, process.env, homedir());
 	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	return gentleAiIsolationEnv(env, { packageRoot });
@@ -1384,7 +1402,7 @@ function sharedPersonaPath() {
 // does nothing.
 function setupPersonaPaths(home) {
 	if (bundledInstall) return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
-	const configHome = standaloneConfigHome(home);
+	const configHome = launchConfigHome(home, process.env, homedir());
 	return configHome === undefined ? [sharedPersonaPath()] : [join(configHome, "persona.json"), sharedPersonaPath()];
 }
 
@@ -2500,9 +2518,10 @@ async function main() {
 	}
 
 	// #2201: the standalone isolated home's own config folder, seeded once from
-	// the shared ~/.pi/gentle-ai. Not when an explicit GENTLE_PI_CONFIG_HOME
-	// decides the config home; never blocks the launch.
-	const configHome = bundled || process.env.GENTLE_PI_CONFIG_HOME ? undefined : standaloneConfigHome(home);
+	// the shared ~/.pi/gentle-ai, also when a named env sharing it launches
+	// first. Not when an explicit GENTLE_PI_CONFIG_HOME decides the config
+	// home; never blocks the launch.
+	const configHome = bundled || process.env.GENTLE_PI_CONFIG_HOME ? undefined : launchConfigHome(home, process.env, homedir());
 	if (configHome !== undefined) {
 		try {
 			const migration = migrateStandaloneConfig({ source: join(homedir(), ".pi", "gentle-ai"), target: configHome, fs: configMigrationFs });

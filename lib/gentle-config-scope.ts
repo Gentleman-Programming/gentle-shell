@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 
-// Per-env scope of Gentle's own configuration (the config home, normally
-// ~/.pi/gentle-ai). Like VS Code profiles, a named env chooses per category
+// Per-env scope of Gentle's own configuration (the base home's config home,
+// ~/.gentle-shell/gentle-ai or ~/.pi/gentle-ai). Like VS Code profiles, a named env chooses per category
 // whether it shares the base configuration or keeps its own copy. Pure data
 // and env parsing only: shared by the launcher and the Pi extensions.
 

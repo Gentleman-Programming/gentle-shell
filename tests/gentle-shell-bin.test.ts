@@ -3766,6 +3766,26 @@ test("re-owning a category reuses its kept own copy instead of seeding over it",
 	assert.equal(readFileSync(own, "utf8"), '{"persona":"edited"}', "the kept own copy is reused");
 });
 
+test("envs config removes a partial seed when a copy fails, so a retry seeds the whole category", (t) => {
+	const f = fixture(t);
+	const base = join(f.root, "base-config");
+	const env = { ...f.env, GENTLE_PI_CONFIG_HOME: base };
+	mkdirSync(base, { recursive: true });
+	writeFileSync(join(base, "models.json"), '{"models":"base"}');
+	// profiles.json is a directory, so its copy throws after models.json was copied.
+	mkdirSync(join(base, "profiles.json"));
+	assert.equal(run(env, ["envs", "new", "a"]).status, 0);
+	const own = join(f.home, ".gentle-shell", "envs", "a", "gentle-ai");
+	const failed = run(env, ["envs", "config", "a", "--own", "models"]);
+	assert.equal(failed.status, 1, failed.stderr);
+	assert.equal(existsSync(join(own, "models.json")), false, "no partial copy is left to read as a kept own copy");
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "a", ".gentle-shell-env.json")), false);
+	rmSync(join(base, "profiles.json"), { recursive: true });
+	writeFileSync(join(base, "profiles.json"), '{"profiles":"base"}');
+	assert.equal(run(env, ["envs", "config", "a", "--own", "models"]).status, 0);
+	assert.equal(readFileSync(join(own, "profiles.json"), "utf8"), '{"profiles":"base"}', "the retry seeds the whole category");
+});
+
 test("envs new rejects scope flags without --own and leaves no half-created env", (t) => {
 	const f = fixture(t);
 	const envs = join(f.home, ".gentle-shell", "envs");

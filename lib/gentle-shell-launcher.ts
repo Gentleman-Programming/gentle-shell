@@ -272,6 +272,20 @@ export function standaloneConfigHome(home: ResolvedHome): string | undefined {
 	return basename(dir) === "agent" && basename(parent) === ".gentle-shell" ? join(parent, "gentle-ai") : undefined;
 }
 
+// The launcher config folder a launch of `home` uses (#2201): the isolated
+// home's own, and for a named env the base isolated home's, since "shared"
+// means shared with the base home. Undefined keeps ~/.pi/gentle-ai (--link,
+// a plain --home, or a base home without its own folder).
+export function launchConfigHome(home: ResolvedHome, env: Record<string, string | undefined>, homedir: string): string | undefined {
+	if (home.mode === "isolated") return standaloneConfigHome(home);
+	return home.env === undefined ? undefined : baseConfigHome(env, homedir);
+}
+
+// The base (isolated) home's own config folder, or undefined when it has none.
+export function baseConfigHome(env: Record<string, string | undefined>, homedir: string): string | undefined {
+	return standaloneConfigHome({ mode: "isolated", dir: isolatedDir(env, homedir), source: "default" });
+}
+
 // The filesystem behind migrateStandaloneConfig; bin/gentle-shell.mjs wires the real one.
 export interface ConfigMigrationFs {
 	// lstat: a symbolic link is "other", never followed.
@@ -1128,10 +1142,11 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};
-	// #2201: only the standalone isolated home gets its own config folder; any
-	// other launch removes an inherited marker, so a nested `--link` launch from
-	// an isolated session reads ~/.pi/gentle-ai again.
-	const configHome = input.bundled === true ? undefined : standaloneConfigHome(input.home);
+	// #2201: only the standalone isolated home, and the named envs that share
+	// it, get its own config folder; any other launch removes an inherited
+	// marker, so a nested `--link` launch from an isolated session reads
+	// ~/.pi/gentle-ai again.
+	const configHome = input.bundled === true ? undefined : launchConfigHome(input.home, input.baseEnv, input.homedir);
 	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 

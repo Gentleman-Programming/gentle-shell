@@ -23,3 +23,4 @@ Fix: attribute a header snapshot to the provider that served the response
 - T1: probe on pi 1.2.0 + bridge 0.9.3 logged `provider: "claude-bridge"`, `5h-utilization 0.02`, `7d-utilization 0`.
 - T2: new test failed before the fix (footer had no `claude 5h`).
 - T3/T4: `node --test tests/gentle-shell.test.ts tests/shell-usage.test.ts tests/shell-bar.test.ts` 377/377; `npm run typecheck` no regressions; bridge `npm run test:unit` 330/330. Live gentle-shell on `claude-bridge/claude-haiku-4-5`: bar `usage 5h 2% · week 0%`, `/gentle:usage` shows `✿ claude-bridge` with claude 5h and week rows.
+- Commit: eb7968e46 fix(shell): file header usage under the provider that served the response.

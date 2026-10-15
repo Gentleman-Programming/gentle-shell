@@ -1322,7 +1322,7 @@ function liveProfile(name: string): string {
 	const profile = join(realpathSync(root), name);
 	mkdirSync(join(profile, "agents"), { recursive: true });
 	for (const agent of ["local", "peer"]) {
-		writeFileSync(join(profile, "agents", `${agent}.md`), `---\ndescription: ${agent}\n---\nFixture agent.`);
+		writeFileSync(join(profile, "agents", `${agent}.md`), `---\ndescription: ${agent}\ntools: [read, grep]\n---\nFixture agent.`);
 	}
 	return profile;
 }
@@ -3090,7 +3090,7 @@ for (const [key, tilde] of [["GENTLE_PI_AGENT_HOME", false], ["PI_CODING_AGENT_D
 	test(`${key} ${tilde ? "tilde" : "relative"} profile shares an absolute parent and child session root`, async () => {
 		const agentHome = join(root, `${key}-${tilde}`, "agent");
 		mkdirSync(join(agentHome, "agents"), { recursive: true });
-		writeFileSync(join(agentHome, "agents", "relative.md"), "---\ndescription: relative profile\n---\nMap things.");
+		writeFileSync(join(agentHome, "agents", "relative.md"), "---\ndescription: relative profile\ntools: [read, grep]\n---\nMap things.");
 		writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ default_model: "openai/profile-model" }));
 		const env = { [key]: tilde ? `~/${relative(homedir(), agentHome)}` : relative(process.cwd(), agentHome) };
 		const harness = deps();
@@ -3593,9 +3593,9 @@ test("subagent_list_agents publishes each agent's declared tool inventory so rou
 		await h.fire("session_start", ctx);
 		const listed = await h.tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find, codegraph\]/);
-		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
-		// tool set, so the catalog must never render it as having no tools at all.
-		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: Pi defaults \(no allowlist\)\]/);
+		// An agent without an explicit allowlist cannot launch, and the catalog
+		// must make that policy visible instead of implying Pi defaults apply.
+		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: explicit allowlist required; launch rejected\]/);
 		// The review lane declares the `"*": false` wildcard, which Pi drops: it is
 		// not a capability and must not appear as one in the routing surface.
 		assert.match(listed.content[0].text, /- lens \(global\): review lane \[declared tools \(not verified\): read, grep, gentle_review_scope\]/);
@@ -3940,7 +3940,7 @@ test("AgentsView production composition observes each pointer event once and acc
 });
 
 test("AgentsView production footer uses rendered bounds and invalidates them before the next frame", async () => {
-	writeFileSync(join(home, ".pi", "agent", "agents", "寿司.md"), "---\ndescription: unicode footer target\nmodel: openai-codex/gpt-5.6-terra\n---\nFooter target.");
+	writeFileSync(join(home, ".pi", "agent", "agents", "寿司.md"), "---\ndescription: unicode footer target\nmodel: openai-codex/gpt-5.6-terra\ntools: [read, grep]\n---\nFooter target.");
 	const { pi, tools, fire, commands } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
@@ -4063,7 +4063,7 @@ test("the overlay confirms a running task once and reports when it finishes duri
 	const harness = deps();
 	const modalHome = join(root, "modal-home");
 	mkdirSync(join(modalHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(modalHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\nmodel: openai-codex/gpt-5.6-terra\n---\nYou map things.");
+	writeFileSync(join(modalHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\nmodel: openai-codex/gpt-5.6-terra\ntools: [read, grep]\n---\nYou map things.");
 	writeFileSync(join(modalHome, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 2 }));
 	harness.deps.home = modalHome;
 	let answerConfirmation: (confirmed: boolean) => void = () => {};
@@ -4098,7 +4098,7 @@ test("the overlay stops a queued selection immediately without confirmation", as
 	const harness = deps();
 	const queueHome = join(root, "queue-home");
 	mkdirSync(join(queueHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(queueHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\n---\nYou map things.");
+	writeFileSync(join(queueHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
 	writeFileSync(join(queueHome, ".pi", "agent", "subagents.json"), JSON.stringify({ max_concurrency: 1 }));
 	harness.deps.home = queueHome;
 	gentleAgents(pi, {}, harness.deps);
@@ -4123,7 +4123,7 @@ test("the overlay explains that stopping a waiting subagent dismisses its questi
 	const harness = deps();
 	const waitingHome = join(root, "waiting-home");
 	mkdirSync(join(waitingHome, ".pi", "agent", "agents"), { recursive: true });
-	writeFileSync(join(waitingHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\n---\nYou map things.");
+	writeFileSync(join(waitingHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep]\n---\nYou map things.");
 	harness.deps.home = waitingHome;
 	let answerInput: (value: string | undefined) => void = () => {};
 	gentleAgents(pi, {}, harness.deps);

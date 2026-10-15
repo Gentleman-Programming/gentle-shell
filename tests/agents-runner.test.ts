@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
-import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
+import { AGENT_MODE, parseAgentDefinition, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { MISSING_TOOLS_NOTE_PREFIX, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
@@ -722,9 +722,10 @@ test("childArguments builds an rpc launch with model, thinking, tools, session d
 	assert.equal(args[args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
 	assert.equal(args[args.indexOf("--append-system-prompt") + 1], "You map things.");
 	assert.ok(!args.includes("--session"));
-	const resumed = childArguments(request({ resumeSessionPath: "/sessions/old.jsonl", model: undefined, thinking: undefined, agent: { ...explorer, tools: [] } }));
+	const resumed = childArguments(request({ resumeSessionPath: "/sessions/old.jsonl", model: undefined, thinking: undefined }));
 	assert.equal(resumed[resumed.indexOf("--session") + 1], "/sessions/old.jsonl");
-	assert.ok(!resumed.includes("--model") && !resumed.includes("--tools"));
+	assert.ok(!resumed.includes("--model") && resumed.includes("--tools"));
+	assert.throws(() => childArguments(request({ agent: { ...explorer, tools: [] } })), /explicit tools allowlist required/i);
 });
 
 test("childArguments preserves a max profile instead of the definition's medium effort", () => {
@@ -772,20 +773,54 @@ test("childArguments passes --no-extensions alone for a takeover with no paths (
 	assert.deepEqual(childArguments(request({ noExtensions: true, extensionPaths: [] })), ["--mode", "rpc", "--session-dir", "/sessions", "--no-extensions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."]);
 });
 
+test("AgentRunner rejects an empty tools allowlist before spawn", async () => {
+	const h = harness();
+	const task = h.runner.run(request({ agent: { ...explorer, tools: [] }, env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(task.id)?.error ?? "", /explicit tools allowlist required/i);
+	assert.deepEqual(h.spawnOptions, [], "an empty allowlist must be rejected before the fake spawn");
+	assert.deepEqual(h.children, []);
+});
+
+test("AgentRunner rejects tools omitted from parsed agent frontmatter before spawn", async () => {
+	const agent = parseAgentDefinition("Instructions for this agent.", "/agents/no-tools.md", "global");
+	assert.ok(!("error" in agent));
+	assert.deepEqual(agent.tools, [], "missing frontmatter tools normalize to an empty allowlist");
+	const h = harness();
+	const task = h.runner.run(request({ agent }));
+	await tick();
+	assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(task.id)?.error ?? "", /explicit tools allowlist required/i);
+	assert.deepEqual(h.spawnOptions, [], "the parsed empty allowlist must be rejected before spawn");
+	assert.deepEqual(h.children, []);
+});
+
+test("a rejected empty allowlist does not block a following valid task", async () => {
+	const h = harness({ maxConcurrency: 1 });
+	const rejected = h.runner.run(request({ agent: { ...explorer, tools: [] } }));
+	const valid = h.runner.run(request({ env: { VALID_TASK: "yes" } }));
+	await tick();
+	assert.equal(h.store.get(rejected.id)?.status, TASK_STATUS.FAILED);
+	assert.match(h.store.get(rejected.id)?.error ?? "", /explicit tools allowlist required/i);
+	assert.equal(h.store.get(valid.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(h.spawnOptions.length, 1, "only the following valid task reaches spawn");
+	assert.equal(h.spawnOptions[0].env.VALID_TASK, "yes");
+	assert.equal(h.spawnOptions[0].args[h.spawnOptions[0].args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
+	h.runner.cancel(valid.id);
+});
+
 // #1690: the child compares this list with its own tools and reports the
 // names Pi dropped, so it must be exactly what --tools carries.
-test("AgentRunner gives the child its exact --tools list and never forwards a stale one", async () => {
+test("AgentRunner gives a non-empty child its exact --tools list and never forwards a stale one", async () => {
 	const h = harness();
-	const scoped = h.runner.run(request({ env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
-	const unscoped = h.runner.run(request({ agent: { ...explorer, tools: [] }, env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
+	const task = h.runner.run(request({ env: { [REQUESTED_TOOLS_ENV]: "stale" } }));
 	await tick();
-	const [first, second] = h.spawnOptions;
-	assert.equal(first.env[REQUESTED_TOOLS_ENV], first.args[first.args.indexOf("--tools") + 1]);
-	assert.equal(first.env[REQUESTED_TOOLS_ENV], "read,grep,subagent_parent_message");
-	assert.ok(!second.args.includes("--tools"), "a profile without tools keeps Pi's defaults");
-	assert.equal(second.env[REQUESTED_TOOLS_ENV], undefined, "no --tools means no requested list, inherited or not");
-	h.runner.cancel(scoped.id);
-	h.runner.cancel(unscoped.id);
+	const [spawn] = h.spawnOptions;
+	assert.equal(spawn.env[REQUESTED_TOOLS_ENV], spawn.args[spawn.args.indexOf("--tools") + 1]);
+	assert.equal(spawn.env[REQUESTED_TOOLS_ENV], "read,grep,subagent_parent_message");
+	assert.equal(spawn.args[spawn.args.indexOf("--tools") + 1], "read,grep,subagent_parent_message");
+	h.runner.cancel(task.id);
 });
 
 // A child reports missing tools at its first before_agent_start, before Pi answers the

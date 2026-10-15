@@ -29,7 +29,7 @@ test("actual SDK Bridge wake retains preparation, history, reload and resumed re
 	const home = join(root, "home"), cwd = join(root, "project"), agentDir = join(root, "agent");
 	mkdirSync(home, { recursive: true });
 	mkdirSync(cwd); mkdirSync(join(agentDir, "agents"), { recursive: true });
-	writeFileSync(join(agentDir, "agents", "explore.md"), "---\ndescription: Offline fixture\n---\nReturn a fixture answer.");
+	writeFileSync(join(agentDir, "agents", "explore.md"), "---\ndescription: Offline fixture\ntools: [read, grep]\n---\nReturn a fixture answer.");
 	const children: FakeChild[] = [], requests: TranscriptContext[] = [];
 	let preparations = 0;
 	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "offline-auth.json"), modelsPath: null, refreshOnCreate: false });

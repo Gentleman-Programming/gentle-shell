@@ -464,7 +464,7 @@ test("AgentRunner delivers real fd3 authorization rechecks through its permissio
 		client?.close();
 		process.stdout.write(JSON.stringify({ answers, fixtureArgs: process.argv.slice(1) }));
 	`;
-	const agent: AgentDefinition = { name: "permission-fixture", description: "test", filePath: "/test.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: [] };
+	const agent: AgentDefinition = { name: "permission-fixture", description: "test", filePath: "/test.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: ["read"] };
 	const store = new TaskStore();
 	let authorizationCalls = 0;
 	let child: ReturnType<typeof spawn> | undefined;

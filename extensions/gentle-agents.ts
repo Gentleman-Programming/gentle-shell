@@ -313,15 +313,16 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 
 // Catalog declarations are routing hints, not proof of child availability.
 // Filter non-name entries such as `"*": false`, but do not claim that a
-// syntactically valid name is registered. Empty declarations omit --tools and
-// use Pi defaults. The runner adds parent messaging separately.
+// syntactically valid name is registered. Child launch rejects definitions
+// whose normalized tools list is empty. The runner adds parent messaging separately.
 const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/;
 
+/** Renders the catalog's declared-tools annotation; an empty declaration is reported as launch-rejected. */
 function declaredToolInventory(agent: AgentDefinition): string {
 	const usable = agent.tools.filter((name) => TOOL_NAME.test(name));
 	if (usable.length > 0) return `[declared tools (not verified): ${usable.join(", ")}]`;
 	return agent.tools.length === 0
-		? "[declared tools: Pi defaults (no allowlist)]"
+		? "[declared tools: explicit allowlist required; launch rejected]"
 		: "[declared tools: no tool names declared]";
 }
 

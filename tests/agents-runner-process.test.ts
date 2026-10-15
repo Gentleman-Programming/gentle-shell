@@ -8,7 +8,7 @@ import { TASK_STATUS, TaskStore } from "../lib/agents-protocol.ts";
 import { fakeChild } from "./agents-fake-child.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/agents-process-child.mjs", import.meta.url));
-const agent: AgentDefinition = { name: "process", description: "test", filePath: "/test.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: [] };
+const agent: AgentDefinition = { name: "process", description: "test", filePath: "/test.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: ["read"] };
 const request = (prompt: string): TaskRequest => ({ agent, prompt, label: undefined, context: undefined, mode: AGENT_MODE.BACKGROUND, cwd: process.cwd(), parentSessionId: "test", model: undefined, thinking: undefined, sessionDir: "/tmp", resumeSessionPath: undefined, env: {} });
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 10_000): Promise<void> => {

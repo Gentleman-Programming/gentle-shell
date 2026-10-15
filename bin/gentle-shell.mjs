@@ -832,7 +832,15 @@ function renameEnv(root, from, to) {
 	const aliases = [...new Set([oldDir, safeRealpath(oldDir)])];
 	renameSync(oldDir, newDir);
 	const configPath = resolveConfigPath();
-	writeRawConfig(configPath, renameEnvInConfig(readRawConfig(configPath), aliases, newDir, safeRealpath(newDir)));
+	try {
+		writeRawConfig(configPath, renameEnvInConfig(readRawConfig(configPath), aliases, newDir, safeRealpath(newDir)));
+	} catch (error) {
+		// config.json still names the old dir (default home, setup record): put
+		// the env back there rather than leave a launch bootstrapping an empty
+		// home at the old path and the renamed env provisioning again.
+		renameSync(newDir, oldDir);
+		throw error;
+	}
 }
 
 function deleteEnv(root, name) {

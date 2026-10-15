@@ -447,6 +447,17 @@ test("an isolated home inside the named envs is refused, never removed", async (
 	} finally { w.cleanup(); }
 });
 
+test("a named envs root overridden into the isolated home as a '..'-prefixed folder is refused, never removed", async () => {
+	const w = world();
+	try {
+		// `..envs` is an ordinary child name, not parent traversal.
+		const envs = join(w.paths.isolated, "..envs");
+		write(join(envs, "work", ".gentle-shell-home"));
+		await refused(w, { GENTLE_SHELL_ENVS_DIR: envs }, /your named envs/);
+		assert.equal(existsSync(join(envs, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
 test("tools the installer may have added are listed with how to remove them, never removed", async () => {
 	for (const platform of ["darwin", "win32"]) {
 		const w = world();
@@ -952,6 +963,33 @@ test("bundled: a Pi home inside the prefix is protected, except the session's ow
 		assert.equal(existsSync(w.prefix), false);
 		for (const path of w.kept) assert.equal(existsSync(path), true, path);
 	} finally { w.cleanup(); }
+});
+
+test("bundled: named envs in the prefix survive removing every other prefix entry", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const env = join(w.prefix, "envs", "work", ".gentle-shell-home");
+		write(env);
+		assert.equal(await w.uninstall(["--yes", "--include-shared"]), 0, w.err.join("\n"));
+		assert.equal(existsSync(env), true);
+		assert.deepEqual(readdirSync(w.prefix), ["envs"], "only the named envs keep the prefix");
+		assert.doesNotMatch(section(w.out, "Kept:").join("\n"), /not written by the bundled install/);
+		assert.ok(section(w.out, "Not touched:").join("\n").includes(`${join(w.prefix, "envs")}  (your named envs)`));
+	} finally { w.cleanup(); }
+});
+
+test("bundled: a removal that overlaps the named envs, even a '..'-prefixed one, refuses the whole run", posixOnly, async () => {
+	for (const envs of [(w: BundledWorld) => join(w.prefix, "versions", "envs"), (w: BundledWorld) => join(w.shared.agent, "..envs")]) {
+		const w = bundledWorld();
+		try {
+			const root = envs(w);
+			write(join(root, "work", ".gentle-shell-home"));
+			assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: { GENTLE_SHELL_ENVS_DIR: root } }), 1, root);
+			assert.match(w.err.join("\n"), /your named envs/, root);
+			bundledUntouched(w);
+			assert.equal(existsSync(join(root, "work", ".gentle-shell-home")), true, root);
+		} finally { w.cleanup(); }
+	}
 });
 
 test("bundled: in a terminal one question confirms, the shared home is asked separately and kept by default; EOF cancels and Ctrl-C aborts", posixOnly, async () => {

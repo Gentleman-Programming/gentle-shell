@@ -143,7 +143,8 @@ function canonical(path        )         {
 /** True when `child` is `parent` itself or lies inside it. */
 function within(parent        , child        , platform        )          {
 	const path = relative(comparable(parent, platform), comparable(child, platform));
-	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+	// Only a whole `..` segment is parent traversal; `..envs` is a child name.
+	return path === "" || (!/^\.\.(?:[\\/]|$)/.test(path) && !isAbsolute(path));
 }
 
 

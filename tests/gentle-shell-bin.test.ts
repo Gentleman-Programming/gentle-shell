@@ -3631,6 +3631,23 @@ test("the envs manager renames, sets the default and deletes envs on disk", (t) 
 	assert.match(result.stdout, /\x1b\[\?1049l/, "the terminal is restored");
 });
 
+test("the envs manager rolls a rename back when config.json cannot be written", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a non-root POSIX read-only dir" }, (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "a"]).status, 0);
+	// A readable config in a read-only folder: the manager loads, every write fails.
+	const lockedDir = join(f.root, "locked");
+	mkdirSync(lockedDir);
+	writeFileSync(join(lockedDir, "config.json"), "{}\n");
+	chmodSync(lockedDir, 0o500);
+	let result;
+	// Unlocked before the fixture's own cleanup, which runs first.
+	try { result = runManager({ ...f.env, GENTLE_SHELL_CONFIG: join(lockedDir, "config.json") }, ["j", "r", "\x7f", "alpha", "\r", "q"].join("")); }
+	finally { chmodSync(lockedDir, 0o700); }
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readdirSync(envs), ["a"], "the env keeps its old name, matching config.json");
+});
+
 test("the envs manager never lists or touches a symlinked env", (t) => {
 	const f = fixture(t);
 	const envs = join(f.home, ".gentle-shell", "envs");

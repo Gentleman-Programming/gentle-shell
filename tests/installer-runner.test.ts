@@ -724,7 +724,7 @@ test("install nonzero, signal or deadline fails and reports completed steps", as
 test("an existing global Pi or gentle-pi blocks before installation regardless of the plan", async () => {
 	const existing = [
 		listing(),
-		JSON.stringify([{ dependencies: { "@earendil-works/pi-coding-agent": { version: "1.2.0" } } }]),
+		JSON.stringify([{ dependencies: { "@earendil-works/pi-coding-agent": { version: "1.2.1" } } }]),
 		JSON.stringify([{ dependencies: {} }, { dependencies: { "gentle-pi": { version: "3.0.0" } } }]),
 		JSON.stringify([{ optionalDependencies: { "gentle-pi": { version: "4.0.0" } } }]),
 	];
@@ -1390,7 +1390,7 @@ test("setup recovery blocks when the installed stack changed between plan and ru
 	const stack = JSON.parse(listing());
 	const changed = [
 		"[]",
-		listing("1.2.0"),
+		listing("1.2.1"),
 		listing(PI_INSTALL_VERSION, "3.0.0"),
 		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/gentle-pi"),
 		JSON.stringify([...stack, { dependencies: { "gentle-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
@@ -1640,7 +1640,7 @@ const NPM_SHELL_ROOT = "/usr/local/lib/node_modules/gentle-pi";
 
 test("with a compatible Pi already installed, only Gentle Shell is added and Pi is left as it is", async () => {
 	// A pnpm Pi newer than PI_INSTALL_VERSION is kept too: gentle-pi gets its own pnpm group, nothing is replaced.
-	for (const version of ["1.2.0", PI_INSTALL_VERSION]) {
+	for (const version of ["1.2.1", PI_INSTALL_VERSION]) {
 		const h = harness({ results: { [LIST]: [piOnlyList(version), { code: 0, stdout: listing(version) }], [SHELL_ONLY_ADD]: { code: 0 } } });
 		const result = await runStandardInstall({ plan: existingPlan({ pi: tool(version) }), consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready", version);
@@ -1652,7 +1652,7 @@ test("with a compatible Pi already installed, only Gentle Shell is added and Pi 
 });
 
 test("adding only Gentle Shell still refuses a gentle-pi that pnpm already lists", async () => {
-	const h = harness({ results: { [LIST]: { code: 0, stdout: listing("1.2.0") } } });
+	const h = harness({ results: { [LIST]: { code: 0, stdout: listing("1.2.1") } } });
 	const result = await runStandardInstall({ plan: existingPlan({}), consent: true }, h.adapters);
 	assert.deepEqual([result.outcome, result.reason], ["blocked", "existing-stack"]);
 	assert.equal(h.calls.some((call) => call.args[1] === "add"), false);
@@ -1674,19 +1674,20 @@ test("Pi and gentle-pi are added as separate pnpm groups, so a later `pi update`
 
 test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at the minimum or newer, and reports one other than the pin", async () => {
 	// pnpm's latest peer beside gentle-pi (or nested in it): Gentle Shell runs it, and the outcome says which.
-	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("1.1.0") },
+	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("1.2.1") },
 		{ [besidePi(PACKAGE_ROOT)]: piPackage(requirements.pi) }]) {
 		const h = harness({ texts });
 		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready", JSON.stringify(texts));
-		assert.equal(result.piVersion, Object.values(texts)[0].includes("1.1.0") ? "1.1.0" : requirements.pi);
+		const selectedVersion = JSON.parse(Object.values(texts)[0]).version;
+		assert.equal(result.piVersion, selectedVersion === PI_INSTALL_VERSION ? undefined : selectedVersion);
 	}
 	// The pin itself adds nothing to the outcome.
 	assert.equal("piVersion" in (await runStandardInstall({ plan: plan(), consent: true }, harness().adapters)), false);
 	const wrong = [
 		{ [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") },
 		// A Pi nested in gentle-pi resolves first, even below the minimum.
-		{ [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0"), [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") },
+		{ [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0"), [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") },
 		{ [besidePi(PACKAGE_ROOT)]: piPackage("1.2.0-beta.1") },
 		{ [besidePi(PACKAGE_ROOT)]: JSON.stringify({ name: "not-pi", version: PI_INSTALL_VERSION }) },
 		{ [besidePi(PACKAGE_ROOT)]: "not json" },
@@ -1706,10 +1707,10 @@ test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at th
 });
 
 test("the main Shell is added alone and its adjacent Pi is verified like the release one", async () => {
-	const h = mainHarness(undefined, { texts: { [besidePi(MAIN_ROOT)]: piPackage("1.1.0") } });
+	const h = mainHarness(undefined, { texts: { [besidePi(MAIN_ROOT)]: piPackage("1.2.1") } });
 	const result = await runStandardInstall({ plan: mainPlan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
-	assert.equal(result.piVersion, "1.1.0");
+	assert.equal(result.piVersion, "1.2.1");
 	assert.deepEqual(h.calls.filter((call) => call.args[1] === "add").map((call) => call.args.slice(1)),
 		[INSTALL.split(" "), MAIN_ADD.split(" ")]);
 	const below = mainHarness(undefined, { texts: { [besidePi(MAIN_ROOT)]: piPackage("0.99.0") } });
@@ -1722,10 +1723,10 @@ test("a pnpm-owned Gentle Shell update is verified with a Pi at the minimum or n
 	const fixed = existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "pnpm" },
 		gentleAi: { available: null }, setup: { available: null } });
 	const located = [{ root: OLD_ROOT, version: "3.9.0", owner: "pnpm" }, { root: PACKAGE_ROOT, version: requirements.shell, owner: "pnpm" }];
-	const h = updateHarness({ located, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") } });
+	const h = updateHarness({ located, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") } });
 	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
-	assert.equal(result.piVersion, "1.1.0");
+	assert.equal(result.piVersion, "1.2.1");
 	assert.deepEqual(result.completed.slice(3, 5), ["update-shell", "verify-updated-shell"]);
 	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0") }]) {
 		const wrong = updateHarness({ located, texts });
@@ -1740,7 +1741,7 @@ test("a pnpm-owned Gentle Shell update is verified with a Pi at the minimum or n
 });
 
 test("a setup recovery accepts a newer Pi beside gentle-pi but not one below the minimum", async () => {
-	const newer = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.1.0") } });
+	const newer = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") } });
 	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, newer.adapters)).outcome, "ready");
 	const h = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") } });
 	const result = await runStandardInstall({ plan: recoveryPlan(), consent: true }, h.adapters);
@@ -1942,7 +1943,7 @@ test("a Pi update is refused before any change when the installed Pi is not the 
 	const plan = existingPlan({ pi: olderPi("pnpm") });
 	// Gone, unattributed, another version, another owner, or already current: never reinstalled, never downgraded.
 	for (const before of [null, { ...piBefore, owner: null }, { ...piBefore, version: "0.90.0" }, { ...piBefore, owner: "npm" },
-		{ ...piBefore, version: "1.2.0" }, { ...piBefore, version: PI_INSTALL_VERSION }, { ...piBefore, root: "relative/pi" }]) {
+		{ ...piBefore, version: "1.2.1" }, { ...piBefore, version: PI_INSTALL_VERSION }, { ...piBefore, root: "relative/pi" }]) {
 		const h = locatingPi(harness({ results: { [LIST]: piOnlyList("0.87.1") } }), [before]);
 		const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 		assert.deepEqual([result.outcome, result.reason], ["blocked", "existing-stack-unverified"], JSON.stringify(before));

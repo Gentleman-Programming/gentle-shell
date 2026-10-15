@@ -35,9 +35,10 @@ export class MainChannelError extends Error {
 	}
 }
 
-/** Same config home as the dev-binary override: GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai. */
+/** Same config home as the dev-binary override: a nonempty GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai.
+ * Install-level state, so never the standalone launcher's per-home marker (#2201). */
 export function configHome({ env, home }) {
-	return env.GENTLE_PI_CONFIG_HOME ?? join(home, ".pi", "gentle-ai");
+	return env.GENTLE_PI_CONFIG_HOME || join(home, ".pi", "gentle-ai");
 }
 export function channelStatePath(ctx) {
 	return join(configHome(ctx), "channel.json");

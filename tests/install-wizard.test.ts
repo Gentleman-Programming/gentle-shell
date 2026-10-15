@@ -399,7 +399,7 @@ test("the review screen shows the notice about reused tools in folders another a
 });
 
 test("a recoverable stack is reviewed as completing setup, not as a reinstall", async () => {
-	const view = await serverPlanView({ pi: { available: true, version: "1.0.0", usable: true },
+	const view = await serverPlanView({ pi: { available: true, version: "1.2.0", usable: true },
 		shell: { available: true, version: requirements.shell, usable: true, global: true },
 		gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
 		setup: { available: true, recoverable: true } });
@@ -563,7 +563,7 @@ test("expectedSteps checks, updates and verifies an older Pi before any Gentle S
 test("a plan that only updates an older Pi is reviewed as a Pi update, with an Update Pi button", () => {
 	const document = new FakeDocument();
 	const model = wizard.planModel({ planId: "p", ready: false, channel: "release", blockers: [],
-		actions: [{ id: "update-pi", description: "Update Pi 0.87.1 to 1.0.0 with npm." }, { id: "verify-readiness", description: "Verify." }] });
+		actions: [{ id: "update-pi", description: "Update Pi 0.87.1 to 1.2.0 with npm." }, { id: "verify-readiness", description: "Verify." }] });
 	assert.equal(model.kind, "update-pi");
 	const view = wizard.renderPlan(document, model, { install: () => {}, reload: () => {}, close: () => {} });
 	assert.ok(headings(view)[0].textContent.includes("Update Pi"));

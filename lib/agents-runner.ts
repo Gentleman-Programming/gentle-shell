@@ -133,6 +133,11 @@ export interface TaskRequest {
 	// Host-provided only: the launcher's package injection signal (#1690) or
 	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
+	// Host-computed launch-layer token for the card (#2180): which profile layer
+	// supplied `model` (`binding`, `frozen:*`, `pin:*`, `declaration`, `profile`,
+	// `definition`, `default`). Same host-only provenance as `extensionPaths`:
+	// never derived from tool input or agent definitions.
+	modelSource?: string;
 	// Same host-only provenance as extensionPaths (#1690).
 	noExtensions?: boolean;
 	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
@@ -407,6 +412,8 @@ export class AgentRunner {
 			startedAt: null,
 			endedAt: null,
 			model: formatModelRef(request.model),
+			// Copied, never recomputed: the layer token was resolved once at the seam (#2180).
+			...(request.modelSource === undefined ? {} : { modelSource: request.modelSource }),
 			thinking: request.thinking,
 			sessionPath: request.resumeSessionPath ?? null,
 			error: null,

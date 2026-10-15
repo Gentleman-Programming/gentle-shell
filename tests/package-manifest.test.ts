@@ -133,13 +133,13 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.0.0");
+	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
 	assert.equal(manifest.engines?.node, ">=22.19.0");
 	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
-		assert.match(source, /Pi 0\.99\.1 or newer/, path);
+		assert.match(source, /Pi 1\.2\.0 or newer/, path);
 		assert.match(source, /open `>=1\.0\.0` development range/, path);
 		assert.doesNotMatch(source, /development tests pin Pi/, path);
 		// Docs name exactly the audited Vim editor releases, never a future one.
@@ -162,7 +162,7 @@ test("packed runtime uses optional Pi host peers with one open development range
 	// one exact release shared by every Pi host package.
 	const installed = new Set<string>();
 	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
-		assert.equal(manifest.devDependencies?.[name], ">=1.0.0", name);
+		assert.equal(manifest.devDependencies?.[name], ">=1.2.0", name);
 		const metadata = JSON.parse(readFileSync(join(PACKAGE_ROOT, "node_modules", name, "package.json"), "utf8")) as { name: string; version: string };
 		assert.equal(metadata.name, name);
 		installed.add(metadata.version);
@@ -1726,23 +1726,24 @@ test("bounded implementation routing resolves the explicit canonical fallback re
 		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
 		"utf8",
 	);
-	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	// S9 canon change (gentle-ai 87a3b2eb): the canonical heading is "Delegation Triggers" (no "Mandatory").
+	const reference = "For bounded writes, follow the canonical Writer rule under Delegation Triggers.";
 	const resolveSimpleDelegation = (source: string): string => {
 		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
 		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
-		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		const canonical = readMarkdownSection(source, "Delegation Triggers");
 		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
 		return canonical;
 	};
-	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
+	const delegationTriggers = readMarkdownSection(routing, "Delegation Triggers");
 
 	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
-	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assertWorkerFallbackRouting(delegationTriggers, "Delegation Triggers");
 	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Delegation Triggers", "Other Rule"))),
 		/must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
-		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Delegation Triggers section/);
 	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
 		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
@@ -1789,9 +1790,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.1.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.2.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.1.0", "the release manifest must be explicitly pinned to v4.1.0");
+	assert.equal(packageJson.version, "4.2.0", "the release manifest must be explicitly pinned to v4.2.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

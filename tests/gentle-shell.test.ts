@@ -4,19 +4,23 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, afterEach } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
+import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+
+// Fixture sessions share ids across tests; the inherited-profile freeze is
+// process state keyed by session id (gentle-shell#1064 slice 3b-ii).
+afterEach(() => resetFrozenInheritedProfilesForTesting());
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
-import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
@@ -84,6 +88,7 @@ interface FakeUi {
 	overlay: unknown;
 	overlayView: { render(width: number): string[]; handleInput(data: string): void } | undefined;
 	closeOverlay: (() => void) | undefined;
+	customOptions?: unknown[];
 }
 
 interface GitScript {
@@ -171,7 +176,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 }
 
 function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): string }; hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
-	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
+	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined, customOptions: [] };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
 	const entries = options.entries ?? [];
@@ -222,8 +227,9 @@ function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): stri
 			// whatever their `done` callback is given (see ExtensionUIContext.custom
 			// in pi-coding-agent), not always null. `closeOverlay` stays a
 			// null-resolving escape hatch for tests that only need to end the wait.
-			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }) {
+			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }, options?: unknown) {
 				ui.overlay = factory;
+				ui.customOptions?.push(options);
 				return new Promise<T | null>((resolve) => {
 					ui.closeOverlay = () => resolve(null);
 					// An identity bg mock hides focused rows; omit it so overlay navigation
@@ -751,7 +757,9 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	t.mock.method(globalThis, "clearInterval", (handle: { timer: (typeof intervals)[number] }) => { handle.timer.stopped = true; });
 	const { pi, handlers } = fakePi();
 	let resolutions = 0;
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	// follow mode keeps the live p → P → G resolution, so a pin edit reaches the
+	// open session through the poll (gentle-shell#1064 slice 3b-ii).
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_PROFILE_FOLLOW: "1" }, {
 		resolveWorktree: () => { resolutions++; return { root: repo, commonDir }; },
 	});
 	const first = fakeContext();
@@ -1800,6 +1808,8 @@ function reverseColumns(row: string): number[] {
 	let inverse = false;
 	let column = 0;
 	const selected: number[] = [];
+	const host = TuiMainScreen.prototype as unknown as { resolveFakeCursors(rows: string[]): string[] };
+	row = host.resolveFakeCursors.call({ showHardwareCursor: false }, [row])[0]!;
 	const tokens = row.match(/\x1b\[[0-9;]*m|\x1b_pi:c\x07|[^\x1b]/g) ?? [];
 	assert.equal(tokens.join(""), row);
 	for (const token of tokens) {
@@ -4767,6 +4777,35 @@ test("a registered worktree opens Changes as its own group", async () => {
  } finally { ui.closeOverlay?.(); await opened; await fire(handlers,"session_shutdown",ctx); }
 });
 
+// /gentle:changes opens like Gentle Agents: a full-terminal overlay whose
+// native fullscreen wrapper still routes mouse events to the changes view.
+test("Changes opens full screen and the wrapper keeps mouse hit-testing aligned", async () => {
+ const {pi,handlers,commands}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
+ gentleShell(pi,{});
+ const {ctx,ui,overlayReady}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ const opened=commands.get("gentle:changes")!.handler("",ctx);
+ await overlayReady;
+ const overlay=ui.overlayView as unknown as { render(width: number): string[]; handleInput(data: string): void; handleMouse(event: unknown): unknown };
+ const at=(type: string, x: number, y: number) => ({ type, button: type === "move" ? "none" : "left", x, y, screenX: x, screenY: y, width: 140, height: 40, shift: false, alt: false, ctrl: false });
+ try {
+  assert.deepEqual(ui.customOptions?.at(-1), { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } });
+  assert.equal(overlay.render(140).length, 40, "the overlay uses every terminal row");
+  overlay.handleInput("\r");
+  overlay.render(140);
+  const { handled, render } = overlay.handleMouse(at("click", 3, 3)) as { handled?: boolean; render?: boolean };
+  assert.deepEqual({ handled, render }, { handled: true, render: true });
+  assert.match(overlay.render(140)[3]!, /▸   M file\.ts/, "a click through the wrapper selects the file");
+  overlay.handleInput("F");
+  assert.match(overlay.render(140)[1]!, /^│ M file\.ts +│$/, "F switches to diff-only inside the fullscreen overlay");
+ } finally { ui.closeOverlay?.(); await opened; }
+ const reopened=commands.get("gentle:changes")!.handler("",ctx);
+ for (let attempt=0; attempt<100 && ui.overlayView===overlay; attempt++) await new Promise((resolve)=>setTimeout(resolve,5));
+ try {
+  assert.match(ui.overlayView!.render(140)[1]!, /main · repo/, "diff-only mode is not persisted across openings");
+ } finally { ui.closeOverlay?.(); await reopened; await fire(handlers,"session_shutdown",ctx); }
+});
+
 test("new sessions do not inherit another session's worktrees", async () => {
  const h=fakePi(); gentleShell(h.pi,{});
  const first=fakeContext();
@@ -4841,7 +4880,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	assert.ok(await loadFileDiff(bounded, { path: "tracked.txt", added: 70_001, deleted: 1, status: CHANGE_STATUS.MODIFIED }) === DIFF_TOO_LARGE);
 	const opened = h.commands.get("gentle:changes")!.handler("", ctx);
 	await overlayReady;
-	const trees = (ui.overlayView as unknown as { trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }).trees;
+	const trees = (ui.overlayView as unknown as { children: Array<{ trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }> }).children[0]!.trees;
 	assert.deepEqual(trees.map((tree) => [tree.root, tree.model.files.map((file) => file.path)]), [[selected, ["selected-only.txt", "tracked.txt"]]], "inherited routing never lists the foreign repository");
 	ui.closeOverlay?.();
 	await opened;
@@ -5945,12 +5984,70 @@ test("after a profile switch the panel stops presenting the old profile's provid
 	ui.closeOverlay?.();
 	await opened;
 
-	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: {} }, "solo");
+	// An open session changes profile only through its own Enter (gentle-shell#1064
+	// slice 3b-ii): a new global default would leave its frozen routing in place.
+	bindSessionProfile("shell-session", "solo", {});
+	t.after(() => resetSessionProfileBindingsForTesting());
 	const reopened = commands.get("gentle:usage")!.handler("", ctx);
 	await settle();
 	assert.equal(ui.overlayView!.render(90).map(stripAnsi).some((line) => line.includes("nan")), false, "a provider recorded under the previous profile's routing is not current scope");
 	ui.closeOverlay?.();
 	await reopened;
+});
+
+test("an open session keeps its frozen profile in the status and Usage scope when the defaults change", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-frozen-"));
+	const commonDir = mkdtempSync(join(tmpdir(), "shell-frozen-git-"));
+	t.after(() => {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(commonDir, { recursive: true, force: true });
+	});
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	assert.equal(readFrozenInheritedProfile("shell-session")?.profile?.name, "team", "the session froze the global active profile at start");
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "solo");
+	writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "solo" }));
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => /^│ nan ·/.test(line)), "Usage keeps the frozen profile's nan route");
+	ui.closeOverlay?.();
+	await opened;
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const status = (sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail).render(60).join("\n");
+		assert.match(status, /Profile.*team/, "the status keeps the bare global name of the frozen profile");
+		assert.doesNotMatch(status, /solo/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("active profile reader: a bound session shows its frozen profile, and follow shows the live default", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-frozen-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const commonDir = join(root, "git");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} } }));
+	const pin = (profile: string) => writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile }));
+	pin("other");
+	const frozen = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	frozen.bind(root, () => ({ root, commonDir }), "session-frozen");
+	assert.equal(frozen(), "other (local)");
+	const follow = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_PROFILE_FOLLOW: "1" });
+	follow.bind(root, () => ({ root, commonDir }), "session-follow");
+	assert.equal(follow(), "other (local)");
+	rmSync(join(commonDir, "gentle-ai", "profile-pin.json"));
+	assert.equal(frozen.refresh(), false, "the frozen label does not move");
+	assert.equal(frozen(), "other (local)");
+	assert.equal(follow.refresh(), true);
+	assert.equal(follow(), "team", "follow falls to the global active profile");
+	assert.equal(readFrozenInheritedProfile("session-follow"), undefined);
 });
 
 function openPanelLines(ui: FakeUi): string[] {
@@ -6215,19 +6312,21 @@ test("an explicit session binding routes the Usage scope ahead of the pin and th
 
 // S9: the config home each of these reads resolves, per case. The OS home is
 // a temporary folder in every case, so no case can reach the real one.
-// "unset" and "empty" are exactly as before: an empty GENTLE_PI_CONFIG_HOME
-// names the current folder. "bundled" stands in for this package running from
-// a bundled install (testing overlay) whose prefix the launcher passed; the
-// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
+// counts as unset (#2201; it used to name the current folder). "bundled" stands
+// in for this package running from a bundled install (testing overlay) whose
+// prefix the launcher passed; the user's own GENTLE_PI_CONFIG_HOME is then not
+// this install's.
 type ConfigHomeCase = "unset" | "empty" | "bundled";
 function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
-	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX };
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
 	const cwd = process.cwd();
 	process.env.HOME = join(base, "home");
 	process.env.USERPROFILE = join(base, "home");
 	delete process.env.GENTLE_PI_CONFIG_HOME;
 	delete process.env.GENTLE_SHELL_PREFIX;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
 	t.after(() => {
 		process.chdir(cwd);
 		setBundledInstallForTesting(undefined);
@@ -6242,7 +6341,7 @@ function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHome
 	if (kind === "empty") {
 		mkdirSync(join(base, "cwd"));
 		process.chdir(join(base, "cwd"));
-		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "cwd"), userConfig };
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
 	}
 	const prefix = join(base, "prefix");
 	mkdirSync(prefix);

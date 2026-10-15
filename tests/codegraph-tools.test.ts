@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import codeGraphTools, {
@@ -355,4 +355,125 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 		text: JSON.stringify(["query", "--path", cwd, "--limit", "10", "--", query]),
 	}]);
 	assert.equal(existsSync(join(cwd, "shell-injection.txt")), false);
+});
+
+// Real CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so the
+// .gitignore itself stays untracked and would otherwise enter every diff.
+const writeIndex: CodeGraphRunner = async (_args, options) => {
+	mkdirSync(join(options.cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(options.cwd, ".codegraph", ".gitignore"), "*\n!.gitignore\n");
+	writeFileSync(join(options.cwd, ".codegraph", "codegraph.db"), "index");
+	return { stdout: "indexed", stderr: "" };
+};
+
+function gitOutput(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+function excludeFile(cwd: string): string {
+	return realpathSync(resolve(cwd, gitOutput(cwd, "rev-parse", "--git-path", "info/exclude")));
+}
+
+function excludeLines(cwd: string): string[] {
+	return readFileSync(excludeFile(cwd), "utf8").split("\n").filter((line) => line.trim() === ".codegraph/");
+}
+
+test("CodeGraph init keeps the whole .codegraph index out of git through the local exclude file, idempotently", async (t) => {
+	const cwd = workspace(t);
+	writeFileSync(join(cwd, "tracked.txt"), "tracked\n");
+	execFileSync("git", ["add", "tracked.txt"], { cwd });
+	const tool = createCodeGraphTool(writeIndex);
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	const second = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	assert.deepEqual(first.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "A  tracked.txt");
+	assert.deepEqual(excludeLines(cwd), [".codegraph/"], "exactly one exclude line after repeated init");
+	assert.equal(existsSync(join(cwd, ".gitignore")), false, "never creates or edits a tracked .gitignore");
+	assert.deepEqual((first.details as { localExclude?: unknown }).localExclude, { status: "added", path: excludeFile(cwd) });
+	assert.deepEqual((second.details as { localExclude?: unknown }).localExclude, { status: "present", path: excludeFile(cwd) });
+});
+
+test("CodeGraph exclusion appends on a new line and recognizes an equivalent existing pattern", async (t) => {
+	const appended = workspace(t);
+	writeFileSync(excludeFile(appended), "# local\n*.log");
+	await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: appended } as ExtensionContext);
+	assert.equal(readFileSync(excludeFile(appended), "utf8"), "# local\n*.log\n.codegraph/\n");
+
+	const equivalent = workspace(t);
+	writeFileSync(excludeFile(equivalent), "/.codegraph\n");
+	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: equivalent } as ExtensionContext);
+	assert.equal(readFileSync(excludeFile(equivalent), "utf8"), "/.codegraph\n");
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "present");
+	assert.equal(gitOutput(equivalent, "status", "--porcelain", "--untracked-files=all"), "");
+});
+
+test("CodeGraph exclusion uses the exclude file git resolves for a linked worktree", async (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-worktree-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const primary = join(base, "primary");
+	const linked = join(base, "linked");
+	mkdirSync(primary);
+	execFileSync("git", ["init", "-b", "main"], { cwd: primary, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], { cwd: primary, stdio: "ignore" });
+	execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: primary, stdio: "ignore" });
+
+	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: linked } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(gitOutput(linked, "status", "--porcelain", "--untracked-files=all"), "");
+	assert.deepEqual(excludeLines(linked), [".codegraph/"]);
+	assert.equal((result.details as { localExclude?: { path: string } }).localExclude?.path, excludeFile(linked));
+	assert.equal(existsSync(join(linked, ".git", "info")), false, "the linked worktree's .git file is never treated as a directory");
+});
+
+test("CodeGraph query excludes an index that already exists, and leaves the exclude file alone without one", async (t) => {
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const answer: CodeGraphRunner = async () => ({ stdout: "found", stderr: "" });
+	await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: indexed } as ExtensionContext);
+	assert.deepEqual(excludeLines(indexed), [".codegraph/"]);
+	assert.equal(gitOutput(indexed, "status", "--porcelain", "--untracked-files=all"), "");
+
+	const bare = workspace(t);
+	const result = await createCodeGraphTool(answer).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: bare } as ExtensionContext);
+	assert.deepEqual(excludeLines(bare), []);
+	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
+});
+
+test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
+	const cwd = workspace(t);
+	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));
+	const originalPath = process.env.PATH;
+	t.after(() => {
+		process.env.PATH = originalPath;
+		rmSync(empty, { recursive: true, force: true });
+	});
+	const result = await createCodeGraphTool(async (args, options) => {
+		const output = await writeIndex(args, options);
+		process.env.PATH = empty; // git disappears after the workspace check
+		return output;
+	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	process.env.PATH = originalPath;
+
+	assert.match(result.content[0].text, /^indexed\n\n/);
+	assert.match(result.content[0].text, /\.codegraph\/ is not excluded from git locally/);
+	assert.match(result.content[0].text, /keep \.codegraph\/ out of the change/i);
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "failed");
+	assert.deepEqual(excludeLines(cwd), []);
+});
+
+test("CodeGraph excludes a partial index left behind by a failed init without changing the fallback text", async (t) => {
+	const cwd = workspace(t);
+	const result = await createCodeGraphTool(async (args, options) => {
+		await writeIndex(args, options);
+		throw new Error("CodeGraph exited with status 1");
+	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "CodeGraph failed to run. Use read, grep, and find for this exploration." }]);
+	assert.equal((result.details as { status: string }).status, "failed");
+	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "added");
+	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "");
 });

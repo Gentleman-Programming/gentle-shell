@@ -268,11 +268,41 @@ A later launch treats the store as Shell's own only when all hold:
 
 #### Recovery and setup
 
-When the running server's `/health` reports a valid 32-hex `instance_id` and a canonical numeric `x.y.z` version (optional `v` prefix, no leading zeros, at most four digits per component) older than 3.4.0, and `/compatibility` does not answer ready, the notice names that version and asks to back up the data, update **that server** to 3.4.0 or later with its own installation method, and restart it. The version only selects this wording: memory stays disabled, and any other version string is never shown. Otherwise, when disabled, Shell explains that it **could not verify safe store or server reuse**. Matching versions or updating alone do not prove compatibility. Reuse requires the verified active `/compatibility` contract or matching Shell-provisioned store identity under the rules above. Back up existing data before manual changes; do not delete the store, fabricate provenance, or bypass the safety check. Shell rechecks on every launch and remains usable without memory. It performs no migration, deletion, or process termination.
+When the running server's `/health` reports a valid 32-hex `instance_id` and a canonical numeric `x.y.z` version (optional `v` prefix, no leading zeros, at most four digits per component) older than 3.4.0, and `/compatibility` does not answer ready, the notice names that version and asks to back up the data, update **that server** to 3.4.0 or later with its own installation method, and restart it. The version only selects this wording: memory stays disabled, and any other version string is never shown. Otherwise, when disabled, Shell explains that it **could not verify safe store or server reuse**. Matching versions or updating alone do not prove compatibility. Reuse requires the verified active `/compatibility` contract or matching Shell-provisioned store identity under the rules above. Back up existing data before manual changes; do not delete the store, fabricate provenance, or bypass the safety check. Shell rechecks on every launch and remains usable without memory. Ordinary startup performs no migration, deletion, or process termination. Recovery is a separate, explicitly confirmed command below.
 
 Engram 3.3.2 does not expose `/compatibility`, so reinstalling that version cannot authorize reuse of an existing global store. [Engram 3.4.0](https://github.com/Gentleman-Programming/engram/releases/tag/v3.4.0) includes the endpoint from PR #1792. Back up the existing store before updating its server through its own installation method, then restart that server and Shell. Updating Shell's bundled binary does not replace an already-running global server. Reuse still requires a valid ready response, not just the version number; a token-protected server cannot provide it to Shell's unauthenticated probe. Do not disable authentication to bypass this policy or use an unpublished build.
 
 The memory decision never skips or fails setup: `gentle-shell setup` always publishes the verified core, runs Gentle AI and pins the companion, as before. Gentle AI 4.0.0 `install --agent pi` runs no `engram setup` for Pi, and `pi-engram init` only edits settings, so neither opens a store. Setup reclassifies after publishing the core, and the decision only selects the Engram environment its children and the launched Pi receive. On a new machine the wizard publishes the runtime without Engram, so the first `gentle-shell setup` publishes the core and the following launch is the fresh one that records provenance. Setup and every launch pin `npm:gentle-engram@0.4.2` through Pi's own `install` command (configuration only) and verify the declaration plus `engram.startupPolicy: 1`; a failed check is reported and Shell still starts, protected by the guard. `setup --dry-run` installs nothing.
+
+#### Session-owned local servers
+
+An admitted local store now starts only through a private session-owned server. Before provisioning a fresh identity, Shell requires both `engram.sessionOwned: 1` in every selected companion's package metadata (including mixed local/npm selections) and `serve --session-owned` in the verified core's config-free help, checked with an isolated temporary home. It then selects `ENGRAM_SERVER_MODE=session-owned`, without URL, port or socket overrides. The companion must validate the actual `engram-session-owned-v1` readiness record, authenticate every HTTP route, and retain its child's stdin pipe. Pi exit or parent death closes that pipe; EOF cancels startup-lock waits and drains a started server. Reload releases transport without ending the conversation; multiple hosted roots release the child only after the last owner exits.
+
+**Release dependency:** the currently pinned core 3.4.0 and companion 0.4.2 do not establish these capabilities. Local memory therefore remains disabled with explicit supporting-release guidance; Shell does not silently launch an old detached daemon. These source changes must not be presented as a working deployed fix until supporting published pins are available. No release version or checksum is invented here.
+
+Already verified running shared servers remain explicit URL reuse, never session-owned processes; Shell does not terminate them. Explicit bin, URL, port, socket or data selections are preserved and never probed. An explicit empty, whitespace or conflicting server mode disables local memory rather than overriding the selection; unset it or select exactly `session-owned`. Explicit owned mode cannot be combined with shared URL reuse; unset it when using an already running shared service. Non-bundled installations retain their existing shared default unless they opt in to session-owned mode.
+
+#### Explicit recovery after a core upgrade
+
+For a **Shell-provisioned store**, stop every Engram client and server using the directory, retain a complete backup (including WAL and configuration), then run:
+
+```sh
+gentle-shell memory migrate --confirm-quiescent
+```
+
+**Release dependency:** this requires a published bundled core advertising `migrate-copy`. The currently pinned Engram 3.4.0 does not implement it. Shell checks help in an isolated home and refuses without invoking an unknown migration command or changing the source/provenance. Do not substitute an unpublished binary, edit hashes, or assume equal schema versions authorize recovery.
+
+When supported, the provider copies the complete directory to a new sibling and validates/migrates only that copy. Shell checks the provider's directory and identity evidence, renames the original to the reported `backup_dir`, promotes the copy, and atomically replaces its core-bound provenance. Success prints one JSON record with `status: "migrated"`, `instance_id`, and `backup_dir`. Keep that backup until you have verified your records in Shell. Provider failures preserve the original and provenance; any incomplete copy is identified and retained, never promoted. Explicit foreign data locations or endpoints are not adopted by this command.
+
+The confirmation is an operator assertion, not a process lock: source hashes detect observed changes but do not establish that every writer has stopped. Never run recovery while another integration is using the store.
+
+#### Recovering an interrupted migration
+
+A marker at `<prefix>/config/engram-migration.json` blocks memory before probes or fresh provisioning. It records the `source`, `output`, `backup` paths and `originalProvenance`. **Keep clients stopped and do not simply remove this marker.** Preserve all paths while inspecting them.
+
+To roll back an interrupted promotion, first verify the paths and recorded instance identity. If `backup` exists, it is the original directory: retain any current `source` under a separate quarantine name, then restore `backup` to `source`. If no backup exists, do not replace the original source with the incomplete output. Restore `originalProvenance` atomically to `<prefix>/config/engram-provenance.json`, preserving the old core hash exactly. Only after source identity and provenance are reconciled may the marker be removed. Retain the migration output for diagnosis. If these facts cannot be established, leave the marker and request recovery assistance rather than guessing.
+
+Restoring the old provenance does not authorize the newer core to open it. Use the matching prior bundle or retry explicit migration after a supporting published bundle is installed. No automatic retry, store deletion, or server termination is performed.
 
 #### Known limits
 
@@ -289,7 +319,7 @@ S9. Everything Gentle AI and gentle-pi keep lives in the prefix, except Engram's
 | Process | Gets |
 |---|---|
 | `gentle-shell setup` (the pinned `gentle-ai install --agent pi`) | `GENTLE_AI_HOME=<prefix>/gentle-ai`, `GENTLE_AI_PI_CONFIG_DIR=<prefix>/config/gentle-ai`, `GENTLE_AI_ENGRAM_BIN=<prefix>/runtime/engram-<v>/engram`, `GENTLE_AI_NO_SELF_UPDATE=1` and `GENTLE_PI_CONFIG_HOME=<prefix>/config`. |
-| Pi and its subagents | `GENTLE_SHELL_PREFIX=<prefix>` and the memory startup policy; `ENGRAM_BIN` is the verified `<prefix>/runtime/engram-<v>/engram` when memory is allowed locally, otherwise the Shell guard (plus `ENGRAM_URL` for verified reuse). An explicit `ENGRAM_BIN` or `ENGRAM_URL` is kept as is ([Engram startup safety](#engram-startup-safety)). No `GENTLE_AI_*` variable, and `GENTLE_PI_CONFIG_HOME` is left as the user has it. |
+| Pi and its subagents | `GENTLE_SHELL_PREFIX=<prefix>` and the memory startup policy; verified private local launches also receive `ENGRAM_SERVER_MODE=session-owned`; `ENGRAM_BIN` is the verified `<prefix>/runtime/engram-<v>/engram` when memory is allowed locally, otherwise the Shell guard (plus `ENGRAM_URL` for verified reuse). An explicit `ENGRAM_BIN` or `ENGRAM_URL` is kept as is ([Engram startup safety](#engram-startup-safety)). No `GENTLE_AI_*` variable, and `GENTLE_PI_CONFIG_HOME` is left as the user has it. |
 | gentle-pi's own `gentle-ai` runs (review, telemetry trigger, runtime metrics) | The same five variables as setup. |
 | The agent's shell | Pi's environment: the user's own plus the Pi row above. |
 

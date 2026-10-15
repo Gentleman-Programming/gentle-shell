@@ -25,7 +25,7 @@ export const requirements = Object.freeze({
 /** Pi version the installer installs next to gentle-pi, and the version an older
  * Pi is updated to (never below requirements.pi; the runner asserts it).
  */
-export const PI_INSTALL_VERSION = "1.0.0";
+export const PI_INSTALL_VERSION = "1.2.0";
 
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`, or only npm when

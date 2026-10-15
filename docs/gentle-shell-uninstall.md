@@ -36,6 +36,11 @@ In this order:
      `GENTLE_SHELL_HOME` directory is removed only when Gentle Shell created it
      (its `.gentle-shell-home` marker, or its setup record in
      `~/.gentle-shell/config.json`); otherwise it is listed as kept.
+   - `~/.gentle-shell/gentle-ai`: the isolated home's own settings (profiles,
+     banner and the other preferences). The `gentle-ai` folder next to a
+     `GENTLE_SHELL_HOME` is only listed as kept, since it may not be Gentle
+     Shell's. When `GENTLE_PI_CONFIG_HOME` names it, the config home rules
+     below apply instead.
    - `~/.gentle-shell/config.json`: the launcher settings.
 2. **Shared Gentle AI configuration**, only when you accept it (see below).
 3. **The `gentle-pi` package**, with the package manager that owns it:
@@ -43,7 +48,9 @@ In this order:
    `npm uninstall -g gentle-pi`.
 4. **`~/.gentle-shell`**, only when it is empty.
 
-The config home is `GENTLE_PI_CONFIG_HOME`, or `~/.pi/gentle-ai`.
+The config home is `GENTLE_PI_CONFIG_HOME`, or `~/.pi/gentle-ai`: the one Pi
+with Gentle AI, `--link` and custom homes use, and where the main channel keeps
+its builds. The isolated home's own folder is removed with the data above.
 
 ## Shared configuration
 

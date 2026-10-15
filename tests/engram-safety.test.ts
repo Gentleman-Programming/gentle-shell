@@ -97,7 +97,7 @@ test("a verified /compatibility contract reuses the running server through an ex
 test("Shell provenance allows its own store only for the same instance and the same core binary", () => {
 	const provenance = { instanceId: ID };
 	assert.deepEqual(classify({ store: "present", provenance }), { policy: "allow" });
-	assert.deepEqual(classify({ store: "present", provenance, endpoint: listening(false, ID) }), { policy: "allow" });
+	assert.deepEqual(classify({ store: "present", provenance, endpoint: listening(false, ID) }), { policy: "allow", url: "http://127.0.0.1:7437" });
 	assert.equal(classify({ store: "present", provenance, endpoint: listening(false, OTHER_ID) }).policy, "disabled");
 	for (const version of ["3.3.3", "v3.4.0", "dev", ""]) {
 		assert.equal(classify({ store: "present", provenance, endpoint: listening(false, ID, version) }).policy, "disabled", version);

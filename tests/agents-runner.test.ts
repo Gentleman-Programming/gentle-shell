@@ -618,6 +618,21 @@ test("runner captures resolved model and effort, retaining omitted launch values
 	h.runner.cancel(task.id);
 });
 
+test("record creation copies the launch-layer model source next to the model (#2180)", () => {
+	const sourced = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const sourcedTask = sourced.runner.run(request({ modelSource: "binding" }));
+	assert.equal(sourced.store.get(sourcedTask.id)?.modelSource, "binding", "the record keeps the host-computed layer next to the resolved model");
+	sourced.runner.cancel(sourcedTask.id);
+
+	// The absence contract: a request without a model source (older callers,
+	// peers) records no field at all, so the card renders exactly as before.
+	const plain = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const plainTask = plain.runner.run(request());
+	assert.equal(plain.store.get(plainTask.id)?.modelSource, undefined);
+	assert.equal("modelSource" in (plain.store.get(plainTask.id) as TaskRecord), false, "no modelSource key is recorded when the launch did not name a layer");
+	plain.runner.cancel(plainTask.id);
+});
+
 test("runner delivers each response combination once at finish, never attributing launch selection", async () => {
 	const snapshots: NonNullable<Parameters<NonNullable<RunnerHooks["onFinish"]>>[1]>[] = [];
 	const h = harness({ exitOnKill: false, state: { model: { provider: "anthropic", id: "launch" }, thinkingLevel: "max" },

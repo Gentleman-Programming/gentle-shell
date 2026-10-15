@@ -653,13 +653,14 @@ test("native Windows entry: spaces, Unicode, CMD metacharacters and early missin
 		const scripts = join(f.root, "scripts"); mkdirSync(scripts);
 		// Observe the copied production entry's first PowerShell handle so the
 		// existing ownership-checked guard can reap it if the fixture times out.
-		writeFileSync(join(scripts, "bootstrap.cmd"), observeStage(readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8")));
+		writeFileSync(join(scripts, "bootstrap.cmd"), observeStage(readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8"), true));
 		const local = join(f.root, "home"); mkdirSync(local);
 		const env = { ...nativeEnv(f.root), LOCALAPPDATA: local };
 		// The same outer bound as every other production fragment (nativeCmd): a cold
 		// cmd.exe plus Windows PowerShell 5.1 start can exceed 5 s while the CI step runs
 		// the installer suites in parallel. The bundle stage itself has no deadline.
 		console.error("WINDOWS_ENTRY_PROBE_START timeoutMs=14000");
+		const startedAt = Date.now();
 		const started = performance.now();
 		const result = await nativeCmdFile(f.root, "scripts\\bootstrap.cmd", env, 14000);
 		console.error("WINDOWS_ENTRY_PROBE_RESULT", JSON.stringify({ elapsedMs: performance.now() - started, status: result.status, guardKilled: result.guardKilled, expectedDiagnostic: /No acquisition attempted/.test(result.stderr) }));
@@ -668,6 +669,8 @@ test("native Windows entry: spaces, Unicode, CMD metacharacters and early missin
 		assertNative(result, 1);
 		assert.match(result.stderr, /No acquisition attempted/);
 		assert.match(readFileSync(join(f.root, "process-records"), "utf8").trim(), /^[1-9][0-9]*\|[1-9][0-9]*$/, "the copied entry must expose its first PowerShell handle to fixture cleanup");
+		const readyMs = Number(readFileSync(join(f.root, "powershell-ready-ms"), "utf8"));
+		assert.ok(Number.isSafeInteger(readyMs) && readyMs >= startedAt && readyMs <= Date.now(), "the fixture must timestamp PowerShell executing its body");
 		assert.deepEqual(readdirSync(local), []);
 	} finally {
 		try { cleanNativeProcesses(f.root); } finally { f.cleanup(); }
@@ -1199,11 +1202,14 @@ test("production and fixture PowerShell never depend on autoloading Microsoft.Po
 	}
 });
 const psRecordLine = '  "$record = [Diagnostics.Process]::GetCurrentProcess(); [IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$record.Id + [char]124 + [string]$record.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
-function observeStage(stage: string) {
+// Entry-only telemetry: this timestamps execution of the PowerShell body, not
+// merely process creation. Keep it separate from the guard's PID/ticks records.
+const psReadyLine = '  "[IO.File]::WriteAllText([IO.Path]::Combine($env:GENTLE_FIXTURE_ROOT,\'powershell-ready-ms\'),[string][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds());" ^';
+function observeStage(stage: string, entryReadiness = false) {
 	const lines = stage.split("\n");
 	const index = lines.findIndex((line) => line.includes("LanguageMode"));
 	assert.ok(index >= 0);
-	lines.splice(index + 1, 0, psRecordLine);
+	lines.splice(index + 1, 0, psRecordLine, ...(entryReadiness ? [psReadyLine] : []));
 	return lines.join("\n");
 }
 function cmdComposition(stages: string[]) {
@@ -1232,6 +1238,16 @@ test("native entry observation preserves the complete production batch", () => {
 	const observed = observeStage(source).split("\n");
 	assert.equal(observed.filter((line) => line === psRecordLine).length, 1);
 	assert.equal(observed.filter((line) => line !== psRecordLine).join("\n"), source);
+});
+
+test("native entry readiness observation is opt-in and preserves production and ownership records", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	const observed = observeStage(source, true).split("\n");
+	assert.equal(observed.filter((line) => line.includes("powershell-ready-ms")).length, 1);
+	assert.equal(observed.filter((line) => line === psRecordLine).length, 1);
+	assert.equal(observed.filter((line) => line !== psRecordLine && !line.includes("powershell-ready-ms")).join("\n"), source);
+	assert.doesNotMatch(observeStage(source), /powershell-ready-ms/);
+	assert.ok(observed.findIndex((line) => line.includes("powershell-ready-ms")) > observed.indexOf(psRecordLine));
 });
 
 test("native fixture compositions retain exact production fragments and no transport command", () => {
@@ -1314,9 +1330,21 @@ async function nativeCmd(root: string, stages: string[], env: NodeJS.ProcessEnv 
 	return nativeCmdFile(root, "fixture.cmd", env, limit);
 }
 async function nativeCmdFile(root: string, file: string, env: NodeJS.ProcessEnv, limit = 5000): Promise<NativeResult> {
+	const startedAt = Date.now();
 	const started = performance.now();
 	const trace = (phase: string, detail: Record<string, unknown> = {}) => {
 		if (file === "scripts\\bootstrap.cmd") console.error("WINDOWS_ENTRY_PHASE", JSON.stringify({ phase, elapsedMs: performance.now() - started, limit, ...detail }));
+	};
+	// Wall-clock timestamps share an epoch with PowerShell. These measurements
+	// are diagnostic only; the monotonic outer deadline is never reset. Emit
+	// the split before synchronous guard cleanup can inflate execution time.
+	const traceEntryTiming = () => {
+		if (file !== "scripts\\bootstrap.cmd") return;
+		const readyPath = join(root, "powershell-ready-ms");
+		const finishedAt = Date.now();
+		const readyMs = existsSync(readyPath) ? Number(readFileSync(readyPath, "utf8")) : NaN;
+		const valid = Number.isSafeInteger(readyMs) && readyMs >= startedAt && readyMs <= finishedAt;
+		trace("entry-timing", { readyObserved: valid, startupMs: valid ? readyMs - startedAt : null, executionMs: valid ? finishedAt - readyMs : null });
 	};
 	trace("spawn-request");
 	const child = spawn(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", file], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1327,6 +1355,7 @@ async function nativeCmdFile(root: string, file: string, env: NodeJS.ProcessEnv,
 	const result = await new Promise<NativeResult>((resolveChild, reject) => {
 		const timer = setTimeout(() => {
 			guardKilled = true;
+			traceEntryTiming();
 			trace("guard-fired", { recordExists: existsSync(join(root, "process-records")), diagnosticSeen: /No acquisition attempted/.test(stderr) });
 			try { cleanNativeProcesses(root); } catch (error) { guardError = error; }
 			child.kill("SIGKILL");
@@ -1341,7 +1370,7 @@ async function nativeCmdFile(root: string, file: string, env: NodeJS.ProcessEnv,
 			if (!/No acquisition attempted/.test(before) && /No acquisition attempted/.test(stderr)) trace("missing-bundle-diagnostic");
 			if (stderr.length > 1048576) { guardError = new Error("Fixture output limit"); child.kill("SIGKILL"); } });
 		child.once("error", (error) => { clearTimeout(timer); reject(error); });
-		child.once("close", (status) => { trace("cmd-close", { status, guardKilled }); clearTimeout(timer); resolveChild({ status, stdout, stderr, guardKilled }); });
+		child.once("close", (status) => { if (!guardKilled) traceEntryTiming(); trace("cmd-close", { status, guardKilled }); clearTimeout(timer); resolveChild({ status, stdout, stderr, guardKilled }); });
 	});
 	const residualReaped = cleanNativeProcesses(root);
 	assert.equal(residualReaped, false, "production must reap its own recorded children; fixture cleanup cannot mask a failure");

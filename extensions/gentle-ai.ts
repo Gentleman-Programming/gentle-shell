@@ -1,5 +1,5 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
-import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
@@ -20,6 +20,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -222,7 +223,7 @@ import {
 	isSmallWriterProfile,
 	resolveWriterProfile,
 	decodeAgentRiskEscalation,
-	escalatedRisk,
+	verificationRisk,
 	HIGH_RISK_ITEMS,
 	RDD_LINE,
 	WRITER_PROFILE,
@@ -264,6 +265,7 @@ import {
 	sameReviewSessionIdentity,
 	type ReviewSessionIdentity,
 } from "../lib/review-session-standing-permission.ts";
+import { herdrSetupHint } from "../lib/herdr-activity.ts";
 
 const GRAPH_V1_ORDINARY_READ_ONLY = "Graph-v1 ordinary review authority is read-only; use native compact-v2 review operations";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -788,6 +790,7 @@ const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus 
 /** @internal test seam: clears the per-cwd RDD status memo. */
 function clearRddStatusMemoForTesting(): void {
 	rddStatusMemo.clear();
+	rddStatusUnavailableWarned = false;
 }
 
 // gentle-pi#668 (corrected): last-known outcome for ONE candidate, keyed by
@@ -852,29 +855,62 @@ async function readRddModeStatusOnce(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
-	if (!nativeReviewCli?.reviewMode) return undefined;
+	const read = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	return "status" in read ? read.status : undefined;
+}
+
+// gentle-shell#2250: the same read, keeping why it failed so the one-shot
+// unavailable notice can tell a timeout from a native refusal (for example a
+// repository on a network share that Git or gentle-ai rejects by ownership).
+async function readRddModeStatusWithCause(
+	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<{ readonly status: NativeReviewModeStatus } | { readonly cause: string }> {
+	if (!nativeReviewCli?.reviewMode) return { cause: "the native gentle-ai review CLI is not available" };
 	try {
 		const call = nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, signal });
 		const result = signal === undefined ? await call : await Promise.race([call, rddAbortRejection(signal)]);
-		return result.status;
-	} catch {
-		return undefined;
+		return { status: result.status };
+	} catch (error) {
+		return { cause: describeRddStatusFailure(error, signal) };
 	}
+}
+
+const RDD_STATUS_CAUSE_LIMIT = 300;
+
+function describeRddStatusFailure(error: unknown, signal: AbortSignal | undefined): string {
+	const command = "native `gentle-ai review mode status`";
+	if (signal?.aborted || (error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT)) {
+		return `${command} did not answer within ${RDD_STATUS_TIMEOUT_MS} ms`;
+	}
+	if (error instanceof NativeReviewCliError) {
+		const exit = error.diagnostics.exit_code === undefined ? "" : `, exit ${error.diagnostics.exit_code}`;
+		const detail = (error.diagnostics.stderr ?? "").replace(/\s+/g, " ").trim() || error.message;
+		return `${command} failed (${error.code}${exit}): ${boundRddStatusCause(detail)}`;
+	}
+	return boundRddStatusCause(error instanceof Error ? error.message : String(error));
+}
+
+function boundRddStatusCause(text: string): string {
+	const trimmed = text.replace(/[.\s]+$/, "");
+	return trimmed.length <= RDD_STATUS_CAUSE_LIMIT ? trimmed : `${trimmed.slice(0, RDD_STATUS_CAUSE_LIMIT - 1)}…`;
 }
 
 // gentle-pi#662: read-only combined native risk assessment plus the computed
 // verification plan (`lib/review-risk-assessment.ts`), for the `gentle_review`
 // tool's `assess` operation. Never throws: an unavailable/failed native
 // assess call (older binary without the verb, timeout, malformed response)
-// resolves to the `unassessable` tier, which `verificationPlan` treats the
-// same as `high` -- the fail-closed rule from gentle-pi#662.
+// resolves to the `unassessable` native tier, which informs only: like a
+// native high, it adds no independent verifier without an agent escalation.
 interface ReviewAssessmentPlanDetails {
 	schema: "gentle-pi.review-assessment-plan/v1";
 	risk: VerificationTier;
-	// gentle-shell#1494: the native tier before any agent escalation. `risk`
-	// differs from it only when the agent raised the candidate to high.
+	// gentle-shell#1494: the native tier before any agent escalation. `risk` is
+	// the plan tier: high only through an escalation, else passive or medium.
 	nativeRisk: VerificationTier;
-	// `applied` is false when the native tier was already high or unassessable.
+	// `applied` is true whenever an escalation is present: without it the plan
+	// would be passive or medium.
 	agentEscalation?: { item: number; label: string; reason: string; applied: boolean };
 	reasons: readonly ReviewAssessmentReason[];
 	changedPaths: number;
@@ -1031,9 +1067,10 @@ async function resolveReviewAssessmentPlan(
 	}
 
 	const nativeRisk: VerificationTier = assessment?.risk ?? VERIFICATION_TIER.UNASSESSABLE;
-	// gentle-shell#1494: an agent escalation raises passive/medium to high and
-	// never lowers; the native tier stays visible as `nativeRisk`.
-	const risk = escalatedRisk(nativeRisk, input.escalate);
+	// gentle-shell#1494: the plan is high only through an agent escalation
+	// naming a Task Size high-risk item; a native high or unassessable tier
+	// informs as medium. The native tier stays visible as `nativeRisk`.
+	const risk = verificationRisk(nativeRisk, input.escalate);
 	// gentle-pi#668: the memo is read only for THIS candidate's own target
 	// identity, never repository-only. It is still needed when the caller
 	// claims `closed`, because a recorded decline beats closure (gentle-pi#1175).
@@ -1048,7 +1085,7 @@ async function resolveReviewAssessmentPlan(
 		nativeRisk,
 		...(input.escalate === undefined
 			? {}
-			: { agentEscalation: { item: input.escalate.item, label: HIGH_RISK_ITEMS[input.escalate.item], reason: input.escalate.reason, applied: risk !== nativeRisk } }),
+			: { agentEscalation: { item: input.escalate.item, label: HIGH_RISK_ITEMS[input.escalate.item], reason: input.escalate.reason, applied: risk !== verificationRisk(nativeRisk, undefined) } }),
 		// No path is known for an unassessable candidate: omit it rather than
 		// emitting an empty string the native reason shape forbids.
 		reasons: assessment?.reasons ?? (unassessableDetail === undefined ? [] : [{ code: unassessableCode, detail: unassessableDetail }]),
@@ -1098,9 +1135,11 @@ function homeRootedRepository(cwd: string): string | undefined {
  * `NativeReviewModeStatus`) that the `/gentle:review-mode` command also
  * calls. Never throws and never hangs past `signal`'s deadline when one is
  * given: an absent binary, a timed-out/aborted process, or a native CLI
- * failure all resolve to `undefined`. `ctx` is optional and used only for a
- * one-shot (per process) UI notice when the read is swallowed, so a
- * sustained native outage is observable beyond the rendered "unknown" line.
+ * failure all resolve to `undefined` unless an earlier read for the same cwd
+ * succeeded, in which case that last known status is kept (gentle-shell#1029:
+ * the rendered line sits in the cached prompt prefix). `ctx` is optional and
+ * used only for a one-shot (per process) UI notice when the read is
+ * swallowed, so a sustained native outage is observable beyond the prompt.
  */
 async function resolveRddModeStatus(
 	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
@@ -1112,13 +1151,20 @@ async function resolveRddModeStatus(
 	const nowMs = now();
 	const cached = rddStatusMemo.get(cwd);
 	if (cached !== undefined && cached.expiresAt > nowMs) return cached.status;
-	const status = await readRddModeStatusOnce(nativeReviewCli, cwd, signal);
+	// gentle-shell#1029: the rendered line is part of the cached system-prompt
+	// prefix. A re-read that fails or times out keeps the last successfully
+	// read status instead of flipping the prompt to "unknown" and back, which
+	// would invalidate the provider's prefix cache for the whole conversation.
+	// Only a status the native reader actually reports replaces a known one.
+	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	const read = "status" in outcome ? outcome.status : undefined;
+	const status = read ?? cached?.status;
 	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
-	if (status === undefined && !rddStatusUnavailableWarned) {
+	if ("cause" in outcome && !rddStatusUnavailableWarned) {
 		rddStatusUnavailableWarned = true;
 		if (ctx?.hasUI) {
 			ctx.ui.notify(
-				"Gentle AI: receipt-driven-development status is unavailable (native review CLI absent, timed out, or failed). The parent prompt renders \"unknown\" until this recovers; this notice will not repeat this session.",
+				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status, or renders "unknown" when none was read; this notice will not repeat this session.`,
 				"warning",
 			);
 		}
@@ -1129,6 +1175,18 @@ async function resolveRddModeStatus(
 /** True only for a validated `off` line; `unknown` and `on` are never off. */
 function isRddStatusLineOff(line: string | undefined): boolean {
 	return line !== undefined && line.startsWith("Receipt-driven development: off ");
+}
+
+/**
+ * gentle-shell#2195: the rendered line sits in the cached system-prompt
+ * prefix, so a session keeps the first line it rendered and re-renders only
+ * when the off state changes, because that also adds or drops the review
+ * execution contract (gentle-shell#1494). An unknown-to-on flip or a
+ * deciding-source change keeps the prefix; review tools still read the live
+ * mode whenever they run, so the pinned text never grants or blocks anything.
+ */
+function pinRddStatusLine(pinned: string | undefined, next: string): string {
+	return pinned !== undefined && isRddStatusLineOff(pinned) === isRddStatusLineOff(next) ? pinned : next;
 }
 
 /** Resolves and renders the RDD status line for a production call site in one call. */
@@ -1306,6 +1364,14 @@ ${personaPrompt}
 
 ${languageBoundary}
 
+## Authorized work continuity
+
+An authorized outcome includes its necessary in-scope implementation, documentation and verification steps. Continue those steps without asking the human to approve each transition. Never end a turn merely announcing an immediately executable authorized next step; execute it instead. A progress update is not a request for permission.
+
+Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
+
+For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue", poll, or claim completion while checks remain pending.
+
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
 1. **Authorize.** Investigation, explanation, review, comparison, and proposal-only requests stay read-only: no writer, apply, or implementation artifacts. Ambiguous or conditional change intent (unclear whether a change is authorized at all) gets one clarification; stop and wait. A user saying they may stop you or resume later asks for notes and separate commits, not a stop.
@@ -1313,7 +1379,7 @@ Organic Driven Development (ODD) is the predefined workflow of this orchestrator
 3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
 4. **Classify.** Size the task by the orchestrator's Task Size section: small when understood, risk is contained, and the work could be resumed from the original request and \`git diff\` alone; large only when that resume test fails. Never classify by counting files, commands, tests, fixes, or a requested todo list. Small work stays inline and creates no durable task artifacts.
 5. **Track before the first write.** For large authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds. The document is the specification subagents read, in this order: a two- or three-line header; \`## Specs\` with numbered \`S#\` that quote the user's exact strings, error messages, and examples verbatim, never summarized and never adding unrequested requirements; \`## Tasks\` with one line per task (ID, linked \`S#\`, route, commit); \`## Log\` last, where \`L1\` is the user's original request verbatim and later user corrections, evidence, and decisions are appended. A requirement change appends its verbatim Log entry, rewrites only the affected \`S#\`, and reopens only its task.
-6. **Implement task by task.** Hand off by reference, never by paraphrase: name the document, task, and specs (for example \`Spec: odd/tasks/<feature>.md, T2, S3-S4\`), tell workers to read until \`## Log\`, and ask which \`S#\` were covered. Without a feature document, include the user's request verbatim. Verify reads the whole document, runs the spec's examples the parent authorized, against isolated state when they mutate data, and returns a verdict per \`S#\`. When the user reports a failure, reproduce it before deciding it already works. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it. Route each task through the orchestrator's Mechanisms, honoring its mandatory delegation triggers, with applicable test-first development and checks. These triggers are mandatory, not advisory: executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized large ODD implementation; push, pull request creation, and merge remain the user's decisions.
+6. **Implement task by task.** Hand off by reference, never by paraphrase: name the document, task, and specs (for example \`Spec: odd/tasks/<feature>.md, T2, S3-S4\`), tell workers to read until \`## Log\`, and ask which \`S#\` were covered. Without a feature document, include the user's request verbatim. Verify reads the whole document, runs the spec's examples the parent authorized, against isolated state when they mutate data, and returns a verdict per \`S#\`. When the user reports a failure, reproduce it before deciding it already works. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it. Route each task through the orchestrator's Mechanisms, honoring its delegation triggers when their conditions truly hold, with applicable test-first development and checks. No trigger holds by default and, when in doubt, work inline; executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized large ODD implementation; push, pull request creation, and merge remain the user's decisions.
 7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. Before writing \`Risk: none\`, check whether your diff changes code that existing behavior the request did not mention also uses (shared options, parsers, helpers); if it does, that is item 3. Never end with a tracked task pending unless you quote the user's explicit stop. An applicable quick check runs once; an unavailable verifier or subagent is reported as unavailable, never retried or escalated into extra ceremony. Partial, blocked, unavailable, or exhausted proof becomes one **Needs your decision** result naming the open blockers or missing proof, never more verification; that result is a valid stop, hedged wording is not. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
 Phase reporting: the Gentle Shell prompt label is inferred automatically from the primary session's tool activity (reads show \`exploring\`, edits \`implementing\`, test runs \`checking\`, user questions \`deciding\`). When the \`gentle_odd_phase\` tool is available, use it to refine that label with phases tools cannot show (\`authorizing\`, \`researching\`, \`deciding\`, \`closing\`): call \`gentle_odd_phase\` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent. It drives the Gentle Shell prompt label only.
 Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
@@ -1324,7 +1390,7 @@ Harness principles:
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
 - Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (\`git stash\` or a copy of HEAD) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -1333,7 +1399,9 @@ ${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode)}`;
 
 // Matches `git [global-flags] push` — tolerates flags like -C /repo or --work-tree=/tmp
 // between `git` and the subcommand. Short flags may be followed by a separate value token.
-const GIT_GLOBAL_FLAGS_SRC = String.raw`(?:\s+--?\S+(?:\s+[^-\s]\S*)?)* `;
+// gentle-shell#2172: `\s+` rather than a literal space, so a tab-separated
+// `git\tpush` is guarded like any other spelling.
+const GIT_GLOBAL_FLAGS_SRC = String.raw`(?:\s+--?\S+(?:\s+[^-\s]\S*)?)*\s+`;
 const GIT_PUSH_RE = new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}(push)\b`);
 
 const DENIED_BASH_PATTERNS: RegExp[] = [
@@ -1399,7 +1467,7 @@ interface LoadGuardrailsOptions {
 
 const GUARDED_KEY_PATTERNS: Record<GuardedCommandKey, RegExp> = {
 	gitPush: GIT_PUSH_RE,
-	gitRebase: /\bgit\s+(rebase)\b/,
+	gitRebase: new RegExp(String.raw`\bgit${GIT_GLOBAL_FLAGS_SRC}(rebase)\b`),
 	gitBranchDeleteForce: /\bgit\s+(branch)\s+(?:-[a-zA-Z]*D[a-zA-Z]*|-[a-zA-Z]*d[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*f[a-zA-Z]*d[a-zA-Z]*|--delete\b[^\r\n;&|]*--force\b|--force\b[^\r\n;&|]*--delete\b)/,
 	npmPublish: /\bnpm\s+(publish)\b/,
 	piRemove: /\bpi\s+(remove)\b/,
@@ -1441,12 +1509,15 @@ function collectGuardedMatches(
 	config: RuntimeGuardrailsConfig,
 ): GuardMatch[] {
 	const matches: GuardMatch[] = [];
+	const dataRanges = dataArgumentRanges(command);
 	for (const [key, pattern] of Object.entries(GUARDED_KEY_PATTERNS) as [
 		GuardedCommandKey,
 		RegExp,
 	][]) {
 		const globalPattern = new RegExp(pattern.source, `${pattern.flags}g`);
 		for (const match of command.matchAll(globalPattern)) {
+			// gentle-shell#2174: text inside a data command's argument is not an operation.
+			if (inDataArgument(dataRanges, match.index)) continue;
 			const action = config.autonomousMode
 				? (config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key])
 				: "confirm";
@@ -1460,6 +1531,10 @@ function collectGuardedMatches(
 	return matches.sort((left, right) => left.triggerIndex - right.triggerIndex);
 }
 
+function inDataArgument(ranges: ReadonlyArray<readonly [number, number]>, index: number): boolean {
+	return ranges.some(([start, end]) => index >= start && index < end);
+}
+
 function evaluateGuardedCommand(
 	command: string,
 	config: RuntimeGuardrailsConfig,
@@ -1470,8 +1545,10 @@ function evaluateGuardedCommand(
 	if (hardDeny) return { action: "block", triggerIndex: hardDeny.triggerIndex, matches };
 
 	// Hard denies override every configured action across the complete command.
+	const dataRanges = dataArgumentRanges(command);
 	for (const pattern of DENIED_BASH_PATTERNS) {
-		const denied = pattern.exec(command);
+		const denied = [...command.matchAll(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`))]
+			.find((candidate) => !inDataArgument(dataRanges, candidate.index));
 		if (!denied) continue;
 		const matchedAction = matches.find((match) =>
 			match.triggerIndex >= denied.index && match.triggerIndex < denied.index + denied[0].length,
@@ -1851,14 +1928,60 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	};
 }
 
-/** Conservative waiver surface: one plain push in the current repository, no shell/wrapper or destination-changing options. */
-function isOrdinaryYoloPush(command: string, evaluation: GuardEvaluation): boolean {
-	if (evaluation.action !== "confirm" || evaluation.dataLoss || evaluation.matches.length !== 1 || evaluation.key !== "gitPush") return false;
-	return /^git\s+push(?:\s+(?:-u|--set-upstream|[A-Za-z0-9_][A-Za-z0-9_./-]*))*\s*$/.test(command);
+// gentle-shell#2172: YOLO waives reversible delivery, not only one bare push.
+// A guarded segment is judged from its trigger word (`push`/`rebase`) to the
+// next command separator; a plain token or allow-listed option list is the
+// whole eligible grammar, so quotes, wrappers and unknown options fall back
+// to the ordinary confirmation. Everything that deletes or rewrites a remote
+// ref, publishes, or runs arbitrary commands is deliberately absent:
+// `--delete`/`-d`, `:dst` and `+src` refspecs, `--mirror`, `--prune`,
+// `--all`, every force spelling, `--receive-pack`/`--exec`, `--repo`, `-o`.
+const YOLO_WAIVABLE_KEYS: ReadonlySet<GuardedCommandKey> = new Set(["gitPush", "gitRebase"]);
+const YOLO_SEGMENT_END_RE = /&&|\|\||;|\||\n|\r/;
+// Text between the segment start and the `push`/`rebase` word: optional
+// variable assignments, `env`/`command` prefixes and the `git` word with at
+// most a `-C <path>`. Other global options (`-c key=value`, `--exec-path`,
+// `--git-dir`) can run or redirect code, so they keep the confirmation.
+const YOLO_GIT_PREFIX_RE = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s'"`$]*\s+|env\s+(?:-i\s+)?|command\s+)*git(?:\s+-C\s+[^\s'"`$;&|]+)?\s+$/;
+const YOLO_PUSH_SEGMENT_RE = /^push(?:\s+(?:-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*\s*$/;
+const YOLO_REBASE_SEGMENT_RE = /^rebase(?:\s+(?:--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*\s*$/;
+
+function yoloGuardedSegment(command: string, triggerIndex: number): string {
+	const rest = command.slice(triggerIndex);
+	const end = rest.search(YOLO_SEGMENT_END_RE);
+	return end < 0 ? rest : rest.slice(0, end);
 }
 
-/** Preserve explicitly configured confirmations even when legacy env/autonomy resolution ignores them. */
-function yoloPushConfiguredRestriction(cwd: string, options: LoadGuardrailsOptions = {}): GuardAction | undefined {
+function yoloSegmentPrefix(command: string, triggerIndex: number): string {
+	const head = command.slice(0, triggerIndex);
+	const separators = [...head.matchAll(new RegExp(YOLO_SEGMENT_END_RE.source, "g"))];
+	const last = separators.at(-1);
+	return last === undefined ? head : head.slice(last.index + last[0].length);
+}
+
+/** Every guarded match and every recognized Git side effect must be a reversible push or non-interactive rebase. */
+function isReversibleYoloCommand(command: string, evaluation: GuardEvaluation): boolean {
+	if (evaluation.action !== "confirm" || evaluation.dataLoss || evaluation.matches.length === 0) return false;
+	for (const match of evaluation.matches) {
+		if (!YOLO_WAIVABLE_KEYS.has(match.key)) return false;
+		if (!YOLO_GIT_PREFIX_RE.test(yoloSegmentPrefix(command, match.triggerIndex))) return false;
+		const segment = yoloGuardedSegment(command, match.triggerIndex);
+		if (!(match.key === "gitPush" ? YOLO_PUSH_SEGMENT_RE : YOLO_REBASE_SEGMENT_RE).test(segment)) return false;
+	}
+	// The data-loss recognizer leaves non-hard Git effects (reset, stash drop,
+	// restore, checkout --) to the primary policy; under YOLO only a rebase that
+	// a guarded match already vetted may remain.
+	const rebaseTriggers = new Set(evaluation.matches.filter((match) => match.key === "gitRebase").map((match) => match.triggerIndex));
+	for (const effect of recognizeDestructiveCommands(command)) {
+		if (effect.hardDeny || effect.kind !== "git") return false;
+		const rebase = /^git(?:\s+(?:-C|-c|--git-dir|--work-tree|--namespace)\s+\S+|\s+-\S+)*\s+(rebase)\b/.exec(command.slice(effect.triggerIndex));
+		if (rebase === null || !rebaseTriggers.has(effect.triggerIndex + rebase.index + rebase[0].lastIndexOf("rebase"))) return false;
+	}
+	return true;
+}
+
+/** Preserve explicitly configured confirmations for the waivable keys present, even when legacy env/autonomy resolution ignores them. */
+function yoloConfiguredRestriction(cwd: string, keys: readonly GuardedCommandKey[], options: LoadGuardrailsOptions = {}): GuardAction | undefined {
 	let restriction: GuardAction | undefined;
 	for (const path of [join(options.gentlePiConfigHome ?? gentleAiConfigHome(), "runtime-guardrails.json"), join(cwd, ".pi", "gentle-ai", "runtime-guardrails.json")]) {
 		try {
@@ -1868,9 +1991,11 @@ function yoloPushConfiguredRestriction(cwd: string, options: LoadGuardrailsOptio
 				restriction ??= "confirm";
 				continue;
 			}
-			const action = isRecord(parsed.guardedCommands) ? parsed.guardedCommands.gitPush : undefined;
-			if (action === "block") return "block";
-			if (action !== undefined && action !== "allow") restriction = "confirm";
+			for (const key of keys) {
+				const action = isRecord(parsed.guardedCommands) ? parsed.guardedCommands[key] : undefined;
+				if (action === "block") return "block";
+				if (action !== undefined && action !== "allow") restriction = "confirm";
+			}
 		} catch { restriction ??= "confirm"; }
 	}
 	return restriction;
@@ -1889,8 +2014,9 @@ async function confirmCommand(
 	// Configuration provenance is distinct from legacy autonomy resolution, which
 	// can ignore confirmations when an environment override is present. Activation
 	// cannot waive a restriction from either user or project configuration layer.
-	const configuredRestriction = yoloActive && evaluation.matches.some((match) => match.key === "gitPush")
-		? yoloPushConfiguredRestriction(ctx.cwd) : undefined;
+	const waivableKeys = evaluation.matches.map((match) => match.key).filter((key) => YOLO_WAIVABLE_KEYS.has(key));
+	const configuredRestriction = yoloActive && waivableKeys.length > 0
+		? yoloConfiguredRestriction(ctx.cwd, waivableKeys) : undefined;
 	const classification = evaluation.action === "block" || configuredRestriction === "block"
 		? "block" : configuredRestriction ?? evaluation.action;
 
@@ -1926,7 +2052,7 @@ async function confirmCommand(
 	}
 
 	// Full T1 evaluation has already run. YOLO never changes persistent autonomy.
-	if (yoloActive && configuredRestriction === undefined && isOrdinaryYoloPush(command, evaluation)) return undefined;
+	if (yoloActive && configuredRestriction === undefined && isReversibleYoloCommand(command, evaluation)) return undefined;
 
 	// classification === "confirm"
 	if (!ctx.hasUI) {
@@ -5124,7 +5250,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -6595,6 +6721,8 @@ const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessio
 // named-agent start increments the depth, a matching end decrements it,
 // and a fresh primary-loop start resets it to 0.
 const processAgentEndSubagentDepth = new Map<PendingReviewConsentSessionKey, number>();
+// gentle-shell#2195: the RDD status line each primary session last rendered into its system prompt.
+const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, string>();
 
 // gentle-shell#1064 slice 1: the parent-session profile binding store lives in
 // lib/session-profile-binding.ts (in-process, keyed by parent session id). The
@@ -7974,6 +8102,20 @@ function isSelectedReviewCapture(value: SelectedReviewCapture | Record<string, u
 
 function captureGroupRejected(reason: string): Record<string, unknown> { return captureBindingRejected(reason, true); }
 
+function captureGroupStatusFailure(error: unknown): Record<string, unknown> {
+	return {
+		...captureGroupRejected(error instanceof Error ? error.message : String(error)),
+		outcome: "native-status-failed",
+		// Only project the decoded native envelope, never arbitrary error fields.
+		// Group mutation reporting belongs to its submitted-reviewer progress.
+		...(error instanceof NativeReviewIntegrationError ? {
+			native_failure: error.failureEnvelope.raw,
+			replayability: error.failureEnvelope.replayability,
+			next_action: error.failureEnvelope.nextAction,
+		} : {}),
+	};
+}
+
 function hasExactReviewCaptureSuffix(status: ReviewStatusV3, expected: readonly string[]): boolean {
 	const current = status.nextTransition?.kind === "collect"
 		? (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation === "review.capture-result").map(canonicalReviewCaptureBinding)
@@ -8280,7 +8422,7 @@ async function executeReviewCaptureGroupOperation(
 		if (negotiated.transport !== undefined) return hostTransportUnavailable("gentle_review_capture_group", negotiated.transport);
 		status = negotiated.status!;
 	} catch (error) {
-		return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed" };
+		return captureGroupStatusFailure(error);
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!isSelectedReviewCaptureGroup(group)) return group;
@@ -8326,7 +8468,7 @@ async function executeReviewCaptureGroupOperation(
 			if (!hasExactReviewCaptureSuffix(negotiated.status!, canonicalBindings.slice(index))) return { ...captureGroupAuthorityDrift(negotiated.status!), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 			current = selectExactReviewCapture(negotiated.status!, parameters.lineageId, canonicalBindings[index]!);
 		} catch (error) {
-			return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed", ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
+			return { ...captureGroupStatusFailure(error), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		}
 		if (!isSelectedReviewCapture(current)) return { ...captureGroupRejected(String(current.reason ?? "current STATUS rejected a reviewer binding")), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		try {
@@ -9444,8 +9586,8 @@ export const __testing = {
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
-	isOrdinaryYoloPush,
-	yoloPushConfiguredRestriction,
+	isReversibleYoloCommand,
+	yoloConfiguredRestriction,
 	BASH_COMMAND_POLICIES,
 	evaluateBashPolicies,
 	buildGentlePrompt,
@@ -9472,6 +9614,7 @@ export const __testing = {
 	readActiveToolNames,
 	renderBackgroundSubagentsStatusLine,
 	renderRddStatusLine,
+	pinRddStatusLine,
 	isValidRddModeStatus,
 	resolveRddModeStatus,
 	resolveRddStatusLine,
@@ -9549,6 +9692,9 @@ function createGentleAiExtensionForTesting(
 		cancel: () => classifier?.cancel(),
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
+	pi.on("tool_result", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
+	});
 	pi.on("input", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
 		return { action: "continue" };
@@ -9595,6 +9741,7 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
 		auto.reset();
 		yolo.reset(context);
 		reviewSidebar.reset();
@@ -9842,7 +9989,7 @@ function createGentleAiExtensionForTesting(
 			"For blocked-legacy or blocked-mixed, do not call START repeatedly. Explain invalidation, request explicit user authorization, then call RESET or RECOVER only after authorization. RESET and RECOVER_LOCK route to audited native `gentle-ai review reclaim`; only RESET carries the legacy repositoryId, commonDirHash, inventoryHash, and confirmation challenge. RECOVER routes to native `gentle-ai review recover` with exactly six inputs: predecessorLineage, expectedPredecessorRevision, successorLineage, disposition, actor, and reason. Never send RECOVER the reset challenge and never send it a maintainerAuthorization: Pi reads fresh native target status, pins the predecessor lineage, revision, provider-selected disposition, and target identity, derives the exact six-line native authorization binding, displays it for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once and allows later fresh validated envelopes only for the same live SessionManager, nonempty session ID, and canonical Git common-directory identity, including sibling worktrees; an unrelated repository requires a new explicit human grant. Revoke removes the current repository grant, while nonreload replacement, quit, and process exit remove all session grants; reload preserves them. It grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority operations; delivery commands follow ordinary repository policy.",
-			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it raises passive or medium to high, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). A missing model, a mini model token (gemini is not mini), or low effort keeps the conservative small-model bias. The plan follows the native risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment reports risk "unassessable", verified exactly like "high". This never mutates review authority state.',
+			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it is the only way to get an independent verifier, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). The writer profile is reported but never adds a verifier. The plan follows its risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment (nativeRisk "unassessable"), or a native high, informs only: the plan adds the independent verifier only when escalate names a Task Size high-risk item. This never mutates review authority state.',
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
@@ -10113,7 +10260,8 @@ function createGentleAiExtensionForTesting(
 		// this branch, so no line is resolved or computed for them.
 		// resolveRddStatusLine never throws and never hangs past
 		// RDD_STATUS_TIMEOUT_MS: an absent/timed-out/aborted/failing native
-		// binary renders the fail-closed "unknown" line instead.
+		// binary keeps the last known line for this cwd, or renders the
+		// fail-closed "unknown" line when none was ever read (gentle-shell#1029).
 		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
 		// A startup read still in flight fills the memo: wait for it within the
 		// same deadline instead of spawning the same STATUS a second time.
@@ -10121,7 +10269,11 @@ function createGentleAiExtensionForTesting(
 		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
 		const rddStatusLine = !isPrimarySession
 			? undefined
-			: await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx);
+			: pinRddStatusLine(
+				pinnedRddStatusLines.get(subagentDepthKey),
+				await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx),
+			);
+		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
 		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
@@ -10392,6 +10544,10 @@ function createGentleAiExtensionForTesting(
 			if (modelConfig.status === "invalid") {
 				lines.push(`remedy: fix or remove ${modelConfig.path}`);
 			}
+			lines.push(...herdrSetupHint(process.env, {
+				interactive: ctx.mode === "tui" && ctx.hasUI,
+				isSocket: (path) => { try { return statSync(path).isSocket(); } catch { return false; } },
+			}));
 			ctx.ui.notify(
 				lines.join("\n"),
 				lines.some((line) => line.startsWith("fail:")) || assetLines.some((line) => line.startsWith("warn:")) ? "warning" : "info",

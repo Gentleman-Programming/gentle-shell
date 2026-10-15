@@ -1,13 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
-import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -68,7 +67,7 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return bundledGentlePiConfigHome(process.env) ?? process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return gentlePiConfigHome(process.env);
 }
 
 function bannerConfigPath(configHome = gentleAiConfigHome()): string {

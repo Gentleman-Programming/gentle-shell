@@ -258,16 +258,32 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 	return state;
 }
 
-export function todoPromptBlock(state: TodoState, stale: number): string | undefined {
+// gentle-shell#1367, #1662: the system prompt is a cached prefix for every
+// provider, so the block it carries is byte-stable for the whole session:
+// rules only, no task content and no counters. The current list travels as a
+// hidden transcript message appended when it changes (todoStateMessage,
+// gentle-shell#2195), so requests stay append-only and a change costs only
+// the tail of the conversation, never the prefix.
+const TODO_PROMPT_BLOCK = [
+	"## Todo list",
+	"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
+	"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
+	"While tasks stay open, the current list arrives as a hidden conversation message whenever it changes; the latest one is current, and it is not repeated here.",
+].join("\n");
+
+/** The byte-stable rules block appended to every system prompt. */
+export function todoPromptBlock(): string {
+	return TODO_PROMPT_BLOCK;
+}
+
+/** Persisted once an open list closes, so an earlier snapshot never reads as current work (#2195). */
+export const TODO_CLOSED_STATE = "Current todo list: no open tasks.";
+
+/** The open-task snapshot delivered as a hidden transcript message; undefined when nothing is open. */
+export function todoStateMessage(state: TodoState): string | undefined {
 	if (todoSummary(state).open === 0) return undefined;
 	const lines = state.tasks.map((task, index) => `${index + 1}. [${task.status}] ${task.title}${task.note ? ` — ${task.note}` : ""}`);
-	const staleLine = stale >= STALE_AFTER_TURNS ? `\n(stale: ${stale} turns without an update — bring the list up to date now)` : "";
-	return [
-		"## Todo list",
-		"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
-		"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
-		...lines,
-	].join("\n") + staleLine;
+	return ["Current todo list:", ...lines].join("\n");
 }
 
 function taskRow(task: TodoTask, theme: TodoTheme, inner: number): string {

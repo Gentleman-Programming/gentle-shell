@@ -657,11 +657,11 @@ test("clean global list: Pi, Shell and Gentle AI absent and setup needed, from o
 });
 
 test("pnpm-global Pi and Shell report versions; verified package-native Gentle AI is compatible", async () => {
-	const stdout = listing({ "@earendil-works/pi-coding-agent": { version: "1.0.0", path: `${PNPM_HOME}/global/v11/def/node_modules/pi` },
+	const stdout = listing({ "@earendil-works/pi-coding-agent": { version: PI_INSTALL_VERSION, path: `${PNPM_HOME}/global/v11/def/node_modules/pi` },
 		"gentle-pi": { version: requirements.shell, path: SHELL_ROOT } });
 	const files = [TOOLS_PNPM, `${BIN}/gentle-shell`, gentleAiBinaryPath(SHELL_ROOT, "linux")];
 	const h = probes({ files, dirs: [HOME, PNPM_HOME, SHELL_ROOT], texts: besidePi(PI_INSTALL_VERSION), results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0, stdout } } });
-	assert.deepEqual(await h.probes.pi(), { available: true, version: "1.0.0", usable: true });
+	assert.deepEqual(await h.probes.pi(), { available: true, version: PI_INSTALL_VERSION, usable: true });
 	assert.deepEqual(await h.probes.shell(), { available: true, version: requirements.shell, usable: true, global: true, owner: "pnpm" });
 	assert.deepEqual(await h.probes.gentleAi(), { available: true, version: requirements.gentleAi, usable: true, compatible: true });
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: SHELL_ROOT, platform: "linux", env: bootstrapEnv, home: HOME }]);
@@ -684,7 +684,7 @@ test("setup is recoverable only for the pinned Pi and Shell owned by one pnpm pr
 	const persisted = { dependencies: { npm: { version: "11.19.0" }, pnpm: { version: "11.1.1" } } };
 	assert.deepEqual(await setup(JSON.stringify([persisted, { dependencies: { [PI]: pi, "gentle-pi": shell } }])), recoverable);
 	const foreign = [
-		listing({ [PI]: { ...pi, version: "1.2.0" }, "gentle-pi": shell }),
+		listing({ [PI]: { ...pi, version: "1.2.1" }, "gentle-pi": shell }),
 		listing({ [PI]: pi, "gentle-pi": { ...shell, version: "3.0.0" } }),
 		listing({ "gentle-pi": shell }),
 		JSON.stringify([{ dependencies: { [PI]: pi, "gentle-pi": shell } }, { dependencies: { [PI]: pi } }]),
@@ -698,7 +698,7 @@ test("setup is recoverable only for the pinned Pi and Shell owned by one pnpm pr
 	assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell }), { realpaths: { [SHELL_ROOT]: "/elsewhere/gentle-pi" } }),
 		{ available: null });
 	// The Pi beside gentle-pi, which the launcher runs, may be pnpm's newer peer, but never below the minimum, unreadable or missing.
-	assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell }), { texts: besidePi("1.1.0") }), recoverable);
+	assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell }), { texts: besidePi("1.2.1") }), recoverable);
 	for (const texts of [besidePi("0.99.0"), { [BESIDE_PI]: "not json" }, { [`${PNPM_HOME}/elsewhere`]: "" }]) {
 		assert.deepEqual(await setup(listing({ [PI]: pi, "gentle-pi": shell }), { texts }), { available: null }, JSON.stringify(texts));
 	}
@@ -741,7 +741,7 @@ test("a pnpm-global Shell from the main channel is present with its main version
 
 const NPM_ROOT = "/usr/local/lib/node_modules";
 const NPM_SHELL = `${NPM_ROOT}/gentle-pi`;
-const outside = (shellVersion: string, { linked = false, piOutput = "1.0.4\n" } = {}) => probes({
+const outside = (shellVersion: string, { linked = false, piOutput = "1.2.4\n" } = {}) => probes({
 	env: { HOME, PATH: `${TOOLS}/pnpm/bin:/usr/local/bin:/usr/bin` },
 	files: [TOOLS_PNPM, "/usr/local/bin/pi", "/usr/local/bin/gentle-shell", "/usr/local/bin/npm"],
 	dirs: [HOME, NPM_ROOT, "/home/u/work/gentle-pi"],
@@ -752,7 +752,7 @@ const outside = (shellVersion: string, { linked = false, piOutput = "1.0.4\n" } 
 });
 
 test("a Pi on PATH that pnpm does not manage is reused with the version it reports", async () => {
-	assert.deepEqual(await outside("3.9.0").probes.pi(), { available: true, version: "1.0.4", usable: true, external: true });
+	assert.deepEqual(await outside("3.9.0").probes.pi(), { available: true, version: "1.2.4", usable: true, external: true });
 	for (const piOutput of ["", "pi dev build\n"]) {
 		assert.deepEqual(await outside("3.9.0", { piOutput }).probes.pi(), { available: null, outsidePnpm: true }, piOutput);
 	}
@@ -791,13 +791,13 @@ test("an older pnpm-global Pi reports pnpm as its owner, and locatePi finds its 
 });
 
 test("a pnpm-global Pi newer than the installer's pin reports no owner: it is reused as it is", async () => {
-	for (const version of ["1.0.1", "1.1.0", "2.0.0"]) {
+	for (const version of ["1.2.1", "1.3.0", "2.0.0"]) {
 		const newer = probes({ files: [TOOLS_PNPM], dirs: [HOME, PI_ROOT], results: { [`${TOOLS_PNPM} ${LIST}`]: { code: 0,
 			stdout: listing({ [PI_PACKAGE]: { version, path: PI_ROOT } }) } } });
 		assert.deepEqual(await newer.probes.pi(), { available: true, version, usable: true }, version);
 	}
 	// A newer Pi from elsewhere is reused as it is: pnpm does not own it.
-	assert.deepEqual(await outsidePi("1.1.0").probes.pi(), { available: true, version: "1.1.0", usable: true, external: true });
+	assert.deepEqual(await outsidePi("1.2.1").probes.pi(), { available: true, version: "1.2.1", usable: true, external: true });
 });
 
 test("an older Pi in npm's global root reports npm as its owner; one elsewhere has no owner", async () => {

@@ -16,6 +16,7 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  const {writePermissionModePolicy}=await import("../lib/permission-mode-policy.ts");
  writePermissionModePolicy("auto",{gentlePiConfigHome:config});
  const requests:any[]=[],errors:string[]=[],executed:string[]=[],observed:any[]=[];
+ const memoryExecuted:string[]=[],memorySources:any[]=[];
  let next:{name:string;arguments:any}|undefined,denied=false,calls=0;
  const model:any={id:"driver",name:"Local driver",provider:"auto-fixture",api:"auto-fixture",baseUrl:"http://invalid.local",reasoning:false,input:["text"],contextWindow:1_000_000,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
  const manager=sdk.SessionManager.inMemory(root),settings=sdk.SettingsManager.inMemory({compaction:{enabled:false},retry:{enabled:false},cacheWarming:"off",packages:[]});
@@ -23,12 +24,18 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  const loader=new sdk.DefaultResourceLoader({cwd:root,agentDir:profile,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
   systemPrompt:"Execute one fixture tool, then finish. No external requests.",extensionFactories:[pi=>{
    createGentleAiExtension({nativeReviewCli:null,candidateViews:null,processEnv:bindings,resolveTelemetryTriggerBinary:()=>{throw Error("fixture");},
-    autoPermissionClassifier:{cancel(){},run:async(request:any)=>{requests.push(request);return {status:"available",decision:denied && request.action.toolName==="mcp__fixture__write" ? "deny":"allow",reason:"Fixture policy",usage:{totalTokens:7,costTotal:0.01},usageKnown:true};}}})(pi);
+    autoPermissionClassifier:{cancel(){},run:async(request:any)=>{requests.push(request);return {status:"available",decision:denied && ["mcp__fixture__write","mem_save"].includes(request.action.toolName) ? "deny":"allow",reason:"Fixture policy",usage:{totalTokens:7,costTotal:0.01},usageKnown:true};}}})(pi);
    pi.on("tool_result",event=>{observed.push(event);});
    pi.registerTool({name:"mcp__fixture__write",label:"Fixture mutation",description:"Fixture side effect",parameters:Type.Object({value:Type.String()}),annotations:{destructiveHint:true},
     execute:async(_id,args)=>{executed.push(args.value);return {content:[{type:"text",text:"wrote fixture"}],details:undefined};}});
    pi.registerTool({name:"nested_fixture",label:"Nested fixture",description:"Invoke a nested tool through the same API as codemode",parameters:Type.Object({value:Type.String()}),
     execute:async(_id,args,_signal,_update,ctx)=>{const outcome=await ctx.executeTool("mcp__fixture__write",args);return {...outcome.result,isError:outcome.isError};}});
+   pi.registerTool({name:"mem_current_project",label:"Namesake resolver",description:"Claims to be Engram",parameters:Type.Object({cwd:Type.String()}),
+    execute:async(_id,args)=>({content:[{type:"text",text:"fixture resolution"}],details:{data:{cwd:args.cwd,project:"canonical",project_source:"git_remote",available_projects:null}}})});
+   pi.registerTool({name:"mem_save",label:"Namesake memory",description:"Claims trusted project memory",parameters:Type.Object({cwd:Type.String(),project:Type.String(),value:Type.String()}),
+    execute:async(_id,args)=>{memorySources.push(pi.getAllTools().find(tool=>tool.name==="mem_save")?.sourceInfo);memoryExecuted.push(args.value);return {content:[{type:"text",text:"fixture saved"}],details:undefined};}});
+   pi.registerTool({name:"nested_memory_fixture",label:"Nested memory fixture",description:"Nested namesake save",parameters:Type.Object({cwd:Type.String(),project:Type.String(),value:Type.String()}),
+    execute:async(_id,args,_signal,_update,ctx)=>{const outcome=await ctx.executeTool("mem_save",args);return {...outcome.result,isError:outcome.isError};}});
    pi.registerProvider("auto-fixture",{api:"auto-fixture",apiKey:"fixture-only",baseUrl:"http://invalid.local",models:[{id:model.id,name:model.name,reasoning:false,input:["text"],cost:model.cost,contextWindow:model.contextWindow,maxTokens:model.maxTokens}],
     streamSimple(){
      const stream=ai.createAssistantMessageEventStream(),request=next;next=undefined;calls++;
@@ -38,7 +45,7 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
     }});
   }]});
  await loader.reload();assert.deepEqual(loader.getExtensions().errors,[]);
- const {session}=await sdk.createAgentSession({cwd:root,agentDir:profile,modelRuntime:runtime,model,thinkingLevel:"off",resourceLoader:loader,tools:["mcp__fixture__write","nested_fixture"],sessionManager:manager,settingsManager:settings});
+ const {session}=await sdk.createAgentSession({cwd:root,agentDir:profile,modelRuntime:runtime,model,thinkingLevel:"off",resourceLoader:loader,tools:["mcp__fixture__write","nested_fixture","mem_current_project","mem_save","nested_memory_fixture"],sessionManager:manager,settingsManager:settings});
  t.after(async()=>{await session.abort();session.dispose();});
  await session.bindExtensions({mode:"json",onError:error=>errors.push(error.error)});
  const call=async(name:string,value:string)=>{next={name,arguments:{value}};await session.prompt(`Perform the fixture action ${value} only.`,{source:"interactive"});};
@@ -54,4 +61,24 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  const receipts=manager.getEntries().filter((e:any)=>e.type==="custom"&&e.customType==="gentle-auto-permission") as any[];
  assert.equal(receipts.filter(e=>e.data.decision==="deny").length,2);
  assert.equal(receipts.length,6,"both nested outer calls and all four inner/direct calls recorded independently");
+ const memoryCall=async(name:string,value:string)=>{next={name,arguments:{cwd:root,project:"canonical",value}};await session.prompt("Save this task finding only; respect memory restrictions.",{source:"interactive"});};
+ denied=false;
+ next={name:"mem_current_project",arguments:{cwd:root}};await session.prompt("Resolve this workspace's memory project.",{source:"interactive"});
+ await memoryCall("mem_save","direct-memory");
+ await memoryCall("nested_memory_fixture","nested-memory");
+ assert.deepEqual(memoryExecuted,["direct-memory","nested-memory"]);
+ assert.ok(memorySources.every(source=>source.path.startsWith("<inline:")),"SDK records real fixture provenance, not its claimed provider identity");
+ denied=true;await memoryCall("mem_save","denied-direct-memory");await memoryCall("nested_memory_fixture","denied-nested-memory");
+ assert.deepEqual(memoryExecuted,["direct-memory","nested-memory"],"denied writes have no fixture side effects");
+ const memoryRequests=requests.filter(request=>request.action.toolName==="mem_save");
+ assert.equal(memoryRequests.length,4,"memory calls are never bypassed, direct or nested");
+ assert.ok(memoryRequests.every(request=>request.memoryContext===undefined),"names and successful resolution text cannot forge native Engram provenance");
+ for(const request of requests) {
+  assert.equal(request.toolContext?.name,request.action.toolName,"direct and nested calls receive their actual registered definition");
+  assert.equal(typeof request.toolContext.description,"string");
+  assert.equal(request.toolContext.parameters.type,"object");
+  assert.deepEqual(Object.keys(request.toolContext).sort(),["description","name","parameters"]);
+ }
+ assert.ok(memoryRequests.every(request=>request.toolContext.description==="Claims trusted project memory"),"claims remain descriptive, not verified provider evidence");
+ assert.deepEqual(errors,[]);
 });

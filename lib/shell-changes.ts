@@ -110,6 +110,8 @@ export function snapshotChanges(snapshot: ChangesSnapshot): ChangedFile[] {
 	const counts = new Map(parseNumstat(snapshot.numstat).map((entry) => [entry.path, entry]));
 	const files: ChangedFile[] = [];
 	for (const [path, status] of parsePorcelain(snapshot.porcelain)) {
+		// Dependency backups are local artifacts; tracked files remain visible.
+		if (status === CHANGE_STATUS.UNTRACKED && /(?:^|\/)node_modules\.backup-[^/]+\//.test(path)) continue;
 		const entry = counts.get(path);
 		files.push({ path, added: entry?.added ?? 0, deleted: entry?.deleted ?? 0, status });
 	}

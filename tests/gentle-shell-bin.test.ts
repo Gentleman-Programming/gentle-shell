@@ -250,6 +250,40 @@ test("a quoted .js path on an earlier comment line in the .cmd wrapper is never 
 	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed on an unrelated decoy comment-line path must not reuse the old version");
 });
 
+for (const extension of ["cmd", "bat"]) {
+	test(`a relative script in a .${extension} wrapper never caches the wrapper-directory decoy on Windows`, { skip: process.platform !== "win32" }, (t) => {
+		const f = fixture(t);
+		const wrapperDir = join(f.root, "wrapper");
+		const cwd = join(f.root, "working-directory");
+		mkdirSync(wrapperDir);
+		mkdirSync(cwd);
+		const decoy = writeCountingPiScript(wrapperDir, "1.2.7");
+		const actual = writeCountingPiScript(cwd, "1.2.5");
+		const command = join(wrapperDir, `relative-pi.${extension}`);
+		writeFileSync(command, `@echo off\r\n"${process.execPath}" "counting-pi.mjs" %*\r\n`);
+		const wrapperBefore = readFileSync(command);
+		const decoyBefore = readFileSync(join(wrapperDir, "counting-pi.mjs"));
+		const env = { ...f.env, GENTLE_SHELL_PI: command };
+		const check = (version: string) => {
+			const result = run(env, ["--version"], { cwd });
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stderr, "");
+			assert.equal(result.stdout, `gentle-shell ${ownGentlePiVersion()}\npi ${version}\nhome isolated ${f.gentleShellHome}\n`);
+		};
+		check("1.2.5");
+		assert.equal(readFileSync(actual.log, "utf8").length, 1);
+		const script = join(cwd, "counting-pi.mjs");
+		writeFileSync(script, readFileSync(script, "utf8").replaceAll("1.2.5", "1.2.6") + "\n");
+		check("1.2.6");
+		assert.equal(readFileSync(actual.log, "utf8").length, 2, "the script executed from cwd must be re-probed after changing");
+		check("1.2.6");
+		assert.equal(readFileSync(actual.log, "utf8").length, 3, "a relative script must always re-probe rather than cache the decoy");
+		assert.equal(readFileSync(decoy.log, "utf8"), "", "the wrapper-directory decoy must never execute");
+		assert.deepEqual(readFileSync(command), wrapperBefore);
+		assert.deepEqual(readFileSync(join(wrapperDir, "counting-pi.mjs")), decoyBefore);
+	});
+}
+
 for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-js-shim"]) {
 	test(`wrapper cache recognizes only supported execution shapes: ${shape}`, { skip: process.platform !== "win32" }, (t) => {
 		const f = fixture(t);

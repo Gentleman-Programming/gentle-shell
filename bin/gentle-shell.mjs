@@ -478,7 +478,10 @@ function resolveVersionProbeIdentity(command) {
 		script = invocation[2];
 	}
 	if (script === undefined || script !== scripts[0][1]) return undefined;
-	const targetPath = isAbsolute(script) ? script : resolvePath(dirname(command), script);
+	// Node resolves a relative script from the child cwd, not the wrapper's
+	// directory. Never cache a potentially unrelated wrapper-directory file.
+	if (!isAbsolute(script)) return undefined;
+	const targetPath = script;
 	let target;
 	try {
 		target = statSync(targetPath);

@@ -1429,6 +1429,26 @@ Bootstrap: storage candidate C:\Users\me\AppData\Local: acl-mask at C:\Users\me\
 Bootstrap: storage candidate C:\Users\me: acl-mask at C:\Users: S-1-5-21-…-1002 (PC\other) allowed 0x00100002
 ```
 
+#### Both profile candidates fail `acl-mask`
+
+**The bootstrap stops safely; this diagnostic does not unblock installation.**
+When both `%LOCALAPPDATA%` and `%USERPROFILE%` fail `acl-mask`, another
+principal can write to a candidate or one of its ancestors. The existing
+candidate lines retain the affected path, SID, resolved account name (when
+available) and allowed rights mask. `CodexSandboxUsers` may be the reported
+account; an unresolved SID is not evidence that it belongs to that group.
+
+There is currently no supported automatic alternative for this case. No third
+storage candidate or trust exception is provided. Do not remove sandbox
+permissions or run elevated as a workaround.
+
+For troubleshooting/support, stop and report the reason codes and candidate
+lines in a repository issue. Before sharing, redact usernames, machine/domain
+names, personal path components and identifying SID components consistently;
+keep the reason codes, rights masks, candidate/ancestor relationships and whether
+an account name resolved. Never include credentials, tokens or unrelated logs.
+This information supports investigation, not a promise of installation recovery.
+
 A failure after the walk (`collision`, `protected-dacl`, `private-owner`,
 `private-ace`, or an unexpected step) adds a line naming the chosen directory.
 
@@ -1787,8 +1807,15 @@ installer then runs that target itself with `shell:false`
 | npm cmd-shim 4.1-8 and 9, JS target | `npm install -g` (pnpm, Pi, npm itself in `%APPDATA%\npm`) | The shim's sibling `node.exe`, else the first `node` on PATH (an `.exe`), with the JS entry. |
 | npm cmd-shim, native target | `npm install -g pnpm@12` or `@pnpm/exe` | That `.exe` (an extensionless @pnpm/exe hard link runs as its `.exe` twin). |
 | @zkochan/cmd-shim 9, native or JS target | pnpm 10-12 global bins: `pnpm setup`, `pnpm self-update`, `pnpm add -g` | The `.exe`, or the JS entry with the sibling/PATH Node or the `node.exe` the shim names. pnpm's optional NODE_PATH block only extends module lookup and is not reproduced. |
+| pnpm 12 self-shim with the exact `@GOTO :pnpm` / title-restoration prologue reported in #2127 | Issue-reported pnpm 12.11.2 `pnpm self-update` (not independently generator-verified) | The native target directly, never its CMD prologue. |
 | Node.js's `npm.cmd` (npm 6-9, and 10-11 with `npm-prefix.js`) | Node.js, also behind nvm-windows (`mklink /D`) or fnm (a junction) | Node as above with `node_modules\npm\bin\npm-cli.js`, after npm's own redirect: the fixed prefix query (`npm-prefix.js`, or `npm-cli.js prefix -g`) from the drive root, then the `npm-cli.js` under that prefix when it exists. |
 | Any `.exe` | Volta (`C:\Program Files\Volta\npm.exe`), mise's default `exe` shims, pnpm's installer | Itself. |
+
+Classic pnpm native invocations and the reported pnpm 12 self-shim accept exactly
+two or three literal spaces before `%*`, with LF or CRLF line endings. The entire
+template must match; extra commands, changed prologue lines, environment-expanded
+targets and UNC targets remain unrecognized. Recognition does not bypass the
+existing storage, reparse-point, package metadata, version or executable checks.
 
 Anything else (mise's `file` shims, Volta's package shims, Corepack's pnpm, a
 hand-written wrapper) is never run: an npm is then not usable and the plan

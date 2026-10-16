@@ -36,6 +36,40 @@ const nodeNpmCmd = (prefixJs: boolean) => ":: Created by npm, please don't edit 
 	"SET \"NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js\"\r\n" +
 	(prefixJs ? "FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO (\r\n" : "FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_CLI_JS%\" prefix -g') DO (\r\n") +
 	"  SET \"NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js\"\r\n)\r\nIF EXIST \"%NPM_PREFIX_NPM_CLI_JS%\" (\r\n  SET \"NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%\"\r\n)\r\n\r\n\"%NODE_EXE%\" \"%NPM_CLI_JS%\" %*\r\n";
+// Issue-reported pnpm 12.11.2 self-shim (#2127); not independently generator-verified.
+const pnpmSelf = (target: string, spaces = "  ") => [
+	"@GOTO :pnpm",
+	"@REM cmd.exe may still be running the pnpm.cmd this file replaced, and read",
+	"@EXIT /B %ERRORLEVEL%",
+	":pnpm",
+	"@SETLOCAL",
+	'@SET "_PNPM_RESTORE_TITLE="',
+	"@SETLOCAL EnableDelayedExpansion",
+	'@SET "_PNPM_CMDLINE=!CMDCMDLINE:/c=!"',
+	'@IF "!_PNPM_CMDLINE!"=="!CMDCMDLINE!" (ENDLOCAL & SET "_PNPM_RESTORE_TITLE=1") ELSE ENDLOCAL',
+	`@GOTO #_undefined_# 2>NUL || (IF "%_PNPM_RESTORE_TITLE%"=="1" TITLE %COMSPEC%) & "${target}"${spaces}%*`,
+	"",
+].join("\n");
+
+test("reported native pnpm templates accept only exact prologues and two or three spaces", () => {
+	const target = "..\\global\\v11\\fixture\\node_modules\\pnpm\\pnpm.exe";
+	const classic = (path: string, spaces: string) => `@SETLOCAL\n@"${path}"${spaces}%*\n`;
+	for (const make of [classic, pnpmSelf]) {
+		for (const newline of ["\n", "\r\n"]) {
+			for (const spaces of ["  ", "   "]) {
+				const text = make(`%~dp0\\${target}`, spaces).replaceAll("\n", newline);
+				assert.deepEqual(windowsShim(text), { exe: target });
+				assert.deepEqual(windowsShim(make("C:\\pnpm\\pnpm.exe", spaces).replaceAll("\n", newline)), { exe: "C:\\pnpm\\pnpm.exe" });
+				for (const altered of [text + `echo extra${newline}`, text.replace("%*", "%* & echo extra"), text.replace("%*", "%*\rX")]) assert.equal(windowsShim(altered), null);
+			}
+			for (const spaces of ["", " ", "    ", "\t", " \t"]) assert.equal(windowsShim(make(`%~dp0\\${target}`, spaces).replaceAll("\n", newline)), null);
+			for (const path of ["%PNPM_HOME%\\pnpm.exe", "\\\\server\\share\\pnpm.exe", "%~dp0\\\\server\\pnpm.exe"]) assert.equal(windowsShim(make(path, "  ").replaceAll("\n", newline)), null);
+		}
+	}
+	const reported = pnpmSelf(`%~dp0\\${target}`);
+	for (const line of reported.trimEnd().split("\n")) assert.equal(windowsShim(reported.replace(line, line + " & echo changed")), null);
+});
+
 // Shims no structure can resolve: mise's legacy file shim, Volta's package and
 // default shims (github.com/jdx/mise src/shims.rs, volta-cli/volta shim.rs, wix/shim.cmd).
 const unresolvable = ["@echo off\r\nsetlocal\r\nmise x -- %*\r\n", "@echo off\nvolta run %~n0 %*\n", "@echo off\r\n\"%~dpn0.exe\" %*\r\n"];
@@ -723,6 +757,18 @@ const claimRejections = ["policy", "path-mismatch", "home-owner", "ancestor-repa
 const claimSteps = ["policy", "path-mismatch", "home-owner", "ancestor-walk", "create", "private-acl", "marker"];
 const claimReasons = [...claimRejections, ...claimSteps.map((step) => `unexpected-${step}`)];
 const claimMessage = "Bootstrap: private storage ACL/reparse/ownership claim failed or policy denied it.";
+const bothAclDiagnostic = [
+	"Bootstrap: Both profile storage candidates failed acl-mask: another principal can write to a candidate or ancestor.",
+	"Bootstrap: CodexSandboxUsers is relevant only if reported above; an unresolved SID does not identify it.",
+	"Bootstrap: No supported automatic alternative. Do not remove sandbox permissions or run elevated as a workaround.",
+	"Bootstrap: Troubleshooting/support and privacy redaction: docs/install-wizard.md#both-profile-candidates-fail-acl-mask",
+];
+const bothAclCondition = "$reason -ceq 'acl-mask' -and $tried.Count -eq 2 -and $tried[0].StartsWith($candidates[0][1] + ': acl-mask at ')";
+test("claim both-acl diagnostic is fixed and limited to two acl-mask rejections", () => {
+	const stage = cmdStage(stageMarkers.claim);
+	assert.ok(stage.includes(`if (${bothAclCondition}) { ${bothAclDiagnostic.map((line) => `[Console]::Error.WriteLine('${line}');`).join(' ')} }`));
+	assert.ok(stage.indexOf("foreach ($line in $tried)") < stage.indexOf(bothAclDiagnostic[0]), "keep detailed evidence before the explanation");
+});
 test("claim reports one fixed non-sensitive reason code per check beside the unchanged message", () => {
 	const stage = cmdStage(stageMarkers.claim);
 	const thrown = [...stage.matchAll(/throw '([^']*)'/g)].map((match) => match[1]);
@@ -780,7 +826,7 @@ test("the claim base may be owned by the user, SYSTEM or Administrators and the 
 
 test("a rejected claim keeps its first line, then names each candidate folder and, for acl-mask, the principal and rights", () => {
 	const stage = cmdStage(stageMarkers.claim);
-	assert.ok(stage.includes(`[Console]::Error.WriteLine('${claimMessage} Reason: ' + $reason); foreach ($line in $tried) { [Console]::Error.WriteLine('Bootstrap: storage candidate ' + $line) }; exit 1`));
+	assert.ok(stage.includes(`[Console]::Error.WriteLine('${claimMessage} Reason: ' + $reason); foreach ($line in $tried) { [Console]::Error.WriteLine('Bootstrap: storage candidate ' + $line) };`));
 	assert.ok(stage.includes("$tried += ($base + ': ' + $code + $detail);"));
 	assert.ok(stage.includes("$detail = ' at ' + $path + ': ' + $rule.IdentityReference.Value + (& $account $rule.IdentityReference) + ' allowed 0x' + ([int]$rule.FileSystemRights).ToString('X8'); throw 'acl-mask'"));
 	assert.ok(stage.includes("$detail = ' owned by ' + $owner.Value + (& $account $owner); throw 'home-owner'"));
@@ -1618,6 +1664,47 @@ test("native Windows: when both candidates fail, the claim names each folder, pr
 		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_FALLBACK_TOOLS), false);
 		const inside = join(profile, "tools"); mkdirSync(inside);
 		assert.throws(() => verifyWindowsStorage(inside, env), (error: { check?: string }) => error.check === "ancestor-acl-mask");
+	} finally { f.cleanup(); }
+});
+
+test("native Windows: both-acl diagnostic preserves real claim rejection and fixture state", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const profile = join(f.root, "profile");
+		mkdirSync(local); mkdirSync(profile);
+		await grantEveryone(f.root, local, modifyRights);
+		await grantEveryone(f.root, profile, modifyRights);
+		const env = candidateEnv(f.root, local, profile);
+		const stage = cmdStage(stageMarkers.claim);
+		// The pre-change production fragment differs only by this fixed diagnostic.
+		const insertion = `if (${bothAclCondition}) { ${bothAclDiagnostic.map((line) => `[Console]::Error.WriteLine('${line}');`).join(' ')} } `;
+		const baseline = stage.replace(insertion, "");
+		// Stock PowerShell lazily initializes AppData/Roaming under USERPROFILE
+		// during the claim's first Get-Item. Warm the unchanged fragment first.
+		assertClaimRejected(await nativeCmd(f.root, [baseline], env), "acl-mask");
+		const snapshot = () => [local, profile].map((base) => readdirSync(base, { recursive: true }).sort());
+		const initial = snapshot();
+		const before = await nativeCmd(f.root, [baseline], env);
+		const after = await nativeCmd(f.root, [stage], env);
+		assertClaimRejected(before, "acl-mask"); assertClaimRejected(after, "acl-mask");
+		assert.equal(before.stdout, ""); assert.equal(after.stdout, "");
+		assert.match(before.stderr, /^Bootstrap: private storage[^\r\n]+Reason: acl-mask\r?\nBootstrap: storage candidate [^\r\n]+: acl-mask at [^\r\n]+: S-[0-9-]+(?: \([^\r\n]+\))? allowed 0x[0-9A-F]{8}\r?\nBootstrap: storage candidate [^\r\n]+: acl-mask at [^\r\n]+: S-[0-9-]+(?: \([^\r\n]+\))? allowed 0x[0-9A-F]{8}\r?\n$/);
+		assert.equal(after.stderr.replaceAll("\r\n", "\n"), before.stderr.replaceAll("\r\n", "\n") + bothAclDiagnostic.join("\n") + "\n");
+		assert.deepEqual(snapshot(), initial, "neither rejected fragment creates storage or counter files");
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_TOOLS), false);
+		assert.equal(existsSync(env.GENTLE_BOOTSTRAP_FALLBACK_TOOLS), false);
+		assert.ok(readFileSync(env.GENTLE_FIXTURE_RECORDS, "utf8").trim().split(/\r?\n/).every((line) => /^[1-9][0-9]*\|[1-9][0-9]*$/.test(line)), "only fixture process-handle records are present");
+		for (const [reason, changes] of [
+			["acl-mask", { GENTLE_BOOTSTRAP_FALLBACK_TOOLS: "" }],
+			["path-mismatch", { GENTLE_BOOTSTRAP_TOOLS: join(profile, "wrong-parent") }],
+		] as const) {
+			const alternate = { ...env, ...changes };
+			const oldResult = await nativeCmd(f.root, [baseline], alternate);
+			const newResult = await nativeCmd(f.root, [stage], alternate);
+			assertClaimRejected(oldResult, reason); assertClaimRejected(newResult, reason);
+			assert.deepEqual(newResult, oldResult, "single-candidate and non-ACL failures remain byte-for-byte unchanged");
+			assert.deepEqual(snapshot(), initial);
+		}
 	} finally { f.cleanup(); }
 });
 

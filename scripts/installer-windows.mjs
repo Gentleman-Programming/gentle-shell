@@ -58,6 +58,9 @@ const npmTemplates = [
 	["entry", `${npmProgram})\n\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  "%dp0%\\\0" %*\n`],
 	["exe", `${npmHead}"%dp0%\\\0"   %*\n`],
 ];
+// Complete self-shim reported in #2127 (pnpm 12.11.2), not an inferred prologue.
+const pnpmSelfHead = '@GOTO :pnpm\n@REM cmd.exe may still be running the pnpm.cmd this file replaced, and read\n@EXIT /B %ERRORLEVEL%\n:pnpm\n@SETLOCAL\n@SET "_PNPM_RESTORE_TITLE="\n@SETLOCAL EnableDelayedExpansion\n@SET "_PNPM_CMDLINE=!CMDCMDLINE:/c=!"\n@IF "!_PNPM_CMDLINE!"=="!CMDCMDLINE!" (ENDLOCAL & SET "_PNPM_RESTORE_TITLE=1") ELSE ENDLOCAL\n';
+const pnpmSelfCall = '@GOTO #_undefined_# 2>NUL || (IF "%_PNPM_RESTORE_TITLE%"=="1" TITLE %COMSPEC%) & "\0"';
 const pnpmHeader = /^@SETLOCAL\n(?:@IF NOT DEFINED NODE_PATH \(\n {2}@SET "NODE_PATH=([^"\n]*)"\n\) ELSE \(\n {2}@SET "NODE_PATH=\1;%NODE_PATH%"\n\)\n)?/;
 /** The value at every `\0` of template, when text is exactly that template. */
 function filled(text, template) {
@@ -87,15 +90,22 @@ export function windowsShim(text) {
 		const target = shimPath(filled(normalized, template), true);
 		if (target) return kind === "exe" ? { exe: target } : { entry: target, node: null };
 	}
+	const target = (quoted) => (quoted?.startsWith("%~dp0\\") ? shimPath(quoted.slice(6), true) : shimPath(quoted, false));
+	for (const spaces of ["  ", "   "]) {
+		for (const relative of [true, false]) {
+			const call = relative ? pnpmSelfCall.replace("\0", "%~dp0\\\0") : pnpmSelfCall;
+			const exe = shimPath(filled(normalized, `${pnpmSelfHead}${call}${spaces}%*\n`), relative);
+			if (exe) return { exe };
+		}
+	}
 	const header = pnpmHeader.exec(normalized);
 	if (!header) return null;
 	const rest = normalized.slice(header[0].length);
-	const target = (quoted) => (quoted?.startsWith("%~dp0\\") ? shimPath(quoted.slice(6), true) : shimPath(quoted, false));
 	const javascript = /^@IF EXIST "%~dp0\\node\.exe" \(\n {2}"%~dp0\\node\.exe" {2}"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" %\*\n/.exec(rest);
 	if (javascript && rest === pnpmJs.replaceAll("\0", javascript[1]) && target(javascript[1])) return { entry: target(javascript[1]), node: null };
 	const pinned = /^@"([A-Za-z]:\\[^"%\x00-\x1f]*\\node\.exe)" {2}"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" %\*\n$/i.exec(rest);
 	if (pinned && target(pinned[2])) return { entry: target(pinned[2]), node: pinned[1] };
-	const native = /^@"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" {3}%\*\n$/.exec(rest);
+	const native = /^@"(%~dp0\\[^"%\x00-\x1f]+|[^"%\x00-\x1f]+)" {2,3}%\*\n$/.exec(rest);
 	return native && target(native[1]) ? { exe: target(native[1]) } : null;
 }
 

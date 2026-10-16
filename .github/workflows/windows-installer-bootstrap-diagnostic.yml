@@ -1,0 +1,165 @@
+name: Windows installer bootstrap diagnostic
+
+on:
+  push:
+    branches: [diagnose/windows-installer-bootstrap]
+
+permissions:
+  contents: read
+
+jobs:
+  paired-diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable base
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: f58010c46c7bad855f371d958f75d7c690c41098
+          path: base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout pushed candidate
+        if: always()
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup exact Node
+        if: always()
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+
+      # No dependencies, full installer entry, global tooling or ACL setup.
+      # Only the existing tests may mutate their owned, guarded fixtures.
+      - name: Collect paired evidence and enforce verdicts
+        if: always()
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logs = Join-Path $env:RUNNER_TEMP 'bootstrap-diagnostic'
+          New-Item -ItemType Directory -Force $logs | Out-Null
+          $baseSha = 'f58010c46c7bad855f371d958f75d7c690c41098'
+          $bounded = '^(CMD entry contains|fixed ACL predicates|portable ACL fixture|claim reports|claim tries|the claim base|a rejected claim|native fixture compositions|native Windows: production owned claim/check|native Windows: a %LOCALAPPDATA%|native Windows: when both candidates fail)'
+          $regressions = 'reported native pnpm templates|only complete known Windows shims|both-acl diagnostic'
+          $node = (Get-Command node -CommandType Application).Source
+          $metadata = [ordered]@{
+            base = $baseSha; candidate = $env:CANDIDATE_SHA
+            node = (& $node --version); nodeSha256 = (Get-FileHash $node).Hash
+            windows = [Environment]::OSVersion.VersionString
+            imageOS = $env:ImageOS; imageVersion = $env:ImageVersion
+            runnerOS = $env:RUNNER_OS; runnerArch = $env:RUNNER_ARCH
+            signalSemantics = 'Windows native exit code; no POSIX signal is reported'
+            comparison = 'Inspect stderr separately for intended diagnostic additions; TAP paths and timing are dynamic, not byte-identical'
+          }
+          $metadata | ConvertTo-Json | Set-Content "$logs/metadata.json"
+          $failed = $metadata.node -ne 'v24.14.0'
+          foreach ($side in @('base', 'candidate')) {
+            $root = Join-Path $env:GITHUB_WORKSPACE $side
+            try {
+              $expected = if ($side -eq 'base') { $baseSha } else { $env:CANDIDATE_SHA }
+              $actual = & git -C $root rev-parse HEAD
+              if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) { throw 'Checkout SHA mismatch' }
+              $hashes = Get-ChildItem "$root/scripts", "$root/runtime" -File -Recurse |
+                Where-Object { $_.Extension -in @('.mjs', '.cmd') } |
+                ForEach-Object {
+                  [ordered]@{ path = [IO.Path]::GetRelativePath($root, $_.FullName); sha256 = (Get-FileHash $_.FullName).Hash }
+                }
+              $hashes += foreach ($file in @('tests/installer-windows-bootstrap.test.ts', 'tests/installer-runner.test.ts')) {
+                [ordered]@{ path = $file; sha256 = (Get-FileHash (Join-Path $root $file)).Hash }
+              }
+              @{ sha = $actual; files = $hashes } | ConvertTo-Json -Depth 5 | Set-Content "$logs/$side-sources.json"
+              $statusBefore = & git -C $root status --porcelain --untracked-files=all
+              if ($LASTEXITCODE -ne 0 -or $statusBefore) { throw 'Checkout not clean before run' }
+              $commands = @(@{ name = 'bounded'; pattern = $bounded; count = 12; file = 'tests/installer-windows-bootstrap.test.ts' })
+              if ($side -eq 'candidate') {
+                $commands += @{ name = 'regressions'; pattern = $regressions; count = 4; file = 'tests/installer-windows-bootstrap.test.ts' }
+                $commands += @{ name = 'runner'; pattern = $null; count = $null; file = 'tests/installer-runner.test.ts' }
+              }
+              foreach ($command in $commands) {
+                $label = "$side-$($command.name)"
+                $record = [ordered]@{ command = $command; exitCode = $null; signal = $null; verdict = 'failed' }
+                try {
+                  $info = [Diagnostics.ProcessStartInfo]::new($node)
+                  $info.WorkingDirectory = $root
+                  $info.UseShellExecute = $false
+                  $info.RedirectStandardOutput = $true
+                  $info.RedirectStandardError = $true
+                  foreach ($arg in @('--experimental-strip-types', '--test', '--test-reporter=tap')) { $info.ArgumentList.Add($arg) }
+                  if ($command.pattern) {
+                    $info.ArgumentList.Add('--test-name-pattern')
+                    $info.ArgumentList.Add($command.pattern)
+                  }
+                  $info.ArgumentList.Add($command.file)
+                  $record.arguments = @($info.ArgumentList)
+                  $stdout = [IO.File]::Create("$logs/$label.stdout.log")
+                  $stderr = [IO.File]::Create("$logs/$label.stderr.log")
+                  try {
+                    $process = [Diagnostics.Process]::new()
+                    $process.StartInfo = $info
+                    if (!$process.Start()) { throw 'Native process did not start' }
+                    $outTask = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
+                    $errTask = $process.StandardError.BaseStream.CopyToAsync($stderr)
+                    $process.WaitForExit()
+                    $record.exitCode = $process.ExitCode
+                    [Threading.Tasks.Task]::WaitAll(@($outTask, $errTask))
+                  } finally {
+                    $stdout.Dispose()
+                    $stderr.Dispose()
+                    if ($process) { $process.Dispose() }
+                  }
+                  $tap = [IO.File]::ReadAllText("$logs/$label.stdout.log")
+                  $counts = @{}
+                  foreach ($key in @('tests', 'pass', 'fail', 'skipped', 'cancelled', 'todo')) {
+                    $matches = [regex]::Matches($tap, "(?m)^# $key (\d+)\r?$")
+                    if ($matches.Count -ne 1) { throw "Missing or ambiguous TAP $key" }
+                    $counts[$key] = [int]$matches[0].Groups[1].Value
+                  }
+                  $record.counts = $counts
+                  if ($record.exitCode -ne 0) { throw "Native exit $($record.exitCode)" }
+                  if ($counts.tests -le 0 -or $counts.pass -ne $counts.tests -or $counts.fail -ne 0 -or
+                      $counts.skipped -ne 0 -or $counts.cancelled -ne 0 -or $counts.todo -ne 0) { throw 'Incomplete TAP success' }
+                  if ($command.count -and $counts.tests -ne $command.count) { throw 'Unexpected selected test count' }
+                  $record.verdict = 'passed'
+                } catch {
+                  $record.error = $_.Exception.Message
+                  $failed = $true
+                } finally {
+                  $record | ConvertTo-Json -Depth 6 | Set-Content "$logs/$label-verdict.json"
+                }
+              }
+            } catch {
+              $_.Exception.Message | Set-Content "$logs/$side-setup-error.txt"
+              $failed = $true
+            } finally {
+              $status = & git -C $root status --porcelain --untracked-files=all
+              $clean = $LASTEXITCODE -eq 0 -and !$status
+              @{ clean = $clean; status = @($status) } | ConvertTo-Json | Set-Content "$logs/$side-clean.json"
+              if (!$clean) { $failed = $true }
+            }
+          }
+          $comparison = foreach ($side in @('base', 'candidate')) {
+            $file = "$logs/$side-bounded.stderr.log"
+            if (Test-Path $file) {
+              @{ side = $side; bytes = (Get-Item $file).Length; sha256 = (Get-FileHash $file).Hash }
+            }
+          }
+          @{ stderr = @($comparison); interpretation = 'Review separate raw streams for intended diagnostic differences; hashes are evidence, not an equality acceptance gate' } |
+            ConvertTo-Json -Depth 4 | Set-Content "$logs/stderr-comparison.json"
+          if ($failed) { throw 'Required diagnostic checks failed; inspect raw streams and verdicts' }
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-installer-bootstrap-diagnostic
+          path: ${{ runner.temp }}/bootstrap-diagnostic
+          if-no-files-found: error
+          retention-days: 7

@@ -49,7 +49,7 @@ jobs:
           $baseSha = 'f58010c46c7bad855f371d958f75d7c690c41098'
           $bounded = '^(CMD entry contains|fixed ACL predicates|portable ACL fixture|claim reports|claim tries|the claim base|a rejected claim|native fixture compositions|native Windows: production owned claim/check|native Windows: a %LOCALAPPDATA%|native Windows: when both candidates fail)'
           $regressions = 'reported native pnpm templates|only complete known Windows shims|both-acl diagnostic'
-          $node = (Get-Command node -CommandType Application).Source
+          $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           $metadata = [ordered]@{
             base = $baseSha; candidate = $env:CANDIDATE_SHA
             node = (& $node --version); nodeSha256 = (Get-FileHash $node).Hash

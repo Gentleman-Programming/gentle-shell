@@ -143,7 +143,46 @@ export function formatCost(total: number, subscription = false): string {
 // bar repaints every neutral run in the status role, so an extension's own
 // reset never hands the tail the terminal default.
 const ANSI_SGR_RUN = /\x1b\[[0-9;]*m/g;
-const ANSI_SGR_RESET = /^\x1b\[(?:0|39)m$/;
+
+/**
+ * Turnover of the extension's status foreground for one SGR token: whether
+ * after this sequence the active foreground belongs to the extension.
+ * Parses the parameters sequentially so compound resets (\x1b[0;0m), empty
+ * resets (\x1b[m) and extended-color groups (\x1b[38;2;0;0;0m — a 0 inside
+ * the parameters is a color component, not a reset) are all classified;
+ * attribute-only sequences (bold \x1b[1m, underline \x1b[4m) carry no
+ * foreground and leave the turnover untouched.
+ */
+function sgrForegroundTurnover(token: string, extensionColored: boolean): boolean {
+	const match = /^\x1b\[([0-9;]*)m$/.exec(token);
+	if (!match) return extensionColored;
+	const params = match[1] === "" ? [] : match[1].split(";");
+	let colored = extensionColored;
+	let index = 0;
+	while (index < params.length) {
+		const param = params[index];
+		if (param === "" || param === "0") {
+			colored = false; // full reset (empty parameter or 0)
+		} else if (param === "39") {
+			colored = false; // default foreground
+		} else if (param === "38" || param === "48") {
+			// Extended color group: 38;2;r;g;b / 38;5;palette(+bg variants).
+			if (param === "38") colored = true;
+			const mode = params[index + 1];
+			index += mode === "2" ? 5 : mode === "5" ? 2 : 0;
+		} else {
+			const code = Number(param);
+			if (
+				!Number.isNaN(code) &&
+				((code >= 30 && code <= 37) || (code >= 90 && code <= 97))
+			) {
+				colored = true; // classic foreground colors
+			}
+		}
+		index += 1;
+	}
+	return colored;
+}
 
 function sanitizeStatus(text: string): string {
 	// Protect SGR runs, clean the rest like the bar always did, then restore.
@@ -168,13 +207,16 @@ function statusSegment(theme: ShellBarTheme, status: string): string {
 		if (token === "") continue;
 		if (/^\x1b\[[0-9;]*m$/.test(token)) {
 			painted += token;
-			extensionColored = !ANSI_SGR_RESET.test(token);
+			extensionColored = sgrForegroundTurnover(token, extensionColored);
 			continue;
 		}
 		painted += extensionColored || !token.trim()
 			? token
 			: theme.fg(ROLE.STATUS, token);
 	}
+	// Close an extension foreground that survives to the segment end so the
+	// line's remaining segments never inherit it.
+	if (extensionColored) painted += "\x1b[39m";
 	return painted;
 }
 

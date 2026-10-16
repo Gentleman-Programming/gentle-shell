@@ -332,6 +332,50 @@ test("renderShellBar repaints the neutral runs of a hybrid status around the col
 	assert.match(line, /<muted> \u00b7 \$2\.50\/\$10\.00<\/muted>$/);
 });
 
+test("renderShellBar treats foreground-only SGR (bold/underline) as uncolored and repaints the run in the bar role", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["\x1b[1mMCP\x1b[m: 3 servers"] }),
+		tagged,
+		400,
+	);
+	// Bold carried no foreground: each neutral run must take the status role.
+	assert.match(line, /\x1b\[1m<muted>MCP<\/muted>\x1b\[m<muted>: 3 servers<\/muted>$/);
+});
+
+test("renderShellBar repaints the neutral suffix after empty and compound SGR resets", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const cases = [
+		["Budget\x1b[m gauge"],
+		["Budget\x1b[0m gauge"],
+		["Budget\x1b[0;0m gauge"],
+		// 0 inside an extended color parameter must not count as a reset.
+		["Budget\x1b[38;2;0;0;0m gauge", false],
+	] as Array<[string, boolean?]>;
+	for (const [status, colored] of cases) {
+		const [line] = renderShellBar(model({ statuses: [status] }), tagged, 400);
+		if (colored === false) {
+			// 0 inside an extended color is a color component:
+			// the whole suffix stays in the extension's palette (and,
+			// because it survives to the segment end, the fg is closed).
+			assert.match(line, /Budget<\/muted>\x1b\[38;2;0;0;0m gauge\x1b\[39m$/, status);
+		} else {
+			// The reset is recognized and repainted in the bar role.
+			assert.match(line, /Budget<\/muted>\x1b\[[0-9;]*m<muted> gauge<\/muted>$/, status);
+		}
+	}
+});
+
+test("renderShellBar closes an extension foreground that survives to the segment end", () => {
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38;2;34;197;94m25%"] }),
+		plainTheme,
+		400,
+	);
+	// The active foreground must not leak into whatever the bar appends next.
+	assert.match(line, /25%\x1b\[39m/);
+});
+
 test("renderShellBar compacts the path and branch before it sacrifices an extension status", () => {
 	const long = model({ branch: "fix/shell-bar-status-ansi", dirty: 2, statuses: ["MCP: 3/3 servers"] });
 	const [full] = renderShellBar(long, plainTheme, 160);

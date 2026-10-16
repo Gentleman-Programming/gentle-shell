@@ -1466,11 +1466,60 @@ yet (held to the strict depth-0 mask).
 | Not set: `%LOCALAPPDATA%\pnpm` | Passes | Used as before; the plan is unchanged. |
 | Not set: `%LOCALAPPDATA%\pnpm` | Fails, and nothing is installed there | `%USERPROFILE%\.pnpm` is used, if it passes the walk too. |
 | Not set: `%LOCALAPPDATA%\pnpm` | Fails, and something is installed there | Blocked: `untrusted-pnpm-home`. |
+| Explicit `--private-pnpm-home` option; configured/default folder holds files or is set by the user | Fails | Leave that folder unchanged and use the checked `%USERPROFILE%\.pnpm` instead. |
 | Any | The walk cannot finish (policy, PowerShell) | Blocked: `unknown-tool` for `pnpmHome`. |
+
+To recover from `untrusted-pnpm-home` on Windows 11 without changing the old
+folder's ACLs or removing existing packages, close the wizard and run from the
+checkout in PowerShell:
+
+```powershell
+.\scripts\bootstrap.cmd --private-pnpm-home
+```
+
+The bootstrap accepts only that optional switch and sets
+`GENTLE_INSTALL_PRIVATE_PNPM_HOME=1` for its children. The decision still checks
+the configured/default folder first and keeps it when safe. Only when it fails
+does this explicit option allow selecting the same checked private folder even
+if the old home was configured by the user or already holds files. When `.pnpm`
+is occupied and unmarked, the option leaves it intact and tries exactly one
+alternative, `%USERPROFILE%\.gentle-shell-pnpm`, under the same permission and
+marker checks. This also recovers a folder containing only `bin`, `tmp` or
+Node compile caches from earlier checks without pretending those files prove
+installer ownership. If both candidates are occupied and unmarked, or the
+selected candidate fails its walk, installation still blocks. No package is
+copied or migrated, and an unavailable ACL check still blocks. No installation
+folder is created before consent. A case-insensitive `Pnpm_Home` environment key is removed before the
+selected `PNPM_HOME` is passed to children, so only one spelling remains.
+The same decision excludes PATH entries at or beneath the rejected pnpm home
+from both the probe and standard runner environments. Windows case, trailing
+separators, quoted entries and normalized `..` segments are handled without
+matching sibling names such as `pnpm-other`. This prevents an old pnpm-owned
+`gentle-shell` or `pi` from being seen on PATH while absent from the new home's
+global listing, then being misclassified as unmanaged. The old programs are
+not executed, updated, removed, or adopted. The caller's PATH and unrelated
+manual/npm installations remain unchanged; genuinely unmanaged commands
+elsewhere still block. The review discloses this isolation before consent.
+
+The private decision and plan record `replaceEnvironment: true` only for this
+explicit option. The review explains that `pnpm setup --force` will replace an
+existing Windows **user** `PNPM_HOME` and update the user PATH after consent.
+Without this option, normal `pnpm setup` still refuses conflicting settings.
 
 A blocked decision (`untrusted-pnpm-home`, or `unknown-tool` for `pnpmHome`)
 runs no probe at all: the node probe would otherwise run the user's npm with
 that PNPM_HOME's `bin` first on PATH. The plan then holds only that blocker.
+
+For a selected private folder without the exact ownership marker, **all**
+probe subprocesses (including the internal npm/shim checks) get scratch
+`PNPM_HOME`, XDG folders, npm cache, TEMP and TMP under the already-private
+bootstrap tools directory; Node's compile cache is disabled. Even `--version`
+can otherwise create `bin` or temporary caches. Global package listing is
+skipped for both absent and empty unclaimed homes, not just absent ones. A
+refresh or the pre-consent re-inventory therefore leaves the selected home
+unchanged. Missing bootstrap scratch storage fails closed rather than running
+against the unclaimed home. Once the runner has claimed and marked the folder
+after consent, fresh probes list its real packages normally.
 
 "Nothing is installed" has one exact meaning: `%LOCALAPPDATA%\pnpm` does not
 exist, or it is a real directory (not a link) with no entries at all. Any
@@ -1488,8 +1537,9 @@ The plan says all of this before consent: the default folder, the account
 folder, and that `pnpm setup` will save `PNPM_HOME=%USERPROFILE%\.pnpm` and
 add `%USERPROFILE%\.pnpm\bin` to the user PATH for new terminals. A blocker
 names the same folder, account and rights, plus the remedy: remove that
-account's write access, or set PNPM_HOME to a private folder such as
-`%USERPROFILE%\.pnpm` and reinstall the global pnpm packages there.
+account's write access and check again, or restart the checkout bootstrap with
+`--private-pnpm-home` to install separately in `%USERPROFILE%\.pnpm`.
+Reinstall any other global packages you need there; the old packages are not migrated.
 
 After consent the runner's first step, `prepare-pnpm-home`, claims the private
 folder before any pnpm command could create it with inherited permissions. It
@@ -1515,8 +1565,10 @@ to `HKCU\Environment` as `PNPM_HOME`, then puts `%PNPM_HOME%\bin` first in the
 user Path (`addDirToWindowsEnvPath`). The runner gives `pnpm setup` the
 private PNPM_HOME, and runs it even for an update, which otherwise keeps the
 PATH its installation already uses. A registry `PNPM_HOME` that already holds
-another value makes `pnpm setup` fail with `ERR_PNPM_BAD_ENV_FOUND` instead of
-overwriting it. The native Windows tests check the decision, the claim and the
+another value makes normal `pnpm setup` fail with `ERR_PNPM_BAD_ENV_FOUND`
+instead of overwriting it. The explicitly opted-in private-home plan uses
+`pnpm setup --force` to authorize that replacement after consent. The native
+Windows tests check the decision, the claim and the
 probe. No test runs `pnpm setup` against a real user registry: the registry
 write is pnpm's own behavior, read from the pnpm 11.1.1 package source.
 

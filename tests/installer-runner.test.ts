@@ -2098,6 +2098,18 @@ test("a private Windows PNPM_HOME is claimed before any command and holds pnpm's
 	assert.deepEqual(posix.prepared, []);
 });
 
+test("only an explicitly consented private-home plan may replace the Windows user PNPM_HOME", async () => {
+	const fixed = privatePlan({ pnpmHome: { available: true, path: W_PNPM_HOME, source: "private",
+		rejected: { path: W_LOCAL_DEFAULT, check: "target-acl-mask" }, replaceEnvironment: true } });
+	for (const consent of [false, true]) {
+		const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` }, results: { "setup --force": { code: 0 } } }));
+		const result = await runStandardInstall({ plan: fixed, consent }, h.adapters);
+		assert.equal(result.outcome, consent ? "terminal-action-required" : "blocked");
+		if (consent) assert.equal(h.pnpmCalls().at(-1), "setup --force");
+		else assert.deepEqual(h.calls, []);
+	}
+});
+
 test("a private PNPM_HOME that changed, or could not be claimed, stops before any command", async () => {
 	const moved = preparing(harness({ layout: windowsLayout }));
 	const changed = await runStandardInstall({ plan: privatePlan({}, "C:\\Users\\u\\.pnpm"), consent: true }, moved.adapters);

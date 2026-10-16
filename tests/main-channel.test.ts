@@ -6,6 +6,7 @@ import { join, win32 } from "node:path";
 import test from "node:test";
 import {
 	CHANNEL_SCHEMA,
+	GENTLE_AI_MAIN_MODULE,
 	GENTLE_AI_MAIN_PACKAGE,
 	MainChannelError,
 	buildMainGentleAi,
@@ -163,6 +164,48 @@ test("a failed source extraction or Go build keeps the command's bounded stderr 
 		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "linux", goPath: "/go/bin/go", run: async () => ({ code: 1, stdout: "" }), fs: fsPromises }),
 			(error: MainChannelError) => error.code === "main-gentle-ai-build-failed" && error.cause === undefined);
 	} finally { s.cleanup(); }
+});
+
+// main's HEAD can be exactly a tagged release commit: `go install <module>@<sha>` then stamps the
+// tag (v4.2.0) instead of a pseudo-version, so the built binary never names the commit's sha12.
+test("a Gentle AI commit Go resolves to an exact tag is verified through that resolved version", async () => {
+	const s = sandbox();
+	try {
+		const run = async (_command: string, argv: string[], options: Call["options"]) => {
+			if (argv[0] === "install") {
+				mkdirSync(options.env!.GOBIN, { recursive: true });
+				writeFileSync(join(options.env!.GOBIN, "gentle-ai.exe"), "MZ\n", { mode: 0o755 });
+				return { code: 0, stdout: "" };
+			}
+			if (argv[0] === "list") return { code: 0, stdout: `${GENTLE_AI_MAIN_MODULE} v4.2.0\n` };
+			return { code: 0, stdout: "gentle-ai 4.2.0\n" };
+		};
+		const built = await buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "win32", goPath: "C:\\go\\bin\\go.exe", run, fs: fsPromises });
+		assert.equal(built.version, "4.2.0");
+		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json")), true);
+	} finally { s.cleanup(); }
+});
+
+// A resolved tag only proves anything when the binary carries exactly that version, and only when
+// the resolution actually happened: a failed or unreadable `go list -m` never becomes a pass.
+test("a tag-resolved Gentle AI build is rejected when its stamp differs or the resolution is unavailable", async () => {
+	for (const [name, probe, list] of [["another stamp", "gentle-ai 4.1.9\n", null], ["unavailable resolution", "gentle-ai 4.2.0\n", { code: 1, stdout: "" }]] as const) {
+		const s = sandbox();
+		try {
+			const run = async (_command: string, argv: string[], options: Call["options"]) => {
+				if (argv[0] === "install") {
+					mkdirSync(options.env!.GOBIN, { recursive: true });
+					writeFileSync(join(options.env!.GOBIN, "gentle-ai.exe"), "MZ\n", { mode: 0o755 });
+					return { code: 0, stdout: "" };
+				}
+				if (argv[0] === "list") return list ?? { code: 0, stdout: `${GENTLE_AI_MAIN_MODULE} v4.2.0\n` };
+				return { code: 0, stdout: probe };
+			};
+			await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "win32", goPath: "C:\\go\\bin\\go.exe", run, fs: fsPromises }),
+				(error: MainChannelError) => error.code === "main-gentle-ai-unverified", name);
+			assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json")), false, name);
+		} finally { s.cleanup(); }
+	}
 });
 
 test("Gentle AI main is built from the exact commit through Go's checksum database and registered as the override", posixOnly, async () => {

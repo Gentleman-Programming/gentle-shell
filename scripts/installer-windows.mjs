@@ -264,7 +264,7 @@ export function verifyWindowsStorageMany(paths, env, { processAdapter = windowsP
 
 // S6: the wizard's PNPM_HOME on Windows. pnpm runs and persists binaries there,
 // so it gets the same walk as the bootstrap's tools directory before consent.
-export const privatePnpmHome = Object.freeze({ directory: ".pnpm", marker: ".gentle-shell-pnpm-home", text: "gentle-pi private pnpm home", temp: "tmp" });
+export const privatePnpmHome = Object.freeze({ directory: ".pnpm", fallbackDirectory: ".gentle-shell-pnpm", marker: ".gentle-shell-pnpm-home", text: "gentle-pi private pnpm home", temp: "tmp" });
 const hostHomeFs = Object.freeze({
 	/** "missing", "directory" or "file" (neither a link), or "other". */
 	kind(path) {
@@ -289,6 +289,11 @@ function windowsEnv(env, name) {
  *   the private `%USERPROFILE%\.pnpm`, which must pass the walk too and be absent,
  *   empty or marked as created by this flow:
  *   { available: true, path, source: "private", rejected: { path, check, at, sid?, account?, rights? } };
+ * - with GENTLE_INSTALL_PRIVATE_PNPM_HOME=1 (bootstrap's explicit option), a
+ *   rejected user/default home may stay untouched, even when populated, while
+ *   the same checked private folder is selected. If .pnpm is occupied and
+ *   unmarked, try .gentle-shell-pnpm once, without adopting the occupied folder.
+ *   No global packages are migrated;
  * - otherwise a blocker: { available: true, path, source, untrusted, installed?, private? }.
  * The walk covers the folder (or its nearest existing ancestor when it is absent)
  * and its `bin` when present. Null when PNPM_HOME is unknowable, as for
@@ -325,32 +330,43 @@ export function windowsPnpmHome({ env, storage = verifyWindowsStorage, fs = host
 		return fs.kind(marker) === "file" && fs.readText(marker) === privatePnpmHome.text ? "marked" : "used";
 	};
 	const set = windowsEnv(env, "PNPM_HOME");
-	if (set !== undefined) {
-		if (!absolute(set)) return null;
-		const path = normal(set);
-		const untrusted = walk(path);
-		return { available: true, path, source: "user", ...(untrusted ? { untrusted } : {}) };
-	}
 	const local = windowsEnv(env, "LOCALAPPDATA");
-	if (!absolute(local)) return null;
-	const path = normal(win32.join(local, "pnpm"));
+	if (!absolute(set === undefined ? local : set)) return null;
+	const path = normal(set === undefined ? win32.join(local, "pnpm") : set);
+	const source = set === undefined ? "default" : "user";
 	const untrusted = walk(path);
-	if (!untrusted) return { available: true, path, source: "default" };
-	const blocked = { available: true, path, source: "default", untrusted };
-	// Never moved, deleted or adopted: anything already there is an installation.
-	if (!["absent", "empty"].includes(contents(path))) return { ...blocked, installed: true };
+	if (!untrusted) return { available: true, path, source };
+	const blocked = { available: true, path, source, untrusted };
+	const optIn = windowsEnv(env, "GENTLE_INSTALL_PRIVATE_PNPM_HOME") === "1";
+	if (!optIn && source === "user") return blocked;
+	// Never move, delete or adopt the old installation. Only explicit opt-in
+	// permits leaving a populated/configured home behind for a separate install.
+	if (!optIn && !["absent", "empty"].includes(contents(path))) return { ...blocked, installed: true };
 	const profile = windowsEnv(env, "USERPROFILE");
 	if (!absolute(profile)) return blocked;
-	const own = normal(win32.join(profile, privatePnpmHome.directory));
-	if (contents(own) === "used") return { ...blocked, private: { path: own, foreign: true } };
-	const ownUntrusted = walk(own);
-	if (ownUntrusted) return { ...blocked, private: { path: own, untrusted: ownUntrusted } };
-	return { available: true, path: own, source: "private", rejected: { path, ...untrusted } };
+	const directories = [privatePnpmHome.directory, ...(optIn ? [privatePnpmHome.fallbackDirectory] : [])];
+	for (const [index, directory] of directories.entries()) {
+		const own = normal(win32.join(profile, directory));
+		if (own.toLowerCase() === path.toLowerCase()) return blocked;
+		const state = contents(own);
+		if (state === "used") {
+			// An earlier probe (or the user) may have populated .pnpm without our
+			// marker. Never adopt or delete it; opt-in permits one separate candidate.
+			if (index + 1 < directories.length) continue;
+			return { ...blocked, private: { path: own, foreign: true } };
+		}
+		const ownUntrusted = walk(own);
+		if (ownUntrusted) return { ...blocked, private: { path: own, untrusted: ownUntrusted } };
+		return { available: true, path: own, source: "private", rejected: { path, ...untrusted },
+			...(optIn ? { replaceEnvironment: true } : {}) };
+	}
 }
 
 /** The wizard's environment and PNPM_HOME decision (windowsPnpmHome): a private
  * PNPM_HOME is set for this process's children only (childEnvironment adds pnpm's
- * own folders there). A walk that cannot finish is { available: null, failed: true }:
+ * own folders there). The rejected home's PATH entries are excluded too: its old
+ * commands are neither reused nor misclassified as unmanaged in the new home.
+ * A walk that cannot finish is { available: null, failed: true }:
  * preflight then blocks.
  */
 export function windowsWizardEnvironment({ env, ...adapters }) {
@@ -361,7 +377,19 @@ export function windowsWizardEnvironment({ env, ...adapters }) {
 		return { env, pnpmHome: { available: null, failed: true } };
 	}
 	if (pnpmHome?.source !== "private") return { env, pnpmHome };
-	return { env: { ...env, PNPM_HOME: pnpmHome.path }, pnpmHome };
+	// A plain copied environment is case-sensitive: emit only one home and PATH
+	// spelling. Isolate the rejected home for both probes AND the install runner,
+	// without changing the caller's environment or hiding unrelated manual installs.
+	const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH");
+	const rejectedEntry = (entry) => {
+		const candidate = entry.trim().replace(/^"(.*)"$/, "$1");
+		if (!win32.isAbsolute(candidate)) return false;
+		const relative = win32.relative(pnpmHome.rejected.path, candidate);
+		return relative === "" || (relative !== ".." && !relative.startsWith("..\\") && !win32.isAbsolute(relative));
+	};
+	const inherited = Object.entries(env).filter(([key]) => !["PNPM_HOME", "PATH"].includes(key.toUpperCase()));
+	const isolatedPath = pathKey === undefined ? {} : { [pathKey]: env[pathKey].split(";").filter((entry) => !rejectedEntry(entry)).join(";") };
+	return { env: { ...Object.fromEntries(inherited), ...isolatedPath, PNPM_HOME: pnpmHome.path }, pnpmHome };
 }
 
 // The private PNPM_HOME, after consent: created, or an empty one adopted, with the

@@ -1328,13 +1328,21 @@ test("/api/plan says before consent that a private PNPM_HOME replaces a default 
 	assert.deepEqual(view.blockers, []);
 	assert.equal(view.profileChange.changesProfile, true);
 	names(view.profileChange.description, [W_DEFAULT, weak.at, "S-1-5-21-1-2-3-1002 (PC\\other)", "0x001301BF", W_PRIVATE, "`pnpm setup`",
-		`PNPM_HOME=${W_PRIVATE}`, `${W_PRIVATE}\\bin`, "new terminals", "only you, SYSTEM and Administrators"]);
+		`PNPM_HOME=${W_PRIVATE}`, `${W_PRIVATE}\\bin`, "new terminals", "only you, SYSTEM and Administrators", "existing global packages are not copied or migrated",
+		"excluded from the installer's PATH", "not reused or updated", "other PATH entries are kept"]);
 	assert.equal(view.persistence.pnpmHome, W_PRIVATE);
 	// S13: the accepted residual risk of later pnpm commands, stated before consent.
 	names(view.profileChange.description, ["pnpm commands you run later", "configuration, cache and state", "%LOCALAPPDATA%", W_DEFAULT]);
 	// A passing default keeps the existing copy.
 	const plain = await windowsView({ available: true, path: W_DEFAULT, source: "default" });
 	assert.doesNotMatch(plain.profileChange.description, /private|%LOCALAPPDATA%/);
+});
+
+test("/api/plan discloses replacing the Windows user environment only for the explicit private-home plan", async () => {
+	const view = await windowsView({ available: true, path: W_PRIVATE, source: "private", rejected: { path: "D:\\custom-pnpm", ...weak }, replaceEnvironment: true });
+	assert.deepEqual(view.blockers, []);
+	assert.equal(view.profileChange.command, "pnpm setup --force");
+	names(view.profileChange.description, ["D:\\custom-pnpm", W_PRIVATE, "`pnpm setup --force`", "replaces any previous PNPM_HOME", "after you confirm", "not copied or migrated"]);
 });
 
 // S6 notice: reused tools in folders another account can change, before consent.
@@ -1363,8 +1371,8 @@ test("/api/plan notes reused tools in folders another account can change, withou
 
 test("/api/plan names the folder, principal, rights and remedy when PNPM_HOME is not private", async () => {
 	const cases = [
-		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, installed: true }, [W_DEFAULT, "already holds files", "never moves or deletes", "%USERPROFILE%\\.pnpm"]],
-		[{ available: true, path: "D:\\pnpm", source: "user", untrusted: { ...weak, at: "D:\\pnpm" } }, ["PNPM_HOME is set to D:\\pnpm", "%USERPROFILE%\\.pnpm"]],
+		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, installed: true }, [W_DEFAULT, "already holds files", "never moves or deletes", "%USERPROFILE%\\.pnpm", "scripts\\bootstrap.cmd --private-pnpm-home"]],
+		[{ available: true, path: "D:\\pnpm", source: "user", untrusted: { ...weak, at: "D:\\pnpm" } }, ["PNPM_HOME is set to D:\\pnpm", "%USERPROFILE%\\.pnpm", "scripts\\bootstrap.cmd --private-pnpm-home", "never copies, moves or deletes"]],
 		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, private: { path: W_PRIVATE, foreign: true } }, [W_PRIVATE, "did not create"]],
 		[{ available: true, path: W_DEFAULT, source: "default", untrusted: weak, private: { path: W_PRIVATE, untrusted: { check: "target-owner", at: "C:\\Users\\m", sid: "S-1-5-21-9" } } },
 			[W_PRIVATE, "C:\\Users\\m is owned by S-1-5-21-9"]],

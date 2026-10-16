@@ -5,7 +5,8 @@
 //   - Gentle AI: `go install <module>@<sha>` in a sealed Go environment, so the
 //     module source is verified by Go's checksum database (sum.golang.org), as
 //     the Windows release build already is. The binary must report a version
-//     naming that commit, then it is activated through the existing dev-binary
+//     naming that commit (its pseudo-version suffix, or the exact tag Go resolved
+//     that commit to), then it is activated through the existing dev-binary
 //     override, which never falls back to the pinned binary silently.
 //   - Gentle Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
@@ -18,7 +19,8 @@ import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-prefligh
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
-export const GENTLE_AI_MAIN_PACKAGE = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
+export const GENTLE_AI_MAIN_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
+export const GENTLE_AI_MAIN_PACKAGE = `${GENTLE_AI_MAIN_MODULE}/cmd/gentle-ai`;
 export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 
@@ -130,6 +132,15 @@ function sealedGoEnvironment(goPath, buildDirectory, platform) {
 	return { ...base, HOME: buildDirectory, TMPDIR: temporary, PATH: [dirname(goPath), "/usr/bin", "/bin"].join(":") };
 }
 
+/** The module version Go resolves an exact commit to (`go list -m <module>@<commit>` prints
+ * "<module> <version>"), or null when it cannot be read. Only Go's own resolution answers what a
+ * commit is when that commit is exactly a tagged release. */
+async function resolvedModuleVersion({ goPath, commit, env, buildDirectory, run }) {
+	const result = await run(goPath, ["list", "-m", `${GENTLE_AI_MAIN_MODULE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.version });
+	const line = succeeded(result) ? /^(\S+) (v[0-9][^\s]*)$/m.exec(String(result.stdout ?? "").trim()) : null;
+	return line?.[1] === GENTLE_AI_MAIN_MODULE ? line[2] : null;
+}
+
 /** Builds Gentle AI from `commit`, verifies the binary names it and registers it as the override. */
 export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs }) {
 	if (!SHA.test(commit)) throw new MainChannelError("main-gentle-ai-unverified", "the Gentle AI commit is not an exact SHA");
@@ -146,15 +157,25 @@ export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs
 		const binaryPath = join(directory, executable);
 		await fs.copyFile(join(env.GOBIN, executable), binaryPath);
 		if (platform !== "win32") await fs.chmod(binaryPath, 0o755);
-		// Go stamps the module pseudo-version, whose suffix is the commit's first 12 characters.
+		// Go stamps the module pseudo-version, whose suffix is the commit's first 12 characters. When
+		// the commit is exactly a tagged release (main's HEAD right after one), Go stamps the tag
+		// instead: the stamp then has to equal the version Go itself resolved for that commit.
 		const probe = await run(binaryPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
-		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
-		if (!match || !match[1].endsWith(`-${commit.slice(0, 12)}`)) {
+		const match = succeeded(probe) ? /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? "")) : null;
+		const version = match?.[1] ?? null;
+		const suffix = `-${commit.slice(0, 12)}`;
+		let verified = version !== null && version.endsWith(suffix);
+		if (!verified && version !== null) {
+			const resolved = await resolvedModuleVersion({ goPath, commit, env, buildDirectory, run });
+			verified = resolved !== null && resolved.replace(/^v/, "") === version.replace(/^v/, "");
+		}
+		if (!verified) {
 			await fs.rm(directory, { recursive: true, force: true });
-			throw new MainChannelError("main-gentle-ai-unverified", `the built Gentle AI does not report commit ${commit.slice(0, 12)}`);
+			throw new MainChannelError("main-gentle-ai-unverified",
+				`the built Gentle AI reports ${version ?? "no version"}, which names neither commit ${commit.slice(0, 12)} nor the version Go resolved for it`);
 		}
 		registerGentleAiDevBinary(binaryPath, ctx, platform);
-		return { binaryPath, version: match[1] };
+		return { binaryPath, version };
 	} finally {
 		await fs.rm(buildDirectory, { recursive: true, force: true });
 	}

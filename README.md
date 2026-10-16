@@ -456,6 +456,33 @@ It installs what is missing (Node.js, pnpm, Pi, Gentle Shell) and updates an exi
 - **Latest release** (recommended): the published Gentle Shell with its pinned Gentle AI binary.
 - **Latest main**: development builds of Gentle Shell and Gentle AI from the latest commit of `main`, built on your computer with Go. If your Go is missing, older or its version cannot be checked, the installer downloads its own pinned, verified Go only for that build.
 
+**Windows 11: `untrusted-pnpm-home` / “pnpm home folder”.** This means another
+account (possibly an unresolved SID from an old account or a sandbox) can modify
+`PNPM_HOME` or one of its parent folders. Do not disable the permission check or
+remove your own account's access. To install separately without changing the old
+folder's permissions or deleting its packages, close the wizard and run from
+PowerShell in this checkout:
+
+```powershell
+.\scripts\bootstrap.cmd --private-pnpm-home
+```
+
+If the current pnpm folder fails the check, this option selects
+`%USERPROFILE%\.pnpm` instead. If that folder is already occupied without the
+installer's marker (including `bin` or `tmp` left by earlier checks), it leaves
+it untouched and tries `%USERPROFILE%\.gentle-shell-pnpm` once. The selected
+folder must also pass the permission check and be absent, empty, or previously
+created by this installer. Version checks and their caches use the bootstrap's
+disposable folder until you confirm, not the selected installation folder. Review the new
+plan before confirming: it uses `pnpm setup --force` to save the new `PNPM_HOME`
+in your Windows user environment and add its `bin` to your user PATH. Existing
+global packages stay in the old folder and are **not migrated**; reinstall any
+you still need in the new home. The rejected pnpm folder and its subfolders are
+excluded from the installer's own PATH, so an old `gentle-shell` or `pi` there
+is not reused, updated, or mistaken for an unmanaged installation in the new
+home. Other PATH entries (including unrelated manual installations) are kept.
+Open a new terminal after installation.
+
 <details>
 <summary><kbd>More</kbd> <strong>How the installer treats the tools you already have</strong> — what it reuses, updates, or leaves alone</summary>
 

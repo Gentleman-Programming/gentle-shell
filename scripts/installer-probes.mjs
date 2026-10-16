@@ -21,7 +21,7 @@ import {
 	succeeded,
 	windowsInvocation,
 } from "./installer-runner.mjs";
-import { verifyWindowsStorage, verifyWindowsStorageMany } from "./installer-windows.mjs";
+import { privatePnpmHome, verifyWindowsStorage, verifyWindowsStorageMany } from "./installer-windows.mjs";
 
 // Real host probes for collectInventory. Every effect goes through injected
 // adapters; probes only run fixed read-only argv (`--version`, `go version`,
@@ -205,9 +205,30 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	storageMany = platform === "win32" ? (files) => verifyWindowsStorageMany(files, env) : null, pnpmHome = null }) {
 	const path = pathOf(platform);
 	const user = userEnvironment({ platform, env });
+	const roots = bootstrapRoots({ platform, env });
 	const globalBin = pnpmGlobalBin({ platform, env: user });
 	// pnpm 11 global commands need `$PNPM_HOME/bin` on PATH, as in the runner.
 	const privateHome = platform === "win32" && pnpmHome?.source === "private";
+	const unclaimedPrivateHome = async () => privateHome &&
+		(await fs.readText(path.join(globalBin.pnpmHome, privatePnpmHome.marker)).catch(() => null)) !== privatePnpmHome.text;
+	if (privateHome) {
+		// Even --version can create caches or PNPM_HOME/bin. Until consent and
+		// the private claim, redirect EVERY subprocess (including npmInvocation's
+		// internal probes) into the bootstrap's already-private disposable root.
+		const execute = run;
+		const tools = roots[0];
+		run = async (command, argv, options = {}) => {
+			if (!(await unclaimedPrivateHome())) return execute(command, argv, options);
+			if (!tools) throw new Error("Private Windows probe storage unavailable");
+			const kept = Object.fromEntries(Object.entries(options.env ?? env).filter(([key]) =>
+				!/^(?:PNPM_HOME|TEMP|TMP|XDG_CONFIG_HOME|XDG_CACHE_HOME|XDG_STATE_HOME|XDG_DATA_HOME|NPM_CONFIG_CACHE|NODE_COMPILE_CACHE|NODE_DISABLE_COMPILE_CACHE)$/i.test(key)));
+			return execute(command, argv, { ...options, env: { ...kept,
+				PNPM_HOME: path.join(tools, "probe-pnpm-home"), TEMP: tools, TMP: tools, NODE_DISABLE_COMPILE_CACHE: "1",
+				XDG_CONFIG_HOME: path.join(tools, "probe-config"), XDG_CACHE_HOME: path.join(tools, "probe-cache"),
+				XDG_STATE_HOME: path.join(tools, "probe-state"), XDG_DATA_HOME: path.join(tools, "probe-data"),
+				NPM_CONFIG_CACHE: path.join(tools, "probe-npm-cache") } });
+		};
+	}
 	const child = globalBin ? childEnvironment(env, platform, globalBin, { privateHome }) : env;
 	const userChild = globalBin ? childEnvironment(user, platform, globalBin, { privateHome }) : user;
 	/** Every file passes the storage walk; any failure means it is not usable. */
@@ -226,7 +247,6 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		return succeeded(result) && result.truncated !== true ? String(result.stdout ?? "").trim() : null;
 	};
 	const persistentOn = async (name) => (await lookPath(name, user, platform, fs)) !== null;
-	const roots = bootstrapRoots({ platform, env });
 	const marker = platform === "win32" ? new RegExp(BOOTSTRAP_TOOLS.source, "i") : BOOTSTRAP_TOOLS;
 	/** A file inside the bootstrap's temporary tools directory. */
 	const fromBootstrap = (file) => path.isAbsolute(file) && (roots.some((root) => contains(root, file, platform)) ||
@@ -235,9 +255,9 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 	let listing;
 	/** Output of the single `list -g` call, or null when it is unavailable. */
 	const globalListing = () => (listing ??= (async () => {
-		// A private PNPM_HOME this run has not created yet holds nothing; listing it
-		// could make pnpm create it, unprotected, before consent.
-		if (privateHome && globalBin && !(await fs.exists(globalBin.pnpmHome))) return "[]";
+		// Absent AND empty unclaimed private homes hold no packages. Never run
+		// pnpm list there: it creates bin/config/cache before the ownership marker.
+		if (await unclaimedPrivateHome()) return "[]";
 		const pnpm = globalBin ? await pnpmInvocation(env, platform, fs) : null;
 		if (!pnpm) return null;
 		return output(pnpm.command, [...pnpm.prefix, "list", "-g", "--depth", "0", "--json"], child, deadlines.list);

@@ -1,5 +1,12 @@
 @echo off
 setlocal DisableDelayedExpansion
+rem Explicit opt-in only; never silently replace the user's configured pnpm home.
+set "GENTLE_INSTALL_PRIVATE_PNPM_HOME="
+if "%~1"=="" goto bootstrap
+if /i not "%~1"=="--private-pnpm-home" goto usage
+if not "%~2"=="" goto usage
+set "GENTLE_INSTALL_PRIVATE_PNPM_HOME=1"
+:bootstrap
 rem Trusted extracted/checkout bundle only. Never pipe a remote script here.
 rem Fixed stock PowerShell commands; paths are environment DATA, not PS source.
 rem Each invocation is below CMD's logical command length limit.
@@ -236,6 +243,10 @@ rem through reparse points. A removal problem never fails the installation.
   "} catch { $message = 'Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:GENTLE_BOOTSTRAP_TOOLS;" ^
   "if ([Console]::IsErrorRedirected) { $bytes = [Text.Encoding]::UTF8.GetBytes($message + [Environment]::NewLine); $stderr = [Console]::OpenStandardError(); $stderr.Write($bytes, 0, $bytes.Length); $stderr.Flush() } else { [Console]::Error.WriteLine($message) }; exit 1 } }"
 endlocal & exit /b 0
+
+:usage
+>&2 echo Usage: scripts\bootstrap.cmd [--private-pnpm-home]
+endlocal & exit /b 1
 
 :unavailable
 >&2 echo Bootstrap: stock Windows PowerShell is unavailable. No acquisition attempted.

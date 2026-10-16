@@ -1080,7 +1080,10 @@ export async function runStandardInstall(request, adapters) {
 	const persistPath = !globalBin.onPath && (privateHome || (!update && !piOnly));
 	if (persistPath) {
 		steps.push(["persist-path", async () => {
-			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup"], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });
+			// Only the explicit private-home plan authorizes replacing an existing
+			// HKCU PNPM_HOME; normal setup still refuses conflicting settings.
+			const force = privateHome && request.plan.tools.pnpmHome.replaceEnvironment === true;
+			const result = await adapters.run(pnpm.command, [...pnpm.prefix, "setup", ...(force ? ["--force"] : [])], { env: child, deadlineMs: deadlines.setup, stderrTail: 4096 });
 			if (succeeded(result)) return true;
 			setupDetail = outputDetail(result);
 			return false;

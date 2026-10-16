@@ -274,7 +274,8 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	if (home?.available === true && home.source === "private" && typeof home.path === "string" && typeof home.rejected?.path === "string") {
 		const finding = Object.fromEntries(["check", "at", "sid", "account", "rights"]
 			.filter((key) => typeof home.rejected[key] === "string").map((key) => [key, home.rejected[key]]));
-		tools.pnpmHome = { status: "private", path: home.path, default: home.rejected.path, finding };
+		tools.pnpmHome = { status: "private", path: home.path, default: home.rejected.path, finding,
+			...(home.replaceEnvironment === true ? { replaceEnvironment: true } : {}) };
 	}
 	// Windows only (S6 notice, never a blocker): reused tools whose folders another
 	// account can change, from the inventory's one `folders` walk. Only tools this

@@ -1047,6 +1047,46 @@ test("Windows: the user's pnpm in a folder another principal may write is never 
 	assert.deepEqual(await trusted.probes.pnpm(), { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false, found: "10.0.0" });
 });
 
+test("Windows: unclaimed private homes never receive probe subprocess caches or pnpm startup writes", async () => {
+	const env = { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", PNPM_HOME: W_PRIVATE, Path: W_NODE_DIR,
+		GENTLE_BOOTSTRAP_TOOLS: W_TOOLS, GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY,
+		tmp: `${W_PRIVATE}\\tmp`, TEMP: `${W_PRIVATE}\\tmp`, XDG_CACHE_HOME: `${W_PRIVATE}\\.cache`, NODE_COMPILE_CACHE: `${W_PRIVATE}\\tmp\\node-compile-cache` };
+	for (const dirs of [["C:\\Users\\u"], ["C:\\Users\\u", W_PRIVATE]]) {
+		const h = probes({ platform: "win32", env, dirs,
+			pnpmHome: { available: true, path: W_PRIVATE, source: "private" },
+			files: [W_NODE, `${W_NODE_DIR}\\npm.cmd`, W_NPM_CLI], texts: { [`${W_NODE_DIR}\\npm.cmd`]: nodeNpmCmd },
+			results: { [`${W_NODE} --version`]: { code: 0, stdout: "v24.18.0\r\n" },
+				[`${W_NODE} ${W_NPM_CLI} --version`]: { code: 0, stdout: "11.6.2\r\n" },
+				[`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} --version`]: { code: 0, stdout: "11.1.1\r\n" } } });
+		assert.equal((await h.probes.node()).available, true);
+		assert.equal((await h.probes.pnpm()).available, true);
+		assert.deepEqual(await h.probes.shell(), { available: false });
+		assert.ok(h.calls.length >= 2);
+		for (const call of h.calls) {
+			assert.equal(call.env.PNPM_HOME, `${W_TOOLS}\\probe-pnpm-home`);
+			assert.equal(call.env.TEMP, W_TOOLS);
+			assert.equal(call.env.TMP, W_TOOLS);
+			assert.equal(call.env.NODE_DISABLE_COMPILE_CACHE, "1");
+			assert.equal(Object.keys(call.env).filter((key) => /^tmp$/i.test(key)).length, 1);
+			assert.equal(call.env.NODE_COMPILE_CACHE, undefined);
+			for (const key of ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "NPM_CONFIG_CACHE"]) {
+				assert.ok(call.env[key].startsWith(`${W_TOOLS}\\`), key);
+			}
+		}
+		assert.equal(h.calls.some((call) => call.args.includes("list")), false);
+	}
+	assert.equal(env.PNPM_HOME, W_PRIVATE, "the wizard's environment is not changed");
+});
+
+test("Windows: unclaimed private-home probes fail closed without bootstrap scratch storage", async () => {
+	const h = probes({ platform: "win32", env: { USERPROFILE: "C:\\Users\\u", PNPM_HOME: W_PRIVATE, Path: "C:\\Windows",
+		GENTLE_INSTALL_PNPM_COMMAND: "C:\\external\\pnpm.exe" }, pnpmHome: { available: true, path: W_PRIVATE, source: "private" },
+		results: { "C:\\external\\pnpm.exe --version": { code: 0, stdout: "11.1.1\r\n" } } });
+	assert.deepEqual(await h.probes.pnpm(), { available: null });
+	assert.deepEqual(h.calls, []);
+	assert.deepEqual(await h.probes.shell(), { available: false });
+});
+
 test("Windows: a private PNPM_HOME not created yet holds no global packages, so pnpm list -g never runs before consent", async () => {
 	const env = { LOCALAPPDATA: W_LOCAL, USERPROFILE: "C:\\Users\\u", PNPM_HOME: W_PRIVATE, Path: "C:\\Windows",
 		GENTLE_INSTALL_PNPM_NODE: W_TOOLS_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_TOOLS_ENTRY };
@@ -1057,6 +1097,7 @@ test("Windows: a private PNPM_HOME not created yet holds no global packages, so 
 	assert.deepEqual(absentHome.calls, []);
 	// Once it exists (created by an earlier run), its packages are listed as usual.
 	const existing = probes({ platform: "win32", env, pnpmHome, dirs: ["C:\\Users\\u", W_PRIVATE],
+		texts: { [`${W_PRIVATE}\\.gentle-shell-pnpm-home`]: "gentle-pi private pnpm home" },
 		results: { [`${W_TOOLS_NODE} ${W_TOOLS_ENTRY} ${LIST}`]: { code: 0, stdout: "[]" } } });
 	assert.deepEqual(await existing.probes.shell(), { available: false });
 	assert.equal(existing.calls.length, 1);

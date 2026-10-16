@@ -1110,6 +1110,99 @@ test("a weak default holding nothing switches to %USERPROFILE%\\.pnpm, which mus
 	assert.deepEqual(wizard.env, { ...homeEnv, PNPM_HOME: W_PRIVATE });
 });
 
+test("the explicit private-home option leaves populated or configured weak homes untouched", () => {
+	for (const configured of [false, true]) {
+		const env = { ...homeEnv, ...(configured ? { Pnpm_Home: W_DEFAULT } : {}), GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1" };
+		const h = homeDecision({ env, dirs: [W_DEFAULT, `${W_DEFAULT}\\store`], weak: { [W_DEFAULT]: "target-acl-mask" } });
+		const wizard = h.wizard();
+		assert.deepEqual(wizard.pnpmHome, { available: true, path: W_PRIVATE, source: "private", rejected: { path: W_DEFAULT, ...finding(W_DEFAULT) }, replaceEnvironment: true });
+		assert.deepEqual(h.walked, [W_DEFAULT, "C:\\Users\\m"]);
+		assert.equal(wizard.env.PNPM_HOME, W_PRIVATE);
+		assert.equal(Object.keys(wizard.env).filter((key) => key.toUpperCase() === "PNPM_HOME").length, 1);
+		assert.equal(env.Pnpm_Home, configured ? W_DEFAULT : undefined, "the caller's environment is unchanged");
+		const plan = planPreflight({ platform: "win32", arch: "x64", node: { available: false }, pnpm: { available: false }, pi: { available: false },
+			shell: { available: false }, gentleAi: { available: false }, go: { available: false }, setup: false,
+			globalBin: { available: true, path: `${W_PRIVATE}\\bin`, writable: true, onPath: false }, pnpmHome: wizard.pnpmHome });
+		assert.deepEqual(plan.blockers, []);
+		assert.equal(plan.tools.pnpmHome.status, "private");
+		assert.equal(plan.tools.pnpmHome.replaceEnvironment, true);
+	}
+});
+
+test("private-home selection excludes only the rejected pnpm home from the installer PATH", () => {
+	const tools = "C:\\Users\\m\\.gentle-shell-bootstrap-tools.test";
+	const other = `${W_DEFAULT}-other\\bin`;
+	const manual = "C:\\source-checkout\\bin";
+	const env = { ...homeEnv, PNPM_HOME: W_DEFAULT, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1",
+		pAtH: [tools, `${W_DEFAULT}\\bin`, W_DEFAULT.toUpperCase(), `${W_DEFAULT}\\global\\v11\\group`,
+			`\"${W_DEFAULT}\\bin\\\"`, `${W_DEFAULT}\\bin\\..\\bin`, other, manual, "C:\\Windows\\System32"].join(";") };
+	const h = homeDecision({ env, dirs: [W_DEFAULT, `${W_DEFAULT}\\bin`], weak: { [W_DEFAULT]: "target-acl-mask" } });
+	const wizard = h.wizard();
+	assert.equal(wizard.env.PNPM_HOME, W_PRIVATE);
+	assert.equal(wizard.env.pAtH, [tools, other, manual, "C:\\Windows\\System32"].join(";"));
+	assert.equal(Object.keys(wizard.env).filter((key) => key.toUpperCase() === "PATH").length, 1);
+	assert.equal(env.pAtH.split(";").length, 9, "the caller's PATH is untouched");
+	// Neither a reusable home nor a blocked decision authorizes hiding programs.
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT] }).wizard().env, env);
+	const blocked = { ...env, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "" };
+	assert.equal(homeDecision({ env: blocked, dirs: [W_DEFAULT], weak: { [W_DEFAULT]: "target-acl-mask" } }).wizard().env, blocked);
+});
+
+test("private-home opt-in skips an occupied .pnpm without adopting or modifying its contents", () => {
+	const env = { ...homeEnv, PNPM_HOME: W_DEFAULT, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1" };
+	const fallback = "C:\\Users\\m\\.gentle-shell-pnpm";
+	const weak = { [W_DEFAULT]: "target-acl-mask" };
+	const h = homeDecision({ env, dirs: [W_DEFAULT, W_PRIVATE, `${W_PRIVATE}\\bin`, `${W_PRIVATE}\\tmp`],
+		files: { [`${W_PRIVATE}\\tmp\\cache`]: "preserve" }, weak });
+	assert.equal(h.wizard().env.PNPM_HOME, fallback);
+	assert.equal(h.decide().path, fallback);
+	assert.equal(h.decide().source, "private");
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT, W_PRIVATE, fallback],
+		files: { [`${W_PRIVATE}\\notes`]: "preserve", [`${fallback}\\notes`]: "preserve" }, weak }).decide().private.foreign, true);
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT, W_PRIVATE, fallback],
+		files: { [`${W_PRIVATE}\\notes`]: "preserve", [`${fallback}\\.gentle-shell-pnpm-home`]: "gentle-pi private pnpm home" }, weak }).decide().source, "private");
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT, W_PRIVATE, fallback], files: { [`${W_PRIVATE}\\notes`]: "preserve" },
+		weak: { ...weak, [fallback]: "target-owner" } }).decide().private.untrusted.check, "target-owner");
+});
+
+test("private-home opt-in never bypasses failed walks or adopts foreign private folders", () => {
+	const env = { ...homeEnv, PNPM_HOME: W_DEFAULT, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1" };
+	const weak = { [W_DEFAULT]: "target-acl-mask" };
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT], weak: { ...weak, "C:\\Users\\m": "target-owner" } }).decide().private.untrusted.check, "target-owner");
+	assert.equal(homeDecision({ env, dirs: [W_DEFAULT, W_PRIVATE, "C:\\Users\\m\\.gentle-shell-pnpm"],
+		files: { [`${W_PRIVATE}\\notes.txt`]: "keep", "C:\\Users\\m\\.gentle-shell-pnpm\\notes.txt": "keep" }, weak }).decide().private.foreign, true);
+	assert.equal(homeDecision({ env, throws: new Error("unavailable ACL check") }).wizard().pnpmHome.failed, true);
+	assert.equal(homeDecision({ env: { ...env, PNPM_HOME: "relative" } }).decide(), null);
+	assert.equal(homeDecision({ env: { ...env, PNPM_HOME: W_PRIVATE }, dirs: [W_PRIVATE], weak: { [W_PRIVATE]: "target-acl-mask" } }).decide().source, "user");
+	// Only the exact opt-in enables the new behavior. A trusted folder is always kept.
+	for (const flag of ["", "true", "0"]) assert.equal(homeDecision({ env: { ...env, GENTLE_INSTALL_PRIVATE_PNPM_HOME: flag }, dirs: [W_DEFAULT], weak }).decide().source, "user");
+	assert.equal(homeDecision({ env }).decide().source, "user");
+});
+
+test("bootstrap accepts only the explicit private-home switch before doing any work", () => {
+	const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+	assert.ok(source.indexOf('set "GENTLE_INSTALL_PRIVATE_PNPM_HOME="') < source.indexOf('set "GENTLE_INSTALL_PRIVATE_PNPM_HOME=1"'));
+	assert.ok(source.includes('if /i not "%~1"=="--private-pnpm-home" goto usage'));
+	assert.ok(source.includes('if not "%~2"=="" goto usage'));
+	assert.ok(source.indexOf(":bootstrap") < source.indexOf("GENTLE_BOOTSTRAP_BUNDLE="));
+});
+
+test("native Windows: CMD passes private-home opt-in only for the supported switch", { skip: process.platform !== "win32" }, () => {
+	const f = fixture();
+	try {
+		const source = readFileSync(new URL("../scripts/bootstrap.cmd", import.meta.url), "utf8");
+		const prefix = source.slice(0, source.indexOf("rem Trusted extracted/checkout bundle only."));
+		writeFileSync(join(f.root, "option.cmd"), `${prefix}\r\necho PRIVATE=%GENTLE_INSTALL_PRIVATE_PNPM_HOME%\r\nexit /b 0\r\n:usage\r\nexit /b 2\r\n`);
+		for (const [args, status, output] of [["", 0, "PRIVATE="], ["--private-pnpm-home", 0, "PRIVATE=1"],
+			["--unknown", 2, ""], ["--private-pnpm-home extra", 2, ""]] as const) {
+			const result = spawnSync(join(process.env.SystemRoot!, "System32/cmd.exe"), ["/d", "/c", `option.cmd ${args}`],
+				{ cwd: f.root, env: { ...process.env, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1" }, encoding: "utf8", timeout: 5000, windowsHide: true });
+			assert.equal(result.status, status, result.stderr);
+			assert.equal(result.stdout.trim(), output);
+		}
+	} finally { f.cleanup(); }
+});
+
 test("a weak default that already holds files, a weak or foreign private folder, or a weak user PNPM_HOME blocks", () => {
 	const installed = homeDecision({ dirs: [W_DEFAULT, `${W_DEFAULT}\\store`], weak: { [W_DEFAULT]: "target-acl-mask" } });
 	assert.deepEqual(installed.decide(), { available: true, path: W_DEFAULT, source: "default", untrusted: finding(W_DEFAULT), installed: true });
@@ -1679,6 +1772,64 @@ test("native Windows: a weak default PNPM_HOME holding nothing makes the plan us
 	} finally { f.cleanup(); }
 });
 
+test("native Windows: repeated preflight leaves an unclaimed fallback untouched even when probe children create caches", { skip: nativeUnavailable }, async () => {
+	const f = await ownedNativeFixture();
+	try {
+		const local = join(f.root, "local"); const profile = join(f.root, "profile"); const tools = join(f.root, "tools");
+		const old = join(local, "pnpm"); const occupied = join(profile, ".pnpm"); const own = join(profile, ".gentle-shell-pnpm");
+		const oldBin = join(old, "bin");
+		mkdirSync(oldBin, { recursive: true }); mkdirSync(join(occupied, "bin"), { recursive: true });
+		// Existing global commands in the rejected home used to become unknown
+		// tools after PNPM_HOME changed, blocking the separate private install.
+		writeFileSync(join(oldBin, "gentle-shell.exe"), "old shell sentinel");
+		writeFileSync(join(oldBin, "pi.exe"), "old Pi sentinel");
+		mkdirSync(join(occupied, "tmp")); mkdirSync(tools);
+		writeFileSync(join(occupied, "tmp", "cache"), "keep");
+		await grantEveryone(f.root, old, modifyRights);
+		const env = { SystemRoot: process.env.SystemRoot!, LOCALAPPDATA: local, USERPROFILE: profile, Path: `${tools};${oldBin}`, PNPM_HOME: old,
+			GENTLE_BOOTSTRAP_TOOLS: tools, GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1", GENTLE_INSTALL_PNPM_COMMAND: join(tools, "pnpm.exe") };
+		const { fs } = hostAdapters();
+		const calls: Array<{ argv: string[]; home: string }> = [];
+		const run = async (_command: string, argv: string[], options: { env: NodeJS.ProcessEnv }) => {
+			calls.push({ argv, home: options.env.PNPM_HOME! });
+			// Simulate real npm/pnpm startup effects in a real child process, not
+			// just a mocked return value. Before consent all writes must stay in tools.
+			const script = `const fs = require('node:fs'), path = require('node:path');
+				fs.mkdirSync(path.join(process.env.PNPM_HOME, 'bin'), { recursive: true });
+				fs.mkdirSync(path.join(process.env.TEMP, 'node-compile-cache'), { recursive: true });
+				process.stdout.write(${JSON.stringify(argv.includes("list") ? "[]" : "11.1.1")});`;
+			const child = spawnSync(process.execPath, ["-e", script], { env: options.env, encoding: "utf8", timeout: 5000, windowsHide: true });
+			return { code: child.status, stdout: child.stdout };
+		};
+		const probesFor = (wizard: ReturnType<typeof windowsModule.windowsWizardEnvironment>) => createProbes({ platform: "win32", env: wizard.env,
+			pnpmHome: wizard.pnpmHome, run, fs, storageMany: null });
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const wizard = windowsModule.windowsWizardEnvironment({ env });
+			assert.equal(wizard.pnpmHome.path, own, JSON.stringify(wizard.pnpmHome));
+			const probes = probesFor(wizard);
+			assert.equal((await probes.pnpm()).available, true);
+			assert.deepEqual(await probes.shell(), { available: false });
+			assert.deepEqual(await probes.pi(), { available: false });
+			assert.equal(existsSync(own), false, "refresh and consent re-inventory must not create the selected home");
+		}
+		assert.ok(calls.every((call) => call.home === join(tools, "probe-pnpm-home")));
+		assert.equal(calls.some((call) => call.argv.includes("list")), false);
+		assert.equal(windowsModule.ensureWindowsPnpmHome(own, env), "claimed");
+		const after = probesFor(windowsModule.windowsWizardEnvironment({ env }));
+		assert.deepEqual(await after.shell(), { available: false });
+		assert.equal(calls.at(-1)!.home, own, "after the real claim, installed packages are listed in the selected home");
+		assert.ok(calls.at(-1)!.argv.includes("list"));
+		assert.deepEqual(readdirSync(occupied).sort(), ["bin", "tmp"]);
+		assert.equal(readFileSync(join(occupied, "tmp", "cache"), "utf8"), "keep");
+		assert.equal(readFileSync(join(oldBin, "gentle-shell.exe"), "utf8"), "old shell sentinel");
+		// An unrelated manual command remains visible and blocked as unknown.
+		const manual = join(f.root, "manual"); mkdirSync(manual);
+		writeFileSync(join(manual, "gentle-shell.exe"), "manual shell sentinel");
+		const manualWizard = windowsModule.windowsWizardEnvironment({ env: { ...env, Path: `${env.Path};${manual}` } });
+		assert.deepEqual(await probesFor(manualWizard).shell(), { available: null, outsidePnpm: true });
+	} finally { f.cleanup(); }
+});
+
 test("native Windows: a weak default PNPM_HOME that already holds files blocks and names the folder, principal and rights", { skip: nativeUnavailable }, async () => {
 	const f = await ownedNativeFixture();
 	try {
@@ -1702,6 +1853,17 @@ test("native Windows: a weak default PNPM_HOME that already holds files blocks a
 		// A PNPM_HOME the user set is held to the same walk.
 		const user = windowsModule.windowsPnpmHome({ env: { ...env, PNPM_HOME: join(local, "pnpm") } });
 		assert.deepEqual([user.source, user.untrusted?.check], ["user", "target-acl-mask"]);
+		// Explicit recovery for this exact report: configured PNPM_HOME with a
+		// foreign Modify ACE and existing files. No ACLs or contents are changed there.
+		const isolated = windowsModule.windowsWizardEnvironment({ env: { ...env, PNPM_HOME: join(local, "pnpm"), GENTLE_INSTALL_PRIVATE_PNPM_HOME: "1" } });
+		const own = join(profile, ".pnpm");
+		assert.equal(isolated.pnpmHome.source, "private", JSON.stringify(isolated.pnpmHome));
+		assert.equal(isolated.env.PNPM_HOME, own);
+		assert.equal(existsSync(own), false, "planning is read-only");
+		assert.equal(windowsModule.ensureWindowsPnpmHome(own, isolated.env), "claimed");
+		verifyWindowsStorage(join(own, "tmp"), isolated.env);
+		assert.deepEqual(readdirSync(join(local, "pnpm")), ["store"]);
+		assert.throws(() => verifyWindowsStorage(join(local, "pnpm"), env), (error: { check?: string }) => error.check === "target-acl-mask");
 	} finally { f.cleanup(); }
 });
 

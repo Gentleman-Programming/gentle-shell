@@ -114,7 +114,7 @@ export const guidance = Object.freeze({
 		"existing-stack-unverified": "The installed Pi and Gentle Shell changed after the plan was made, or are no longer the versions this installer set up. Nothing was changed; run the installer again to check this computer again.",
 	}),
 	failed: Object.freeze({
-		"prepare-pnpm-home": "The private pnpm folder (%USERPROFILE%\\.pnpm) could not be created, or kept, with access for you, SYSTEM and Administrators only, or it changed after the plan was made. Nothing was installed. " +
+		"prepare-pnpm-home": "The private pnpm folder shown in the plan (%USERPROFILE%\\.pnpm or %USERPROFILE%\\.gentle-shell-pnpm) could not be created, or kept, with access for you, SYSTEM and Administrators only, or it changed after the plan was made. Nothing was installed. " +
 			"If that folder holds files this installer did not put there, move them aside. Then run the installer again.",
 		"persist-node": `Installing Node.js under PNPM_HOME failed. Check your network connection. ${tryAgain}`,
 		"persist-package-managers": `Installing npm and pnpm under PNPM_HOME failed. Check your network connection. ${tryAgain}`,
@@ -287,20 +287,19 @@ function findingText(finding) {
 	if (check.endsWith("-reparse")) return `${at} is a link (reparse point) to another location`;
 	return `${at} did not pass the permission check`;
 }
-const privateRemedy = "set PNPM_HOME to a private folder such as %USERPROFILE%\\.pnpm and reinstall your global pnpm packages there";
+const privateRemedy = "close this installer and run `.\\scripts\\bootstrap.cmd --private-pnpm-home` from the checkout to install separately in %USERPROFILE%\\.pnpm (or %USERPROFILE%\\.gentle-shell-pnpm when the first folder is occupied). " +
+	"The installer checks that folder's permissions too and never copies, moves or deletes your existing global pnpm packages";
 function pnpmHomeGuidance(home) {
 	const path = plainText(home?.path);
 	if (!path || typeof home.untrusted !== "object" || home.untrusted === null) return guidance.blockers["untrusted-pnpm-home"];
 	const found = findingText(home.untrusted);
 	const at = plainText(home.untrusted.at) ?? path;
-	if (home.source === "user") {
-		return `PNPM_HOME is set to ${path}, but ${found}. pnpm installs and runs programs there, so nothing was installed. ` +
-			`Remove that account's write access, or ${privateRemedy}, then select Check again.`;
-	}
-	const intro = `pnpm's default folder ${path} is not private: ${found}.`;
+	const intro = home.source === "user"
+		? `PNPM_HOME is set to ${path}, but ${found}.`
+		: `pnpm's default folder ${path} is not private: ${found}.`;
 	if (home.installed === true) {
 		return `${intro} It already holds files. This installer never runs programs from a folder another account can change, and never moves or deletes an existing installation, so nothing was installed. ` +
-			`Remove that account's write access to ${at}, or ${privateRemedy}, then select Check again.`;
+			`Remove that account's write access to ${at} and select Check again, or ${privateRemedy}.`;
 	}
 	const own = plainText(home.private?.path);
 	if (own && home.private.foreign === true) {
@@ -311,7 +310,7 @@ function pnpmHomeGuidance(home) {
 		return `${intro} ${own}, the private folder this installer would use instead, is not private either: ${findingText(home.private.untrusted)}. Nothing was changed. ` +
 			"Remove the extra access shown, then select Check again.";
 	}
-	return `${intro} Nothing was installed. Remove that account's write access to ${at}, or ${privateRemedy}, then select Check again.`;
+	return `${intro} Nothing was installed. Remove that account's write access to ${at} and select Check again, or ${privateRemedy}.`;
 }
 
 /** Names the found and required versions when an incompatible tool is simply
@@ -394,9 +393,13 @@ function alongsideNotes(plan) {
 function privateHomeDescription(home) {
 	const path = plainText(home.path);
 	const fallback = plainText(home.default);
-	return `pnpm's default folder ${fallback} is not private: ${findingText(home.finding)}. So the installer uses a new private folder, ${path}, as PNPM_HOME, ` +
-		`which only you, SYSTEM and Administrators can change. \`pnpm setup\` will save PNPM_HOME=${path} in your user environment and add ${path}\\bin ` +
-		`to your user PATH, so new terminals use it. Nothing in ${fallback} is changed. Open a new terminal afterwards. ` +
+	const setup = home.replaceEnvironment === true ? "pnpm setup --force" : "pnpm setup";
+	const replace = home.replaceEnvironment === true ? "This replaces any previous PNPM_HOME in your Windows user environment, after you confirm. " : "";
+	return `The previous pnpm folder ${fallback} is not private: ${findingText(home.finding)}. So the installer uses a separate private folder, ${path}, as PNPM_HOME, ` +
+		`which only you, SYSTEM and Administrators can change. \`${setup}\` will save PNPM_HOME=${path} in your user environment and add ${path}\\bin ` +
+		`to your user PATH, so new terminals use it. Nothing in ${fallback} is changed; existing global packages are not copied or migrated. ` +
+		"The previous pnpm folder and its subfolders are excluded from the installer's PATH, so their programs are not reused or updated; other PATH entries are kept. " +
+		`${replace}Open a new terminal afterwards. ` +
 		// S13: pnpm reads its configuration folder only from XDG_CONFIG_HOME or %LOCALAPPDATA%\pnpm\config.
 		"Only the installer's own pnpm steps keep pnpm's configuration, cache and state inside that private folder: pnpm commands you run later keep " +
 		"pnpm's default configuration, cache and state under %LOCALAPPDATA%, which pnpm offers no safe persistent setting to move. This is an accepted risk.";
@@ -516,7 +519,7 @@ function planView(planId, { inventory, plan }) {
 		})),
 		profileChange: {
 			changesProfile,
-			command: "pnpm setup",
+			command: privateHome?.replaceEnvironment === true ? "pnpm setup --force" : "pnpm setup",
 			binDir,
 			description: privateHome ? privateHomeDescription(privateHome) : changesProfile
 				? `\`pnpm setup\` will add ${binDir ?? "the pnpm global bin directory"} to your PATH: it edits your shell profile on macOS and Linux, or your user PATH on Windows. Open a new terminal afterwards.`

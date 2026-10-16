@@ -657,7 +657,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:models             Assign global model/effort routing to packaged/custom agents.
+/gentle:models             Assign global agent model/effort routing and choose a profile orchestrator.
 /gentle:profiles           Create, switch, and manage global agent-model profiles.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
@@ -1037,7 +1037,9 @@ Startup and reload materialize saved non-empty routing, but never treat a saved 
 
 Inside `/gentle:models`, press `x` to export the saved routing to `~/.pi/gentle-ai/models.export.json`, or `r` to restore from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
 
-Press `u` to save global agent routing like `ctrl+s`, then capture that routing plus this session's orchestrator model and thinking level in the current profile. If this session has no model, `u` falls back to the orchestrator defaults in `settings.json`; it never changes those defaults. `/gentle:profiles` `s` follows the same rule for the orchestrator: the live session when available, the `settings.json` defaults otherwise. The panel names the profile `u` targets: the profile this repository pins when a pin wins, otherwise the globally active profile. When no profiles store exists yet, `u` seeds it with a `current` profile the way `/gentle:profiles` does on first open; when the store exists but nothing is active and nothing is pinned, the global save still happens and the panel points you to `/gentle:profiles`.
+The `orchestrator` row selects the model and thinking effort that `u` will store in the current profile. Its initial choice is the target profile's saved entry, or **leave untouched** if that profile has no orchestrator key. Without an existing target profile, it uses the live session model and effort, falling back to `settings.json` when no live model exists; changing the row never switches the live session. Choose **leave untouched** in its model picker, or press `i` on the row, to store no `orchestrator` key—even when replacing a profile that previously carried one. Select a model before editing effort. **Set all agents** never changes this row.
+
+Press `u` to save global agent routing like `ctrl+s`, then snapshot that routing and the explicit orchestrator choice into the current profile. `ctrl+s` saves only agent routing: it neither updates a profile nor applies the chosen orchestrator. Both keys leave orchestrator defaults and the live model/effort unchanged; applying a profile with no orchestrator key preserves both. Custom-model, export and restore reopens retain the choice; exports/restores remain saved-agent-routing operations. `/gentle:profiles` `s` remains unchanged: it captures the live session model/effort when available, the `settings.json` defaults otherwise. The panel names the profile `u` targets: the profile this repository pins when a pin wins, otherwise the globally active profile. When no profiles store exists yet, `u` seeds it with a `current` profile the way `/gentle:profiles` does on first open; when the store exists but nothing is active and nothing is pinned, the global save still happens and the panel points you to `/gentle:profiles`.
 
 Config shape (per agent):
 

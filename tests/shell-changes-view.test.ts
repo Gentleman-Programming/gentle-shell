@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { CHANGE_STATUS, DIFF_TOO_LARGE, changesModel, type ChangedFile } from "../lib/shell-changes.ts";
 import { WorktreeChangesView, ChangesView, colorDiff, type ChangesViewDeps } from "../lib/shell-changes-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -892,4 +893,78 @@ test("the native fullscreen wrapper keeps keyboard, hover, click and wheel on th
 	} finally {
 		tui.stop();
 	}
+});
+
+// Syntax highlighting: the pane colours every diff line with Pi's own tokenizer
+// and the active theme's syntax roles, while the added/removed marker keeps its
+// own role so a changed line stays distinguishable.
+const hasAnsi = (text: string) => /\u001b\[[0-9;]*m/.test(text);
+// The tagged theme wraps text in readable tags; compare visible text without them.
+const visible = (text: string) => stripAnsi(text).replace(/<\/?[a-zA-Z]+>/g, "");
+
+const DIFF_TS = [
+	"diff --git a/src/app.ts b/src/app.ts",
+	"index 1..2 100644",
+	"--- a/src/app.ts",
+	"+++ b/src/app.ts",
+	"@@ -1,2 +1,3 @@",
+	" const cache = new Map<string, number>();",
+	"-  const saludo = `hola ${nombre}`;",
+	"+  const saludo = `hola ${nombre.toUpperCase()}`; // fixed",
+	"+  return saludo.trim();",
+].join("\n");
+
+test("colorDiff highlights the line body and keeps the diff marker's own role", () => {
+	initTheme("dark");
+	const lines = colorDiff(DIFF_TS, taggedTheme, "typescript");
+	assert.equal(lines.length, 5, "one output line per diff line, headers already dropped");
+
+	const added = lines[4]!;
+	assert.match(added, /^<toolDiffAdded>\+<\/toolDiffAdded>/, "the marker carries the added role");
+	assert.ok(hasAnsi(added), "the body carries the theme's syntax coloring");
+	assert.match(visible(added), /^\+ {2}return saludo\.trim\(\);$/, "the visible text is the diff line");
+
+	const removed = lines[2]!;
+	assert.match(removed, /^<toolDiffRemoved>-<\/toolDiffRemoved>/, "the marker carries the removed role");
+	assert.match(visible(removed), /^- {2}const saludo = `hola \$\{nombre\}`;$/, "the removed line keeps its text");
+
+	assert.equal(lines[0], "<customMessageLabel>@@ -1,2 +1,3 @@</customMessageLabel>", "the hunk header is never tokenized as code");
+	assert.ok(hasAnsi(lines[1]!), "context lines are highlighted as well");
+	assert.equal(visible(lines[1]!), " const cache = new Map<string, number>();");
+});
+
+test("colorDiff does not mistake a hyphen inside the code for the removed marker", () => {
+	initTheme("dark");
+	const diff = ["@@ -1 +1 @@", "-  let i = 0; --i;", "+  let i = 0; ++i;"].join("\n");
+	const lines = colorDiff(diff, taggedTheme, "typescript");
+	assert.match(visible(lines[1]!), /^- {2}let i = 0; --i;$/, "only the leading marker is the diff marker");
+	assert.match(visible(lines[2]!), /^\+ {2}let i = 0; \+\+i;$/);
+});
+
+test("colorDiff keeps every diff line when the language is unknown", () => {
+	initTheme("dark");
+	const lines = colorDiff(DIFF_TS, taggedTheme, "not-a-real-language");
+	assert.equal(lines.length, 5);
+	assert.match(visible(lines[3]!), /^\+ {2}const saludo = /, "the text is never lost to the tokenizer");
+});
+
+// A line the tokenizer leaves alone (a bare brace, prose, a heading) would come
+// back uncolored and lose the pane's context color: the pane's own role wins there.
+test("colorDiff keeps the pane's own color for a line with no tokens of its own", () => {
+	initTheme("dark");
+	const diff = ["@@ -1,3 +1,3 @@", " }", "+const x = 1;"].join("\n");
+	const lines = colorDiff(diff, taggedTheme, "typescript");
+	assert.equal(lines[1], "<toolDiffContext> }</toolDiffContext>", "a bare brace keeps the context role");
+	assert.ok(hasAnsi(lines[2]!), "a line with tokens still gets syntax");
+});
+
+test("colorDiff survives a large diff without losing lines", () => {
+	initTheme("dark");
+	const big = ["@@ -1,4000 +1,4000 @@"];
+	for (let index = 0; index < 4000; index += 1) {
+		big.push(`${index % 2 === 0 ? "+" : "-"}  const value${index} = "line ${index}";`);
+	}
+	const lines = colorDiff(big.join("\n"), taggedTheme, "typescript");
+	assert.equal(lines.length, 4001, "every line survives, hunk header included");
+	assert.ok(hasAnsi(lines[4000]!), "the last line is highlighted too");
 });

@@ -376,14 +376,16 @@ test("renderShellBar resets an active extension foreground on an empty SGR reset
 	assert.match(line, /\x1b\[38;2;239;68;68m25%\x1b\[m<muted> \u00b7 capped<\/muted>$/);
 });
 
-test("renderShellBar keeps colon-form (ITU T.416) extension colors", () => {
+test("colon-form (ITU T.416) colors are normalized to semicolon form with the same palette", () => {
 	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
 	const [line] = renderShellBar(
 		model({ statuses: ["Budget \x1b[38:2::239:68:68m25%\x1b[39m \u00b7 ok"] }),
 		tagged,
 		400,
 	);
-	assert.match(line, /\x1b\[38:2::239:68:68m25%\x1b\[39m<muted> \u00b7 ok<\/muted>$/);
+	// Same red, standard syntax: downstream trackers (wrap/width) restore it.
+	assert.match(line, /\x1b\[38;2;239;68;68m25%\x1b\[39m<muted> \u00b7 ok<\/muted>$/);
+	assert.doesNotMatch(line, /38:2:/);
 });
 
 test("renderShellBar closes an extension foreground that survives to the segment end", () => {

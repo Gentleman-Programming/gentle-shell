@@ -198,7 +198,36 @@ function sanitizeStatus(text: string): string {
 		.replace(/\uFFFD(\d+)\uFFFD/g, (_, index) => sgrs[Number(index)] ?? "")
 		.replace(/ +/g, " ")
 		.trim();
-	return cleaned;
+	return colonSgrToSemicolon(cleaned);
+}
+
+/**
+ * Rewrite ITU T.416 colon parameter units (CSI 38:2::R:G:Bm / 38:5:Pm) into
+ * the semicolon form pi-tui's trackers understand, so wrapped continuation
+ * lines keep the extension foreground. Color values are preserved; units
+ * other than 38:/48: color specs stay untouched.
+ */
+function colonSgrToSemicolon(text: string): string {
+	return text.replace(ANSI_SGR_RUN, (sgr) => {
+		if (!sgr.includes(":")) return sgr;
+		const inner = sgr.slice(2, -1);
+		const units = inner.split(";").map((unit) => {
+			if (!unit.includes(":")) return unit;
+			const parts = unit.split(":");
+			const kind = parts[0];
+			const subtype = parts[1];
+			if (kind !== "38" && kind !== "48") return unit;
+			const rest = parts.slice(2).filter((p) => p !== "");
+			if (subtype === "5") {
+				return rest.length === 1 ? `${kind};5;${rest[0]}` : unit;
+			}
+			if (subtype === "2") {
+				return rest.length === 3 ? [kind, "2", ...rest].join(";") : unit;
+			}
+			return unit;
+		});
+		return `\x1b[${units.join(";")}m`;
+	});
 }
 
 function statusSegment(theme: ShellBarTheme, status: string): string {

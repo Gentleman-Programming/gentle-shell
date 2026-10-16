@@ -137,10 +137,119 @@ export function formatCost(total: number, subscription = false): string {
 	return subscription ? `$${amount} sub` : `$${amount}`;
 }
 
-// Extensions may paint their status themselves (pi-mcp-adapter does); the bar
-// owns the palette, so their escapes go and the text takes the status role.
+// Extensions may paint their status themselves (pi-mcp-adapter paints role
+// colors; budget/usage gauges paint use thresholds). Colorless statuses take
+// the bar's status role; runs the extension colored render verbatim, and the
+// bar repaints every neutral run in the status role, so an extension's own
+// reset never hands the tail the terminal default.
+const ANSI_SGR_RUN = /\x1b\[[0-9;:]*m/g;
+
+/**
+ * Turnover of the extension's status foreground for one SGR token: whether
+ * after this sequence the active foreground belongs to the extension.
+ * Parses the parameters sequentially so compound resets (\x1b[0;0m), empty
+ * resets (\x1b[m) and extended-color groups (\x1b[38;2;0;0;0m — a 0 inside
+ * the parameters is a color component, not a reset) are all classified;
+ * attribute-only sequences (bold \x1b[1m, underline \x1b[4m) carry no
+ * foreground and leave the turnover untouched.
+ */
+function sgrForegroundTurnover(token: string, extensionColored: boolean): boolean {
+	const match = /^\x1b\[([0-9;:]*)m$/.exec(token);
+	if (!match) return extensionColored;
+	const params = match[1] === "" ? [] : match[1].split(";");
+	if (params.length === 0) return false; // empty reset: \x1b[m
+	let colored = extensionColored;
+	let index = 0;
+	while (index < params.length) {
+		const param = params[index];
+		if (param === "" || param === "0") {
+			colored = false; // full reset (empty parameter or 0)
+		} else if (param === "39") {
+			colored = false; // default foreground
+		} else if (param === "38" || param === "48") {
+			if (param === "38") colored = true;
+			const mode = params[index + 1];
+			index += mode === "2" ? 5 : mode === "5" ? 2 : 0;
+		} else if (param.startsWith("38:") || param.startsWith("48:")) {
+			// ITU T.416 colon form: one unit (38:2::r:g:b / 38:5:P); no sub-scan.
+			if (param.startsWith("38:")) colored = true;
+		} else {
+			const code = Number(param);
+			if (
+				!Number.isNaN(code) &&
+				((code >= 30 && code <= 37) || (code >= 90 && code <= 97))
+			) {
+				colored = true; // classic foreground colors
+			}
+		}
+		index += 1;
+	}
+	return colored;
+}
+
 function sanitizeStatus(text: string): string {
-	return sanitizeTerminalText(text.replace(/[\r\n\t]/g, " ")).replace(/ +/g, " ").trim();
+	// Protect SGR runs, clean the rest like the bar always did, then restore.
+	const sgrs: string[] = [];
+	const guarded = text.replace(ANSI_SGR_RUN, (run) => {
+		sgrs.push(run);
+		return `\uFFFD${sgrs.length - 1}\uFFFD`;
+	});
+	const cleaned = sanitizeTerminalText(guarded.replace(/[\r\n\t]/g, " "))
+		.replace(/\uFFFD(\d+)\uFFFD/g, (_, index) => sgrs[Number(index)] ?? "")
+		.replace(/ +/g, " ")
+		.trim();
+	return colonSgrToSemicolon(cleaned);
+}
+
+/**
+ * Rewrite ITU T.416 colon parameter units (CSI 38:2::R:G:Bm / 38:5:Pm) into
+ * the semicolon form pi-tui's trackers understand, so wrapped continuation
+ * lines keep the extension foreground. Color values are preserved; units
+ * other than 38:/48: color specs stay untouched.
+ */
+function colonSgrToSemicolon(text: string): string {
+	return text.replace(ANSI_SGR_RUN, (sgr) => {
+		if (!sgr.includes(":")) return sgr;
+		const inner = sgr.slice(2, -1);
+		const units = inner.split(";").map((unit) => {
+			if (!unit.includes(":")) return unit;
+			const parts = unit.split(":");
+			const kind = parts[0];
+			const subtype = parts[1];
+			if (kind !== "38" && kind !== "48") return unit;
+			const rest = parts.slice(2).filter((p) => p !== "");
+			if (subtype === "5") {
+				return rest.length === 1 ? `${kind};5;${rest[0]}` : unit;
+			}
+			if (subtype === "2") {
+				return rest.length === 3 ? [kind, "2", ...rest].join(";") : unit;
+			}
+			return unit;
+		});
+		return `\x1b[${units.join(";")}m`;
+	});
+}
+
+function statusSegment(theme: ShellBarTheme, status: string): string {
+	const text = sanitizeStatus(status);
+	if (!text.includes("\x1b")) return theme.fg(ROLE.STATUS, text);
+	let painted = "";
+	let extensionColored = false;
+	for (const token of text.split(/(\x1b\[[0-9;:]*m)/)) {
+		if (token === "") continue;
+		if (/^\x1b\[[0-9;:]*m$/.test(token)) {
+			painted += token;
+			extensionColored = sgrForegroundTurnover(token, extensionColored);
+			continue;
+		}
+		painted += extensionColored || !token.trim()
+			? token
+			: theme.fg(ROLE.STATUS, token);
+	}
+	// Close an extension foreground that survives to the segment end so the
+	// line's remaining segments never inherit it.
+	if (extensionColored) painted += "\x1b[39m";
+	return painted;
 }
 
 // Shared by the compact bar, the sidebar Status card, and the fullscreen
@@ -174,7 +283,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const context = contextSegment(model.contextPercent, theme, paint);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
-	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
+	const statuses = model.statuses.map((status) => statusSegment(theme, status));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
 		location,
@@ -257,7 +366,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
-			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
+			? model.statuses.map((status) => statusSegment(theme, status))
 			: [label("No status reported")] },
 	];
 	// Wrap and indent every group line before it reaches the card, so Unicode and

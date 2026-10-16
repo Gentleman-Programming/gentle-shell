@@ -307,11 +307,95 @@ test("renderShellBar appends extension statuses as trailing segments", () => {
 	assert.match(line, /⟡ 🔌 MCP: 3 servers enabled$/);
 });
 
-test("renderShellBar repaints extension statuses in the bar role, discarding colors the extension embedded", () => {
+test("renderShellBar keeps the extension palette in colored statuses and repaints neutral runs in the bar role", () => {
 	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
 	const [line] = renderShellBar(model({ statuses: ["\x1b[38;2;255;0;0mMCP: 3/3 servers\x1b[0m"] }), tagged, 400);
-	assert.match(line, /<muted>MCP: 3\/3 servers<\/muted>$/);
-	assert.doesNotMatch(line, /\x1b\[/);
+	// The colored run renders verbatim; no repaint swallows it.
+	assert.match(line, /\x1b\[38;2;255;0;0mMCP: 3\/3 servers\x1b\[0m/);
+	// A fully colored status leaves no neutral tail; the label prefix stays neutral-free.
+	assert.doesNotMatch(line, /<muted>[^<]*MCP: 3\/3 servers/);
+});
+
+test("renderShellBar repaints the neutral runs of a hybrid status around the colored run", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38;2;34;197;94m\u25b0\u25b1 25%\x1b[39m \u00b7 $2.50/$10.00"] }),
+		tagged,
+		400,
+	);
+	// Neutral head takes the bar role.
+	assert.match(line, /<muted>Budget <\/muted>/);
+	// The colored run survives verbatim.
+	assert.match(line, /\x1b\[38;2;34;197;94m\u25b0\u25b1 25%\x1b\[39m/);
+	// The neutral tail is repainted in the bar role (the extension's bare
+	// fg reset must not hand the tail the terminal default).
+	assert.match(line, /<muted> \u00b7 \$2\.50\/\$10\.00<\/muted>$/);
+});
+
+test("renderShellBar treats foreground-only SGR (bold/underline) as uncolored and repaints the run in the bar role", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["\x1b[1mMCP\x1b[m: 3 servers"] }),
+		tagged,
+		400,
+	);
+	// Bold carried no foreground: each neutral run must take the status role.
+	assert.match(line, /\x1b\[1m<muted>MCP<\/muted>\x1b\[m<muted>: 3 servers<\/muted>$/);
+});
+
+test("renderShellBar repaints the neutral suffix after empty and compound SGR resets", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const cases = [
+		["Budget\x1b[m gauge"],
+		["Budget\x1b[0m gauge"],
+		["Budget\x1b[0;0m gauge"],
+		// 0 inside an extended color parameter must not count as a reset.
+		["Budget\x1b[38;2;0;0;0m gauge", false],
+	] as Array<[string, boolean?]>;
+	for (const [status, colored] of cases) {
+		const [line] = renderShellBar(model({ statuses: [status] }), tagged, 400);
+		if (colored === false) {
+			// 0 inside an extended color is a color component:
+			// the whole suffix stays in the extension's palette (and,
+			// because it survives to the segment end, the fg is closed).
+			assert.match(line, /Budget<\/muted>\x1b\[38;2;0;0;0m gauge\x1b\[39m$/, status);
+		} else {
+			// The reset is recognized and repainted in the bar role.
+			assert.match(line, /Budget<\/muted>\x1b\[[0-9;]*m<muted> gauge<\/muted>$/, status);
+		}
+	}
+});
+
+test("renderShellBar resets an active extension foreground on an empty SGR reset", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38;2;239;68;68m25%\x1b[m \u00b7 capped"] }),
+		tagged,
+		400,
+	);
+	assert.match(line, /\x1b\[38;2;239;68;68m25%\x1b\[m<muted> \u00b7 capped<\/muted>$/);
+});
+
+test("colon-form (ITU T.416) colors are normalized to semicolon form with the same palette", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38:2::239:68:68m25%\x1b[39m \u00b7 ok"] }),
+		tagged,
+		400,
+	);
+	// Same red, standard syntax: downstream trackers (wrap/width) restore it.
+	assert.match(line, /\x1b\[38;2;239;68;68m25%\x1b\[39m<muted> \u00b7 ok<\/muted>$/);
+	assert.doesNotMatch(line, /38:2:/);
+});
+
+test("renderShellBar closes an extension foreground that survives to the segment end", () => {
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38;2;34;197;94m25%"] }),
+		plainTheme,
+		400,
+	);
+	// The active foreground must not leak into whatever the bar appends next.
+	assert.match(line, /25%\x1b\[39m/);
 });
 
 test("renderShellBar compacts the path and branch before it sacrifices an extension status", () => {

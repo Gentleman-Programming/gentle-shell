@@ -42,7 +42,6 @@
 	],
 	"scripts": {
 		"check:provider-contract": "node scripts/check-provider-contract.mjs",
-		"mirror:odd-routing": "node scripts/mirror-odd-routing.mjs",
 		"postinstall": "node scripts/install-gentle-ai.mjs",
 		"test": "node scripts/run-test-suite.mjs",
 		"test:harness": "node --experimental-strip-types tests/runtime-harness.mjs",

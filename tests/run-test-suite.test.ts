@@ -123,6 +123,8 @@ console.log("ENV_PROBE=" + JSON.stringify({
   home,
   files: home && existsSync(home) ? readdirSync(home) : null,
   sentinel: process.env.TEST_ENV_SENTINEL,
+  tmp: process.env.TMPDIR ?? null,
+  tmpExists: process.env.TMPDIR ? existsSync(process.env.TMPDIR) : null,
 }));
 `);
 	writeFileSync(stagesPath, JSON.stringify([
@@ -199,4 +201,17 @@ test("direct invocation rejects a malformed stages file with a non-zero exit", (
 	const result = spawnSync(process.execPath, [runnerPath, stagesPath], { encoding: "utf8" });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr ?? "", /stages file must be an array/);
+});
+
+// Harness roadmap T3: each subagent gets its own TMPDIR, and unit fixtures that
+// leave a fake child unfinished would leave it behind; the stage owns them all.
+test("unit stage gets a private TMPDIR removed after the stage; later stages keep the inherited one", (t) => {
+	const inherited = mkdtempSync(join(tmpdir(), "gentle-pi-caller-tmp-"));
+	t.after(() => rmSync(inherited, { recursive: true, force: true }));
+	const [unit, provider] = probeStageEnvironment(t, { TMPDIR: inherited });
+	assert.notEqual(unit.tmp, inherited);
+	assert.match(unit.tmp, /gentle-pi-unit-tmp-/);
+	assert.equal(unit.tmpExists, true, "the private TMPDIR exists while the stage runs");
+	assert.equal(existsSync(unit.tmp), false, "the private TMPDIR is removed after the stage");
+	assert.equal(provider.tmp, inherited);
 });

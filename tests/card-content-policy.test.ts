@@ -42,16 +42,26 @@ test("invalid or unreadable preference files read as default and are never overw
 	const dir = home();
 	mkdirSync(join(dir, "card-content.json"));
 	assert.equal(resolveCardContent({ gentlePiConfigHome: dir }).malformed, true, "a directory in its place is unreadable, not missing");
-	if (process.getuid?.() !== 0) {
-		const locked = home();
-		writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: locked });
-		chmodSync(join(locked, "card-content.json"), 0o000);
-		try {
-			assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "default", source: "global_file", malformed: true, globalFile: "" });
-		} finally {
-			chmodSync(join(locked, "card-content.json"), 0o600);
-		}
+	assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/);
+	assert.deepEqual(readdirSync(dir), ["card-content.json"], "the rejected write must not create temporary files");
+	assert.deepEqual(readdirSync(join(dir, "card-content.json")), [], "the unreadable directory is preserved");
+});
+
+// chmod cannot deny reads on Windows; retain the portable directory case above.
+test("POSIX unreadable preference files read as default and are never overwritten", {
+	skip: process.platform === "win32" || process.getuid?.() === 0 ? "requires POSIX permissions and a non-root user" : false,
+}, () => {
+	const locked = home();
+	writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: locked });
+	chmodSync(join(locked, "card-content.json"), 0o000);
+	try {
+		assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "default", source: "global_file", malformed: true, globalFile: "" });
+		assert.throws(() => writeCardContent(CARD_CONTENT.DEFAULT, { gentlePiConfigHome: locked }), /Cannot update malformed or unreadable card content preference/);
+	} finally {
+		chmodSync(join(locked, "card-content.json"), 0o600);
 	}
+	assert.equal(resolveCardContent({ gentlePiConfigHome: locked }).content, CARD_CONTENT.MINIMAL, "the rejected write preserves the stored preference");
+	assert.deepEqual(readdirSync(locked), ["card-content.json"], "the rejected write leaves no temporary files");
 });
 
 test("the live slot shares one content level per process and an unset slot reads default", (t) => {

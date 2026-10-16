@@ -1966,7 +1966,11 @@ async function main() {
 	});
 	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
 	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
-	if (!versionCheck.ok) fail(versionCheck.message, 1);
+	// A managed self update is how an old Pi gets replaced, so the minimum-version
+	// gate must not block it; everything else still requires the minimum.
+	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined
+		&& (await import("../scripts/pi-update.mjs")).managedUpdatePlan(args.passthrough).self;
+	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
 		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);

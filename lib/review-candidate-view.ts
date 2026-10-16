@@ -242,8 +242,9 @@ export interface CandidateOwnerChmodIneffectiveDiagnostic {
 	message: typeof CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE;
 }
 
-const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
-const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
+export const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
+export const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
+export const CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE = "candidate view cannot create native symlinks; enable symlink capability out of band before retrying START" as const;
 
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;
@@ -872,7 +873,7 @@ function materializeSymlinkEntries(root: string, entries: readonly CandidateTree
 			const targetType = process.platform === "win32" && lstatSync(targetPath, { throwIfNoEntry: false })?.isDirectory() ? "dir" : "file";
 			symlinkSync(link.target, path, targetType);
 		} catch (error) {
-			throw new CandidateViewError("candidate view cannot create native symlinks; enable symlink capability out of band before retrying START", "symlink-materialization-failed", undefined, { cause: error });
+			throw new CandidateViewError(CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, "symlink-materialization-failed", undefined, { cause: error });
 		}
 	}
 	return new Map(links.map((link) => [link.path, createHash("sha256").update(Buffer.from(link.target, "utf8")).digest("hex")]));

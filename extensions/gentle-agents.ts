@@ -34,7 +34,8 @@ import { installBackgroundCacheWarming } from "../lib/background-cache-warming.t
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
-import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { type IpcEndpoint } from "../lib/agents-messaging.ts";
+import { ownedChildIpc, registerChildMessaging } from "./child-parent-message.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
@@ -161,16 +162,11 @@ export interface AgentsDeps extends RunnerDeps {
 	jobOutputDir?: () => string;
 }
 
-// gentle-shell#1587: fallback for a parent without the launcher's package
-// injection signal (#1690), e.g. a manual `pi -e <package>` launch. Children
-// then get context filtering, destructive-command safety, and the nan
-// provider (gentle-shell#1731 T32: a model routed to nan/* is not found
-// without it). When the signal is present, children load the whole package
-// instead. This list is frozen: new child-facing behavior ships inside the
-// package, never here. Missing files are omitted.
+// Keep the fallback child set small. Parent messaging is included because
+// background children need it to report blocked required capabilities.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
-		return ["./child-context.ts", "./child-safety.ts", "./nan-provider.ts"]
+		return ["./child-context.ts", "./child-safety.ts", "./nan-provider.ts", "./child-parent-message.ts"]
 			.map((path) => fileURLToPath(new URL(path, import.meta.url)))
 			.filter(exists);
 	} catch {
@@ -306,11 +302,6 @@ function messageText(content: unknown): string {
 	return content.map((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "").join("\n");
 }
 
-function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefined): IpcEndpoint | undefined {
-	if (env.GENTLE_PI_AGENTS_CHILD !== "1" || !env.GENTLE_PI_AGENTS_OWNED_IPC || !candidate || typeof candidate.send !== "function" || typeof candidate.on !== "function") return undefined;
-	return candidate;
-}
-
 // Catalog declarations are routing hints, not proof of child availability.
 // Filter non-name entries such as `"*": false`, but do not claim that a
 // syntactically valid name is registered. Empty declarations omit --tools and
@@ -345,27 +336,6 @@ function registerMissingToolsCheck(pi: ExtensionAPI, env: NodeJS.ProcessEnv): vo
 			const missing = [...new Set(requested.filter((name) => !available.has(name)))];
 			if (missing.length > 0) ctx.ui.notify(`${MISSING_TOOLS_NOTE_PREFIX} ${missing.join(", ")}`, "warning");
 		} catch { /* A diagnostic must never break the child's first prompt. */ }
-	});
-}
-
-function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
-	const messenger = new ChildMessenger(ipc);
-	pi.registerTool({
-		name: "subagent_parent_message",
-		label: "Agent parent message",
-		description: "Send a bounded notification or correlated query to this subagent's parent.",
-		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { kind: { type: "string", enum: ["notification", "query"] }, message: { type: "string" } } } as never,
-		async execute(_id, params): Promise<ToolText> {
-			const input = params as { kind?: unknown; message?: unknown };
-			if (typeof input.message !== "string") throw new Error("parent messages require text");
-			if (input.kind === undefined || input.kind === "notification") {
-				await messenger.notify(input.message);
-				return { content: [{ type: "text", text: "Notification accepted by the parent." }], details: {} };
-			}
-			if (input.kind !== "query") throw new Error("parent messages require notification or query kind");
-			const reply = await messenger.query(input.message);
-			return { content: [{ type: "text", text: reply }], details: { reply } };
-		},
 	});
 }
 

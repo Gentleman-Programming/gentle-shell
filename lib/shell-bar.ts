@@ -157,6 +157,7 @@ function sgrForegroundTurnover(token: string, extensionColored: boolean): boolea
 	const match = /^\x1b\[([0-9;]*)m$/.exec(token);
 	if (!match) return extensionColored;
 	const params = match[1] === "" ? [] : match[1].split(";");
+	if (params.length === 0) return false; // empty reset: \x1b[m
 	let colored = extensionColored;
 	let index = 0;
 	while (index < params.length) {

@@ -36,7 +36,7 @@ import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskA
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
-import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
+import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, WindowsSessionRegistryPhaseSequence, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
@@ -696,6 +696,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			let listener: SessionTransportListener | undefined;
 			let client: SessionTransportClient | undefined;
 			let closePromise: Promise<void> | undefined;
+			let sessionId: string | undefined;
+			let startupPhase: "registry" | "listener" = "registry";
+			const phases = new WindowsSessionRegistryPhaseSequence();
 			const closeStartupTransport = () => {
 				if (closePromise) return closePromise;
 				closePromise = Promise.resolve().then(async () => {
@@ -709,13 +712,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			};
 			try {
 				if (previous) trackTransportOperation(closeSessionTransport(previous));
-				const sessionId = sessionManager.getSessionId();
+				sessionId = sessionManager.getSessionId();
 				if (!validTransportSessionId(sessionId) || sessions !== sessionManager || generation !== transportGeneration) return;
-				registry = await sessionTransport.createRegistry(agentHome);
+				registry = await sessionTransport.createRegistry(agentHome, (event) => phases.observe(event));
 				if (sessions !== sessionManager || generation !== transportGeneration) {
 					await closeStartupTransport();
 					return;
 				}
+				startupPhase = "listener";
 				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
 					const active = activeSessionTransport;
 					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
@@ -739,6 +743,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				publishActivity();
 			} catch {
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
+				// Only fixed, validated observer fields cross the UI boundary. Never
+				// interpolate the exception or report a retired session's failure.
+				if (sessions === sessionManager && generation === transportGeneration && validTransportSessionId(sessionId) && activeSessionId() === sessionId) {
+					const observation = phases.snapshot();
+					const diagnostic = startupPhase === "registry" && observation.availability === "observed" && observation.firstFailurePhase !== null
+						? `phase=${observation.firstFailurePhase} class=${observation.firstFailureClass} code=${observation.firstFailureCode} lastStartupMarker=${observation.lastStartupMarker ?? "unavailable"}`
+						: `phase=${startupPhase} diagnostics=unavailable`;
+					try { ctx.ui.notify(`Session transport startup failed: ${diagnostic}.`, "warning"); } catch {}
+				}
 				await closeStartupTransport();
 			}
 		})();

@@ -1,8 +1,13 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
+import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
+import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
+import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
+import { appendContextBackstopNotice, createContextBackstopSignal } from "../lib/context-backstop.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
-import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
@@ -39,6 +44,8 @@ import type {
 	Theme,
 	ThemeColor,
 	ToolCallEventResult,
+	ToolResultEvent,
+	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -266,6 +273,7 @@ import {
 	type ReviewSessionIdentity,
 } from "../lib/review-session-standing-permission.ts";
 import { herdrSetupHint } from "../lib/herdr-activity.ts";
+import { isInteractiveMode } from "../lib/rpc-host.ts";
 
 const GRAPH_V1_ORDINARY_READ_ONLY = "Graph-v1 ordinary review authority is read-only; use native compact-v2 review operations";
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -790,6 +798,7 @@ const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus 
 /** @internal test seam: clears the per-cwd RDD status memo. */
 function clearRddStatusMemoForTesting(): void {
 	rddStatusMemo.clear();
+	rddStatusUnavailableWarned = false;
 }
 
 // gentle-pi#668 (corrected): last-known outcome for ONE candidate, keyed by
@@ -854,14 +863,46 @@ async function readRddModeStatusOnce(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
-	if (!nativeReviewCli?.reviewMode) return undefined;
+	const read = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	return "status" in read ? read.status : undefined;
+}
+
+// gentle-shell#2250: the same read, keeping why it failed so the one-shot
+// unavailable notice can tell a timeout from a native refusal (for example a
+// repository on a network share that Git or gentle-ai rejects by ownership).
+async function readRddModeStatusWithCause(
+	nativeReviewCli: Pick<NativeReviewCli, "reviewMode"> | null | undefined,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<{ readonly status: NativeReviewModeStatus } | { readonly cause: string }> {
+	if (!nativeReviewCli?.reviewMode) return { cause: "the native gentle-ai review CLI is not available" };
 	try {
 		const call = nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, signal });
 		const result = signal === undefined ? await call : await Promise.race([call, rddAbortRejection(signal)]);
-		return result.status;
-	} catch {
-		return undefined;
+		return { status: result.status };
+	} catch (error) {
+		return { cause: describeRddStatusFailure(error, signal) };
 	}
+}
+
+const RDD_STATUS_CAUSE_LIMIT = 300;
+
+function describeRddStatusFailure(error: unknown, signal: AbortSignal | undefined): string {
+	const command = "native `gentle-ai review mode status`";
+	if (signal?.aborted || (error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.TIMEOUT)) {
+		return `${command} did not answer within ${RDD_STATUS_TIMEOUT_MS} ms`;
+	}
+	if (error instanceof NativeReviewCliError) {
+		const exit = error.diagnostics.exit_code === undefined ? "" : `, exit ${error.diagnostics.exit_code}`;
+		const detail = (error.diagnostics.stderr ?? "").replace(/\s+/g, " ").trim() || error.message;
+		return `${command} failed (${error.code}${exit}): ${boundRddStatusCause(detail)}`;
+	}
+	return boundRddStatusCause(error instanceof Error ? error.message : String(error));
+}
+
+function boundRddStatusCause(text: string): string {
+	const trimmed = text.replace(/[.\s]+$/, "");
+	return trimmed.length <= RDD_STATUS_CAUSE_LIMIT ? trimmed : `${trimmed.slice(0, RDD_STATUS_CAUSE_LIMIT - 1)}…`;
 }
 
 // gentle-pi#662: read-only combined native risk assessment plus the computed
@@ -1123,14 +1164,15 @@ async function resolveRddModeStatus(
 	// read status instead of flipping the prompt to "unknown" and back, which
 	// would invalidate the provider's prefix cache for the whole conversation.
 	// Only a status the native reader actually reports replaces a known one.
-	const read = await readRddModeStatusOnce(nativeReviewCli, cwd, signal);
+	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	const read = "status" in outcome ? outcome.status : undefined;
 	const status = read ?? cached?.status;
 	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
-	if (read === undefined && !rddStatusUnavailableWarned) {
+	if ("cause" in outcome && !rddStatusUnavailableWarned) {
 		rddStatusUnavailableWarned = true;
 		if (ctx?.hasUI) {
 			ctx.ui.notify(
-				"Gentle AI: receipt-driven-development status is unavailable (native review CLI absent, timed out, or failed). The parent prompt keeps the last known status, or renders \"unknown\" when none was read; this notice will not repeat this session.",
+				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status, or renders "unknown" when none was read; this notice will not repeat this session.`,
 				"warning",
 			);
 		}
@@ -1153,6 +1195,34 @@ function isRddStatusLineOff(line: string | undefined): boolean {
  */
 function pinRddStatusLine(pinned: string | undefined, next: string): string {
 	return pinned !== undefined && isRddStatusLineOff(pinned) === isRddStatusLineOff(next) ? pinned : next;
+}
+
+/**
+ * gentle-pi S11 T1: while the pinned line reads off, no review can start and
+ * the orchestrator only calls ASSESS, so the primary request swaps the review
+ * family's long guidance for this lean loadout: one short gentle_review
+ * snippet, guideline, and description, with the capture, capture-group, and
+ * scope declarations hidden (they stay registered and active). It follows the
+ * pinned line, so it changes only when that line's off state flips, together
+ * with the review execution contract; on and unknown keep the registered text.
+ */
+const RDD_OFF_REVIEW_SNIPPET = "Assess an authorized change and return its verification plan (read-only)";
+const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
+	'Receipt-driven development is off, so use gentle_review only for {"operation":"assess"} (read-only): after an authorized implementation, delegated or inline, call it over the diff and follow the returned plan; pass input {"escalate":{"item":1-6,"reason":"<one line>"}} only when the change touches a Task Size high-risk item, or {"baseRef":"<ref>","committedOnly":true} to assess a committed range.',
+	"When ASSESS returns reviewDue or a native continuation, relay it unchanged and follow it; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
+];
+const RDD_OFF_REVIEW_DESCRIPTION = "Assess the current changes, or a committed range, and return the verification plan. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
+const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];
+
+interface ReviewToolPromptOptions {
+	toolSnippets?: Record<string, string>;
+	toolGuidelines?: Record<string, string[]>;
+}
+
+/** Replaces gentle_review's snippet and guidelines in this run's prompt options only. */
+function applyRddOffReviewPrompt(options: ReviewToolPromptOptions | null | undefined): void {
+	if (options?.toolSnippets?.gentle_review !== undefined) options.toolSnippets.gentle_review = RDD_OFF_REVIEW_SNIPPET;
+	if (options?.toolGuidelines?.gentle_review !== undefined) options.toolGuidelines.gentle_review = [...RDD_OFF_REVIEW_GUIDELINES];
 }
 
 /** Resolves and renders the RDD status line for a production call site in one call. */
@@ -1221,13 +1291,13 @@ function renderOrchestratorPrompt(
 // pinned at an 8192-byte budget (tests/orchestrator-budget.test.ts).
 const PROVIDER_CONTRACT_MIRROR_ROOT = join(PACKAGE_ROOT, "contracts", "review-provider-contract-mirror");
 const PROVIDER_CONTRACT_LOCK_FILE = "provider-contract.lock.json";
-const PI_ORCHESTRATION_RUNTIME = "pi";
+const PI_MIRROR_RUNTIME = "pi";
 
 let reviewContractPromptFragmentCache: string | null | undefined;
 let reviewContractPromptMissingWarned = false;
 
-// Verifies the mirrored orchestration/pi.md bytes against the lock's digest before injection (gentle-ai R1/R3).
-function readMirroredReviewContractFragment(mirrorRoot: string = PROVIDER_CONTRACT_MIRROR_ROOT): string | null {
+// Reads one mirrored bundle file after verifying its bytes against the lock's digest (gentle-ai R1/R3).
+function readVerifiedMirrorFile(mirrorRoot: string, bundlePath: string): { contractSemver: string; text: string } | null {
 	try {
 		const lockPath = join(mirrorRoot, PROVIDER_CONTRACT_LOCK_FILE);
 		const lock = JSON.parse(readFileSync(lockPath, "utf8")) as {
@@ -1235,18 +1305,69 @@ function readMirroredReviewContractFragment(mirrorRoot: string = PROVIDER_CONTRA
 			entries?: Record<string, unknown>;
 		};
 		if (typeof lock.contract_semver !== "string" || lock.contract_semver === "") return null;
-		const expectedSha256 = lock.entries?.[`orchestration/${PI_ORCHESTRATION_RUNTIME}.md`];
+		const expectedSha256 = lock.entries?.[bundlePath];
 		if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) return null;
-		const contractPath = join(mirrorRoot, `v${lock.contract_semver}`, "bundle", "orchestration", `${PI_ORCHESTRATION_RUNTIME}.md`);
-		const rawBytes = readFileSync(contractPath);
+		const filePath = join(mirrorRoot, `v${lock.contract_semver}`, "bundle", ...bundlePath.split("/"));
+		const rawBytes = readFileSync(filePath);
 		const actualSha256 = createHash("sha256").update(rawBytes).digest("hex");
 		if (!timingSafeEqual(Buffer.from(expectedSha256, "hex"), Buffer.from(actualSha256, "hex"))) return null;
-		const text = rawBytes.toString("utf8").trim();
-		if (text.length === 0) return null;
-		return `## Gentle AI review execution contract (mirrored provider bundle ${lock.contract_semver})\n\n${text}`;
+		return { contractSemver: lock.contract_semver, text: rawBytes.toString("utf8") };
 	} catch {
 		return null;
 	}
+}
+
+// Verifies the mirrored orchestration/pi.md bytes against the lock's digest before injection (gentle-ai R1/R3).
+function readMirroredReviewContractFragment(mirrorRoot: string = PROVIDER_CONTRACT_MIRROR_ROOT): string | null {
+	const file = readVerifiedMirrorFile(mirrorRoot, `orchestration/${PI_MIRROR_RUNTIME}.md`);
+	if (file === null) return null;
+	const text = file.text.trim();
+	if (text.length === 0) return null;
+	return `## Gentle AI review execution contract (mirrored provider bundle ${file.contractSemver})\n\n${text}`;
+}
+
+// gentle-ai R3: the harness ODD steps 1-7, the phase-reporting line, and the
+// resume line come from the mirrored bundle's routing/pi.md (contract >= 1.4.0),
+// the ODD routing block Gentle AI renders for Pi, instead of a hand-copied
+// literal. The bundle's blank lines between them are not carried into the
+// prompt. Like assets/orchestrator.md, this is package-shipped prompt source:
+// a missing, tampered, or reshaped file fails closed instead of rendering a
+// harness without its workflow.
+const ODD_PROTOCOL_HEADING = "### ODD protocol (MANDATORY, in this order, on every request)";
+const ODD_PROTOCOL_STEP_COUNT = 7;
+
+let oddProtocolStepsCache: string | undefined;
+
+function extractOddProtocolLines(routing: string): string {
+	const lines = routing.split("\n");
+	const start = lines.indexOf(ODD_PROTOCOL_HEADING);
+	const section: string[] = [];
+	for (const line of start === -1 ? [] : lines.slice(start + 1)) {
+		if (line.startsWith("#")) break;
+		if (line !== "") section.push(line);
+	}
+	const shapeHolds =
+		section.length === ODD_PROTOCOL_STEP_COUNT + 2 &&
+		section.slice(0, ODD_PROTOCOL_STEP_COUNT).every((line, index) => line.startsWith(`${index + 1}. **`)) &&
+		section[ODD_PROTOCOL_STEP_COUNT]!.startsWith("Phase reporting: ") &&
+		section[ODD_PROTOCOL_STEP_COUNT + 1]!.startsWith("Resume an interrupted feature ");
+	if (!shapeHolds) {
+		throw new Error(`The mirrored provider bundle's routing/${PI_MIRROR_RUNTIME}.md ODD protocol section has an unexpected shape: expected ${JSON.stringify(ODD_PROTOCOL_HEADING)} followed by steps 1-${ODD_PROTOCOL_STEP_COUNT}, phase reporting, and resume.`);
+	}
+	return section.join("\n");
+}
+
+function readMirroredOddProtocolSteps(mirrorRoot: string = PROVIDER_CONTRACT_MIRROR_ROOT): string {
+	const file = readVerifiedMirrorFile(mirrorRoot, `routing/${PI_MIRROR_RUNTIME}.md`);
+	if (file === null) {
+		throw new Error(`Gentle Shell cannot render its ODD steps: the mirrored provider bundle's routing/${PI_MIRROR_RUNTIME}.md is missing, unreadable, or fails digest verification. Reinstall gentle-pi.`);
+	}
+	return extractOddProtocolLines(file.text);
+}
+
+function oddProtocolSteps(): string {
+	oddProtocolStepsCache ??= readMirroredOddProtocolSteps();
+	return oddProtocolStepsCache;
 }
 
 function loadReviewContractPromptFragment(
@@ -1340,27 +1461,27 @@ For background work, launch the bounded action and end the turn when no independ
 
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
-1. **Authorize.** Investigation, explanation, review, comparison, and proposal-only requests stay read-only: no writer, apply, or implementation artifacts. Ambiguous or conditional change intent (unclear whether a change is authorized at all) gets one clarification; stop and wait. A user saying they may stop you or resume later asks for notes and separate commits, not a stop.
-2. **Explore.** Explore existing code and requirements first, proportionately to the request, before proposing or writing anything. Do not delegate exploration of files you will read anyway to work inline; explore only for a map you need to decide or route.
-3. **Resolve uncertainty.** Recommend optional research only for a named uncertainty; ask one focused user question only for a real unresolved product decision, then stop and wait; use at most one scoped read-only assumption challenge for a high-consequence unproven premise.
-4. **Classify.** Size the task by the orchestrator's Task Size section: small when understood, risk is contained, and the work could be resumed from the original request and \`git diff\` alone; large only when that resume test fails. Never classify by counting files, commands, tests, fixes, or a requested todo list. Small work stays inline and creates no durable task artifacts.
-5. **Track before the first write.** For large authorized implementation, create \`odd/tasks/<feature-name>.md\` and its Engram mirror \`odd/<feature-name>/tasks\` automatically, then create or rebuild the visible \`todo\` list from the reconciled feature tasks, all before the first source write and without asking permission for tasks or storage. Tell the user in one line which feature document was created and how many tasks it holds. The document is the specification subagents read, in this order: a two- or three-line header; \`## Specs\` with numbered \`S#\` that quote the user's exact strings, error messages, and examples verbatim, never summarized and never adding unrequested requirements; \`## Tasks\` with one line per task (ID, linked \`S#\`, route, commit); \`## Log\` last, where \`L1\` is the user's original request verbatim and later user corrections, evidence, and decisions are appended. A requirement change appends its verbatim Log entry, rewrites only the affected \`S#\`, and reopens only its task.
-6. **Implement task by task.** Hand off by reference, never by paraphrase: name the document, task, and specs (for example \`Spec: odd/tasks/<feature>.md, T2, S3-S4\`), tell workers to read until \`## Log\`, and ask which \`S#\` were covered. Without a feature document, include the user's request verbatim. Verify reads the whole document, runs the spec's examples the parent authorized, against isolated state when they mutate data, and returns a verdict per \`S#\`. When the user reports a failure, reproduce it before deciding it already works. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it. Route each task through the orchestrator's Mechanisms, honoring its delegation triggers when their conditions truly hold, with applicable test-first development and checks. No trigger holds by default and, when in doubt, work inline; executing past a fired trigger inline is a routing defect even if the work succeeds. Check an item off only after its outcome and checks were observed; update the file, mirror, and visible \`todo\` projection after every task transition and material plan change. Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence. Work-unit commits on the feature branch are part of authorized large ODD implementation; push, pull request creation, and merge remain the user's decisions.
-7. **Close.** Report the verified outcome, every failed, skipped, or pending check, and the next step. Before writing \`Risk: none\`, check whether your diff changes code that existing behavior the request did not mention also uses (shared options, parsers, helpers); if it does, that is item 3. Never end with a tracked task pending unless you quote the user's explicit stop. An applicable quick check runs once; an unavailable verifier or subagent is reported as unavailable, never retried or escalated into extra ceremony. Partial, blocked, unavailable, or exhausted proof becomes one **Needs your decision** result naming the open blockers or missing proof, never more verification; that result is a valid stop, hedged wording is not. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.
-Phase reporting: the Gentle Shell prompt label is inferred automatically from the primary session's tool activity (reads show \`exploring\`, edits \`implementing\`, test runs \`checking\`, user questions \`deciding\`). When the \`gentle_odd_phase\` tool is available, use it to refine that label with phases tools cannot show (\`authorizing\`, \`researching\`, \`deciding\`, \`closing\`): call \`gentle_odd_phase\` only when the primary session's ODD phase actually changes, never per tool call or on a fixed cadence, and never from a subagent. It drives the Gentle Shell prompt label only.
-Resume an interrupted feature with \`mem_context\`, then project- and feature-scoped \`mem_search\`, then \`mem_get_observation\` for the full document, then the task file itself; reconcile before continuing the next unfinished task. Detail for steps 3–7: \`orchestrator-delegation.md\` and \`orchestrator-memory.md\`.
+${oddProtocolSteps()}
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
-- Organic Driven Development (ODD) is the predefined workflow for every request: authorize, explore, resolve uncertainty, classify, track large work before the first write, implement task by task with proportionate checks, close each tracked task with a work-unit commit, and close.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (\`git stash\` or a copy of HEAD) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
-${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode)}`;
+${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode)}${headlessDeliveryNote(hostMode)}`;
+}
+
+// Bench gate-p53-r1-BS40 x6 run 3: in a headless RPC session the ask-on-risk
+// delivery question ran before any code was written, ask_user_question was
+// unavailable, and the orchestrator printed the menu and stopped. Hosts where
+// no human can answer (the same rule ask_user_question applies) resolve that
+// question to the recommended chain. Interactive sessions render nothing here.
+function headlessDeliveryNote(hostMode: string | undefined): string {
+	if (hostMode === undefined || isInteractiveMode(hostMode)) return "";
+	return "\n\nNo human can answer questions in this session. For the ask-on-risk delivery question, do not ask: use `feature-branch-chain`, record that choice in the feature document's `## Log`, and continue. Consent, maintenance, and opaque-token prompts keep their own rules.";
 }
 
 // Matches `git [global-flags] push` — tolerates flags like -C /repo or --work-tree=/tmp
@@ -1875,8 +1996,15 @@ const YOLO_SEGMENT_END_RE = /&&|\|\||;|\||\n|\r/;
 // most a `-C <path>`. Other global options (`-c key=value`, `--exec-path`,
 // `--git-dir`) can run or redirect code, so they keep the confirmation.
 const YOLO_GIT_PREFIX_RE = /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s'"`$]*\s+|env\s+(?:-i\s+)?|command\s+)*git(?:\s+-C\s+[^\s'"`$;&|]+)?\s+$/;
-const YOLO_PUSH_SEGMENT_RE = /^push(?:\s+(?:-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*\s*$/;
-const YOLO_REBASE_SEGMENT_RE = /^rebase(?:\s+(?:--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*\s*$/;
+// Output redirections that write nothing: to stdout/stderr or /dev/null.
+const YOLO_REDIRECT_SRC = String.raw`[12]?>&[12]|(?:[12]?|&)>>?\s*/dev/null(?![^\s;&|])`;
+const YOLO_PUSH_SEGMENT_RE = new RegExp(String.raw`^push(?:\s+(?:${YOLO_REDIRECT_SRC}|-u|--set-upstream|-q|--quiet|-v|--verbose|--tags|--follow-tags|--no-verify|--porcelain|[A-Za-z0-9_][A-Za-z0-9_./-]*(?::[A-Za-z0-9_][A-Za-z0-9_./-]*)?))*\s*$`);
+const YOLO_REBASE_SEGMENT_RE = new RegExp(String.raw`^rebase(?:\s+(?:${YOLO_REDIRECT_SRC}|--onto\s+[A-Za-z0-9_][A-Za-z0-9_./~^-]*|--continue|--abort|--skip|--autostash|--no-autostash|[A-Za-z0-9_][A-Za-z0-9_./~^-]*))*\s*$`);
+// A pipe out of a waived segment may only feed read-only filters with plain or
+// literally quoted arguments and end at a sequential separator. Git output
+// carries remote-controlled text, so `| sh`, `| tee`, `| xargs` and a trailing
+// background `&` keep the confirmation.
+const YOLO_FILTER_PIPELINE_RE = new RegExp(String.raw`^(?:\|(?!\|)\s*(?:tail|head|cat|grep|wc)(?:\s+(?:${YOLO_REDIRECT_SRC}|[A-Za-z0-9_.,:=+/%@-]+|'[^'\n]*'|"[^"$\x60\\\n]*"))*\s*)*(?=$|&&|\|\||;|\n|\r)`);
 
 function yoloGuardedSegment(command: string, triggerIndex: number): string {
 	const rest = command.slice(triggerIndex);
@@ -1891,20 +2019,29 @@ function yoloSegmentPrefix(command: string, triggerIndex: number): string {
 	return last === undefined ? head : head.slice(last.index + last[0].length);
 }
 
-/** Every guarded match and every recognized Git side effect must be a reversible push or non-interactive rebase. */
-function isReversibleYoloCommand(command: string, evaluation: GuardEvaluation): boolean {
-	if (evaluation.action !== "confirm" || evaluation.dataLoss || evaluation.matches.length === 0) return false;
+/**
+ * Every guarded match and every recognized Git side effect must be a reversible
+ * push or non-interactive rebase; the only data loss allowed is recursive
+ * removal of the session's own temp scratch (lib/yolo-temp-scratch.ts).
+ */
+function isReversibleYoloCommand(command: string, evaluation: GuardEvaluation, scratchFs?: TempScratchFs): boolean {
+	if (evaluation.action !== "confirm") return false;
+	const effects = recognizeDestructiveCommands(command);
+	const scratch = effects.map((effect) => effect.removalTargets !== undefined && isTempScratchRemoval(effect, scratchFs ??= defaultTempScratchFs()));
+	if (evaluation.matches.length === 0 && !scratch.includes(true)) return false;
 	for (const match of evaluation.matches) {
 		if (!YOLO_WAIVABLE_KEYS.has(match.key)) return false;
 		if (!YOLO_GIT_PREFIX_RE.test(yoloSegmentPrefix(command, match.triggerIndex))) return false;
 		const segment = yoloGuardedSegment(command, match.triggerIndex);
 		if (!(match.key === "gitPush" ? YOLO_PUSH_SEGMENT_RE : YOLO_REBASE_SEGMENT_RE).test(segment)) return false;
+		if (!YOLO_FILTER_PIPELINE_RE.test(command.slice(match.triggerIndex + segment.length))) return false;
 	}
 	// The data-loss recognizer leaves non-hard Git effects (reset, stash drop,
 	// restore, checkout --) to the primary policy; under YOLO only a rebase that
 	// a guarded match already vetted may remain.
 	const rebaseTriggers = new Set(evaluation.matches.filter((match) => match.key === "gitRebase").map((match) => match.triggerIndex));
-	for (const effect of recognizeDestructiveCommands(command)) {
+	for (const [index, effect] of effects.entries()) {
+		if (scratch[index]) continue;
 		if (effect.hardDeny || effect.kind !== "git") return false;
 		const rebase = /^git(?:\s+(?:-C|-c|--git-dir|--work-tree|--namespace)\s+\S+|\s+-\S+)*\s+(rebase)\b/.exec(command.slice(effect.triggerIndex));
 		if (rebase === null || !rebaseTriggers.has(effect.triggerIndex + rebase.index + rebase[0].lastIndexOf("rebase"))) return false;
@@ -8008,6 +8145,20 @@ function isSelectedReviewCapture(value: SelectedReviewCapture | Record<string, u
 
 function captureGroupRejected(reason: string): Record<string, unknown> { return captureBindingRejected(reason, true); }
 
+function captureGroupStatusFailure(error: unknown): Record<string, unknown> {
+	return {
+		...captureGroupRejected(error instanceof Error ? error.message : String(error)),
+		outcome: "native-status-failed",
+		// Only project the decoded native envelope, never arbitrary error fields.
+		// Group mutation reporting belongs to its submitted-reviewer progress.
+		...(error instanceof NativeReviewIntegrationError ? {
+			native_failure: error.failureEnvelope.raw,
+			replayability: error.failureEnvelope.replayability,
+			next_action: error.failureEnvelope.nextAction,
+		} : {}),
+	};
+}
+
 function hasExactReviewCaptureSuffix(status: ReviewStatusV3, expected: readonly string[]): boolean {
 	const current = status.nextTransition?.kind === "collect"
 		? (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation === "review.capture-result").map(canonicalReviewCaptureBinding)
@@ -8314,7 +8465,7 @@ async function executeReviewCaptureGroupOperation(
 		if (negotiated.transport !== undefined) return hostTransportUnavailable("gentle_review_capture_group", negotiated.transport);
 		status = negotiated.status!;
 	} catch (error) {
-		return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed" };
+		return captureGroupStatusFailure(error);
 	}
 	const group = selectExactReviewCaptureGroup(status, parameters.lineageId, canonicalBindings);
 	if (!isSelectedReviewCaptureGroup(group)) return group;
@@ -8360,7 +8511,7 @@ async function executeReviewCaptureGroupOperation(
 			if (!hasExactReviewCaptureSuffix(negotiated.status!, canonicalBindings.slice(index))) return { ...captureGroupAuthorityDrift(negotiated.status!), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 			current = selectExactReviewCapture(negotiated.status!, parameters.lineageId, canonicalBindings[index]!);
 		} catch (error) {
-			return { ...captureGroupRejected(error instanceof Error ? error.message : String(error)), outcome: "native-status-failed", ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
+			return { ...captureGroupStatusFailure(error), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		}
 		if (!isSelectedReviewCapture(current)) return { ...captureGroupRejected(String(current.reason ?? "current STATUS rejected a reviewer binding")), ...reviewHostRelayGroupProgress(group.slots, prepared, index) };
 		try {
@@ -9495,6 +9646,7 @@ export const __testing = {
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,
 	readMirroredReviewContractFragment,
+	readMirroredOddProtocolSteps,
 	loadBackgroundSubagentsPolicy,
 	resolveBackgroundSubagentsPolicy,
 	renderBackgroundSubagentsReport,
@@ -9626,12 +9778,17 @@ function createGentleAiExtensionForTesting(
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 	});
+	// Lean RDD-off review loadout (applyRddOffReviewPrompt): every
+	// before_agent_start sets it from the pinned line before Pi prepares that
+	// run's tool loadout, so gentle_review's prepareLoadout reads this run's value.
+	let rddOffReviewLoadout = false;
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
+		rddOffReviewLoadout = false;
 		auto.reset();
 		yolo.reset(context);
 		reviewSidebar.reset();
@@ -9883,6 +10040,16 @@ function createGentleAiExtensionForTesting(
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
+		// Hidden declarations stay active and callable; Pi leaves their
+		// declarations and guidelines out of the request.
+		prepareLoadout(loadout) {
+			if (!rddOffReviewLoadout) return undefined;
+			const declared = new Set(loadout.declared.map((tool) => tool.name));
+			return {
+				descriptions: { gentle_review: RDD_OFF_REVIEW_DESCRIPTION },
+				hiddenDeclarations: RDD_OFF_HIDDEN_REVIEW_TOOLS.filter((name) => declared.has(name)),
+			};
+		},
 		renderCall(args, theme, context) {
 			return renderGentleAiLifecycleCall(
 				reviewToolOperationPath(args),
@@ -10164,6 +10331,8 @@ function createGentleAiExtensionForTesting(
 				await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx),
 			);
 		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
+		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
+		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
 		const gentlePrompt = rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
@@ -10246,7 +10415,7 @@ function createGentleAiExtensionForTesting(
 		consumeReviewMutation(pi, ctx.sessionManager, root, mutation, "nudged", targetIdentity);
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
+	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
 		if (!reminderSessionActive || (reminderManager && reminderManager !== ctx.sessionManager) || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
 		try {
@@ -10258,9 +10427,33 @@ function createGentleAiExtensionForTesting(
 			if (root) recordReviewMutation(pi, ctx.sessionManager, root, { source: "direct", toolName: event.toolName, toolCallId: event.toolCallId, ...directWriterProfile(pi, ctx) });
 			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && prospectiveRoot && !resolveSessionWorktree(ctx.cwd, ctx.cwd)) await prepareBoundSessionRepository(ctx.sessionManager, ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.signal);
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
+	};
+	const contextBackstopSignal = createContextBackstopSignal(permissionEnvironment);
+	pi.on("tool_result", async (event, ctx) => {
+		// Harness roadmap R1: the primary session's measured context is checked
+		// against the backstop on every tool result; the first result at or past
+		// it carries one notice, after any other patch below.
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+		let notice: string | undefined;
+		try { notice = primary ? contextBackstopSignal(sessionKey, ctx.getContextUsage?.()) : undefined; } catch { notice = undefined; }
+		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
+		// Harness roadmap T4: a parent commit reports the branch's authored
+		// changed lines so delivery slicing reads a number, not an estimate.
+		if (SHELL_COMMAND_TOOLS.has(event.toolName)) {
+			if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+			try { return withNotice(await commitSliceToolResult(event, ctx.cwd)); } catch { return withNotice(undefined); }
+		}
+		await recordWriteResult(event, ctx);
+		return withNotice(undefined);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// Native review tools stalled the session when a codemode script called them
+		// (a nested call, which carries parentToolCallId); direct calls return at once.
+		if (event.toolName.startsWith("gentle_review") && typeof (event as { parentToolCallId?: unknown }).parentToolCallId === "string") {
+			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
+		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
 		const yoloActive = primaryToolCall && await yolo.active(ctx);
 		const sensitivePathDenied = evaluateSensitivePathTool(
@@ -10268,11 +10461,22 @@ function createGentleAiExtensionForTesting(
 			event.input,
 		);
 		if (sensitivePathDenied) return sensitivePathDenied;
+		const deliveredTestDenied = evaluateDeliveredTestTool(event.toolName, event.input, ctx.cwd);
+		if (deliveredTestDenied) return deliveredTestDenied;
 		if (event.toolName === "subagent_run") {
 			const judgmentDayFixDenied = rejectInvalidJudgmentDayFixDispatch(event.input);
 			if (judgmentDayFixDenied) return judgmentDayFixDenied;
 			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(event.input);
 			if (writerScopeDenied) return writerScopeDenied;
+			if (primaryToolCall) {
+				const launch = event.input as Record<string, unknown>;
+				const selected = [launch.workspace_root, launch.repository_root].find((value): value is string => typeof value === "string" && value.trim() !== "");
+				const root = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
+				if (undocumentedWriter) return undocumentedWriter;
+				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
+				if (unriskedVerifier) return unriskedVerifier;
+			}
 			try {
 				injectReviewCandidateView(event.input, candidateViews);
 				return undefined;

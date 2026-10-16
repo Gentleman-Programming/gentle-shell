@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
@@ -27,6 +28,24 @@ import {
 	decodeReviewStartV3,
 	type ReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
+
+test("coordination suites isolate Windows ACL authority with teardown", () => {
+	for (const file of ["native-review-parity", "review-controller-native-routing", "review-session-standing-permission-controller"]) {
+		const source = readFileSync(new URL(`./${file}.test.ts`, import.meta.url), "utf8");
+		assert.match(source, /import \{ setWindowsAclAuthorityForTesting \} from/, file);
+		assert.match(source, /after\(\(\) => setWindowsAclAuthorityForTesting\(\)\)/, file);
+	}
+});
 
 const CAPTURED_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
 
@@ -218,7 +237,9 @@ function repository(t: test.TestContext): string {
 
 function startStatus(cwd: string): ReviewStatusV3 {
 	const candidates = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const candidate = candidates.create({ contributorRoot: cwd });
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",

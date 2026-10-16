@@ -59,6 +59,72 @@ test("recorded host/owned child/registered scope correlates clones, isolates amb
 	assert.equal(new OrchestratorScopeCache(() => ({ root: "/repo\nother", commonDir: "/clone" })).project(repo, [], []).host.root, null);
 });
 
+test("recency reorders preserve repository facts but retain caller order", () => {
+	const host = join(tmpdir(), "scope-host"), a = join(tmpdir(), "scope-a"), b = join(tmpdir(), "scope-b");
+	let calls = 0, now = 1;
+	const cache = new OrchestratorScopeCache(path => {
+		calls++;
+		if (path === b) throw new Error("unavailable");
+		return { root: path, commonDir: host };
+	}, () => now++);
+	const tasks = [{ id: "a", cwd: a }, { id: "b", cwd: b }];
+	const first = cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 3);
+	const reordered = cache.project(host, [...tasks].reverse(), [b, a]);
+	assert.equal(calls, 3, "pure reorders must not probe Git, including cached unknowns");
+	assert.deepEqual(reordered.tasks, [...first.tasks].reverse());
+	assert.deepEqual(reordered.registered, [...first.registered].reverse());
+	assert.deepEqual(reordered.host, first.host);
+	assert.equal(reordered.tasks[0].repository.root, null);
+	assert.equal(validRecordedScope(reordered), true);
+	assert.strictEqual(cache.project(host, [...tasks].reverse(), [b, a]), reordered);
+
+	const added = cache.project(host, [...tasks, { id: "c", cwd: host }], [a, b]);
+	assert.equal(calls, 6, "membership changes refresh even existing facts");
+	assert.ok(added.host.resolvedAt > first.host.resolvedAt);
+	cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 9, "removal refreshes facts");
+	cache.project(host, [{ id: "a", cwd: host }, tasks[1]], [a, b]);
+	assert.equal(calls, 12, "cwd changes refresh facts");
+	cache.project(host, [{ id: "a", cwd: host }, tasks[1]], [a]);
+	assert.equal(calls, 15, "registered membership changes refresh facts");
+	cache.clear();
+	cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 18, "session replacement clears facts");
+});
+
+test("first-eight visibility evicts hidden facts and retains visible unknowns", () => {
+	const host = join(tmpdir(), "scope-visible-host");
+	const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i}`, cwd: join(tmpdir(), `scope-visible-task-${i}`) }));
+	const calls: string[] = [];
+	const cache = new OrchestratorScopeCache(path => {
+		calls.push(path);
+		if (path === tasks[0].cwd) throw new Error("unavailable");
+		return { root: path, commonDir: host };
+	});
+	const first = cache.project(host, tasks, []);
+	assert.deepEqual(calls, [host, ...tasks.slice(0, 8).map(t => t.cwd)]);
+	assert.equal(first.tasks[0].repository.root, null);
+	const unknown = first.tasks[0].repository;
+	const ninthVisible = [tasks[8], ...tasks.slice(0, 8)];
+	const expectedCalls = [...calls];
+	for (const [order, newlyVisible] of [[ninthVisible, tasks[8]], [tasks, tasks[7]], [ninthVisible, tasks[8]]] as const) {
+		const snapshot = cache.project(host, order, []);
+		expectedCalls.push(newlyVisible.cwd);
+		assert.deepEqual(calls, expectedCalls, "each visibility transition resolves only its evicted/newly visible path");
+		assert.deepEqual(snapshot.tasks.map(t => t.id), order.slice(0, 8).map(t => t.id));
+		assert.equal(snapshot.tasks.length, 8);
+		assert.equal(snapshot.omittedTasks, 1);
+		assert.equal(snapshot.complete, false);
+		assert.equal(validRecordedScope(snapshot), true);
+		assert.strictEqual(snapshot.tasks.find(t => t.id === "t0")!.repository, unknown, "visible unknown facts survive every reorder");
+		assert.strictEqual(cache.project(host, order, []), snapshot);
+		assert.deepEqual(calls, expectedCalls, "stable snapshots never resolve again");
+	}
+	assert.equal(calls.filter(path => path === tasks[8].cwd).length, 2, "ninth path is resolved again after eviction");
+	assert.equal(calls.filter(path => path === tasks[0].cwd).length, 1, "visible unknown is not retried");
+});
+
 test("literal recorded roots never alias Unicode separators to another real repository", (t) => {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "scope-literal-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));

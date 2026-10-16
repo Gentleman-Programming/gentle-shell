@@ -112,10 +112,11 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 
 // Verification by named risk changed the core rule 3 text: only a named
 // high-risk item, passed as assess `escalate`, adds the independent verifier.
+// odd/tasks/verifier-admission.md S6: the rule names the runtime admission of the verifier launch.
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`, as rarely as possible; else inline; gates/overengineering: `orchestrator-verification.md`.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
 		),
 		"core Verification rule changed",
 	);
@@ -237,13 +238,15 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 
 // verify-always-rdd-high S1 deliberately rewrote this section: verification follows the
 // risk tier in every RDD state. Verification by named risk deliberately rewrote
-// the tier table again (escalate-only verifier, no small-model bias). The pin
-// still guards against accidental drift.
+// the tier table again (escalate-only verifier, no small-model bias), and
+// verifier admission (odd/tasks/verifier-admission.md S6) names the runtime
+// check of the verifier launch; the PR #2290 review (odd/tasks/pr-2290-review.md S4)
+// names every line that admits it. The pin still guards against accidental drift.
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"14dbcaa9169072090f91868344287838b02ed57b2ad45b90ae299b7c9a8bc3e6",
+		"b159829cad24a31e23d6309b3bfe0e4cc71eec2316775ba07314fecd1fb6a63f",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");
@@ -340,9 +343,16 @@ test("AC6: parallel writers need disjoint Allowed edit surfaces (runtime-enforce
 	const harness = read("extensions/gentle-ai.ts");
 	const docs = read("docs/readme-reference.md");
 	assert.ok(core.includes(`- P${rule}.`), "core Safety must carry the relaxed writer rule");
-	assert.ok(harness.includes(`- P${rule}.`), "harness principles must carry the relaxed writer rule");
-	for (const [path, text] of Object.entries({ core, delegation, harness, skill, docs })) {
+	// S11 T3: deduplicated. The harness principle repeated core Safety in the same
+	// parent prompt; the rendered prompt now carries the rule once, from Safety.
+	assert.ok(!harness.includes(rule), "harness principles restate the core Safety writer rule");
+	for (const persona of ["gentleman", "neutral"] as const) {
+		assert.equal(__testing.buildGentlePrompt(persona).split(rule).length - 1, 1, `[${persona}] the parent prompt must carry the writer rule once`);
+	}
+	for (const [path, text] of Object.entries({ core, delegation, skill, docs })) {
 		assert.ok(text.includes(rule), `${path} is missing the relaxed writer rule`);
+	}
+	for (const [path, text] of Object.entries({ core, delegation, harness, skill, docs })) {
 		for (const retired of ["single-threaded", "Never run parallel writers in one worktree", "do not run parallel writers unless isolated worktrees", "preserves a single writer thread", "one writer per task"]) {
 			assert.ok(!text.includes(retired), `${path} keeps the single-writer wording: ${retired}`);
 		}

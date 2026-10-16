@@ -152,9 +152,7 @@ function sanitizeStatus(text: string): string {
 		sgrs.push(run);
 		return `\uFFFD${sgrs.length - 1}\uFFFD`;
 	});
-	const cleaned = guarded
-		.replace(/[\r\n\t]/g, " ")
-		.replace(/[\x00-\x08\x0B-\x1A\x1C-\x1F\x7F-\x9F]/g, "")
+	const cleaned = sanitizeTerminalText(guarded.replace(/[\r\n\t]/g, " "))
 		.replace(/\uFFFD(\d+)\uFFFD/g, (_, index) => sgrs[Number(index)] ?? "")
 		.replace(/ +/g, " ")
 		.trim();

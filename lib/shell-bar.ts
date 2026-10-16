@@ -142,7 +142,7 @@ export function formatCost(total: number, subscription = false): string {
 // the bar's status role; runs the extension colored render verbatim, and the
 // bar repaints every neutral run in the status role, so an extension's own
 // reset never hands the tail the terminal default.
-const ANSI_SGR_RUN = /\x1b\[[0-9;]*m/g;
+const ANSI_SGR_RUN = /\x1b\[[0-9;:]*m/g;
 
 /**
  * Turnover of the extension's status foreground for one SGR token: whether
@@ -154,7 +154,7 @@ const ANSI_SGR_RUN = /\x1b\[[0-9;]*m/g;
  * foreground and leave the turnover untouched.
  */
 function sgrForegroundTurnover(token: string, extensionColored: boolean): boolean {
-	const match = /^\x1b\[([0-9;]*)m$/.exec(token);
+	const match = /^\x1b\[([0-9;:]*)m$/.exec(token);
 	if (!match) return extensionColored;
 	const params = match[1] === "" ? [] : match[1].split(";");
 	if (params.length === 0) return false; // empty reset: \x1b[m
@@ -167,10 +167,12 @@ function sgrForegroundTurnover(token: string, extensionColored: boolean): boolea
 		} else if (param === "39") {
 			colored = false; // default foreground
 		} else if (param === "38" || param === "48") {
-			// Extended color group: 38;2;r;g;b / 38;5;palette(+bg variants).
 			if (param === "38") colored = true;
 			const mode = params[index + 1];
 			index += mode === "2" ? 5 : mode === "5" ? 2 : 0;
+		} else if (param.startsWith("38:") || param.startsWith("48:")) {
+			// ITU T.416 colon form: one unit (38:2::r:g:b / 38:5:P); no sub-scan.
+			if (param.startsWith("38:")) colored = true;
 		} else {
 			const code = Number(param);
 			if (
@@ -204,9 +206,9 @@ function statusSegment(theme: ShellBarTheme, status: string): string {
 	if (!text.includes("\x1b")) return theme.fg(ROLE.STATUS, text);
 	let painted = "";
 	let extensionColored = false;
-	for (const token of text.split(/(\x1b\[[0-9;]*m)/)) {
+	for (const token of text.split(/(\x1b\[[0-9;:]*m)/)) {
 		if (token === "") continue;
-		if (/^\x1b\[[0-9;]*m$/.test(token)) {
+		if (/^\x1b\[[0-9;:]*m$/.test(token)) {
 			painted += token;
 			extensionColored = sgrForegroundTurnover(token, extensionColored);
 			continue;

@@ -137,10 +137,47 @@ export function formatCost(total: number, subscription = false): string {
 	return subscription ? `$${amount} sub` : `$${amount}`;
 }
 
-// Extensions may paint their status themselves (pi-mcp-adapter does); the bar
-// owns the palette, so their escapes go and the text takes the status role.
+// Extensions may paint their status themselves (pi-mcp-adapter paints role
+// colors; budget/usage gauges paint use thresholds). Colorless statuses take
+// the bar's status role; runs the extension colored render verbatim, and the
+// bar repaints every neutral run in the status role, so an extension's own
+// reset never hands the tail the terminal default.
+const ANSI_SGR_RUN = /\x1b\[[0-9;]*m/g;
+const ANSI_SGR_RESET = /^\x1b\[(?:0|39)m$/;
+
 function sanitizeStatus(text: string): string {
-	return sanitizeTerminalText(text.replace(/[\r\n\t]/g, " ")).replace(/ +/g, " ").trim();
+	// Protect SGR runs, clean the rest like the bar always did, then restore.
+	const sgrs: string[] = [];
+	const guarded = text.replace(ANSI_SGR_RUN, (run) => {
+		sgrs.push(run);
+		return `\uFFFD${sgrs.length - 1}\uFFFD`;
+	});
+	const cleaned = guarded
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/[\x00-\x08\x0B-\x1A\x1C-\x1F\x7F-\x9F]/g, "")
+		.replace(/\uFFFD(\d+)\uFFFD/g, (_, index) => sgrs[Number(index)] ?? "")
+		.replace(/ +/g, " ")
+		.trim();
+	return cleaned;
+}
+
+function statusSegment(theme: ShellBarTheme, status: string): string {
+	const text = sanitizeStatus(status);
+	if (!text.includes("\x1b")) return theme.fg(ROLE.STATUS, text);
+	let painted = "";
+	let extensionColored = false;
+	for (const token of text.split(/(\x1b\[[0-9;]*m)/)) {
+		if (token === "") continue;
+		if (/^\x1b\[[0-9;]*m$/.test(token)) {
+			painted += token;
+			extensionColored = !ANSI_SGR_RESET.test(token);
+			continue;
+		}
+		painted += extensionColored || !token.trim()
+			? token
+			: theme.fg(ROLE.STATUS, token);
+	}
+	return painted;
 }
 
 // Shared by the compact bar, the sidebar Status card, and the fullscreen
@@ -174,7 +211,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const context = contextSegment(model.contextPercent, theme, paint);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
-	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
+	const statuses = model.statuses.map((status) => statusSegment(theme, status));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
 		location,
@@ -257,7 +294,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
-			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
+			? model.statuses.map((status) => statusSegment(theme, status))
 			: [label("No status reported")] },
 	];
 	// Wrap and indent every group line before it reaches the card, so Unicode and

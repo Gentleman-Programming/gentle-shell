@@ -307,11 +307,29 @@ test("renderShellBar appends extension statuses as trailing segments", () => {
 	assert.match(line, /⟡ 🔌 MCP: 3 servers enabled$/);
 });
 
-test("renderShellBar repaints extension statuses in the bar role, discarding colors the extension embedded", () => {
+test("renderShellBar keeps the extension palette in colored statuses and repaints neutral runs in the bar role", () => {
 	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
 	const [line] = renderShellBar(model({ statuses: ["\x1b[38;2;255;0;0mMCP: 3/3 servers\x1b[0m"] }), tagged, 400);
-	assert.match(line, /<muted>MCP: 3\/3 servers<\/muted>$/);
-	assert.doesNotMatch(line, /\x1b\[/);
+	// The colored run renders verbatim; no repaint swallows it.
+	assert.match(line, /\x1b\[38;2;255;0;0mMCP: 3\/3 servers\x1b\[0m/);
+	// A fully colored status leaves no neutral tail; the label prefix stays neutral-free.
+	assert.doesNotMatch(line, /<muted>[^<]*MCP: 3\/3 servers/);
+});
+
+test("renderShellBar repaints the neutral runs of a hybrid status around the colored run", () => {
+	const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text };
+	const [line] = renderShellBar(
+		model({ statuses: ["Budget \x1b[38;2;34;197;94m\u25b0\u25b1 25%\x1b[39m \u00b7 $2.50/$10.00"] }),
+		tagged,
+		400,
+	);
+	// Neutral head takes the bar role.
+	assert.match(line, /<muted>Budget <\/muted>/);
+	// The colored run survives verbatim.
+	assert.match(line, /\x1b\[38;2;34;197;94m\u25b0\u25b1 25%\x1b\[39m/);
+	// The neutral tail is repainted in the bar role (the extension's bare
+	// fg reset must not hand the tail the terminal default).
+	assert.match(line, /<muted> \u00b7 \$2\.50\/\$10\.00<\/muted>$/);
 });
 
 test("renderShellBar compacts the path and branch before it sacrifices an extension status", () => {

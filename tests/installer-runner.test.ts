@@ -444,6 +444,37 @@ function windowsShapes({ files = [] as string[], texts = {} as Record<string, st
 	};
 	return { adapters, calls };
 }
+test("windowsInvocation rejects rooted shim targets before target IO", async () => {
+	const shim = "C:\\Local\\pnpm.cmd";
+	const env = { Path: "C:\\Local", PATHEXT: ".EXE;.CMD" };
+	for (const target of ["//server/share/pnpm.exe", "/pnpm.exe", "/\\server/share/pnpm.exe", "\\/server/share/pnpm.exe", "\\\\server\\share\\pnpm.exe", "\\pnpm.exe", "..\\pnpm\\pnpm.exe"]) {
+		const calls: [string, string][] = [];
+		const adapters = {
+			fs: {
+				readText: async (path: string) => {
+					calls.push(["readText", path]);
+					assert.equal(path, shim, "only the local shim may be read");
+					return `@SETLOCAL\n@"%~dp0\\${target}"  %*\n`;
+				},
+				isFile: async (path: string) => { calls.push(["isFile", path]); return true; },
+				realpath: async (path: string) => { calls.push(["realpath", path]); return path; },
+			},
+			run: async (command: string) => {
+				calls.push(["run", command]);
+				throw new Error("execution is forbidden");
+			},
+		};
+		const invocation = await windowsInvocation(shim, env, adapters);
+		if (target === "..\\pnpm\\pnpm.exe") {
+			assert.deepEqual(invocation, { command: "C:\\pnpm\\pnpm.exe", prefix: [] });
+			assert.deepEqual(calls, [["readText", shim], ["isFile", "C:\\pnpm\\pnpm.exe"]]);
+		} else {
+			assert.equal(invocation, null, target);
+			assert.deepEqual(calls, [["readText", shim]], "no target discovery, read, realpath or execution");
+		}
+	}
+});
+
 test("windowsInvocation runs what a Windows npm or pnpm shim runs, never through cmd.exe", async () => {
 	const env = { Path: `${W_APPDATA_NPM};C:\\PathNode;${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
 	// Node.js's own npm.cmd: its sibling node.exe, and the npm under npm's global prefix when it is there.

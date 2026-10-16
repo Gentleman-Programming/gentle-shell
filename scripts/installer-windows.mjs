@@ -73,7 +73,7 @@ function filled(text, template) {
 function shimPath(value, relative) {
 	if (value === null) return null;
 	if (!relative) return /^[A-Za-z]:\\/.test(value) ? value : null;
-	return value.startsWith("\\") || /^[A-Za-z]:/.test(value) ? null : value;
+	return /^[\\/]/.test(value) || /^[A-Za-z]:/.test(value) ? null : value;
 }
 /** What a complete known Windows command shim runs, read from its text and never
  * executed: { exe } a native target; { entry, node } a JS entry run by node (an

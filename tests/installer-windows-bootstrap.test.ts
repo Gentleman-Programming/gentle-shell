@@ -60,6 +60,9 @@ test("reported native pnpm templates accept only exact prologues and two or thre
 				const text = make(`%~dp0\\${target}`, spaces).replaceAll("\n", newline);
 				assert.deepEqual(windowsShim(text), { exe: target });
 				assert.deepEqual(windowsShim(make("C:\\pnpm\\pnpm.exe", spaces).replaceAll("\n", newline)), { exe: "C:\\pnpm\\pnpm.exe" });
+				for (const rooted of ["//server/share/pnpm.exe", "/pnpm.exe", "/\\server/share/pnpm.exe", "\\/server/share/pnpm.exe", "\\\\server\\share\\pnpm.exe", "\\pnpm.exe", "C:pnpm.exe", "C:\\pnpm.exe"]) {
+					assert.equal(windowsShim(make(`%~dp0\\${rooted}`, spaces).replaceAll("\n", newline)), null, rooted);
+				}
 				for (const altered of [text + `echo extra${newline}`, text.replace("%*", "%* & echo extra"), text.replace("%*", "%*\rX")]) assert.equal(windowsShim(altered), null);
 			}
 			for (const spaces of ["", " ", "    ", "\t", " \t"]) assert.equal(windowsShim(make(`%~dp0\\${target}`, spaces).replaceAll("\n", newline)), null);

@@ -142,14 +142,20 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				const match = /^([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([A-Za-z0-9_-]{22})\.json$/.exec(entry.name);
 				if (!match) continue;
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), match[1], match[2]);
 					const candidate = loaded?.record;
-					if (!candidate || candidate.sessionId === excluded || !await this.advertises(candidate)) continue;
+					if (!candidate || candidate.sessionId === excluded) continue;
+					const reachability = await this.endpointState(candidate);
+					// A conclusively-absent endpoint is an orphan: reclaim it rather than
+					// spend the bounded discovery budget on it. Present-but-unsafe paths
+					// stay untouched, and only retained advertisements count.
+					if (reachability === "absent") { await this.removeOwn(candidate).catch(() => {}); continue; }
+					if (reachability !== "present") continue;
+					if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 					const prior = newest.get(candidate.sessionId);
 					if (!prior || candidate.createdAt > prior.createdAt || (candidate.createdAt === prior.createdAt && this.token(candidate.endpoint) > this.token(prior.endpoint))) newest.set(candidate.sessionId, candidate);
 				} catch (error) {
@@ -170,9 +176,9 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				const match = new RegExp(`^${id}\\.([A-Za-z0-9_-]{22})\\.json$`).exec(entry.name);
 				if (!match) continue;
+				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), id, match[1]);
@@ -204,13 +210,15 @@ export class SessionPresenceRegistry {
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") boundary(error); }
 	}
 
-	private async advertises(record: PresenceRecord) {
+	// Conclusively-absent endpoints (missing file or symlink loop) may be
+	// reclaimed; a present-but-unsafe path is retained and fails closed.
+	private async endpointState(record: PresenceRecord): Promise<"present" | "absent" | "unsafe"> {
 		try {
 			const stat = await lstat(record.endpoint);
-			return !stat.isSymbolicLink() && stat.isSocket() && sameUser(stat);
+			return !stat.isSymbolicLink() && stat.isSocket() && sameUser(stat) ? "present" : "unsafe";
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT" || code === "ELOOP") return false;
+			if (code === "ENOENT" || code === "ELOOP") return "absent";
 			throw error;
 		}
 	}

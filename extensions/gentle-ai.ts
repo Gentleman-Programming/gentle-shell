@@ -9781,6 +9781,7 @@ async function executeReviewControllerOperation(
 export const __testing = {
 	setCandidateViewSymlinkProbeForTesting,
 	CandidateViewSymlinkProbeUnavailableError,
+	scanCandidateTreeForSymlinks,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,

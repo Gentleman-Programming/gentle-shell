@@ -245,7 +245,7 @@ export interface CandidateOwnerChmodIneffectiveDiagnostic {
 export const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
 export const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
 export const CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE = "candidate view cannot create native symlinks; enable symlink capability out of band before retrying START" as const;
-export const CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE = "candidate-view symlink capability could not be verified on the filesystem that will hold the candidate view; make sure the Git common directory is writable and can create symlinks before retrying START" as const;
+export const CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE = "candidate-view symlink capability could not be verified on the filesystem that will hold the candidate-views parent; make sure that filesystem is writable and can create symlinks before retrying START" as const;
 
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;

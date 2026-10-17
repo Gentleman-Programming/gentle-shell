@@ -81,6 +81,7 @@ export class SessionPresenceRegistry {
 	readonly paths: TransportPaths;
 
 	private readonly beforeCandidateOpen?: () => Promise<void>;
+	private probeTimeoutMs = 50;
 
 	private constructor(agentHome: string, sockets: string, beforeCandidateOpen?: () => Promise<void>) {
 		const root = join(agentHome, "gentle-agents", "transport");
@@ -189,6 +190,11 @@ export class SessionPresenceRegistry {
 		return newest;
 	}
 
+	/**
+	 * Remove an owned presence record and unlink its socket endpoint if present.
+	 *
+	 * @param record - The presence record identifying the session activation to remove.
+	 */
 	async removeOwn(record: PresenceRecord) {
 		this.validate(record);
 		const file = this.presencePath(record);
@@ -202,12 +208,62 @@ export class SessionPresenceRegistry {
 			const stat = await lstat(file);
 			if (!stat.isSymbolicLink() && stat.dev === result.stat.dev && stat.ino === result.stat.ino) await unlink(file);
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") boundary(error); }
+		try {
+			const stat = await lstat(record.endpoint);
+			if (!stat.isSymbolicLink() && stat.isSocket() && sameUser(stat)) await unlink(record.endpoint);
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") boundary(error); }
 	}
 
+	/**
+	 * Probe a socket endpoint to verify if an active listener is accepting connections.
+	 *
+	 * @param endpoint - Absolute filesystem path to the Unix domain socket.
+	 * @returns Probe outcome: "live" if connected, "refused" if definitively dead, or "timeout" if inconclusive.
+	 */
+	private probeSocket(endpoint: string): Promise<"live" | "refused" | "timeout"> {
+		return new Promise<"live" | "refused" | "timeout">((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const socket = createConnection(endpoint);
+			const finish = (result: "live" | "refused" | "timeout") => {
+				if (settled) return;
+				settled = true;
+				if (timer !== undefined) clearTimeout(timer);
+				socket.destroy();
+				resolve(result);
+			};
+			socket.once("connect", () => finish("live"));
+			socket.once("error", (error: NodeJS.ErrnoException) => {
+				if (error.code === "ECONNREFUSED" || error.code === "ENOENT") {
+					finish("refused");
+				} else {
+					finish("timeout");
+				}
+			});
+			timer = setTimeout(() => finish("timeout"), this.probeTimeoutMs);
+			try { timer.unref(); } catch {}
+		});
+	}
+
+	/**
+	 * Determine whether a presence candidate should be advertised as an active peer.
+	 *
+	 * @param record - The candidate presence record.
+	 * @returns True if the endpoint is a valid, live socket; false otherwise.
+	 */
 	private async advertises(record: PresenceRecord) {
 		try {
 			const stat = await lstat(record.endpoint);
-			return !stat.isSymbolicLink() && stat.isSocket() && sameUser(stat);
+			if (stat.isSymbolicLink() || !stat.isSocket() || !sameUser(stat)) return false;
+			const outcome = await this.probeSocket(record.endpoint);
+			if (outcome === "refused") {
+				await this.removeOwn(record).catch(() => {});
+				return false;
+			}
+			if (outcome === "timeout") {
+				return false;
+			}
+			return true;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT" || code === "ELOOP") return false;

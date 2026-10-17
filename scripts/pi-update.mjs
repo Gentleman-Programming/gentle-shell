@@ -234,8 +234,10 @@ export async function updateSelectedPi(input) {
  const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: input.cwd, stderrTail:4096});
  if (!succeeded(result)) {
   // One sanitized line of the manager's own error: npm prints it on stderr,
-  // pnpm 11 prints ERR_PNPM_* on stdout and leaves stderr empty.
-  const detail = setupErrorDetail(result?.stderrTail, input.home, input.platform) ?? setupErrorDetail(result?.stdout, input.home, input.platform);
+  // pnpm 11 prints ERR_PNPM_* on stdout. Read as one text, stderr last, an
+  // error line in either stream wins over a stderr warning, stderr's on a tie.
+  const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
+  const detail = setupErrorDetail(output, input.home, input.platform);
   throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.spec}${detail ? `\n${detail}` : ''}`);
  }
  const after = await suppliedPiVersion(owner, input);

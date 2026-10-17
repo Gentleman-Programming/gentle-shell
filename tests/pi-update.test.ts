@@ -268,3 +268,14 @@ test('a failed install without output keeps the single line, naming the command 
  await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0'});
  assert.deepEqual(f.mutations, [['add', '-g', 'gentle-pi@4.1.0', '--allow-build=gentle-pi']]);
 });
+
+test('a stderr warning never hides the ERR_PNPM line pnpm printed on stdout', async () => {
+ const f = fixture({installFailure: {stderrTail: '(node:1) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.\n',
+  stdout: '[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.\n'}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.'});
+});
+
+test('without any error line the last stderr line is shown', async () => {
+ const f = fixture({installFailure: {stderrTail: 'killed\n', stdout: 'Progress: resolved 1\n'}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\nkilled'});
+});

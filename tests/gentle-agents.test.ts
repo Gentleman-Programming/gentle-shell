@@ -3650,6 +3650,34 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
 });
 
+test("subagent_run resolves agent and profile via short alias keys (issue #2196)", async (t) => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	const fixtureHome = mkdtempSync(join(root, "alias-home-"));
+	t.after(() => rmSync(fixtureHome, TEST_DIR_REMOVAL));
+	const workerPath = join(fixtureHome, ".pi", "agent", "agents", "gentle-ai-worker.md");
+	mkdirSync(dirname(workerPath), { recursive: true });
+	writeFileSync(workerPath, "---\nname: gentle-ai-worker\ndescription: Package worker\ntools: [read]\n---\nWorker instructions");
+	writeFileSync(join(fixtureHome, ".pi", "agent", "subagents.json"), JSON.stringify({
+		max_concurrency: 2,
+		model_profiles: { worker: { model: "anthropic/claude-3-7-sonnet", effort: "high" } },
+	}));
+
+	gentleAgents(pi, {}, { ...harness.deps, home: fixtureHome });
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+
+	const running = tools.get("subagent_run")!.execute("c1", { agent: "worker", task: "Implement feature\n## Allowed edit surfaces\nsrc/app.ts\n## Return\nDone", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	const [args] = harness.spawned;
+	assert.ok(args.includes("--model"), "child arguments must include --model");
+	assert.equal(args[args.indexOf("--model") + 1], "anthropic/claude-3-7-sonnet:high", "resolves model and effort from alias profile");
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await running;
+	await fire("session_shutdown", ctx);
+});
+
 test("running subagent_result polls hide only their tool chrome, not the model result or final completion", async () => {
 	const { pi, tools, fire, sent, renderers } = fakePi();
 	const harness = deps();

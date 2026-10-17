@@ -4,6 +4,7 @@ import { resolveProfilePin } from "./agent-profile-pin.ts";
 import {
 	discoverAgents,
 	loadAgentsConfig,
+	modelProfileLookupKeys,
 	resolveAgentProfile,
 	withPinnedModelProfiles,
 	type AgentDefinition,
@@ -71,7 +72,10 @@ export function resolveEffectiveAgentModel(
 	agentName: string,
 	scope: AgentProfileScope & { fallback?: ModelRef },
 ): EffectiveAgentModel | undefined {
-	const agent = discoverAgents(scope.roots).agents.find((candidate) => candidate.name === agentName);
+	const keys = modelProfileLookupKeys(agentName);
+	const agents = discoverAgents(scope.roots).agents;
+	const agent = agents.find((candidate) => candidate.name === agentName)
+		?? agents.find((candidate) => keys.includes(candidate.name));
 	if (!agent) return undefined;
 	const profile = resolvePinnedAgentProfile(agent, scope);
 	return profile.model === undefined

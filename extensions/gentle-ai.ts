@@ -12,8 +12,9 @@ import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProf
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
+import { collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
+import { registeredRootsForSession, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
-import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -1774,14 +1775,6 @@ function loadRuntimeGuardrailsConfig(
 }
 
 const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit"]);
-const PATH_INPUT_KEYS = new Set([
-	"path",
-	"paths",
-	"file",
-	"files",
-	"filePath",
-	"filePaths",
-]);
 const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.ssh(?:\/|$)/,
 	/(^|\/)\.credentials(?:\/|$)/,
@@ -1871,12 +1864,7 @@ function isSensitivePath(value: string): boolean {
 }
 
 function collectPathInputs(value: unknown, key?: string): string[] {
-	if (typeof value === "string") return key && PATH_INPUT_KEYS.has(key) ? [value] : [];
-	if (Array.isArray(value)) return value.flatMap((item) => collectPathInputs(item, key));
-	if (!isRecord(value)) return [];
-	return Object.entries(value).flatMap(([entryKey, entryValue]) =>
-		collectPathInputs(entryValue, entryKey),
-	);
+	return collectStringPaths(value, key);
 }
 
 function hasWritableEngramTool(pi: ExtensionAPI): boolean {
@@ -2124,7 +2112,7 @@ async function confirmCommand(
 	if (yoloActive && configuredRestriction === undefined && isReversibleYoloCommand(command, evaluation)) return undefined;
 
 	// classification === "confirm"
-	if (!ctx.hasUI) {
+	if (!canConfirm(ctx)) {
 		return {
 			block: true,
 			reason:
@@ -2175,6 +2163,106 @@ async function confirmCommand(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One fail-closed semantic for both confirmation flows (#1660): a UI without
+ * a callable confirm is headless, so the call is denied with the headless
+ * reason instead of throwing. A confirm that exists and throws still rethrows. */
+function canConfirm(ctx: ExtensionContext): boolean {
+	return ctx.hasUI && typeof ctx.ui?.confirm === "function";
+}
+
+/** #1305 slice 2: path-tool consent fence. Outside the session worktree and
+ * registered same-clone worktrees requires per-target, per-session consent;
+ * headless sessions fail closed. Bash coverage is slice 3. */
+async function confirmOutsideBoundaryTargets(
+	toolName: string,
+	input: unknown,
+	ctx: ExtensionContext,
+	events: ExtensionAPI["events"],
+	herdrLifecycle: HerdrConfirmationLifecycle,
+	grants: PathTargetGrants,
+): Promise<ToolCallEventResult | undefined> {
+	// A missing manager (a non-session caller) or a non-Git cwd keeps the fence
+	// silent. A manager whose session id is not assigned yet is different: the
+	// fence cannot attribute grants or registered roots, so in-worktree access
+	// still passes but outside-worktree targets fail closed until an id exists.
+	const manager = ctx.sessionManager;
+	if (!manager) return undefined;
+	const sessionKey = manager.getSessionId?.();
+	const identity = resolveSessionWorktree(ctx.cwd, ctx.cwd);
+	if (!identity) return undefined;
+	const roots = [identity.root, ...(sessionKey ? registeredRootsForSession(manager, sessionKey).filter((root) => resolveSessionWorktree(root, ctx.cwd)?.commonDir === identity.commonDir) : [])];
+	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), canConfirm(ctx));
+	if (decision.kind === "pass") return undefined;
+	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
+	if (!sessionKey) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
+	const cwd = ctx.cwd;
+	// Snapshot every target, not just ungranted outside paths. A changed target
+	// must not inherit this approval even if another call already granted it.
+	const currentTargets = (): string[] => {
+		const paths = collectStringPaths(input);
+		return resolveOutsidePaths(paths.length > 0 ? paths : ["."], cwd, []);
+	};
+	let targetsBeforeConfirmation: string[];
+	try {
+		targetsBeforeConfirmation = currentTargets();
+	} catch {
+		return { block: true, reason: "Gentle AI safety policy cannot safely resolve the requested path." };
+	}
+	const changedTargetReason = "Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.";
+	let targetChanged = false;
+	const requestId = randomUUID();
+	const emitPermissionRequest = (state: "waiting" | "approved" | "denied"): void => {
+		events.emit("pi-permission-system:permission-request", {
+			requestId,
+			state,
+			source: "tool_call",
+			message: "Gentle AI safety policy requires confirmation for this tool call.",
+			toolName,
+		});
+	};
+	let approved = false;
+	let confirmationFailed = false;
+	let confirmationError: unknown;
+	emitPermissionRequest("waiting");
+	herdrLifecycle.begin();
+	try {
+		approved = (await ctx.ui.confirm("Allow access outside the project root?", decision.targets.join("\n"))) === true;
+		if (approved) {
+			try {
+				const targetsAfterConfirmation = currentTargets();
+				targetChanged = ctx.cwd !== cwd || ctx.sessionManager !== manager || manager.getSessionId?.() !== sessionKey
+					|| targetsAfterConfirmation.length !== targetsBeforeConfirmation.length
+					|| targetsAfterConfirmation.some((target, index) => target !== targetsBeforeConfirmation[index])
+					|| decision.targets.some((target) => !targetsAfterConfirmation.includes(target));
+			} catch {
+				targetChanged = true;
+			}
+			if (targetChanged) approved = false;
+		}
+	} catch (error) {
+		confirmationFailed = true;
+		confirmationError = error;
+	} finally {
+		try {
+			emitPermissionRequest(confirmationFailed || !approved ? "denied" : "approved");
+		} finally {
+			herdrLifecycle.settle();
+		}
+	}
+	if (confirmationFailed) throw confirmationError;
+	if (targetChanged) return { block: true, reason: changedTargetReason };
+	if (approved) {
+		// Revalidation closes the dialog window, not the later pathname/open
+		// race. This consent hook is not an OS-level filesystem sandbox.
+		grants.grant(sessionKey, decision.targets);
+		return undefined;
+	}
+	return {
+		block: true,
+		reason: "Gentle AI safety policy blocked the path access because it was not confirmed.",
+	};
 }
 
 function gentleAiConfigHome(): string {
@@ -9725,6 +9813,7 @@ function createGentleAiExtensionForTesting(
 	const permissionEnvironment = dependencies.processEnv ?? process.env;
 	let autoPermissions: AutoPermissionRuntime | undefined;
 	const yolo = registerYoloSessionPolicy(pi, permissionEnvironment, { onChange: () => autoPermissions?.cancelPending() });
+	const pathTargetGrants = new PathTargetGrants();
 	let classifier: AutoPermissionClassifier | undefined;
 	autoPermissions = new AutoPermissionRuntime(pi, yolo, dependencies.autoPermissionClassifier ?? {
 		run: request => {
@@ -10463,6 +10552,10 @@ function createGentleAiExtensionForTesting(
 		if (sensitivePathDenied) return sensitivePathDenied;
 		const deliveredTestDenied = evaluateDeliveredTestTool(event.toolName, event.input, ctx.cwd);
 		if (deliveredTestDenied) return deliveredTestDenied;
+		if (PATH_FENCE_TOOL_NAMES.has(event.toolName)) {
+			const outsideDenied = await confirmOutsideBoundaryTargets(event.toolName, event.input, ctx, pi.events, herdrLifecycle, pathTargetGrants);
+			if (outsideDenied) return outsideDenied;
+		}
 		if (event.toolName === "subagent_run") {
 			const judgmentDayFixDenied = rejectInvalidJudgmentDayFixDispatch(event.input);
 			if (judgmentDayFixDenied) return judgmentDayFixDenied;

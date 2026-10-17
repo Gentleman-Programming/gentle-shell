@@ -1688,7 +1688,9 @@ async function packageManagerAdapters() {
 		fs: await import("node:fs/promises"),
 		which: async (name) => findOnPath(name) ?? null,
 		...(invocation ? { invocation } : {}),
-		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+		// stderrTail: a caller that asks for it, such as a failed `update` install, gets the bounded stderr.
+		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000,
+			...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }) }),
 	};
 }
 
@@ -1966,7 +1968,11 @@ async function main() {
 	});
 	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
 	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
-	if (!versionCheck.ok) fail(versionCheck.message, 1);
+	// A managed self update is how an old Pi gets replaced, so the minimum-version
+	// gate must not block it; everything else still requires the minimum.
+	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined
+		&& (await import("../scripts/pi-update.mjs")).managedUpdatePlan(args.passthrough).self;
+	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
 		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
@@ -1992,7 +1998,7 @@ async function main() {
 		const { managedUpdatePlan, updateSelectedPi } = await import("../scripts/pi-update.mjs");
 		const plan = managedUpdatePlan(args.passthrough);
 		if (plan.self) {
-			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(),
+			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(), env: process.env, home: homedir(),
 				adapters: await packageManagerAdapters(), out: (line) => process.stdout.write(`${line}\n`) });
 			if (plan.piArgs === undefined) return;
 		}

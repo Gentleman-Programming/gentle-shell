@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
 
 // gentle-shell#1731 T13 (evidence L24): in bench task x4 the user wrote "I may
 // stop you between the two and pick the second part up later"; every Gentle
@@ -62,7 +63,8 @@ test("T13: the Close gate requires continuing or quoting the user's explicit sto
 
 test("T13: budgets hold and the pinned human-control line is untouched", () => {
 	const bytes = Buffer.byteLength(tracking, "utf8");
-	assert.ok(bytes <= 12_600, `orchestrator-tracking.md is ${bytes} B, over its 12,600 B budget`);
+	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B), same as MODULE_BUDGETS.
+	assert.ok(bytes <= 12_850, `orchestrator-tracking.md is ${bytes} B, over its 12,850 B budget`);
 	assert.ok(core.includes("- Preserve human control: user decisions beat agent momentum."), "core human-control line must stay verbatim");
 	assert.ok(core.includes("4. **Track**") && core.includes("`orchestrator-tracking.md`"), "Track must still load the tracking module");
 });
@@ -70,7 +72,8 @@ test("T13: budgets hold and the pinned human-control line is untouched", () => {
 test("T13: the always-on harness narrows conditional intent and gates Close on pending tasks", () => {
 	// The harness ODD steps are injected on every request, including the small
 	// path that never loads the tracking module, so the narrowing must live there too.
-	const harness = read("extensions/gentle-ai.ts");
+	// They are rendered from the mirrored routing/pi.md, so check the rendered harness.
+	const harness = __testing.buildGentlePrompt("gentleman");
 	assert.ok(
 		harness.includes("Ambiguous or conditional change intent (unclear whether a change is authorized at all) gets one clarification; stop and wait."),
 		"harness Authorize step must narrow conditional intent",

@@ -31,6 +31,10 @@ const FIXTURE_PATHS = [
 // release archive, extracted. gentle-pi#560 / gentle-ai#4056, #4057.
 const FIXTURE_1_2_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.2.0");
 
+// Fixture provenance: the gentle-ai provider contract bundle 1.4.0 archive
+// built by goreleaser, extracted. Adds Pi's ODD routing block as routing/pi.md.
+const FIXTURE_1_4_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.4.0");
+
 interface LockRecord {
 	schema: string;
 	acquisition: string;
@@ -121,6 +125,26 @@ test("mirrors a verified local 1.2.0 bundle tree, including its orchestration en
 		assert.ok(existsSync(mirrored), "orchestration/pi.md must be mirrored");
 		assert.deepEqual(readFileSync(mirrored), readFileSync(join(FIXTURE_1_2_0_ROOT, "orchestration", "pi.md")));
 		assert.deepEqual(checkProviderContractMirror(packageRoot), []);
+	});
+});
+
+test("mirrors a verified local 1.4.0 bundle tree, including its routing entry, and the offline drift check passes", () => {
+	withTemporaryRoot((packageRoot) => {
+		mirrorProviderContractBundle(FIXTURE_1_4_0_ROOT, packageRoot);
+		const lock = JSON.parse(
+			readFileSync(join(packageRoot, PROVIDER_CONTRACT_MIRROR_ROOT, PROVIDER_CONTRACT_LOCK_FILE), "utf8"),
+		) as LockRecord;
+		assert.equal(lock.contract_semver, "1.4.0");
+		assert.equal(Object.keys(lock.entries).length, 10);
+		assert.ok("routing/pi.md" in lock.entries, "the mirrored lock must record routing/pi.md");
+		const mirrored = join(packageRoot, PROVIDER_CONTRACT_MIRROR_ROOT, "v1.4.0", "bundle", "routing", "pi.md");
+		assert.deepEqual(readFileSync(mirrored), readFileSync(join(FIXTURE_1_4_0_ROOT, "routing", "pi.md")));
+		assert.deepEqual(checkProviderContractMirror(packageRoot), []);
+
+		writeFileSync(mirrored, `${readFileSync(mirrored, "utf8")}tampered\n`);
+		const problems = checkProviderContractMirror(packageRoot);
+		assert.equal(problems.length, 1);
+		assert.match(problems[0] ?? "", /mirrored bundle failed verification: .*"routing\/pi\.md" does not match its manifest SHA-256/);
 	});
 });
 

@@ -8,9 +8,18 @@ Source map: [shell extension](../extensions/gentle-shell.ts), [shell bar](../lib
 
 ## Updating Pi safely
 
-Run `gentle-shell update` to update the Pi this launcher runs. Shell verifies npm/pnpm global listing JSON and canonical package roots before installing exactly one supplying package. This supports pnpm v11 linked stores without relying on `PNPM_HOME` containment. When the launcher runs its adjacent Pi peer, the supplier is the listed `gentle-pi` package itself: Shell is reinstalled at its current version so the package manager re-resolves the peer, because updating a separate global Pi never changes the peer a Shell install runs. A Pi found on `PATH` or through `GENTLE_SHELL_PI` is updated through its own listed global package; a package-manager shim is followed to the single `cli.js` it names. Pi and Shell are never combined into a comma install.
+Run `gentle-shell update` to update the Pi this launcher runs. It also works when that Pi is older than the required minimum version, which every other command refuses. Shell verifies npm/pnpm global listing JSON and canonical package roots before installing exactly one supplying package. This supports pnpm v11 linked stores without relying on `PNPM_HOME` containment. When the launcher runs its adjacent Pi peer, the supplier is the listed `gentle-pi` package itself: Shell is reinstalled at its current version so the package manager re-resolves the peer, because updating a separate global Pi never changes the peer a Shell install runs. A main-channel Shell (`<version>-main.<sha12>`) is never published, so it is reinstalled from the tarball `gentle-shell upgrade --channel main` packed under `<config home>/main/packages/` (an absolute `GENTLE_PI_CONFIG_HOME`, else `~/.pi/gentle-ai`; a relative override is refused); when that tarball is missing, `update` installs nothing and names the rebuild path (`gentle-shell upgrade --channel release`, then `--channel main`), because `upgrade --channel main` alone is a no-op when already at the latest main. A Pi found on `PATH` or through `GENTLE_SHELL_PI` is updated through its own listed global package; a package-manager shim is followed to the single `cli.js` it names. Pi and Shell are never combined into a comma install.
 
 Unknown or ambiguous ownership, npm source/link packages, and pnpm groups shared with other top-level packages refuse without installation changes. Separate groups in one aggregated listing are allowed. After the install, Shell reads the supplied Pi version back from a fresh listing and reports whether it changed. pnpm installs only releases older than its `minimumReleaseAge` setting (pnpm 11 defaults to 4320 minutes), so a very recent Pi release is picked up once it is old enough; Shell reports that rule instead of overriding it. Package managers run from the system temporary directory so a project's `packageManager` pin never changes which pnpm answers. Use the supplying package manager for source checkouts or unsupported layouts. `gentle-shell update --extensions-only` remains an extension-only Pi command; prefix-bundled Pi still updates with `gentle-shell upgrade`. See [managing packages](readme-reference.md#managing-packages) for the ownership contract.
+
+When the install fails, `update` names the package manager and the exact command it ran, then one sanitized line of that manager's own output. That line is the last error line (`Error:` or an `ERR_` code) in its stdout or stderr, stderr's when both have one, because npm prints its error on stderr while pnpm 11 prints `ERR_PNPM_*` on stdout. A warning on stderr never hides that error. Without any error line, it is the last line of stderr, else of stdout. Terminal escapes and control characters are removed, your home directory becomes `~`, and the line is at most 300 characters. For example:
+
+```text
+gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi/gentle-ai/main/packages/gentle-pi-<version>.tgz
+[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "gentle-pi@file:...". Use exact versions only.
+```
+
+`ERR_PNPM_INVALID_VERSION_UNION` during `update` usually means more than one pnpm is installed: an older pnpm on `PATH` cannot read the `allowBuilds` key a newer pnpm wrote to the global `pnpm-workspace.yaml`. Keep a single standalone pnpm.
 
 ## v2.6.0 workspace updates
 
@@ -21,7 +30,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles; see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
-The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.1.1` pin; this does not imply that the package release has been published.
+The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.2.0` pin; this does not imply that the package release has been published.
 
 ## Shell interactions and runtime behavior
 

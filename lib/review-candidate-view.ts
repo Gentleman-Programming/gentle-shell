@@ -12,7 +12,7 @@ export type ReviewLens = (typeof REVIEW_LENS)[number];
 const CANDIDATE_GIT_TIMEOUT_MS = 10_000;
 const CANDIDATE_GIT_TIMEOUT_MAX_MS = 120_000;
 const CANDIDATE_GIT_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS";
-const CANDIDATE_GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+export const CANDIDATE_GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 // Keep the copied index at least one timestamp tick behind its source. The
 // two-second target also clears filesystems whose mtime granularity is a second
 // or coarser without needlessly assigning an arbitrary historical timestamp.
@@ -21,7 +21,7 @@ const PRIVATE_INDEX_RACY_BACKDATE_NS = 2_000_000_000n;
 
 // Candidate views may materialize full repository trees. Large repositories can
 // raise this bounded deadline without creating an unbounded child process.
-function resolveCandidateGitTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
+export function resolveCandidateGitTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
 	const value = environment[CANDIDATE_GIT_TIMEOUT_ENV];
 	if (value === undefined || !/^[1-9]\d*$/.test(value)) return CANDIDATE_GIT_TIMEOUT_MS;
 	const parsed = Number(value);
@@ -245,6 +245,7 @@ export interface CandidateOwnerChmodIneffectiveDiagnostic {
 export const CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE = "candidate-views parent must be owned by the current user and inaccessible to group and others; inspect its ownership and permissions, then correct them out of band before retrying START" as const;
 export const CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE = "candidate-views parent filesystem does not honor POSIX permission changes; move this repository's Git common directory to a POSIX-metadata filesystem or enable metadata support before retrying START" as const;
 export const CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE = "candidate view cannot create native symlinks; enable symlink capability out of band before retrying START" as const;
+export const CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE = "candidate-view symlink capability could not be verified on the filesystem that will hold the candidate view; make sure the Git common directory is writable and can create symlinks before retrying START" as const;
 
 export interface CandidateViewDiagnostic {
 	phase: typeof CANDIDATE_VIEW_DIAGNOSTIC_PHASE;

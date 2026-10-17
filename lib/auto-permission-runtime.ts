@@ -368,8 +368,22 @@ export class AutoPermissionRuntime {
  private protectedMutation(event: Pick<ToolCallEvent,"toolName"|"input">, ctx: ExtensionContext): boolean {
   const args=event.input as Record<string,unknown>;
   if (!args || typeof args!=="object") return false;
+  const projectHome=resolve(ctx.cwd,".pi","gentle-ai");
   if ((event.toolName==="write" || event.toolName==="edit") && typeof args.path==="string") {
-   try { return within(canonical(resolve(ctx.cwd,args.path)),canonical(this.configHome)); } catch { return true; }
+   try {
+    const target=canonical(resolve(ctx.cwd,args.path)),home=canonical(this.configHome);
+    // Keep policy aliases and containing directories protected, including project restrictions.
+    if([resolve(this.configHome,"permission-mode.json"),resolve(this.configHome,"runtime-guardrails.json"),
+     resolve(projectHome,"runtime-guardrails.json")].some(path=>within(canonical(path),target)))return true;
+    if(!within(target,home))return false;
+    // A shared inode can alias policy without changing the canonical path.
+    if((lstatSync(target,{throwIfNoEntry:false})?.nlink ?? 0)>1)return true;
+    // Only updater-owned data returns to ordinary permission checks. Compare the
+    // resolved target to literal destinations under home: canonicalizing exemptions
+    // would let a dev-binary.json symlink exempt the authority file it points at.
+    return !["dev-binary.json","channel.json"].some(path=>target===resolve(home,path)) &&
+     !["main","tools/go"].some(path=>within(target,resolve(home,path)));
+   } catch { return true; }
   }
   if (["bash","bash_background","monitor"].includes(event.toolName) && typeof args.command==="string") {
    // Best-effort shell recognition supplements classification, not OS containment.

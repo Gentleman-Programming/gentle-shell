@@ -128,13 +128,18 @@ function toolContext(context: ExtensionContext): ExtensionToolContext {
 async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	// Each call made three temp dirs and never removed them (87 left behind per suite run).
+	const created: string[] = [];
 	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-agent-home-"));
+	created.push(process.env.GENTLE_PI_AGENT_HOME);
 	// Isolates both the model-config sweep and the dev-binary registration
 	// lookup from this machine's real ~/.pi/gentle-ai, so `session_start`'s
 	// unrelated notifications never leak into these assertions.
 	process.env.GENTLE_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-config-home-"));
+	created.push(process.env.GENTLE_PI_CONFIG_HOME);
 	try {
 		const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-cwd-"));
+		created.push(cwd);
 		if (initializeGit) childProcess.execFileSync("git", ["init", "--quiet", cwd]);
 		await mkdir(join(cwd, "src"));
 		await writeFile(join(cwd, "src/example.ts"), "export const value = 1;");
@@ -144,6 +149,7 @@ async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, ini
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		for (const dir of created) await rm(dir, { recursive: true, force: true });
 	}
 }
 

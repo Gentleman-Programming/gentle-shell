@@ -52,7 +52,7 @@ Changing the default does **not** change the current session. To return this ses
 | --- | --- |
 | **Normal** | Existing permission behavior; the default when no valid global preference exists. |
 | **Auto** | A separate reviewer using the current session model checks eligible actions against live user intent before execution. Local reads are classified too; locality does not exempt an action from explicit restrictions. |
-| **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain. [Full YOLO details](yolo-mode.md). |
+| **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain, except recursive removal of the session's own [temp scratch](yolo-mode.md#temp-scratch-removal). [Full YOLO details](yolo-mode.md). |
 
 ## Commands and menu
 

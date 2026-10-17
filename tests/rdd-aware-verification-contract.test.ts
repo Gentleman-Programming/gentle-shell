@@ -57,8 +57,9 @@ const PASSIVE_TIER_ROW = "| passive | structural readback by the parent; no sepa
 const MEDIUM_TIER_ROW = "| medium | writer self-verification stands; no separate verifier, whatever model wrote the change |";
 const HIGH_TIER_ROW = "| high | only through `escalate` naming a Task Size high-risk item: writer self-verification plus one separate `gentle-ai-verify` run |";
 const UNASSESSABLE_TIER_ROW = "| native high, unknown, or assess failed | informs only: writer self-verification stands; escalate when a named high-risk item applies |";
+// odd/tasks/verifier-admission.md S6: the sentence names the runtime admission of the verifier launch.
 const NAMED_RISK_SENTENCE =
-	"The independent verifier is for concrete occasions only: run it when, and only when, the change touches a named Task Size high-risk item, passed as `escalate`; never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change. An unknown `Receipt-driven development:` line never lowers a tier below `off`.";
+	"The independent verifier runs only when the change touches a named Task Size high-risk item, passed as `escalate` (the runtime admits its launch on a `Risk: item N` line, a feature-document task line, or past the context backstop); never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change. An unknown `Receipt-driven development:` line never lowers a tier below `off`.";
 const SPOT_CHECK_SENTENCE =
 	"The parent spot check (re-running one reported command before delivery) stays required in every tier.";
 test("trigger 5 (Verification rule) routes every RDD line through assess and the risk tier", () => {

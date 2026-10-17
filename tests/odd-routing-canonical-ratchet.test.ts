@@ -1,46 +1,36 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import {
-	ODD_ROUTING_BLOCK_PREFIX,
-	ODD_ROUTING_FIXTURE_RELATIVE,
-	ODD_ROUTING_SOURCE_PATH,
-	ODD_ROUTING_SOURCE_REPO,
-	assertCleanGentleAiCheckout,
-	parseOddRoutingFixture,
-	renderOddRoutingFixture,
-	resolveOddRoutingProvenance,
-	sha256Hex,
-} from "../scripts/mirror-odd-routing.mjs";
+import { __testing } from "../extensions/gentle-ai.ts";
+import { PI_RUNTIME_IDENTITY, ROUTING_REQUIRED_SINCE_MINOR, verifyProviderContractBundleTree } from "../lib/provider-contract-bundle.ts";
+import { PROVIDER_CONTRACT_LOCK_FILE, PROVIDER_CONTRACT_MIRROR_ROOT } from "../scripts/mirror-provider-contract.mjs";
 
 // ---------------------------------------------------------------------------
 // ODD routing drift ratchet (gentle-pi#1147 follow-up)
 //
-// gentle-pi hand-mirrors the always-on ODD routing block rendered by gentle-ai
-// `internal/components/agentguidance/routing.go` (RenderRouting). There is no
-// automated sync, so a canonical change leaves the pi mirror stale with nothing
-// catching it. This ratchet vendored-snapshots the canonical block into
-// `fixtures/odd-routing-canonical.md` (regenerated via `npm run
-// mirror:odd-routing`) and fails when a mandatory-delegation clause is dropped
-// either from the canonical fixture or from a pi mirror surface.
-//
-// Regeneration writes ONLY the fixture; this ratchet never auto-rewrites mirror
-// assets, so drift stays visible as a deliberate diff.
+// gentle-ai renders the always-on ODD routing block for Pi
+// (`internal/components/agentguidance/routing.go`) and publishes it in the
+// provider contract bundle as `routing/pi.md` (contract 1.4.0). The mirrored
+// bundle (`contracts/review-provider-contract-mirror/`, refreshed with
+// `scripts/mirror-provider-contract.mjs`) is the canonical reference: the
+// harness ODD steps are rendered from it, and this ratchet fails when a
+// mandatory-delegation clause is dropped either from the canonical block or
+// from a Pi surface that restates it (the `assets/orchestrator*.md` modules
+// stay Pi's own and keep their anchors).
 // ---------------------------------------------------------------------------
 
 const REPO_ROOT = join(import.meta.dirname, "..");
-const FIXTURE_PATH = join(REPO_ROOT, ...ODD_ROUTING_FIXTURE_RELATIVE.split("/"));
+const MIRROR_ROOT = join(REPO_ROOT, ...PROVIDER_CONTRACT_MIRROR_ROOT.split("/"));
 const DELEGATION_PATH = join(REPO_ROOT, "assets", "orchestrator-delegation.md");
 const CORE_PATH = join(REPO_ROOT, "assets", "orchestrator.md");
-const EXTENSION_PATH = join(REPO_ROOT, "extensions", "gentle-ai.ts");
 
 const readRepo = (absolutePath: string): string => readFileSync(absolutePath, "utf8");
 
 // A mandatory-delegation semantic anchor: the clause the canonical block must
 // still carry, plus the wording each pi mirror surface is expected to carry.
-// A canonical change that drops `canonical` is caught here on regeneration
-// because the fixture no longer carries it.
+// A canonical change that drops `canonical` is caught here once the bundle is re-mirrored
+// because the mirrored routing block no longer carries it.
 interface RoutingAnchor {
 	label: string;
 	canonical: string;
@@ -49,7 +39,9 @@ interface RoutingAnchor {
 
 const DELEGATION = "assets/orchestrator-delegation.md";
 const CORE = "assets/orchestrator.md";
-const EXTENSION = "extensions/gentle-ai.ts";
+// The harness prompt rendered by extensions/gentle-ai.ts, including the ODD
+// steps it takes from the mirrored routing/pi.md.
+const EXTENSION = "rendered harness prompt";
 
 const ANCHORS: readonly RoutingAnchor[] = [
 	{
@@ -196,10 +188,12 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		label: "long-session backstop",
 		canonical: "**Long-session backstop:**",
 		// Gentle Shell intentionally leads the canon here: a parent-context token
-		// backstop replaces the tool-call count (tracked by gentle-ai#5139).
+		// backstop replaces the tool-call count (tracked by gentle-ai#5139), and the
+		// runtime measures it and signals it instead of the canon's advisory ~150k
+		// estimate (harness roadmap R1), so the Pi anchor names the runtime signal.
 		mirrors: [
-			{ surface: DELEGATION, includes: "**Context backstop:** when the parent context passes ~150k tokens" },
-			{ surface: CORE, includes: "**Context backstop** — parent context past ~150k tokens" },
+			{ surface: DELEGATION, includes: "**Context backstop:** when the runtime signals it" },
+			{ surface: CORE, includes: "**Context backstop** — when the runtime signals it" },
 		],
 	},
 	{
@@ -240,50 +234,43 @@ const ANCHORS: readonly RoutingAnchor[] = [
 
 // Condensed trigger rows that live only in the always-on core prompt; the
 // canonical RenderRouting block does not carry the incident or verification
-// rows, so they are mirror-only and not fixture-derived anchors.
+// rows, so they are mirror-only and not anchors of the canonical routing block.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
 	"**Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`",
 ] as const;
 
-function fixtureBody(): string {
-	assert.ok(
-		existsSync(FIXTURE_PATH),
-		`missing canonical fixture ${ODD_ROUTING_FIXTURE_RELATIVE}; regenerate it with \`npm run mirror:odd-routing\``,
-	);
-	return parseOddRoutingFixture(readRepo(FIXTURE_PATH)).body;
+// The verified mirrored routing/pi.md: the bundle tree must pass the strict
+// decoder, so a hand edit to the canonical block fails here as well as in
+// `pnpm run check:provider-contract`.
+function canonicalRoutingBlock(): string {
+	const lock = JSON.parse(readFileSync(join(MIRROR_ROOT, PROVIDER_CONTRACT_LOCK_FILE), "utf8")) as { contract_semver: string };
+	const bundle = verifyProviderContractBundleTree(join(MIRROR_ROOT, `v${lock.contract_semver}`, "bundle"));
+	const block = bundle.routing.get(PI_RUNTIME_IDENTITY);
+	assert.ok(block !== undefined, `the mirrored provider contract ${bundle.contractSemver} carries no routing/${PI_RUNTIME_IDENTITY}.md`);
+	return block;
 }
 
 // ---------------------------------------------------------------------------
-// 1 — Fixture provenance readback
+// 1 — The canonical reference is the verified mirrored bundle
 // ---------------------------------------------------------------------------
 
-test("the canonical routing fixture exists with managed provenance (source repo, commit, digest)", () => {
-	assert.ok(
-		existsSync(FIXTURE_PATH),
-		`missing canonical fixture ${ODD_ROUTING_FIXTURE_RELATIVE}; regenerate it with \`npm run mirror:odd-routing\``,
-	);
-	const { header } = parseOddRoutingFixture(readRepo(FIXTURE_PATH));
-	assert.equal(header.source_repo, ODD_ROUTING_SOURCE_REPO);
-	assert.equal(header.source_path, ODD_ROUTING_SOURCE_PATH);
-	assert.match(header.source_commit ?? "", /^[0-9a-f]{40}$/, "fixture must record the gentle-ai source commit");
-	assert.match(header.generated_at ?? "", /^\d{4}-\d{2}-\d{2}T/, "fixture must record a generation date");
-	assert.match(header.block_sha256 ?? "", /^[0-9a-f]{64}$/, "fixture must record the block body digest");
-});
-
-test("the fixture digest matches its block body byte-for-byte", () => {
-	const { header, body } = parseOddRoutingFixture(readRepo(FIXTURE_PATH));
-	assert.equal(header.block_sha256, sha256Hex(body), "the fixture body was hand-edited without regenerating its digest");
+test("the canonical routing reference is the verified mirrored routing/pi.md (contract >= 1.4.0)", () => {
+	const lock = JSON.parse(readFileSync(join(MIRROR_ROOT, PROVIDER_CONTRACT_LOCK_FILE), "utf8")) as { contract_semver: string; entries: Record<string, string> };
+	const [major, minor] = lock.contract_semver.split(".").map(Number);
+	assert.ok(major === 1 && (minor ?? 0) >= ROUTING_REQUIRED_SINCE_MINOR, `mirrored contract ${lock.contract_semver} predates routing`);
+	assert.match(lock.entries[`routing/${PI_RUNTIME_IDENTITY}.md`] ?? "", /^[0-9a-f]{64}$/);
+	assert.ok(canonicalRoutingBlock().startsWith("## Implementation Routing\n"));
 });
 
 // ---------------------------------------------------------------------------
-// 2 — Canonical fixture carries every mandatory anchor
+// 2 — The canonical block carries every mandatory anchor
 // ---------------------------------------------------------------------------
 
-test("the canonical fixture carries every mandatory-delegation anchor", () => {
-	const body = fixtureBody();
+test("the canonical routing block carries every mandatory-delegation anchor", () => {
+	const body = canonicalRoutingBlock();
 	for (const anchor of ANCHORS) {
-		assert.ok(body.includes(anchor.canonical), `canonical fixture dropped anchor: ${anchor.label}`);
+		assert.ok(body.includes(anchor.canonical), `canonical routing block dropped anchor: ${anchor.label}`);
 	}
 });
 
@@ -295,7 +282,7 @@ test("the pi mirror surfaces carry every mapped mandatory-delegation anchor", ()
 	const surfaces: Record<string, string> = {
 		[DELEGATION]: readRepo(DELEGATION_PATH),
 		[CORE]: readRepo(CORE_PATH),
-		[EXTENSION]: readRepo(EXTENSION_PATH),
+		[EXTENSION]: __testing.buildGentlePrompt("gentleman"),
 	};
 	for (const anchor of ANCHORS) {
 		for (const mirror of anchor.mirrors) {
@@ -314,85 +301,4 @@ test("the always-on core prompt carries the condensed incident and verification 
 	for (const row of CORE_ONLY_TRIGGERS) {
 		assert.ok(core.includes(row), `assets/orchestrator.md is missing condensed trigger row: ${JSON.stringify(row)}`);
 	}
-});
-
-// ---------------------------------------------------------------------------
-// 4 — Regeneration provenance: idempotent and fail-closed
-// ---------------------------------------------------------------------------
-
-// The fixture header claims provenance from the source commit, so regeneration
-// must be byte-reproducible: the same gentle-ai commit must not produce a
-// date-only diff. `generated_at` therefore tracks the source commit's committer
-// date instead of wall-clock time.
-test("fixture rendering is idempotent and derives generated_at from the source commit", () => {
-	const sourceCommit = "e7729359fd9d6cb691ed2a88e8f72b1372f7c92e";
-	const committerDate = "2026-09-18T13:49:03+02:00";
-	const fakeGit = (args: readonly string[]): string => {
-		switch (args[0]) {
-			case "status":
-				return "";
-			case "rev-parse":
-				return `${sourceCommit}\n`;
-			case "show":
-				return `${committerDate}\n`;
-			default:
-				throw new Error(`unexpected git invocation: ${args.join(" ")}`);
-		}
-	};
-	const block = `${ODD_ROUTING_BLOCK_PREFIX}\n\n- a canonical clause\n`;
-	const first = renderOddRoutingFixture(block, resolveOddRoutingProvenance("/fake/gentle-ai", fakeGit));
-	const second = renderOddRoutingFixture(block, resolveOddRoutingProvenance("/fake/gentle-ai", fakeGit));
-	assert.equal(first, second, "rendering the same source commit twice must be byte-identical");
-	const { header } = parseOddRoutingFixture(first);
-	assert.equal(header.source_commit, sourceCommit);
-	assert.equal(
-		header.generated_at,
-		committerDate,
-		"generated_at must track the source commit's committer date, not wall-clock time",
-	);
-});
-
-// A dirty checkout would render uncommitted content under the committed
-// provenance claim, so the mirror fails closed before rendering and names the
-// tracked paths. Untracked files (the odd/tasks notes) must never block.
-test("the mirror fails closed on a dirty source checkout and names the tracked paths", () => {
-	const recordedCalls: string[][] = [];
-	const cleanGit = (args: readonly string[]): string => {
-		recordedCalls.push([...args]);
-		switch (args[0]) {
-			case "status":
-				return "";
-			case "rev-parse":
-				return `${"a".repeat(40)}\n`;
-			case "show":
-				return "2026-09-18T13:49:03+02:00\n";
-			default:
-				throw new Error(`unexpected git invocation: ${args.join(" ")}`);
-		}
-	};
-	resolveOddRoutingProvenance("/fake/gentle-ai", cleanGit);
-	assert.deepEqual(
-		recordedCalls.find((args) => args[0] === "status"),
-		["status", "--porcelain", "--untracked-files=no"],
-		"the dirty guard must ignore untracked files",
-	);
-
-	assert.doesNotThrow(() => assertCleanGentleAiCheckout(""));
-	const dirtyGit = (args: readonly string[]): string => {
-		if (args[0] === "status") {
-			return " M internal/components/agentguidance/routing.go\n M scripts/other.mjs\n";
-		}
-		throw new Error(`unexpected git invocation: ${args.join(" ")}`);
-	};
-	assert.throws(
-		() => resolveOddRoutingProvenance("/fake/gentle-ai", dirtyGit),
-		(error: unknown) => {
-			assert.ok(error instanceof Error);
-			assert.match(
-				error.message,
-				/gentle-ai checkout is dirty; provenance would be unverifiable: internal\/components\/agentguidance\/routing\.go, scripts\/other\.mjs\. Commit or stash first\./,
-			);
-			return true;
-		},
-	);
 });

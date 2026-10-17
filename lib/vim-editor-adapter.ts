@@ -1,14 +1,22 @@
 import { CURSOR_MARKER, Editor, visibleWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 
-// Private shape audited against @earendil-works/pi-tui 0.99.1, 0.99.2 and 1.0.0:
+// Private shape audited against @earendil-works/pi-tui 0.99.1, 0.99.2, 1.0.0, 1.1.0 and 1.2.0:
 // editor.js state/pastes/history, sticky cursor reset, layoutText/render geometry,
 // autocomplete cancellation and { state, pastes, pasteCounter } undo restoration;
 // undo-stack.js clone-on-push/pop snapshots. The two 0.99 releases ship identical
 // editor/undo-stack sources; 1.0.0 is a touched-contract audit, not byte identity.
-// Actual 1.0.0 bundled and unbundled tests exercise identity, edit/undo, paste,
+// The 1.1.0 touched-contract audit retains clone-on-push snapshots with the
+// paste registry, cursor resets, layoutText/render geometry and history exit.
+// cancelAutocomplete aborts/debounces requests before clearing its UI;
+// the adapter still calls that host-owned method, never mutating its request state.
+// Actual installed bundled/unbundled tests exercise identity, edit/undo, paste,
 // selection, wrapping/scroll and autocomplete; fabricated metadata tests only
 // prove exact-version admission for the older audited releases.
+// 1.2.0 changes only editor cursor rendering to paired pi:fc/pi:/fc APC
+// markers resolved by the host TUI (including hardware-cursor suppression).
+// Keep these markers intact and rearm selection after their reverse-off;
+// state, undo, paste, layout and autocomplete contracts remain unchanged.
 // Never silently adapt another build: undo also owns the paste registry.
 interface Position { line: number; col: number }
 interface State { lines: string[]; cursorLine: number; cursorCol: number }
@@ -47,7 +55,7 @@ interface PrivateEditor {
 
 // The single audited-release source for the adapter and Gentle Shell's runtime
 // identity gates. Add a release only after re-auditing the files named above.
-export const AUDITED_PI_EDITOR_VERSIONS = Object.freeze(["0.99.1", "0.99.2", "1.0.0"] as const);
+export const AUDITED_PI_EDITOR_VERSIONS = Object.freeze(["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0"] as const);
 export type AuditedPiEditorVersion = (typeof AUDITED_PI_EDITOR_VERSIONS)[number];
 
 export function isAuditedPiEditorVersion(version: unknown): version is AuditedPiEditorVersion {
@@ -79,7 +87,7 @@ function hasEditorIdentity(value: unknown, version: string, editorClass: typeof 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const marker = /\[paste #(\d+)(?: (?:\+\d+ lines|\d+ chars))?\]/g;
 
-// Only CSI SGR and Pi's own zero-width cursor marker are expected in editor
+// Only CSI SGR and Pi's own zero-width cursor markers are expected in editor
 // text. Unknown escapes leave the unmodified frame intact (fail closed).
 function highlightRenderedRow(row: string, chunk: LayoutLine, left: number, right: number, padding: number): string | undefined {
   const cursor = chunk.hasCursor ? chunk.cursorPos : undefined;
@@ -110,8 +118,22 @@ function highlightRenderedRow(row: string, chunk: LayoutLine, left: number, righ
       result += token;
       if (selected && !inverse) { result += "\x1b[7m"; inverse = true; }
     } else if (token.startsWith("\x1b")) {
-      if (token !== CURSOR_MARKER) return undefined;
+      if (token !== CURSOR_MARKER && token !== "\x1b_pi:fc\x07" && token !== "\x1b_pi:/fc\x07") return undefined;
+      // Close selection *before* the cursor pair, never inside its cell:
+      // otherwise a later host SGR 7 would immediately meet our SGR 27.
+      // Closing before CURSOR_MARKER also keeps it adjacent to pi:fc so
+      // hardware-cursor suppression can still recognize the focused pair.
+      const local = col - padding;
+      if ((token === CURSOR_MARKER || token === "\x1b_pi:fc\x07") && selected &&
+          !(local >= left && local < right && local < chunk.text.length)) {
+        if (!nativeInverse && inverse) result += "\x1b[27m";
+        selected = false;
+        inverse = nativeInverse;
+      }
       result += token;
+      // The host resolves pi:/fc to SGR 27, or drops the pair when the
+      // hardware cursor owns this cell. Selection must survive either path.
+      if (token === "\x1b_pi:/fc\x07" && selected) result += "\x1b[7m";
     } else {
       const local = col - padding;
       const shouldSelect = local >= left && local < right && local < chunk.text.length;

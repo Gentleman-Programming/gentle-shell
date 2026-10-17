@@ -5,21 +5,178 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
-const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isOrdinaryYoloPush, yoloPushConfiguredRestriction } = __testing;
+const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isReversibleYoloCommand, yoloConfiguredRestriction } = __testing;
 
-test("YOLO waiver only selects a single ordinary default-confirm push after full evaluation", () => {
+// gentle-shell#2172: YOLO waives every reversible push and non-interactive
+// rebase segment; anything that deletes, rewrites or publishes keeps asking.
+test("YOLO waives reversible push and rebase segments after full evaluation (#2172)", () => {
 	const config = { autonomousMode: false, guardedCommands: {} };
-	for (const command of ["git push", "git push -u origin feature/test", "git push --set-upstream origin main"]) {
-		assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), true, command);
+	for (const command of [
+		"git push", "git push -u origin feature/test", "git push --set-upstream origin main", "git push origin HEAD",
+		"git push -q origin main", "git push --quiet --tags", "git push --no-verify origin main", "git push --follow-tags -v origin main",
+		"git push origin HEAD:refs/heads/feature/x", "git push origin main:main",
+		"git -C /other push origin main", "env X=1 git push origin main",
+		"git add -A && git commit -m 'fix: x && y' && git push -u origin feature/test",
+		"git push origin main && gh pr create --fill", "cd sub && git push", "git push origin main; git status",
+		"git rebase main", "git rebase origin/main", "git rebase --onto main feature~3 feature", "git rebase --continue", "git rebase --abort", "git rebase --autostash main",
+		"git fetch origin && git rebase origin/main && git push",
+		"git\tpush\torigin\tmain", "git -C dir rebase main", "command git push origin main", "env -i git push origin main", "GIT_AUTHOR_NAME=x git push origin main",
+	]) {
+		assert.equal(isReversibleYoloCommand(command, evaluateGuardedCommand(command, config)), true, command);
 	}
 	for (const command of [
-		"git push --delete origin main", "git push origin :main", "git push --mirror origin",
-		"git push --prune origin", "git push -f origin main", "git -C /other push origin main",
-		"git push origin main; git status", "env X=1 git push origin main", "sudo git push origin main",
-		"git push origin main && git rebase main", "git push origin main && npm publish",
+		"git push --delete origin main", "git push -d origin main", "git push origin :main", "git push origin +main", "git push --mirror origin",
+		"git push --prune origin", "git push --all origin", "git push -f origin main", "git push --force-with-lease origin main",
+		"git push --receive-pack=evil origin main", "git push --exec=evil origin main", "git push --repo=/other origin main", "git push -o ci.skip origin main",
+		"sudo git push origin main", "git push origin main && npm publish", "git push origin main && pi remove foo", "git push origin main && git branch -D old",
 		`sh -c 'git push origin main'`, `git push origin main && sh -c "psql -c 'DROP TABLE users'"`,
-		"git push origin main && find data -delete", "git push origin main && rm -r data",
-	]) assert.equal(isOrdinaryYoloPush(command, evaluateGuardedCommand(command, config)), false, command);
+		"git push origin main && find data -delete", "git push origin main && rm -r data", "git push origin main && git stash drop", "git push origin main && git reset --hard",
+		"git rebase -i HEAD~3", "git rebase --interactive main", "git rebase -x 'make test' main", "git rebase --exec 'make test' main",
+		"git commit -m x", "git status",
+		// Global git options that run or redirect code are not inspected by the segment grammar, so they never qualify.
+		"git -c core.sshCommand=evil push origin main", "git --exec-path=/evil push origin main", "git --git-dir=/x push origin main", "git -C dir rebase -i main",
+		"git push origin $(echo main)", "git push origin `echo main`", "GIT_SSH=\"evil\" git push origin main",
+		"sh -c 'git push; echo done'", "bash -c 'git push && echo done'", "sh -c 'git rebase main; echo done'", "eval 'git push origin main'", "sudo -u x git push origin main",
+	]) assert.equal(isReversibleYoloCommand(command, evaluateGuardedCommand(command, config)), false, command);
+});
+
+// YOLO also waives recursive removal of the session's own temp scratch: one
+// literal path component under a temp root whose admission-time lstat is
+// missing, a symlink, an own file or an own mktemp directory. Every other
+// effect in the command keeps its ordinary guard.
+test("YOLO waives recursive removal of own temp scratch only", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	const entry = (type: "dir" | "file" | "link", uid = 1000) => ({
+		uid, isDirectory: () => type === "dir", isFile: () => type === "file", isSymbolicLink: () => type === "link",
+	});
+	const entries = new Map([
+		["/tmp/tmp.8phya1BpFr", entry("dir")], ["/tmp/tmp.LKd1kBX8Rw", entry("dir")], ["/tmp/tmp.C94OVzf01o", entry("dir")],
+		["/tmp/ctx-backstop-pnpm-test.log", entry("file")], ["/tmp/tmp.abcdef1234", entry("dir")], ["/tmp/latest", entry("link", 0)],
+		["/var/tmp/tmp.zzzzzz", entry("dir")], ["/tmp/cache", entry("dir")], ["/tmp/tmp.other1234", entry("dir", 0)],
+		["/tmp/shared.log", entry("file", 0)],
+	]);
+	const fs = {
+		uid: 1000, tmpdir: "/tmp", home: "/home/user",
+		lstat(path: string) {
+			if (path === "/tmp/tmp.denied99") throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+			const found = entries.get(path);
+			if (found === undefined) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+			return found;
+		},
+	};
+	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config), fs);
+	for (const command of [
+		"rm -rf /tmp/tmp.8phya1BpFr /tmp/tmp.LKd1kBX8Rw /tmp/tmp.C94OVzf01o /tmp/ctx-backstop-pnpm-test.log; cd /home/gentleman/work/gentle-pi-worktrees/harness-r1 && git log --oneline -1",
+		"rm -rf /tmp/tmp.abcdef1234", "rm -rf /tmp/ctx-backstop-pnpm-test.log", "rm -rf /tmp/latest", "rm -rf /tmp/tmp.gone1234",
+		"rm -r -f -- /var/tmp/tmp.zzzzzz", "rm -rf /tmp/tmp.abcdef1234 && git push -u origin feature/x",
+		"rm -rf /tmp/tmp.abcdef1234 && rm -rf /tmp/tmp.gone1234\nrm -rf /tmp/latest || git log --oneline -1",
+	]) assert.equal(waived(command), true, command);
+	for (const command of [
+		"rm -rf /tmp", "rm -rf /tmp/", "rm -rf /tmp/*", "rm -rf /tmp/tmp.x/", "rm -rf /tmp/tmp.x/../..", "rm -rf /tmp/./tmp.x",
+		"rm -rf /tmp/a/b", `rm -rf "$TMPDIR/x"`, "rm -rf $TMPDIR/x", "rm -rf /tmp/tmp.{a,b}", "rm -rf /tmp/tmp.abc?", "rm -rf tmp.abcdef1234",
+		"sudo rm -rf /tmp/tmp.abcdef1234", "xargs rm -rf /tmp/tmp.abcdef1234", "rm -rf --no-preserve-root /tmp/tmp.abcdef1234",
+		"rm -rf /tmp/tmp.abcdef1234 ~/foo", "rm -rf /tmp/tmp.abcdef1234 && rm -rf data", "rm -rf /tmp/tmp.abcdef1234 data",
+		"rm -rf /tmp/tmp.abcdef1234 && find /tmp/x -delete", "rm -rf /tmp/tmp.abcdef1234 && psql -c 'DROP TABLE users'",
+		"rm -rf /tmp/tmp.abcdef1234 && git push --delete origin main", "rm -rf /tmp/tmp.abcdef1234 && npm publish",
+		"rm -rf /tmp/tmp.abcdef1234 && git stash drop", "rm -rf /tmp/cache", "rm -rf /tmp/tmp.other1234", "rm -rf /tmp/shared.log",
+		"rm -rf /tmp/tmp.denied99", "rm -rf /home/user/tmp.abcdef1234", "sh -c 'rm -rf /tmp/tmp.abcdef1234'",
+		"find /tmp -maxdepth 1 -name 'tmp.*' -exec rm -rf {} +", "rm -rf /tmp/tmp.gone1234>important.txt", "rm -rf /tmp/tmp.gone1234 2>/dev/null",
+		// Ordering: an earlier segment can move data into a target the lstat saw as scratch.
+		"mv /home/u/data /tmp/tmp.missingZZ619976 && rm -rf /tmp/tmp.missingZZ619976", "mv /home/u/data /tmp/tmp.abcdef1234 && rm -rf /tmp/tmp.abcdef1234",
+		"cp -r x /tmp/tmp.abcdef1234; rm -rf /tmp/tmp.abcdef1234", "echo hi; rm -rf /tmp/tmp.abcdef1234", "ln -s /home/u/data /tmp/tmp.gone1234 && rm -rf /tmp/tmp.gone1234",
+		"(mv /home/u/data /tmp/tmp.abcdef1234) && rm -rf /tmp/tmp.abcdef1234", "(rm -rf /tmp/tmp.abcdef1234)",
+		"rm -rf /tmp/tmp.abcdef1234 & mv /home/u/data /tmp/tmp.abcdef1234", "rm -rf /tmp/tmp.abcdef1234 | cat",
+		"rm -rf /tmp/tmp.gone1234; mv /home/u/data /tmp/tmp.abcdef1234; rm -rf /tmp/tmp.abcdef1234",
+	]) assert.equal(waived(command), false, command);
+	// A tmpdir under home would make top-level repository files look like scratch.
+	const underHome = { ...fs, home: "/home/gentleman", tmpdir: "/home/gentleman/work/repo", lstat: () => entry("file") };
+	assert.equal(isReversibleYoloCommand("rm -rf /home/gentleman/work/repo/README.md", evaluateGuardedCommand("rm -rf /home/gentleman/work/repo/README.md", config), underHome), false);
+	// A missing uid (no POSIX ownership) never proves own scratch.
+	assert.equal(isReversibleYoloCommand("rm -rf /tmp/tmp.abcdef1234", evaluateGuardedCommand("rm -rf /tmp/tmp.abcdef1234", config), { ...fs, uid: undefined }), false);
+});
+
+// An eligible push or rebase stays waived with fd or /dev/null redirections
+// and a pipe into a read-only filter; any other redirection or consumer asks.
+test("YOLO waives push and rebase segments with harmless redirections and read-only filters", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	const entry = { uid: 1000, isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+	const fs = { uid: 1000, tmpdir: "/tmp", home: "/home/user", lstat: () => entry };
+	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config), fs);
+	for (const command of [
+		"git push origin main 2>&1", "git push -u origin feat/x 2>&1 | tail -5", "git push origin main >/dev/null", "git push origin main 2>/dev/null",
+		"git push origin main &>/dev/null", "git push origin main > /dev/null 2>&1", "git push origin main 2>&1 | grep -v hint | head -20",
+		"git push origin main | cat", "git push origin main 2>&1 | wc -l && gh pr create --fill", "git push 2>&1 | grep 'remote: '",
+		"git rebase origin/main 2>&1 | tail -3", "git fetch && git rebase origin/main >/dev/null && git push 2>&1 | tail -5",
+		"rm -rf /tmp/tmp.abcdef1234; git push origin main 2>&1 | tail -5",
+	]) assert.equal(waived(command), true, command);
+	for (const command of [
+		"git push origin main > out.txt", "git push origin main 2>err.log", "git push origin main >> /dev/null.txt", "git push origin main &>log",
+		"git push origin main | sh", "git push origin main | tee out", "git push origin main 2>&1 | tail -5 | sh", "git push origin main | tail -5 > out",
+		"git push origin main | catx", "git push origin main 2>&1 &", "git push origin main | tail -5 &", "git push origin main | grep \"$(id)\"",
+		"git push --force origin main 2>&1", "git push --delete origin main 2>&1 | tail -5", "git push origin :main 2>&1", "git push --mirror origin 2>&1",
+		"git rebase -i main 2>&1 | tail", "git push origin main 2>&1 | xargs echo",
+	]) assert.equal(waived(command), false, command);
+});
+
+// gentle-shell#2174: a guarded word inside an argument of a known data command
+// (search, print, view, non-executing edit) is text, not an operation. Every
+// opaque form keeps today's lexical match.
+test("guarded words inside data-command arguments are not guarded operations (#2174)", () => {
+	const config = { autonomousMode: false, guardedCommands: {} };
+	for (const command of [
+		"grep -n 'git push origin main' probe.mts",
+		"grep -o '\"command\":\"[^\"]*git push[^\"]*\"' session.jsonl | sort | uniq -c | sort -rn | head -8",
+		"rg 'npm publish' docs",
+		"echo 'remember to git push later'",
+		"cat > probe.mts <<'EOF'\nconst x = \"git push --force origin main\";\nEOF",
+		"grep -rn 'git reset --hard' docs",
+		"env LC_ALL=C grep 'pi remove' notes.md",
+		"grep -l \"git push\" a.jsonl",
+		// A data-only command substitution or a plain assignment keeps the exemption.
+		"f=$(ls); grep -l \"git push\" $f",
+		"cd x; f=$(ls -t */*.jsonl | head -40); grep -l \"git push\" $f 2>/dev/null | head -5",
+		"grep -l 'git push' $(ls *.jsonl)", "f=1; grep 'git push' x", "grep \"git push $(pwd)\" x", "f=$(ls); grep -rn 'git reset --hard' docs",
+	]) assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	for (const [command, expected] of [
+		["git push origin main", "confirm"],
+		["grep x file && git push origin main", "confirm"],
+		["sh -c 'git push origin main'", "confirm"],
+		["bash <<'EOF'\ngit push origin main\nEOF", "confirm"],
+		["python3 -c \"import os; os.system('git push')\"", "confirm"],
+		["echo $(git push origin main)", "confirm"],
+		["x=$(ls); git push origin main", "confirm"],
+		["x=$(git push origin main); grep 'git push' $x", "confirm"],
+		["f=$(ls); $f push origin main; grep 'git push' x", "confirm"],
+		["grep 'git push' $(cat x | sh)", "confirm"],
+		["grep 'git push' $(echo $(git push))", "confirm"],
+		["grep 'git push' $((1+2))", "confirm"],
+		["cat <<EOF\ndon't $(git push origin main)\nEOF", "confirm"],
+		["PATH=/x; git push origin main", "confirm"],
+		["x=$(ls); git reset --hard", "block"],
+		["grep 'git push origin main' f | sh", "confirm"],
+		["time git push origin main", "confirm"],
+		["sed 's/x/git push/e' file", "confirm"],
+		["grep \"git push origin main file", "confirm"],
+		["ssh host git push origin main", "confirm"],
+		["cat <<'EOF' | bash\ngit push -f origin main\nEOF", "block"],
+		["git reset --hard", "block"],
+		["echo ok; git push --force origin main", "block"],
+		// Verifier counterexamples: every executor or unproven heredoc keeps the lexical guard.
+		["cat <<EOF; git push origin main\nhello\nEOF", "confirm"],
+		["cat <<EOF; chmod -R 777 /tmp/guard-target\nhello\nEOF", "block"],
+		["echo '<<true'\ngit push --force origin main\ntrue", "block"],
+		["printf '%s\\n' 'git push --force origin main' | xargs env", "block"],
+		["printf '%s\\n' 'git push origin main' | sudo -s", "confirm"],
+		["printf '%s\\n' 'git push origin main' | env -S 'sh -s'", "confirm"],
+		["printf '%s\\n' 'git push origin main' | exec -a cat sh", "confirm"],
+		["printf '%s\\n' 'git push origin main' | builtin source /dev/stdin", "confirm"],
+		["printf '%s\\n' 'git push origin main' | $'sh'", "confirm"],
+		["printf x | sed 's|.*|git push --force origin main|e'", "block"],
+		["printf x | sed '1e git push origin main'", "confirm"],
+		["echo 'git push origin main' | at now", "confirm"],
+		["echo 'git push origin main' > x.sh && ./x.sh", "confirm"],
+		["sed -i '' 's/a/git push/' file", "confirm"],
+	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 
 test("YOLO preserves explicit push restrictions in either config layer independently of persistent autonomy", () => {
@@ -27,18 +184,23 @@ test("YOLO preserves explicit push restrictions in either config layer independe
 	const cwd = join(root, "repo");
 	const home = join(root, "home");
 	try {
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		const pushOnly = (): unknown => yoloConfiguredRestriction(cwd, ["gitPush"], { gentlePiConfigHome: home });
+		assert.equal(pushOnly(), undefined);
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: false, guardedCommands: { gitPush: "confirm" } });
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), undefined);
+		assert.equal(pushOnly(), undefined);
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "block" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "block");
+		assert.equal(pushOnly(), "block");
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "confirm" } });
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
 		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", null);
-		assert.equal(yoloPushConfiguredRestriction(cwd, { gentlePiConfigHome: home }), "confirm");
+		assert.equal(pushOnly(), "confirm");
+		// gentle-shell#2172: a rebase rule restricts only commands that rebase.
+		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitRebase: "block" } });
+		assert.equal(pushOnly(), undefined, "a rebase rule does not restrict a push-only command");
+		assert.equal(yoloConfiguredRestriction(cwd, ["gitPush", "gitRebase"], { gentlePiConfigHome: home }), "block");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -72,6 +234,36 @@ test("quoted separator arguments cannot waive hard denial or invent destruction"
 	}
 	for (const command of [`echo ';' rm -r cache`, `printf '%s ' ';' rm -r ./data`]) {
 		assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	}
+});
+
+// gentle-pi#2285: compound bodies, backticks and eval reach the data-loss
+// boundary, while the YOLO scratch waiver still covers leading direct `rm` only.
+test("removal after reserved words, in backticks and in eval needs fresh confirmation and is never scratch-waived", () => {
+	const config = { autonomousMode: true, guardedCommands: { gitPush: "allow" as const } };
+	for (const command of [`if true; then rm -rf data; fi`, `for d in a b; do rm -rf "$d"; done`, "echo `rm -rf data`", `eval 'rm -rf data'`]) {
+		const evaluation = evaluateGuardedCommand(command, config);
+		assert.equal(evaluation.action, "confirm", command);
+		assert.equal(evaluation.dataLoss, true, command);
+	}
+	for (const command of [`if true; then rm -rf ~; fi`, "echo `rm -rf /`", `eval 'rm -rf "$HOME"'`]) {
+		assert.equal(classifyGuardedCommand(command, config), "block", command);
+	}
+	for (const command of [`if [ -f x ]; then echo ok; fi`, `for f in *; do cat "$f"; done`, "echo `date`", `eval "$(ssh-agent -s)"`, `grep "then rm -rf" x`]) {
+		assert.equal(classifyGuardedCommand(command, config), "not-guarded", command);
+	}
+	const entry = { uid: 1000, isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
+	const fs = { uid: 1000, tmpdir: "/tmp", home: "/home/user", lstat: () => entry };
+	const normal = { autonomousMode: false, guardedCommands: {} };
+	assert.equal(isReversibleYoloCommand("rm -rf /tmp/tmp.abcdef1234", evaluateGuardedCommand("rm -rf /tmp/tmp.abcdef1234", normal), fs), true);
+	for (const command of [
+		`if true; then rm -rf /tmp/tmp.abcdef1234; fi`, `for d in a; do rm -rf /tmp/tmp.abcdef1234; done`, `{ rm -rf /tmp/tmp.abcdef1234; }`,
+		`! rm -rf /tmp/tmp.abcdef1234`, "echo `rm -rf /tmp/tmp.abcdef1234`", `eval 'rm -rf /tmp/tmp.abcdef1234'`, `eval rm -rf /tmp/tmp.abcdef1234`,
+		"rm -rf /tmp/tmp.abcdef1234 && echo `rm -rf data`", `rm -rf /tmp/tmp.abcdef1234; eval 'rm -rf data'`,
+	]) {
+		const evaluation = evaluateGuardedCommand(command, normal);
+		assert.equal(evaluation.action, "confirm", command);
+		assert.equal(isReversibleYoloCommand(command, evaluation, fs), false, command);
 	}
 });
 

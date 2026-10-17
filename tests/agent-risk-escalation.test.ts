@@ -5,15 +5,17 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { NATIVE_REVIEW_MODE_SOURCE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import {
 	decodeAgentRiskEscalation,
-	escalatedRisk,
 	HIGH_RISK_ITEMS,
 	REVIEW_ASSESSMENT_SCHEMA,
 	VERIFICATION_TIER,
+	verificationRisk,
 } from "../lib/review-risk-assessment.ts";
 
 // gentle-shell#1494 S6: the agent may raise a candidate's risk to high by
 // citing one item of the shared high-risk list, never lower it. The raise
-// travels inside the existing assess call; no new operation.
+// travels inside the existing assess call; no new operation. Verification by
+// named risk: that escalation is now the only way to get the independent
+// verifier; a native high or unassessable tier informs only.
 
 test("the high-risk list has exactly the six items of the always-on Task Size section", () => {
 	assert.deepEqual(Object.keys(HIGH_RISK_ITEMS).map(Number), [1, 2, 3, 4, 5, 6]);
@@ -45,23 +47,25 @@ test("decodeAgentRiskEscalation rejects unknown items, empty or oversized reason
 	}
 });
 
-test("escalatedRisk raises passive and medium to high and never lowers", () => {
+// Replaces the escalatedRisk test: the plan risk is high only with an
+// escalation; without one a native high or unassessable tier becomes medium.
+test("verificationRisk makes every escalated tier high and maps the rest to passive or medium", () => {
 	const escalation = { item: 3 as const, reason: "changes a published export" };
-	assert.equal(escalatedRisk(VERIFICATION_TIER.PASSIVE, escalation), VERIFICATION_TIER.HIGH);
-	assert.equal(escalatedRisk(VERIFICATION_TIER.MEDIUM, escalation), VERIFICATION_TIER.HIGH);
-	assert.equal(escalatedRisk(VERIFICATION_TIER.HIGH, escalation), VERIFICATION_TIER.HIGH);
-	assert.equal(escalatedRisk(VERIFICATION_TIER.UNASSESSABLE, escalation), VERIFICATION_TIER.UNASSESSABLE);
-	for (const tier of Object.values(VERIFICATION_TIER)) assert.equal(escalatedRisk(tier, undefined), tier);
+	for (const tier of Object.values(VERIFICATION_TIER)) assert.equal(verificationRisk(tier, escalation), VERIFICATION_TIER.HIGH, tier);
+	assert.equal(verificationRisk(VERIFICATION_TIER.PASSIVE, undefined), VERIFICATION_TIER.PASSIVE);
+	for (const tier of [VERIFICATION_TIER.MEDIUM, VERIFICATION_TIER.HIGH, VERIFICATION_TIER.UNASSESSABLE]) {
+		assert.equal(verificationRisk(tier, undefined), VERIFICATION_TIER.MEDIUM, tier);
+	}
 });
 
-function assessTool(): { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details: unknown }> } {
+function assessTool(nativeRisk: "passive" | "medium" | "high" = "medium"): { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details: unknown }> } {
 	const tools = new Map<string, any>();
 	const pi = { on() {}, registerCommand() {}, registerTool(tool: { name: string }) { tools.set(tool.name, tool); } } as unknown as ExtensionAPI;
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
 			schema: REVIEW_ASSESSMENT_SCHEMA,
-			risk: "medium",
+			risk: nativeRisk,
 			reasons: [],
 			changedPaths: 1,
 			changedLines: 3,
@@ -120,4 +124,27 @@ test("gentle_review assess: agentEscalation says whether the escalation changed 
 	const input = JSON.stringify({ escalate: { item: 4, reason: "reorders an async write" } });
 	const { details } = await tool.execute("esc-5", { operation: "assess", input }, undefined, undefined, ctx);
 	assert.equal((details as { agentEscalation: { applied: boolean } }).agentEscalation.applied, true, "medium raised to high is applied");
+});
+
+test("gentle_review assess: a native high without an escalation informs only and adds no verifier", async () => {
+	const tool = assessTool("high");
+	for (const writer of [{ writerModelId: "openai/gpt-6.1-sol", writerEffort: "high" }, { writerModelId: "openai/gpt-5-mini", writerEffort: "low" }]) {
+		const { details } = await tool.execute("esc-6", { operation: "assess", input: JSON.stringify(writer) }, undefined, undefined, ctx);
+		const plan = details as { risk: string; nativeRisk: string; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
+		assert.equal(plan.nativeRisk, VERIFICATION_TIER.HIGH);
+		assert.equal(plan.risk, VERIFICATION_TIER.MEDIUM, writer.writerModelId);
+		assert.equal(plan.plan.writerSelfVerification, true);
+		assert.equal(plan.plan.independentVerifier, false, `${writer.writerModelId}: neither a native high nor the writer's model adds a verifier`);
+	}
+});
+
+test("gentle_review assess: an escalation over a native high is what adds the verifier", async () => {
+	const tool = assessTool("high");
+	const input = JSON.stringify({ escalate: { item: 1, reason: "rewrites stored records" } });
+	const { details } = await tool.execute("esc-7", { operation: "assess", input }, undefined, undefined, ctx);
+	const plan = details as { risk: string; nativeRisk: string; agentEscalation: { applied: boolean }; plan: { independentVerifier: boolean } };
+	assert.equal(plan.nativeRisk, VERIFICATION_TIER.HIGH);
+	assert.equal(plan.risk, VERIFICATION_TIER.HIGH);
+	assert.equal(plan.agentEscalation.applied, true, "without the escalation the plan would be medium");
+	assert.equal(plan.plan.independentVerifier, true);
 });

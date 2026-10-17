@@ -111,7 +111,7 @@ test("T31: high-risk item 3 is about unrequested breaks, not the requested chang
 	);
 });
 
-// T33 (L74): in p31 x5 both runs declared `Risk: none` after adding --year to
+// T33 (L74): in a benchmark run both cells declared `Risk: none` after adding --year to
 // the shared budget options; one shipped `budget set --year` silently saving a
 // wrong budget, the regression verify used to catch. The Risk line must check
 // shared code before claiming none.
@@ -120,5 +120,40 @@ test("T33: the Close step checks shared code before Risk: none", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("7. **Close"));
 		assert.ok(step?.includes(SHARED_CHECK), `${persona} Close step must check shared code before Risk: none`);
+	}
+});
+
+// C8 (benchmark finding): the PRESERVE test alone missed the `budget set
+// --year` regression in 1 of 2 runs. A differential run of every existing
+// command that shares the changed code, old code against new, caught it in
+// 2 of 2. Inline work and the worker carry the same check.
+// S15: the differential check runs in scratch and is never committed as a test (blind round 4 found tests pinning a git commit).
+const DIFFERENTIAL = "Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.";
+test("C8: inline test-first and the worker PRESERVE step run the differential check", () => {
+	for (const persona of ["gentleman", "neutral"] as const) {
+		const principle = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));
+		assert.ok(principle?.includes(`${TOUCHED}. ${DIFFERENTIAL}`), `${persona} principle must run the differential check after PRESERVE`);
+	}
+	const step = read("assets/agents/gentle-ai-worker.md").split("\n").find((line) => line.startsWith("3. PRESERVE — "));
+	assert.ok(step?.includes(DIFFERENTIAL), "worker step 3 must run the differential check");
+});
+
+// C3 (benchmark finding): parallel workers appended a shared `Fees` entry
+// inline, unsorted, instead of reusing the helper that keeps the order. The
+// worker reuses the existing function for shared state, and each writer prompt
+// names the helpers to reuse, because parallel units cannot see each other.
+test("C3: the worker reuses the existing function for shared state and keeps its invariants", () => {
+	const worker = read("assets/agents/gentle-ai-worker.md");
+	assert.ok(
+		worker.includes("- Before you create or change shared state (a record, list entry, file, or setting that other commands also create or read), find the existing function that already does it and reuse it, keeping every invariant it enforces (ordering, uniqueness, validation, normalization). Never re-implement that step inline with a different shape."),
+		"worker must reuse the existing shared-state function",
+	);
+	const invariants = read("assets/orchestrator-writer.md").split("\n").find((line) => line.startsWith("- **Invariants**"));
+	for (const clause of [
+		"each writer prompt names the existing helpers its unit must reuse for shared state",
+		"and the invariants they keep",
+		"units built in parallel cannot see each other",
+	]) {
+		assert.ok(invariants?.includes(clause), `writer module invariants reason is missing: ${clause}`);
 	}
 });

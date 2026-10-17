@@ -5,11 +5,16 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
-import { CURSOR_MARKER, Editor, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Editor, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { AUDITED_PI_EDITOR_VERSIONS, createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
 import { resolveVimRuntime, VIM_AGENT_INDEX_PATTERN, VIM_CLI_ENTRY_PATTERN } from "../extensions/gentle-shell.ts";
 import { VimOperatorEngine } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
+
+function resolveFakeCursors(rows: string[], hardware = false): string[] {
+  const host = TuiMainScreen.prototype as unknown as { resolveFakeCursors(rows: string[]): string[] };
+  return host.resolveFakeCursors.call({ showHardwareCursor: hardware }, rows);
+}
 
 function editor(): Editor {
   return new Editor({ terminal: { rows: 24 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
@@ -20,6 +25,8 @@ function editor(): Editor {
 function paintedCells(row: string): Array<{ char: string; inverse: boolean }> {
   const cells: Array<{ char: string; inverse: boolean }> = [];
   let inverse = false;
+  // Decode the actual host post-pass, including hardware cursor suppression.
+  row = resolveFakeCursors([row])[0]!;
   const tokens = row.match(/\x1b\[[0-9;]*m|\x1b_pi:c\x07|[^\x1b]/g) ?? [];
   assert.equal(tokens.join(""), row, "only known editor escape sequences are present");
   for (const token of tokens) {
@@ -229,8 +236,8 @@ function assertInstalledPiPairBehavior(version: string, EditorClass: typeof Edit
   assert.equal(adapter.renderSelection(18, { line: 0, col: 0 }, { line: 0, col: 6 }, scrolled).length, scrolled.length);
 }
 
-test("actual bundled Pi 1.0.0 proves editing, undo, paste, selection, wrap and autocomplete", () => {
-  assert.equal(bundledAgent.VERSION, "1.0.0");
+test(`actual bundled Pi ${INSTALLED_PI} proves editing, undo, paste, selection, wrap and autocomplete`, () => {
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI);
   assertInstalledPiPairBehavior(bundledAgent.VERSION, BundledEditor, bundledAgent.CustomEditor, bundledAgent.VERSION);
 });
 
@@ -270,12 +277,12 @@ test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () 
 });
 
 test("audited Pi editor releases are one frozen exact allowlist that includes the installed TUI", () => {
-  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0"]);
-  assert.equal(INSTALLED_PI, "1.0.0", "this audit must exercise actual Pi 1.0.0, not a fabricated release");
+  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0"]);
+  assert.equal(bundledAgent.VERSION, INSTALLED_PI, "bundled and local metadata must describe the same actual installed release");
   assert.ok(Object.isFrozen(AUDITED_PI_EDITOR_VERSIONS));
   assert.throws(() => (AUDITED_PI_EDITOR_VERSIONS as unknown as string[]).push("0.99.3"), TypeError);
   assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `installed pi-tui ${INSTALLED_PI} must be audited`);
-  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", undefined, 99.2]) {
+  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", "1.2.1", "1.2.0-rc.1", "v1.2.0", ">=1.2.0", undefined, 99.2]) {
     assert.equal(isAuditedPiEditorVersion(unknown), false, String(unknown));
   }
 });
@@ -302,17 +309,19 @@ function fabricatedPiCli(t: test.TestContext, version: string, tuiVersion = vers
 }
 
 test("bundled host admits each audited release and rejects unknown or mismatched bundle metadata", (t) => {
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     assert.deepEqual(resolveVimRuntime(fabricatedPiCli(t, version), bundledAgent.CustomEditor), { version, editorClass: BundledEditor }, version);
   }
   for (const version of ["0.99.3", "1.0.1", ">=1.0.0", "v1.0.0"]) {
     assert.equal(resolveVimRuntime(fabricatedPiCli(t, version), bundledAgent.CustomEditor), undefined, version);
   }
   assert.equal(resolveVimRuntime(fabricatedPiCli(t, "1.0.0", "1.0.0", "0.99.2"), bundledAgent.CustomEditor), undefined);
+  assert.equal(resolveVimRuntime(fabricatedPiCli(t, "1.2.1"), bundledAgent.CustomEditor), undefined);
+  assert.equal(resolveVimRuntime(fabricatedPiCli(t, "1.2.0", "1.2.0", "1.1.0"), bundledAgent.CustomEditor), undefined);
 });
 
 test("installed agent/TUI pair admits each audited release and skips unknown or mismatched pairs", (t) => {
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     assert.deepEqual(resolveVimRuntime(fabricatedPiCli(t, version), runtimeAgent.CustomEditor), { version, editorClass: runtimeTui.Editor }, version);
   }
   // Rejected candidates must resolve to the real local pair, not their claim.
@@ -325,7 +334,7 @@ test("installed agent/TUI pair admits each audited release and skips unknown or 
 
 test("adapter admits each verified audited release and rejects unknown or mismatched claims without mutation", () => {
   const host = () => new BundledEditor!({ terminal: { rows: 6 }, requestRender() {} } as never, { borderColor: (s: string) => s } as never);
-  for (const version of ["0.99.1", "0.99.2", "1.0.0"]) {
+  for (const version of AUDITED_PI_EDITOR_VERSIONS) {
     const e = host();
     e.setText("alpha beta");
     const adapter = createVimEditorAdapter(e, version, BundledEditor, version);
@@ -343,6 +352,8 @@ test("adapter admits each verified audited release and rejects unknown or mismat
     assert.throws(() => createVimEditorAdapter(editor(), version), /unsupported/i, version);
   }
   assert.throws(() => createVimEditorAdapter(e, "1.0.0", BundledEditor, "0.99.2"), /unsupported/i);
+  assert.throws(() => createVimEditorAdapter(e, "1.2.1", BundledEditor, "1.2.1"), /unsupported/i);
+  assert.throws(() => createVimEditorAdapter(e, "1.2.0", BundledEditor, "1.1.0"), /unsupported/i);
   assert.equal(e.getText(), "untouched");
   assert.deepEqual(e.getCursor(), cursor);
   assert.deepEqual(e.render(30), frame);
@@ -638,24 +649,39 @@ test("operator insertion and registered marker guards keep one undo snapshot", (
   assert.equal(paste.getExpandedText(), "z".repeat(1001));
 });
 
+test("Pi 1.2 selection preserves fake markers and host hardware-cursor suppression", () => {
+  const e = editor();
+  e.setText("abcd");
+  e.focused = true;
+  const adapter = createVimEditorAdapter(e, INSTALLED_PI);
+  adapter.move({ line: 0, col: 1 });
+  const rows = adapter.renderSelection(20, { line: 0, col: 0 }, { line: 0, col: 4 });
+  assert.ok(rows[1]!.includes(`${CURSOR_MARKER}\x1b_pi:fc\x07`));
+  assert.ok(rows[1]!.includes("\x1b_pi:/fc\x07"));
+  for (const hardware of [false, true]) {
+    const resolved = resolveFakeCursors(rows, hardware);
+    assert.deepEqual(paintedCells(resolved[1]!).slice(0, 4), "abcd".split("").map(char => ({ char, inverse: true })));
+    assert.ok(resolved.every(row => visibleWidth(row) === 20));
+  }
+  const boundary = adapter.renderSelection(20, { line: 0, col: 0 }, { line: 0, col: 1 });
+  assert.ok(boundary[1]!.includes(`${CURSOR_MARKER}\x1b_pi:fc\x07`));
+  assert.deepEqual(selectedColumns(resolveFakeCursors(boundary, true)[1]!), [0]);
+  assert.deepEqual(selectedColumns(resolveFakeCursors(boundary, false)[1]!), [0, 1]);
+  const legacy = e.render(20);
+  legacy[1] = legacy[1]!.replaceAll("\x1b_pi:fc\x07", "\x1b[7m").replaceAll("\x1b_pi:/fc\x07", "\x1b[0m");
+  assert.deepEqual(selectedColumns(adapter.renderSelection(20, { line: 0, col: 0 }, { line: 0, col: 4 }, legacy)[1]!), [0, 1, 2, 3]);
+  const unknown = e.render(20).map(row => row.replace("\x1b_pi:fc\x07", "\x1b_pi:unknown\x07"));
+  assert.deepEqual(adapter.renderSelection(20, { line: 0, col: 0 }, { line: 0, col: 4 }, unknown), unknown);
+});
+
 test("selection survives fake cursor reset and retains surrounding color", () => {
   const e = editor();
   e.setText("abcd");
   createVimEditorAdapter(e, INSTALLED_PI).move({ line: 0, col: 1 });
   const frame = createVimEditorAdapter(e, INSTALLED_PI).renderSelection(20, { line: 0, col: 0 }, { line: 0, col: 4 });
   const row = frame.find((line) => line.includes("a")) ?? frame.join("");
-  let reverse = false;
-  const selected: string[] = [];
-  for (const token of row.matchAll(/\x1b\[[0-9;]*m|[^\x1b]/g)) {
-    const value = token[0];
-    if (value.startsWith("\x1b[")) {
-      for (const code of value.slice(2, -1).split(";").map(Number)) {
-        if (code === 0 || code === 27) reverse = false;
-        if (code === 7) reverse = true;
-      }
-    } else if ("abcd".includes(value)) selected.push(reverse ? value : `!${value}`);
-  }
-  assert.deepEqual(selected, ["a", "b", "c", "d"], "every visible cell must have effective reverse SGR");
+  assert.deepEqual(paintedCells(row).slice(0, 4), "abcd".split("").map(char => ({ char, inverse: true })),
+    "every visible cell must have effective reverse SGR after the host post-pass");
 });
 
 test("truecolor channels do not change inverse state across selected and unselected cells", () => {

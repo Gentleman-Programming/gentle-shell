@@ -31,12 +31,15 @@ const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
 // gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
-const BUDGET_BYTES = 8400;
+// Verification by named risk (escalate-only rule 3) and the writer-rule fix (triggers hold only when
+// their condition holds; a unit is independent behavior over a size floor), user decision 2026-10-14: 8,400 -> 9,100 B.
+const BUDGET_BYTES = 9100;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
 	"orchestrator.md",
 	"orchestrator-delegation.md",
+	"orchestrator-delegation-reference.md",
 	"orchestrator-memory.md",
 	"orchestrator-skills.md",
 ] as const;
@@ -123,7 +126,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 8,400 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,100 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -303,6 +306,10 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	154,
 	160,
 	166,
+	// 280: S11 T3 made the Safety commit line consistent with ODD step 6: it now
+	// excepts the work-unit commits of authorized large ODD implementation
+	// (asserted verbatim in tests/odd-routing-contract.test.ts).
+	280,
 	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
 	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 	282,
@@ -363,10 +370,12 @@ test("core-alone: load-bearing direct-delegation tokens remain without lazy unio
 
 test("lazy coordination detail retains subject guidance without inflating the core", () => {
 	const core = readRealAsset("orchestrator.md");
-	const detail = readRealAsset("orchestrator-delegation.md");
+	// S11 T2: the card binds on delegation; the session subject rules are reference material.
+	const card = readRealAsset("orchestrator-delegation.md");
+	const detail = readRealAsset("orchestrator-delegation-reference.md");
 	assert.match(core, /Bind this to the parent Pi session only/);
 	assert.match(core, /orchestrator-delegation\.md/);
-	assert.match(detail, /on delegation or routing triggers/);
+	assert.match(card, /on delegation or routing triggers/);
 	assert.match(detail, /Once a meaningful task subject is clear, before delegation or cross-session coordination, call `orchestrator_session_id`/);
 	assert.match(detail, /short, non-sensitive `subject`/);
 	assert.match(detail, /Batch with setup if possible; no extra model call/);
@@ -384,14 +393,14 @@ test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instruc
 });
 
 test("lazy delegation detail has no native RDD controller markers", () => {
-	const delegation = readRealAsset("orchestrator-delegation.md");
+	const delegation = `${readRealAsset("orchestrator-delegation.md")}\n${readRealAsset("orchestrator-delegation-reference.md")}`;
 	for (const marker of ["next_transition", "review.capture-result", "reconcile-terminal-mirrors"]) {
 		assert.ok(!delegation.includes(marker), `stale RDD marker retained: ${marker}`);
 	}
 });
 
 test("live orchestrator assets remove the stale strong-gate retry contract", () => {
-	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}`;
+	const content = `${readRealAsset("orchestrator.md")}\n${readRealAsset("orchestrator-delegation.md")}\n${readRealAsset("orchestrator-delegation-reference.md")}`;
 	assert.doesNotMatch(content, /strong gate/i);
 	assert.doesNotMatch(content, /extension blocks.*gh pr create/i);
 	assert.doesNotMatch(content, /before the user retries the PR command/i);
@@ -464,14 +473,16 @@ test("every compressed lazy-file pointer in the core still names the material it
 	// byte budget -- each must keep naming what is over there, not collapse
 	// to an opaque "Detail: `file.md`.".
 	const namedPointers: ReadonlyArray<{ file: string; mustName: readonly string[] }> = [
+		// S11 T2: this reference material moved out of the delegation card.
 		{
-			file: "orchestrator-delegation.md",
+			file: "orchestrator-delegation-reference.md",
 			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
 		},
 		// gentle-shell#1494 per-mechanism modules.
 		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
 		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
-		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high risk"] },
+		// Verification by named risk: rule 3 names the escalated high-risk item.
+		{ file: "orchestrator-verification.md", mustName: ["Verification rule", "high-risk item"] },
 		{ file: "orchestrator-writer.md", mustName: ["Writer rule", "large task"] },
 		{
 			file: "orchestrator-memory.md",

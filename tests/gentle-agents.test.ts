@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -15,20 +15,24 @@ import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
+import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
-import { applyTaskEvent, emptyThread, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
 import { PresenceCursor, PresencePublisher, listPresence, readActivity, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { OrchestratorScopeCache } from "../lib/orchestrator-scope.ts";
+import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
-import { AgentRunner } from "../lib/agents-runner.ts";
+import { AgentRunner, REQUESTED_TOOLS_ENV, type TaskRequest } from "../lib/agents-runner.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { taskHeader } from "../lib/agents-view.ts";
+import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 // The card style defaults to float; these assertions pin the outlined (neon)
@@ -51,6 +55,10 @@ interface Registered {
 }
 
 const plainTheme = { fg: (_color: string, text: string) => text };
+// Session shutdown persists finished subagent history asynchronously, so a
+// late write can race a teardown removal; Node retries ENOTEMPTY/EBUSY here
+// instead of failing the test (macOS showed it, #1840).
+const TEST_DIR_REMOVAL = { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as const;
 const fakeTui = { requestRender() {} };
 const inertSessionTransport: SessionTransportFactory = {
 	createRegistry: async () => ({ list: async () => [], listActivations: async () => [] }),
@@ -87,6 +95,9 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-ext-")));
 const activeSessionTeardowns = new Set<() => Promise<void>>();
 const stopActiveSessions = () => Promise.all([...activeSessionTeardowns].map((shutdown) => shutdown()));
 afterEach(stopActiveSessions);
+// Every fixture session is "s1": the inherited-profile freeze is process state
+// keyed by session id, so each test starts from an unfrozen session.
+afterEach(() => resetFrozenInheritedProfilesForTesting());
 // subagent_run's default mode now reads the background-subagents policy
 // in-process (gentle-pi#background-subagents-default-mode), which falls
 // back to the real ~/.pi/gentle-ai/background-subagents.json when
@@ -101,7 +112,7 @@ after(async () => {
 	finally {
 		if (previousGentlePiConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousGentlePiConfigHome;
-		rmSync(root, { recursive: true, force: true });
+		rmSync(root, TEST_DIR_REMOVAL);
 	}
 });
 const home = join(root, "home");
@@ -348,7 +359,9 @@ function deps(): { deps: Partial<AgentsDeps>; children: FakeChild[]; spawned: st
 			pi: { command: "pi", args: [] },
 			home,
 			resolveWorktree: (path, base) => ({ root: resolve(base, path), commonDir: "/fixture/common" }),
-			env: { PATH: "/bin" },
+			// The launch reads the global active profile from the config home; keep it
+			// on the scratch directory instead of the developer's own profiles.json.
+			env: { PATH: "/bin", GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME },
 			sessionTransport: inertSessionTransport,
 		},
 	};
@@ -1218,7 +1231,7 @@ for (const boundary of ["allowed", "env", "session", "replacement", "bus-throws"
 			return { stdout: JSON.stringify({ schema: "gentle-ai.telemetry-policy/v1", operation: "policy", enabled: true,
 				source: "state", reason: "enabled" }), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} };
-		const env: NodeJS.ProcessEnv = {};
+		const env: NodeJS.ProcessEnv = { GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 		const profile = join(root, `metrics-${boundary}`);
 		mkdirSync(join(profile, "agents"), { recursive: true });
 		writeFileSync(join(profile, "agents", "gentle-ai-worker.md"), readFileSync(new URL("../assets/agents/gentle-ai-worker.md", import.meta.url)));
@@ -1576,6 +1589,68 @@ test("live-only directory traverses presence overflow, excludes expired and othe
 	await panel.opened;
 });
 
+// #1690: Pi drops unknown --tools names without a diagnostic, so the child
+// compares the runner's requested list with its own tools at the first
+// before_agent_start, after every extension's session_start has registered.
+function missingToolsChild(env: NodeJS.ProcessEnv, toolNames: string[] | (() => string[])) {
+	const child = fakePi();
+	Object.assign(child.pi, { getAllTools: () => (typeof toolNames === "function" ? toolNames() : toolNames).map((name) => ({ name })) });
+	gentleAgents(child.pi, { GENTLE_PI_AGENTS_CHILD: "1", ...env });
+	const notes: Array<{ message: string; type: unknown }> = [];
+	const ctx = { hasUI: true, ui: { notify: (message: string, type?: unknown) => notes.push({ message, type }) } } as unknown as ExtensionContext;
+	return {
+		start: () => child.fire("session_start", ctx, { type: "session_start", reason: "startup" }),
+		prompt: () => child.fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "go", systemPrompt: "base", systemPromptOptions: {} }),
+		notes,
+	};
+}
+
+test("a child warns once about requested tools it does not have", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,gentle_review_scope,grep,codegraph,subagent_parent_message" }, ["read", "grep", "subagent_parent_message"]);
+	await child.start();
+	assert.deepEqual(child.notes, [], "session_start runs before later extensions register their tools");
+	assert.deepEqual(await child.prompt(), [undefined], "the check never alters the prompt");
+	assert.deepEqual(child.notes, [{ message: `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`, type: "warning" }]);
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
+	assert.equal(child.notes.length, 1, "later prompts and session replacements do not repeat the warning");
+});
+
+test("a child does not report a tool that a later extension registers in its own session_start", async () => {
+	const tools = ["read", "grep"];
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,late_tool" }, () => tools);
+	await child.start();
+	// Pi runs session_start handlers in load order; an extension loaded after
+	// gentle-agents registers late_tool only now.
+	tools.push("late_tool");
+	const results = await child.prompt();
+	assert.deepEqual(child.notes, []);
+	assert.deepEqual(results, [undefined]);
+});
+
+test("a child stays quiet when every checkable requested tool exists or nothing was requested", async () => {
+	for (const [label, env] of [
+		["all present", { [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }],
+		["MCP names register late", { [REQUESTED_TOOLS_ENV]: "read,mcp__github__search,mcp__x" }],
+		["frontmatter wildcard entries are not tool names", { [REQUESTED_TOOLS_ENV]: "read,\"*\": false,*, ," }],
+		["no requested list", {}],
+		["empty requested list", { [REQUESTED_TOOLS_ENV]: "" }],
+	] as const) {
+		const child = missingToolsChild(env, ["read", "grep", "subagent_parent_message"]);
+		await child.start();
+		const results = await child.prompt();
+		assert.ok(results.every((result) => result === undefined), label);
+		assert.deepEqual(child.notes, [], label);
+	}
+});
+
+test("the missing-tools check never throws into before_agent_start", async () => {
+	const child = missingToolsChild({ [REQUESTED_TOOLS_ENV]: "read,codegraph" }, () => { throw new Error("tool registry unavailable"); });
+	await child.start();
+	assert.deepEqual(await child.prompt(), [undefined]);
+	assert.deepEqual(child.notes, []);
+});
+
 test("retired managed SDD child envelopes deny all tools without registering a delegation host", () => {
 	for (const env of [{ GENTLE_PI_RESEARCH_TOOLS: '["read"]' }, { GENTLE_PI_RESEARCH_SELECTION: '{}' }, { GENTLE_PI_RESEARCH_ARTIFACT: '{}' }, { GENTLE_PI_SDD_REMEDIATION_PLAN: '{}' }]) {
 		const hooks = new Map<string, (event: { toolName: string }) => { block: boolean }>();
@@ -1772,9 +1847,9 @@ test("C1 investigation: the relay mechanism is correct when every guard input is
 		await h.fire("session_shutdown", ctx);
 		await tick();
 	} finally {
-		rmSync(repoRoot, { recursive: true, force: true });
-		rmSync(gitHome, { recursive: true, force: true });
-		rmSync(gitHooksDir, { recursive: true, force: true });
+		rmSync(repoRoot, TEST_DIR_REMOVAL);
+		rmSync(gitHome, TEST_DIR_REMOVAL);
+		rmSync(gitHooksDir, TEST_DIR_REMOVAL);
 	}
 });
 
@@ -2147,7 +2222,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 		mkdirSync(gitTemplate);
 		execFileSync("git", ["init", "--quiet", `--template=${gitTemplate}`, canonicalGitCwd]);
 	} catch (error) {
-		rmSync(canonicalGitFixture, { recursive: true, force: true });
+		rmSync(canonicalGitFixture, TEST_DIR_REMOVAL);
 		throw error;
 	}
 	childProcess.spawn = ((command: string, args: readonly string[], options: Record<string, unknown>) => {
@@ -2160,6 +2235,8 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 	try {
 		const launch = async (mode: "task" | "background", env: NodeJS.ProcessEnv, sessionCwd = nonGitCwd) => {
 			const h = fakePi();
+			// The launch reads the global active profile; keep it on the scratch config home.
+			env = { ...env, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 			gentleAgents(h.pi, env, { home, agentHome: join(home, ".pi", "agent"), env, pi: { command: "/fixture/pi", args: ["--host-flag"] }, resolveWorktree: () => undefined, sessionTransport: inertSessionTransport });
 			const { ctx } = fakeContext();
 			(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => sessionCwd;
@@ -2191,7 +2268,10 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 			assert.equal(captured[index]?.command, "/fixture/pi");
 			assert.deepEqual(captured[index]?.args, args);
 			assert.equal(captured[index]?.options.cwd, permissionChannel ? canonicalGitCwd : nonGitCwd);
-			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}) });
+			const scratch = captured[index]?.options.env.TMPDIR;
+			assert.match(scratch ?? "", /[\\/]ga[A-Za-z0-9]{6}$/, "each child receives its own TMPDIR");
+			const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
+			assert.deepEqual(captured[index]?.options.env, { PATH: "/bin", FIXTURE: fixture, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, ...(permissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}), [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
 			assert.equal(captured[index]?.options.shell, undefined, "the adapter does not invoke a shell");
 			assert.equal(captured[index]?.options.windowsHide, true, "the adapter always hides a Windows console");
 			assert.equal(captured[index]?.options.detached, process.platform !== "win32", "the adapter forwards the runner's platform selection");
@@ -2204,7 +2284,7 @@ test("default Node spawn adapter distinguishes IPC-only and permission-capable c
 		try {
 			await shutdownAndRestoreNativeSpawn(childProcess, originalSpawn, () => Promise.all(shutdown.map((close) => close())));
 		} finally {
-			rmSync(canonicalGitFixture, { recursive: true, force: true });
+			rmSync(canonicalGitFixture, TEST_DIR_REMOVAL);
 		}
 	}
 });
@@ -2320,6 +2400,9 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.deepEqual(spawned, [foreign]);
 		assert.equal((runnerRun.mock.calls[0]?.arguments[0] as { authorizeParentStandingReviewPermission?: unknown }).authorizeParentStandingReviewPermission, undefined, "foreign child must not receive parent review permission channel");
+		// The parent session froze "no profile" (no pin, no global active), so the
+		// foreign launch keeps the foreign repository's own pin (gentle-shell#1064
+		// 3b-ii). Dropping `foreignRepository` from the launch wiring breaks this.
 		assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/foreign-model:minimal");
 		assert.equal((result.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
@@ -2367,7 +2450,35 @@ test("foreign clone tool requires consent before queueing and never enters paren
 		await tick();
 		assert.equal(runtime.children.length, 3, "stale queued foreign task must fail before OS spawn");
 		await h.fire("session_shutdown", successor);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
+test("a frozen session profile routes a foreign repository launch over that repository's pin", async (t) => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "foreign-frozen-")));
+	t.after(() => rmSync(fixture, TEST_DIR_REMOVAL));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+	const configHome = join(fixture, "config");
+	mkdirSync(configHome);
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "session", profiles: {
+		session: { explore: { model: "openai/session-model", thinking: "low" } },
+		pinned: { explore: { model: "openai/foreign-model", thinking: "minimal" } },
+	} }));
+	mkdirSync(join(foreign, ".git", "gentle-ai"));
+	writeFileSync(join(foreign, ".git", "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "pinned" }));
+	const h = fakePi(), runtime = deps();
+	runtime.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: configHome };
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getCwd = () => parent;
+	await h.fire("session_start", ctx);
+	t.after(async () => { await h.fire("session_shutdown", ctx); await tick(); });
+	assert.equal(readFrozenInheritedProfile("s1")?.profile?.name, "session", "the parent froze the global active profile");
+	await h.tools.get("subagent_run")!.execute("foreign-frozen", { agent: "explore", task: "Map", repository_root: foreign, mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.spawned[0]?.[runtime.spawned[0]!.indexOf("--model") + 1], "openai/session-model:low", "the session profile wins over the foreign pin");
 });
 
 test("foreign child Changes require successful target-bound tool evidence, never model claims or sibling writes", async () => {
@@ -2451,7 +2562,7 @@ test("foreign child Changes require successful target-bound tool evidence, never
 		assert.equal(h.entries.filter(entry => entry.customType === "gentle-pi.session-change/v1").length, 3, "session replacement during a tool cannot attribute its result");
 		assert.equal(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY).length, 0);
 		await h.fire("session_shutdown", successor);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign task mode waits for the child and continuation reuses its live grant", async () => {
@@ -2499,7 +2610,7 @@ test("foreign task mode waits for the child and continuation reuses its live gra
 		assert.equal(((await continued).details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.equal(runtime.spawned.length, 2);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("aborting during foreign consent cannot grant or queue a background child", async () => {
@@ -2524,7 +2635,7 @@ test("aborting during foreign consent cannot grant or queue a background child",
 		assert.equal(runtime.children.length, 0);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("an interactive non-Git umbrella can target an independent repository without registering it", async () => {
@@ -2544,7 +2655,7 @@ test("an interactive non-Git umbrella can target an independent repository witho
 		assert.equal((launched.details.gentleAgents as { cwd: string }).cwd, foreign);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign selector rejects RPC and retired SDD selections before consent", async () => {
@@ -2580,7 +2691,7 @@ test("foreign selector rejects RPC and retired SDD selections before consent", a
 		assert.equal(dialogs.length, 0);
 		assert.equal(runtime.children.length, 0);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {
@@ -2607,14 +2718,19 @@ test("foreign clone rejects aliases, absent UI, decline and changed session befo
 		const declined = run.execute("decline", args(foreign), undefined, undefined, ctx);
 		await tick(); decision(false);
 		await assert.rejects(declined, /interactive/);
+		// gentle-shell#2314: Git prints Windows roots with forward slashes; that spelling
+		// must pass the canonical-root guard and reach consent like the native one.
+		const forwardSlashes = run.execute("forward-slashes", args(foreign.replaceAll("\\", "/")), undefined, undefined, ctx);
+		await tick(); decision(false);
+		await assert.rejects(forwardSlashes, /interactive/);
 		const drift = run.execute("drift", args(foreign), undefined, undefined, ctx);
 		await tick(); id = "replacement"; decision(true);
 		await assert.rejects(drift, /identity changed/);
 		assert.equal(runtime.spawned.length, 0);
-		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
+		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 3);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
-	} finally { rmSync(fixture, { recursive: true, force: true }); }
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
 });
 
 test("explicit child roots launch and continue in the actual cwd, persist without shell, and reject other clones", async () => {
@@ -2642,6 +2758,7 @@ test("explicit child roots launch and continue in the actual cwd, persist withou
 	await h.fire("session_start", ctx);
 	const run = h.tools.get("subagent_run")!;
 	await assert.rejects(run.execute("bad", { agent: "explore", task: "Map", workspace_root: "/other-clone", mode: "background" }, undefined, undefined, ctx), /same Git clone/);
+	await assert.rejects(run.execute("bad", { agent: "explore", task: "Map", workspace_root: "/other-clone", mode: "background" }, undefined, undefined, ctx), /subagent_run with repository_root/);
 	assert.deepEqual(launched, []);
 	const result = await run.execute("one", { agent: "explore", task: "Map /other-clone mentioned in prose", workspace_root: childRoot, mode: "background" }, undefined, undefined, ctx);
 	await tick();
@@ -2758,7 +2875,8 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 		Object.assign(ctx, { cwd: project, modelRegistry: { find: (_provider: string, model: string) => scenario === "model" || model === "bad" ? undefined : { provider: "offline", id: model } } });
 		ctx.sessionManager.getCwd = () => project;
 		ctx.sessionManager.getEntries = () => h.entries as never;
-		await h.fire("session_start", ctx);
+		// The repository declaration exists before the session starts: the session
+		// freezes it at session_start (gentle-shell#1064 slice 3b-ii).
 		if (scenario === "profile-model" || scenario === "profile-valid") {
 			mkdirSync(join(project, ".pi", "gentle-ai"), { recursive: true });
 			writeFileSync(join(project, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "invalid" }));
@@ -2766,6 +2884,7 @@ for (const scenario of ["implicit-worker", "explicit-worker", "implicit-gentle-a
 			mkdirSync(config, { recursive: true });
 			writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { invalid: { worker: { model: scenario === "profile-valid" ? "offline/pinned-good" : "offline/bad" } } } }));
 		}
+		await h.fire("session_start", ctx);
 		let calls = 0;
 		const abort = new AbortController();
 		const unbind = scenario === "missing" ? () => {} : bindSessionRepositoryPreparation(ctx.sessionManager, project, async (_root, current) => {
@@ -3027,8 +3146,8 @@ function pinFixture(name: string) {
 		declarationPath,
 		writePin: (profile: string) => writePinText(localPinPath, profile),
 		writeDeclaration: (profile: string) => writePinText(declarationPath, profile),
-		writeStore: (profiles: Record<string, unknown>) => {
-			writeFileSync(join(configHome, "profiles.json"), `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles }, null, 2)}\n`);
+		writeStore: (profiles: Record<string, unknown>, active?: string) => {
+			writeFileSync(join(configHome, "profiles.json"), `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, ...(active === undefined ? {} : { active }), profiles }, null, 2)}\n`);
 		},
 	};
 }
@@ -3154,6 +3273,282 @@ test("a queued launch keeps the session routing frozen across a rebind", async t
 	}
 });
 
+// gentle-shell#1064 slice 3b-ii: a parent session without an explicit Enter
+// binding freezes p → P → G at session_start; later default changes only show
+// a drift notice once per change. GENTLE_PI_PROFILE_FOLLOW=1 keeps the live
+// resolution.
+async function launchSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome, ...env };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx, dialogs } = fakeContext();
+	await fire("session_start", ctx);
+	let count = 0;
+	return {
+		dialogs,
+		driftNotices: () => dialogs.filter((dialog) => dialog.includes("the default profile changed")),
+		launch: async () => {
+			await tools.get("subagent_run")!.execute(`drift-${count}`, { agent: "explore", task: `Map ${count}`, mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			const args = harness.spawned[count];
+			// Settle the child so the next launch is not held by the concurrency cap.
+			const child = harness.children[count++]!;
+			child.emit({ type: "agent_end", messages: [] });
+			child.emit({ type: "agent_settled" });
+			child.exit(0);
+			await tick();
+			return args[args.indexOf("--model") + 1];
+		},
+		shutdown: async () => {
+			await fire("session_shutdown", ctx);
+			await tick();
+		},
+	};
+}
+
+const DRIFT_PROFILES = {
+	frontier: { explore: { model: "openai/alpha", thinking: "minimal" } },
+	local: { explore: { model: "openai/beta" } },
+};
+
+test("session_start freezes the inherited pin: a later pin change does not move the open session", async t => {
+	const base = pinFixture("freeze-pin");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	assert.equal(readFrozenInheritedProfile("s1")?.profile?.name, "frontier", "frozen at session_start, before any launch");
+	base.writePin("local");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.deepEqual(session.driftNotices(), [
+		'notify:el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+	], "one notice for one change, across two launches");
+	base.writeStore(DRIFT_PROFILES, "local");
+	base.writeDeclaration("local");
+	rmSync(base.localPinPath);
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	assert.equal(session.driftNotices().length, 1, "the same default reached through another layer is not a new change");
+});
+
+test("an unpinned session routes through the global active profile and freezes it", async t => {
+	const base = pinFixture("freeze-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	base.writeStore(DRIFT_PROFILES, "local");
+	assert.equal(await session.launch(), "openai/alpha:minimal", "the global active profile replaces the materialized routing");
+	assert.equal(session.driftNotices().length, 1);
+	assert.match(session.driftNotices()[0]!, /changed to "local" \(global\), this session keeps "frontier" \(global\)/);
+});
+
+test("a session with no profile anywhere keeps today's routing even after a pin appears", async t => {
+	const base = pinFixture("freeze-none");
+	base.writeStore(DRIFT_PROFILES);
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	assert.equal(await session.launch(), "openai-codex/gpt-5.6-terra:low", "today's materialized routing");
+	base.writePin("frontier");
+	assert.equal(await session.launch(), "openai-codex/gpt-5.6-terra:low");
+	assert.deepEqual(session.driftNotices(), [
+		'notify:el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+	]);
+});
+
+test("an explicit Enter binding wins over the frozen profile and never shows the drift notice", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("freeze-explicit");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	bindSessionProfile("s1", "local", { explore: { model: "openai/beta" } });
+	base.writePin("local");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	rmSync(base.localPinPath);
+	assert.equal(await session.launch(), "openai/beta:high");
+	assert.deepEqual(session.driftNotices(), []);
+});
+
+test("follow mode re-resolves the defaults on every launch without a notice; Enter makes it explicit", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const base = pinFixture("follow");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	assert.equal(readFrozenInheritedProfile("s1"), undefined, "follow never freezes");
+	assert.equal(await session.launch(), "openai/alpha:minimal");
+	base.writePin("local");
+	assert.equal(await session.launch(), "openai/beta:high");
+	bindSessionProfile("s1", "frontier", { explore: { model: "openai/alpha", thinking: "minimal" } });
+	assert.equal(await session.launch(), "openai/alpha:minimal", "the explicit binding stops following");
+	assert.deepEqual(session.driftNotices(), []);
+});
+
+// gentle-shell#2180: the launch seam records which profile layer supplied the
+// model, next to the model itself, so every task card shows the winning layer
+// and stale disk edits below a frozen session become visible.
+interface LaunchCapture {
+	request: TaskRequest;
+	record: TaskRecord;
+}
+
+function captureLaunches(t: TestContext): LaunchCapture[] {
+	const captures: LaunchCapture[] = [];
+	const original = AgentRunner.prototype.run;
+	t.mock.method(AgentRunner.prototype, "run", function (this: AgentRunner, request: TaskRequest) {
+		const record = original.call(this, request);
+		captures.push({ request, record });
+		return record;
+	});
+	return captures;
+}
+
+// A non-Git variant of launchSession: the resolver returns nothing, so the
+// declaration is the only pin layer (as non-Git writer admission reads it).
+async function launchNonGitSession(base: ReturnType<typeof pinFixture>, env: Record<string, string> = {}) {
+	const harness = deps();
+	harness.deps.resolveWorktree = () => undefined;
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome, ...env };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	// Outside Git the declaration is read at the session's own cwd, so the
+	// fixture binds a dedicated session directory instead of leaking the
+	// declaration into the shared fixture cwd other tests launch from.
+	const sessionCwd = join(base.root, "session");
+	mkdirSync(join(sessionCwd, ".pi", "gentle-ai"), { recursive: true });
+	copyFileSync(base.declarationPath, join(sessionCwd, ".pi", "gentle-ai", "profile.json"));
+	ctx.sessionManager.getCwd = () => sessionCwd;
+	await fire("session_start", ctx);
+	return {
+		launch: async () => {
+			await tools.get("subagent_run")!.execute("source", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+		},
+		shutdown: async () => {
+			await fire("session_shutdown", ctx);
+			await tick();
+		},
+	};
+}
+
+test("a bound session launch records the binding as the model source on the task record", async t => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-binding");
+	base.writeStore({ pinned: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writePin("pinned");
+	bindSessionProfile("s1", "bound", { explore: { model: "openai/beta" } });
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "binding", "the explicit Enter binding wins per the chain precedence");
+	assert.equal(captures[0]!.record.modelSource, "binding", "the record copies the request's layer token");
+});
+
+test("a frozen global-active launch records frozen:global as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:global");
+});
+
+test("a frozen local-pin launch records frozen:local as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-local");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:local");
+});
+
+test("a session frozen on a non-Git declaration records frozen:repo as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-freeze-declaration");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchNonGitSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "frozen:repo");
+});
+
+test("an agent outside every profile records its frontmatter as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-definition");
+	// The pinned profile replaces routing wholesale and does not name explore,
+	// so explore's model comes from its own frontmatter.
+	base.writeStore({ helper: { model: "openai/beta" } });
+	base.writePin("helper");
+	const session = await launchSession(base);
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "definition");
+});
+
+test("a follow launch through the globally active profile records profile as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-global");
+	base.writeStore(DRIFT_PROFILES, "frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "profile");
+});
+
+test("a follow launch through the local pin records pin:local as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-pin");
+	base.writeStore(DRIFT_PROFILES);
+	base.writePin("frontier");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "pin:local");
+});
+
+test("a follow launch through a committed repository declaration records pin:repo as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-declaration");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "pin:repo");
+});
+
+test("a follow launch through a non-Git repository declaration records declaration as the model source", async t => {
+	const captures = captureLaunches(t);
+	const base = pinFixture("source-follow-nongit");
+	base.writeStore({ declared: { explore: { model: "openai/alpha", thinking: "minimal" } } });
+	base.writeDeclaration("declared");
+	const session = await launchNonGitSession(base, { GENTLE_PI_PROFILE_FOLLOW: "1" });
+	t.after(session.shutdown);
+	await session.launch();
+	assert.equal(captures[0]!.request.modelSource, "declaration");
+});
+
+test("the agents task card shows the winning layer next to the model, and renders unchanged without one (#2180)", () => {
+	const record = {
+		id: "task", agent: "explore", mode: "task", prompt: "Map the repo", label: "Map", cwd: "/repo", parentSessionId: "s1",
+		status: TASK_STATUS.RUNNING, createdAt: 60_000, startedAt: 60_000, endedAt: null, model: "nan/glm5.3",
+		thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "", lastActivityAt: 60_000,
+		turns: 0, toolCalls: 0, tokens: 0, cost: 0,
+	} as TaskRecord;
+	assert.equal(taskHeader({ ...record, modelSource: "binding" }, 61_000), "explore · running · nan/glm5.3 · binding · 1s");
+	assert.equal(taskHeader(record, 61_000), "explore · running · nan/glm5.3 · 1s", "absent modelSource renders exactly as today");
+});
+
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
 	assert.equal(agentsEnabled({}), true);
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS: "off" }), false);
@@ -3186,13 +3581,42 @@ test("while pi-subagents-j0k3r is still installed the tools stay unregistered an
 	assert.match(notices[0] ?? "", /^warning:❀ Gentle Agents is waiting: remove the old package first with "pi remove npm:pi-subagents-j0k3r"/);
 });
 
+test("subagent_list_agents publishes each agent's declared tool inventory so routing can check capabilities", async () => {
+	const fixture = mkdtempSync(join(tmpdir(), "capability-catalog-"));
+	const agentHome = join(fixture, "agent-home");
+	mkdirSync(join(agentHome, ".pi", "agent", "agents"), { recursive: true });
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "explore.md"), "---\ndescription: maps things\ntools: [read, grep, find, codegraph]\n---\nYou map things.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "open.md"), "---\ndescription: no allowlist\n---\nYou are open.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "unknown.md"), "---\ndescription: unverified name\ntools: [glob]\n---\nYou explore.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "lens.md"), "---\ndescription: review lane\ntools:\n  - \"*\": false\n  - read\n  - grep\n  - gentle_review_scope\n---\nYou review.");
+	writeFileSync(join(agentHome, ".pi", "agent", "agents", "denied.md"), "---\ndescription: only a wildcard\ntools:\n  - \"*\": false\n---\nYou are denied.");
+	try {
+		const h = fakePi(), runtime = deps();
+		runtime.deps.home = agentHome;
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		const listed = await h.tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
+		assert.match(listed.content[0].text, /- explore \(global\): maps things \[declared tools \(not verified\): read, grep, find, codegraph\]/);
+		// gentle-shell#1269: a definition without an allowlist keeps Pi's default
+		// tool set, so the catalog must never render it as having no tools at all.
+		assert.match(listed.content[0].text, /- open \(global\): no allowlist \[declared tools: Pi defaults \(no allowlist\)\]/);
+		// The review lane declares the `"*": false` wildcard, which Pi drops: it is
+		// not a capability and must not appear as one in the routing surface.
+		assert.match(listed.content[0].text, /- lens \(global\): review lane \[declared tools \(not verified\): read, grep, gentle_review_scope\]/);
+		assert.doesNotMatch(listed.content[0].text, /false/);
+		assert.match(listed.content[0].text, /- unknown \(global\): unverified name \[declared tools \(not verified\): glob\]/);
+		assert.match(listed.content[0].text, /- denied \(global\): only a wildcard \[declared tools: no tool names declared\]/);
+	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
 test("subagent_list_agents and subagent_run in task mode launch a child with the resolved profile and return its answer", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	assert.deepEqual([...tools.keys()].sort(), ["orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
+	assert.deepEqual([...tools.keys()].sort(), ["bash_background", "job_list", "job_stop", "monitor", "orchestrator_consult", "orchestrator_list", "orchestrator_send_message", "orchestrator_session_id", "subagent_cancel", "subagent_continue", "subagent_list_agents", "subagent_list_tasks", "subagent_reply", "subagent_result", "subagent_run", "subagent_send_message", "subagent_status"]);
 	const listed = await tools.get("subagent_list_agents")!.execute("c0", {}, undefined, undefined, ctx);
 	assert.match(listed.content[0].text, /- explore \(global\): maps things/);
 
@@ -4017,6 +4441,72 @@ test("session transport startup failure cleans the constructed Windows-capable t
 	assert.match((await h.tools.get("orchestrator_session_id")!.execute("id", {}, undefined, undefined, ctx)).content[0].text, /not ready/);
 });
 
+test("registered task aliases persist independently of human names and curated state", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const profile = realpathSync(mkdtempSync(join(root, "aliases-runtime-")));
+	runtime.deps.agentHome = profile;
+	const peer = { version: 1 as const, sessionId: "s1", endpoint: "/fixture/aliases.sock", createdAt: 1 };
+	const registry = { list: async () => [], listActivations: async () => [peer] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, record: peer, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected message"); } }),
+	};
+	let name = "Human label";
+	Object.assign(h.pi, { setSessionName: () => { throw new Error("named session must not be renamed"); } });
+	let branch = h.entries;
+	Object.assign(ctx.sessionManager, { getSessionName: () => name, getBranch: () => branch });
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const tool = h.tools.get("orchestrator_session_id")!;
+	const declare = (params: unknown = {}, context = ctx) => tool.execute("aliases", params, undefined, undefined, context);
+	const aliases = () => readDiscovery(profile, listPresence(profile).entries[0])?.aliases;
+	const first = await declare({ subject: "Task A", state: { progress: "Starting", work: { area: "Auth" } } });
+	const initial = h.entries.at(-1)!;
+	assert.deepEqual(aliases(), { initialAlias: "Task A", currentAlias: "Task A" });
+	assert.match(first.content[0].text, /Current alias \(CURRENT TASK\): Task A/);
+	assert.match(first.content[0].text, /Initial alias \(FIRST TASK\): Task A/);
+	const recordedAt = readDiscovery(profile, listPresence(profile).entries[0])?.state?.recordedAt;
+	const second = await declare({ subject: "Task B" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.recordedAt, recordedAt);
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.state?.state?.progress, "Starting");
+	assert.deepEqual(aliases(), { initialAlias: "Task A", currentAlias: "Task B" });
+	assert.match(second.content[0].text, /Session name: Human label/);
+	assert.equal((second.details.gentleAgents as { senderSessionId: string }).senderSessionId, "s1");
+	assert.equal(listPresence(profile).entries[0].label, name);
+	const list = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+	assert.match(list.content[0].text, /Task A/);
+	assert.match(list.content[0].text, /Task B/);
+	const consult = await h.tools.get("orchestrator_consult")!.execute("consult", { recipient_session_id: "s1" }, undefined, undefined, ctx);
+	assert.deepEqual(JSON.parse(consult.content[0].text).snapshot.aliases, aliases());
+	const filtered = await h.tools.get("orchestrator_list")!.execute("filter", { filter: { text: "Task B" } }, undefined, undefined, ctx);
+	assert.equal(JSON.parse(filtered.content[0].text).matches[0].label, "Task B");
+	name = "Human rename";
+	await declare({ state: { progress: "Replacement" } });
+	await declare({ state: null });
+	const writes = h.entries.length;
+	await declare();
+	assert.equal(h.entries.length, writes);
+	assert.deepEqual(aliases(), { initialAlias: "Task A", currentAlias: "Task B" });
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.deepEqual(aliases(), { initialAlias: "Task A", currentAlias: "Task B" });
+	branch = [initial];
+	await h.fire("session_tree", ctx);
+	assert.deepEqual(aliases(), { initialAlias: "Task A", currentAlias: "Task A" });
+	branch = [{ ...initial, data: { ...(initial.data as object), aliases: undefined } }];
+	// An actual legacy envelope has no alias field, not a malformed undefined field.
+	delete (branch[0].data as { aliases?: unknown }).aliases;
+	await h.fire("session_start", ctx, { reason: "reload" });
+	assert.equal(aliases(), undefined);
+	await declare({ subject: "Legacy current" });
+	assert.deepEqual(aliases(), { initialAlias: null, currentAlias: "Legacy current" });
+	const replacement = fakeContext().ctx;
+	await h.fire("session_start", replacement);
+	assert.match((await declare({ subject: "Stale" }, ctx)).content[0].text, /not ready/);
+	assert.equal(aliases(), undefined);
+	assert.equal(runtime.spawned.length + h.sent.length + h.userMessages.length, 0);
+});
+
 test("registered session identity declares subjects and refreshes canonical idle renames", async (t) => {
 	const h = fakePi();
 	const runtime = deps();
@@ -4056,10 +4546,10 @@ test("registered session identity declares subjects and refreshes canonical idle
 	const result = await declare("\u001b[31m Fix\n auth\u202e ");
 	assert.equal(name, "Fix auth");
 	assert.match(result.content[0].text, /Active session ID: s1.*\n.*Fix auth/);
-	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth" });
+	assert.deepEqual(result.details.gentleAgents, { senderSessionId: "s1", alias: "Fix auth", sessionName: "Fix auth", initialAlias: "Fix auth", currentAlias: "Fix auth" });
 	const before = listPresence(profile).entries[0]!;
 	assert.equal(before.label, "Fix auth");
-	assert.equal(readDiscovery(profile, before)?.state, undefined, "no implicit summary");
+	assert.equal(readDiscovery(profile, before)?.state?.state, null, "no implicit summary");
 	Object.assign(ctx.sessionManager, { getBranch: () => h.entries });
 	const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [
 		{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
@@ -4243,6 +4733,39 @@ test("registered orchestrator_list joins peer metadata without child launches or
 	} finally { publisher.dispose(); }
 });
 
+test("orchestrator_list labels a live peer that predates discovery publication (#2305)", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-legacy-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	// A peer running pre-publication code heartbeats its schema-1 header only.
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "gentle-shell", activity: [] });
+	try {
+		let ready = false;
+		const registry = { list: async () => [], listActivations: async () => [peer] };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.equal(result.content[0].text, "Advertised sessions (reachability is unknown):\n"
+			+ "- peer · gentle-shell · context: legacy (this session predates discovery publication; restart it to publish its workspace and repository)"
+			+ " · repository: not published · metadata: legacy\n  recorded catalog: unknown");
+		// Consultation stays fail-closed: a legacy label is display-only.
+		const consult = await h.tools.get("orchestrator_consult")!.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		assert.equal(JSON.parse(consult.content[0].text).status, "unavailable");
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
 test("registered reasoning and revocation use live SDK host and published source only", async () => {
 	const h = fakePi(), runtime = deps();
 	const profile = realpathSync(mkdtempSync(join(root, "reasoning-runtime-")));
@@ -4376,10 +4899,20 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	assert.ok(h.tools.has("orchestrator_send_message"));
 	assert.match((await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx)).content[0].text, /peer/);
 	assert.ok(callback, "listener receives the inbound callback");
+	Object.assign(ctx.sessionManager, { getSessionName: () => "Integration" });
 	await callback!({ id: "message-1", senderSessionId: "peer", message: "\u001b[31mraw model content" });
 	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
 	assert.match(String(h.sent.at(-1)?.message.content), /\u001b\[31mraw model content/);
 	assert.deepEqual(h.sent.at(-1)?.options, { deliverAs: "followUp", triggerTurn: true });
+	const renderer = h.renderers.get("gentle-agents.orchestrator-message")!;
+	const compact = renderer(h.sent.at(-1)!.message, { expanded: false }, plainTheme).render(80).join("\n");
+	assert.match(compact, /Message received/);
+	assert.match(compact, /🤖 Orchestrator → 🤖 Integration/);
+	assert.match(compact, /raw model content/);
+	assert.doesNotMatch(compact, /Session message from|correlation|message-1|\u001b/);
+	const expanded = renderer(h.sent.at(-1)!.message, { expanded: true }, plainTheme).render(80).join("\n");
+	assert.match(expanded, /message-1/);
+	assert.match(expanded, /Sender session: peer/);
 	await h.fire("session_shutdown", ctx);
 	assert.equal(clientCloses, 1);
 	assert.equal(listenerCloses, 1);
@@ -4435,6 +4968,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	const { ctx, dialogs } = fakeContext();
 	await h.fire("session_start", ctx);
 	await eventually(() => callbacks.length === 1, "initial transport callback registration");
+	Object.assign(ctx.sessionManager, { getSessionName: () => "Backend" });
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer", reason: "because the peer needs an update" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
 		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
@@ -4442,6 +4976,20 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
 	assert.match(result.content[0].text, /accepted for delivery; it is not a delivery or read receipt/);
+	const tool = h.tools.get("orchestrator_send_message")!;
+	assert.equal(tool.renderShell, "self", "do not nest the card in Pi's default tool box");
+	const args = { message: "hello peer", reason: "because the peer needs an update" };
+	const renderContext = { args, state: {}, expanded: false, isPartial: false };
+	const call = (tool.renderCall as Function)(args, plainTheme, renderContext);
+	const output = (tool.renderResult as Function)(result, { expanded: false }, plainTheme, renderContext);
+	const compact = [...call.render(80), ...output.render(80)].join("\n");
+	assert.match(compact, /Message queued/);
+	assert.match(compact, /🤖 Backend → 🤖 Orchestrator/);
+	assert.match(compact, /hello peer/);
+	assert.doesNotMatch(compact, /accepted-1|Sender session:|Recipient session:|because the peer/);
+	const expanded = (tool.renderResult as Function)(result, { expanded: true }, plainTheme, { ...renderContext, expanded: true }).render(80).join("\n");
+	assert.match(expanded, /accepted-1/);
+	assert.match(expanded, /not a delivery or read receipt/);
 	const original = callbacks[0]!;
 	(ctx.sessionManager as unknown as { getSessionId(): string }).getSessionId = () => "s2";
 	await h.fire("session_start", ctx);
@@ -4449,6 +4997,17 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	assert.equal(closed, 2, "replacement closes the old client and listener before activating its successor");
 	await assert.rejects(original({ id: "late", senderSessionId: "alpha", message: "late callback" }), /stale session transport/);
 	await h.fire("session_shutdown", ctx);
+});
+
+test("all orchestrator tools own compact and expanded card rendering", () => {
+	const h = fakePi();
+	gentleAgents(h.pi, {}, deps().deps);
+	for (const name of ["orchestrator_session_id", "orchestrator_consult", "orchestrator_list", "orchestrator_send_message"]) {
+		const tool = h.tools.get(name)!;
+		assert.equal(tool.renderShell, "self", name);
+		assert.equal(typeof tool.renderCall, "function", name);
+		assert.equal(typeof tool.renderResult, "function", name);
+	}
 });
 
 // Issue #1364: user consent before cross-orchestrator communication
@@ -5104,7 +5663,7 @@ test("a stale parent context fails closed: child completions and notifications a
 	await fire("session_shutdown", ctx);
 });
 
-test("a completion held past the stale window becomes transcript-only content and never re-enters the conversation", async () => {
+test("a completion held past the stale window keeps its report out of the conversation and shows the human a stale card", async () => {
 	const { pi, tools, fire, sent, entries, entryRenderers } = fakePi();
 	const harness = deps();
 	let clock = 1000;
@@ -5130,6 +5689,171 @@ test("a completion held past the stale window becomes transcript-only content an
 	assert.match(rendered, new RegExp(id));
 	assert.match(rendered, /explore/);
 	assert.match(rendered, /ago/);
+	await fire("session_shutdown", ctx);
+});
+
+// Issue #1821/#1092: the parent is told never to poll, so an unread stale
+// completion must still tell the model a result is waiting, without replaying
+// the report itself.
+test("an unread completion held past the stale window steers a compact notice into the running parent", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Long tool call", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	await fire("agent_start", ctx);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Late answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	await fire("turn_end", ctx);
+	const notices = sent.filter((entry) => entry.message.customType === "gentle-agents.stale-notice");
+	assert.equal(notices.length, 1, "the model is told once that an unread result is waiting");
+	assert.deepEqual(notices[0]!.options, { deliverAs: "steer", triggerTurn: true });
+	const content = String(notices[0]!.message.content);
+	assert.match(content, new RegExp(id));
+	assert.match(content, /subagent_result/);
+	assert.doesNotMatch(content, /Late answer\./, "the stale report itself is never replayed");
+	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.result").length, 0);
+	await fire("turn_end", ctx);
+	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.stale-notice").length, 1, "the notice is sent at most once");
+	await fire("session_shutdown", ctx);
+});
+
+test("an unread stale completion flushed at an idle boundary stores its notice and wakes the parent", async () => {
+	const { pi, tools, fire, sent, userMessages, setIdle } = fakePi();
+	const harness = deps();
+	let clock = 1000;
+	harness.deps.now = () => clock;
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Ends idle", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	await fire("agent_start", ctx);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Late answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	clock += STALE_COMPLETION_MS + 1_000;
+	setIdle(true);
+	await fire("agent_end", ctx);
+	await tick();
+	const notices = sent.filter((entry) => entry.message.customType === "gentle-agents.stale-notice");
+	assert.equal(notices.length, 1);
+	assert.deepEqual(notices[0]!.options, { triggerTurn: false });
+	assert.equal(userMessages.length, 1, "an idle parent is woken instead of waiting forever");
+	await fire("session_shutdown", ctx);
+});
+
+test("a completion whose forwarding throws stays queued and is delivered at the next boundary", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Flaky host", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	await fire("agent_start", ctx);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Retried answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	const sendMessage = pi.sendMessage;
+	Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+	await fire("turn_end", ctx);
+	assert.equal(sent.length, 0);
+	Object.assign(pi, { sendMessage });
+	await fire("turn_end", ctx);
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1, "a failed forward is retried, not lost");
+	assert.match(String(results[0]!.message.content), /Retried answer\./);
+	await fire("turn_end", ctx);
+	assert.equal(sent.filter((entry) => entry.message.customType === "gentle-agents.result").length, 1, "a delivered completion is never sent twice");
+	await fire("session_shutdown", ctx);
+});
+
+test("a completion whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Idle flaky host", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const sendMessage = pi.sendMessage;
+	Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Idle retried answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 0);
+	assert.equal(userMessages.length, 0);
+	Object.assign(pi, { sendMessage });
+	// No turn boundary is coming for an idle parent, so the retry is a timer.
+	assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+	await tick();
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1, "the requeued completion reaches the idle parent");
+	assert.match(String(results[0]!.message.content), /Idle retried answer\./);
+	assert.equal(userMessages.length, 1, "and the idle parent is woken for it");
+	// Only the dispatched wake's own grace remains; expiring it resends nothing.
+	assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1);
+	await tick();
+	assert.equal(sent.length, 1, "a successful retry never delivers the completion twice");
+	assert.equal(userMessages.length, 1);
+	await fire("session_shutdown", ctx);
+});
+
+test("retries for a failing idle delivery stop after the bounded limit", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Broken host", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	Object.assign(pi, { sendUserMessage: () => { throw new Error("host rejected prompt"); } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	let retries = 0;
+	while (timers.run(PARENT_WAKE_GRACE_MS) > 0) {
+		retries += 1;
+		await tick();
+		assert.ok(retries <= 3, "a permanently failing wake never retries forever");
+	}
+	assert.equal(retries, 3);
+	assert.equal(sent.length, 1, "retries never store the completion twice");
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("a wake that throws stays owed and is retried after the bounded grace", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Lost wake", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const sendUserMessage = pi.sendUserMessage;
+	Object.assign(pi, { sendUserMessage: () => { throw new Error("host rejected prompt"); } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 1, "the completion is stored before the wake fails");
+	assert.equal(userMessages.length, 0);
+	Object.assign(pi, { sendUserMessage });
+	assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry is armed");
+	await tick();
+	assert.equal(userMessages.length, 1, "the idle parent is finally woken");
+	assert.equal(sent.length, 1, "the retry wakes without storing the completion again");
 	await fire("session_shutdown", ctx);
 });
 
@@ -5427,7 +6151,42 @@ test("a writer continuation without its own section inherits the admitted surfac
 	runtime.children[1].emit({ type: "agent_settled" });
 	await continued;
 	await h.fire("session_shutdown", ctx);
-	rmSync(profile, { recursive: true, force: true });
+	rmSync(profile, TEST_DIR_REMOVAL);
+});
+
+// #1690: the launcher's injection signal in the host env replaces the curated
+// child entries; without a valid signal children keep the curated entries.
+test("children receive the launcher's package injection instead of the curated entries", async () => {
+	const curated = ["/curated/child-context.ts", "/curated/child-safety.ts"];
+	const takeover = ["/agent/npm/node_modules/other", "/agent/extensions/a b.ts", "/pkg"];
+	const scenarios: Array<{ name: string; value: string | undefined; expected: string[] }> = [
+		{ name: "takeover", value: encodeChildPackageInjection({ noExtensions: true, extensionPaths: takeover }), expected: ["--no-extensions", ...takeover.flatMap((path) => ["--extension", path])] },
+		{ name: "package-root", value: encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["/pkg"] }), expected: ["--extension", "/pkg"] },
+		{ name: "absent", value: undefined, expected: curated.flatMap((path) => ["--extension", path]) },
+		{ name: "malformed", value: JSON.stringify({ version: 1, noExtensions: true, extensionPaths: ["relative/pkg"] }), expected: curated.flatMap((path) => ["--extension", path]) },
+	];
+	for (const scenario of scenarios) {
+		const h = fakePi();
+		const runtime = deps();
+		runtime.deps.childExtensionPaths = curated;
+		runtime.deps.env = { PATH: "/bin", ...(scenario.value === undefined ? {} : { [CHILD_PACKAGE_INJECTION_ENV]: scenario.value }) };
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		try {
+			await h.tools.get("subagent_run")!.execute(`injection-${scenario.name}`, { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+			await tick();
+			assert.equal(runtime.spawned.length, 1, scenario.name);
+			const argv = runtime.spawned[0]!;
+			const start = argv.indexOf("--session-dir") + 2;
+			assert.deepEqual(argv.slice(start, start + scenario.expected.length), scenario.expected, scenario.name);
+			assert.equal(argv[start + scenario.expected.length], "--model", `${scenario.name}: no other extension arguments`);
+			assert.equal(argv[argv.indexOf("--tools") + 1], "read,grep,subagent_parent_message", scenario.name);
+		} finally {
+			await h.fire("session_shutdown", ctx);
+			await tick();
+		}
+	}
 });
 
 // gentle-shell#1731 T4 (S2, AC6): subagent_run and subagent_continue admit a
@@ -5484,7 +6243,7 @@ test("parallel writers are admitted only with disjoint Allowed edit surfaces end
 		assert.equal(runtime.children.length, 5, "the continuation is admitted once its surfaces are free");
 	} finally {
 		await h.fire("session_shutdown", ctx);
-		rmSync(profile, { recursive: true, force: true });
+		rmSync(profile, TEST_DIR_REMOVAL);
 	}
 });
 
@@ -5517,6 +6276,511 @@ test("a subdirectory session cwd and workspace_root of the same worktree share o
 		await assert.rejects(h.tools.get("subagent_run")!.execute("run", { agent: "gentle-ai-worker", task, workspace_root: cwd, mode: "background" }, undefined, undefined, ctx), new RegExp(`task ${firstId}`));
 	} finally {
 		await h.fire("session_shutdown", ctx);
-		rmSync(profile, { recursive: true, force: true });
+		rmSync(profile, TEST_DIR_REMOVAL);
 	}
+});
+
+// Background jobs share the subagent parent delivery router: the exit notice
+// is stored and woken like an idle completion, or steered into a running turn.
+function fakeJobShell() {
+	const runs: Array<{ command: string; onData(data: Buffer): void; signal?: AbortSignal; exit(code: number): void }> = [];
+	const shell = () => ({
+		operations: {
+			exec: (command: string, _cwd: string, options: { onData(data: Buffer): void; signal?: AbortSignal }) => new Promise<{ exitCode: number | null }>((done, fail) => {
+				options.signal?.addEventListener("abort", () => fail(new Error("aborted")), { once: true });
+				runs.push({ command, onData: options.onData, signal: options.signal, exit: (code) => done({ exitCode: code }) });
+			}),
+		},
+	});
+	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-agents-"));
+	return { runs, shell, dir, cleanup: () => rmSync(dir, TEST_DIR_REMOVAL) };
+}
+// A job settles only after its log file closes, which takes real I/O turns.
+const jobIo = () => new Promise((done) => setTimeout(done, 50));
+const toolText = (result: { content: Array<{ text?: string }> }) => result.content.map((part) => part.text ?? "").join("\n");
+
+test("standalone bash sleep is blocked only while background work is active (#1903)", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	const call = async (toolName: string, command: string) =>
+		(await fire("tool_call", ctx, { toolCallId: "t", toolName, input: { command } })).find((result) => result !== undefined) as { block?: boolean; reason?: string } | undefined;
+	try {
+		await fire("session_start", ctx);
+		// Without background work, sleep is ordinary shell use.
+		assert.equal(await call("bash", "sleep 10"), undefined);
+
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		for (const command of ["sleep 10", "  sleep 2m  ", "sleep 0.5;", "sleep 5 && sleep 5"]) {
+			const blocked = await call("bash", command);
+			assert.equal(blocked?.block, true, command);
+			assert.match(blocked!.reason!, /background work is active/);
+			assert.match(blocked!.reason!, /End the turn/);
+		}
+		// Real wait conditions, mixed commands and the sanctioned background tools stay allowed.
+		for (const command of ["until curl -s x; do sleep 1; done", "sleep 5 && gh run view 42", "for i in 1 2; do sleep 1; echo $i; done", "sleep $N"]) {
+			assert.equal(await call("bash", command), undefined, command);
+		}
+		assert.equal(await call("bash_background", "sleep 100"), undefined);
+		assert.equal(await call("monitor", "sleep 100"), undefined);
+
+		jobs.runs[0]!.exit(0);
+		await eventually(() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice"), "the job must settle before sleep is allowed again");
+		assert.equal(await call("bash", "sleep 10"), undefined, "sleep is allowed again once background work settles");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("bash_background returns at once, and an idle parent gets one stored exit notice and one wake", async () => {
+	const { pi, tools, fire, sent, userMessages, delivery, renderers } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx));
+		assert.match(started, /job-1/);
+		assert.ok(started.includes(join(jobs.dir, "job-1.log")), "the output file path is returned");
+		assert.match(started, /notified once/i);
+		assert.equal(jobs.runs[0]!.command, "gh run watch 42 --exit-status");
+		assert.equal(sent.length, 0, "nothing reaches the parent while the job runs");
+		jobs.runs[0]!.onData(Buffer.from("check build: fail\n"));
+		jobs.runs[0]!.exit(1);
+		await eventually(
+			() => sent.some((entry) => entry.message.customType === "gentle-jobs.notice") && userMessages.length > 0,
+			"the closed job log must deliver its exit notice and wake before assertions",
+		);
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the exit is reported exactly once");
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false }, "an idle parent stores the notice without a direct turn");
+		const content = String(notices[0]!.message.content);
+		for (const expected of [/job-1/, /"CI"/, /exited with code 1/, /gh run watch 42 --exit-status/, /check build: fail/, /job-1\.log/]) assert.match(content, expected);
+		assert.equal(userMessages.length, 1, "the idle parent is woken exactly once");
+		assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "the notice is stored before the wake");
+		assert.match(renderers.get("gentle-jobs.notice")!(notices[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /exited with code 1/);
+		await fire("turn_end", ctx);
+		await fire("agent_settled", ctx);
+		assert.equal(sent.length, 1, "later boundaries never replay the notice");
+		assert.equal(userMessages.length, 1, "later boundaries never repeat the wake");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a busy parent gets the exit notice steered into its run at the next turn boundary", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make build" }, undefined, undefined, ctx);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1);
+		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
+		assert.match(String(sent[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
+		assert.equal(userMessages.length, 0, "a running parent needs no wake");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("job_list and job_stop cover this session's jobs; stopped jobs send no notice and shutdown stops the rest", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		assert.match(toolText(await tools.get("job_list")!.execute("l0", {}, undefined, undefined, ctx)), /No background jobs/);
+		await tools.get("bash_background")!.execute("b1", { command: "sleep 100", label: "long" }, undefined, undefined, ctx);
+		await tools.get("bash_background")!.execute("b2", { command: "npm run dev" }, undefined, undefined, ctx);
+		const listed = toolText(await tools.get("job_list")!.execute("l1", {}, undefined, undefined, ctx));
+		assert.match(listed, /job-1 · running · long/);
+		assert.match(listed, /job-2 · running · npm run dev/);
+		assert.match(toolText(await tools.get("job_stop")!.execute("s1", { job_id: "job-1" }, undefined, undefined, ctx)), /Stopped job-1/);
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "the job's process tree is killed");
+		await assert.rejects(async () => tools.get("job_stop")!.execute("s2", { job_id: "job-9" }, undefined, undefined, ctx), /No background job job-9 in this session/);
+		await jobIo();
+		assert.equal(sent.length, 0, "a stopped job sends no exit notice");
+		assert.match(toolText(await tools.get("job_list")!.execute("l2", {}, undefined, undefined, ctx)), /job-1 · stopped · long/);
+		await fire("session_shutdown", ctx);
+		assert.equal(jobs.runs[1]!.signal?.aborted, true, "session shutdown stops every running job");
+		await jobIo();
+		assert.equal(sent.length, 0);
+	} finally {
+		jobs.cleanup();
+	}
+});
+
+test("/gentle:jobs opens this session's jobs overlay, stops the selected job, and the footer counts running jobs", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	const statuses: Array<string | undefined> = [];
+	const snapshots: Array<{ sessionId: string; snapshot: { jobs: Array<{ id: string; label: string; startedAt: number }> } }> = [];
+	const unsubscribe = pi.events.on("gentle-ai:jobs-sidebar", (value) => { snapshots.push(value as typeof snapshots[number]); });
+	Object.assign(ctx.ui, { setStatus: (key: string, value: string | undefined) => { if (key === "gentle-jobs") statuses.push(value); } });
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "gh run watch 42 --exit-status", label: "CI" }, undefined, undefined, ctx);
+		assert.equal(statuses.at(-1), "⧗ 1 job");
+		assert.equal(snapshots.at(-1)?.sessionId, ctx.sessionManager.getSessionId());
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs.map(({ id, label }) => ({ id, label })), [{ id: "job-1", label: "CI" }]);
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		const view = overlays.at(-1)!;
+		const screen = view.render(100).map(stripAnsi).join("\n");
+		assert.match(screen, /Jobs · 1 running · 0 finished/);
+		assert.match(screen, /gh run watch 42 --exit-status/);
+		view.handleInput("s");
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "s stops the selected job");
+		assert.equal(statuses.at(-1), undefined, "the footer count clears when nothing runs");
+		assert.deepEqual(snapshots.at(-1)?.snapshot.jobs, [], "the Status descriptions clear when nothing runs");
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the agent was told it would be notified, so a human stop is reported once");
+		assert.match(String(notices[0]!.message.content), /job-1 \("CI"\) was stopped by the user/);
+		view.handleInput("q");
+		await opened;
+	} finally {
+		unsubscribe();
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a job exit notice whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+		const sendMessage = pi.sendMessage;
+		Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0);
+		assert.equal(userMessages.length, 0);
+		Object.assign(pi, { sendMessage });
+		// No turn boundary is coming for an idle parent, so the retry is a timer.
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "one bounded retry flush is armed");
+		await tick();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the requeued notice reaches the idle parent");
+		assert.match(String(notices[0]!.message.content), /job-1 \("make ci"\) exited with code 0/);
+		assert.equal(userMessages.length, 1, "and the idle parent is woken for it");
+		assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1);
+		await tick();
+		assert.equal(sent.length, 1, "a successful retry never delivers the notice twice");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+for (const boundary of ["session_compact", "session_compact_failed"] as const) {
+	test(`a parent compacting outside an agent run holds a job exit notice until ${boundary}, then wakes it`, async () => {
+		const { pi, tools, fire, sent, userMessages, delivery, setIdle } = fakePi();
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		const jobs = fakeJobShell();
+		gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+		const { ctx } = fakeContext();
+		try {
+			await fire("session_start", ctx);
+			await tools.get("bash_background")!.execute("b1", { command: "make ci" }, undefined, undefined, ctx);
+			setIdle(false);
+			jobs.runs[0]!.exit(1);
+			await jobIo();
+			assert.equal(sent.length, 0, "no direct custom-message turn starts while the parent compacts");
+			assert.equal(userMessages.length, 0, "no wake is sent while the parent compacts");
+			await fire(boundary, ctx);
+			assert.equal(sent.length, 0, "the boundary handler runs before Pi leaves the compacting state");
+			setIdle(true);
+			assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the compaction boundary");
+			await tick();
+			assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held notice is stored without a direct turn");
+			assert.deepEqual(delivery, ["custom:gentle-jobs.notice", "user"], "one wake follows the held notice");
+		} finally {
+			await fire("session_shutdown", ctx);
+			jobs.cleanup();
+		}
+	});
+}
+
+test("session shutdown removes the default background job log directory", async () => {
+	const { pi, tools, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("bash_background")!.execute("b1", { command: "sleep 100" }, undefined, undefined, ctx));
+		const outputPath = /Output: (.+)$/m.exec(started)![1]!;
+		assert.ok(existsSync(dirname(outputPath)), "the job log directory exists while the session runs");
+		await fire("session_shutdown", ctx);
+		assert.equal(existsSync(dirname(outputPath)), false, "the job log directory is removed with the session");
+	} finally {
+		jobs.cleanup();
+	}
+});
+
+test("session shutdown never hangs on a job whose process ignores the stop", { timeout: 5000 }, async () => {
+	const { pi, tools, fire } = fakePi();
+	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-stuck-"));
+	// A process that never exits, even after its abort signal.
+	const stuck = () => ({ operations: { exec: () => new Promise<{ exitCode: number | null }>(() => {}) } });
+	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); timer.unref(); return () => clearTimeout(timer); };
+	gentleAgents(pi, {}, { ...deps().deps, schedule, jobShell: stuck });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "sleep 100" }, undefined, undefined, ctx);
+		await fire("session_shutdown", ctx);
+	} finally {
+		rmSync(dir, TEST_DIR_REMOVAL);
+	}
+});
+
+// A monitor reports output lines while it runs, through the same router.
+test("monitor delivers line events to an idle parent with one wake, and reports its end with the event count", async () => {
+	const { pi, tools, fire, sent, userMessages, renderers } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		const started = toolText(await tools.get("monitor")!.execute("m1", { command: "gh run watch 7", label: "CI checks", timeout_seconds: 900 }, undefined, undefined, ctx));
+		assert.match(started, /Started monitor job-1 \("CI checks"\)/);
+		assert.match(started, /900s/);
+		jobs.runs[0]!.onData(Buffer.from("lint: pass\nunit: fail\n"));
+		assert.equal(sent.length, 0, "lines wait for the batch window");
+		assert.equal(timers.run(200), 1);
+		await tick();
+		const events = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(events.length, 1);
+		assert.deepEqual(events[0]!.options, { triggerTurn: false });
+		assert.match(String(events[0]!.message.content), /Monitor job-1 \("CI checks"\) reported 2 new lines:\nlint: pass\nunit: fail/);
+		assert.equal(userMessages.length, 1, "the idle parent is woken for the events");
+		assert.match(renderers.get("gentle-jobs.notice")!(events[0]!.message, { expanded: true }, plainTheme).render(70).map(stripAnsi).join("\n"), /unit: fail/);
+		jobs.runs[0]!.onData(Buffer.from("e2e: pass\n"));
+		jobs.runs[0]!.exit(1);
+		await jobIo();
+		const contents = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice").map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 3, "pending lines are delivered before the end notice");
+		assert.match(contents[1]!, /reported 1 new line:\ne2e: pass/);
+		assert.match(contents[2]!, /Monitor job-1 \("CI checks"\) exited with code 1 after .* 3 events\./);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("monitor events wait for a busy parent's turn boundary and coalesce into one notice", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[0]!.onData(Buffer.from("ERROR a\n"));
+		timers.run(200);
+		jobs.runs[0]!.onData(Buffer.from("ERROR b\n"));
+		timers.run(200);
+		assert.equal(sent.length, 0, "a busy parent is not interrupted mid-tool-call");
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1, "both batches arrive as one notice");
+		assert.deepEqual(sent[0]!.options, { deliverAs: "steer", triggerTurn: true });
+		assert.match(String(sent[0]!.message.content), /reported 2 new lines:\nERROR a\nERROR b/);
+		// job_stop ends the monitor without any further notice.
+		assert.match(toolText(await tools.get("job_stop")!.execute("s1", { job_id: "job-1" }, undefined, undefined, ctx)), /Stopped job-1/);
+		jobs.runs[0]!.onData(Buffer.from("ERROR c\n"));
+		timers.run(200);
+		timers.run(60_000);
+		await jobIo();
+		await fire("turn_end", ctx);
+		assert.equal(sent.length, 1, "a stopped monitor reports nothing more");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("monitor rejects a missing or out-of-range timeout before starting anything", async () => {
+	const { pi, tools, fire } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		for (const params of [{ command: "x" }, { command: "x", timeout_seconds: 0 }, { command: "x", timeout_seconds: 3600 }]) {
+			await assert.rejects(async () => tools.get("monitor")!.execute("m", params, undefined, undefined, ctx), /timeout_seconds must be a whole number from 1 to 1800/);
+		}
+		assert.equal(jobs.runs.length, 0);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("events from two interleaved monitors coalesce per monitor while the parent is busy", async () => {
+	const { pi, tools, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "watch a", label: "A", timeout_seconds: 60 }, undefined, undefined, ctx);
+		await tools.get("monitor")!.execute("m2", { command: "watch b", label: "B", timeout_seconds: 60 }, undefined, undefined, ctx);
+		for (const round of [1, 2, 3]) {
+			jobs.runs[0]!.onData(Buffer.from(`a${round}\n`));
+			jobs.runs[1]!.onData(Buffer.from(`b${round}\n`));
+			timers.run(200);
+		}
+		await fire("turn_end", ctx);
+		const contents = sent.map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 2, "one notice per monitor, not one per batch");
+		assert.match(contents[0]!, /\("A"\) reported 3 new lines:\na1\na2\na3/);
+		assert.match(contents[1]!, /\("B"\) reported 3 new lines:\nb1\nb2\nb3/);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("a human stop of a monitor from /gentle:jobs delivers its pending lines, then one stop notice, then nothing", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await fire("agent_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", label: "log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[0]!.onData(Buffer.from("ERROR seen\n"));
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		overlays.at(-1)!.handleInput("s");
+		overlays.at(-1)!.handleInput("q");
+		await opened;
+		assert.equal(jobs.runs[0]!.signal?.aborted, true);
+		jobs.runs[0]!.onData(Buffer.from("ERROR after stop\n"));
+		timers.run(200);
+		timers.run(60_000);
+		await jobIo();
+		await fire("turn_end", ctx);
+		const contents = sent.map((entry) => String(entry.message.content));
+		assert.equal(contents.length, 2, `notices: ${JSON.stringify(contents)}`);
+		assert.match(contents[0]!, /reported 1 new line:\nERROR seen/);
+		assert.match(contents[1]!, /Monitor job-1 \("log"\) was stopped by the user after .*, 1 event\./);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+// Harness roadmap T6: todo progress reaches peers without a model turn spent on
+// orchestrator_session_id, and never replaces the owner's curated fields.
+test("todo progress publishes merged into the owner's curated state, only for this session", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const profile = realpathSync(mkdtempSync(join(root, "todo-progress-")));
+	runtime.deps.agentHome = profile;
+	const peer = { version: 1 as const, sessionId: "s1", endpoint: "/fixture/todo-progress.sock", createdAt: 1 };
+	const registry = { list: async () => [], listActivations: async () => [peer] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, record: peer, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected message"); } }),
+	};
+	Object.assign(h.pi, { setSessionName() {} });
+	Object.assign(ctx.sessionManager, { getSessionName: () => "", getBranch: () => h.entries });
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const published = () => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state;
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 0, total: 2, current: "Write parser" });
+	// PR #2290 review: a todo title is private work text; peers see counts only.
+	assert.deepEqual(published(), { progress: "0/2 done" }, "progress publishes before any curated state, without the todo title");
+	assert.doesNotMatch(JSON.stringify(readDiscovery(profile, listPresence(profile).entries[0])), /Write parser/, "the todo title never reaches peers");
+	await h.tools.get("orchestrator_session_id")!.execute("own", { subject: "Ledger", state: { objective: "Ship the ledger", decisions: "inline" } }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 2, current: null });
+	assert.deepEqual(published(), { objective: "Ship the ledger", decisions: "inline", progress: "1/2 done" });
+	assert.equal(readDiscovery(profile, listPresence(profile).entries[0])?.aliases?.currentAlias, "Ledger", "the subject survives");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "other", done: 2, total: 2, current: null });
+	assert.equal(published()?.progress, "1/2 done", "another session's todo is ignored");
+	// R1 review advisory: a cleared list published "0/0 done" as if it were progress.
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 0, total: 0, current: null });
+	assert.deepEqual(published(), { objective: "Ship the ledger", decisions: "inline" }, "a cleared list removes the progress line and keeps curated fields");
+	// R1 review advisory: a withdrawn state must stay withdrawn until the owner publishes again.
+	await h.tools.get("orchestrator_session_id")!.execute("withdraw", { state: null }, undefined, undefined, ctx);
+	assert.equal(published(), null);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 3, current: "Docs" });
+	assert.equal(published(), null, "automatic progress does not republish a withdrawn state");
+	await h.tools.get("orchestrator_session_id")!.execute("own", { state: { objective: "Ship v2" } }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 2, total: 3, current: null });
+	assert.deepEqual(published(), { objective: "Ship v2", progress: "2/3 done" }, "progress resumes once the owner publishes again");
+});
+
+// PR #2290 review: an owner publication without `progress` replaced the automatic
+// progress line, so peers lost it until the next todo write.
+test("an owner publication without progress keeps the automatic progress; explicit progress and null still win", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const profile = realpathSync(mkdtempSync(join(root, "todo-progress-merge-")));
+	runtime.deps.agentHome = profile;
+	const peer = { version: 1 as const, sessionId: "s1", endpoint: "/fixture/todo-progress-merge.sock", createdAt: 1 };
+	const registry = { list: async () => [], listActivations: async () => [peer] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, record: peer, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected message"); } }),
+	};
+	Object.assign(h.pi, { setSessionName() {} });
+	Object.assign(ctx.sessionManager, { getSessionName: () => "", getBranch: () => h.entries });
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const published = () => readDiscovery(profile, listPresence(profile).entries[0])?.state?.state;
+	const own = (state: unknown) => h.tools.get("orchestrator_session_id")!.execute("own", { state }, undefined, undefined, ctx);
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 3, current: "Parser" });
+	await own({ objective: "Ship the ledger" });
+	assert.deepEqual(published(), { objective: "Ship the ledger", progress: "1/3 done" }, "omitted progress keeps the automatic line");
+	await own({ objective: "Ship the ledger", progress: "Reviewing the parser" });
+	assert.deepEqual(published(), { objective: "Ship the ledger", progress: "Reviewing the parser" }, "explicit owner progress wins");
+	await own({ objective: "Ship the ledger" });
+	assert.deepEqual(published(), { objective: "Ship the ledger" }, "owner progress is replaced like any curated field");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 2, total: 3, current: null });
+	await own(null);
+	assert.equal(published(), null, "null withdraws everything");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 3, total: 3, current: null });
+	assert.equal(published(), null, "the withdrawal holds against automatic progress");
+	await own({ objective: "Ship v2" });
+	assert.deepEqual(published(), { objective: "Ship v2" }, "a withdrawn progress line is not merged back");
+	h.pi.events.emit(TODO_PROGRESS_EVENT, { sessionId: "s1", done: 1, total: 4, current: null });
+	const full = "x".repeat(2048);
+	await own({ objective: full });
+	assert.deepEqual(published(), { objective: full }, "a merge over the state budget publishes the owner's state as given");
 });

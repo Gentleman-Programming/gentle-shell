@@ -1688,7 +1688,9 @@ async function packageManagerAdapters() {
 		fs: await import("node:fs/promises"),
 		which: async (name) => findOnPath(name) ?? null,
 		...(invocation ? { invocation } : {}),
-		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000 }),
+		// stderrTail: a caller that asks for it, such as a failed `update` install, gets the bounded stderr.
+		run: (command, argv, options = {}) => run(command, argv, { env: options.env ?? process.env, cwd: options.cwd, deadlineMs: options.deadlineMs ?? 20 * 60_000,
+			...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }) }),
 	};
 }
 

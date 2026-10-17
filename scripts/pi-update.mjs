@@ -1,6 +1,7 @@
 // Narrow update ownership proof. Deliberately independent of Shell upgrade/uninstall.
 import { posix, win32 } from 'node:path';
 import { bundledUpdatePlan } from '../runtime/gentle-shell-bundled.mjs';
+import { setupErrorDetail } from './installer-runner.mjs';
 
 const PI = '@earendil-works/pi-coding-agent';
 const SHELL = 'gentle-pi';
@@ -230,8 +231,13 @@ export async function updateSelectedPi(input) {
  // Exactly one approved package per command; never create a comma group or
  // reinstall arbitrary dependencies merely because they share a store.
  const args = owner.name === 'pnpm' ? ['add', '-g', owner.spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', owner.spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])];
- const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: input.cwd});
- if (!succeeded(result)) throw new Error(`gentle-shell update: ${owner.name} could not install ${owner.spec}${result?.stderrTail ? `\n${result.stderrTail}` : ''}`);
+ const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: input.cwd, stderrTail:4096});
+ if (!succeeded(result)) {
+  // One sanitized line of the manager's own error: npm prints it on stderr,
+  // pnpm 11 prints ERR_PNPM_* on stdout and leaves stderr empty.
+  const detail = setupErrorDetail(result?.stderrTail, input.home, input.platform) ?? setupErrorDetail(result?.stdout, input.home, input.platform);
+  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.spec}${detail ? `\n${detail}` : ''}`);
+ }
  const after = await suppliedPiVersion(owner, input);
  const before = input.currentVersion;
  if (after === null) input.out?.(`${owner.name} installed ${owner.spec}. The Pi version it now supplies could not be read back; run 'gentle-shell --version' to check it.`);

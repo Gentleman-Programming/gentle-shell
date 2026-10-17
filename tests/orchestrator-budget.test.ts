@@ -33,7 +33,9 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
 // Verification by named risk (escalate-only rule 3) and the writer-rule fix (triggers hold only when
 // their condition holds; a unit is independent behavior over a size floor), user decision 2026-10-14: 8,400 -> 9,100 B.
-const BUDGET_BYTES = 9100;
+// gentle-shell#348: the Skill Registry Protocol binds the parent's own inline path to the same SKILL.md read
+// (one sentence, 50 B), user decision 2026-10-18: 9,100 -> 9,150 B.
+const BUDGET_BYTES = 9150;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [

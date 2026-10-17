@@ -4407,6 +4407,70 @@ test("default session transport selects Windows or POSIX classes without mutatin
 	assert.notEqual(windows.createRegistry, posix.createRegistry);
 });
 
+test("session transport startup diagnostic reports only bounded current failures", async (t) => {
+	for (const mode of ["initialize", "registry", "listener", "malformed", "success", "stale-id", "reload", "shutdown"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+			const notices: Array<{ message: string; level: unknown }> = [];
+			ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+			let release!: () => void;
+			const pending = new Promise<void>((resolve) => { release = resolve; });
+			let entered = false;
+			let starts = 0;
+			let observerResult: unknown = "not called";
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async (_home, observe) => {
+					if (mode === "initialize") {
+						observerResult = observe?.({ phase: "start", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+						observe?.({ phase: "initialize", status: "failed", error: { class: "timed-out", code: "deadline" }, lastStartupMarker: "native-ready" });
+						observe?.({ phase: "cleanup", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+						throw new Error("SECRET path SID stderr session-id");
+					}
+					if (mode === "malformed") {
+						observe?.({ phase: "SECRET", status: "failed", error: { class: "SECRET", code: "SECRET" }, lastStartupMarker: "SECRET" } as never);
+						throw new Error("SECRET");
+					}
+					if (mode === "registry") throw new Error("SECRET path SID stderr session-id");
+					if (mode === "stale-id" || mode === "reload" || mode === "shutdown") {
+						entered = true;
+						await pending;
+						throw new Error("SECRET");
+					}
+					return registry;
+				},
+				createListener: () => ({ registry, start: async () => { starts++; if (mode === "listener") throw new Error("SECRET"); }, close: async () => {} }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			if (mode === "stale-id" || mode === "reload" || mode === "shutdown") {
+				await eventually(() => entered, "registry startup entered");
+				if (mode === "stale-id") Object.assign(ctx.sessionManager, { getSessionId: () => "replacement" });
+				if (mode === "reload") await h.fire("session_start", fakeContext().ctx);
+				if (mode === "shutdown") {
+					const closing = h.fire("session_shutdown", ctx);
+					release();
+					await closing;
+				}
+				release();
+			}
+			// Shutdown drains tracked startup operations, including catch and cleanup.
+			if (mode === "success") await eventually(() => starts === 1, "successful listener start");
+			if (["initialize", "registry", "listener", "malformed"].includes(mode)) {
+				await eventually(() => notices.length === 1, "startup diagnostic notification");
+			}
+			await h.fire("session_shutdown", ctx);
+			const expected = mode === "initialize"
+				? "Session transport startup failed: phase=initialize class=timed-out code=deadline lastStartupMarker=native-ready."
+				: mode === "listener" ? "Session transport startup failed: phase=listener diagnostics=unavailable."
+				: mode === "registry" || mode === "malformed" ? "Session transport startup failed: phase=registry diagnostics=unavailable." : undefined;
+			assert.deepEqual(notices, expected ? [{ message: expected, level: "warning" }] : []);
+			if (mode === "initialize") assert.equal(observerResult, undefined);
+		});
+	}
+});
+
 test("session transport startup failure cleans the constructed Windows-capable transport and stays unavailable", async () => {
 	const h = fakePi();
 	const runtime = deps();

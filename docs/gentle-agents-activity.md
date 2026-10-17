@@ -32,6 +32,20 @@ unknown rather than misleadingly shortened. Labels are sanitized and bounded to
 counted as omitted. Task workspaces are recorded launch directories, not proof of
 isolation, ownership locks, or exclusive access.
 
+### Startup failures
+
+If session transport startup fails, the current session receives a warning such as
+`Session transport startup failed: phase=initialize class=timed-out code=deadline lastStartupMarker=native-ready.`
+Windows registry diagnostics use only validated phase, failure class/code, and the
+last startup marker. Missing or invalid observations instead report
+`phase=registry diagnostics=unavailable`; listener setup failures report
+`phase=listener diagnostics=unavailable`. Raw exceptions, paths, and helper stderr
+are never included. Retired sessions do not emit startup warnings.
+
+The warning explains why peer tools may remain "not ready"; it does not retry
+startup, increase deadlines, or establish the cause of a native helper stall.
+Successful startup remains silent.
+
 ### Declare a recognizable subject
 
 Before delegation or cross-session coordination, call `orchestrator_session_id`

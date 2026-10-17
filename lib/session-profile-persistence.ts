@@ -13,6 +13,19 @@ import {
 export const SESSION_PROFILE_CUSTOM_TYPE = "gentle-pi.session-profile/v1";
 const SESSION_PROFILE_FAMILY = "gentle-pi.session-profile/";
 
+/** True for any custom entry in the session-profile family, known version or not. */
+export function isSessionProfileFamilyEntry(entry: unknown): boolean {
+	return (
+		typeof entry === "object" &&
+		entry !== null &&
+		(entry as { type?: unknown }).type === "custom" &&
+		typeof (entry as { customType?: unknown }).customType === "string" &&
+		(entry as { customType: string }).customType.startsWith(
+			SESSION_PROFILE_FAMILY,
+		)
+	);
+}
+
 export type SessionProfileOrigin = "user" | "local" | "repo" | "global";
 
 export interface SessionProfileBindPayload {
@@ -148,12 +161,7 @@ export function createSessionProfileClear(): SessionProfileClearPayload {
 export function readSessionProfileEntry(
 	entry: SessionProfileEntry,
 ): SessionProfileReadResult {
-	if (
-		entry.type !== "custom" ||
-		typeof entry.customType !== "string" ||
-		!entry.customType.startsWith(SESSION_PROFILE_FAMILY)
-	)
-		return { status: "absent" };
+	if (!isSessionProfileFamilyEntry(entry)) return { status: "absent" };
 	if (entry.customType !== SESSION_PROFILE_CUSTOM_TYPE)
 		return { status: "unsupported" };
 	const data = entry.data;

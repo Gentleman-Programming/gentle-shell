@@ -134,3 +134,13 @@ test("an incomplete symlink scan never claims a symlink-free tree and keeps the 
 	assert.equal(result.status, "ready", "an unconfirmed scan withholds no advertisement");
 	assert.equal(probed, 0, "an unconfirmed scan never consults the capability probe");
 });
+
+test("the scan classification itself is a tri-state: unreadable trees are unconfirmed, never symlink-free (gentle-ai#2196)", async t => {
+	const { root } = fixtureRepository(true);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	assert.equal(__testing.scanCandidateTreeForSymlinks(root, git(root, "rev-parse", "HEAD^{tree}")), "tracks-symlinks");
+	const bare = fixtureRepository(false);
+	t.after(() => rmSync(bare.root, { recursive: true, force: true }));
+	assert.equal(__testing.scanCandidateTreeForSymlinks(bare.root, git(bare.root, "rev-parse", "HEAD^{tree}")), "no-symlinks");
+	assert.equal(__testing.scanCandidateTreeForSymlinks(bare.root, "f".repeat(40)), "unconfirmed", "an unreadable tree is never classified symlink-free");
+});

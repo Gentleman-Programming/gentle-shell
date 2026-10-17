@@ -109,9 +109,12 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.match(appended, /no meaningful RED, explain why and run proportionate ordinary functional or structural verification/);
 	assert.match(appended, /Never invent lifecycle evidence or skip checks/);
 	assert.doesNotMatch(appended, /If tests exist, use strict TDD/);
-	assert.match(appended, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
+	// S11 T3: deduplicated. The core pointer sentence restated the harness; the
+	// mandatory ODD entry is injected once, from the harness steps' header.
+	assert.match(appended, /Organic Driven Development \(ODD\) is the predefined workflow of this orchestrator\. Every request enters it/);
+	assert.doesNotMatch(appended, /ODD \(Default Workflow, harness section above\)/);
 	assert.doesNotMatch(appended, /Prefer SDD\/OpenSpec artifacts/);
-	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.3\.0\)/);
+	assert.match(appended, /## Gentle AI review execution contract \(mirrored provider bundle 1\.4\.0\)/);
 	assert.ok(appended.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
 	assert.match(appended, /call `gentle_review` with {"operation":"inspect"}/);
 	assert.match(appended, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);

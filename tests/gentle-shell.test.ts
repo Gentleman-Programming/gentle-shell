@@ -88,6 +88,7 @@ interface FakeUi {
 	overlay: unknown;
 	overlayView: { render(width: number): string[]; handleInput(data: string): void } | undefined;
 	closeOverlay: (() => void) | undefined;
+	customOptions?: unknown[];
 }
 
 interface GitScript {
@@ -175,7 +176,7 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 }
 
 function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): string }; hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
-	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
+	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined, customOptions: [] };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
 	const entries = options.entries ?? [];
@@ -226,8 +227,9 @@ function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): stri
 			// whatever their `done` callback is given (see ExtensionUIContext.custom
 			// in pi-coding-agent), not always null. `closeOverlay` stays a
 			// null-resolving escape hatch for tests that only need to end the wait.
-			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }) {
+			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }, options?: unknown) {
 				ui.overlay = factory;
+				ui.customOptions?.push(options);
 				return new Promise<T | null>((resolve) => {
 					ui.closeOverlay = () => resolve(null);
 					// An identity bg mock hides focused rows; omit it so overlay navigation
@@ -4775,6 +4777,35 @@ test("a registered worktree opens Changes as its own group", async () => {
  } finally { ui.closeOverlay?.(); await opened; await fire(handlers,"session_shutdown",ctx); }
 });
 
+// /gentle:changes opens like Gentle Agents: a full-terminal overlay whose
+// native fullscreen wrapper still routes mouse events to the changes view.
+test("Changes opens full screen and the wrapper keeps mouse hit-testing aligned", async () => {
+ const {pi,handlers,commands}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
+ gentleShell(pi,{});
+ const {ctx,ui,overlayReady}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ const opened=commands.get("gentle:changes")!.handler("",ctx);
+ await overlayReady;
+ const overlay=ui.overlayView as unknown as { render(width: number): string[]; handleInput(data: string): void; handleMouse(event: unknown): unknown };
+ const at=(type: string, x: number, y: number) => ({ type, button: type === "move" ? "none" : "left", x, y, screenX: x, screenY: y, width: 140, height: 40, shift: false, alt: false, ctrl: false });
+ try {
+  assert.deepEqual(ui.customOptions?.at(-1), { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } });
+  assert.equal(overlay.render(140).length, 40, "the overlay uses every terminal row");
+  overlay.handleInput("\r");
+  overlay.render(140);
+  const { handled, render } = overlay.handleMouse(at("click", 3, 3)) as { handled?: boolean; render?: boolean };
+  assert.deepEqual({ handled, render }, { handled: true, render: true });
+  assert.match(overlay.render(140)[3]!, /▸   M file\.ts/, "a click through the wrapper selects the file");
+  overlay.handleInput("F");
+  assert.match(overlay.render(140)[1]!, /^│ M file\.ts +│$/, "F switches to diff-only inside the fullscreen overlay");
+ } finally { ui.closeOverlay?.(); await opened; }
+ const reopened=commands.get("gentle:changes")!.handler("",ctx);
+ for (let attempt=0; attempt<100 && ui.overlayView===overlay; attempt++) await new Promise((resolve)=>setTimeout(resolve,5));
+ try {
+  assert.match(ui.overlayView!.render(140)[1]!, /main · repo/, "diff-only mode is not persisted across openings");
+ } finally { ui.closeOverlay?.(); await reopened; await fire(handlers,"session_shutdown",ctx); }
+});
+
 test("new sessions do not inherit another session's worktrees", async () => {
  const h=fakePi(); gentleShell(h.pi,{});
  const first=fakeContext();
@@ -4849,7 +4880,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	assert.ok(await loadFileDiff(bounded, { path: "tracked.txt", added: 70_001, deleted: 1, status: CHANGE_STATUS.MODIFIED }) === DIFF_TOO_LARGE);
 	const opened = h.commands.get("gentle:changes")!.handler("", ctx);
 	await overlayReady;
-	const trees = (ui.overlayView as unknown as { trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }).trees;
+	const trees = (ui.overlayView as unknown as { children: Array<{ trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }> }).children[0]!.trees;
 	assert.deepEqual(trees.map((tree) => [tree.root, tree.model.files.map((file) => file.path)]), [[selected, ["selected-only.txt", "tracked.txt"]]], "inherited routing never lists the foreign repository");
 	ui.closeOverlay?.();
 	await opened;
@@ -6281,19 +6312,21 @@ test("an explicit session binding routes the Usage scope ahead of the pin and th
 
 // S9: the config home each of these reads resolves, per case. The OS home is
 // a temporary folder in every case, so no case can reach the real one.
-// "unset" and "empty" are exactly as before: an empty GENTLE_PI_CONFIG_HOME
-// names the current folder. "bundled" stands in for this package running from
-// a bundled install (testing overlay) whose prefix the launcher passed; the
-// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
+// counts as unset (#2201; it used to name the current folder). "bundled" stands
+// in for this package running from a bundled install (testing overlay) whose
+// prefix the launcher passed; the user's own GENTLE_PI_CONFIG_HOME is then not
+// this install's.
 type ConfigHomeCase = "unset" | "empty" | "bundled";
 function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
-	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX };
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
 	const cwd = process.cwd();
 	process.env.HOME = join(base, "home");
 	process.env.USERPROFILE = join(base, "home");
 	delete process.env.GENTLE_PI_CONFIG_HOME;
 	delete process.env.GENTLE_SHELL_PREFIX;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
 	t.after(() => {
 		process.chdir(cwd);
 		setBundledInstallForTesting(undefined);
@@ -6308,7 +6341,7 @@ function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHome
 	if (kind === "empty") {
 		mkdirSync(join(base, "cwd"));
 		process.chdir(join(base, "cwd"));
-		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "cwd"), userConfig };
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
 	}
 	const prefix = join(base, "prefix");
 	mkdirSync(prefix);

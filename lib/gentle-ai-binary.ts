@@ -14,7 +14,7 @@ import {
 	resolveGentleAiReleaseAsset,
 } from "../scripts/gentle-ai-installer.mjs";
 import { engramPinVersion } from "../scripts/installer-downloads.mjs";
-import { bundledGentlePiConfigHome, bundledPiConfigDir, bundledPiConfigParent, runningBundledPrefix } from "./gentle-shell-bundled.ts";
+import { bundledPiConfigDir, bundledPiConfigParent, GENTLE_SHELL_CONFIG_HOME_ENV, resolveGentlePiConfigHome, runningBundledPrefix } from "./gentle-shell-bundled.ts";
 import { fileURLToPath } from "node:url";
 
 export const GENTLE_AI_BINARY_MISSING_CODE = "package-local-binary-missing";
@@ -86,9 +86,11 @@ export function bundledGentleAiPaths(prefix: string, platform: string = process.
  * (only when the pinned Engram is published), GENTLE_AI_NO_SELF_UPDATE=1 and
  * GENTLE_PI_CONFIG_HOME (the parent of GENTLE_AI_PI_CONFIG_DIR)
  * when this gentle-pi runs from the valid bundled install GENTLE_SHELL_PREFIX
- * names (runningBundledPrefix). Otherwise `env` itself, unchanged: a gentle-pi
- * installed elsewhere (the user's own, started from the agent's shell, which
- * inherits the variable) keeps its own Gentle AI.
+ * names (runningBundledPrefix). In the standalone launcher's isolated home
+ * (#2201) only the config pair, for the folder its marker names. Otherwise
+ * `env` itself, unchanged: a gentle-pi installed elsewhere (the user's own,
+ * started from the agent's shell, which inherits the variable) keeps its own
+ * Gentle AI.
  */
 export function gentleAiIsolationEnv(
 	env: NodeJS.ProcessEnv,
@@ -96,7 +98,7 @@ export function gentleAiIsolationEnv(
 ): NodeJS.ProcessEnv {
 	const platform = options.platform ?? process.platform;
 	const prefix = runningBundledPrefix(env, { packageRoot: options.packageRoot, platform });
-	if (prefix === undefined) return env;
+	if (prefix === undefined) return standaloneGentleAiEnv(env, platform);
 	const paths = bundledGentleAiPaths(prefix, platform);
 	let engram = false;
 	try {
@@ -125,6 +127,23 @@ export function gentleAiIsolationEnv(
 	};
 }
 
+// #2201: the same config pair as a bundled install, for the folder the
+// standalone launcher's marker names, when it decides the config home
+// (resolveGentlePiConfigHome; an explicit GENTLE_PI_CONFIG_HOME keeps its
+// existing meaning for Gentle AI). Gentle AI's own state stays where it was.
+// The parent is given only for a folder named gentle-ai, the one Gentle AI
+// 4.0.0 appends to it.
+function standaloneGentleAiEnv(env: NodeJS.ProcessEnv, platform: string): NodeJS.ProcessEnv {
+	const marker = env[GENTLE_SHELL_CONFIG_HOME_ENV];
+	if (marker === undefined || resolveGentlePiConfigHome(env, homedir(), { platform }) !== marker) return env;
+	const path = platform === "win32" ? win32 : posix;
+	return {
+		...env,
+		GENTLE_AI_PI_CONFIG_DIR: marker,
+		...(path.basename(marker) === "gentle-ai" ? { GENTLE_PI_CONFIG_HOME: path.dirname(marker) } : {}),
+	};
+}
+
 function sha256(value: Buffer): string {
 	return createHash("sha256").update(value).digest("hex");
 }
@@ -136,7 +155,9 @@ function sha256(value: Buffer): string {
 //   1. GENTLE_PI_GENTLE_AI_DEV_BINARY (session override, absolute path), then
 //   2. the persistent registration file at
 //      <config home>/dev-binary.json (a bundled prefix's gentle-pi, else
-//      GENTLE_PI_CONFIG_HOME, else ~/.pi/gentle-ai) with the strict
+//      GENTLE_PI_CONFIG_HOME, else ~/.pi/gentle-ai, never the standalone
+//      launcher's marker: the main channel writes it outside any session,
+//      #2201) with the strict
 //      shape {"schema":"gentle-pi.dev-binary/v1","path":"<absolute path>"}.
 //
 // The registration deliberately pins no digest: it is the unpinned field-test
@@ -194,7 +215,7 @@ function ambientDevBinaryEnvironment(): GentleAiDevBinaryEnvironment {
 }
 
 export function gentleAiDevBinaryRegistrationPath(environment: GentleAiDevBinaryEnvironment = ambientDevBinaryEnvironment()): string {
-	const configHome = bundledGentlePiConfigHome(environment.env) ?? environment.env.GENTLE_PI_CONFIG_HOME ?? join(environment.home, ".pi", "gentle-ai");
+	const configHome = resolveGentlePiConfigHome(environment.env, environment.home, { launcherMarker: false });
 	return join(configHome, "dev-binary.json");
 }
 

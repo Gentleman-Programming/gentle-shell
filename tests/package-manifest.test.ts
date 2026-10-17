@@ -232,7 +232,7 @@ test("package verification excludes the retired init extension while retaining O
 	assert.equal(existsSync(join(PACKAGE_ROOT, "extensions", "sdd-init.ts")), false);
 	assert.doesNotMatch(verifier, /^\s*"extensions\/sdd-init\.ts",?$/m);
 	assert.match(verifier, /existsSync\(join\(root, "extensions\/sdd-init\.ts"\)\)/);
-	for (const resource of ["extensions/gentle-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/agents/gentle-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
+	for (const resource of ["extensions/gentle-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "assets/agents/gentle-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
 		assert.ok(verifier.includes(`"${resource}"`), `${resource} must remain required`);
 	}
 });
@@ -431,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.1.1 runtime pin", () => {
+test("package verification binds the published Gentle AI v4.2.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.1\.1"/);
+	assert.match(installer, /INSTALLER_VERSION = "4\.2\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:\+WmZ2IvIOiJ8qtHa7wsjnYKNasem\+PByeOZ6HIjoAL8="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:J8EluS7QrfM\+m3vmQlF26B\/shZRjD6rBfsKtrABL5mc="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.1\.1/);
+	assert.match(verifier, /v4\.2\.0/);
 });
 
 
@@ -1722,27 +1722,29 @@ test("normal and forced installation copy generic agents with complete role cont
 });
 
 test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
-	const routing = readFileSync(
-		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
-		"utf8",
-	);
-	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	// S11 T2: the Delegation Triggers live in the delegation card and the Work Routing Ladder (with its
+	// Simple Delegation pointer back to them) in the reference, so the pointer resolves across both files.
+	const routing = ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]
+		.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8"))
+		.join("\n\n");
+	// S9 canon change (gentle-ai 87a3b2eb): the canonical heading is "Delegation Triggers" (no "Mandatory").
+	const reference = "For bounded writes, follow the canonical Writer rule under Delegation Triggers.";
 	const resolveSimpleDelegation = (source: string): string => {
 		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
 		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
-		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		const canonical = readMarkdownSection(source, "Delegation Triggers");
 		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
 		return canonical;
 	};
-	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
+	const delegationTriggers = readMarkdownSection(routing, "Delegation Triggers");
 
 	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
-	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assertWorkerFallbackRouting(delegationTriggers, "Delegation Triggers");
 	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Delegation Triggers", "Other Rule"))),
 		/must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
-		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Delegation Triggers section/);
 	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
 		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
@@ -1758,8 +1760,10 @@ test("bounded implementation routing resolves the explicit canonical fallback re
 });
 
 test("orchestrator routes generic roles without static RDD lens routing", () => {
-	for (const file of ["orchestrator.md", "orchestrator-delegation.md"]) {
-		const routing = readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8");
+	// S11 T2: the explorer fallback binding moved from the delegation card to its reference; the card and
+	// the reference together are the lazy delegation route.
+	for (const files of [["orchestrator.md"], ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]]) {
+		const routing = files.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8")).join("\n\n");
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
@@ -1789,9 +1793,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.2.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.3.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.2.0", "the release manifest must be explicitly pinned to v4.2.0");
+	assert.equal(packageJson.version, "4.3.0", "the release manifest must be explicitly pinned to v4.3.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

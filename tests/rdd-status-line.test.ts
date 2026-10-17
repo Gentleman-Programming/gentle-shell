@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 import {
+	NATIVE_REVIEW_ERROR_CODE,
 	NATIVE_REVIEW_MODE_OPERATION,
+	NATIVE_REVIEW_OPERATION,
+	NativeReviewCliError,
 	NATIVE_REVIEW_MODE_SOURCE,
 	type NativeReviewCli,
 	type NativeReviewModeRequest,
@@ -31,6 +34,7 @@ import {
 
 const {
 	renderRddStatusLine,
+	pinRddStatusLine,
 	resolveRddModeStatus,
 	resolveRddStatusLine,
 	getOrchestratorPrompt,
@@ -357,4 +361,79 @@ test("resolveRddModeStatus stays unknown when no status was ever read", async ()
 	clearRddStatusMemoForTesting();
 	const cli = fakeReviewMode(() => { throw new Error("never available"); });
 	assert.equal(await resolveRddModeStatus(cli, "/repo-never-known"), undefined);
+});
+
+// gentle-shell#2250: the one-shot unavailable notice must name the cause so a
+// user on a slow or foreign-owned filesystem can tell a timeout from a native
+// refusal instead of reading a generic "absent, timed out, or failed".
+function captureNotices(): { ctx: { hasUI: true; ui: { notify(message: string, level: string): void } }; messages: string[] } {
+	const messages: string[] = [];
+	return { ctx: { hasUI: true, ui: { notify(message: string) { messages.push(message); } } }, messages };
+}
+
+test("the unavailable notice names the native failure and its stderr", async () => {
+	clearRddStatusMemoForTesting();
+	const { ctx, messages } = captureNotices();
+	const cli = fakeReviewMode(() => {
+		throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.MODE, true, false, "native process failed", {
+			operation: NATIVE_REVIEW_OPERATION.MODE,
+			error_code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO,
+			exit_code: 1,
+			timed_out: false,
+			output_limit_exceeded: false,
+			stderr: "fatal: detected dubious ownership in repository",
+		});
+	});
+	assert.equal(await resolveRddModeStatus(cli, "/repo-native-failure", undefined, Date.now, ctx as never), undefined);
+	assert.equal(messages.length, 1);
+	assert.match(messages[0], /status is unavailable: native `gentle-ai review mode status` failed \(non-zero, exit 1\): fatal: detected dubious ownership in repository\./);
+	assert.match(messages[0], /keeps the last known status/);
+});
+
+test("the unavailable notice reports a timeout distinctly", async () => {
+	clearRddStatusMemoForTesting();
+	const { ctx, messages } = captureNotices();
+	const keepalive = setTimeout(() => {}, 2000);
+	try {
+		await resolveRddModeStatus(fakeReviewMode(() => new Promise<never>(() => {})), "/repo-timeout", AbortSignal.timeout(50), Date.now, ctx as never);
+	} finally {
+		clearTimeout(keepalive);
+	}
+	assert.equal(messages.length, 1);
+	assert.match(messages[0], new RegExp(`status is unavailable: native \`gentle-ai review mode status\` did not answer within ${RDD_STATUS_TIMEOUT_MS} ms\.`));
+});
+
+test("the unavailable notice reports an absent native review CLI", async () => {
+	clearRddStatusMemoForTesting();
+	const { ctx, messages } = captureNotices();
+	await resolveRddModeStatus(null, "/repo-absent", undefined, Date.now, ctx as never);
+	assert.equal(messages.length, 1);
+	assert.match(messages[0], /status is unavailable: the native gentle-ai review CLI is not available\./);
+});
+
+test("the unavailable notice still fires only once per session", async () => {
+	clearRddStatusMemoForTesting();
+	const { ctx, messages } = captureNotices();
+	const cli = fakeReviewMode(() => { throw new Error("boom"); });
+	await resolveRddModeStatus(cli, "/repo-once-a", undefined, Date.now, ctx as never);
+	await resolveRddModeStatus(cli, "/repo-once-b", undefined, Date.now, ctx as never);
+	assert.equal(messages.length, 1);
+	assert.match(messages[0], /status is unavailable: boom\./);
+});
+
+test("pinRddStatusLine keeps the session's first line until the off state changes (#2195)", () => {
+	const unknown = "Receipt-driven development: unknown (native status unavailable)";
+	const onGlobal = "Receipt-driven development: on (decided by global)";
+	const onClone = "Receipt-driven development: on (decided by clone)";
+	const off = "Receipt-driven development: off (decided by clone)";
+	const offGlobal = "Receipt-driven development: off (decided by global)";
+	assert.equal(pinRddStatusLine(undefined, onGlobal), onGlobal, "the first render of a session is the resolved line");
+	assert.equal(pinRddStatusLine(unknown, onGlobal), unknown, "unknown to on keeps the cached prompt prefix");
+	assert.equal(pinRddStatusLine(onGlobal, unknown), onGlobal, "on to unknown keeps the cached prompt prefix");
+	assert.equal(pinRddStatusLine(onGlobal, onClone), onGlobal, "a deciding-source change alone keeps the prefix");
+	assert.equal(pinRddStatusLine(off, offGlobal), off, "a source change while off keeps the prefix");
+	assert.equal(pinRddStatusLine(onGlobal, off), off, "turning RDD off re-renders, since it drops the review contract");
+	assert.equal(pinRddStatusLine(unknown, off), off, "unknown to off re-renders");
+	assert.equal(pinRddStatusLine(off, onGlobal), onGlobal, "turning RDD back on re-renders");
+	assert.equal(pinRddStatusLine(off, unknown), unknown, "off to unknown re-renders, since unknown keeps the review contract");
 });

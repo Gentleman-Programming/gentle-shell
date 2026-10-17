@@ -176,6 +176,29 @@ export function bundledGentlePiConfigHome(env     )                     {
 	return prefix === undefined ? undefined : bundledPiConfigDir(prefix);
 }
 
+// #2201: the standalone launcher gives Pi this variable in its isolated home
+// only, naming the config folder next to the agent dir (standaloneConfigHome:
+// ~/.gentle-shell/gentle-ai by default). It is launcher-owned, never
+// GENTLE_PI_CONFIG_HOME: Gentle AI 4.0.0 reads that one as the parent of its
+// own gentle-ai folder, and the agent's shell would pass it to any gentle-ai.
+export const GENTLE_SHELL_CONFIG_HOME_ENV = "GENTLE_SHELL_CONFIG_HOME";
+
+// gentle-pi's config home, the one rule every reader shares: a bundled
+// prefix's folder, then an explicit GENTLE_PI_CONFIG_HOME, then the launcher's
+// marker (absolute only), then ~/.pi/gentle-ai. Empty values count as unset.
+// `launcherMarker: false` is for install-level state written outside a session
+// (the main channel's channel.json, builds and dev-binary.json): the installer
+// and `gentle-shell upgrade` never see the marker, so their readers ignore it.
+export function resolveGentlePiConfigHome(env     , home        , options                                                  = {})         {
+	const path = pathFor(options.platform ?? process.platform);
+	const bundled = bundledGentlePiConfigHome(env);
+	if (bundled !== undefined) return bundled;
+	if (env.GENTLE_PI_CONFIG_HOME) return env.GENTLE_PI_CONFIG_HOME;
+	const marker = env[GENTLE_SHELL_CONFIG_HOME_ENV];
+	if (options.launcherMarker !== false && marker && path.isAbsolute(marker)) return marker;
+	return path.join(home, ".pi", "gentle-ai");
+}
+
 // The exact Pi of the version (S8): the Pi the version's package.json pins,
 // installed inside the version folder with Pi's own bin entry. Never another Pi.
 export function bundledPi(install                , input                                     )            {

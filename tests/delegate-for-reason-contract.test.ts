@@ -30,11 +30,19 @@ function lineStarting(text: string, prefix: string): string {
 const coreWriter = lineStarting(core, "5. **Writer rule**");
 const delegationWriter = lineStarting(delegation, "5. **Writer trigger (Writer rule):**");
 
+// Writer-rule fix (benchmark finding): a low-effort orchestrator read "2+
+// independent units, disjoint files" as tests vs README and split one behavior
+// across writers. The core rule now defines a unit as independent behavior,
+// keeps tests, docs, and code of one behavior together, and sets a size floor.
 test("AC1: the core writer rule fires on named reasons, never on size or file count", () => {
 	for (const clause of [
 		"never by file count or a large task alone",
 		"`orchestrator-writer.md`",
-		"2+ independent units, disjoint files, each heavier than a subagent start",
+		"2+ independent units of behavior (separate features or fixes that do not depend on each other), each heavier than a subagent start",
+		"a unit qualifies only when it needs several minutes of work: several files or roughly 100+ changed lines",
+		"a small change to one module or one command is done inline even when several such changes are independent",
+		"Tests, docs, and code of the same behavior are one unit, never separate writers",
+		"a delivery that depends on an earlier one is not independent",
 		"Context backstop",
 	]) {
 		assert.ok(coreWriter.includes(clause), `core Writer rule is missing: ${clause}`);
@@ -65,13 +73,19 @@ test("AC1: the lazy writer trigger names its reasons and keeps the logbook on th
 	assert.ok(skill.includes("a writer reason (parallel units or context)"), "the skill must name the writer reasons");
 });
 
-test("AC2: parallelism needs 2+ independent units, disjoint files, each heavier than a subagent start", () => {
-	assert.ok(
-		delegationWriter.includes(
-			"(a) parallelism — 2+ independent units with disjoint files, each clearly heavier than starting a subagent; medium tasks included",
-		),
-		"lazy Writer trigger must state the parallelism threshold",
-	);
+// S9 canon change (gentle-ai 87a3b2eb): the lazy trigger mirrors the canon's
+// behavior unit and size threshold instead of "clearly heavier than starting a
+// subagent; medium tasks included".
+test("AC2: parallelism needs 2+ independent behavior units, disjoint surfaces, each worth several minutes", () => {
+	for (const clause of [
+		"(a) parallelism — 2+ independent units of behavior with disjoint edit surfaces, each needing several minutes of work (several files or ~100+ changed lines; a subagent spends 1-2 minutes reading before it writes), launched together",
+		"A unit is one independent piece of behavior with its code, tests, and docs together: never split one behavior into test, docs, and code writers",
+		"a delivery that depends on another is not independent",
+		"several small independent changes run inline, one after another",
+	]) {
+		assert.ok(delegationWriter.includes(clause), `lazy Writer trigger is missing: ${clause}`);
+	}
+	assert.ok(!delegationWriter.includes("medium tasks included"), "lazy Writer trigger keeps the retired medium-task clause");
 	assert.ok(writer.includes("parallel units"), "the writer module must name the parallelism reason");
 });
 
@@ -96,16 +110,20 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 	);
 });
 
+// Verification by named risk changed the core rule 3 text: only a named
+// high-risk item, passed as assess `escalate`, adds the independent verifier.
+// odd/tasks/verifier-admission.md S6: the rule names the runtime admission of the verifier launch.
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — high risk → independent `gentle-ai-verify`; else inline; gates/overengineering: `orchestrator-verification.md`.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
 		),
 		"core Verification rule changed",
 	);
 	assert.ok(
 		delegation.includes(
-			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): a high-risk change (Task Size) gets an independent `gentle-ai-verify` run after the change's own checks; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
+			// S9 canon change (gentle-ai 6b9a71ef): only a named high-risk item adds the verifier.
+			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
 		),
 		"lazy Verification rule changed",
 	);
@@ -177,26 +195,28 @@ test("T12/S6: one independent verify per delegated unit after its self-review, n
 		"once, after its final self-review",
 		"never per worker cycle or retry",
 		"its Risk line",
-		"small-model bias per the tier table",
+		"high-risk list in Task Size",
 	]) {
 		assert.ok(item.includes(clause), `independent verify timing is missing: ${clause}`);
 	}
 	assert.ok(!item.includes("(1) "), "the timing rule restates the high-risk list");
+	// Verification by named risk retired the small-model bias.
+	assert.ok(!item.includes("small-model bias"), "the per-unit verify must not add a verifier for the writer's model");
 });
 
-// T15 (S6, L38): after3 B x4 paid two same-model verifies with 0 defects,
-// while verify caught real defects in smaller-model (Luna) writer code.
-test("T15/S6: same-model inline code over several deliveries gets one verify at the feature's end; smaller-model writer code stays per unit", () => {
+// T15 (S6, L38): after3 B x4 paid two same-model verifies with 0 defects.
+// Verification by named risk (user decision: the verifier follows the change's
+// risk, never the model that wrote it) dropped the smaller-model exception.
+test("T15/S6: inline code over several deliveries gets one verify at the feature's end, whatever model wrote it", () => {
 	const item = reviewItem("2. **Independent verify per unit**");
 	for (const clause of [
-		"Same-model inline code over several deliveries of one feature",
+		"Inline code over several deliveries of one feature",
 		"one verify at the feature's end",
-		"smaller-model writer code stays per unit",
 		"only when that unit is high risk",
-		"small-model bias per the tier table",
 	]) {
 		assert.ok(item.includes(clause), `independent verify exception is missing: ${clause}`);
 	}
+	assert.ok(!item.includes("smaller-model"), "the writer's model never keeps a per-unit verify");
 });
 
 test("T11/S4: the parent hands verify the whole spec, authorizes its probes and resolves every unmet item", () => {
@@ -217,12 +237,16 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 });
 
 // verify-always-rdd-high S1 deliberately rewrote this section: verification follows the
-// risk tier in every RDD state. The pin still guards against accidental drift.
+// risk tier in every RDD state. Verification by named risk deliberately rewrote
+// the tier table again (escalate-only verifier, no small-model bias), and
+// verifier admission (odd/tasks/verifier-admission.md S6) names the runtime
+// check of the verifier launch; the PR #2290 review (odd/tasks/pr-2290-review.md S4)
+// names every line that admits it. The pin still guards against accidental drift.
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"1f66f6998c4659fb08d81b83d350dcf5e8279b3f04a9e1a3a2951ed2abe7e54b",
+		"b159829cad24a31e23d6309b3bfe0e4cc71eec2316775ba07314fecd1fb6a63f",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");
@@ -299,7 +323,8 @@ test("T10: escalate labels name the core high-risk items", () => {
 test("T9/AC2: the parallelism reason launches every unit together in background and waits for all", () => {
 	const parallel = lineStarting(writer, "- **Parallelism**");
 	for (const clause of [
-		"every disjoint unit in the same turn",
+		// Writer-rule fix: a unit is one independent piece of behavior.
+		"every independent unit in the same turn",
 		'`subagent_run` with `mode: "background"`',
 		"wait for all completions",
 		"serial launches void the reason",
@@ -318,11 +343,52 @@ test("AC6: parallel writers need disjoint Allowed edit surfaces (runtime-enforce
 	const harness = read("extensions/gentle-ai.ts");
 	const docs = read("docs/readme-reference.md");
 	assert.ok(core.includes(`- P${rule}.`), "core Safety must carry the relaxed writer rule");
-	assert.ok(harness.includes(`- P${rule}.`), "harness principles must carry the relaxed writer rule");
-	for (const [path, text] of Object.entries({ core, delegation, harness, skill, docs })) {
+	// S11 T3: deduplicated. The harness principle repeated core Safety in the same
+	// parent prompt; the rendered prompt now carries the rule once, from Safety.
+	assert.ok(!harness.includes(rule), "harness principles restate the core Safety writer rule");
+	for (const persona of ["gentleman", "neutral"] as const) {
+		assert.equal(__testing.buildGentlePrompt(persona).split(rule).length - 1, 1, `[${persona}] the parent prompt must carry the writer rule once`);
+	}
+	for (const [path, text] of Object.entries({ core, delegation, skill, docs })) {
 		assert.ok(text.includes(rule), `${path} is missing the relaxed writer rule`);
+	}
+	for (const [path, text] of Object.entries({ core, delegation, harness, skill, docs })) {
 		for (const retired of ["single-threaded", "Never run parallel writers in one worktree", "do not run parallel writers unless isolated worktrees", "preserves a single writer thread", "one writer per task"]) {
 			assert.ok(!text.includes(retired), `${path} keeps the single-writer wording: ${retired}`);
 		}
+	}
+});
+
+// Writer-rule fix (benchmark finding): "Mandatory Delegation Triggers ...
+// and is then mandatory" read as a default to delegate. The core heading now
+// says a trigger holds only when its condition truly holds, inline when in doubt.
+test("the core delegation triggers hold only when their condition truly holds, none by default", () => {
+	const intro = lineStarting(core, "Delegation Triggers — ");
+	for (const clause of [
+		"each mechanism turns on only when its own trigger condition truly holds, and only then is it mandatory",
+		"no trigger holds by default",
+		"when in doubt work inline",
+	]) {
+		assert.ok(intro.includes(clause), `core delegation triggers are missing: ${clause}`);
+	}
+	assert.ok(!core.includes("Mandatory Delegation Triggers"), "the core must not read the triggers as mandatory by default");
+});
+
+test("the writer module sets the size threshold and keeps one behavior in one unit", () => {
+	const size = lineStarting(writer, "- **Size threshold**");
+	for (const clause of [
+		"a subagent costs one to two minutes of reading and setup before it writes anything",
+		"delegate a unit only when it needs several minutes of work (several files or roughly 100+ changed lines)",
+		"Several small independent changes are faster inline, one after another",
+	]) {
+		assert.ok(size.includes(clause), `writer size threshold is missing: ${clause}`);
+	}
+	const parallel = lineStarting(writer, "- **Parallelism**");
+	for (const clause of [
+		"a unit is one independent piece of behavior with its own code, tests, and docs",
+		"never split one behavior into a test writer, a docs writer, and inline code",
+		"never delegate a unit that depends on another unit still in progress",
+	]) {
+		assert.ok(parallel.includes(clause), `writer parallelism unit rule is missing: ${clause}`);
 	}
 });

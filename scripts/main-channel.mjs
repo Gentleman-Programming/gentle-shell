@@ -4,9 +4,11 @@
 // an exact commit SHA resolved at install or upgrade time:
 //   - Gentle AI: `go install <module>@<sha>` in a sealed Go environment, so the
 //     module source is verified by Go's checksum database (sum.golang.org), as
-//     the Windows release build already is. The binary must report a version
-//     naming that commit, then it is activated through the existing dev-binary
-//     override, which never falls back to the pinned binary silently.
+//     the Windows release build already is. Go must resolve the commit to a
+//     module version (a tag or a pseudo-version) whose origin is that commit,
+//     and the binary must embed that version and report it, then it is
+//     activated through the existing dev-binary override, which never falls
+//     back to the pinned binary silently.
 //   - Gentle Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
 //     test suite), then installed globally like any local tarball.
@@ -18,13 +20,14 @@ import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-prefligh
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
+export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
 export const GENTLE_AI_MAIN_PACKAGE = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
 export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 
 const SHA = /^[0-9a-f]{40}$/;
 const MINUTE = 60_000;
-const deadlines = Object.freeze({ build: 15 * MINUTE, version: 30_000, extract: 2 * MINUTE, pack: 5 * MINUTE });
+const deadlines = Object.freeze({ build: 15 * MINUTE, resolve: 2 * MINUTE, version: 30_000, extract: 2 * MINUTE, pack: 5 * MINUTE });
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 
 export class MainChannelError extends Error {
@@ -35,9 +38,10 @@ export class MainChannelError extends Error {
 	}
 }
 
-/** Same config home as the dev-binary override: GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai. */
+/** Same config home as the dev-binary override: a nonempty GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai.
+ * Install-level state, so never the standalone launcher's per-home marker (#2201). */
 export function configHome({ env, home }) {
-	return env.GENTLE_PI_CONFIG_HOME ?? join(home, ".pi", "gentle-ai");
+	return env.GENTLE_PI_CONFIG_HOME || join(home, ".pi", "gentle-ai");
 }
 export function channelStatePath(ctx) {
 	return join(configHome(ctx), "channel.json");
@@ -135,23 +139,57 @@ export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs
 	const executable = platform === "win32" ? "gentle-ai.exe" : "gentle-ai";
 	const directory = join(configHome(ctx), "main", "gentle-ai", commit);
 	const buildDirectory = join(configHome(ctx), "main", ".build");
+	// Verified in the work folder before it replaces anything, so a failed rebuild of
+	// an already registered commit never touches the override; the final move stays
+	// on one filesystem, and uninstall already accepts a leftover .build.
+	const staging = join(buildDirectory, commit);
 	await fs.rm(buildDirectory, { recursive: true, force: true });
 	const env = sealedGoEnvironment(goPath, buildDirectory, platform);
 	for (const path of [env.GOBIN, env.GOPATH, env.GOMODCACHE, env.GOCACHE, join(buildDirectory, "tmp")]) await fs.mkdir(path, { recursive: true });
 	try {
 		const install = await run(goPath, ["install", `${GENTLE_AI_MAIN_PACKAGE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.build, stderrTail: 4096 });
 		if (!succeeded(install)) throw new MainChannelError("main-gentle-ai-build-failed", `go install ${GENTLE_AI_MAIN_PACKAGE}@${commit} failed`, stderrCause(install));
+		await fs.mkdir(staging, { recursive: true });
+		const stagedPath = join(staging, executable);
+		await fs.copyFile(join(env.GOBIN, executable), stagedPath);
+		if (platform !== "win32") await fs.chmod(stagedPath, 0o755);
+		const reject = async (message, cause) => {
+			throw new MainChannelError("main-gentle-ai-unverified", message, cause);
+		};
+		const short = commit.slice(0, 12);
+		const goOptions = { env, cwd: buildDirectory, deadlineMs: deadlines.version, stderrTail: 4096 };
+		// Go resolves the commit through the proxy and checksum database: a tag commit is
+		// stamped with its tag, any other with a pseudo-version, so the version is not guessed.
+		// Resolving may reach the proxy, so it gets a network deadline, not the local one.
+		const listed = await run(goPath, ["list", "-m", "-json", `${GENTLE_AI_MODULE}@${commit}`], { ...goOptions, deadlineMs: deadlines.resolve });
+		if (!succeeded(listed)) return await reject(`Go could not resolve Gentle AI commit ${short}`, stderrCause(listed));
+		let resolved = null;
+		try {
+			resolved = JSON.parse(String(listed.stdout ?? ""));
+		} catch {
+			return await reject(`Go returned unreadable module information for Gentle AI commit ${short}`);
+		}
+		const resolvedVersion = typeof resolved?.Version === "string" ? resolved.Version : "";
+		const originHash = resolved?.Origin?.Hash;
+		if (resolvedVersion === "") return await reject(`Go resolved Gentle AI commit ${short} to no module version`);
+		if (originHash !== commit) {
+			return await reject(`Go resolved Gentle AI commit ${short} to ${originHash ? `commit ${originHash}` : "no commit"}, not the requested commit`);
+		}
+		const embedded = await run(goPath, ["version", "-m", stagedPath], goOptions);
+		if (!succeeded(embedded)) return await reject("the built Gentle AI's embedded module version could not be read", stderrCause(embedded));
+		const modLine = String(embedded.stdout ?? "").split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find((fields) => fields[0] === "mod" && fields[1] === GENTLE_AI_MODULE);
+		if (modLine?.[2] !== resolvedVersion) {
+			return await reject(`the built Gentle AI embeds module version ${modLine?.[2] ?? "none"}, expected ${resolvedVersion} for commit ${short}`);
+		}
+		const probe = await run(stagedPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
+		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
+		const expectedVersion = resolvedVersion.replace(/^v/, "");
+		if (!match || match[1] !== expectedVersion) {
+			return await reject(`the built Gentle AI reports version ${match ? match[1] : "none"}, expected ${expectedVersion} for commit ${short}`);
+		}
 		await fs.mkdir(directory, { recursive: true });
 		const binaryPath = join(directory, executable);
-		await fs.copyFile(join(env.GOBIN, executable), binaryPath);
-		if (platform !== "win32") await fs.chmod(binaryPath, 0o755);
-		// Go stamps the module pseudo-version, whose suffix is the commit's first 12 characters.
-		const probe = await run(binaryPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
-		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
-		if (!match || !match[1].endsWith(`-${commit.slice(0, 12)}`)) {
-			await fs.rm(directory, { recursive: true, force: true });
-			throw new MainChannelError("main-gentle-ai-unverified", `the built Gentle AI does not report commit ${commit.slice(0, 12)}`);
-		}
+		await fs.rename(stagedPath, binaryPath);
 		registerGentleAiDevBinary(binaryPath, ctx, platform);
 		return { binaryPath, version: match[1] };
 	} finally {
@@ -386,6 +424,21 @@ async function mainGo({ userGo, pinnedGo, acquire, run }) {
 	}
 }
 
+/** A thrown value's message when it has one (an Error or not), otherwise the value as text. */
+function describe(error) {
+	return typeof error?.message === "string" ? error.message : String(error);
+}
+
+/** `error` with `detail` appended to its message, keeping its code and cause; any
+ * other error becomes `main-upgrade-incomplete` with its message and itself as cause. */
+function withDetail(error, detail) {
+	if (!(error instanceof MainChannelError)) {
+		return new MainChannelError("main-upgrade-incomplete", `${describe(error)}; ${detail}`, error);
+	}
+	const message = error.message.slice(`${error.code}: `.length);
+	return new MainChannelError(error.code, `${message}; ${detail}`, error.cause);
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
@@ -440,11 +493,33 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+	// Fail forward (#2356): a Gentle AI step that fails still installs a main Shell that
+	// moved, so the retry runs the new Shell's code; the channel is recorded only when
+	// both steps succeed, so that retry rebuilds Gentle AI. Verification stays fail-closed.
+	// A flag, not the caught value: a rejection may be any value, even a falsy one.
+	let aiFailed = false;
+	let aiError;
+	if (!aiCurrent) {
+		try {
+			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+		} catch (error) {
+			if (shellCurrent) throw error;
+			aiFailed = true;
+			aiError = error;
+		}
+	}
 	if (!shellCurrent) {
-		const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
-		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
-		await installGlobal(manager, tgz, run);
+		try {
+			const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
+			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
+			await installGlobal(manager, tgz, run);
+		} catch (error) {
+			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
+		}
+	}
+	if (aiFailed) {
+		out(`Updated Gentle Shell to the latest main (${shellCommit.slice(0, 12)}); Gentle AI was not updated.`);
+		throw withDetail(aiError, `Gentle Shell was updated to main ${shellCommit.slice(0, 12)} but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
 	}
 	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);
 	out(`Updated to the latest main: ${summary}.`);

@@ -7418,11 +7418,14 @@ function candidateViewSymlinkCapability(commonDir: string | undefined): Candidat
 }
 
 function candidateViewPreflightRejection(status: ReviewStatusV3, diagnostics: Record<string, string>): Record<string, unknown> {
+	// The native body carries the executable START transition; consumers read the
+	// nested result.next_transition, so a blocked inspect must not forward it.
+	const { next_transition: _withheldTransition, ...blockedResult } = status.raw;
 	return {
 		operation: REVIEW_CONTROLLER_OPERATION.INSPECT,
 		status: "blocked",
 		outcome: "candidate-view-preflight-blocked",
-		result: status.raw,
+		result: blockedResult,
 		diagnostics,
 		mutation_performed: false,
 		mutation_outcome: "none",

@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -38,11 +38,18 @@ export interface CodeGraphRunOptions {
 	maxBuffer: number;
 }
 
+interface CodeGraphLocalExclude {
+	status: "added" | "present" | "failed";
+	path?: string;
+	reason?: string;
+}
+
 interface CodeGraphFallbackDetails {
 	status: CodeGraphStatus;
 	operation: CodeGraphOperation;
 	cwd: string;
 	fallback: string;
+	localExclude?: CodeGraphLocalExclude;
 }
 
 export type CodeGraphRunner = (
@@ -107,6 +114,55 @@ function assertSafeIndexDirectory(cwd: string): void {
 		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return;
 		throw error;
 	}
+}
+
+function indexExists(cwd: string): boolean {
+	try {
+		return lstatSync(join(cwd, ".codegraph")).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function gitOutput(cwd: string, args: readonly string[]): string {
+	return execFileSync("git", [...args], {
+		cwd,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		windowsHide: true,
+	}).trim();
+}
+
+// CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
+// stays untracked and enters every diff. Keep the whole index out of git through
+// the worktree's local exclude file; tracked files and .gitignore are never edited.
+const LOCAL_EXCLUDE_PATTERN = ".codegraph/";
+const EQUIVALENT_EXCLUDE_PATTERNS = new Set([".codegraph", ".codegraph/", "/.codegraph", "/.codegraph/"]);
+
+function excludeIndexLocally(cwd: string): CodeGraphLocalExclude | undefined {
+	let path: string | undefined;
+	try {
+		if (gitOutput(cwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") return undefined;
+		// --git-path resolves the exclude file a linked worktree actually reads.
+		path = resolve(cwd, gitOutput(cwd, ["rev-parse", "--git-path", "info/exclude"]));
+		const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+		mkdirSync(dirname(path), { recursive: true });
+		path = join(realpathSync(dirname(path)), basename(path));
+		if (current.split(/\r?\n/).some((line) => EQUIVALENT_EXCLUDE_PATTERNS.has(line.trim()))) {
+			return { status: "present", path };
+		}
+		const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
+		appendFileSync(path, `${separator}${LOCAL_EXCLUDE_PATTERN}\n`);
+		return { status: "added", path };
+	} catch (error: unknown) {
+		const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+		return { status: "failed", ...(path ? { path } : {}), reason };
+	}
+}
+
+function withLocalExcludeNote(text: string, localExclude: CodeGraphLocalExclude | undefined): string {
+	if (localExclude?.status !== "failed") return text;
+	return `${text}\n\n.codegraph/ is not excluded from git locally (${localExclude.reason}). Keep .codegraph/ out of the change.`;
 }
 
 function resolveLimit(limit: number | undefined): number {
@@ -304,7 +360,7 @@ export function createCodeGraphTool(
 			signal: AbortSignal | undefined,
 			_onUpdate: undefined,
 			ctx: ExtensionContext,
-		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[] } | CodeGraphFallbackDetails }> {
+		): Promise<{ content: { type: "text"; text: string }[]; details: { operation: CodeGraphOperation; cwd: string; args: string[]; localExclude?: CodeGraphLocalExclude } | CodeGraphFallbackDetails }> {
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
 			const args = commandArguments(parameters, cwd);
@@ -313,18 +369,24 @@ export function createCodeGraphTool(
 			try {
 				const result = await runner(args, { cwd, signal: runSignal, maxBuffer: PROCESS_MAX_BUFFER });
 				const output = truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
+				const localExclude = parameters.operation === CODEGRAPH_OPERATION.INIT || indexExists(cwd)
+					? excludeIndexLocally(cwd)
+					: undefined;
 				return {
-					content: [{ type: "text" as const, text: output || "CodeGraph completed without output." }],
-					details: { operation: parameters.operation, cwd, args },
+					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
+					details: { operation: parameters.operation, cwd, args, ...(localExclude ? { localExclude } : {}) },
 				};
 			} catch (error: unknown) {
 				const details = codeGraphFailureDetails(error, parameters.operation, cwd);
+				// A failed init can still leave a partial index behind.
+				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd) : undefined;
+				if (localExclude) details.localExclude = localExclude;
 				const timedOut = timeout?.aborted === true && signal?.aborted !== true;
 				const text = timedOut
 					? `CodeGraph timed out after ${queryTimeoutMs} ms (a slow filesystem such as a WSL /mnt mount, or a very large workspace). ${FALLBACK_INSTRUCTIONS}`
 					: codeGraphFailureMessage(details.status);
 				return {
-					content: [{ type: "text" as const, text }],
+					content: [{ type: "text" as const, text: withLocalExcludeNote(text, localExclude) }],
 					details,
 				};
 			}

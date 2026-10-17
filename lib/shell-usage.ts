@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { parseModelRef } from "./agents-config.ts";
-import { paintGauge } from "./shell-gauge.ts";
+import { paintGauge, type GaugePaint } from "./shell-gauge.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
 // provider reports. Codex sends them as SSE headers and through its usage
@@ -514,16 +514,16 @@ export function accountIdFromToken(token: string): string | undefined {
 	}
 }
 
-function paintMeter(percent: number, cells: number, theme: UsageTheme): string {
-	return paintGauge(percent, theme, cells);
+function paintMeter(percent: number, cells: number, theme: UsageTheme, paint?: GaugePaint): string {
+	return paintGauge(percent, theme, cells, paint);
 }
 
-export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string): string | undefined {
+export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string, paint?: GaugePaint): string | undefined {
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
 	// An unlabeled window prints as the name, the meter and the percentage.
-	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
+	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme, paint), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
 	const tail = rest.map((window) => `${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, window.label)} ${theme.fg(ROLE.PERCENT, `${Math.round(window.usedPercent)}%`)}`);
 	return [head, ...tail].join(" ");
 }
@@ -574,7 +574,7 @@ export interface UsagePanelScope {
 // snapshot keeps that snapshot and says so beside it, and a provider recorded
 // under a previous profile's routing is never presented as current scope after
 // a profile switch.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope): string[] {
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope, paint?: GaugePaint): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
 	const byProvider = new Map(usages.map((usage) => [usage.provider, usage] as const));
 	const rows = scope
@@ -607,7 +607,7 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
 			const reset = formatReset(row.window.resetAt, now);
 			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
-			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
+			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme, paint)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
 		// A failure after a good snapshot never hides either fact: the last good
 		// snapshot stays on its rows and the failed refresh says so beside it.

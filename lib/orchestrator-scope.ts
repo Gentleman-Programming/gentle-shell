@@ -41,9 +41,14 @@ export function validRecordedScope(value: any): value is RecordedScope {
 /** One bounded derivative snapshot, not a registry or authority. The caller supplies
  * only admitted, unfinished, non-restored owned children and durable registry roots.
  * Membership/cwd changes invalidate even unknown facts; session replacement clears.
- * No resolution runs on a stable heartbeat/token update. */
+ * Recency reorders rebuild caller-ordered snapshots without refreshing visible facts.
+ * Resolution stays bounded to the host and first eight tasks/registered roots;
+ * newly visible paths are resolved lazily, including after a reorder. */
 export class OrchestratorScopeCache {
 	private key = "";
+	private membershipKey = "";
+	private facts = new Map<string, RepositoryFact>();
+	private resolvedAt = 0;
 	private snapshot?: RecordedScope;
 	private resolver: WorktreeResolver;
 	private now: () => number;
@@ -53,14 +58,24 @@ export class OrchestratorScopeCache {
 	}
 	clear() {
 		this.key = "";
+		this.membershipKey = "";
+		this.facts.clear();
 		this.snapshot = undefined;
 	}
 	project(cwd: string, tasks: readonly { id: string; cwd: string }[], roots: readonly string[]): RecordedScope {
 		const registered = [...new Set(roots)];
 		const key = createHash("sha256").update(JSON.stringify([cwd, tasks.map(t => [t.id, t.cwd]), registered])).digest("hex");
 		if (key === this.key && this.snapshot) return this.snapshot;
-		const resolvedAt = this.now();
-		const facts = new Map<string, RepositoryFact>();
+		const membershipKey = createHash("sha256").update(JSON.stringify([
+			cwd, tasks.map(t => JSON.stringify([t.id, t.cwd])).sort(), [...registered].sort(),
+		])).digest("hex");
+		if (membershipKey !== this.membershipKey) {
+			this.facts.clear();
+			this.resolvedAt = this.now();
+			this.membershipKey = membershipKey;
+		}
+		const resolvedAt = this.resolvedAt;
+		const facts = this.facts;
 		const fact = (path: string) => {
 			if (facts.has(path)) return facts.get(path)!;
 			const unknown: RepositoryFact = { root: null, cloneHash: null, resolvedAt, source: "recorded-workspace/git" };
@@ -74,6 +89,9 @@ export class OrchestratorScopeCache {
 		this.snapshot = { host: fact(cwd), tasks: tasks.slice(0, 8).map(t => ({ id: t.id, repository: fact(t.cwd) })),
 			registered: registered.slice(0, 8).map(fact), omittedTasks: Math.max(0, tasks.length - 8),
 			omittedRegistered: Math.max(0, registered.length - 8), complete: tasks.length <= 8 && registered.length <= 8 };
+		// Keep fact retention bounded even when an oversized task list rotates.
+		const visible = new Set([cwd, ...tasks.slice(0, 8).map(t => t.cwd), ...registered.slice(0, 8)]);
+		for (const path of facts.keys()) if (!visible.has(path)) facts.delete(path);
 		this.key = key;
 		return this.snapshot;
 	}

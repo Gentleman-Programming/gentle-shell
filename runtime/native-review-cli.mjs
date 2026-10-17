@@ -124,6 +124,7 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 
 
 
+
 export const NATIVE_REVIEW_MODE_OPERATION = {
 	STATUS: "status",
 	ENABLE: "enable",
@@ -1083,6 +1084,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
 	// No new negotiated capability identity is asserted.
 	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.2.0 repeats 4.1.1: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The provider contract moved
+	// from 1.3.0 to 1.4.0 (routing/pi.md, gentle-ai#5536), with published
+	// tarball SHA-256
+	// 9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b.
+	// No new negotiated capability identity is asserted.
+	"4.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 

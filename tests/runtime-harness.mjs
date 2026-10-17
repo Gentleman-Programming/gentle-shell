@@ -604,9 +604,19 @@ async function run() {
 			assert.equal(writerDispatch.task, task, "writer guard must not mutate child input");
 		}
 
+		// S16: generic writers are admitted only for a task of an existing feature document (or at the measured
+		// context backstop); the accepted cases below name one, and an undocumented launch is told to work inline.
+		await mkdir(join(toolCwd, "odd", "tasks"), { recursive: true });
+		await writeFile(join(toolCwd, "odd", "tasks", "harness.md"), "# Harness\n");
+		const undocumentedWriter = await toolHook(
+			{ toolName: "subagent_run", input: { agent: "gentle-ai-worker", task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" } },
+			createCtx(toolCwd),
+		);
+		assert.equal(undocumentedWriter?.block, true, "an undocumented writer must be blocked before dispatch");
+		assert.match(undocumentedWriter?.reason ?? "", /write this unit inline yourself/);
 		const scopedWriterDispatch = {
 			agent: "gentle-ai-worker",
-			task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
+			task: "Spec: odd/tasks/harness.md, T1. Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
 			mode: "task",
 		};
 		assert.equal(
@@ -620,7 +630,7 @@ async function run() {
 					toolName: "subagent_run",
 					input: {
 						agent: "worker",
-						task: "Implement the requested change.",
+						task: "Spec: odd/tasks/harness.md, T2. Implement the requested change.",
 						context: "## Allowed edit surfaces\n- assets/orchestrator.md",
 						mode: "task",
 					},
@@ -717,7 +727,7 @@ async function run() {
 				"valid scope followed by a repository-root scope",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
+					task: "Spec: odd/tasks/harness.md, T4.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
 					mode: "task",
 				},
 			],
@@ -725,7 +735,7 @@ async function run() {
 				"valid task scope plus invalid context scope",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					task: "Spec: odd/tasks/harness.md, T5.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
 					context: "## Allowed edit surfaces\n.",
 					mode: "task",
 				},
@@ -734,7 +744,7 @@ async function run() {
 				"conflicting valid task and context scopes",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					task: "Spec: odd/tasks/harness.md, T6.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
 					context: "## Allowed edit surfaces\ntests/runtime-harness.mjs",
 					mode: "task",
 				},
@@ -749,7 +759,7 @@ async function run() {
 					toolName: "subagent_run",
 					input: {
 						agent: "gentle-ai-worker",
-						task: "## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
+						task: "Spec: odd/tasks/harness.md, T3.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
 						mode: "task",
 					},
 				},

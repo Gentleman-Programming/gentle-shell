@@ -976,3 +976,33 @@ test("bundled on Windows: the user Path entry goes first, the running node.exe, 
 		assert.equal(existsSync(join(w.shared.agent, "auth.json")), true);
 	} finally { w.cleanup(); }
 });
+
+// #2201: the standalone isolated home keeps its config in ~/.gentle-shell/gentle-ai.
+test("Gentle Shell's own config folder next to the isolated home is removed; the shared config home keeps its rule", async () => {
+	const w = world();
+	try {
+		const own = join(w.shell, "gentle-ai");
+		write(join(own, "profiles.json"));
+		write(join(own, "persona.json"));
+		assert.equal(await w.uninstall(["--dry-run"]), 0);
+		assert.ok(section(w.out, "Remove Gentle Shell data:").some((line) => line.includes(own)), w.out.join("\n"));
+		assert.equal(await w.uninstall(["--yes"]), 0);
+		assert.equal(existsSync(own), false);
+		assert.equal(existsSync(w.shell), false);
+		for (const name of ["profiles.json", "persona.json"]) assert.equal(existsSync(join(w.config, name)), true, name);
+	} finally { w.cleanup(); }
+});
+
+test("the gentle-ai folder next to a custom GENTLE_SHELL_HOME is kept: it may not be Gentle Shell's", async () => {
+	const w = world();
+	try {
+		const custom = join(w.root, "elsewhere", "agent");
+		const sibling = join(w.root, "elsewhere", "gentle-ai");
+		write(join(custom, ".gentle-shell-home"));
+		write(join(sibling, "notes.json"));
+		assert.equal(await w.uninstall(["--yes"], { env: { GENTLE_SHELL_HOME: custom } }), 0);
+		assert.equal(existsSync(custom), false);
+		assert.equal(existsSync(join(sibling, "notes.json")), true);
+		assert.ok(section(w.out, "Kept:").some((line) => line.includes(sibling)), w.out.join("\n"));
+	} finally { w.cleanup(); }
+});

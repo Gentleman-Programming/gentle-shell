@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
+import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import type { ReviewArtifactSubjectV2, ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -373,6 +374,31 @@ test("a relayed empty-output failure carries the child's own evidence in the fai
 	assert.equal(failure.reviewer?.stdoutKind, "no-assistant-text");
 	assert.equal(failure.reviewer?.reviewerModel, "nan/deepseek-v4-flash");
 	assert.equal(failure.reviewer?.toolCallAttempted, true);
+});
+
+test("public empty-output report preserves only safe in-process completion facts", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const outcome = await runInProcessReviewer({ selection: "nan/deepseek-v4-flash", prompt: Buffer.from("offline"), timeoutMs: 1_000, routingKey: "review-risk" }, {
+		registry: {
+			find: () => ({ provider: "nan", id: "deepseek-v4-flash" }) as never,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "PRIVATE AUTH" }),
+		},
+		complete: async () => ({ content: [{ type: "thinking", thinking: "PRIVATE THINKING" }], stopReason: "length", errorMessage: "PRIVATE ERROR", usage: { output: 64, reasoning: 64, unknown: "PRIVATE USAGE" } }) as never,
+	});
+	assert.equal(outcome.kind, "refused");
+	if (outcome.kind !== "refused") return;
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, "pi", outcome.message, { reviewerEvidence: outcome.evidence });
+	});
+	const result = await runCapture(cwd, native, "safe-evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	assert.deepEqual((result.failure as { reviewer: unknown }).reviewer, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);
 });
 
 test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {

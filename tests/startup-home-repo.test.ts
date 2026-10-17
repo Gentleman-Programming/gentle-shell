@@ -168,3 +168,37 @@ test("startup returns before the native review negotiation finishes, and the fir
 	await __testing.startupNegotiationSettled();
 	assert.equal(calls.target, 1, "the negotiation still completes after startup");
 });
+
+// gentle-shell#2195: the RDD line sits in the cached system-prompt prefix, so a
+// session keeps the line it first rendered and re-renders only when RDD turns
+// off or back on.
+test("a session keeps its first RDD status line until the off state changes", async (t) => {
+	const { cwd, environment } = fixture(t, false);
+	let status: { effective: string; source: string } | undefined;
+	const cli = {
+		reviewMode: async () => {
+			if (status === undefined) throw new Error("native review CLI unavailable");
+			return { operation: "status", scope: "clone", status: { global: "", cloneLocal: status.effective, ...status } };
+		},
+	} as unknown as NativeReviewCli;
+	const { handlers, ctx } = start(cli, cwd, environment);
+	const line = async () => {
+		__testing.clearRddStatusMemoForTesting();
+		const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		await handlers.get("before_agent_start")!(event, ctx);
+		return /Receipt-driven development: [^;\n]*/.exec(event.systemPromptOptions.appendSystemPrompt)?.[0];
+	};
+	await handlers.get("session_shutdown")!({}, ctx);
+	assert.equal(await line(), "Receipt-driven development: unknown (native status unavailable)");
+	status = { effective: "on", source: "clone_local" };
+	assert.equal(await line(), "Receipt-driven development: unknown (native status unavailable)", "unknown to on keeps the prompt prefix");
+	status = { effective: "on", source: "global" };
+	assert.equal(await line(), "Receipt-driven development: unknown (native status unavailable)", "a source change keeps the prompt prefix");
+	status = { effective: "off", source: "clone_local" };
+	assert.equal(await line(), "Receipt-driven development: off (decided by clone_local)", "turning RDD off re-renders");
+	status = { effective: "on", source: "global" };
+	assert.equal(await line(), "Receipt-driven development: on (decided by global)", "turning RDD back on re-renders");
+	await handlers.get("session_shutdown")!({}, ctx);
+	status = { effective: "on", source: "clone_local" };
+	assert.equal(await line(), "Receipt-driven development: on (decided by clone_local)", "a new session renders the current line");
+});

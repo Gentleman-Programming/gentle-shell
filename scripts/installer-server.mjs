@@ -170,6 +170,9 @@ export const guidance = Object.freeze({
 	setupRateLimit: "`gentle-shell setup` could not finish because GitHub's limit for anonymous API requests was reached on this network. Wait up to an hour, then run the installer again.",
 	// A failed acquire-go whose detail names a Go folder the installer did not publish.
 	goDestinationConflict: `A Go folder from an earlier, interrupted installer run is in the way, and the installer never replaces a folder it cannot prove it published. Remove that folder (shown below), then run the installer again. Nothing was installed.`,
+	// A failed install whose detail shows Windows refused to start the gentle-ai.exe gentle-pi's postinstall built.
+	codeIntegrityBlocked: "Windows refused to run the Gentle AI program (gentle-ai.exe) that the installation builds on this computer, most likely because Smart App Control or another code integrity policy blocks unsigned programs. " +
+		"Windows offers no exception for a single program. Keep using Gentle Shell in WSL, or turn Smart App Control off in Windows Security and run the installer again; on Windows 11 it cannot be turned back on without reinstalling Windows.",
 	// A failed persist-path whose detail shows pnpm could not tell the shell (POSIX SHELL missing or unsupported).
 	persistPathShell: "`pnpm setup` could not tell which shell profile to edit because the SHELL environment variable is missing or names an unsupported shell. Open a regular terminal and run the installer again, or add `$PNPM_HOME/bin` to your PATH yourself.",
 	fallback: "The installation stopped for an unexpected reason. Nothing else will run; check the terminal and run the installer again.",
@@ -186,16 +189,20 @@ function setupDetail(value) {
 const rateLimited = (detail) => /rate limit/i.test(detail) || (/GitHub API/i.test(detail) && /\b403\b/.test(detail));
 const unknownShell = (detail) => /ERR_PNPM_(?:UNKNOWN|UNSUPPORTED)_SHELL/.test(detail);
 const goConflict = (detail) => detail.startsWith("Conflicting Go destination: ");
+// libuv reports a CreateProcess refusal it has no code for, such as a Windows code integrity block
+// (Smart App Control, event 3077), as spawn UNKNOWN.
+const codeIntegrityBlocked = (detail) => /\bspawn UNKNOWN\b/.test(detail);
 // The main channel's typed error when GitHub refused the latest main commit with HTTP 403.
 const githubLimited = (detail) => rateLimited(detail) || (/\bmain-commit-unavailable\b/.test(detail) && /\bHTTP 403\b/.test(detail));
 // Fixed steps whose sanitized last error line may reach the browser.
 // The bundled steps send a detail only for a migration (its error message); a new install's send none.
 const bundledDetail = Object.fromEntries(["claim-prefix", "copy-npm-settings", "install-runtime", "activate-version", "write-launcher", "verify-launcher", "bundled-path"]
 	.map((step) => [step, () => false]));
-const detailSteps = Object.freeze({ ...bundledDetail, "shell-setup": rateLimited, "install-version": () => false, "persist-path": unknownShell, "acquire-go": goConflict,
-	"install-global": githubLimited, "install-shell-main": githubLimited, "build-gentle-ai-main": githubLimited, "update-shell": githubLimited });
+const detailSteps = Object.freeze({ ...bundledDetail, "shell-setup": rateLimited, "install-version": codeIntegrityBlocked, "persist-path": unknownShell, "acquire-go": goConflict,
+	"install-global": (detail) => githubLimited(detail) || codeIntegrityBlocked(detail), "install-shell-main": githubLimited, "build-gentle-ai-main": githubLimited, "update-shell": githubLimited });
+// A step whose detail can match more than one pattern names its guidance by detail.
 const detailGuidance = Object.freeze({ "shell-setup": "setupRateLimit", "persist-path": "persistPathShell", "acquire-go": "goDestinationConflict",
-	"install-global": "githubRateLimit", "install-shell-main": "githubRateLimit", "build-gentle-ai-main": "githubRateLimit", "update-shell": "githubRateLimit" });
+	"install-version": "codeIntegrityBlocked", "install-global": (detail) => (githubLimited(detail) ? "githubRateLimit" : "codeIntegrityBlocked"), "install-shell-main": "githubRateLimit", "build-gentle-ai-main": "githubRateLimit", "update-shell": "githubRateLimit" });
 
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
 function identifier(value, fallback = "unknown") {
@@ -543,7 +550,10 @@ function outcomeView(result) {
 		const detail = step ? setupDetail(result.detail) : null;
 		if (detail) {
 			view.detail = detail;
-			if (detailSteps[step](detail)) view.guidance = guidance[detailGuidance[step]];
+			if (detailSteps[step](detail)) {
+				const key = detailGuidance[step];
+				view.guidance = guidance[typeof key === "function" ? key(detail) : key];
+			}
 		}
 	} else {
 		view.guidance = guidance.outcomes[result.outcome];

@@ -219,6 +219,13 @@ test("renderShellBar renders one line with the segments in order", () => {
 	);
 });
 
+test("renderShellBar paints the context gauge with the given gauge roles", () => {
+	const [line] = renderShellBar(model(), taggedTheme, 400, undefined, { ok: "gaugeOk", empty: "gaugeEmpty" });
+	assert.match(line, /<gaugeOk>▰▰▰▰<\/gaugeOk><gaugeEmpty>▱▱▱▱<\/gaugeEmpty>/);
+	const [fallback] = renderShellBar(model(), taggedTheme, 400);
+	assert.match(fallback, /<accent>▰▰▰▰<\/accent><border>▱▱▱▱<\/border>/);
+});
+
 test("renderShellBar colors the brand, model, effort, and gauge by role", () => {
 	const [line] = renderShellBar(model(), taggedTheme, 400);
 	assert.match(line, /<accent>✿ gentle shell<\/accent>/);

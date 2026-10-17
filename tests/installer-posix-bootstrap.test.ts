@@ -190,6 +190,55 @@ posixTest("no initial Node acquires verified native binary and refreshes child P
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
 	} finally { f.cleanup(); }
 });
+// BSD ls appends `@` (extended attributes) or `+` (an ACL) to the mode
+// string. Current macOS attaches com.apple.provenance to every new
+// directory, so `@` is the normal case there (#2144). GNU ls appends `.`
+// when the directory has an SELinux security context, which is every
+// directory on an SELinux-enabled host, and `+` for an ACL. This ls reports a
+// fixed marker on every host, so the guard is checked the same way on
+// Linux CI and macOS.
+function lsWithModeMarker(f: ReturnType<typeof fixture>, marker: "" | "@" | "." | "+") {
+	f.executable("ls", `${systemUtility("ls")} "$@" | awk -v m='${marker}' '{ sub(/[@+.]$/, "", $1); $1 = $1 m; print }'`);
+}
+posixTest("a tools directory whose mode shows the extended-attribute marker @ is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "@");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the SELinux context marker . is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, ".");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the ACL marker + is still refused", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "+");
+		const result = f.run();
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Unsafe tooling ownership/);
+		assert.doesNotMatch(result.stdout, /wizard-child/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory with a plain drwx------ mode is still accepted", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:/);
+	} finally { f.cleanup(); }
+});
 posixTest("successful exit removes only the owned tools directory", () => {
 	const f = fixture();
 	try {

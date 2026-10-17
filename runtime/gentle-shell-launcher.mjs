@@ -461,12 +461,17 @@ export function recordProvisioned(config                   , homeDir        , pi
 
 
 
+
+
+
+
+
 export function resolvePiRuntime(deps               )                        {
 	const envOverride = deps.env.GENTLE_SHELL_PI;
 	if (envOverride !== undefined && envOverride.length > 0) return { kind: "env", command: envOverride, args: [] };
 
-	const bundledCliPath = deps.resolveBundledCli();
-	if (bundledCliPath !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCliPath] };
+	const bundledCli = deps.resolveBundledCli();
+	if (bundledCli !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCli.path], version: bundledCli.version };
 
 	const onPath = deps.findOnPath("pi");
 	if (onPath !== undefined) return { kind: "path", command: onPath, args: [] };
@@ -512,6 +517,82 @@ export function checkPiVersion(output        , minimum         = MIN_PI_VERSION)
 		return { ok: false, version, message: `pi version ${version} is older than the required minimum ${minimum}.` };
 	}
 	return { ok: true, version };
+}
+
+// --- pi version probe cache (env/path runtimes, #2096) ----------------------
+
+// Identity used to decide whether a cached pi --version result still applies
+// to the file at a given path: the same stat-based convention already used
+// as a same-call TOCTOU check in lib/gentle-ai-binary.ts (dev+ino+size+mtimeMs),
+// reused here as a cross-run cache key for env/path runtimes (kind "bundled"
+// never needs this: its version already comes from an in-memory package.json).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function isFileIdentity(value         )                        {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value                           ;
+	if (typeof record.dev !== "number" || typeof record.ino !== "number" || typeof record.size !== "number" || typeof record.mtimeMs !== "number") return false;
+	return record.target === undefined || isFileIdentity(record.target);
+}
+
+// recordPiVersion only ever writes checkPiVersion's own already-clean "X.Y.Z"
+// result, never a prefix or suffix, so the cache's own validation can afford
+// to require an exact match — unlike VERSION_PATTERN above (which intentionally
+// tolerates surrounding text in a real --version probe's raw stdout).
+const CANONICAL_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+
+// A cached version string that is not an exact clean version (unparseable,
+// or valid-looking text with garbage around it) is treated the same as a
+// missing entry (a cache miss, re-probe), never trusted as-is and never a
+// hard failure — a malformed write must never make a launch that used to
+// succeed fail outright.
+function isCachedPiVersion(value         )                           {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value                           ;
+	return typeof record.version === "string" && CANONICAL_VERSION_PATTERN.test(record.version) && isFileIdentity(record);
+}
+
+// Tolerant like provisionedEntry above: a missing, non-object, or malformed
+// cache map (or a malformed individual entry) resolves to undefined rather
+// than throwing, so a stale or foreign config.json just re-probes instead of
+// crashing the launcher.
+export function cachedPiVersion(config                   , path        )                              {
+	const map = config.piVersionProbeCache;
+	if (typeof map !== "object" || map === null || Array.isArray(map)) return undefined;
+	const entry = (map                           )[path];
+	return isCachedPiVersion(entry) ? entry : undefined;
+}
+
+export function matchesFileIdentity(cached              , identity              )          {
+	if (cached.dev !== identity.dev || cached.ino !== identity.ino || cached.size !== identity.size || cached.mtimeMs !== identity.mtimeMs) return false;
+	if (cached.target === undefined || identity.target === undefined) return cached.target === identity.target;
+	return matchesFileIdentity(cached.target, identity.target);
+}
+
+// Returns a new config object recording path's freshly probed version and
+// identity, preserving every other key — including every other path's cache
+// entry — unchanged. Never mutates config, same immutable-merge convention
+// as recordProvisioned above.
+export function recordPiVersion(config                   , path        , identity              , version        )                    {
+	const map = config.piVersionProbeCache;
+	const existing = typeof map === "object" && map !== null && !Array.isArray(map) ? (map                           ) : {};
+	return { ...config, piVersionProbeCache: { ...existing, [path]: { ...identity, version } } };
 }
 
 // --- setup subcommand's gentle-ai pin gate -----------------------------------

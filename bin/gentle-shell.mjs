@@ -26,12 +26,13 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { constants as osConstants, homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
 	buildPiInvocation,
+	cachedPiVersion,
 	checkPiVersion,
 	decideTakeOver,
 	describeVersion,
@@ -42,6 +43,7 @@ import {
 	homeSelectorFlags,
 	isSetupCapablePin,
 	launcherConfigPath,
+	matchesFileIdentity,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
 	needsProvisioning,
@@ -55,6 +57,7 @@ import {
 	postInstallRemovals,
 	provisionedEntry,
 	migrateStandaloneConfig,
+	recordPiVersion,
 	recordProvisioned,
 	resolveHome,
 	resolvePiRuntime,
@@ -143,14 +146,14 @@ function resolveBundledCli() {
 	const expectedEntry = join(root, "dist", "index.js");
 	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
-		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		metadata.bin?.pi !== "dist/bundle/cli.js" || typeof metadata.version !== "string") {
 		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
 	}
 	const cliPath = join(root, metadata.bin.pi);
 	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
 		throw new Error("Unsupported adjacent Pi CLI path");
 	}
-	return cliPath;
+	return { path: cliPath, version: metadata.version };
 }
 
 function findOnPath(name) {
@@ -399,6 +402,127 @@ function bundledProcessEnv() {
 function ownPackageVersion() {
 	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 	return packageJson.version;
+}
+
+// The real spawn, only ever needed for a runtime with no in-memory version
+// (env override, PATH pi): kind "bundled" always has runtime.version set and
+// skips this entirely (#2096).
+function probePiVersion(runtime) {
+	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
+	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 15000,
+		encoding: "utf8",
+		shell: versionProbePlan.shell,
+		env: bundledEnv ?? process.env,
+	});
+	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
+	return checkPiVersion(versionProbe.stdout ?? "");
+}
+
+// On Windows, GENTLE_SHELL_PI/PATH often resolves to a .cmd/.bat wrapper: a
+// fixed batch-script text file around a real script, not an OS-level
+// indirection like a symlink. statSync on the wrapper alone never changes
+// when only the wrapped script does, so a cache keyed on the wrapper's own
+// identity could keep reusing a version that no longer matches what actually
+// runs. Fold the wrapped script's own identity in (as its own nested
+// dev/ino/size/mtimeMs, never blended into the wrapper's own fields: a
+// same-size, older-than-wrapper replacement of only the wrapped script must
+// still change this identity, which a combined size/max-mtime cannot
+// guarantee) when the wrapper's text names one we can find; when it doesn't
+// (an unrecognized wrapper shape), return undefined so the caller never
+// trusts (or writes) a cache entry for it, falling back to a real spawn
+// every time instead of a possibly stale hit.
+//
+// A bare command name (no path separator, e.g. a literal GENTLE_SHELL_PI="pi")
+// is resolved against PATH by the OS/runtime at spawn time (POSIX execvp
+// semantics), not against the current directory the way statSync below
+// resolves a relative path — so it can name a completely different file than
+// whatever this process actually ends up running. Never trust (or write) a
+// cache entry keyed on such a name; always re-probe instead.
+function resolveVersionProbeIdentity(command) {
+	if (!command.includes("/") && !command.includes("\\")) return undefined;
+	let primary;
+	try {
+		primary = statSync(command);
+	} catch {
+		return undefined;
+	}
+	if (!/\.(cmd|bat)$/i.test(command)) return { dev: primary.dev, ino: primary.ino, size: primary.size, mtimeMs: primary.mtimeMs };
+	let text;
+	try {
+		text = readFileSync(command, "utf8");
+	} catch {
+		return undefined;
+	}
+	// Batch is not a format we can safely interpret in general. Only cache
+	// a single quoted script passed directly to a recognizable Node command;
+	// comments, assignments, or multiple script paths must not pick a target.
+	const scripts = [...text.matchAll(/"([^"\r\n]+\.(?:m?c?js))"/gi)];
+	if (scripts.length !== 1) return undefined;
+	const nodeCommand = /^(?:"(?:[^"%\r\n]*[\\/])?node(?:\.exe)?"|node(?:\.exe)?)$/i;
+	let variableIsNode = false;
+	let script;
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim().replace(/^@/, "");
+		if (line === "" || /^(?:echo off|setlocal|exit \/b %errorlevel%)$/i.test(line) || /^rem(?:\s|$)/i.test(line)) continue;
+		if (/^set "NODE_PATH=[^"\r\n]*"$/i.test(line)) continue;
+		const assignment = /^set "_prog=([^"\r\n]+)"$/i.exec(line);
+		if (assignment !== null) {
+			if (!nodeCommand.test(`"${assignment[1]}"`)) return undefined;
+			variableIsNode = true;
+			continue;
+		}
+		// npm's cmd-shim uses this fixed prelude to leave SETLOCAL while
+		// expanding its invocation. Other control flow is not interpreted.
+		const commandLine = line.replace(/^endLocal & goto #_undefined_# 2>NUL \|\| title %COMSPEC% & /i, "");
+		const invocation = /^("[^"\r\n]+"|node(?:\.exe)?)\s+"([^"\r\n]+\.(?:m?c?js))"\s+%\*$/i.exec(commandLine);
+		if (invocation === null || script !== undefined) return undefined;
+		if (!nodeCommand.test(invocation[1]) && !(invocation[1] === '"%_prog%"' && variableIsNode)) return undefined;
+		script = invocation[2];
+	}
+	if (script === undefined || script !== scripts[0][1]) return undefined;
+	// Node resolves a relative script from the child cwd, not the wrapper's
+	// directory. Never cache a potentially unrelated wrapper-directory file.
+	if (!isAbsolute(script)) return undefined;
+	const targetPath = script;
+	let target;
+	try {
+		target = statSync(targetPath);
+	} catch {
+		return undefined;
+	}
+	return {
+		dev: primary.dev, ino: primary.ino, size: primary.size, mtimeMs: primary.mtimeMs,
+		target: { dev: target.dev, ino: target.ino, size: target.size, mtimeMs: target.mtimeMs },
+	};
+}
+
+// env/path runtimes have no in-memory version (unlike bundled, #2096), but a
+// real pi executable at a given path rarely changes: cache the probed version
+// keyed by that exact path's identity (resolveVersionProbeIdentity above),
+// and only spawn again once that identity changes. Best-effort: a failed
+// stat, a missing or malformed cache entry, or a concurrent write losing this
+// one just falls back to (or repeats) the real spawn, never a wrong version.
+function probePiVersionCached(runtime, configPath) {
+	const identity = resolveVersionProbeIdentity(runtime.command);
+	if (identity !== undefined) {
+		const cached = cachedPiVersion(readRawConfig(configPath), runtime.command);
+		if (cached !== undefined && matchesFileIdentity(cached, identity)) return checkPiVersion(cached.version);
+	}
+	const probed = probePiVersion(runtime);
+	if (probed.ok && identity !== undefined) {
+		// Best-effort (#2096): a read-only or symlinked config.json, or a lost
+		// race with another concurrent launch's atomic rename, must never turn
+		// an otherwise-successful launch into a failure just to persist a cache
+		// entry. Worst case here is simply paying for the real spawn again.
+		try {
+			writeRawConfig(configPath, recordPiVersion(readRawConfig(configPath), runtime.command, identity, probed.version));
+		} catch {
+			// swallow: see comment above.
+		}
+	}
+	return probed;
 }
 
 function emptyArgs() {
@@ -1940,7 +2064,7 @@ async function main() {
 		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
 		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
 		if (!pi.ok) fail(pi.message, 1);
-		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
+		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli], version: pi.version };
 		bundledInstall = bundled;
 		bundledCli = pi.cli;
 		bundledMemory = engramQuiet ? { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE } : await classifyBundledMemory();
@@ -1956,16 +2080,11 @@ async function main() {
 		if (runtime === undefined) fail(missingPiMessage(), 1);
 	}
 
-	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
-	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: 15000,
-		encoding: "utf8",
-		shell: versionProbePlan.shell,
-		env: bundledEnv ?? process.env,
-	});
-	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
-	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
+	// Bundled runtimes already carry their version in memory (package.json /
+	// the pinned dependency): spawning a whole process just to print it back
+	// is the redundant cost issue #2096 reports, so only env/path runtimes
+	// (which have no such in-memory source) still pay for a real probe.
+	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersionCached(runtime, resolveConfigPath());
 	// A managed self update is how an old Pi gets replaced, so the minimum-version
 	// gate must not block it; everything else still requires the minimum.
 	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined

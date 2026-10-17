@@ -170,8 +170,8 @@ import {
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, CandidateViewError, CandidateViewRegistry, CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE, CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
-import { assertCandidateOwnerParent, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError } from "../lib/review-candidate-view-owner.ts";
+import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, candidateOwnerPreparationError, CandidateViewError, CandidateViewRegistry, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { assertCandidateOwnerParent } from "../lib/review-candidate-view-owner.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -7441,14 +7441,13 @@ function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: strin
 			assertCandidateOwnerParent(commonDir, platform);
 		} catch (error) {
 			// A missing parent is not a deterministic failure: START's prepare
-			// creates it private. Only the typed privacy findings withhold the
-			// advertisement; anything else stays START's to report.
-			const diagnostics = error instanceof PosixCandidateOwnerParentPrivacyError
-				? { code: "candidate-owner-parent-privacy" as const, message: CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE }
-				: error instanceof PosixCandidateOwnerParentChmodIneffectiveError
-					? { code: "candidate-owner-parent-chmod-ineffective" as const, message: CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE }
-					: undefined;
-			if (diagnostics !== undefined) return candidateViewPreflightRejection(status, diagnostics);
+			// creates it private. Every other owner failure makes START refuse too,
+			// so withhold the advertisement with the owner-preparation classification.
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+				const failure = candidateOwnerPreparationError(error);
+				const typed = failure.diagnostics !== undefined && "code" in failure.diagnostics ? failure.diagnostics : undefined;
+				return candidateViewPreflightRejection(status, typed ?? { code: failure.reason, message: failure.message });
+			}
 		}
 	}
 	const candidateTree = status.projection.currentCandidateTree;

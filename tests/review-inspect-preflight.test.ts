@@ -65,6 +65,21 @@ for (const quota of [{ name: "plain", untrackedScope: undefined }] as const) {
 	});
 }
 
+test("inspect withholds a ready START advertisement for any other candidate owner failure START would repeat (gentle-ai#2196)", { skip: posix ? false : "POSIX symlinked owner parent fixture" }, async t => {
+	const { root, candidateTree } = fixtureRepository(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const elsewhere = join(root, ".git", "elsewhere");
+	mkdirSync(elsewhere, { mode: 0o700 });
+	mkdirSync(join(root, ".git", "gentle-ai"), { mode: 0o700 });
+	symlinkSync(elsewhere, join(root, ".git", "gentle-ai", "candidate-views"));
+	const result = await inspect(root, readyNative(candidateTree));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "candidate-view-preflight-blocked");
+	assert.equal((result.diagnostics as { code?: string }).code, "candidate-owner-preparation-failed");
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.lineage_created, false);
+});
+
 test("inspect withholds a ready START advertisement when the frozen tree tracks symlinks this process cannot create (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));

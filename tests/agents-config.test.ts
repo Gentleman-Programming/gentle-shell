@@ -140,6 +140,22 @@ test("max defaults and model profiles preserve routing precedence", () => {
 	assert.equal(resolveAgentProfile(medium, override).model?.id, "gpt-5.6-luna");
 });
 
+test("parseAgentDefinition rejects a boolean-like tools scalar instead of making it a tool name", () => {
+	// `tools: false` is a natural way to write "no tools" in YAML; it must not
+	// become a subagent allowlist containing a tool named "false" (#895).
+	for (const value of ["false", "true", "no", "none", "null", "~", "Off"]) {
+		const result = parseAgentDefinition(`---\nname: a\ntools: ${value}\n---\nbody`, "/a.md", "global");
+		assert.ok("error" in result, `tools: ${value} should be rejected`);
+		assert.match(result.error, new RegExp(`tools "${value.replace("~", "~")}" is not a tool list`));
+		assert.match(result.error, /tools: \[\]/);
+	}
+	// Legitimate spellings still parse: a single tool, a csv, an empty inline list, and a missing key.
+	assert.deepEqual((parseAgentDefinition("---\nname: a\ntools: read\n---\nbody", "/a.md", "global") as { tools: string[] }).tools, ["read"]);
+	assert.deepEqual((parseAgentDefinition("---\nname: a\ntools: read, bash\n---\nbody", "/a.md", "global") as { tools: string[] }).tools, ["read", "bash"]);
+	assert.deepEqual((parseAgentDefinition("---\nname: a\ntools: []\n---\nbody", "/a.md", "global") as { tools: string[] }).tools, []);
+	assert.deepEqual((parseAgentDefinition("---\nname: a\n---\nbody", "/a.md", "global") as { tools: string[] }).tools, []);
+});
+
 test("discoverAgents merges the four directories with project over global and subagents over agents", () => {
 	const home = join(root, "home");
 	const cwd = join(root, "project");

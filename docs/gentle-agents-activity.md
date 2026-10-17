@@ -578,6 +578,12 @@ Pi's `setWidget` is the only fire-and-forget RPC push structured enough to carry
 
 Tasks are ordered `running`, `waiting`, `queued`, then finished tasks by `endedAt` descending (most recently finished first).
 
+### Terminal error hints
+
+A terminal assistant failure keeps the `assistant reported an error` prefix. When a string `errorMessage` has a recognized marker in its first 2048 UTF-16 code units, the diagnostic appends one fixed hint: `[hint: quota]`, `[hint: rate_limit]`, `[hint: authentication]`, `[hint: model_unavailable]`, `[hint: timeout]`, or `[hint: transport]`, in that precedence. No provider text, credentials, URLs or request IDs are copied into the diagnostic. Unknown, missing or non-string details keep the original generic message.
+
+Hints are best-effort classifications, not verified provider identity or root-cause evidence. Failed status and settlement behavior are unchanged; this does not change streaming-error handling, retry a task, or reconfigure its model.
+
 ## Bounds
 
 Every bound below fails closed: a value that cannot fit is truncated or dropped, and `lib/agents-rpc-publisher.ts`'s `encodeActivityLines` never throws.

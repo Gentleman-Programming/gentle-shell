@@ -185,15 +185,34 @@ function keepTail(text: string, max: number): string {
 	return text.length <= max ? text : `${ELLIPSIS}${text.slice(text.length - max + 1)}`;
 }
 
+const TERMINAL_ERROR_SCAN_MAX = 2_048;
+const TERMINAL_ERROR_HINTS = [
+	["quota", /insufficient_quota|quota_exceeded|usage_limit_reached|usage limit|quota exceeded/],
+	["rate_limit", /rate[_ -]?limit|too many requests/],
+	["authentication", /invalid_api_key|authentication failed|authentication error|unauthorized/],
+	["model_unavailable", /model_not_found|unknown model|unsupported model|model (?:not found|unavailable)/],
+	["timeout", /timeout|timed out/],
+	["transport", /websocket|econnreset|econnrefused|enotfound|fetch failed|connection (?:closed|reset|refused)/],
+] as const;
+
+function terminalErrorDiagnostic(errorMessage: unknown): string {
+	const generic = "assistant reported an error";
+	if (typeof errorMessage !== "string") return generic;
+	// Inspect a bounded prefix, but retain only a fixed label: no provider text,
+	// URLs, credentials or request identifiers may enter task state or output.
+	const excerpt = errorMessage.slice(0, TERMINAL_ERROR_SCAN_MAX).toLowerCase();
+	const hint = TERMINAL_ERROR_HINTS.find(([, pattern]) => pattern.test(excerpt))?.[0];
+	return hint ? `${generic} [hint: ${hint}]` : generic;
+}
+
 function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 	if (!Array.isArray(messages)) return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown };
+		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown };
 		if (message?.role !== "assistant") continue;
 		const stopReason = clean(message.stopReason).toLowerCase();
-		// Do not preserve unbounded provider error payloads. The terminal reason is
-		// enough for an operator to distinguish failure from an empty report.
-		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: "assistant reported an error" };
+		// Preserve the generic prefix and only a bounded, allowlisted hint.
+		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: terminalErrorDiagnostic(message.errorMessage) };
 		if (stopReason === "aborted") return { text: "", outcome: "aborted", diagnostic: "assistant aborted" };
 		const text = contentText(message.content);
 		return text.length > 0

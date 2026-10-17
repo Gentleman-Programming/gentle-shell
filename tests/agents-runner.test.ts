@@ -973,6 +973,11 @@ test("AgentRunner classifies terminal assistant outcomes only after settlement",
 		assert.equal(finished.status, scenario.status, scenario.name);
 		if (scenario.error) assert.match(finished.error ?? "", scenario.error);
 		else assert.equal(finished.result, "final report");
+		if (scenario.name === "error") {
+			assert.equal(finished.error, "assistant reported an error [hint: transport]");
+			assert.equal(finished.result, null);
+			assert.doesNotMatch(JSON.stringify(finished), /secret=|never-copy|WebSocket/);
+		}
 	}
 });
 

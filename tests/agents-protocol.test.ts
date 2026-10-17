@@ -99,7 +99,7 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: true, result: { content: [{ type: "text", text: "boom" }] } }), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "boom", isError: true }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "turn_end" }), [{ type: TASK_EVENT.TURN_END }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done." }], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "done.", outcome: "success" }]);
-	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error" }]);
+	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error [hint: transport]" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "aborted" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "aborted", diagnostic: "assistant aborted" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "empty", diagnostic: "assistant returned no final report" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_settled" }), [{ type: TASK_EVENT.AGENT_SETTLED }]);
@@ -112,6 +112,33 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "message_end", message: { role: "user" } }), []);
 	assert.deepEqual(normalizeRpcEvent({ type: "queue_update" }), []);
 	assert.deepEqual(normalizeRpcEvent("garbage"), []);
+});
+
+test("terminal provider failures expose only bounded allowlisted hints", () => {
+	const generic = "assistant reported an error";
+	const cases: Array<[unknown, string | undefined]> = [
+		["insufficient_quota", "quota"],
+		["RATE LIMIT exceeded", "rate_limit"],
+		["invalid_api_key", "authentication"],
+		["model_not_found", "model_unavailable"],
+		["WebSocket timed out", "timeout"],
+		["WebSocket connection failed", "transport"],
+		["opaque provider failure", undefined],
+		[undefined, undefined],
+		[{ message: "invalid_api_key", secret: "private-marker" }, undefined],
+		["x".repeat(2048 - "websocket".length) + "websocket", "transport"],
+		["x".repeat(2048) + "websocket", undefined],
+	];
+	for (const [value, hint] of cases) {
+		const errorMessage = typeof value === "string"
+			? `${value} https://example.invalid/?secret=private-marker Authorization: Bearer sk-test-private-marker`
+			: value;
+		const diagnostic = hint ? `${generic} [hint: ${hint}]` : generic;
+		const events = normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage }] });
+		assert.deepEqual(events, [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic }]);
+		assert.ok(diagnostic.length <= 80, "only a bounded fixed-label diagnostic is emitted");
+		assert.doesNotMatch(JSON.stringify(events), /private-marker|sk-test|example\.invalid|secret=/);
+	}
 });
 
 // #1690: Pi drops unknown --tools names silently, so the child reports them

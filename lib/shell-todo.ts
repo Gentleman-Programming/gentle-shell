@@ -90,6 +90,21 @@ export interface TodoRenderOptions {
 export const TODO_DETAILS_KEY = "gentleTodo";
 export const TODO_TOOL_NAME = "todo";
 export const TODO_GLYPH = "❀";
+/** Emitted on pi.events after each successful todo write; gentle-agents publishes it as session progress. */
+export const TODO_PROGRESS_EVENT = "gentle-pi:todo:progress";
+
+export interface TodoProgress {
+	sessionId: string;
+	done: number;
+	total: number;
+	/** Title of the first in-progress task, or null when none is in progress. */
+	current: string | null;
+}
+
+export function todoProgress(state: TodoState, sessionId: string): TodoProgress {
+	const current = state.tasks.find((task) => task.status === TODO_STATUS.IN_PROGRESS)?.title ?? null;
+	return { sessionId, done: countStatus(state, TODO_STATUS.DONE), total: state.tasks.length, current };
+}
 const STATUS_ALIASES: Record<string, TodoStatus> = {
 	completed: TODO_STATUS.DONE,
 	complete: TODO_STATUS.DONE,

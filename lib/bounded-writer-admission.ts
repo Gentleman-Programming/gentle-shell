@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:path";
+import { contextBackstopReached, type MeasuredContext } from "./context-backstop.ts";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
@@ -77,6 +78,56 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 	const parsed = parseAllowedEditSurfaces([record.task, record.context]);
 	if ("paths" in parsed) return undefined;
 	return { block: true, reason: `${WRITER_EDIT_SURFACE_REJECTION} ${parsed.problem} Resend the same task text unchanged except for that section; never shorten or re-summarize it.` };
+}
+
+// Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still
+// started two writers for ~35-line units). A generic writer launch is admitted only for a task of an existing ODD
+// feature document, or when the parent's measured context reaches the context backstop (the same threshold as the
+// runtime notice, lib/context-backstop.ts). Judgment Day fix agents and continuations keep their own protocols.
+// A line that starts with `Spec:` (optionally as a list item), names an odd/tasks document, and names a task
+// `T<n>` later on the same line: covers the canon (`, T2, S3-S4`), the delegation card (`(read until "## Log").
+// Do T2; S3.`), and comma-free forms (`.md T1 S1;`). A mention inside prose does not start the line.
+const FEATURE_DOCUMENT_TASK = /^[ \t]*(?:[-*+][ \t]+)?Spec:[ \t]*`?(odd\/tasks\/[^\s,`()]+\.md)`?[^\n]*?\bT\d+\b/gm;
+export const WRITER_FEATURE_DOCUMENT_REJECTION =
+	"Writers run only for a task of an existing ODD feature document (`Spec: odd/tasks/<feature>.md, T<n>` in the task) or when your measured context reaches the context backstop. This unit has neither: write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers.";
+
+function featureDocumentExists(root: string, relativePath: string): boolean {
+	// Resolve symlinks on both sides so a document linked from outside the root, or an odd/tasks directory linked
+	// elsewhere, never admits a writer; the document must be a regular file under <root>/odd/tasks.
+	try {
+		const realRoot = realpathSync(resolve(root));
+		const tasksDir = realpathSync(resolve(realRoot, "odd", "tasks"));
+		const target = realpathSync(resolve(realRoot, relativePath));
+		const inTasks = relative(tasksDir, target);
+		if (relative(realRoot, tasksDir).startsWith("..") || !inTasks || inTasks.startsWith("..") || isAbsolute(inTasks)) return false;
+		return statSync(target).isFile();
+	} catch {
+		return false;
+	}
+}
+
+// True when a string value has a `Spec:` task line naming an existing feature document under `root`. Shared by
+// writer and verifier admission so both accept exactly the same task lines.
+export function namesExistingFeatureDocumentTask(values: readonly unknown[], root: string): boolean {
+	for (const value of values) {
+		if (typeof value !== "string") continue;
+		for (const match of value.matchAll(FEATURE_DOCUMENT_TASK)) {
+			if (featureDocumentExists(root, match[1])) return true;
+		}
+	}
+	return false;
+}
+
+export function rejectUndocumentedWriterLaunch(
+	input: unknown,
+	options: { root: string; contextUsage: MeasuredContext | undefined; env?: Readonly<Record<string, string | undefined>> },
+): { block: true; reason: string } | undefined {
+	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const record = input as Record<string, unknown>;
+	if (typeof record.agent !== "string" || !isGenericBoundedWriter(record.agent)) return undefined;
+	if (namesExistingFeatureDocumentTask([record.task, record.context], options.root)) return undefined;
+	if (contextBackstopReached(options.contextUsage, options.env)) return undefined;
+	return { block: true, reason: WRITER_FEATURE_DOCUMENT_REJECTION };
 }
 
 // A continuation resumes the same delegated task, so a writer follow-up that

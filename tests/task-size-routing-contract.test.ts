@@ -138,9 +138,17 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
 	// S9 canon change: conditional triggers, behavior-unit writer threshold, named-risk verifier, invariants,
 	// and the PRESERVE differential pointer mirrored from gentle-ai 5f6faa16 (20,800 -> 21,900 B).
-	"orchestrator-delegation.md": 21_900,
+	// Pain-point iteration S11 T2: the parent read this module in most runs and kept ~5K tokens of it in the
+	// transcript on every later call, so it became the lean delegation card (21,900 -> 7,000 B) and the
+	// reference material moved to orchestrator-delegation-reference.md, read only when a situation names it.
+	// Pain-point iteration S13 (C10): the Preparation trigger tells the parent not to read what the worker will
+	// read and to pass paths, not content (7,000 -> 7,100 B; every other card sentence is pinned by a contract).
+	// S15: units of about 100 changed lines or less always run inline (7,100 -> 7,300 B).
+	"orchestrator-delegation.md": 7_300,
+	"orchestrator-delegation-reference.md": 14_800,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
-	"orchestrator-tracking.md": 12_600,
+	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
+	"orchestrator-tracking.md": 12_850,
 	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
 	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
@@ -175,6 +183,46 @@ test("AC7: each delegation module stays under its byte budget and is loaded by i
 	}
 });
 
+// Pain-point iteration S11 T2: once read, a lazy module rides along on every later model call, so the
+// default delegation read must be the lean card; reference material loads only when a pointer names it.
+test("S11: the default delegation pointer resolves to the lean card and the reference loads only by name", () => {
+	const card = read("assets/orchestrator-delegation.md");
+	const reference = read("assets/orchestrator-delegation-reference.md");
+	assert.ok(Buffer.byteLength(card, "utf8") <= MODULE_BUDGETS["orchestrator-delegation.md"], "the delegation card is over its budget");
+	// Every core line that names a delegation module names the card, except the one reference pointer.
+	const pointerLines = core.split("\n").filter((line) => line.includes("`orchestrator-delegation"));
+	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`"));
+	assert.equal(referenceLines.length, 1, "the core names the reference exactly once");
+	for (const name of ["Per-action table", "Work Routing Ladder", "Canonical Workflows"]) {
+		assert.ok(referenceLines[0].includes(name), `the reference pointer must name ${name}`);
+	}
+	assert.ok(pointerLines.some((line) => line.includes("`orchestrator-delegation.md`")), "the core must point at the card");
+	// The card carries what the parent needs at the moment it delegates.
+	for (const clause of [
+		"#### Delegation Triggers",
+		"Each trigger holds only when its condition truly holds",
+		"A unit is one independent piece of behavior with its code, tests, and docs together",
+		"`## Allowed edit surfaces`",
+		"Spec: odd/tasks/<feature>.md (read until \"## Log\"). Do T#; S#.",
+		"`## Skills to load before work`",
+		"`orchestrator-verification.md`",
+		"#### Key Learnings closing block",
+		"disjoint Allowed edit surfaces",
+		"Subagent-facing prompts should be written in English by default",
+		"technical artifacts default to English",
+		"returns a task id",
+		"`orchestrator-delegation-reference.md`",
+	]) {
+		assert.ok(card.includes(clause), `the delegation card is missing: ${clause}`);
+	}
+	// Reference material lives once, in the reference.
+	for (const heading of ["### Work Routing Ladder", "#### Background Subagent Policy", "### Canonical Lightweight Workflows", "#### Pi Subagent Model Routing"]) {
+		assert.ok(reference.includes(heading), `the reference is missing: ${heading}`);
+		assert.ok(!card.includes(heading), `the card still carries reference material: ${heading}`);
+	}
+	assert.ok(!reference.includes("#### Delegation Triggers"), "the triggers live once, in the card");
+});
+
 // gentle-shell#1269/#1598: the capability rule is the substantive part of the fix,
 // so losing it must fail a test instead of quietly passing the AC7 budget gate.
 // Focused on the two claims that carry the fix, not on the exact wording around them.
@@ -186,9 +234,11 @@ test("delegation reports a capability gap instead of substituting inline work fo
 });
 
 test("work usage stays complete in the human guide while routing precedence stays canonical", () => {
-	const asset = read("assets/orchestrator-delegation.md");
+	// S11 T2: the work-publication pointer and the runtime bindings moved to the reference; the writer
+	// fallback stays in the card, so the counts read the card plus the reference.
+	const asset = `${read("assets/orchestrator-delegation.md")}\n${read("assets/orchestrator-delegation-reference.md")}`;
 	const guide = read("docs/gentle-agents-activity.md");
-	assert.ok(asset.includes("tool schemas and `docs/gentle-agents-activity.md`"));
+	assert.ok(read("assets/orchestrator-delegation-reference.md").includes("tool schemas and `docs/gentle-agents-activity.md`"));
 	for (const clause of [
 		'`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`',
 		'`filter: {"related_to":{"session_id":"<stable owner ID>"}}`',

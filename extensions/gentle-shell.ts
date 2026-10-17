@@ -22,6 +22,8 @@ import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
+import { gaugePaintFor } from "../lib/gauge-theme.ts";
+import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
@@ -334,6 +336,16 @@ export function buildShellBarModel(
 	};
 }
 
+// Gauge-specific theme roles (issue #2222): resolved from the installed theme
+// source and memoized by gauge-theme.ts, so the render hot path only stats the
+// theme file. Undefined — and therefore today's shared roles — whenever the theme
+// source is unavailable.
+function gaugePaint(ctx: ExtensionContext): GaugePaint | undefined {
+	const themeName = ctx.ui.theme.name;
+	const source = ctx.ui.theme.sourcePath ?? ctx.ui.getAllThemes?.().find((item) => item?.name === themeName)?.path;
+	return gaugePaintFor(typeof source === "string" ? source : undefined);
+}
+
 export function createShellBarComponent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -350,7 +362,7 @@ export function createShellBarComponent(
 	});
 	return {
 		render(width: number) {
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.());
+			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.(), gaugePaint(ctx));
 		},
 		invalidate() {},
 		dispose() {
@@ -1740,6 +1752,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					onClose: () => withOverlayRepaint(tui, done)(null),
 					requestRender: () => tui.requestRender(),
 					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
+					gauge: () => gaugePaint(ctx),
 				});
 				// Open promptly: the panel draws whatever the store already holds
 				// while the forced refresh runs underneath it, and repaints when
@@ -1926,7 +1939,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusOwner = () => narrowStatusOwner({ mode: (tui as TUI & { mode?: string }).mode, columns: tui.terminal?.columns ?? 0, statusPlacement: visualSettings.statusPlacement, headerPlacement: visualSettings.headerPlacement });
 			const statusCardVisible = () => Boolean(tui.terminal && tui.terminal.columns >= SIDEBAR_BREAKPOINT && sidebarState(tui).ownsHost?.() && visualSettings.statusPlacement !== "hidden");
 			const belowFloat = (width: number, statuses: boolean) => (tui as TUI & { mode?: string }).mode === "fullscreen"
-				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }), ...(statusCardVisible() ? { jobs: undefined } : {}) }, theme, width, usageShortcutKey, visualSettings, tracker.model)
+				? renderShellBelowInputFloat({ ...footerModel(), ...(statuses ? {} : { statuses: [] }), ...(statusCardVisible() ? { jobs: undefined } : {}) }, theme, width, usageShortcutKey, visualSettings, tracker.model, gaugePaint(ctx))
 				: undefined;
 			// Match sidebarPart's live paint ownership, including an unavailable rail.
 			const footerSuppressed = () => {
@@ -1937,7 +1950,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			groupedChangesOwner = (width) => belowFloat(width, !footerSuppressed()) !== undefined;
 			const bottomBar = {
 				...bottom,
-				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings) : bottom.render(width)),
+				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
 					if (footerSuppressed() || event.type !== "click" || event.button !== "left") return undefined;
 					const chrome = belowFloat(event.width, true);
@@ -1954,7 +1967,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
-			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings);
+			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
 				render: (width) => headerBar(width).rows,

@@ -57,6 +57,8 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
 		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 16_384,
+		// NaN's DeepSeek route enforces this field, not max_completion_tokens.
+		compat: { maxTokensField: "max_tokens" },
 	},
 	{
 		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,
@@ -96,6 +98,7 @@ function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
 		input: [...model.input],
 		cost: { ...model.cost },
 		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		...(model.compat ? { compat: { ...model.compat } } : {}),
 	};
 }
 

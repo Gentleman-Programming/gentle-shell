@@ -263,6 +263,15 @@ export function readActivity(profile: string, selection: Header): { activity?: A
 	} catch (error) { return { unavailable: reason(error) }; }
 }
 
+/** True only when no discovery sidecar exists for this header: the publisher
+ * predates discovery publication. A present but unreadable sidecar is not absent. */
+export function discoveryAbsent(profile: string, h: Header): boolean {
+	try {
+		fs.lstatSync(join(rootFor(profile), filename(h, "discovery")));
+		return false;
+	} catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+}
+
 /** Optional derived sidecar; failures never invalidate the schema-1 header. */
 export function readDiscovery(profile: string, h: Header): DiscoveryMetadata | undefined {
 	try {

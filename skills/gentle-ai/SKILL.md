@@ -47,7 +47,7 @@ Hard delegation triggers:
 - **Writer rule**: a writer only for a reason (parallel units launched together, or context); size and file count never fire it.
 - **Verification rule**: a change that touches a named high-risk item gets an independent verifier (assess `escalate`); otherwise the change's own focused test and suite run inline.
 - **Incident rule**: after wrong cwd, accidental worktree/repo mutation, merge recovery, confusing test command, or environment workaround, diagnose separately.
-- **Context backstop**: when the parent context passes ~150k tokens, pause and delegate the next bounded unit of work to a non-review subagent. Keep command output bounded (counts, `--stat`, `tail`).
+- **Context backstop**: when the runtime signals the context backstop (measured parent context past the smaller of an absolute cap and a fraction of the model's context window), pause and delegate the next bounded unit that needs several steps to a non-review subagent; small edits stay inline. Keep command output bounded (counts, `--stat`, `tail`).
 
 ## Review Lens Selection
 

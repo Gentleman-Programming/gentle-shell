@@ -3,6 +3,7 @@ import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
@@ -771,4 +772,22 @@ test("a list left with only dropped tasks open finishes and clears; a blocked-on
 		assert.match(String((await contextState(fire, ctx))!.content), /2\. \[blocked\] Deploy — waiting for an admin/);
 	}
 	assert.match(widget()![2], /⊘ Deploy · waiting for an admin/);
+});
+
+// Harness roadmap T6: the todo list is the session's progress, so the runtime
+// publishes it for peers instead of asking the model to call orchestrator_session_id.
+test("a todo write emits the session's progress; list and errors emit nothing", async () => {
+	const { pi, tools } = fakePi();
+	const emitted: Array<{ name: string; data: unknown }> = [];
+	Object.assign(pi, { events: { emit: (name: string, data: unknown) => { emitted.push({ name, data }); }, on: () => () => {} } });
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	const todo = (params: unknown) => tools.get("todo")!.execute("call", params, undefined, undefined, ctx);
+	await todo({ action: "write", tasks: [{ title: "Write parser", status: "done" }, { title: "Wire CLI", status: "in_progress" }, { title: "Docs" }] });
+	assert.deepEqual(emitted, [{ name: TODO_PROGRESS_EVENT, data: { sessionId: "s1", done: 1, total: 3, current: "Wire CLI" } }]);
+	await todo({ action: "list" });
+	await todo({ action: "update", id: 99, status: "done" });
+	assert.equal(emitted.length, 1, "list and a failed update publish nothing");
+	await todo({ action: "update", id: 2, status: "done" });
+	assert.deepEqual(emitted.at(-1)?.data, { sessionId: "s1", done: 2, total: 3, current: null });
 });

@@ -38,7 +38,7 @@ import {
 	readdir,
 	writeFile,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,7 +172,7 @@ import {
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE, CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, CandidateViewError, CandidateViewRegistry, CANDIDATE_OWNER_PARENT_CHMOD_INEFFECTIVE_MESSAGE, CANDIDATE_OWNER_PARENT_PRIVACY_MESSAGE, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
 import { assertCandidateOwnerParent, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError } from "../lib/review-candidate-view-owner.ts";
 import {
 	GentleAiDevBinaryOverrideError,
@@ -7434,15 +7434,30 @@ function nativePreLineageCandidateIdentity(
 // advertisement with the exact typed diagnostics the START refusal would
 // carry, so STATUS and START stop disagreeing about operations that cannot
 // begin. The Windows owner boundary keeps its START-time DACL validation for
-// now; this preflight only answers questions a read-only check settles.
-let candidateViewSymlinkProbe: (() => void) | undefined;
+// now; this preflight only answers questions a read-only check settles. The
+// symlink scan never claims a confirmed symlink-free tree from an incomplete
+// listing (timeout, output limit, unreadable tree), and the capability probe
+// samples the filesystem that will hold the candidate view — when that
+// filesystem cannot be probed, the capability stays unconfirmed and the
+// advertisement is withheld instead of guessing from another filesystem.
+let candidateViewSymlinkProbe: ((probeRoot: string) => void) | undefined;
 
-function setCandidateViewSymlinkProbeForTesting(probe: (() => void) | undefined): void {
+function setCandidateViewSymlinkProbeForTesting(probe: ((probeRoot: string) => void) | undefined): void {
 	candidateViewSymlinkProbe = probe;
 }
 
-function defaultCandidateViewSymlinkProbe(): void {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-symlink-probe-"));
+// Thrown when no existing directory of the candidate-view filesystem can host
+// the probe: the capability stays unconfirmed instead of being reported as
+// incapable, so an unverifiable filesystem never masquerades as a pass.
+class CandidateViewSymlinkProbeUnavailableError extends Error {}
+
+function defaultCandidateViewSymlinkProbe(probeRoot: string): void {
+	let directory: string;
+	try {
+		directory = mkdtempSync(join(probeRoot, "gentle-symlink-probe-"));
+	} catch (error) {
+		throw new CandidateViewSymlinkProbeUnavailableError("cannot create a probe directory on the candidate-view filesystem", { cause: error });
+	}
 	try {
 		symlinkSync("probe-target", join(directory, "probe"), process.platform === "win32" ? "file" : undefined);
 	} finally {
@@ -7450,18 +7465,64 @@ function defaultCandidateViewSymlinkProbe(): void {
 	}
 }
 
-function candidateTreeTracksSymlinks(cwd: string, candidateTree: string): boolean {
+// The deepest existing ancestor of the candidate-view parent: probing there
+// samples the filesystem that will actually hold the candidate view. Before
+// the first START only the Git common directory exists; after one, the probe
+// lands inside the real candidate-views parent.
+function nearestExistingAncestorDirectory(path: string): string | undefined {
+	let current = path;
+	for (;;) {
+		try {
+			if (statSync(current).isDirectory()) return current;
+		} catch {
+			// Missing or unreadable: keep walking up.
+		}
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+}
+
+type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unconfirmed";
+
+function scanCandidateTreeForSymlinks(cwd: string, candidateTree: string): CandidateTreeSymlinkScan {
 	// Discovery must describe the selected directory, never an ambient Git
 	// override pointing at a different repository or worktree.
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 	try {
-		const listing = execFileSync("git", ["ls-tree", "-r", "--full-tree", candidateTree], { cwd, env, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-		return listing.split("\n").some((line) => line.startsWith("120000 "));
+		const listing = execFileSync("git", ["ls-tree", "-r", "--full-tree", candidateTree], {
+			cwd,
+			env,
+			encoding: "utf8",
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			// Same bounds the candidate-view materialization uses: a bounded
+			// child that cannot hang the event loop, and a listing past the
+			// output limit is an incomplete scan, never a symlink-free verdict.
+			timeout: resolveCandidateGitTimeoutMs(),
+			maxBuffer: CANDIDATE_GIT_MAX_BUFFER_BYTES,
+		});
+		return listing.split("\n").some((line) => line.startsWith("120000 ")) ? "tracks-symlinks" : "no-symlinks";
 	} catch {
-		// An unreadable tree is not a deterministic materialization failure;
-		// START owns reporting it.
-		return false;
+		// A timed-out, over-limit, or otherwise unreadable tree is an
+		// incomplete scan, not a deterministic materialization failure;
+		// START owns reporting unreadable trees.
+		return "unconfirmed";
 	}
+}
+
+type CandidateViewSymlinkCapability = "capable" | "incapable" | "unconfirmed";
+
+function candidateViewSymlinkCapability(commonDir: string | undefined): CandidateViewSymlinkCapability {
+	if (commonDir === undefined) return "unconfirmed";
+	const probeRoot = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+	if (probeRoot === undefined) return "unconfirmed";
+	try {
+		(candidateViewSymlinkProbe ?? defaultCandidateViewSymlinkProbe)(probeRoot);
+	} catch (error) {
+		return error instanceof CandidateViewSymlinkProbeUnavailableError ? "unconfirmed" : "incapable";
+	}
+	return "capable";
 }
 
 function candidateViewPreflightRejection(status: ReviewStatusV3, diagnostics: Record<string, string>): Record<string, unknown> {
@@ -7496,10 +7557,15 @@ function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: strin
 		}
 	}
 	const candidateTree = status.projection.currentCandidateTree;
-	if (isCanonicalProcessString(candidateTree) && candidateTreeTracksSymlinks(cwd, candidateTree)) {
-		try {
-			(candidateViewSymlinkProbe ?? defaultCandidateViewSymlinkProbe)();
-		} catch {
+	if (isCanonicalProcessString(candidateTree) && scanCandidateTreeForSymlinks(cwd, candidateTree) === "tracks-symlinks") {
+		const capability = candidateViewSymlinkCapability(commonDir);
+		if (capability === "unconfirmed") {
+			// The tree needs native symlinks and the target filesystem could not
+			// be probed: advertising START would only move the same uncertainty
+			// into a materialization refusal (gentle-ai#2196).
+			return candidateViewPreflightRejection(status, { code: "symlink-capability-unconfirmed" as const, message: CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE });
+		}
+		if (capability === "incapable") {
 			return candidateViewPreflightRejection(status, { code: "symlink-materialization-failed" as const, message: CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE });
 		}
 	}
@@ -9822,6 +9888,7 @@ async function executeReviewControllerOperation(
 /** @internal */
 export const __testing = {
 	setCandidateViewSymlinkProbeForTesting,
+	CandidateViewSymlinkProbeUnavailableError,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,

@@ -92,3 +92,45 @@ test("a healthy worktree keeps the ready START advertisement (gentle-ai#2196)", 
 	assert.equal(result.status, "ready");
 	assert.equal(result.outcome, undefined);
 });
+
+test("the symlink capability probe samples the filesystem that will hold the candidate view, never tmpdir (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+	const { root, candidateTree } = fixtureRepository(true);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	let probeRoot: string | undefined;
+	__testing.setCandidateViewSymlinkProbeForTesting((directory: string) => {
+		probeRoot = directory;
+	});
+	t.after(() => __testing.setCandidateViewSymlinkProbeForTesting(undefined));
+	const result = await inspect(root, readyNative(candidateTree));
+	assert.equal(result.status, "ready");
+	assert.ok(probeRoot !== undefined, "a symlink-tracking frozen tree consults the capability probe");
+	assert.ok(probeRoot!.startsWith(join(root, ".git")), `probe must run inside the candidate-view filesystem, saw: ${probeRoot}`);
+});
+
+test("inspect withholds the ready START advertisement when the symlink capability stays unconfirmed (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+	const { root, candidateTree } = fixtureRepository(true);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	__testing.setCandidateViewSymlinkProbeForTesting(() => {
+		throw new __testing.CandidateViewSymlinkProbeUnavailableError("no existing ancestor could host the probe");
+	});
+	t.after(() => __testing.setCandidateViewSymlinkProbeForTesting(undefined));
+	const result = await inspect(root, readyNative(candidateTree));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "candidate-view-preflight-blocked");
+	assert.equal((result.diagnostics as { code?: string }).code, "symlink-capability-unconfirmed");
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.lineage_created, false);
+});
+
+test("an incomplete symlink scan never claims a symlink-free tree and keeps the advertisement; START owns unreadable trees (gentle-ai#2196)", async t => {
+	const { root } = fixtureRepository(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	let probed = 0;
+	__testing.setCandidateViewSymlinkProbeForTesting(() => {
+		probed++;
+	});
+	t.after(() => __testing.setCandidateViewSymlinkProbeForTesting(undefined));
+	const result = await inspect(root, readyNative("f".repeat(40)));
+	assert.equal(result.status, "ready", "an unconfirmed scan withholds no advertisement");
+	assert.equal(probed, 0, "an unconfirmed scan never consults the capability probe");
+});

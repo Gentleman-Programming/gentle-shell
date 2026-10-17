@@ -27,6 +27,8 @@ function fixtureRepository(tracksSymlink: boolean): { root: string; candidateTre
 	return { root, candidateTree: git(root, "rev-parse", "HEAD^{tree}") };
 }
 
+const START_TRANSITION = { kind: "execute", execute: { operation: "review.start", arguments: [] } } as const;
+
 function readyNative(candidateTree: string): NativeReviewCli {
 	return {
 		reviewMode: async () => ({ operation: "status", status: { effective: "on", source: "global", global: "on", cloneLocal: "" } }),
@@ -35,7 +37,8 @@ function readyNative(candidateTree: string): NativeReviewCli {
 			applicability: "unrelated",
 			targetIdentity: `sha256:${"a".repeat(64)}`,
 			projection: { projection: "workspace", baseTree: candidateTree, initialReviewTree: candidateTree, currentCandidateTree: candidateTree, paths: [] },
-			raw: { schema: "gentle-ai.review-integration.status/v7", action: "start", reason_code: "fresh_target_ready" },
+			// raw is the full native STATUS body, which carries the executable transition.
+			raw: { schema: "gentle-ai.review-integration.status/v7", action: "start", reason_code: "fresh_target_ready", next_transition: START_TRANSITION },
 			nextTransition: { kind: "execute", execute: { operation: "review.start", arguments: [] } },
 		}),
 	} as unknown as NativeReviewCli;
@@ -72,6 +75,18 @@ test("inspect withholds a ready START advertisement when the frozen tree tracks 
 	assert.equal(result.outcome, "candidate-view-preflight-blocked");
 	assert.equal((result.diagnostics as { code?: string }).code, "symlink-materialization-failed");
 	assert.match(String((result.diagnostics as { message?: string }).message), /enable symlink capability out of band before retrying START/);
+});
+
+test("a blocked inspect result carries no executable START transition but keeps the native status data (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+	const { root, candidateTree } = fixtureRepository(true);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	__testing.setCandidateViewSymlinkProbeForTesting(() => { throw new Error("EPERM (probe)"); });
+	t.after(() => __testing.setCandidateViewSymlinkProbeForTesting(undefined));
+	const result = await inspect(root, readyNative(candidateTree));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.next_transition, undefined);
+	assert.deepEqual(result.result, { schema: "gentle-ai.review-integration.status/v7", action: "start", reason_code: "fresh_target_ready" });
+	assert.equal(JSON.stringify(result).includes("review.start"), false, "no nested field may still advertise review.start");
 });
 
 test("a frozen tree without symlinks never consults the symlink capability probe (gentle-ai#2196)", async t => {

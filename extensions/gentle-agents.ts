@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
-import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegistry, nativeRootSpelling, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
 import { canonicalWriterRoot } from "../lib/writer-surfaces.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
@@ -1678,7 +1678,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// same-clone registry. Never use a caller-injected resolver for this identity.
 				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
 				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
-				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot) throw new Error("repository_root must select a canonical independent Git repository.");
+				const spelling = nativeRootSpelling(selectedRoot);
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || spelling !== identity.root || !isAbsolute(spelling) || realpathSync(spelling) !== spelling) throw new Error("repository_root must select a canonical independent Git repository.");
 				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
 				foreignIdentity = identity;
 				foreignParent = canonicalParent;

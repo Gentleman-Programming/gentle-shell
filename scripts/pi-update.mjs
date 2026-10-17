@@ -8,6 +8,9 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const succeeded = result => result?.code === 0 && !result.timedOut && result.signal == null;
 const refusal = detail => new Error(`gentle-shell update: ownership ${detail}; update Pi with the package manager or source checkout that supplies the selected runtime. No installation changed.`);
 const LINKED = /^(?:file|link|workspace):/i;
+// A main-channel Shell (`<version>-main.<sha12>`, scripts/main-channel.mjs
+// mainVersion) is never published; it exists only as the packed tarball.
+const MAIN_BUILD = /^[0-9A-Za-z.+-]+-main\.[0-9a-f]{12}$/;
 const CLI_TAIL = /[\\/]dist[\\/]bundle[\\/]cli\.js$/i;
 // A quoted cli.js target inside a package-manager shim: pnpm's POSIX shim
 // (`"$basedir/../global/.../cli.js"`), its `.CMD`/npm's `.cmd` shim
@@ -136,7 +139,19 @@ async function listedEntries(groups, {adapters, path, key, canonical}) {
  * ownership. An adjacent runtime is owned by the Shell group that resolved
  * it: updating a separate global Pi never changes what that Shell runs.
  */
-export async function resolveUpdateOwner({runtime, packageRoot, platform = process.platform, adapters, cwd}) {
+/** Where `gentle-shell upgrade --channel main` packed this Shell version: the
+ * same config home as scripts/main-channel.mjs configHome. A relative config
+ * home is refused, not resolved: `upgrade` resolved it from its own working
+ * directory, so it names no single folder, and the package manager runs from
+ * the neutral cwd.
+ */
+function mainBuildTarball(version, {env, home, path}) {
+ const config = env?.GENTLE_PI_CONFIG_HOME || (typeof home === 'string' ? path.join(home, '.pi', 'gentle-ai') : null);
+ if (!config || !path.isAbsolute(config)) throw refusal('cannot locate the main-channel build without an absolute config home');
+ return path.join(config, 'main', 'packages', `${SHELL}-${version}.tgz`);
+}
+
+export async function resolveUpdateOwner({runtime, packageRoot, platform = process.platform, adapters, cwd, env, home}) {
  const {path, key} = pathsFor(platform);
  const canonical = canonicalWith(adapters, path);
  const selected = await selectedCliOf(runtime, {adapters, path, canonical});
@@ -154,7 +169,7 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
    const root = await canonical(dependency.path);
    const manifest = await manifestOf(adapters, path, root);
    if (manifest.name !== pkg) throw refusal('listed package identity differs');
-   let cli, spec;
+   let cli, spec, artifact = false;
    if (pkg === PI) {
     if (manifest.bin?.pi !== 'dist/bundle/cli.js') throw refusal('listed Pi bin is unsupported');
     cli = await canonical(path.join(root, manifest.bin.pi));
@@ -169,11 +184,12 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
     // Reinstalling the same Shell version re-resolves its peer; `update`
     // never upgrades Shell itself (that is `gentle-shell upgrade`).
     if (typeof manifest.version !== 'string') throw refusal('listed Shell version is missing');
-    spec = `${SHELL}@${manifest.version}`;
+    artifact = MAIN_BUILD.test(manifest.version);
+    spec = artifact ? mainBuildTarball(manifest.version, {env, home, path}) : `${SHELL}@${manifest.version}`;
    }
    if (key(cli) !== key(selected)) continue;
    if (name === 'pnpm' && members.get(key(groupRoot)).size !== 1) throw refusal('selected supplier shares its global install group');
-   candidates.push({name, ...invocation, package:pkg, spec});
+   candidates.push({name, ...invocation, package:pkg, spec, artifact});
   }
  }
  if (candidates.length !== 1) throw refusal(candidates.length > 1 ? 'is ambiguous' : 'could not be verified from global listings');
@@ -207,6 +223,10 @@ export async function updateSelectedPi(input) {
  let owner;
  try { owner = await resolveUpdateOwner(input); }
  catch (error) { throw error.message?.includes('ownership') ? error : refusal('could not be resolved'); }
+ if (owner.artifact) {
+  try { await input.adapters.fs.realpath(owner.spec); }
+  catch { throw new Error(`gentle-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`); }
+ }
  // Exactly one approved package per command; never create a comma group or
  // reinstall arbitrary dependencies merely because they share a store.
  const args = owner.name === 'pnpm' ? ['add', '-g', owner.spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', owner.spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])];

@@ -1996,7 +1996,7 @@ async function main() {
 		const { managedUpdatePlan, updateSelectedPi } = await import("../scripts/pi-update.mjs");
 		const plan = managedUpdatePlan(args.passthrough);
 		if (plan.self) {
-			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(),
+			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(), env: process.env, home: homedir(),
 				adapters: await packageManagerAdapters(), out: (line) => process.stdout.write(`${line}\n`) });
 			if (plan.piArgs === undefined) return;
 		}

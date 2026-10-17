@@ -4,7 +4,7 @@ import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CHANNEL_SCHEMA, MainChannelError, ownerManager, readChannel, removeGlobalShell, runUpgrade, writeChannel } from "../scripts/main-channel.mjs";
+import { CHANNEL_SCHEMA, GENTLE_AI_MODULE, MainChannelError, ownerManager, readChannel, removeGlobalShell, runUpgrade, writeChannel } from "../scripts/main-channel.mjs";
 import { requirements } from "../scripts/installer-preflight.mjs";
 
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
@@ -55,7 +55,15 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 			return { code: 0, stdout: "" };
 		}
 		if (argv[0] === "version" && command === `${bin}/go`) {
+			if (argv[1] === "-m") {
+				const commit = String(argv[2] ?? "").split("/").at(-2) ?? "";
+				return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\tv4.0.1-0.20261008202137-${commit.slice(0, 12)}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
+			}
 			return { code: 0, stdout: `go version go${requirements.go} ${platform}/amd64\n` };
+		}
+		if (argv[0] === "list" && command === `${bin}/go`) {
+			const commit = String(argv[3] ?? "").slice(`${GENTLE_AI_MODULE}@`.length);
+			return { code: 0, stdout: JSON.stringify({ Path: GENTLE_AI_MODULE, Version: `v4.0.1-0.20261008202137-${commit.slice(0, 12)}`, Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: commit } }) };
 		}
 		if (argv[0] === "version") {
 			const sha = command.split("/").at(-2) ?? "";

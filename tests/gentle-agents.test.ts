@@ -2718,11 +2718,16 @@ test("foreign clone rejects aliases, absent UI, decline and changed session befo
 		const declined = run.execute("decline", args(foreign), undefined, undefined, ctx);
 		await tick(); decision(false);
 		await assert.rejects(declined, /interactive/);
+		// gentle-shell#2314: Git prints Windows roots with forward slashes; that spelling
+		// must pass the canonical-root guard and reach consent like the native one.
+		const forwardSlashes = run.execute("forward-slashes", args(foreign.replaceAll("\\", "/")), undefined, undefined, ctx);
+		await tick(); decision(false);
+		await assert.rejects(forwardSlashes, /interactive/);
 		const drift = run.execute("drift", args(foreign), undefined, undefined, ctx);
 		await tick(); id = "replacement"; decision(true);
 		await assert.rejects(drift, /identity changed/);
 		assert.equal(runtime.spawned.length, 0);
-		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 2);
+		assert.equal(dialogs.filter(dialog => dialog.startsWith("confirm:")).length, 3);
 		assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
 		await h.fire("session_shutdown", ctx);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }

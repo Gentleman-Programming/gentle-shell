@@ -11,8 +11,12 @@ const CLI = 'dist/bundle/cli.js';
 // peer is a sibling of the Shell package; a separate global Pi links to the
 // same store entry. npm nests the peer under the Shell package.
 function fixture({windows = false, npm = false, runtime = 'adjacent', groups = 'both', peerAfter = '1.2.0', shellVersion = '4.1.0',
- badManifest = false, failed = false, mismatch = false, linked = false, readback = true, unrelatedPeer = false, shim = ''} = {}) {
+ badManifest = false, failed = false, mismatch = false, linked = false, readback = true, unrelatedPeer = false, shim = '',
+ artifact = true, configHome = ''} = {}) {
  const base = windows ? 'C:/pnpm' : '/pnpm';
+ const home = windows ? 'C:/Users/u' : '/home/u';
+ // The tarball `gentle-shell upgrade --channel main` packs, named after its version.
+ const tarball = `${configHome || `${home}/.pi/gentle-ai`}/main/packages/gentle-pi-${shellVersion}.tgz`;
  const storePi = (version: string) => `${base}/store/links/@earendil-works/pi-coding-agent/${version}/h/node_modules/${PI}`;
  const shellModules = npm ? `${base}/npm/lib/node_modules` : `${base}/store/links/@/gentle-pi/4.1.0/h1/node_modules`;
  const shell = `${shellModules}/gentle-pi`;
@@ -41,7 +45,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
   return npm ? group : [group];
  };
  const exists = (n: string) => [g1, g2, g3, shellModules, shell, storePi(state.peer), storePi(state.group), storePi('1.1.0'), nestedPeer]
-  .some(root => n === root || n.startsWith(root + '/'));
+  .some(root => n === root || n.startsWith(root + '/')) || (artifact && n === tarball);
  const realpath = async (value: string) => {
   const n = value.replaceAll('\\', '/');
   if (n === shimFile) return n;
@@ -69,11 +73,12 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
   cwds.push(options?.cwd);
   if (args.includes('list') || args.includes('ls')) return {code: failed ? 1 : 0, stdout: readback || mutations.length === 0 ? JSON.stringify(listing()) : '{'};
   mutations.push(args);
-  if (args.some(arg => arg.startsWith('gentle-pi@'))) state.peer = peerAfter;
+  if (args.some(arg => arg.startsWith('gentle-pi@') || arg.endsWith('.tgz'))) state.peer = peerAfter;
   if (args.some(arg => arg.startsWith(PI + '@'))) state.group = peerAfter;
   return {code: 0};
  };
- return {mutations, out, cwds, state, shell, selectedCli, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/gentle-pi`, currentVersion: '1.1.0', cwd: '/neutral',
+ return {mutations, out, cwds, state, shell, selectedCli, tarball, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/gentle-pi`, currentVersion: '1.1.0', cwd: '/neutral',
+  home, env: configHome ? {GENTLE_PI_CONFIG_HOME: configHome} : {},
   runtime: runtime === 'adjacent' ? {kind: 'bundled', command: 'node', args: [selectedCli]} : {kind: runtime, command: shim ? shimFile : selectedCli, args: []},
   out: (line: string) => out.push(line),
   adapters: {which: async (name: string) => name === (npm ? 'npm' : 'pnpm') ? `/fake/${name}` : null, fs: {realpath, readFile}, run}}};
@@ -115,6 +120,60 @@ test('npm nests the peer under Shell and reinstalls Shell for it', async () => {
  assert.equal(await updateSelectedPi(f.input), 0);
  assert.deepEqual(f.mutations, [['install', '-g', 'gentle-pi@4.1.0']]);
  assert.deepEqual(f.out, ['npm installed gentle-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
+});
+
+// #2324: main-channel Shell versions are never published; only the tarball
+// `gentle-shell upgrade --channel main` packed can reinstall that exact build.
+const MAIN = '4.2.0-main.fb5e731119a7';
+const native = (path: string, windows: boolean) => windows ? path.replaceAll('/', '\\') : path;
+
+for (const windows of [false, true]) test(`a main-channel Shell is reinstalled from its recorded tarball, never from the registry (windows: ${windows})`, async () => {
+ const f = fixture({windows, shellVersion: MAIN});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations, [['add', '-g', native(f.tarball, windows), '--allow-build=gentle-pi']]);
+ assert.deepEqual(f.out, [`pnpm installed ${native(f.tarball, windows)}; the selected Pi is now 1.2.0 (was 1.1.0).`]);
+ assert.equal(f.state.group, '1.1.0');
+});
+
+test('npm reinstalls a main-channel Shell from its recorded tarball', async () => {
+ const f = fixture({npm: true, shellVersion: MAIN});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations, [['install', '-g', f.tarball]]);
+});
+
+test('a main-channel tarball is found under GENTLE_PI_CONFIG_HOME', async () => {
+ const f = fixture({shellVersion: MAIN, configHome: '/custom/config'});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations, [['add', '-g', '/custom/config/main/packages/gentle-pi-4.2.0-main.fb5e731119a7.tgz', '--allow-build=gentle-pi']]);
+});
+
+test('a missing main-channel tarball names the rebuild command and installs nothing', async () => {
+ const f = fixture({shellVersion: MAIN, artifact: false});
+ await assert.rejects(updateSelectedPi(f.input), {message: `gentle-shell update: the main-channel build ${f.tarball} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`});
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.out, []);
+});
+
+// A relative config home names different folders for `upgrade` and `update`
+// run from different directories, and npm/pnpm resolve it from the neutral cwd.
+test('a relative GENTLE_PI_CONFIG_HOME is refused for a main-channel Shell without mutation', async () => {
+ const f = fixture({shellVersion: MAIN, configHome: 'relative/config'});
+ await assert.rejects(updateSelectedPi(f.input), /ownership cannot locate the main-channel build without an absolute config home/);
+ assert.deepEqual(f.mutations, []);
+ assert.deepEqual(f.out, []);
+});
+
+test('a main-channel Shell without a home directory is refused without mutation', async () => {
+ const f = fixture({shellVersion: MAIN});
+ delete (f.input as {home?: string}).home;
+ await assert.rejects(updateSelectedPi(f.input), /ownership cannot locate the main-channel build without an absolute config home/);
+ assert.deepEqual(f.mutations, []);
+});
+
+for (const runtime of ['path', 'env']) test(`a main-channel Shell never redirects the update of a selected ${runtime} Pi`, async () => {
+ const f = fixture({runtime, shellVersion: MAIN, artifact: false});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.deepEqual(f.mutations, [['add', '-g', `${PI}@latest`]]);
 });
 
 test('an npm PATH runtime updates the global Pi without its scripts', async () => {

@@ -689,7 +689,7 @@ function makeWritableForCleanup(path: string): void {
 	chmodSync(path, 0o644);
 }
 
-function candidateOwnerPreparationError(error: unknown): CandidateViewError {
+export function candidateOwnerPreparationError(error: unknown): CandidateViewError {
 	// Surface the bounded errno of the underlying failure directly in the
 	// message so CI logs are self-diagnosing without TAP printing the cause.
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;

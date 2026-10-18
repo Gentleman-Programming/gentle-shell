@@ -107,7 +107,29 @@ interface BridgeWakeIdentity {
 	text: string;
 }
 const bridgeWakeText = (nonce: string): string => `${PARENT_WAKE_TEXT} [gentle-agents wake: ${nonce}]`;
-const NATIVE_PARENT_WAKE_TEXT = "Review the delivered subagent output and continue.";
+export type WakeDeliveryKind = "subagent" | "job" | "monitor";
+
+export const WAKE_TEXT_SUBAGENT = "Review the delivered subagent output and continue.";
+export const WAKE_TEXT_JOB = "Review the background job's exit notice and continue.";
+export const WAKE_TEXT_MONITOR = "Review the delivered monitor events and continue.";
+export const WAKE_TEXT_OUTPUT = "Review the delivered output and continue.";
+export const NATIVE_PARENT_WAKE_TEXT = WAKE_TEXT_SUBAGENT;
+
+/**
+ * Resolves the automated parent wake prompt matching the delivery kinds accumulated
+ * since the last wake, avoiding confusing the model with "subagent output" after a background job.
+ */
+export function nativeParentWakeText(kinds: ReadonlySet<WakeDeliveryKind>): string {
+	if (kinds.size === 1) {
+		if (kinds.has("job")) return WAKE_TEXT_JOB;
+		if (kinds.has("monitor")) return WAKE_TEXT_MONITOR;
+		if (kinds.has("subagent")) return WAKE_TEXT_SUBAGENT;
+	}
+	if (kinds.size > 1) {
+		return WAKE_TEXT_OUTPUT;
+	}
+	return WAKE_TEXT_SUBAGENT;
+}
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;
@@ -923,6 +945,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// sent then; it never suppresses later wakes for longer than that.
 	let wakeOwed = false;
 	let wakeQueued = false;
+	const pendingWakeKinds = new Set<WakeDeliveryKind>();
 	let promptStarting = false;
 	let cancelPromptGrace: (() => void) | undefined;
 	let cancelBoundaryFlush: (() => void) | undefined;
@@ -1009,6 +1032,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// without a run keeps the wake owed until a later boundary flush.
 		if (route !== "idle") return;
 		wakeOwed = false;
+		const kinds = new Set(pendingWakeKinds);
+		pendingWakeKinds.clear();
 		endDeliveryRetry();
 		beginPromptStart();
 		try {
@@ -1022,7 +1047,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} else {
 				pi.sendMessage({
 					customType: PARENT_WAKE_TYPE,
-					content: NATIVE_PARENT_WAKE_TEXT,
+					content: nativeParentWakeText(kinds),
 					display: false,
 				}, { deliverAs: "steer", triggerTurn: true });
 			}
@@ -1033,17 +1058,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// retried once per grace, a bounded number of times in a row.
 			endPromptStart();
 			wakeOwed = true;
+			for (const kind of kinds) pendingWakeKinds.add(kind);
 			armDeliveryRetry();
 		}
 	};
 
-	const sendToParent = (message: Parameters<ExtensionAPI["sendMessage"]>[0], route: Exclude<ParentRoute, "hold">) => {
+	const sendToParent = (
+		message: Parameters<ExtensionAPI["sendMessage"]>[0],
+		route: Exclude<ParentRoute, "hold">,
+		kind: WakeDeliveryKind = "subagent",
+	) => {
 		if (route === "run") {
 			pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
 			return;
 		}
 		pi.sendMessage(message, { triggerTurn: false });
 		wakeOwed = true;
+		pendingWakeKinds.add(kind);
 		requestWake();
 	};
 
@@ -1132,8 +1163,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
 				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
 			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
+			const kind: WakeDeliveryKind = notice.kind === "events" || notice.kind === "stopped" ? "monitor" : "job";
 			try {
-				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
+				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route, kind);
 			} catch {
 				failed.push(notice);
 			}

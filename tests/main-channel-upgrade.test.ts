@@ -4,7 +4,7 @@ import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CHANNEL_SCHEMA, MainChannelError, ownerManager, readChannel, removeGlobalShell, runUpgrade, writeChannel } from "../scripts/main-channel.mjs";
+import { CHANNEL_SCHEMA, GENTLE_AI_MODULE, MainChannelError, ownerManager, readChannel, removeGlobalShell, runUpgrade, writeChannel } from "../scripts/main-channel.mjs";
 import { requirements } from "../scripts/installer-preflight.mjs";
 
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
@@ -19,7 +19,8 @@ type Invocation = { command: string; prefix: string[] } | null;
  * `which` finds `<bin>/<name><suffix>`; `invocation`, when given, is the host's adapter. */
 function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell: SHELL_SHA }, tools = ["go", "pnpm", "npm"], platform = "darwin",
 	bin = "/usr/bin", suffix = "", invocation = undefined as ((name: string) => Promise<Invocation>) | undefined, fs = fsPromises as typeof fsPromises,
-	migrate = undefined as ((input: { latest: string; owner: () => Promise<unknown> }) => Promise<unknown>) | undefined } = {}) {
+	migrate = undefined as ((input: { latest: string; owner: () => Promise<unknown> }) => Promise<unknown>) | undefined,
+	failGoInstall = false, failShellInstall = false } = {}) {
 	// owner "linked": `npm link` of a source checkout, so npm's global entry points outside npm's root.
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "upgrade-")));
 	const home = join(root, "home");
@@ -50,12 +51,21 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 		}
 		calls.push({ command, argv });
 		if (argv[0] === "install" && argv[1]?.includes("gentle-ai/v4/cmd/gentle-ai@")) {
+			if (failGoInstall) return { code: 1, stdout: "" };
 			mkdirSync(options.env!.GOBIN, { recursive: true });
 			for (const name of ["gentle-ai", "gentle-ai.exe"]) writeFileSync(join(options.env!.GOBIN, name), "#!/bin/sh\n", { mode: 0o755 });
 			return { code: 0, stdout: "" };
 		}
 		if (argv[0] === "version" && command === `${bin}/go`) {
+			if (argv[1] === "-m") {
+				const commit = String(argv[2] ?? "").split("/").at(-2) ?? "";
+				return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\tv4.0.1-0.20261008202137-${commit.slice(0, 12)}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
+			}
 			return { code: 0, stdout: `go version go${requirements.go} ${platform}/amd64\n` };
+		}
+		if (argv[0] === "list" && command === `${bin}/go`) {
+			const commit = String(argv[3] ?? "").slice(`${GENTLE_AI_MODULE}@`.length);
+			return { code: 0, stdout: JSON.stringify({ Path: GENTLE_AI_MODULE, Version: `v4.0.1-0.20261008202137-${commit.slice(0, 12)}`, Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: commit } }) };
 		}
 		if (argv[0] === "version") {
 			const sha = command.split("/").at(-2) ?? "";
@@ -65,6 +75,7 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 			writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.1.0", scripts: { prepack: "x" } }));
 			return { code: 0, stdout: "" };
 		}
+		if (failShellInstall && argv.includes("-g") && argv.some((arg) => arg.endsWith(".tgz"))) return { code: 1, stdout: "" };
 		if (argv.includes("pack")) {
 			const version = JSON.parse(readFileSync(join(options.cwd!, "package.json"), "utf8")).version;
 			writeFileSync(join(argv[argv.indexOf("--pack-destination") + 1], `gentle-pi-${version}.tgz`), "tgz");
@@ -183,6 +194,225 @@ test("a main install rebuilds only what moved on main and records the new commit
 		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${tgz} --allow-build=gentle-pi`]);
 		assert.deepEqual(await readChannel(w.ctx, fsPromises), { channel: "main", shellCommit: NEW_SHELL, gentleAiCommit: NEW_AI });
 		assert.deepEqual(w.lines, ["Updated to the latest main: Gentle Shell 333333333333, Gentle AI 222222222222."]);
+	} finally { w.cleanup(); }
+});
+
+// #2356: a Gentle AI step that fails still installs a main Shell that moved, so the
+// retry runs the new Shell's code; the channel is recorded only when both succeed.
+const GO_INSTALL_FAILED = `main-gentle-ai-build-failed: go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@${NEW_AI} failed`;
+const PRIOR_REGISTRATION = JSON.stringify({ schema: "gentle-pi.dev-binary/v1", path: "/prior/main/gentle-ai" });
+const NEW_SHELL_TGZ = (home: string) => join(home, ".pi", "gentle-ai", "main", "packages", "gentle-pi-4.1.0-main.333333333333.tgz");
+async function onPriorMain(w: ReturnType<typeof world>) {
+	await writeChannel(w.ctx, { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA }, fsPromises);
+	writeFileSync(join(w.home, ".pi", "gentle-ai", "dev-binary.json"), PRIOR_REGISTRATION);
+	return () => ({ channel: readFileSync(join(w.home, ".pi", "gentle-ai", "channel.json"), "utf8"), registration: readFileSync(join(w.home, ".pi", "gentle-ai", "dev-binary.json"), "utf8") });
+}
+
+test("a failed Gentle AI build still installs the main Shell that moved, records no channel and names the retry", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, failGoInstall: true });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.equal(error.code, "main-gentle-ai-build-failed");
+			assert.equal(error.message, `${GO_INSTALL_FAILED}; Gentle Shell was updated to main 333333333333 but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
+			return true;
+		});
+		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+		assert.deepEqual(w.lines, ["Updated Gentle Shell to the latest main (333333333333); Gentle AI was not updated."]);
+		assert.deepEqual(files(), before);
+		assert.deepEqual(JSON.parse(before.registration), JSON.parse(PRIOR_REGISTRATION));
+	} finally { w.cleanup(); }
+});
+
+test("a Go that cannot be obtained for the Gentle AI build still installs the main Shell that moved", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, tools: ["pnpm", "npm"] });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.equal(error.code, "main-requires-tools");
+			assert.match(error.message, /^main-requires-tools: the main channel builds Gentle AI with Go .*Unexpected Go acquisition in sandboxed upgrade fixture.*; Gentle Shell was updated to main 333333333333 but Gentle AI was not: run gentle-shell upgrade --channel main to finish$/);
+			return true;
+		});
+		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+		assert.deepEqual(w.lines, ["Updated Gentle Shell to the latest main (333333333333); Gentle AI was not updated."]);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+test("after a fail-forward, the retry from the new Shell builds Gentle AI and records both commits", posixOnly, async () => {
+	// The first copy of the built binary fails (as a rejected build would); the retry's succeeds.
+	let copies = 0;
+	const fs = { ...fsPromises, copyFile: async (...args: Parameters<typeof fsPromises.copyFile>) => {
+		if (copies++ === 0) throw new MainChannelError("main-gentle-ai-unverified", "first attempt rejected");
+		return fsPromises.copyFile(...args);
+	} } as typeof fsPromises;
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => error.code === "main-gentle-ai-unverified");
+		assert.deepEqual(files(), before);
+		// The retry is simulated as the new Shell's run: the same runUpgrade with the new
+		// version (the installed package itself is not executed). No channel was recorded,
+		// so it rebuilds Gentle AI and repacks the Shell before recording both commits.
+		w.lines.length = 0;
+		assert.equal(await w.upgrade([], "4.1.0-main.333333333333"), 0);
+		assert.deepEqual(w.lines, ["Updated to the latest main: Gentle Shell 333333333333, Gentle AI 222222222222."]);
+		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`, `/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+		assert.deepEqual(await readChannel(w.ctx, fsPromises), { channel: "main", shellCommit: NEW_SHELL, gentleAiCommit: NEW_AI });
+		assert.equal(JSON.parse(readFileSync(join(w.home, ".pi", "gentle-ai", "dev-binary.json"), "utf8")).path,
+			join(w.home, ".pi", "gentle-ai", "main", "gentle-ai", NEW_AI, "gentle-ai"));
+		// A third run is a no-op: both commits are current.
+		w.lines.length = 0;
+		assert.equal(await w.upgrade([], "4.1.0-main.333333333333"), 0);
+		assert.deepEqual(w.lines, ["gentle-shell is already at the latest main: Gentle Shell 333333333333, Gentle AI 222222222222."]);
+	} finally { w.cleanup(); }
+});
+
+test("a failed Gentle AI build with the main Shell already current fails as before: nothing installed or recorded", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: SHELL_SHA }, failGoInstall: true });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.equal(error.code, "main-gentle-ai-build-failed");
+			assert.equal(error.message, GO_INSTALL_FAILED);
+			return true;
+		});
+		assert.deepEqual(w.installs(), []);
+		assert.deepEqual(w.lines, []);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+test("when the Gentle AI build and the Shell install both fail, the Shell failure is reported with the Gentle AI one", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, failGoInstall: true, failShellInstall: true });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.equal(error.code, "upgrade-install-failed");
+			assert.equal(error.message, `upgrade-install-failed: pnpm could not install ${NEW_SHELL_TGZ(w.home)}; Gentle AI was not updated either (${GO_INSTALL_FAILED})`);
+			return true;
+		});
+		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+		assert.deepEqual(w.lines, []);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+// An ordinary failure that is not a MainChannelError (EACCES) keeps the retry advice and both errors.
+const eacces = (what: string) => Object.assign(new Error(`EACCES: permission denied, ${what}`), { code: "EACCES" });
+const COPY_DENIED = eacces("copyfile");
+const MANIFEST_DENIED = eacces("open package.json");
+const deniedFs = ({ copy = false, manifest = false }) => ({ ...fsPromises,
+	copyFile: async (...args: Parameters<typeof fsPromises.copyFile>) => { if (copy) throw COPY_DENIED; return fsPromises.copyFile(...args); },
+	readFile: (async (path: string, options?: unknown) => {
+		if (manifest && String(path).endsWith(join(".source", "src", "package.json"))) throw MANIFEST_DENIED;
+		return fsPromises.readFile(path, options as never);
+	}) as typeof fsPromises.readFile }) as typeof fsPromises;
+
+test("an ordinary error in the Gentle AI step still installs the main Shell that moved and names the retry", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs: deniedFs({ copy: true }) });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.ok(error instanceof MainChannelError);
+			assert.equal(error.code, "main-upgrade-incomplete");
+			assert.equal(error.message, "main-upgrade-incomplete: EACCES: permission denied, copyfile; Gentle Shell was updated to main 333333333333 but Gentle AI was not: run gentle-shell upgrade --channel main to finish");
+			assert.equal(error.cause, COPY_DENIED);
+			return true;
+		});
+		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+		assert.deepEqual(w.lines, ["Updated Gentle Shell to the latest main (333333333333); Gentle AI was not updated."]);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+test("ordinary errors in both steps report the Shell error with the Gentle AI one", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs: deniedFs({ copy: true, manifest: true }) });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.ok(error instanceof MainChannelError);
+			assert.equal(error.code, "main-upgrade-incomplete");
+			assert.equal(error.message, "main-upgrade-incomplete: EACCES: permission denied, open package.json; Gentle AI was not updated either (EACCES: permission denied, copyfile)");
+			assert.equal(error.cause, MANIFEST_DENIED);
+			return true;
+		});
+		assert.deepEqual(w.installs(), []);
+		assert.deepEqual(w.lines, []);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+test("an ordinary error in the Gentle AI step with the main Shell already current is rethrown unchanged", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: SHELL_SHA }, fs: deniedFs({ copy: true }) });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: Error) => error === COPY_DENIED);
+		assert.deepEqual(w.installs(), []);
+		assert.deepEqual(w.lines, []);
+		assert.deepEqual(files(), before);
+	} finally { w.cleanup(); }
+});
+
+// A rejection that is not an Error, even a falsy one, is still a failed Gentle AI step.
+const rejectingCopy = (value: unknown) => ({ ...fsPromises, copyFile: async () => { throw value; } }) as typeof fsPromises;
+
+test("a falsy rejection in the Gentle AI step still records no channel and names the retry", posixOnly, async () => {
+	for (const value of [undefined, null, 0, false]) {
+		const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs: rejectingCopy(value) });
+		try {
+			const files = await onPriorMain(w);
+			const before = files();
+			await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+				assert.ok(error instanceof MainChannelError);
+				assert.equal(error.code, "main-upgrade-incomplete");
+				assert.equal(error.message, `main-upgrade-incomplete: ${String(value)}; Gentle Shell was updated to main 333333333333 but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
+				return true;
+			});
+			assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${NEW_SHELL_TGZ(w.home)} --allow-build=gentle-pi`]);
+			assert.deepEqual(w.lines, ["Updated Gentle Shell to the latest main (333333333333); Gentle AI was not updated."]);
+			assert.deepEqual(files(), before);
+		} finally { w.cleanup(); }
+	}
+});
+
+test("a rejection that is not an Error but has a message keeps that message", posixOnly, async () => {
+	for (const failShellInstall of [false, true]) {
+		const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs: rejectingCopy({ message: "EACCES: copy denied", code: "EACCES" }), failShellInstall });
+		try {
+			const files = await onPriorMain(w);
+			const before = files();
+			await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+				assert.equal(error.message, failShellInstall
+					? `upgrade-install-failed: pnpm could not install ${NEW_SHELL_TGZ(w.home)}; Gentle AI was not updated either (EACCES: copy denied)`
+					: "main-upgrade-incomplete: EACCES: copy denied; Gentle Shell was updated to main 333333333333 but Gentle AI was not: run gentle-shell upgrade --channel main to finish");
+				return true;
+			});
+			assert.deepEqual(files(), before);
+		} finally { w.cleanup(); }
+	}
+});
+
+test("a null rejection in the Gentle AI step is kept when the Shell install fails too", posixOnly, async () => {
+	const w = world({ commits: { ai: NEW_AI, shell: NEW_SHELL }, fs: rejectingCopy(null), failShellInstall: true });
+	try {
+		const files = await onPriorMain(w);
+		const before = files();
+		await assert.rejects(w.upgrade([], "4.0.0-main.6e7e3a18f794"), (error: MainChannelError) => {
+			assert.equal(error.code, "upgrade-install-failed");
+			assert.equal(error.message, `upgrade-install-failed: pnpm could not install ${NEW_SHELL_TGZ(w.home)}; Gentle AI was not updated either (null)`);
+			return true;
+		});
+		assert.deepEqual(w.lines, []);
+		assert.deepEqual(files(), before);
 	} finally { w.cleanup(); }
 });
 

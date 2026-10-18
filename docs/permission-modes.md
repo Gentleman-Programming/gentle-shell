@@ -52,7 +52,7 @@ Changing the default does **not** change the current session. To return this ses
 | --- | --- |
 | **Normal** | Existing permission behavior; the default when no valid global preference exists. |
 | **Auto** | A separate reviewer using the current session model checks eligible actions against live user intent before execution. Local reads are classified too; locality does not exempt an action from explicit restrictions. |
-| **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain. [Full YOLO details](yolo-mode.md). |
+| **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain, except recursive removal of the session's own [temp scratch](yolo-mode.md#temp-scratch-removal). [Full YOLO details](yolo-mode.md). |
 
 ## Commands and menu
 
@@ -115,6 +115,10 @@ The **Auto checks** status and `gentle-auto-permission` session entries account 
 ## Persistence and lifetime
 
 The dedicated `permission-mode.json` in Gentle Pi's resolved user config home contains a strict versioned preference. Saving uses a private atomic replacement; malformed or unreadable existing preferences fall back to Normal and refuse an overwrite until repaired. Use the human command/menu path rather than asking model tools to edit this authority file.
+
+Model `write`/`edit` calls keep the config home protected except for the main-channel updater's `dev-binary.json`, `channel.json`, `main/` and `tools/go`. Those destinations select or build executable code, so they still require authorization under the current mode's ordinary checks; Auto classifies them and can deny an update. They are not automatically allowed. Permission preferences, global and project `runtime-guardrails.json`, their parent directories and symlink aliases resolving to them stay blocked even if a classifier would allow the action. Other config-home state, including model routing, persona and privacy preferences, remains protected.
+
+Shell recognition remains deliberately conservative: commands mentioning the config home or policy filenames can still be blocked. This change does not relax shell protection, authorize routing around a denial, or turn the hook into a sandbox.
 
 Live mode selection is bound to the SessionManager, session ID and canonical Git clone identity, or the canonical workspace directory outside Git. Session replacement, shutdown and reload revoke live callbacks and pending actions. A newly initialized primary session may select its saved default; this is a new application of the global preference, not restoration of an old session grant. Disable the saved default as well if future sessions must stay Normal.
 

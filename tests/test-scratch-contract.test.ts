@@ -91,10 +91,12 @@ test("S10: scratch outside the worktree is removed after use", () => {
 		],
 		"worker scratch cleanup",
 	);
-	containsAll(writer, ["the parent removes the exact scratch paths a worker or verifier reports"], "writer parent cleanup");
-	containsAll(
-		read("assets/orchestrator-verification.md"),
-		["the parent removes the scratch paths the verifier reports"],
-		"verification parent cleanup",
-	);
+	// Session scratch and artifact ledger: the runtime owns the parent session's
+	// TMPDIR (subagent TMPDIRs nest under it) and records clones and worktrees,
+	// so the writer rule points at the command instead of a model cleanup step.
+	containsAll(writer, ["The runtime owns session scratch", "`/gentle:scratch` lists or cleans recorded clones and worktrees"], "writer runtime-owned cleanup");
+	// The verifier's mktemp copy lives in its own TMPDIR, which the runner removes.
+	const verification = read("assets/orchestrator-verification.md");
+	containsAll(verification, ["the runtime removes each subagent's own TMPDIR, which holds that copy"], "verification runtime cleanup");
+	assert.ok(!verification.includes("the parent removes the scratch paths the verifier reports"), "the parent no longer removes verifier scratch");
 });

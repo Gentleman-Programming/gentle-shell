@@ -13,9 +13,11 @@ import {
 	staleTurns,
 	TODO_DETAILS_KEY,
 	TODO_GLYPH,
+	TODO_PROGRESS_EVENT,
 	TODO_TOOL_NAME,
 	todoCardTone,
 	TODO_CLOSED_STATE,
+	todoProgress,
 	todoPromptBlock,
 	todoStateMessage,
 	todoSummary,
@@ -284,6 +286,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					// snapshot in the transcript never reads as current work.
 					const state = todoStateMessage(current.state) ?? (current.lastSent === undefined ? undefined : TODO_CLOSED_STATE);
 					if (state !== undefined && state !== current.lastSent) persistState(current, state);
+					pi.events?.emit(TODO_PROGRESS_EVENT, todoProgress(current.state, ctx.sessionManager.getSessionId()));
 				}
 				if (current.tui) invalidateSidebar(current.tui);
 			}

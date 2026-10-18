@@ -48,7 +48,11 @@ test("applicability, fallback and honest evidence flow through ODD actors", () =
 test("retired SDD routes and assets are absent while ODD entry and generic workers remain", () => {
 	const core = read("assets/orchestrator.md");
 	const delegation = readDelegationDetail();
-	assert.match(core, /ODD \(Default Workflow, harness section above\) is mandatory on every request/);
+	// S11 T3: deduplicated. The core's "ODD (Default Workflow, harness section
+	// above) is mandatory on every request" restated the harness; the mandatory
+	// ODD entry is stated once, in the harness that renders above the core.
+	assert.match(read("extensions/gentle-ai.ts"), /Default workflow: Organic Driven Development \(MANDATORY\)\nOrganic Driven Development \(ODD\) is the predefined workflow of this orchestrator\. Every request enters it/);
+	assert.doesNotMatch(core, /ODD \(Default Workflow, harness section above\)/);
 	assert.match(delegation, /generic writer chain is unavailable/);
 	for (const path of [
 		"assets/agents/gentle-ai-worker.md",

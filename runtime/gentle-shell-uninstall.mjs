@@ -123,6 +123,15 @@ function comparable(path        , platform        )         {
 	return platform === "win32" ? path.toLowerCase() : path;
 }
 
+/**
+ * Where a symlinked path's own link entry lives: its parent resolved, its name
+ * kept. Removing a folder that holds this entry breaks the configured path even
+ * when the link's target is guarded elsewhere.
+ */
+function symlinkEntry(path        , state            )                     {
+	return state === "symlink" ? join(canonical(dirname(resolve(path))), basename(path)) : undefined;
+}
+
 /** The real path, resolving the nearest existing ancestor when `path` does not exist. */
 function canonical(path        )         {
 	const absolute = resolve(path);
@@ -374,8 +383,12 @@ async function planSelfUninstall(input                    , configHome        , 
 	// Nothing is both removed and not touched: a removal that is, holds or lies
 	// inside a path listed as not touched refuses the whole run.
 	if (plan.refusals.length === 0) {
+		const namedEnvsEntry = namedEnvsReal !== undefined ? symlinkEntry(namedEnvs, namedEnvsState) : undefined;
 		for (const removal of [...plan.own, ...plan.shared]) {
 			const real = canonical(removal.path);
+			if (namedEnvsEntry !== undefined && within(real, namedEnvsEntry, platform)) {
+				plan.refusals.push(`${removal.path} would be removed, but it overlaps ${namedEnvs} (${NAMED_ENVS_LABEL}), which is not touched; refusing to remove anything.`);
+			}
 			for (const kept of plan.notTouched) {
 				if (kept.path === undefined) continue;
 				const target = canonical(kept.path);
@@ -726,8 +739,11 @@ function planBundledSelfUninstall(input                           )             
 	plan.removeRoot = !foreign;
 
 	if (guardsNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
+	const namedEnvsEntry = guardsNamedEnvs ? symlinkEntry(namedEnvs, namedEnvsState) : undefined;
 	for (const removal of [...plan.own, ...plan.shared]) {
-		const reason = collision(canonical(removal.path), guards, platform);
+		const real = canonical(removal.path);
+		const reason = collision(real, guards, platform)
+			?? (namedEnvsEntry !== undefined && within(real, namedEnvsEntry, platform) ? `contains ${namedEnvs} (${NAMED_ENVS_LABEL})` : undefined);
 		if (reason) plan.refusals.push(`${removal.path} would be removed, but it ${reason}; refusing to remove anything.`);
 	}
 

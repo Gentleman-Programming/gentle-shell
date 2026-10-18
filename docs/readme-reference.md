@@ -301,7 +301,7 @@ An orphan branch with commits and no parent has no branch point to name as `base
 ```bash
 gentle-shell [options] [-- pi-args...]
 gentle-shell home [link|isolated|<path>]
-gentle-shell envs [list | new <name>]
+gentle-shell envs [list | new <name> [scope] | config <name> [scope]]
 gentle-shell [home selectors] setup [--dry-run]
 gentle-shell upgrade [--channel release|main]
 gentle-shell upgrade --rollback

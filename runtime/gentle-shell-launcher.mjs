@@ -1363,7 +1363,7 @@ export function helpText()         {
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
-		"       gentle-shell envs [list | new <name>]",
+		"       gentle-shell envs [list | new <name> [scope] | config <name> [scope]]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",

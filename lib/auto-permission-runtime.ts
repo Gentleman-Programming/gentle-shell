@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { gentlePiConfigHome } from "./agent-home.ts";
@@ -96,7 +96,8 @@ function within(path: string, root: string): boolean {
 function canonical(path: string): string {
  const absolute = resolve(path);
  let ancestor = absolute;
- while (!existsSync(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
+ // A dangling symlink exists as a directory entry: let realpath fail closed.
+ while (!lstatSync(ancestor,{throwIfNoEntry:false})) { const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
  return resolve(realpathSync(ancestor), relative(ancestor, absolute));
 }
 /** True only for an existing symlink-free in-project regular file larger than the reader accepts.

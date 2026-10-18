@@ -324,6 +324,24 @@ test("Updater exceptions cannot overwrite authority through hardlinks", async t=
  assert.equal(f.requests.length,0);
 });
 
+test("Dangling updater aliases cannot create absent permission authority", async t=>{
+ const f=fixture(t);f.input("Update companion tools without creating or changing permission policy.");
+ const home=join(f.cwd,"config");mkdirSync(join(home,"tools"),{recursive:true});
+ for(const [alias,policy] of [["dev-binary.json","permission-mode.json"],["channel.json","runtime-guardrails.json"],
+  ["main","permission-mode.json"],["tools/go","runtime-guardrails.json"]]) {
+  symlinkSync(join(home,policy),join(home,alias));
+  for(const mode of ["normal","auto","yolo"]) {
+   f.setMode(mode);
+   for(const toolName of ["write","edit"]) {
+    const input={path:join(home,alias),content:"{}"};
+    assert.equal(f.runtime.guard({toolName,input},f.ctx)?.block,true,`${mode}: ${alias} stays protected`);
+    assert.equal((await f.execute(toolName,input)).executions,0);
+   }
+  }
+ }
+ assert.equal(f.requests.length,0,"unresolved aliases never reach an allowing classifier");
+});
+
 test("Policy files cannot be modified by model file tools; symlink escapes are reviewed", async t=>{
  const f=fixture(t);f.input("Edit source code");mkdirSync(join(f.cwd,"config"));
  assert.equal((await f.execute("write",{path:join(f.cwd,"config","permission-mode.json"),content:"yolo"})).executions,0);

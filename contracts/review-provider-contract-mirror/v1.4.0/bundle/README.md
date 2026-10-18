@@ -19,4 +19,11 @@ It carries no executable content, same as every other file in this bundle: a
 runtime mirrors and delivers the text as-is and still relies on Go for every
 review decision, prompt, receipt, and delivery gate.
 
+## Routing
+
+manifest.json's routing array lists, for closed runtimes only, one
+routing/<runtime>.md file: the exact ODD implementation-routing block Gentle
+AI renders for that runtime, whose prompt Gentle AI does not install. It is
+data only as well: a runtime mirrors and delivers the text as-is.
+
 Go remains the admission authority for prompts, results, receipts, and delivery gates.

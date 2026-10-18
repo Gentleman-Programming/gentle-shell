@@ -153,6 +153,36 @@ function isTextContent(part: { type?: unknown }): part is TextContent {
 	return part.type === "text";
 }
 
+/** Completion diagnostics are facts only; never copy provider text, errors, or payloads. */
+function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
+	const evidence: Record<string, unknown> = { reviewerModel: `${model.provider}/${model.id}`.slice(0, 512) };
+	if (["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason)) {
+		evidence.stopReason = assistant.stopReason;
+	}
+	const addCounter = (target: Record<string, number>, key: string, value: unknown) => {
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) target[key] = value;
+	};
+	const usage: Record<string, number> = {};
+	for (const key of ["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+		addCounter(usage, key, assistant.usage?.[key]);
+	}
+	if (Object.keys(usage).length > 0) evidence.usage = usage;
+	const text = assistant.content.filter(isTextContent);
+	const thinking = assistant.content.filter((part) => part.type === "thinking");
+	const content: Record<string, number> = {};
+	addCounter(content, "blocks", assistant.content.length);
+	addCounter(content, "textBlocks", text.length);
+	addCounter(content, "thinkingBlocks", thinking.length);
+	if (text.every((part) => typeof part.text === "string")) {
+		addCounter(content, "textChars", text.reduce((sum, part) => sum + part.text.length, 0));
+	}
+	if (thinking.every((part) => typeof part.thinking === "string")) {
+		addCounter(content, "thinkingChars", thinking.reduce((sum, part) => sum + part.thinking.length, 0));
+	}
+	evidence.content = content;
+	return evidence;
+}
+
 /**
  * Mirrors pi's main-loop OpenCode attribution condition exactly
  * (core/provider-attribution.js#getSessionHeaders): the model's provider is
@@ -329,10 +359,11 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 
 	const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
 	if (text.length === 0) {
+		const evidence = emptyOutputEvidence(model, assistant);
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
-			`Reviewer produced no text for ${request.routingKey} (stopReason: ${assistant.stopReason}).`,
-			{ stopReason: assistant.stopReason, ...(assistant.errorMessage === undefined ? {} : { errorMessage: assistant.errorMessage }) },
+			`Reviewer produced no text for ${request.routingKey} (stopReason: ${evidence.stopReason ?? "unknown"}).`,
+			evidence,
 		);
 	}
 

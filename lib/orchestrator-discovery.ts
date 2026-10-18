@@ -1,13 +1,16 @@
 import { readCatalog, type CatalogPage } from "./orchestrator-catalog.ts";
 import type { PublishedWork } from "./orchestrator-work.ts";
 import type { PresenceRecord } from "./agents-session-transport.ts";
-import { activationHash, listPresence, readDiscovery, sessionHash, type DiscoveryMetadata } from "./orchestrator-presence.ts";
+import { activationHash, discoveryAbsent, listPresence, readDiscovery, sessionHash, type DiscoveryMetadata } from "./orchestrator-presence.ts";
 
 export interface OrchestratorCandidate {
 	sessionId: string;
 	reachability: "unknown";
 	freshness: "unknown" | "recent" | "stale";
 	label?: string;
+	/** Display-only label of a live peer whose code predates discovery publication:
+	 * its schema-1 header heartbeats, but it never writes a discovery sidecar. */
+	legacyLabel?: string;
 	aliases?: DiscoveryMetadata["aliases"];
 	workspace?: string;
 	tasks?: DiscoveryMetadata["tasks"];
@@ -36,6 +39,7 @@ export function discoverOrchestrators(profile: string, peers: readonly PresenceR
 		if (matches.length !== 1) return unknown;
 		const header = matches[0];
 		const metadata = readDiscovery(profile, header);
+		if (!metadata && header.recent && discoveryAbsent(profile, header)) return { ...unknown, legacyLabel: header.label };
 		if (metadata?.activation !== activationHash(activations[0])) return unknown;
 		if (!header.recent) return { ...unknown, freshness: "stale" };
 		const catalog = readCatalog(profile, header, metadata.activation, selection?.recipientSessionId === sessionId ? selection.cursor : undefined);

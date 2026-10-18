@@ -6,12 +6,23 @@ import fsp from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewLastEventClosureV1, decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
 
 const SHA = `sha256:${"a".repeat(64)}`;
 const TREE = "b".repeat(40);
@@ -1076,7 +1087,9 @@ function reviewContext(cwd: string): ExtensionContext {
 
 function startStatus(cwd: string, baseRef?: string, intendedUntracked: readonly string[] = []): ReviewStatusV3 {
 	const candidateViews = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const view = candidateViews.create({ contributorRoot: cwd, intendedUntracked, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) });
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",

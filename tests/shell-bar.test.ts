@@ -895,7 +895,17 @@ test("renderShellHeaderBar keeps the env over the brand when only one of them fi
 		assert.match(text, /^env work/, `width ${width}: ${text}`);
 	}
 	// Without an env the narrow header still shows the brand.
-	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 16).text, /^✿ Gentle Shell/);
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 16).text, /^\u273f Gentle Shell/);
+});
+
+test("the narrowest header keeps the env beside the running job count", () => {
+	const data = model({ env: "work", jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] });
+	for (const width of [20, 24]) {
+		const text = renderShellHeaderBar(buildShellHeaderModel(data, true), plainTheme, width).text;
+		assert.ok(visibleWidth(text) <= width, `width ${width}: ${text}`);
+		assert.match(text, /^env work/, `width ${width}: ${text}`);
+		assert.match(text, /\u29d7 1 job$/, `width ${width}: ${text}`);
+	}
 });
 
 test("minimal density hides the brand but still names the env", () => {

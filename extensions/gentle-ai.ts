@@ -7206,7 +7206,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
 	const preservesAnswerConsentStartDiagnostic = operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT && nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.START;
 	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && value.candidateViewPreNative === true
-		? error.diagnostics ?? { code: error.reason, message: "candidate view rejected before native START" }
+		? error.diagnostics ?? { code: error.reason, message: error.message }
 		: error instanceof CandidateViewError
 			? { code: error.reason, message: error.message }
 			: nativeDiagnostics?.operation === `review/${operation}` || preservesNativeTargetStatusDiagnostic || preservesAnswerConsentStartDiagnostic

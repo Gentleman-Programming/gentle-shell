@@ -3556,6 +3556,23 @@ test("--env never creates an unknown env and rejects invalid names", (t) => {
 	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 1);
 });
 
+test("--env accepts only a real env directory, never a file or a symlink", (t) => {
+	const f = fixture(t);
+	const root = join(f.home, ".gentle-shell", "envs");
+	mkdirSync(root, { recursive: true });
+	writeFileSync(join(root, "file"), "not an env\n");
+	const target = join(f.root, "elsewhere");
+	mkdirSync(target);
+	symlinkSync(target, join(root, "link"), "dir");
+	for (const name of ["file", "link"]) {
+		const result = run(f.env, ["--env", name]);
+		assert.equal(result.status, 2, `${name}: ${result.stderr}`);
+		assert.match(result.stderr, new RegExp(`unknown env "${name}"`));
+	}
+	assert.equal(readFileSync(join(root, "file"), "utf8"), "not an env\n");
+	assert.deepEqual(readdirSync(target), []);
+});
+
 test("envs without a TTY lists envs, marks the default, and honors GENTLE_SHELL_ENVS_DIR", (t) => {
 	const f = fixture(t);
 	const envsDir = join(f.root, "custom-envs");

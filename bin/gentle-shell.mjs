@@ -702,6 +702,14 @@ function currentEnvsRoot() {
 	return envsRoot(process.env, homedir());
 }
 
+function isRealDirectory(path) {
+	try {
+		return lstatSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function listEnvNames(root) {
 	let entries;
 	try {
@@ -2083,7 +2091,9 @@ async function main() {
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
 	// An explicit --env never creates a home: a typo must not silently become
 	// a new, empty env. A persisted default keeps the ordinary bootstrap.
-	if (args.env !== undefined && !existsSync(home.dir)) {
+	// Like the envs list, only a real directory (never a file or a symlink)
+	// counts as an env.
+	if (args.env !== undefined && !isRealDirectory(home.dir)) {
 		fail(`gentle-shell: unknown env "${args.env}" (${home.dir}).\nCreate it with 'gentle-shell envs new ${args.env}' or manage envs with 'gentle-shell envs'.`, 2);
 	}
 

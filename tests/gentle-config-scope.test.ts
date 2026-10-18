@@ -62,7 +62,9 @@ test("without env scope variables every category resolves exactly as before", ()
 
 // Install-level reads that must ignore env scope: the dev binary registration,
 // integrity and the update channel belong to the install, never to an env.
-const INSTALL_LEVEL_CALLS = new Set<string>([]);
+// Session scratch ledgers are runtime state, not configuration, so they stay
+// in the shared config home whatever categories an env owns.
+const INSTALL_LEVEL_CALLS = new Set<string>(["extensions/session-scratch.ts:93"]);
 
 test("every config-home read names its category (drift guard)", () => {
 	const root = new URL("..", import.meta.url);

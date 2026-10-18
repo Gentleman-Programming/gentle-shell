@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,6 +98,32 @@ test("review session Git identity lookups hide every Windows child process", asy
 		assert.equal(call.command, "git");
 		assert.equal(call.options.windowsHide, true);
 	}
+});
+
+test("synchronous repository discovery stays silent outside Git", (t) => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-non-git-identity-")));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const moduleUrl = new URL("../lib/review-session-standing-permission.ts", import.meta.url).href;
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
+	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
+		import { resolveCanonicalGitRepositoryIdentitySync } from ${JSON.stringify(moduleUrl)};
+		const identity = resolveCanonicalGitRepositoryIdentitySync(process.cwd());
+		console.log(JSON.stringify({ identity: identity ?? null }));
+	`], { cwd, env, encoding: "utf8", timeout: 10_000 });
+	assert.equal(child.error, undefined);
+	assert.equal(child.status, 0, child.stderr);
+	assert.deepEqual(JSON.parse(child.stdout), { identity: null });
+	assert.equal(child.stderr, "", "a caught Git failure must not write over the TUI editor");
+});
+
+test("synchronous repository discovery preserves clone identity across worktrees", (t) => {
+	const root = repository(t);
+	const sibling = siblingWorktree(t, root);
+	const unrelated = repository(t);
+	const identity = resolveCanonicalGitRepositoryIdentitySync(root);
+	assert.match(identity ?? "", /^sha256:/);
+	assert.equal(resolveCanonicalGitRepositoryIdentitySync(sibling), identity);
+	assert.notEqual(resolveCanonicalGitRepositoryIdentitySync(unrelated), identity);
 });
 
 test("headless, child, empty-session, and non-Git contexts cannot offer or consume standing permission", async (t) => {

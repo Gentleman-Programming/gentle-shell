@@ -127,7 +127,8 @@ test("T33: the Close step checks shared code before Risk: none", () => {
 // --year` regression in 1 of 2 runs. A differential run of every existing
 // command that shares the changed code, old code against new, caught it in
 // 2 of 2. Inline work and the worker carry the same check.
-const DIFFERENTIAL = "Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (`git stash` or a copy of HEAD) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.";
+// S15: the differential check runs in scratch and is never committed as a test (blind round 4 found tests pinning a git commit).
+const DIFFERENTIAL = "Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.";
 test("C8: inline test-first and the worker PRESERVE step run the differential check", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
 		const principle = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));

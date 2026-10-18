@@ -5,7 +5,7 @@ import { test } from 'node:test';
 const PI = '@earendil-works/pi-coding-agent';
 // A virtual symlink filesystem: listed global links point into a pnpm store.
 // The store's adjacent peer is a sibling, not Shell/node_modules/Pi.
-function launch(args: string[], scenario = 'owned') {
+function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  const adjacent = scenario.startsWith('adjacent');
  const npm = scenario.startsWith('npm-');
  const nodeModules = '/global/v11/selected/node_modules';
@@ -31,7 +31,7 @@ function launch(args: string[], scenario = 'owned') {
    source = source.replace('const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));', ${JSON.stringify(`const packageRoot = '${shellRoot}';`)});
    source = source.replace('const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });', 'const bundled = undefined;');
    source = source.replace('runtime = resolvePiRuntime({', ${JSON.stringify(`runtime = ({ kind: '${adjacent ? 'bundled' : 'env'}', command: '${adjacent ? 'node' : piRoot + '/dist/bundle/cli.js'}', args: ${JSON.stringify(adjacent ? [piRoot + '/dist/bundle/cli.js'] : [])} }); /*`)}).replace('nodeExecPath: process.execPath,\\n\\t\\t});', 'nodeExecPath: process.execPath, */');
-   source = source.replace('const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {', 'const versionProbe = { stdout: "1.2.0" }; /*').replace('env: bundledEnv ?? process.env,\\n\\t});', 'env: bundledEnv ?? process.env, */');
+   source = source.replace('const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {', 'const versionProbe = { stdout: "${piVersion}" }; /*').replace('env: bundledEnv ?? process.env,\\n\\t});', 'env: bundledEnv ?? process.env, */');
    source = source.replace('async function packageManagerAdapters() {', 'async function packageManagerAdapters() { return globalThis.fakeAdapters; } async function unusedAdapters() {');
    source = source.replace('let homeHadContentBeforeBootstrap = false;', 'if (passthrough.length === 1) { console.error("error: pi cannot self-update this installation. This installation is not managed by a global pnpm install."); process.exitCode = 1; return; } console.log("FORWARD " + JSON.stringify(passthrough)); return; let homeHadContentBeforeBootstrap = false;');
    return {format:'module', source, shortCircuit:true};
@@ -77,6 +77,25 @@ for (const scenario of ['ambiguous', 'malformed', 'npm-link', 'npm-file', 'share
  assert.equal(result.stdout, '');
  assert.match(result.stderr, /ownership/);
  assert.doesNotMatch(result.stdout + result.stderr, /MUTATION/);
+});
+
+// `update` is how an old Pi gets replaced, so the minimum-version gate must not block it.
+test('public update replaces a Pi older than the required minimum', () => {
+ const result = launch(['update'], 'owned', '1.1.0');
+ assert.equal(result.status, 0, result.stderr);
+ assert.match(result.stdout, /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@latest"\]/);
+ assert.doesNotMatch(result.stdout + result.stderr, /older than the required minimum/);
+ assert.equal(result.stderr, '');
+});
+
+test('an old Pi still fails the minimum-version gate outside a self update', () => {
+ for (const args of [['list'], ['update', '--extensions-only']]) {
+  const result = launch(args, 'owned', '1.1.0');
+  assert.equal(result.status, 1, result.stdout);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /pi version 1\.1\.0 is older than the required minimum 1\.2\.0\./);
+  assert.doesNotMatch(result.stdout, /MUTATION/);
+ }
 });
 
 test('public extensions-only update preserves the forwarded command', () => {

@@ -123,12 +123,20 @@ function comparable(path: string, platform: string): string {
 }
 
 /**
- * Where a symlinked path's own link entry lives: its parent resolved, its name
- * kept. Removing a folder that holds this entry breaks the configured path even
- * when the link's target is guarded elsewhere.
+ * Where each symlink on the way to `path` lives: the root's own link and any
+ * symlinked folder above it, each as its resolved parent plus its name.
+ * Removing a folder that holds one of these breaks the configured path even
+ * when the real target is guarded elsewhere.
  */
-function symlinkEntry(path: string, state: Inspection): string | undefined {
-	return state === "symlink" ? join(canonical(dirname(resolve(path))), basename(path)) : undefined;
+function symlinkEntries(path: string): string[] {
+	const entries: string[] = [];
+	let current = resolve(path);
+	for (let parent = dirname(current); parent !== current; current = parent, parent = dirname(current)) {
+		let link = false;
+		try { link = lstatSync(current).isSymbolicLink(); } catch { /* missing: nothing to break */ }
+		if (link) entries.push(join(canonical(parent), basename(current)));
+	}
+	return entries;
 }
 
 /** The real path, resolving the nearest existing ancestor when `path` does not exist. */
@@ -151,7 +159,9 @@ function canonical(path: string): string {
 /** True when `child` is `parent` itself or lies inside it. */
 function within(parent: string, child: string, platform: string): boolean {
 	const path = relative(comparable(parent, platform), comparable(child, platform));
-	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+	// Only a whole ".." segment leaves the parent: a child folder may itself
+	// be named "..envs".
+	return path === "" || (!/^\.\.(?:[\\/]|$)/.test(path) && !isAbsolute(path));
 }
 
 type Inspection = "ok" | "missing" | "symlink" | "other";
@@ -357,7 +367,8 @@ async function planSelfUninstall(input: SelfUninstallInput, configHome: string, 
 	plan.notTouched.push({ path: piHome, label: "your Pi home" });
 	// Named envs are user data: their root is listed once, never each env as a
 	// custom --home home, and the overlap check below protects all of them.
-	const namedEnvs = envsRoot(env, homedir);
+	// Resolved: a trailing slash would make lstat follow a symlinked root.
+	const namedEnvs = resolve(envsRoot(env, homedir));
 	// A symlinked root still holds the user's envs: protect its real target too.
 	const namedEnvsState = inspect(namedEnvs, "dir");
 	const namedEnvsReal = namedEnvsState === "ok" || (namedEnvsState === "symlink" && inspect(canonical(namedEnvs), "dir") === "ok") ? canonical(namedEnvs) : undefined;
@@ -381,10 +392,10 @@ async function planSelfUninstall(input: SelfUninstallInput, configHome: string, 
 	// Nothing is both removed and not touched: a removal that is, holds or lies
 	// inside a path listed as not touched refuses the whole run.
 	if (plan.refusals.length === 0) {
-		const namedEnvsEntry = namedEnvsReal !== undefined ? symlinkEntry(namedEnvs, namedEnvsState) : undefined;
+		const namedEnvsLinks = namedEnvsReal !== undefined ? symlinkEntries(namedEnvs) : [];
 		for (const removal of [...plan.own, ...plan.shared]) {
 			const real = canonical(removal.path);
-			if (namedEnvsEntry !== undefined && within(real, namedEnvsEntry, platform)) {
+			if (namedEnvsLinks.some((entry) => within(real, entry, platform))) {
 				plan.refusals.push(`${removal.path} would be removed, but it overlaps ${namedEnvs} (${NAMED_ENVS_LABEL}), which is not touched; refusing to remove anything.`);
 			}
 			for (const kept of plan.notTouched) {
@@ -717,7 +728,8 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	if (windows) consider(join(root, BUNDLED_WINDOWS_MARKER.name), "the bundled install's folder marker", "file", plan.own);
 	consider(join(shellHome, "agent"), "your sign-ins, chats, settings and extensions", "dir", plan.shared);
 	consider(join(shellHome, "config.json"), "the launcher's settings", "file", plan.shared);
-	const namedEnvs = envsRoot(env, homedir);
+	// Resolved: a trailing slash would make lstat follow a symlinked root.
+	const namedEnvs = resolve(envsRoot(env, homedir));
 	const namedEnvsState = inspect(namedEnvs, "dir");
 	const hasNamedEnvs = namedEnvsState === "ok";
 	// A symlinked root still holds the user's envs: guard and list its real
@@ -737,11 +749,11 @@ function planBundledSelfUninstall(input: BundledSelfUninstallInput): BundledPlan
 	plan.removeRoot = !foreign;
 
 	if (guardsNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
-	const namedEnvsEntry = guardsNamedEnvs ? symlinkEntry(namedEnvs, namedEnvsState) : undefined;
+	const namedEnvsLinks = guardsNamedEnvs ? symlinkEntries(namedEnvs) : [];
 	for (const removal of [...plan.own, ...plan.shared]) {
 		const real = canonical(removal.path);
 		const reason = collision(real, guards, platform)
-			?? (namedEnvsEntry !== undefined && within(real, namedEnvsEntry, platform) ? `contains ${namedEnvs} (${NAMED_ENVS_LABEL})` : undefined);
+			?? (namedEnvsLinks.some((entry) => within(real, entry, platform)) ? `contains ${namedEnvs} (${NAMED_ENVS_LABEL})` : undefined);
 		if (reason) plan.refusals.push(`${removal.path} would be removed, but it ${reason}; refusing to remove anything.`);
 	}
 

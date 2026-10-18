@@ -436,6 +436,41 @@ test("a symlinked named envs root is still listed as not touched and kept", posi
 	} finally { w.cleanup(); }
 });
 
+test("a named envs root reached through a symlinked folder inside a removed home is refused", posixOnly, async () => {
+	const w = world();
+	try {
+		const real = join(w.root, "real-parent");
+		write(join(real, "envs", "work", ".gentle-shell-home"));
+		const alias = join(w.isolated, "alias");
+		symlinkSync(real, alias);
+		await refused(w, { GENTLE_SHELL_ENVS_DIR: join(alias, "envs") }, /your named envs/);
+		assert.equal(lstatSync(alias).isSymbolicLink(), true);
+		assert.equal(existsSync(join(real, "envs", "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
+test("a named envs root symlink written with a trailing slash is still guarded as a link", posixOnly, async () => {
+	const w = world();
+	try {
+		const real = join(w.root, "real-envs");
+		write(join(real, "work", ".gentle-shell-home"));
+		const link = join(w.isolated, "envs");
+		symlinkSync(real, link);
+		await refused(w, { GENTLE_SHELL_ENVS_DIR: `${link}/` }, /your named envs/);
+		assert.equal(lstatSync(link).isSymbolicLink(), true);
+	} finally { w.cleanup(); }
+});
+
+test("a named envs root named like '..envs' inside a removed home is still inside it", async () => {
+	const w = world();
+	try {
+		const envs = join(w.isolated, "..envs");
+		write(join(envs, "work", ".gentle-shell-home"));
+		await refused(w, { GENTLE_SHELL_ENVS_DIR: envs }, /your named envs/);
+		assert.equal(existsSync(join(envs, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
 test("a named envs root symlink inside a removed home is refused even when its target is outside", posixOnly, async () => {
 	const w = world();
 	try {
@@ -978,6 +1013,32 @@ test("bundled: a symlinked named envs root whose target a removal holds refuses 
 		assert.match(w.err.join("\n"), /your named envs/);
 		bundledUntouched(w);
 		assert.equal(existsSync(join(target, "work", ".gentle-shell-home")), true);
+	} finally { w.cleanup(); }
+});
+
+test("bundled: a named envs root reached through a symlinked folder inside a removal refuses the whole run", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const real = join(w.base, "real-parent");
+		write(join(real, "envs", "work", ".gentle-shell-home"));
+		const alias = join(w.prefix, "versions", "alias");
+		symlinkSync(real, alias);
+		assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: { GENTLE_SHELL_ENVS_DIR: join(alias, "envs") } }), 1);
+		assert.match(w.err.join("\n"), /your named envs/);
+		bundledUntouched(w);
+		assert.equal(lstatSync(alias).isSymbolicLink(), true);
+	} finally { w.cleanup(); }
+});
+
+test("bundled: a named envs root named like '..envs' inside a removal refuses the whole run", async () => {
+	const w = bundledWorld();
+	try {
+		const envs = join(w.prefix, "versions", "..envs");
+		write(join(envs, "work", ".gentle-shell-home"));
+		assert.equal(await w.uninstall(["--yes", "--include-shared"], { env: { GENTLE_SHELL_ENVS_DIR: envs } }), 1);
+		assert.match(w.err.join("\n"), /your named envs/);
+		bundledUntouched(w);
+		assert.equal(existsSync(join(envs, "work", ".gentle-shell-home")), true);
 	} finally { w.cleanup(); }
 });
 

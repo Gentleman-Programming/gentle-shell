@@ -19,6 +19,8 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
+	accessSync,
+	constants as fsConstants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -7548,11 +7550,22 @@ function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: strin
 		try {
 			assertCandidateOwnerParent(commonDir, platform);
 		} catch (error) {
-			// A missing parent is not a deterministic failure: START's prepare
-			// creates it private. Every other owner failure makes START refuse too,
-			// so withhold the advertisement with the owner-preparation classification.
-			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-				const failure = candidateOwnerPreparationError(error);
+			// A missing parent is not a deterministic failure while START's prepare
+			// can still create it private under the nearest existing ancestor. Every
+			// other owner failure makes START refuse too, so withhold the
+			// advertisement with the owner-preparation classification.
+			let failureCause: unknown = error;
+			if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+				failureCause = undefined;
+				const ancestor = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+				try {
+					if (ancestor !== undefined) accessSync(ancestor, fsConstants.W_OK | fsConstants.X_OK);
+				} catch (accessError) {
+					failureCause = accessError;
+				}
+			}
+			if (failureCause !== undefined) {
+				const failure = candidateOwnerPreparationError(failureCause);
 				const typed = failure.diagnostics !== undefined && "code" in failure.diagnostics ? failure.diagnostics : undefined;
 				return candidateViewPreflightRejection(status, typed ?? { code: failure.reason, message: failure.message });
 			}

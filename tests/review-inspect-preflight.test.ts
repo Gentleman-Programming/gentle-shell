@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +78,27 @@ test("inspect withholds a ready START advertisement for any other candidate owne
 	assert.equal((result.diagnostics as { code?: string }).code, "candidate-owner-preparation-failed");
 	assert.equal(result.mutation_performed, false);
 	assert.equal(result.lineage_created, false);
+});
+
+const unprivileged = posix && process.getuid?.() !== 0;
+
+test("inspect withholds a ready START advertisement when the missing owner parent cannot be created under its nearest existing ancestor (gentle-ai#2196)", { skip: unprivileged ? false : "needs POSIX permission bits enforced for this process" }, async t => {
+	const { root, candidateTree } = fixtureRepository(false);
+	const commonDir = join(root, ".git");
+	t.after(() => {
+		chmodSync(commonDir, 0o755);
+		rmSync(root, { recursive: true, force: true });
+	});
+	// The owner parent is missing, so START would try to create it under .git;
+	// without write access there that creation fails, and START with it.
+	chmodSync(commonDir, 0o555);
+	const result = await inspect(root, readyNative(candidateTree));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "candidate-view-preflight-blocked");
+	assert.deepEqual(result.diagnostics, { code: "candidate-owner-preparation-failed", message: "candidate view owner preparation failed (EACCES)" });
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.lineage_created, false);
+	assert.equal(existsSync(join(commonDir, "gentle-ai")), false, "the preflight creates nothing");
 });
 
 test("inspect withholds a ready START advertisement when the frozen tree tracks symlinks this process cannot create (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {

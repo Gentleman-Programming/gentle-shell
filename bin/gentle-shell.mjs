@@ -933,9 +933,12 @@ function renameEnv(root, from, to) {
 function deleteEnv(root, name) {
 	const dir = assertManagedEnvDir(root, name);
 	const aliases = [...new Set([dir, safeRealpath(dir)])];
-	rmSync(dir, { recursive: true, force: true });
+	// config.json first: removing the folder cannot be undone, so a failed
+	// config write must leave the env on disk, never a default that names a
+	// missing folder (the next launch would recreate it empty).
 	const configPath = resolveConfigPath();
 	writeRawConfig(configPath, removeEnvFromConfig(readRawConfig(configPath), aliases));
+	rmSync(dir, { recursive: true, force: true });
 }
 
 function setDefaultEnv(root, name) {

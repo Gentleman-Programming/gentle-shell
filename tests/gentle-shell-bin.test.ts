@@ -3665,6 +3665,23 @@ test("the envs manager rolls a rename back when config.json cannot be written", 
 	assert.deepEqual(readdirSync(envs), ["a"], "the env keeps its old name, matching config.json");
 });
 
+test("the envs manager keeps an env it cannot drop from config.json", { skip: (process.platform === "win32" || process.getuid?.() === 0) && "needs a non-root POSIX read-only dir" }, (t) => {
+	const f = fixture(t);
+	const envs = join(f.home, ".gentle-shell", "envs");
+	assert.equal(run(f.env, ["envs", "new", "a"]).status, 0);
+	// The env is the default: losing its folder while config.json still names
+	// it would make the next plain launch recreate it empty.
+	const lockedDir = join(f.root, "locked");
+	mkdirSync(lockedDir);
+	writeFileSync(join(lockedDir, "config.json"), `${JSON.stringify({ home: join(envs, "a") })}\n`);
+	chmodSync(lockedDir, 0o500);
+	let result;
+	try { result = runManager({ ...f.env, GENTLE_SHELL_CONFIG: join(lockedDir, "config.json") }, ["j", "d", "a", "\r", "q"].join("")); }
+	finally { chmodSync(lockedDir, 0o700); }
+	assert.equal(result.status, 0, result.stderr);
+	assert.ok(existsSync(join(envs, "a", ".gentle-shell-home")), "the env stays on disk, matching config.json");
+});
+
 test("the envs manager never lists or touches a symlinked env", (t) => {
 	const f = fixture(t);
 	const envs = join(f.home, ".gentle-shell", "envs");

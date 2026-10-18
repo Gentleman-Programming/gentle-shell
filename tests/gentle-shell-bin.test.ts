@@ -3563,7 +3563,8 @@ test("--env accepts only a real env directory, never a file or a symlink", (t) =
 	writeFileSync(join(root, "file"), "not an env\n");
 	const target = join(f.root, "elsewhere");
 	mkdirSync(target);
-	symlinkSync(target, join(root, "link"), "dir");
+	// A junction on Windows: it needs no symlink privilege and lstat still reports a link.
+	symlinkSync(target, join(root, "link"), process.platform === "win32" ? "junction" : "dir");
 	for (const name of ["file", "link"]) {
 		const result = run(f.env, ["--env", name]);
 		assert.equal(result.status, 2, `${name}: ${result.stderr}`);

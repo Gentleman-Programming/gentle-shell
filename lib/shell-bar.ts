@@ -424,7 +424,12 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 		const usageStart = visibleWidth(left) + (targetWidth - visibleWidth(left) - visibleWidth(right)) + visibleWidth(ctxCost) + visibleWidth(` ${SHELL_BAR_SEPARATOR} `);
 		return { text, usageSpan: { start: usageStart, end: usageStart + visibleWidth(usageText) } };
 	}
-	const brand = presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	// Narrower than brand plus env: the brand gives way, never the env, as in
+	// the compact bar. Without an env, or when even it does not fit, the brand
+	// (hidden in minimal density) is the last thing left.
+	const envOnly = model.env ? `${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}` : "";
+	const brand = envOnly && visibleWidth(envOnly) <= targetWidth ? envOnly
+		: presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
 	if (jobs && visibleWidth(jobs) <= targetWidth) {
 		const left = visibleWidth(brand) + RIGHT_PADDING + visibleWidth(jobs) <= targetWidth ? brand : "";
 		return { text: left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(jobs)) + jobs };

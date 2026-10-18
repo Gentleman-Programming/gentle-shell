@@ -887,6 +887,17 @@ test("renderShellHeaderBar keeps the env after profile, effort and location are 
 	}
 });
 
+test("renderShellHeaderBar keeps the env over the brand when only one of them fits", () => {
+	const header = buildShellHeaderModel(model({ env: "work", profile: "team" }));
+	for (const width of [12, 16, 24]) {
+		const { text } = renderShellHeaderBar(header, plainTheme, width);
+		assert.ok(visibleWidth(text) <= width, `width ${width}`);
+		assert.match(text, /^env work/, `width ${width}: ${text}`);
+	}
+	// Without an env the narrow header still shows the brand.
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 16).text, /^✿ Gentle Shell/);
+});
+
 test("minimal density hides the brand but still names the env", () => {
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };
 	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ env: "work" })), plainTheme, 140, undefined, settings);

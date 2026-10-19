@@ -6813,3 +6813,24 @@ test("subagent_run warns when a model profile key suggests the launched agent", 
 	await tick();
 	assert.equal(dialogs.length, 0, "a matched key is silent");
 });
+
+// Cortex QA adversarial follow-up (end-to-end pin for the #2196 fix): a key
+// that matches a discovered agent must not only stay silent, it must actually
+// route: the task request carries the profile model and thinking, so the child
+// launches with --model exactly as the issue's expected behavior describes.
+test("a matched model_profiles key routes the task request model end to end", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha", effort: "high" } } })}\n`);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "route", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(captures.length, 1);
+	assert.deepEqual(captures[0]!.request.model, { provider: "openai", id: "alpha" }, "the matched key routes the configured model into the launch");
+	assert.equal(captures[0]!.request.thinking, "high");
+	assert.equal(captures[0]!.request.modelSource, "profile");
+});

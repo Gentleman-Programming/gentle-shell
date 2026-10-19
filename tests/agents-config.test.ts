@@ -282,3 +282,29 @@ test("unmatchedProfileKeys reports profile keys that match no discovered agent",
 	assert.deepEqual(unmatchedProfileKeys({ "gentle-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
 	assert.deepEqual(unmatchedProfileKeys({}, [worker]), []);
 });
+
+// Cortex QA adversarial follow-up (R5 pin): the did-you-mean mapping exists to
+// make a misconfiguration visible, never to resolve; a short key must keep
+// yielding an unresolved profile so the role inherits frontmatter and default
+// routing exactly as before the fix.
+test("resolveAgentProfile never resolves through the suggestion mapping", () => {
+	const worker = {
+		name: "gentle-ai-worker",
+		description: "",
+		filePath: "/x/worker.md",
+		scope: "global" as const,
+		instructions: "",
+		model: { provider: "openai-codex", id: "gpt-5.6-terra" },
+		thinking: undefined,
+		mode: undefined,
+		tools: [],
+	};
+	const config = parseAgentsConfig(
+		{ model_profiles: { worker: { model: "nan/glm5.3", effort: "high" } } },
+		undefined,
+	);
+	const resolved = resolveAgentProfile(worker, config);
+	assert.equal(resolved.model?.provider, "openai-codex", "the short key must not route; the agent frontmatter model wins");
+	assert.equal(resolved.source.model, "definition");
+	assert.ok(unmatchedProfileKeys(config.modelProfiles, [worker]).some((entry) => entry.key === "worker" && entry.suggestion === "gentle-ai-worker"), "the same short key is still reported with its suggestion");
+});

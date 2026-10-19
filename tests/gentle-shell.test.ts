@@ -4929,6 +4929,56 @@ test("shell Git runner hides initial and repeated background polling children", 
 	}
 });
 
+// #927: on Windows a status scan that passes the timeout leaves its real work
+// running in a git descendant, because Node's own timeout kill reaches only the
+// direct child. The shell runner must kill the whole tree itself, so repeated
+// timeouts cannot pile up orphaned git.exe processes until RAM is exhausted.
+test("a shell Git scan that passes its timeout kills the whole process tree", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const killed: number[] = [];
+	const kill = (pid: number) => killed.push(pid);
+	const fake = (answer: (callback: (error: Error | null, stdout: string, stderr: string) => void) => void, pid: number) => ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer(callback);
+		return { pid, kill() {} } as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	// A scan that never answers is tree-killed once the timeout elapses.
+	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake(() => {}, 4242), Infinity, kill)(["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
+	assert.deepEqual(killed, [], "nothing is killed before the timeout");
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(killed, [4242], "the timed-out scan kills its whole process tree");
+
+	// A scan that answers never arms the killer at all, even long after.
+	await shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake((callback) => callback(null, "", ""), 7), Infinity, kill)(["status"]);
+	t.mock.timers.tick(60_000);
+	assert.deepEqual(killed, [4242], "a completed scan never kills a tree");
+});
+
+// A descendant that inherited the pipes can hold a timed-out scan open after the
+// direct child exits, so the runner cuts them instead of waiting forever.
+test("a timed-out scan whose child never exits has its pipes cut", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const events: string[] = [];
+	const hung = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options; void callback;
+		return {
+			pid: 5,
+			exitCode: null,
+			signalCode: null,
+			kill() { events.push("kill"); },
+			stdout: { destroy() { events.push("stdout"); } },
+			stderr: { destroy() { events.push("stderr"); } },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, hung, Infinity, () => events.push("tree"))(["status"]);
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["tree"], "the tree kill lands when the scan passes its timeout");
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["tree", "kill", "stdout", "stderr"], "then the pipes are cut so the scan can settle");
+});
+
 test("openInExternalEditor stops the TUI around the editor and honors $VISUAL over $EDITOR", () => {
 	const events: string[] = [];
 	const host = { stop: () => events.push("stop"), start: () => events.push("start"), requestRender: (force?: boolean) => events.push(`render:${force}`) };

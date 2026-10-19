@@ -48,7 +48,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -4336,10 +4336,10 @@ class ProfilesPanel implements OverlayComponent {
 				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
-			...this.indentLines(this.routingLines(profileRows, widths), width),
+			...this.indentLines(this.routingLines(profileRows, widths, width), width),
 			"",
 			this.renderLine("Current routing (effective)", width, "accent"),
-			...this.indentLines(this.routingLines(currentRows, widths), width),
+			...this.indentLines(this.routingLines(currentRows, widths, width), width),
 		];
 	}
 
@@ -4361,17 +4361,23 @@ class ProfilesPanel implements OverlayComponent {
 	private routingLines(
 		rows: ProfileRoutingRow[],
 		widths: { agent: number; model: number },
+		width: number,
 	): string[] {
 		if (rows.length === 0) {
 			return ["No routing entries — every agent inherits its default model."];
 		}
 		// Issue #2196: a key that names no discovered agent was rendered as a
 		// valid-looking row while its setting was silently ignored at launch, so
-		// each unmatched row now carries its note inline.
+		// each unmatched row now carries its note inline. When the row would push
+		// the note past the pane edge (indentLines adds two columns before
+		// truncating), the note moves to its own line so it is never cut off.
 		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
-		return rows.map((row) => {
+		return rows.flatMap((row) => {
+			const line = formatRoutingRow(row, widths);
 			const note = notes.get(row.agent);
-			return note === undefined ? formatRoutingRow(row, widths) : `${formatRoutingRow(row, widths)}  ← ${note}`;
+			if (note === undefined) return [line];
+			const inline = `${line}  ← ${note}`;
+			return visibleWidth(inline) + 2 <= width ? [inline] : [line, `  ↳ ${note}`];
 		});
 	}
 

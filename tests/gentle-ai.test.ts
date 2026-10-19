@@ -3186,6 +3186,29 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(shortLines.at(-1)!, /^╰/);
 });
 
+test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({
+		team: {
+			worker: { model: "openai/alpha", thinking: "high" },
+			"sdd-design": { model: "nan/glm5.3", thinking: "high" },
+		},
+	}, "team");
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	// At 60 columns the routing row fills the detail pane, so the note wraps
+	// onto its own line instead of being truncated away (issue #2196).
+	const narrow = stripAnsi(panel.render(60).join("\n"));
+	assert.match(narrow, /↳ no matching agent/);
+});
+
 test("j and k scroll the detail pane one line at a time, like the agents view", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	const routing: Record<string, { model: string; thinking: string }> = {};

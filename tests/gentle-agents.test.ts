@@ -599,8 +599,7 @@ test("gentle-agents notifies once, deduplicated, when the RPC activity publisher
 	await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 	scheduler.flushAll(); // a second flush with the same recurring failure must not notify again
 
-	writeFileSync("/tmp/notify-calls.txt", JSON.stringify(notify.mock.calls.map(c=>String(c.arguments[0]))));
-	assert.equal(notify.mock.callCount(), 1, "dedup");
+	assert.equal(notify.mock.callCount(), 1, "the same recurring setWidget failure is deduplicated to one notify per session");
 	assert.match(String(notify.mock.calls[0]?.arguments[0]), /boom/);
 	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
 });
@@ -6812,6 +6811,28 @@ test("subagent_run warns when a model profile key suggests the launched agent", 
 	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "quiet", mode: "background" }, undefined, undefined, ctx);
 	await tick();
 	assert.equal(dialogs.length, 0, "a matched key is silent");
+});
+
+// CodeRabbit follow-up on PR #2397: a key that names another discovered agent
+// is valid, so launching a different agent whose name it merely resembles
+// (explore vs gentle-ai-explore) must not label it unmatched.
+test("subagent_run does not warn about a key that matches another discovered agent", async (t) => {
+	const child = fakePi();
+	const runtime = deps();
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+	const projectAgent = join(cwd, ".pi", "agents", "gentle-ai-explore.md");
+	const subagents = join(cwd, ".pi", "subagents.json");
+	t.after(() => rmSync(projectAgent, { force: true }));
+	t.after(() => rmSync(subagents, { force: true }));
+	writeFileSync(projectAgent, "---\ndescription: packaged explore\ntools: [read]\n---\nYou map things.");
+	writeFileSync(subagents, `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/alpha" } } })}\n`);
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "quiet", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.children.length, 1, "the launch proceeds");
+	assert.equal(dialogs.filter((message) => /did not match any agent/.test(message)).length, 0, "a key naming a discovered agent is never unmatched");
 });
 
 // Cortex QA adversarial follow-up (end-to-end pin for the #2196 fix): a key

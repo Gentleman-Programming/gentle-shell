@@ -1734,9 +1734,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// names no discovered agent was silently ignored while the child inherited
 		// the orchestrator model. When a configured key suggests this agent, name
 		// it at launch; resolution stays exact-match, so an omitted role keeps
-		// inheriting and a matched key never warns.
+		// inheriting and a matched key never warns. Keys are checked against every
+		// discovered agent, so a key naming another agent is never reported here.
 		if (ctx.hasUI) {
-			const nearMisses = unmatchedProfileKeys(config.modelProfiles, [agent]).filter((entry) => entry.suggestion === agent.name);
+			const nearMisses = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents).filter((entry) => entry.suggestion === agent.name);
 			if (nearMisses.length > 0) {
 				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
 			}

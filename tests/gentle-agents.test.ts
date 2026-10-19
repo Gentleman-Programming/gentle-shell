@@ -580,7 +580,9 @@ test("gentle-agents notifies once, deduplicated, when the RPC activity publisher
 	const runtime = deps();
 	const scheduler = fakeScheduler();
 	runtime.deps.schedule = scheduler.schedule;
-	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	// The launch reads the session profile through this env, so it must keep the
+	// scratch config home instead of reaching the runner's real one.
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1", GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 	gentleAgents(h.pi, {}, runtime.deps);
 	const { ctx } = fakeContext();
 	Object.assign(ctx, { mode: "rpc", hasUI: true });
@@ -597,7 +599,8 @@ test("gentle-agents notifies once, deduplicated, when the RPC activity publisher
 	await h.tools.get("subagent_run")!.execute("control", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
 	scheduler.flushAll(); // a second flush with the same recurring failure must not notify again
 
-	assert.equal(notify.mock.callCount(), 1, "the same recurring setWidget failure is deduplicated to one notify per session");
+	writeFileSync("/tmp/notify-calls.txt", JSON.stringify(notify.mock.calls.map(c=>String(c.arguments[0]))));
+	assert.equal(notify.mock.callCount(), 1, "dedup");
 	assert.match(String(notify.mock.calls[0]?.arguments[0]), /boom/);
 	assert.equal(notify.mock.calls[0]?.arguments[1], "warning");
 });
@@ -6783,4 +6786,30 @@ test("an owner publication without progress keeps the automatic progress; explic
 	const full = "x".repeat(2048);
 	await own({ objective: full });
 	assert.deepEqual(published(), { objective: full }, "a merge over the state budget publishes the owner's state as given");
+});
+
+// Issue #2196 (PR #2233 maintainer decision): at launch, a model_profiles key
+// that names no discovered agent but suggests the launched one is reported
+// instead of being silently ignored while the child inherits the orchestrator
+// model. An omitted or matched role keeps today's inheritance untouched.
+test("subagent_run warns when a model profile key suggests the launched agent", async () => {
+	const child = fakePi();
+	const runtime = deps();
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/alpha" } } })}\n`);
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "warn", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.children.length, 1, "the launch itself still proceeds");
+	assert.equal(dialogs.filter((message) => /"gentle-ai-explore" did not match any agent, did you mean explore\?/.test(message)).length, 1);
+
+	// A key that matches the agent exactly never warns, and the fixture's own
+	// global effort profile (explore) stays matched.
+	dialogs.length = 0;
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha" } } })}\n`);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "quiet", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(dialogs.length, 0, "a matched key is silent");
 });

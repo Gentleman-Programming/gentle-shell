@@ -26,7 +26,7 @@ import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
@@ -1730,6 +1730,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (drift !== undefined) ctx.ui.notify(drift, "info");
 		}
 		const profile = resolveAgentProfile(agent, config);
+		// Issue #2196 (PR #2233 maintainer decision): a model_profiles key that
+		// names no discovered agent was silently ignored while the child inherited
+		// the orchestrator model. When a configured key suggests this agent, name
+		// it at launch; resolution stays exact-match, so an omitted role keeps
+		// inheriting and a matched key never warns.
+		if (ctx.hasUI) {
+			const nearMisses = unmatchedProfileKeys(config.modelProfiles, [agent]).filter((entry) => entry.suggestion === agent.name);
+			if (nearMisses.length > 0) {
+				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
+			}
+		}
 		// #2180: the winning layer is named from the resolution and routing this
 		// request already performed, never by re-resolving them.
 		const modelSource = modelSourceToken(profile.source.model, sessionProfile, routingTarget);

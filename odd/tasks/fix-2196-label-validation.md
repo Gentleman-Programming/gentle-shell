@@ -22,3 +22,4 @@ T4 (S6): Differential check for matched keys; suite + typecheck; work-unit commi
 
 L1 (user request, verbatim Discord 2026-10-19): "ta vamos con la 2" — close #2233 with credit and implement the rework ourselves (label validation + did-you-mean in panel and launch, per maintainer decision on the PR thread).
 L2: PR #2233 closed 2026-10-19 with credit comment; Carlos's tests for the worker/gentle-ai-worker case carry over as fixtures for the validator.
+L3 (2026-10-19): Implemented on feat/2196-label-validation: 77caa9cc0 (T1 validator, S3), f89c12693 (T2 panel note, S4), 7e5cadf1d (T3 launch warn, S5). Full suite green (3/3 stages), typecheck 0. Differential S6: panel test passes on base 145485c85 and branch; matched keys render identically and never warn. Latent fixture hygiene gap found and fixed in the RPC notify test (deps.env dropped GENTLE_PI_CONFIG_HOME).

@@ -90,8 +90,6 @@ The [v4.1.0 release](https://github.com/Gentleman-Programming/gentle-shell/relea
 
 Say what you need once, then keep moving. el Gentleman helps turn intent into clear scope, a sensible next step, and evidence people can review — without making every task feel like a process meeting.
 
-https://github.com/user-attachments/assets/1b4b6451-bc01-4ebd-bb67-585d928104fd
-
 **[Docs →](docs/readme-reference.md#organic-driven-development)**
 
 ---
@@ -104,8 +102,6 @@ https://github.com/user-attachments/assets/1b4b6451-bc01-4ebd-bb67-585d928104fd
 
 Tasks are sized by understanding, risk, and resumability: work you could finish from the request and `git diff` alone runs inline, with no subagents and no task document. The feature document quotes your spec verbatim, and every handoff points at it instead of paraphrasing it, so exact strings, error messages, and examples reach the workers intact.
 
-https://github.com/user-attachments/assets/857a2195-34b8-4720-87af-f71bca3dec92
-
 **[Docs →](docs/readme-reference.md#organic-driven-development)**
 
 ---
@@ -117,8 +113,6 @@ https://github.com/user-attachments/assets/857a2195-34b8-4720-87af-f71bca3dec92
 Bring in help without losing the thread. Focused package-owned Pi agents can map a codebase, implement a bounded change, or verify it, while one parent stays accountable for the scope, the decisions, and the final summary.
 
 The parent delegates for a reason, not for size. Understanding that outgrows one inline batch (about 3 calls and 10k tokens) gets one read-only explorer; two or more independent units of behavior, each big enough to outweigh a subagent's start-up and with disjoint edit surfaces, get parallel writers; a change that touches a named high-risk item gets an independent verifier, whatever model wrote it; a long session hands its next unit to a fresh worker. Without a named reason the parent works inline — file count and task size never decide the route.
-
-https://github.com/user-attachments/assets/ccd96c9e-e0fd-4504-ad94-0302398f13a9
 
 **[Docs →](docs/readme-reference.md#how-the-harness-decides-what-to-do)**
 
@@ -148,8 +142,6 @@ Against the same model in Codex CLI, with blind review of every solution, Gentle
 Review the exact change, not a moving target. Native review keeps one candidate in view, returns risk-scoped evidence, and can surface a bounded correction path. You still decide what happens next in your repository.
 
 Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
-
-https://github.com/user-attachments/assets/9d3b176f-6e59-48f3-aba2-1196f20a4a6f
 
 > ℹ️ **RDD is optional and on by default:** turn native receipt-driven development off anytime with `/gentle:review-mode disable` (this clone) or `gentle-ai review mode disable` (machine-wide); `/gentle:review-mode status` shows the current mode. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 

@@ -52,7 +52,9 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			});
 			const ctx = { cwd, hasUI: true, ui: { notify: (message, level) => notices.push({ message, level }) } };
 			const waitFor = async (predicate) => {
-				const deadline = Date.now() + 5000;
+				// CI runners can exceed 5s before the injected error lands; the wait is
+				// a poll, so a generous deadline only slows the failure path.
+				const deadline = Date.now() + 15000;
 				while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
 				assert.ok(predicate(), "timed out waiting for watcher outcome");
 			};

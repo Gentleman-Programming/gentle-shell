@@ -3165,6 +3165,10 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(text, /Current routing \(effective\)/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
+	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high\s+← no matching agent/);
+	// A matched key stays a plain row: the note is reserved for keys that name
+	// no discovered agent (issue #2196).
+	assert.doesNotMatch(text, /worker\s+openai\/alpha\s+high\s+←/);
 	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high/);
 	assert.doesNotMatch(text, /agents? → /);
 

@@ -329,7 +329,7 @@ export interface UnmatchedProfileKey {
 // exact-match and makes the misconfiguration visible instead.
 export function unmatchedProfileKeys(
 	modelProfiles: Record<string, ModelProfile>,
-	agents: AgentDefinition[],
+	agents: ReadonlyArray<{ name: string }>,
 ): UnmatchedProfileKey[] {
 	const names = new Set(agents.map((agent) => agent.name));
 	const lowerNames = new Set(agents.map((agent) => agent.name.toLowerCase()));

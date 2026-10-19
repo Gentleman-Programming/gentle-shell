@@ -36,6 +36,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { discoverAgents } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -85,6 +86,7 @@ import {
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
+	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
 	readProfilesFileResult,
@@ -4067,6 +4069,7 @@ class ProfilesPanel implements OverlayComponent {
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
+	private readonly discoveredAgentNames: string[];
 	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
@@ -4082,6 +4085,7 @@ class ProfilesPanel implements OverlayComponent {
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
+		discoveredAgentNames: string[],
 		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
@@ -4096,6 +4100,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
+		this.discoveredAgentNames = discoveredAgentNames;
 		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
@@ -4360,7 +4365,14 @@ class ProfilesPanel implements OverlayComponent {
 		if (rows.length === 0) {
 			return ["No routing entries — every agent inherits its default model."];
 		}
-		return rows.map((row) => formatRoutingRow(row, widths));
+		// Issue #2196: a key that names no discovered agent was rendered as a
+		// valid-looking row while its setting was silently ignored at launch, so
+		// each unmatched row now carries its note inline.
+		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
+		return rows.map((row) => {
+			const note = notes.get(row.agent);
+			return note === undefined ? formatRoutingRow(row, widths) : `${formatRoutingRow(row, widths)}  ← ${note}`;
+		});
 	}
 
 	private indentLines(lines: string[], width: number): string[] {
@@ -4406,6 +4418,14 @@ async function showProfilesPanel(
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
 	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
+	// Issue #2196: the panel flags routing keys that name no discovered agent, so
+	// it needs one discovery snapshot per visit; a failed or partial discovery is
+	// not an error here, it just renders without notes.
+	const discoveredAgentNames = discoverAgents({
+		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	}).agents.map((agent) => agent.name);
 	return ctx.ui.custom<ProfilesPanelResult>(
 		(tui, theme, keybindings, done) => {
 			const panel = new ProfilesPanel(
@@ -4421,6 +4441,7 @@ async function showProfilesPanel(
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
+				discoveredAgentNames,
 				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);

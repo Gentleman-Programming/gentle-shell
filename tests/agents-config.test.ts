@@ -14,6 +14,7 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	unmatchedProfileKeys,
 	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
@@ -246,4 +247,38 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 	// A pinned profile that mentions no role still replaces the routing, so a
 	// repository can pin "everything inherits" without touching the global store.
 	assert.deepEqual(withPinnedModelProfiles(global, {}).modelProfiles, {});
+});
+
+// Issue #2196 rework (PR #2233 maintainer decision): role keys that name no
+// discovered agent must be reported, with a did-you-mean suggestion, instead of
+// being silently ignored while the child inherits the orchestrator model.
+test("unmatchedProfileKeys reports profile keys that match no discovered agent", () => {
+	const worker = {
+		name: "gentle-ai-worker",
+		description: "",
+		filePath: "/x/worker.md",
+		scope: "global" as const,
+		instructions: "",
+		model: undefined,
+		thinking: undefined,
+		mode: undefined,
+		tools: [],
+	};
+	const explore = { ...worker, name: "gentle-ai-explore" };
+	const profiles = {
+		worker: { model: { provider: "nan", id: "glm5.3" }, thinking: undefined },
+		WORKER: { model: { provider: "nan", id: "glm5.3" }, thinking: undefined },
+		review_risk: { model: undefined, thinking: "high" as const },
+		explore: { model: undefined, thinking: undefined },
+	};
+	assert.deepEqual(unmatchedProfileKeys(profiles, [worker, explore]), [
+		{ key: "worker", suggestion: "gentle-ai-worker" },
+		{ key: "WORKER", suggestion: "gentle-ai-worker" },
+		{ key: "review_risk", suggestion: undefined },
+		{ key: "explore", suggestion: "gentle-ai-explore" },
+	]);
+	// A key that exactly matches an agent name never reports, and an empty
+	// profile set reports nothing.
+	assert.deepEqual(unmatchedProfileKeys({ "gentle-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
+	assert.deepEqual(unmatchedProfileKeys({}, [worker]), []);
 });

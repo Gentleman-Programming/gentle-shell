@@ -21,6 +21,7 @@ auth.json
 .pi-lens/
 .atl/
 .gentle-ai/
+.cortex/
 .npm/
 coverage/
 

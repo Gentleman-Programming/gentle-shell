@@ -1068,7 +1068,7 @@ test("bundled: a named envs root reached through a symlinked folder inside a rem
 	} finally { w.cleanup(); }
 });
 
-test("bundled: a named envs root named like '..envs' inside a removal refuses the whole run", async () => {
+test("bundled: a named envs root named like '..envs' inside a removal refuses the whole run", posixOnly, async () => {
 	const w = bundledWorld();
 	try {
 		const envs = join(w.prefix, "versions", "..envs");

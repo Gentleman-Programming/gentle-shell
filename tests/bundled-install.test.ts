@@ -17,7 +17,7 @@ const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) =
 const NODE = "24.21.0";
 const PNPM = "11.1.1";
 const NPM = "11.19.0";
-const ENGRAM = "3.4.0";
+const ENGRAM = "3.5.1";
 
 // Every temporary home this file creates is removed when the file's tests end.
 const roots: string[] = [];
@@ -1020,10 +1020,10 @@ posixTest("writeNpmrcAuth writes the filtered npmrc 0600 inside the prefix; user
 
 test("pnpmEnvironment keeps the variables the prefix npmrc references and still drops npm settings", () => {
 	const user = home();
-	const layout = prefixLayout({ platform: "linux", env: {}, home: user });
+	const layout = prefixLayout({ platform: process.platform, env: {}, home: user, root: join(user, "bundle") });
 	mkdirSync(join(layout.root, "pnpm", "config"), { recursive: true });
 	writeFileSync(layout.npmrc, "//npm.acme.dev/:_authToken=${NPM_TOKEN}\n//h/:_auth=${npm_config_x}\n");
-	const env = pnpmEnvironment(layout, { platform: "linux", env: { PATH: "/usr/bin", NPM_TOKEN: "secret", NPM_OTHER: "o", npm_config_x: "x",
+	const env = pnpmEnvironment(layout, { platform: process.platform, env: { PATH: "/usr/bin", NPM_TOKEN: "secret", NPM_OTHER: "o", npm_config_x: "x",
 		npm_config_cache: "/home/me/.npm" } });
 	// ${NPM_TOKEN} is expanded by pnpm from the environment, so it survives; npm settings and unreferenced npm_* never do.
 	assert.equal(env.NPM_TOKEN, "secret");

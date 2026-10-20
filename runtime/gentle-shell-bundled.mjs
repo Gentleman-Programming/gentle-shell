@@ -236,7 +236,7 @@ export function bundledPi(install                , input                        
 // (S2, S6): the startup policy, and ENGRAM_BIN is the verified core only when
 // memory is allowed locally; otherwise the Shell-owned guard, so no provider,
 // whatever loaded it, runs an Engram binary against an unverified store.
-export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
+export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.5.0";
 export const ENGRAM_PRIVATE_REQUIRED_NOTICE = "Engram memory disabled: session-owned servers require a supporting published bundled core and companion. This bundle does not establish both capabilities; it will not fall back to a detached shared server. Install a supporting published bundle and restart Shell. Existing shared services are not stopped or adopted as session-owned.";
 export const ENGRAM_CORE_CHANGED_NOTICE = "Engram memory disabled: the bundled core changed since Shell recorded this store. Install a published bundle supporting migrate-copy, stop every Engram client, retain a complete backup, then run gentle-shell memory migrate --confirm-quiescent. The command verifies and migrates a copy before updating provenance; older bundles refuse safely. Do not edit coreSha256 or delete the original store. Shell remains usable without memory.";
 export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not verify safe store or server reuse. Matching versions or updating alone do not prove compatibility. Reuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity. Back up existing Engram data before manual changes; do not delete it or bypass the safety check. Shell rechecks on every launch and remains usable without memory.";
@@ -378,8 +378,10 @@ export function engramProvenanceMatches(record                              , ob
 
 // The bundled core's own schema (SQLite user_version), verified from the
 // tagged sources v3.3.2 and v3.4.0: internal/store/store.go `const schemaVersion = 1`.
+// v3.5.1: 41f1254796d49233d7bcb11741093bc09eb386ff, internal/store/store.go:1252,
+// also declares schemaVersion = 1. Source verification is not binary provenance approval.
 // A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1 };
+const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.1": 1 };
 
 export function bundledEngramSchema(coreVersion        )                     {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;

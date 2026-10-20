@@ -9,6 +9,21 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import * as shell from "../lib/gentle-shell-bundled.ts";
 
+test("candidate companion source selects the published session-owned companion", () => {
+	assert.equal(shell.ENGRAM_COMPANION_SOURCE, "npm:gentle-engram@0.5.0");
+});
+
+test("candidate core schema accepts verified 3.5.1 without accepting unknown cores or newer stores", () => {
+	assert.equal(shell.bundledEngramSchema("3.5.1"), 1);
+	assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema("3.5.1")), true);
+	assert.equal(shell.engramHeaderAllows(2, shell.bundledEngramSchema("3.5.1")), false);
+	for (const version of ["3.5.0", "3.5.2", "4.0.0", "__proto__"]) {
+		assert.equal(shell.bundledEngramSchema(version), undefined);
+		assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema(version)), false);
+	}
+	for (const version of ["3.3.2", "3.4.0"]) assert.equal(shell.bundledEngramSchema(version), 1);
+});
+
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const GUARD = join(repository, "bin", "engram-guard");
 const ID = "0123456789abcdef0123456789abcdef";

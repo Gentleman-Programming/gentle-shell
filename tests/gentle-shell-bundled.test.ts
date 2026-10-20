@@ -237,9 +237,9 @@ const FIXTURE_ID = `${SHELL}-1.2.0`;
 const FAKE_PI = [
 	"import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs'; import {join, dirname} from 'node:path';",
 	"const args = process.argv.slice(2);",
-	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram@0.4.2' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
+	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram@0.5.0' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
 	" const home = process.env.PI_CODING_AGENT_DIR; const metadata = join(home, 'npm/node_modules/gentle-engram/package.json'); mkdirSync(dirname(metadata), {recursive:true});",
-	" writeFileSync(metadata, JSON.stringify({name:'gentle-engram',version:'0.4.2',engram:{startupPolicy:1,...(process.env.FIXTURE_OWNED_COMPANION === '0' ? {} : {sessionOwned:1})}}));",
+	" writeFileSync(metadata, JSON.stringify({name:'gentle-engram',version:'0.5.0',engram:{startupPolicy:1,...(process.env.FIXTURE_OWNED_COMPANION === '0' ? {} : {sessionOwned:1})}}));",
 	" const path = join(home,'settings.json'); let settings={}; try {settings=JSON.parse(readFileSync(path,'utf8'));} catch {}",
 	" if (process.env.FIXTURE_INSTALL_CAPABILITY !== 'metadata-only') { const packages = settings.packages ?? []; const index = packages.findIndex(p => /^npm:gentle-engram(?:@|$)/.test(typeof p === 'string' ? p : p.source));",
 	" if (index < 0) packages.push(args[1]); else packages[index] = typeof packages[index] === 'string' ? args[1] : {...packages[index], source:args[1]}; settings.packages = packages; writeFileSync(path, JSON.stringify(settings)); }",
@@ -872,7 +872,7 @@ test("an unsupported companion is pinned through Pi configuration; a failed read
 	mkdirSync(join(prefix.home, ".engram"));
 	const result = prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "0" });
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stderr, /install.*npm:gentle-engram@0.4.2/s);
+	assert.match(result.stderr, /install.*npm:gentle-engram@0.5.0/s);
 	assert.match(result.stderr, /startupPolicy/);
 	assert.equal(lastLaunch(result).env.ENGRAM_BIN, prefix.guard);
 });
@@ -896,7 +896,7 @@ test("pinning preserves resource filters and unrelated settings and does not rei
 	assert.equal(first.status, 0, first.stderr);
 	const updated = JSON.parse(readFileSync(settings, "utf8"));
 	assert.equal(updated.theme, "chosen");
-	assert.deepEqual(updated.packages, [other, { source: "npm:gentle-engram@0.4.2", autoload: false, extensions: [] }]);
+	assert.deepEqual(updated.packages, [other, { source: "npm:gentle-engram@0.5.0", autoload: false, extensions: [] }]);
 	assert.doesNotMatch(prefix.run([]).stderr, /installing policy-capable companion/);
 });
 

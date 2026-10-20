@@ -1615,6 +1615,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	// Issue #2400: parent sessions already told about model_profiles keys that
+	// match no agent and suggest none, so the notice fires once per session.
+	const unmatchedKeysNotifiedSessions = new Set<string>();
 
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
@@ -1737,9 +1740,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// inheriting and a matched key never warns. Keys are checked against every
 		// discovered agent, so a key naming another agent is never reported here.
 		if (ctx.hasUI) {
-			const nearMisses = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents).filter((entry) => entry.suggestion === agent.name);
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
 			if (nearMisses.length > 0) {
 				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
+			}
+			// Issue #2400: a key with no suggestion never names the launched agent,
+			// so the filter above kept it silent. The session's first launch lists
+			// every such key once; later launches in the same session stay quiet.
+			const unsuggested = unmatched.filter((entry) => entry.suggestion === undefined);
+			const parentSession = ctx.sessionManager.getSessionId() ?? "";
+			if (unsuggested.length > 0 && !unmatchedKeysNotifiedSessions.has(parentSession)) {
+				unmatchedKeysNotifiedSessions.add(parentSession);
+				ctx.ui.notify(unsuggested.map((entry) => `"${sanitizeTerminalText(entry.key)}" did not match any agent and was ignored.`).join(" "), "warning");
 			}
 		}
 		// #2180: the winning layer is named from the resolution and routing this

@@ -6835,6 +6835,43 @@ test("subagent_run does not warn about a key that matches another discovered age
 	assert.equal(dialogs.filter((message) => /did not match any agent/.test(message)).length, 0, "a key naming a discovered agent is never unmatched");
 });
 
+// Issue #2400: a model_profiles key that matches no discovered agent and has no
+// did-you-mean suggestion (a typo such as `explor`) was still silent, because
+// the launch warning only named keys suggesting the launched agent. The first
+// launch of a session now lists every such key once; later launches in the
+// same session stay quiet, and the key is never routed.
+test("subagent_run warns once per session about model profile keys with no suggestion", async (t) => {
+	const child = fakePi();
+	const runtime = deps();
+	const captures = captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const subagents = join(cwd, ".pi", "subagents.json");
+	t.after(() => rmSync(subagents, { force: true }));
+	writeFileSync(subagents, `${JSON.stringify({ model_profiles: { explor: { model: "openai/alpha" }, "sdd-desing": { model: "openai/beta" } } })}\n`);
+	await child.fire("session_start", ctx);
+	const unmatched = () => dialogs.filter((message) => /did not match any agent and was ignored/.test(message));
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(unmatched().length, 1, "the first launch names the unmatched keys");
+	assert.match(unmatched()[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.match(unmatched()[0]!, /"sdd-desing" did not match any agent and was ignored\./);
+	assert.equal(dialogs.filter((message) => /did you mean/.test(message)).length, 0, "a key without a suggestion never claims one");
+	assert.equal(captures[0]!.request.modelSource === "profile", false, "an unmatched key is never routed");
+
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "second", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(unmatched().length, 1, "later launches in the same session do not repeat it");
+
+	// A different parent session is told again.
+	const other = fakeContext();
+	other.ctx.sessionManager.getSessionId = () => "s2";
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "other", mode: "background" }, undefined, undefined, other.ctx);
+	await tick();
+	assert.equal(other.dialogs.filter((message) => /"explor" did not match any agent and was ignored\./.test(message)).length, 1);
+});
+
 // Cortex QA adversarial follow-up (end-to-end pin for the #2196 fix): a key
 // that matches a discovered agent must not only stay silent, it must actually
 // route: the task request carries the profile model and thinking, so the child

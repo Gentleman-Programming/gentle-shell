@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
-const SUPPORTED_PI_VERSION = "1.1.0";
+const SUPPORTED_PI_VERSION = "1.2.0";
 const PI_ROOT_LAYOUT = "dist/ plus node_modules/@earendil-works/{pi-tui,pi-ai,pi-agent-core} and node_modules/jiti";
 
 function hostPackage(piRoot, relative) {
@@ -77,6 +77,7 @@ function fixture(spec, live = false) {
 	manager.getEntries = () => { counts.entries++; return getEntries(); };
 	const model = { id: "synthetic-model", provider: "synthetic", reasoning: true, contextWindow: 200000 };
 	const ctx = { model, sessionManager: manager, modelRegistry: { isUsingOAuth: () => false },
+		ui: { theme: { name: "performance" }, getAllThemes: () => [] },
 		getContextUsage() { counts.projections++; return pi.AgentSession.prototype.getContextUsage.call({ sessionManager: manager, _limitsModel: () => model }); } };
 	const api = { getThinkingLevel: () => "high" };
 	const footerData = { getGitBranch: () => "performance", getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} };

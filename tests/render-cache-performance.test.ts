@@ -81,7 +81,7 @@ test("the worker names the host it refuses instead of reporting an unrelated ver
 		const result = spawnSync(process.execPath, [worker, JSON.stringify({ piRoot: root })], { encoding: "utf8" });
 		assert.notEqual(result.status, 0, "a mismatched host must fail closed");
 		assert.match(result.stderr, /is some-other-package@9\.9\.9/, "the error must name the package that was found");
-		assert.match(result.stderr, /audited only on 1\.1\.0/, "the error must name the audited version");
-		assert.match(result.stderr, /Point --pi-root at a Pi 1\.1\.0 install/, "the error must say how to satisfy it");
+		assert.match(result.stderr, /audited only on 1\.2\.0/, "the error must name the audited version");
+		assert.match(result.stderr, /Point --pi-root at a Pi 1\.2\.0 install/, "the error must say how to satisfy it");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

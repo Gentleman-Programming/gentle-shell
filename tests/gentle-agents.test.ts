@@ -580,7 +580,9 @@ test("gentle-agents notifies once, deduplicated, when the RPC activity publisher
 	const runtime = deps();
 	const scheduler = fakeScheduler();
 	runtime.deps.schedule = scheduler.schedule;
-	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	// The launch reads the session profile through this env, so it must keep the
+	// scratch config home instead of reaching the runner's real one.
+	runtime.deps.env = { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1", GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
 	gentleAgents(h.pi, {}, runtime.deps);
 	const { ctx } = fakeContext();
 	Object.assign(ctx, { mode: "rpc", hasUI: true });
@@ -6783,4 +6785,73 @@ test("an owner publication without progress keeps the automatic progress; explic
 	const full = "x".repeat(2048);
 	await own({ objective: full });
 	assert.deepEqual(published(), { objective: full }, "a merge over the state budget publishes the owner's state as given");
+});
+
+// Issue #2196 (PR #2233 maintainer decision): at launch, a model_profiles key
+// that names no discovered agent but suggests the launched one is reported
+// instead of being silently ignored while the child inherits the orchestrator
+// model. An omitted or matched role keeps today's inheritance untouched.
+test("subagent_run warns when a model profile key suggests the launched agent", async () => {
+	const child = fakePi();
+	const runtime = deps();
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/alpha" } } })}\n`);
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "warn", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.children.length, 1, "the launch itself still proceeds");
+	assert.equal(dialogs.filter((message) => /"gentle-ai-explore" did not match any agent, did you mean explore\?/.test(message)).length, 1);
+
+	// A key that matches the agent exactly never warns, and the fixture's own
+	// global effort profile (explore) stays matched.
+	dialogs.length = 0;
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha" } } })}\n`);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "quiet", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(dialogs.length, 0, "a matched key is silent");
+});
+
+// CodeRabbit follow-up on PR #2397: a key that names another discovered agent
+// is valid, so launching a different agent whose name it merely resembles
+// (explore vs gentle-ai-explore) must not label it unmatched.
+test("subagent_run does not warn about a key that matches another discovered agent", async (t) => {
+	const child = fakePi();
+	const runtime = deps();
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
+	const projectAgent = join(cwd, ".pi", "agents", "gentle-ai-explore.md");
+	const subagents = join(cwd, ".pi", "subagents.json");
+	t.after(() => rmSync(projectAgent, { force: true }));
+	t.after(() => rmSync(subagents, { force: true }));
+	writeFileSync(projectAgent, "---\ndescription: packaged explore\ntools: [read]\n---\nYou map things.");
+	writeFileSync(subagents, `${JSON.stringify({ model_profiles: { "gentle-ai-explore": { model: "openai/alpha" } } })}\n`);
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "quiet", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(runtime.children.length, 1, "the launch proceeds");
+	assert.equal(dialogs.filter((message) => /did not match any agent/.test(message)).length, 0, "a key naming a discovered agent is never unmatched");
+});
+
+// Cortex QA adversarial follow-up (end-to-end pin for the #2196 fix): a key
+// that matches a discovered agent must not only stay silent, it must actually
+// route: the task request carries the profile model and thinking, so the child
+// launches with --model exactly as the issue's expected behavior describes.
+test("a matched model_profiles key routes the task request model end to end", async (t) => {
+	const h = fakePi();
+	const runtime = deps();
+	const captures = captureLaunches(t);
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha", effort: "high" } } })}\n`);
+	await h.fire("session_start", ctx);
+	await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "route", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(captures.length, 1);
+	assert.deepEqual(captures[0]!.request.model, { provider: "openai", id: "alpha" }, "the matched key routes the configured model into the launch");
+	assert.equal(captures[0]!.request.thinking, "high");
+	assert.equal(captures[0]!.request.modelSource, "profile");
 });

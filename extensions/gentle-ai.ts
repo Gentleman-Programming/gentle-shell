@@ -36,6 +36,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { discoverAgents } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -47,7 +48,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -85,6 +86,7 @@ import {
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
+	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
 	readProfilesFileResult,
@@ -4067,6 +4069,7 @@ class ProfilesPanel implements OverlayComponent {
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
+	private readonly discoveredAgentNames: string[];
 	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
@@ -4082,6 +4085,7 @@ class ProfilesPanel implements OverlayComponent {
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
+		discoveredAgentNames: string[],
 		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
@@ -4096,6 +4100,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
+		this.discoveredAgentNames = discoveredAgentNames;
 		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
@@ -4331,10 +4336,10 @@ class ProfilesPanel implements OverlayComponent {
 				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
-			...this.indentLines(this.routingLines(profileRows, widths), width),
+			...this.indentLines(this.routingLines(profileRows, widths, width), width),
 			"",
 			this.renderLine("Current routing (effective)", width, "accent"),
-			...this.indentLines(this.routingLines(currentRows, widths), width),
+			...this.indentLines(this.routingLines(currentRows, widths, width), width),
 		];
 	}
 
@@ -4356,11 +4361,24 @@ class ProfilesPanel implements OverlayComponent {
 	private routingLines(
 		rows: ProfileRoutingRow[],
 		widths: { agent: number; model: number },
+		width: number,
 	): string[] {
 		if (rows.length === 0) {
 			return ["No routing entries — every agent inherits its default model."];
 		}
-		return rows.map((row) => formatRoutingRow(row, widths));
+		// Issue #2196: a key that names no discovered agent was rendered as a
+		// valid-looking row while its setting was silently ignored at launch, so
+		// each unmatched row now carries its note inline. When the row would push
+		// the note past the pane edge (indentLines adds two columns before
+		// truncating), the note moves to its own line so it is never cut off.
+		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
+		return rows.flatMap((row) => {
+			const line = formatRoutingRow(row, widths);
+			const note = notes.get(row.agent);
+			if (note === undefined) return [line];
+			const inline = `${line}  ← ${note}`;
+			return visibleWidth(inline) + 2 <= width ? [inline] : [line, `  ↳ ${note}`];
+		});
 	}
 
 	private indentLines(lines: string[], width: number): string[] {
@@ -4406,6 +4424,14 @@ async function showProfilesPanel(
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
 	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
+	// Issue #2196: the panel flags routing keys that name no discovered agent, so
+	// it needs one discovery snapshot per visit; a failed or partial discovery is
+	// not an error here, it just renders without notes.
+	const discoveredAgentNames = discoverAgents({
+		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	}).agents.map((agent) => agent.name);
 	return ctx.ui.custom<ProfilesPanelResult>(
 		(tui, theme, keybindings, done) => {
 			const panel = new ProfilesPanel(
@@ -4421,6 +4447,7 @@ async function showProfilesPanel(
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
+				discoveredAgentNames,
 				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);

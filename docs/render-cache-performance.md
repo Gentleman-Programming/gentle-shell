@@ -14,6 +14,16 @@ node scripts/render-cache-performance.mjs \
 
 Default matrix: 100/1,000/5,000 tools × 100/160 columns × float/neon × pulse, scroll, typing, streaming, append, resize and theme. Four fresh-process paired replicas alternate before/after order (AB/BA/AB/BA). `--counts`, `--widths`, `--styles`, `--samples`, `--repetitions` and `--live-ms` override these settings; use small counts and samples for a smoke run. Run serially on an otherwise idle machine.
 
+The same entry point is available as `pnpm perf:render-cache -- <args>`, which keeps the harness discoverable without duplicating its arguments.
+
+## Host requirement
+
+`--pi-root` must be a Pi install root, not the installed package directory: it needs `package.json`, `dist/` and a `node_modules/` carrying `@earendil-works/pi-tui`, `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core` and `jiti`. The worker refuses anything else and names the resolved root, the package and version it actually found, and the audited version, instead of failing on a bare read error.
+
+The audited host version is 1.1.0 while the declared dependency is `>=1.2.0`, so the harness fails closed until a root at the audited version is provided. Relaxing that pin requires re-auditing the private frame surface against the newer host.
+
+On Windows without Developer Mode symlink creation is unavailable, so the report-path protection test skips with an explicit reason there; it still runs wherever symlinks are permitted.
+
 ## Read the evidence
 
 - `runs`: raw action-plus-frame wall/CPU times, cold render, construction time, paint/projection counters, visible-screen hashes, memory snapshots and a separate live quality-timer/typing run.

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { setWindowsAclAuthorityForTesting, sweepCandidateOwners } from "../lib/review-candidate-view-owner.ts";
-import { runCandidateStartupSweep } from "../lib/review-candidate-startup-sweep.ts";
+import { launchSweep, runCandidateStartupSweep } from "../lib/review-candidate-startup-sweep.ts";
 
 function fixture(t: test.TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "candidate-startup-"));
@@ -71,6 +71,16 @@ test("startup sweep keeps event loop responsive and shares one in-flight child p
 	settle();
 	assert.deepEqual(await first, await second);
 	await runCandidateStartupSweep(root, async () => ({ examined: 0, remaining: 0, failed: 0, budgetExceeded: false, unavailable: false }));
+});
+
+test("startup helper that never exits is stopped by the hang backstop with a fixed message", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "candidate-startup-hang-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const script = join(root, "hang.mjs");
+	writeFileSync(script, "setInterval(() => {}, 1000);\n");
+	const started = Date.now();
+	await assert.rejects(launchSweep(root, { timeoutMs: 300, script }), { message: "Candidate cleanup helper timed out" });
+	assert.ok(Date.now() - started < 10_000);
 });
 
 test("real startup helper handles a non-repository without creating a candidate store", async (t) => {

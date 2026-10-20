@@ -31,7 +31,8 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 
 ## Constraints
 
-- Allowed edit surfaces: `extensions/gentle-shell.ts` and this task document.
+- Allowed edit surfaces: `extensions/gentle-shell.ts`, `tests/gentle-shell.test.ts`, and this task
+  document.
 - Preserve the existing scan contract: same success shape, same failure signal apart from the
   timed-out `code: 1`.
 - No dependency added for process-tree handling; the platform already provides it.
@@ -64,12 +65,13 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 ## Checks
 
 - Work-unit commit: `5c4643681` (`fix(shell): kill the whole Git process tree on Windows scan timeout`),
-  +97/−7 across `extensions/gentle-shell.ts`.
+  +97/−7 across two files: `extensions/gentle-shell.ts` (the fix) and `tests/gentle-shell.test.ts`
+  (the regression that pins it).
 - Tests: 321 total, 316 passed, 5 failed — all five reproduce on the pristine base commit and are
   Windows-specific pre-existing failures, not caused by this change.
 - Typecheck: `node scripts/check-types.mjs` — 0 recorded diagnostics, no regressions.
 - Runtime harness: `node --experimental-strip-types tests/runtime-harness.mjs` — exit 0.
-- Diff scope: only `extensions/gentle-shell.ts` and this task document.
+- Diff scope: only `extensions/gentle-shell.ts`, `tests/gentle-shell.test.ts` and this task document.
 
 ## Progress
 

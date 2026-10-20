@@ -96,6 +96,33 @@ const DATA_COMMANDS = new Set([
 	"wc", "sort", "uniq", "cut", "tr", "jq", "diff", "ls", "file", "stat",
 ]);
 const INERT_COMMANDS = new Set(["cd", "pwd", "true", "false", "test", "[", "mkdir", "touch"]);
+// gentle-shell#1202: read-only subcommands that neither execute nor re-route
+// text. A segment headed by one of these no longer makes the whole line opaque,
+// provided nothing is piped into it and nothing precedes the head (assignments,
+// wrappers) or follows `git` besides `-C <path>` / `--no-pager`. `push` and
+// `rebase` are the guarded operations themselves: they match lexically on their
+// own text and run only their own literal arguments. Every such segment must be
+// free of `$`: a masked data substitution could smuggle in options such as
+// `--receive-pack=` or `-x`.
+const READ_ONLY_GIT = new Set(["status", "log", "diff", "show", "rev-parse", "rev-list", "ls-files", "describe"]);
+const LITERAL_GIT = new Set(["push", "rebase"]);
+const READ_ONLY_GH = new Map([["pr", ["view", "list", "checks", "diff", "status"]], ["issue", ["view", "list", "status"]], ["run", ["view", "list"]]]);
+
+function readOnlyVcsSegment(segment: readonly Token[], cursor: number, pipedInto: boolean, literal: boolean): boolean {
+	if (pipedInto || !literal || cursor !== 0) return false;
+	const name = segment[0].value;
+	if (name !== "git" && name !== "gh") return false;
+	if (segment.some((token) => token.value !== token.raw)) return false;
+	if (name === "gh") return READ_ONLY_GH.get(segment[1]?.value)?.includes(segment[2]?.value) ?? false;
+	let index = 1;
+	while (index < segment.length) {
+		if (segment[index].value === "--no-pager") index++;
+		else if (segment[index].value === "-C" && index + 1 < segment.length) index += 2;
+		else break;
+	}
+	const subcommand = segment[index]?.value;
+	return READ_ONLY_GIT.has(subcommand) || LITERAL_GIT.has(subcommand);
+}
 const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g;
 
 type Ranges = Array<readonly [number, number]>;
@@ -115,7 +142,7 @@ function maskDataSubstitutions(command: string): { masked: string; ranges: Range
 	const ranges: Ranges = [];
 	let opaque = false;
 	const masked = command.replace(SIMPLE_SUBSTITUTION_RE, (raw: string, body: string, offset: number) => {
-		const inner = dataRanges(body);
+		const inner = dataRanges(body, true);
 		if (inner === undefined) opaque = true;
 		else ranges.push(...inner.map(([from, to]) => [offset + 2 + from, offset + 2 + to] as const));
 		return "_".repeat(raw.length);
@@ -136,8 +163,12 @@ export function dataArgumentRanges(command: string): Ranges {
 	return dataRanges(command) ?? [];
 }
 
-/** Undefined means opaque; an empty list means only inert commands. */
-function dataRanges(original: string): Ranges | undefined {
+/**
+ * Undefined means opaque; an empty list means only inert commands. A nested
+ * (substitution) body admits data and inert commands only: its output is text
+ * that can run, so an ordinary git or gh segment inside it proves nothing.
+ */
+function dataRanges(original: string, nested = false): Ranges | undefined {
 	const substitutions = maskDataSubstitutions(original);
 	if (substitutions === undefined) return undefined;
 	const command = substitutions.masked;
@@ -172,7 +203,14 @@ function dataRanges(original: string): Ranges | undefined {
 		if (head === undefined || head.value !== head.raw) return undefined;
 		const name = head.value;
 		if (INERT_COMMANDS.has(name)) continue;
-		if (!DATA_COMMANDS.has(name)) return undefined;
+		if (!DATA_COMMANDS.has(name)) {
+			// Output of an earlier segment may be piped into this one, also across
+			// blank segments (`|` then newline, `|&`).
+			let pipedInto = false;
+			for (let back = end - segment.length - 1; back >= 0 && tokens[back].operator; back--) pipedInto ||= tokens[back].raw === "|";
+			if (!nested && readOnlyVcsSegment(segment, cursor, pipedInto, !original.slice(segment[0].index, segment.at(-1)!.index + segment.at(-1)!.raw.length).includes("$"))) continue;
+			return undefined;
+		}
 		ranges.push([head.index + head.raw.length, tokens[end]?.index ?? command.length]);
 	}
 	// A heredoc body belongs to the segment of its `<<` header, which the

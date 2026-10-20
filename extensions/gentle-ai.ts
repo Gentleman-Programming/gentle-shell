@@ -36,7 +36,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { discoverAgents } from "../lib/agents-config.ts";
+import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -4070,6 +4070,7 @@ class ProfilesPanel implements OverlayComponent {
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
 	private readonly discoveredAgentNames: string[];
+	private readonly unmatchedKeys: string[];
 	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
@@ -4086,6 +4087,7 @@ class ProfilesPanel implements OverlayComponent {
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
 		discoveredAgentNames: string[],
+		unmatchedKeys: string[],
 		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
@@ -4101,6 +4103,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
 		this.discoveredAgentNames = discoveredAgentNames;
+		this.unmatchedKeys = unmatchedKeys;
 		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
@@ -4340,6 +4343,26 @@ class ProfilesPanel implements OverlayComponent {
 			"",
 			this.renderLine("Current routing (effective)", width, "accent"),
 			...this.indentLines(this.routingLines(currentRows, widths, width), width),
+			...this.unmatchedKeyLines(currentRows, width),
+		];
+	}
+
+	private unmatchedKeyLines(currentRows: ProfileRoutingRow[], width: number): string[] {
+		// Issue #2400: a model_profiles key that matches no discovered agent and
+		// suggests none never becomes a routing row, so it is listed here, one key
+		// per line, with the same inline-or-↳ note rule as the routing rows. A key
+		// already shown as a current row carries its note there instead.
+		const shown = new Set(currentRows.map((row) => row.agent));
+		const keys = this.unmatchedKeys.filter((key) => !shown.has(key));
+		if (keys.length === 0) return [];
+		const note = "no matching agent";
+		return [
+			"",
+			this.renderLine("Unmatched keys (ignored)", width, "accent"),
+			...this.indentLines(keys.flatMap((key) => {
+				const inline = `${key}  ← ${note}`;
+				return visibleWidth(inline) + 2 <= width ? [inline] : [key, `  ↳ ${note}`];
+			}), width),
 		];
 	}
 
@@ -4427,11 +4450,22 @@ async function showProfilesPanel(
 	// Issue #2196: the panel flags routing keys that name no discovered agent, so
 	// it needs one discovery snapshot per visit; a failed or partial discovery is
 	// not an error here, it just renders without notes.
-	const discoveredAgentNames = discoverAgents({
+	const discoveryRoots = {
 		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
 		home: homedir(),
 		agentHome: resolveGentlePiAgentHome(),
-	}).agents.map((agent) => agent.name);
+	};
+	const discoveredAgents = discoverAgents(discoveryRoots).agents;
+	const discoveredAgentNames = discoveredAgents.map((agent) => agent.name);
+	// Issue #2400: launches resolve from the subagents.json model_profiles, which
+	// the effective table only reads per discovered agent, so a key with no match
+	// and no suggestion never appeared. When a session binding or a pin wins, the
+	// table already shows that snapshot's own keys with their notes.
+	const unmatchedKeys = sessionBoundName !== undefined || pinnedEffectiveModelConfig(ctx.cwd) !== undefined
+		? []
+		: unmatchedProfileKeys(loadAgentsConfig(discoveryRoots).modelProfiles, discoveredAgents)
+			.filter((entry) => entry.suggestion === undefined)
+			.map((entry) => entry.key);
 	return ctx.ui.custom<ProfilesPanelResult>(
 		(tui, theme, keybindings, done) => {
 			const panel = new ProfilesPanel(
@@ -4448,6 +4482,7 @@ async function showProfilesPanel(
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
 				discoveredAgentNames,
+				unmatchedKeys,
 				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);

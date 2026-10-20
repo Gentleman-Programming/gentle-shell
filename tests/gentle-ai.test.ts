@@ -3209,6 +3209,66 @@ test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
 	assert.match(narrow, /↳ no matching agent/);
 });
 
+// Issue #2400: a model_profiles key that matches no discovered agent and has
+// no suggestion never became a "Current routing (effective)" row, because that
+// table is built per discovered agent. The panel now lists those keys under
+// their own heading; a key with a suggestion is left to the launch warning.
+test("the profiles panel lists model_profiles keys that match no agent and suggest none", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: {
+			worker: { model: "openai/alpha" },
+			explor: { model: "openai/beta" },
+			"sdd-orchestratr-x": { model: "openai/beta" },
+			"gentle-ai-worker": { model: "openai/beta" },
+		},
+	}, null, 2)}\n`);
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	const wide = stripAnsi(panel.render(120).join("\n"));
+	assert.match(wide, /Unmatched keys \(ignored\)/);
+	assert.match(wide, /explor\s+← no matching agent/);
+	assert.match(wide, /sdd-orchestratr-x\s+← no matching agent/);
+	assert.doesNotMatch(wide, /gentle-ai-worker/, "a key with a suggestion is not listed as unmatched");
+
+	// At 60 columns the detail pane is 32 wide: the heading and the key stay
+	// whole, and a note that does not fit moves to its own line.
+	const narrow = stripAnsi(panel.render(60).join("\n"));
+	assert.match(narrow, /Unmatched keys \(ignored\)/);
+	assert.match(narrow, /explor\s+← no matching agent/);
+	assert.match(narrow, /sdd-orchestratr-x[^\n]*\n[^\n]*↳ no matching agent/);
+});
+
+// Issue #2400: when a pin wins, launches route from the pinned snapshot, whose
+// keys are already current rows with their own notes, so the subagents.json
+// keys are not listed as the routing in effect.
+test("the unmatched-keys list stays out of the panel while a pin wins", async (t) => {
+	const { fixture, writeStore, writePin, localPinPath } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	writePin(localPinPath, "team");
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explor: { model: "openai/beta" } } }, null, 2)}\n`);
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	const text = stripAnsi(panel.render(120).join("\n"));
+	assert.match(text, /Current routing \(effective\)/);
+	assert.doesNotMatch(text, /Unmatched keys/);
+});
+
 test("j and k scroll the detail pane one line at a time, like the agents view", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	const routing: Record<string, { model: string; thinking: string }> = {};

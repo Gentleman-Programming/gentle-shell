@@ -47,29 +47,55 @@ function windowsCandidates(env) {
 	return [usable(local) ? win32.join(local, "gentle-shell") : null, usable(profile) ? win32.join(profile, ".gentle-shell-bundle") : null].filter(Boolean);
 }
 
+/** Absolute directory that receives bundled writes (npm cache, shim, state).
+ * Unset keeps those writes in the installed prefix. A relative path is refused.
+ * When `installRoot` is set, the directory must sit outside that prefix.
+ */
+export const ISOLATION_ROOT_ENV = "GENTLE_SHELL_ISOLATION_ROOT";
+export function resolveIsolationRoot({ env = {}, platform, installRoot }) {
+	const raw = env[ISOLATION_ROOT_ENV];
+	if (typeof raw !== "string" || raw.length === 0) return undefined;
+	const path = pathFor(platform);
+	if (!path.isAbsolute(raw)) throw new Error("GENTLE_SHELL_ISOLATION_ROOT must be an absolute path");
+	if (typeof installRoot === "string" && installRoot.length > 0) {
+		const install = path.resolve(installRoot);
+		const isolated = path.resolve(raw);
+		const sep = path.sep;
+		if (isolated === install || isolated.startsWith(install.endsWith(sep) ? install : install + sep)) {
+			throw new Error("GENTLE_SHELL_ISOLATION_ROOT must be outside the installed prefix");
+		}
+	}
+	return raw;
+}
+
 /** Every bundled path, from plain path arithmetic only. POSIX: `~/.gentle-shell`.
  * Windows: `root` as claimPrefix chose it, otherwise the %LOCALAPPDATA% candidate.
  * The agent home stays `<home>/.gentle-shell/agent` on every platform.
+ * `dataRoot` moves writable npm, pnpm, and tmp paths out of the install.
+ * The Node runtime, Engram binary, versions, and launcher stay on `root`.
  */
-export function prefixLayout({ platform, env = {}, home, root }) {
+export function prefixLayout({ platform, env = {}, home, root, dataRoot }) {
 	const path = pathFor(platform);
 	if (typeof home !== "string" || !path.isAbsolute(home)) throw new Error("The bundled install needs an absolute home directory");
 	const windows = platform === "win32";
 	const base = root ?? (windows ? windowsCandidates(env)[0] : path.join(home, ".gentle-shell"));
 	if (typeof base !== "string" || !path.isAbsolute(base)) throw new Error("The bundled install has no private folder");
+	const data = dataRoot ?? base;
+	if (!path.isAbsolute(data)) throw new Error("The isolation root must be an absolute path");
 	const runtime = path.join(base, "runtime");
 	const nodeDir = path.join(runtime, `node-${pins.node}`);
 	const pnpmDir = path.join(runtime, `pnpm-${pins.pnpm}`);
-	const pnpmHome = path.join(base, "pnpm");
-	const npmHome = path.join(base, "npm");
+	const pnpmHome = path.join(data, "pnpm");
+	const npmHome = path.join(data, "npm");
 	const bin = path.join(base, "bin");
 	return Object.freeze({
-		platform, root: base, agent: path.join(home, ".gentle-shell", "agent"), runtime,
+		platform, root: base, dataRoot: data, agent: path.join(home, ".gentle-shell", "agent"), runtime,
 		nodeDir, node: windows ? path.join(nodeDir, "node.exe") : path.join(nodeDir, "bin", "node"),
 		// The npm bundled in the same Node archive, for Pi's own package installs.
 		npmCli: path.join(nodeDir, ...(windows ? [] : ["lib"]), "node_modules", "npm", "bin", "npm-cli.js"),
 		// The entry Pi's npmCommand runs that npm through (ensureNpmShim).
-		npmShim: path.join(nodeDir, "gentle-shell", "npm"),
+		// An isolation root keeps this generated file out of the installed runtime.
+		npmShim: data === base ? path.join(nodeDir, "gentle-shell", "npm") : path.join(data, "runtime", "npm-shim", "npm"),
 		npmHome, npmPrefix: path.join(npmHome, "prefix"), npmCache: path.join(npmHome, "cache"), npmGlobalConfig: path.join(npmHome, "npmrc"),
 		pnpmDir, pnpm: path.join(pnpmDir, "package", "bin", "pnpm.mjs"),
 		// acquireGo publishes `<goRoot>/<version>/go`.
@@ -78,7 +104,7 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		engramDir: path.join(runtime, `engram-${engramPinVersion}`),
 		engram: path.join(runtime, `engram-${engramPinVersion}`, windows ? "engram.exe" : "engram"),
 		pnpmHome, store: path.join(pnpmHome, "store"), cache: path.join(pnpmHome, "cache"), state: path.join(pnpmHome, "state"),
-		config: path.join(pnpmHome, "config"), npmrc: path.join(pnpmHome, "config", "npmrc"), tmp: path.join(base, "tmp"),
+		config: path.join(pnpmHome, "config"), npmrc: path.join(pnpmHome, "config", "npmrc"), tmp: path.join(data, "tmp"),
 		versions: path.join(base, "versions"), history: path.join(base, "versions.history"),
 		// The applied PATH entry (writePathReceipt), which self-uninstall reverts exactly.
 		pathReceipt: path.join(base, "path-entry.json"),
@@ -810,7 +836,7 @@ export function ensureNpmShim(layout) {
 		[path.basename(layout.npmShim)]: [`// ${NPM_SHIM_MARK}`, `require(require("node:path").join(__dirname, ${cli}));`, ""].join("\n"),
 	};
 	const info = stat(folder);
-	if (!info) mkdirSync(folder, { mode: 0o700 });
+	if (!info) mkdirSync(folder, { recursive: true, mode: 0o700 });
 	else if (!info.isDirectory()) throw new Error(`Conflicting npm entry: ${folder}`);
 	let written = false;
 	for (const [name, text] of Object.entries(files)) {

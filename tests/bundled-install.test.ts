@@ -7,7 +7,7 @@ import { dirname, join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
 import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
-	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
+	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, resolveIsolationRoot, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
 	describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
 
@@ -151,6 +151,31 @@ test("prefixLayout puts every bundled folder under ~/.gentle-shell on POSIX", ()
 	assert.equal(layout.currentKind, "symlink");
 	assert.equal(layout.launcher, `${root}/bin/gentle-shell`);
 	assert.throws(() => prefixLayout({ platform: "linux", env: {}, home: "relative" }), /home/i);
+});
+
+test("prefixLayout keeps the runtime on the install and moves npm writes to an isolation root", () => {
+	const layout = prefixLayout({
+		platform: "linux", env: {}, home: "/home/me", root: "/opt/gentle-shell", dataRoot: "/tmp/gs-sandbox",
+	});
+	assert.equal(layout.root, "/opt/gentle-shell");
+	assert.equal(layout.node, `/opt/gentle-shell/runtime/node-${NODE}/bin/node`);
+	assert.equal(layout.npmCache, "/tmp/gs-sandbox/npm/cache");
+	assert.equal(layout.npmShim, "/tmp/gs-sandbox/runtime/npm-shim/npm");
+	assert.equal(layout.engram, `/opt/gentle-shell/runtime/engram-${ENGRAM}/engram`);
+	assert.equal(layout.launcher, "/opt/gentle-shell/bin/gentle-shell");
+	assert.equal(resolveIsolationRoot({ env: {}, platform: "linux", installRoot: "/opt/gentle-shell" }), undefined);
+	assert.throws(
+		() => resolveIsolationRoot({ env: { GENTLE_SHELL_ISOLATION_ROOT: "relative" }, platform: "linux" }),
+		/absolute path/,
+	);
+	assert.throws(
+		() => resolveIsolationRoot({
+			env: { GENTLE_SHELL_ISOLATION_ROOT: "/opt/gentle-shell/nested" },
+			platform: "linux",
+			installRoot: "/opt/gentle-shell",
+		}),
+		/outside the installed prefix/,
+	);
 });
 
 test("prefixLayout uses the Windows private folder and a pointer file for current", () => {

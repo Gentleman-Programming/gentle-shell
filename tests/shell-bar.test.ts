@@ -863,3 +863,77 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
 });
+
+// --- named env (GENTLE_SHELL_ENV, lib/gentle-shell-envs.ts) ------------------
+
+test("buildShellHeaderModel carries the env only when a named env is active", () => {
+	assert.equal(buildShellHeaderModel(model({ env: "work" })).env, "work");
+	assert.ok(!("env" in buildShellHeaderModel(model())));
+});
+
+test("renderShellHeaderBar shows the env right after the brand", () => {
+	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ env: "work", profile: "team" })), plainTheme, 140);
+	assert.ok(text.startsWith("✿ Gentle Shell ⟡ env work ⟡ ~/work/gentle-pi main"), text);
+	const { text: plain } = renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 140);
+	assert.doesNotMatch(plain, /env /);
+});
+
+test("renderShellHeaderBar keeps the env after profile, effort and location are dropped", () => {
+	const header = buildShellHeaderModel(model({ env: "work", profile: "team" }));
+	for (const width of [100, 90, 70]) {
+		const { text } = renderShellHeaderBar(header, plainTheme, width);
+		assert.equal(visibleWidth(text), width);
+		assert.match(text, /^✿ Gentle Shell ⟡ env work/, `width ${width}: ${text}`);
+	}
+});
+
+test("renderShellHeaderBar keeps the env over the brand when only one of them fits", () => {
+	const header = buildShellHeaderModel(model({ env: "work", profile: "team" }));
+	for (const width of [12, 16, 24]) {
+		const { text } = renderShellHeaderBar(header, plainTheme, width);
+		assert.ok(visibleWidth(text) <= width, `width ${width}`);
+		assert.match(text, /^env work/, `width ${width}: ${text}`);
+	}
+	// Without an env the narrow header still shows the brand.
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 16).text, /^\u273f Gentle Shell/);
+});
+
+test("the narrowest header keeps the env beside the running job count", () => {
+	const data = model({ env: "work", jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] });
+	for (const width of [20, 24]) {
+		const text = renderShellHeaderBar(buildShellHeaderModel(data, true), plainTheme, width).text;
+		assert.ok(visibleWidth(text) <= width, `width ${width}: ${text}`);
+		assert.match(text, /^env work/, `width ${width}: ${text}`);
+		assert.match(text, /\u29d7 1 job$/, `width ${width}: ${text}`);
+	}
+});
+
+test("minimal density hides the brand but still names the env", () => {
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };
+	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ env: "work" })), plainTheme, 140, undefined, settings);
+	assert.doesNotMatch(text, /Gentle Shell/);
+	assert.match(text, /^env work/);
+});
+
+test("regular-mode bar names the env right after the brand and keeps it when narrowed", () => {
+	const [line] = renderShellBar(model({ env: "work" }), plainTheme, 160);
+	assert.ok(line.startsWith("✿ gentle shell ⟡ env work ⟡ ~/work/gentle-pi main"), line);
+	const [narrow] = renderShellBar(model({ env: "work" }), plainTheme, 30);
+	assert.match(narrow, /env work/);
+	// Narrower than brand plus env: the brand gives way, never the env.
+	for (const width of [12, 20]) assert.equal(renderShellBar(model({ env: "work" }), plainTheme, width)[0], "env work", `width ${width}`);
+	const [plain] = renderShellBar(model(), plainTheme, 160);
+	assert.doesNotMatch(plain, /env /);
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" as const };
+	assert.match(renderShellBar(model({ env: "work" }), plainTheme, 160, settings)[0]!, /^env work/);
+});
+
+test("sidebar Status card shows the env as its own group above Project", () => {
+	const lines = renderShellSidebarBar(model({ env: "work" }), plainTheme, 60).map((line) => line.replace(/[│▎]/g, "").trim());
+	const env = lines.indexOf("Env");
+	const project = lines.indexOf("Project");
+	assert.ok(env >= 0 && project > env, lines.join("\n"));
+	assert.ok(lines.slice(env + 1, project).includes("work"), lines.join("\n"));
+	assert.ok(!lines.slice(project).some((line) => /^Env\b/.test(line)), "no Env line left inside Project");
+	assert.ok(!renderShellSidebarBar(model(), plainTheme, 60).some((line) => /\bEnv\b/.test(line)));
+});

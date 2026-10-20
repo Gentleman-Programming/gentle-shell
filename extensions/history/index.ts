@@ -154,7 +154,7 @@ export interface HistoryDeps {
  */
 export function captureEnabled(
   env: NodeJS.ProcessEnv = process.env,
-  configHome: string = gentlePiConfigHome(env),
+  configHome: string = gentlePiConfigHome(env, "behavior"),
 ): boolean {
   return historyCaptureEnabled({ env, gentlePiConfigHome: configHome });
 }
@@ -1315,7 +1315,7 @@ export default function promptHistoryExtension(
   deps: HistoryDeps = {},
 ): void {
   const env = deps.env ?? process.env;
-  const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env);
+  const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env, "behavior");
   // Per-prompt gate: re-read so a Customize toggle applies live. A delegated
   // child never captures: its prompt is a delegation brief, not user history,
   // and the parent owns the store's init and GC (gentle-shell#1690).

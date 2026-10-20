@@ -17,7 +17,7 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 }
 /** Never consult merged Pi settings or repository configuration. */
 export function permissionModePolicyFile(options: PermissionModeOptions = {}): string {
-	return join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "permission-mode.json");
+	return join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior"), "permission-mode.json");
 }
 export const permissionModePolicyPath = permissionModePolicyFile;
 export function parsePermissionModePolicyFile(raw: string): PermissionMode | undefined {
@@ -43,7 +43,7 @@ export function writePermissionModePolicy(mode: PermissionMode, options: Permiss
 	if (!isPermissionMode(mode)) throw new Error("Invalid permission mode");
 	const resolution = resolvePermissionModePolicy(options);
 	if (resolution.malformed) throw new Error("Permission mode preference is malformed or unreadable; repair it before saving.");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior");
 	const path = resolution.globalFile;
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

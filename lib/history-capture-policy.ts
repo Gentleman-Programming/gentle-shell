@@ -46,7 +46,7 @@ export function parseHistoryCaptureFile(raw: string): HistoryCapturePolicy | und
 }
 
 export function resolveHistoryCapturePolicy(options: HistoryCaptureOptions = {}): HistoryCapturePolicyResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "history-capture.json");
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior"), "history-capture.json");
 	try {
 		const policy = parseHistoryCaptureFile(readFileSync(globalFile, "utf8"));
 		return { policy: policy ?? "off", source: "global_file", malformed: policy === undefined, globalFile };
@@ -59,7 +59,7 @@ export function resolveHistoryCapturePolicy(options: HistoryCaptureOptions = {})
 /** Full resolution for status surfaces; always reads the preference. */
 export function resolveHistoryCapture(options: { env?: NodeJS.ProcessEnv; gentlePiConfigHome?: string } = {}): HistoryCaptureResolution {
 	const env = options.env ?? process.env;
-	const saved = resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env) });
+	const saved = resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env, "behavior") });
 	const envOverride = historyCaptureEnvOverride(env);
 	return {
 		enabled: (envOverride ?? saved.policy) === "on",
@@ -76,12 +76,12 @@ export function historyCaptureEnabled(options: { env?: NodeJS.ProcessEnv; gentle
 	const env = options.env ?? process.env;
 	const override = historyCaptureEnvOverride(env);
 	if (override) return override === "on";
-	return resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env) }).policy === "on";
+	return resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env, "behavior") }).policy === "on";
 }
 
 export function writeHistoryCapturePolicy(policy: HistoryCapturePolicy, options: HistoryCaptureOptions = {}): string {
 	if (policy !== "on" && policy !== "off") throw new TypeError("Invalid history capture policy");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior");
 	const path = join(home, "history-capture.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

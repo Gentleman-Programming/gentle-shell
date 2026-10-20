@@ -1,12 +1,16 @@
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPackageInjection } from "./child-package-injection.ts";
 import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
+import { ENV_NAME_ENV, envDir, envNameForDir, envsRoot, validateEnvName } from "./gentle-shell-envs.ts";
+import { type ConfigCategory, ENV_CONFIG_HOME_ENV, ENV_OWN_CONFIG_ENV } from "./gentle-config-scope.ts";
+
+export { ENV_NAME_ENV };
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory";
+export type LauncherCommand = "home" | "envs" | "setup" | "upgrade" | "self-uninstall" | "memory";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -23,6 +27,8 @@ export interface ParsedLauncherArgs {
 	link: boolean;
 	isolated: boolean;
 	home?: string;
+	// Named env selected with `--env <name>` (see lib/gentle-shell-envs.ts).
+	env?: string;
 	packageRoot?: string;
 	help: boolean;
 	version: boolean;
@@ -42,11 +48,12 @@ export interface ParsedLauncherArgs {
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
+	if (argv[0] === "home" || argv[0] === "envs" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
 		return {
 			link: false,
 			isolated: false,
 			home: undefined,
+			env: undefined,
 			packageRoot: undefined,
 			help: false,
 			version: false,
@@ -61,6 +68,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	let link = false;
 	let isolated = false;
 	let home: string | undefined;
+	let env: string | undefined;
 	let packageRoot: string | undefined;
 	let help = false;
 	let version = false;
@@ -119,6 +127,22 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			i += 1;
 			continue;
 		}
+		if (arg === "--env" || arg.startsWith("--env=")) {
+			const inline = arg.startsWith("--env=");
+			const value = inline ? arg.slice("--env=".length) : argv[i + 1];
+			if (!inline && value !== undefined) i += 1;
+			if (value === undefined || value.length === 0) {
+				error = "--env requires a non-empty env name";
+				continue;
+			}
+			const invalid = validateEnvName(value);
+			if (invalid !== undefined) {
+				error = invalid;
+				continue;
+			}
+			env = value;
+			continue;
+		}
 		if (arg.startsWith("--package-root=")) {
 			const value = arg.slice("--package-root=".length);
 			if (value.length === 0) {
@@ -166,7 +190,13 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	}
 
 	if (error === undefined) {
-		if (link && isolated) {
+		if (env !== undefined && link) {
+			error = "--env cannot be combined with --link";
+		} else if (env !== undefined && isolated) {
+			error = "--env cannot be combined with --isolated";
+		} else if (env !== undefined && home !== undefined) {
+			error = "--env cannot be combined with --home";
+		} else if (link && isolated) {
 			error = "--link cannot be combined with --isolated";
 		} else if (link && home !== undefined) {
 			error = "--link cannot be combined with --home";
@@ -175,7 +205,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+	return { link, isolated, home, env, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -187,6 +217,11 @@ export interface ResolvedHome {
 	mode: HomeMode;
 	dir: string;
 	source: HomeSource;
+	// Set for a `path` home that is a named env, so hints reproduce `--env`.
+	env?: string;
+	// The Gentle config categories this env keeps in `<dir>/gentle-ai`
+	// instead of sharing the base configuration (lib/gentle-config-scope.ts).
+	ownConfig?: readonly ConfigCategory[];
 }
 
 // A discriminated union instead of a plain `home: string` field: `resolveHome`
@@ -235,6 +270,20 @@ export function standaloneConfigHome(home: ResolvedHome): string | undefined {
 	// to a custom GENTLE_SHELL_HOME (~/myagent) it would adopt ~/gentle-ai, which
 	// may be anyone's, so such homes keep the shared config home.
 	return basename(dir) === "agent" && basename(parent) === ".gentle-shell" ? join(parent, "gentle-ai") : undefined;
+}
+
+// The launcher config folder a launch of `home` uses (#2201): the isolated
+// home's own, and for a named env the base isolated home's, since "shared"
+// means shared with the base home. Undefined keeps ~/.pi/gentle-ai (--link,
+// a plain --home, or a base home without its own folder).
+export function launchConfigHome(home: ResolvedHome, env: Record<string, string | undefined>, homedir: string): string | undefined {
+	if (home.mode === "isolated") return standaloneConfigHome(home);
+	return home.env === undefined ? undefined : baseConfigHome(env, homedir);
+}
+
+// The base (isolated) home's own config folder, or undefined when it has none.
+export function baseConfigHome(env: Record<string, string | undefined>, homedir: string): string | undefined {
+	return standaloneConfigHome({ mode: "isolated", dir: isolatedDir(env, homedir), source: "default" });
 }
 
 // The filesystem behind migrateStandaloneConfig; bin/gentle-shell.mjs wires the real one.
@@ -299,12 +348,18 @@ export function resolveHome(input: ResolveHomeInput): ResolvedHome {
 
 	if (args.link) return { mode: "link", dir: userPiHome(env, homedir), source: "flag" };
 	if (args.isolated) return { mode: "isolated", dir: isolatedDir(env, homedir), source: "flag" };
-	if (args.home !== undefined) return { mode: "path", dir: args.home, source: "flag" };
+	if (args.home !== undefined) {
+		// An explicit --home into the envs root is that env, labelled like --env.
+		const name = envNameForDir(envsRoot(env, homedir), args.home);
+		return name === undefined ? { mode: "path", dir: args.home, source: "flag" } : { mode: "path", dir: args.home, source: "flag", env: name };
+	}
+	if (args.env !== undefined) return { mode: "path", dir: envDir(envsRoot(env, homedir), args.env), source: "flag", env: args.env };
 
 	if (config !== undefined) {
 		if (config.mode === "link") return { mode: "link", dir: userPiHome(env, homedir), source: "config" };
 		if (config.mode === "isolated") return { mode: "isolated", dir: isolatedDir(env, homedir), source: "config" };
-		return { mode: "path", dir: config.dir, source: "config" };
+		const name = envNameForDir(envsRoot(env, homedir), config.dir);
+		return name === undefined ? { mode: "path", dir: config.dir, source: "config" } : { mode: "path", dir: config.dir, source: "config", env: name };
 	}
 
 	return { mode: "isolated", dir: isolatedDir(env, homedir), source: "default" };
@@ -320,6 +375,7 @@ export function resolveHome(input: ResolveHomeInput): ResolvedHome {
 // gentle-shell's own default when no selector is given.
 export function homeSelectorFlags(home: ResolvedHome): string[] {
 	if (home.mode === "link") return ["--link"];
+	if (home.mode === "path" && home.env !== undefined) return ["--env", home.env];
 	if (home.mode === "path") return ["--home", home.dir];
 	return [];
 }
@@ -1086,12 +1142,28 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};
-	// #2201: only the standalone isolated home gets its own config folder; any
-	// other launch removes an inherited marker, so a nested `--link` launch from
-	// an isolated session reads ~/.pi/gentle-ai again.
-	const configHome = input.bundled === true ? undefined : standaloneConfigHome(input.home);
+	// #2201: only the standalone isolated home, and the named envs that share
+	// it, get its own config folder; any other launch removes an inherited
+	// marker, so a nested `--link` launch from an isolated session reads
+	// ~/.pi/gentle-ai again.
+	const configHome = input.bundled === true ? undefined : launchConfigHome(input.home, input.baseEnv, input.homedir);
 	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
+
+	// Exactly this home's env name: an inherited value (a gentle-shell started
+	// from inside another env's session) must never label a different home.
+	if (input.home.env === undefined) delete env[ENV_NAME_ENV];
+	else env[ENV_NAME_ENV] = input.home.env;
+	// Same rule for the env's config scope: only an env that owns categories
+	// sets it, so an outer session's scope never reaches another home.
+	const ownConfig = input.home.env === undefined ? [] : (input.home.ownConfig ?? []);
+	if (ownConfig.length === 0) {
+		delete env[ENV_CONFIG_HOME_ENV];
+		delete env[ENV_OWN_CONFIG_ENV];
+	} else {
+		env[ENV_CONFIG_HOME_ENV] = join(input.home.dir, "gentle-ai");
+		env[ENV_OWN_CONFIG_ENV] = ownConfig.join(",");
+	}
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
 
@@ -1290,6 +1362,7 @@ export function helpText(): string {
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
+		"       gentle-shell envs [list | new <name> [scope] | config <name> [scope]]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
@@ -1304,6 +1377,7 @@ export function helpText(): string {
 		"  --isolated       Use the dedicated ~/.gentle-shell/agent home (default), with its own",
 		"                   settings in ~/.gentle-shell/gentle-ai (copied once from ~/.pi/gentle-ai).",
 		"  --home <path>    Use a custom agent home directory.",
+		"  --env <name>     Use the named env ~/.gentle-shell/envs/<name> (must already exist).",
 		"  --package-root <dir>  Force this directory as the gentle-pi package to load, taking over",
 		"                        from any conflicting package the target settings.json already declares.",
 		"  --help, -h       Show this help text.",
@@ -1316,6 +1390,12 @@ export function helpText(): string {
 		"                   level when it has none. Never overwrites a file or setting, never copies",
 		"                   packages, extensions or caches, and never changes your pi home.",
 		"                   --dry-run only shows the plan. Refuses --link (nothing to import).",
+		"  envs             Manage named envs: on a terminal, a full-screen manager to create,",
+		"                   rename, delete, launch, set the default, set up, install into and",
+		"                   check sign-ins of each env. 'envs list' prints them, marking (default);",
+		"                   'envs new <name>' creates one; 'envs config <name>' chooses which Gentle",
+		"                   config it owns (--own/--share models,persona,appearance,behavior).",
+		"                   Envs are separate homes, not sandboxes.",
 		"  setup            Provision the resolved home with the gentle-ai companion packages",
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
@@ -1368,6 +1448,7 @@ export function helpText(): string {
 		"                        inside a .gentle-shell folder, its settings live in the gentle-ai",
 		"                        folder next to it; elsewhere they stay in ~/.pi/gentle-ai.",
 		"  GENTLE_PI_CONFIG_HOME Gentle Shell settings folder for every home, overriding the above.",
+		"  GENTLE_SHELL_ENVS_DIR Directory holding named envs (default: ~/.gentle-shell/envs).",
 		"  PI_CODING_AGENT_DIR   Directory for the --link home, shared with pi itself.",
 		"",
 		"Every other argument is forwarded to pi unchanged.",

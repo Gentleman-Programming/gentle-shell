@@ -89,7 +89,7 @@ export function resolveDoubleEscCancelPolicy(
 	const envValue = env.GENTLE_PI_DOUBLE_ESC_CANCEL;
 	let globalFile = "";
 	try {
-		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(env);
+		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(env, "behavior");
 		globalFile = join(configHome, DOUBLE_ESC_CANCEL_FILE);
 		const globalFileExists = existsSync(globalFile);
 		if (globalFileExists) {
@@ -130,7 +130,7 @@ export function writeDoubleEscCancelPolicy(
 	policy: DoubleEscCancelPolicy,
 	options: { gentlePiConfigHome?: string } = {},
 ): string {
-	const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "behavior");
 	const path = join(configHome, DOUBLE_ESC_CANCEL_FILE);
 	mkdirSync(configHome, { recursive: true });
 	writeFileSync(path, `${JSON.stringify({ schema: DOUBLE_ESC_CANCEL_SCHEMA, policy }, null, 2)}\n`);

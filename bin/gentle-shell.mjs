@@ -40,6 +40,7 @@ import {
 	forceJsonFieldIfAbsentInOriginal,
 	helpText,
 	homeSelectorFlags,
+	isolatedDir,
 	isSetupCapablePin,
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
@@ -62,6 +63,8 @@ import {
 	separateHomeHint,
 	shellQuote,
 	standaloneConfigHome,
+	launchConfigHome,
+	baseConfigHome,
 	userPiHome,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { formatImportPiReport, importPi } from "../runtime/gentle-shell-import-pi.mjs";
@@ -91,6 +94,7 @@ import {
 	bundledUpdateNext,
 	bundledUpdateNotice,
 	bundledUpdatePlan,
+	bundledPiConfigDir,
 	nodeBundledFs,
 	parseBundledUpgradeArgs,
 	resolveBundledInstall,
@@ -105,6 +109,25 @@ import {
 } from "../runtime/gentle-shell-resume-hint.mjs";
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import {
+	categoriesToSeed,
+	describeEnvScope,
+	ENV_SCOPE_FILE,
+	parseEnvScope,
+	parseScopeFlags,
+	planScopeChange,
+	seedOperations,
+	serializeEnvScope,
+	envDir,
+	envNameForDir,
+	envsRoot,
+	removeEnvFromConfig,
+	renameEnvInConfig,
+	setDefaultEnvInConfig,
+	summarizeEnv,
+	validateEnvName,
+} from "../runtime/gentle-shell-envs.mjs";
+import { initialEnvsState, parseKeys, reduceEnvs, renderEnvsScreen } from "../runtime/gentle-shell-envs-tui.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, supportsBundledSessionOwned, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
 import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
@@ -406,6 +429,7 @@ function emptyArgs() {
 		link: false,
 		isolated: false,
 		home: undefined,
+		env: undefined,
 		packageRoot: undefined,
 		help: false,
 		version: false,
@@ -689,6 +713,472 @@ async function handleImportPiCommand(args) {
 	process.exitCode = result.failed ? 1 : 0;
 }
 
+// --- named envs (`gentle-shell envs`, lib/gentle-shell-envs*.ts) -------------
+
+// The env's own Gentle config categories (lib/gentle-config-scope.ts); a
+// missing or unreadable scope file means it shares everything.
+function readEnvScope(dir) {
+	return parseEnvScope(readTextOrUndefined(join(dir, ENV_SCOPE_FILE)));
+}
+
+// The shared (base) Gentle config home, exactly as a Pi process launched in
+// a named env resolves it without env scope: the bundled prefix's config,
+// then GENTLE_PI_CONFIG_HOME, then the base isolated home's own folder
+// (~/.gentle-shell/gentle-ai, #2201), then ~/.pi/gentle-ai.
+function sharedConfigHome() {
+	const install = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs });
+	if (install) return bundledPiConfigDir(install.root);
+	if (process.env.GENTLE_PI_CONFIG_HOME) return process.env.GENTLE_PI_CONFIG_HOME;
+	return baseConfigHome(process.env, homedir()) ?? join(homedir(), ".pi", "gentle-ai");
+}
+
+// Applies --own/--share/--from/--empty to one env: seeds the categories that
+// become own (a copy from the base home or another env, or empty), then
+// persists the scope. Sharing a category again keeps its own files on disk.
+function applyEnvScope(root, name, flags) {
+	// Same guard as rename/delete: a managed, real env directory, and an own
+	// config folder that is never a link (seeding would write through it).
+	const dir = assertManagedEnvDir(root, name);
+	const ownDir = join(dir, "gentle-ai");
+	let ownStat;
+	try {
+		ownStat = lstatSync(ownDir);
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+	if (ownStat !== undefined && (ownStat.isSymbolicLink() || !ownStat.isDirectory())) {
+		throw new Error(`refusing to touch ${ownDir}: not a real directory`);
+	}
+	const current = readEnvScope(dir);
+	const plan = planScopeChange({ current, own: flags.own, share: flags.share, seed: flags.empty ? { kind: "empty" } : { kind: "copy", from: flags.from } });
+	let sourceDirFor = () => sharedConfigHome();
+	if (flags.from !== undefined) {
+		const fromDir = envDir(root, flags.from);
+		if (!existsSync(fromDir)) throw Object.assign(new Error(`unknown env "${flags.from}"`), { usage: true });
+		const fromOwn = readEnvScope(fromDir);
+		const shared = sharedConfigHome();
+		sourceDirFor = (category) => (fromOwn.includes(category) ? join(fromDir, "gentle-ai") : shared);
+	}
+	const targetDir = join(dir, "gentle-ai");
+	const seed = categoriesToSeed(plan.seed, targetDir, existsSync);
+	const createdTargetDir = seed.length > 0 && !existsSync(targetDir);
+	const copied = [];
+	try {
+		if (seed.length > 0) mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+		for (const op of seedOperations({ categories: seed, mode: flags.empty ? "empty" : "copy", sourceDirFor, targetDir, exists: existsSync })) {
+			if (op.kind === "copy") {
+				copyFileSync(op.from, op.to);
+				copied.push(op.to);
+			} else rmSync(op.path, { force: true });
+		}
+		writeFileAtomically(join(dir, ENV_SCOPE_FILE), serializeEnvScope(plan.next), { mode: 0o600 });
+	} catch (error) {
+		// A seeded category had no own files before this call (categoriesToSeed),
+		// so what it copied is all there is: a partial copy left behind would
+		// read as a kept own copy next time and never be seeded again.
+		for (const path of copied) rmSync(path, { force: true });
+		if (createdTargetDir) rmSync(targetDir, { recursive: true, force: true });
+		throw error;
+	}
+	return plan;
+}
+
+function currentEnvsRoot() {
+	return envsRoot(process.env, homedir());
+}
+
+function isRealDirectory(path) {
+	try {
+		return lstatSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function listEnvNames(root) {
+	let entries;
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch (error) {
+		if (error.code === "ENOENT") return [];
+		throw error;
+	}
+	return entries
+		.filter((entry) => entry.isDirectory() && validateEnvName(entry.name) === undefined)
+		.map((entry) => entry.name)
+		.sort();
+}
+
+// Session files live in <home>/sessions/<encoded-cwd>/*.jsonl; two levels
+// are walked, never deeper, so a huge home cannot stall the manager.
+function sessionStats(dir) {
+	let count = 0;
+	let last = 0;
+	const visit = (path, depth) => {
+		let entries;
+		try {
+			entries = readdirSync(path, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const child = join(path, entry.name);
+			if (entry.isDirectory() && depth < 2) visit(child, depth + 1);
+			else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+				count += 1;
+				try {
+					last = Math.max(last, statSync(child).mtimeMs);
+				} catch {
+					// Vanished mid-walk: still counted, just undated.
+				}
+			}
+		}
+	};
+	visit(join(dir, "sessions"), 1);
+	return { count, last: last > 0 ? new Date(last).toISOString() : undefined };
+}
+
+function readTextOrUndefined(path) {
+	try {
+		return readJsonIfExists(path);
+	} catch {
+		return undefined;
+	}
+}
+
+// The base home first (the install's own `--isolated` home, exactly as the
+// launcher resolves it), then the named envs. The default follows the same
+// precedence a plain launch uses: a missing, malformed or "isolated" home
+// setting opens the base home, "link" opens none of these, a path opens the
+// env it names.
+function loadEnvSummaries(root) {
+	const rawConfig = readRawConfig(resolveConfigPath());
+	const persisted = loadConfig();
+	const defaultReal = persisted?.mode === "path" ? safeRealpath(resolvePath(persisted.dir)) : undefined;
+	const summarize = (name, dir, extra) => {
+		const real = safeRealpath(dir);
+		const sessions = sessionStats(dir);
+		return summarizeEnv({
+			name,
+			dir,
+			settingsText: readTextOrUndefined(join(dir, "settings.json")),
+			authText: readTextOrUndefined(join(dir, "auth.json")),
+			provisioned: provisionedEntry(rawConfig, real),
+			sessionCount: sessions.count,
+			lastSessionAt: sessions.last,
+			isDefault: defaultReal !== undefined && defaultReal === real,
+			...extra,
+		});
+	};
+	const baseDir = resolvePath(isolatedDir(process.env, homedir()));
+	const base = summarize("base", baseDir, { base: true, ...(persisted === undefined || persisted.mode === "isolated" ? { isDefault: true } : {}) });
+	return [base, ...listEnvNames(root).map((name) => summarize(name, envDir(root, name), { own: readEnvScope(envDir(root, name)) }))];
+}
+
+// The launcher selector that reproduces an entry: `--isolated` for the base
+// home (never an env name, which may even be "base"), `--env <name>` otherwise.
+function entrySelector(target) {
+	return target.base ? ["--isolated"] : ["--env", target.name];
+}
+
+// Same bootstrap a first `--home` launch performs, so the env is owned by
+// gentle-shell and auto-provisions on its first launch.
+async function createEnv(root, name) {
+	const dir = envDir(root, name);
+	if (existsSync(dir)) throw new Error(`env "${name}" already exists`);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	mkdirSync(dir, { mode: 0o700 });
+	try {
+		await installIsolatedTuiModeSetting(dir);
+		writeHomeOwnershipMarker({ mode: "path", dir });
+	} catch (error) {
+		// This call created `dir`: a half-bootstrapped env would read as "already
+		// exists" and, once non-empty and unmarked, as a foreign home --env never
+		// provisions. Remove it so `envs new` can simply be retried.
+		rmSync(dir, { recursive: true, force: true });
+		throw error;
+	}
+	return dir;
+}
+
+// Guards every destructive path: only a direct, validly named child of the
+// envs root that is a real directory (not a symlink to elsewhere).
+function assertManagedEnvDir(root, name) {
+	const dir = envDir(root, name);
+	if (envNameForDir(root, dir) !== name) throw new Error(`refusing to touch ${dir}: not a managed env`);
+	const stat = lstatSync(dir);
+	if (!stat.isDirectory()) throw new Error(`refusing to touch ${dir}: not a directory`);
+	return dir;
+}
+
+function renameEnv(root, from, to) {
+	const oldDir = assertManagedEnvDir(root, from);
+	const newDir = envDir(root, to);
+	if (validateEnvName(to) !== undefined) throw new Error(validateEnvName(to));
+	if (existsSync(newDir)) throw new Error(`env "${to}" already exists`);
+	const aliases = [...new Set([oldDir, safeRealpath(oldDir)])];
+	renameSync(oldDir, newDir);
+	const configPath = resolveConfigPath();
+	try {
+		writeRawConfig(configPath, renameEnvInConfig(readRawConfig(configPath), aliases, newDir, safeRealpath(newDir)));
+	} catch (error) {
+		// config.json still names the old dir (default home, setup record): put
+		// the env back there rather than leave a launch bootstrapping an empty
+		// home at the old path and the renamed env provisioning again.
+		renameSync(newDir, oldDir);
+		throw error;
+	}
+}
+
+function deleteEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const aliases = [...new Set([dir, safeRealpath(dir)])];
+	// config.json first: removing the folder cannot be undone, so a failed
+	// config write must leave the env on disk, never a default that names a
+	// missing folder (the next launch would recreate it empty).
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, removeEnvFromConfig(readRawConfig(configPath), aliases));
+	rmSync(dir, { recursive: true, force: true });
+}
+
+function setDefaultEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, setDefaultEnvInConfig(readRawConfig(configPath), dir));
+}
+
+// Runs this same launcher against one env (setup/install/auth) in the
+// foreground, outside the manager's alternate screen.
+function runLauncherForEnv(target, extraArgs) {
+	const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...entrySelector(target), ...extraArgs], { stdio: "inherit", env: process.env });
+	return result.error ? 1 : (result.status ?? 1);
+}
+
+function printEnvList(root) {
+	const entries = loadEnvSummaries(root);
+	// The default reads like the /gentle:profiles markers: `name (default)`.
+	const label = (env) => `${env.base ? "[base]" : env.name}${env.isDefault ? " (default)" : ""}`;
+	const width = Math.max(...entries.map((env) => label(env).length));
+	for (const env of entries) {
+		process.stdout.write(`${label(env).padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
+	}
+	if (entries.length === 1) process.stdout.write(`No named envs in ${root} yet. Create one with 'gentle-shell envs new <name>'.\n`);
+}
+
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name> [scope] | config <name> [scope]]\n  envs          open the env manager (TTY), or list envs\n  envs list     print the base home and every env; (default) marks what a plain launch opens\n  envs new      create an env without launching it\n  envs config   show or change which Gentle config an env owns\n  scope: --own <list|all> --share <list|all> [--from <env> | --empty]\n         categories: models, persona, appearance, behavior; new own ones copy\n         from the base home (or --from <env>), or start --empty";
+
+// Returns the launcher selector to launch with, or undefined when nothing should launch.
+async function handleEnvsCommand(commandArgs) {
+	const root = currentEnvsRoot();
+	const [sub, ...rest] = commandArgs;
+	if (sub === "list" && rest.length === 0) {
+		printEnvList(root);
+		return undefined;
+	}
+	if (sub === "new" && rest.length >= 1) {
+		const [name, ...flagArgs] = rest;
+		const invalid = validateEnvName(name);
+		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		const flags = parseScopeFlags(flagArgs);
+		if (flags.error !== undefined) fail(`gentle-shell: ${flags.error}`, 2);
+		// A new env starts sharing everything: only --own makes the others meaningful.
+		if (flags.own.length === 0 && (flags.share.length > 0 || flags.from !== undefined || flags.empty)) {
+			fail("gentle-shell: --share, --from and --empty need --own on envs new", 2);
+		}
+		if (flags.from !== undefined && !existsSync(envDir(root, flags.from))) fail(`gentle-shell: unknown env "${flags.from}"`, 2);
+		let created;
+		try {
+			created = await createEnv(root, name);
+			const scope = flags.own.length > 0 ? applyEnvScope(root, name, flags) : undefined;
+			process.stdout.write(`Created env ${name} at ${created}\n`);
+			if (scope) process.stdout.write(`Config: ${describeEnvScope(scope.next)}\n`);
+		} catch (error) {
+			// All or nothing: an env whose scope could not be applied is removed again.
+			if (created !== undefined) rmSync(created, { recursive: true, force: true });
+			fail(`gentle-shell: ${error.message}`, error.usage ? 2 : 1);
+		}
+		return undefined;
+	}
+	if (sub === "config" && rest.length >= 1) {
+		const [name, ...flagArgs] = rest;
+		const invalid = validateEnvName(name);
+		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		if (!existsSync(envDir(root, name))) fail(`gentle-shell: unknown env "${name}"`, 2);
+		const flags = parseScopeFlags(flagArgs);
+		if (flags.error !== undefined) fail(`gentle-shell: ${flags.error}`, 2);
+		try {
+			const own = flagArgs.length === 0 ? readEnvScope(envDir(root, name)) : applyEnvScope(root, name, flags).next;
+			process.stdout.write(`${name}: ${describeEnvScope(own)}\n`);
+		} catch (error) {
+			fail(`gentle-shell: ${error.message}`, error.usage ? 2 : 1);
+		}
+		return undefined;
+	}
+	if (sub === "--help" || sub === "-h") {
+		process.stdout.write(`${ENVS_USAGE}\n`);
+		return undefined;
+	}
+	if (sub !== undefined) fail(`${ENVS_USAGE}`, 2);
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		printEnvList(root);
+		return undefined;
+	}
+	return runEnvsManager(root);
+}
+
+// One alternate-screen session: draws `state`, feeds keys to the reducer and
+// applies in-place effects through `apply`, and resolves with the first
+// effect that needs the real terminal (quit, launch, setup, install, auth).
+// The terminal is always restored, including when `apply` throws.
+function envsScreenSession(initial, apply) {
+	const { stdin, stdout } = process;
+	// Gentle truecolor only where the terminal has it and NO_COLOR is unset;
+	// otherwise the same layout in monochrome.
+	const renderOptions = {
+		color: !process.env.NO_COLOR && stdout.hasColors?.(2 ** 24) === true,
+		version: ownPackageVersion(),
+	};
+	return new Promise((resolve) => {
+		let state = initial;
+		const draw = () => {
+			// Some ptys report 0x0 until resized; fall back to a usable size.
+			const lines = renderEnvsScreen(state, stdout.columns || 80, stdout.rows || 24, renderOptions);
+			stdout.write(`\x1b[H${lines.map((line) => `${line}\x1b[K`).join("\r\n")}\x1b[J`);
+		};
+		const finish = (effect) => {
+			finished = true;
+			stdin.off("data", onData);
+			stdout.off("resize", draw);
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\x1b[?25h\x1b[?1049l");
+			resolve({ state, effect });
+		};
+		// Input is handled strictly in order: a key pressed while `apply` is
+		// still writing to disk waits for it instead of racing it.
+		let queue = Promise.resolve();
+		let finished = false;
+		const onData = (data) => {
+			queue = queue.then(() => handle(data)).catch((error) => {
+				state = { ...state, message: `Error: ${error.message}` };
+				if (!finished) draw();
+			});
+		};
+		const handle = async (data) => {
+			if (finished) return;
+			for (const key of parseKeys(data.toString("utf8"))) {
+				const step = reduceEnvs(state, key);
+				state = step.state;
+				if (step.effect === undefined) continue;
+				const kind = step.effect.kind;
+				if (kind === "create" || kind === "rename" || kind === "delete" || kind === "set-default" || kind === "scope") {
+					state = await apply(state, step.effect);
+					continue;
+				}
+				finish(step.effect);
+				return;
+			}
+			draw();
+		};
+		stdout.write("\x1b[?1049h\x1b[?25l");
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.on("data", onData);
+		stdout.on("resize", draw);
+		draw();
+	});
+}
+
+function waitForAnyKey(message) {
+	const { stdin, stdout } = process;
+	stdout.write(`\n${message}`);
+	return new Promise((resolve) => {
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.once("data", () => {
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\n");
+			resolve();
+		});
+	});
+}
+
+async function runEnvsManager(root) {
+	// Reloads from disk after every change so the view never drifts from it.
+	const reload = (message, selectName) => initialEnvsState(loadEnvSummaries(root), message, selectName);
+	const apply = async (state, effect) => {
+		try {
+			if (effect.kind === "create") {
+				const created = await createEnv(root, effect.name);
+				let scopeNote = "";
+				try {
+					if (effect.own.length > 0) scopeNote = ` Config: ${describeEnvScope(applyEnvScope(root, effect.name, { own: effect.own, share: [], from: effect.from, empty: effect.empty === true }).next)}.`;
+				} catch (error) {
+					// All or nothing, like `envs new`: never leave a half-configured env.
+					rmSync(created, { recursive: true, force: true });
+					throw error;
+				}
+				return reload(`Created ${effect.name}.${scopeNote} Press enter to launch it (first launch installs the companion packages).`, effect.name);
+			}
+			if (effect.kind === "scope") {
+				const plan = applyEnvScope(root, effect.name, { own: effect.own, share: effect.share, from: effect.from, empty: effect.empty === true });
+				return reload(`${effect.name}: ${describeEnvScope(plan.next)}. Applies from its next session.`, effect.name);
+			}
+			if (effect.kind === "rename") {
+				renameEnv(root, effect.from, effect.to);
+				return reload(`Renamed ${effect.from} to ${effect.to}.`, effect.to);
+			}
+			if (effect.kind === "delete") {
+				deleteEnv(root, effect.name);
+				return reload(`Deleted ${effect.name}.`);
+			}
+			if (effect.base) {
+				// Exactly what `gentle-shell home isolated` persists.
+				const configPath = resolveConfigPath();
+				writeRawConfig(configPath, { ...readRawConfig(configPath), home: "isolated" });
+				return reload("The base home is now the default: a plain 'gentle-shell' opens it.", { base: true });
+			}
+			setDefaultEnv(root, effect.name);
+			return reload(`${effect.name} is now the default: a plain 'gentle-shell' opens it.`, effect.name);
+		} catch (error) {
+			return { ...state, message: `Error: ${error.message}` };
+		}
+	};
+
+	let state = reload();
+	for (;;) {
+		const { state: last, effect } = await envsScreenSession(state, apply);
+		if (effect.kind === "quit") return undefined;
+		if (effect.kind === "launch") return entrySelector(effect);
+		const what = effect.base ? "the base home" : `env ${effect.name}`;
+		let code;
+		if (effect.kind === "setup") {
+			process.stdout.write(`gentle-shell: setting up ${what}; downloads can take a few minutes (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["setup"]);
+		} else if (effect.kind === "install") {
+			process.stdout.write(`gentle-shell: installing ${effect.source} into ${what} (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["install", effect.source]);
+		} else {
+			// Pi signs in from inside a session (/login); outside one it can
+			// only check readiness, which needs a provider per call.
+			const providers = last.envs.find((env) => (effect.base ? env.base === true : !env.base && env.name === effect.name))?.providers ?? [];
+			if (providers.length === 0) {
+				process.stdout.write(`No providers signed in to ${what}. Launch it and run /login inside the session.\n`);
+				code = 0;
+			} else {
+				code = 0;
+				for (const provider of providers) {
+					const providerCode = runLauncherForEnv(effect, ["auth", "check", "--provider", provider]);
+					if (providerCode !== 0) code = providerCode;
+				}
+			}
+		}
+		await waitForAnyKey(`${code === 0 ? "Done" : `Finished with exit code ${code}`}. Press any key to return to the env manager.`);
+		state = reload(code === 0 ? undefined : `Last action exited with code ${code}.`, effect.base ? { base: true } : effect.name);
+	}
+}
+
 // Test/development-only override for the setup subcommand's gentle-ai
 // executable path. Lets a test point at a stub script (or a deliberately
 // missing path) without touching the real pinned .gentle-ai/v<version>/gentle-ai
@@ -867,9 +1357,10 @@ function buildSetupEnv(home, runtime, piLauncherDir) {
 		GENTLE_PI_AGENT_HOME: home.dir,
 		PATH: [...(piLauncherDir ? [piLauncherDir] : []), dirname(runtime.command), process.env.PATH ?? ""].join(delimiter),
 	};
-	// #2201: the isolated home's own config folder, given to Gentle AI the
-	// bundled way (gentleAiIsolationEnv); never an outer session's marker.
-	const configHome = standaloneConfigHome(home);
+	// #2201: the isolated home's own config folder (shared by named envs),
+	// given to Gentle AI the bundled way (gentleAiIsolationEnv); never an
+	// outer session's marker.
+	const configHome = launchConfigHome(home, process.env, homedir());
 	if (configHome === undefined) delete env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	return gentleAiIsolationEnv(env, { packageRoot });
@@ -922,7 +1413,7 @@ function sharedPersonaPath() {
 // does nothing.
 function setupPersonaPaths(home) {
 	if (bundledInstall) return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
-	const configHome = standaloneConfigHome(home);
+	const configHome = launchConfigHome(home, process.env, homedir());
 	return configHome === undefined ? [sharedPersonaPath()] : [join(configHome, "persona.json"), sharedPersonaPath()];
 }
 
@@ -1896,6 +2387,15 @@ async function main() {
 		else handleHomeCommand(args.commandArgs);
 		return;
 	}
+	if (args.command === "envs") {
+		const selector = await handleEnvsCommand(args.commandArgs);
+		if (selector === undefined) return;
+		// Re-enter the ordinary launch exactly as `gentle-shell --env <name>`
+		// (or `--isolated` for the base home), so startup checks, provisioning
+		// and resume hints all see that argv.
+		process.argv = [...process.argv.slice(0, 2), ...selector];
+		return main();
+	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
@@ -1933,6 +2433,15 @@ async function main() {
 	const config = loadConfig();
 	let home = resolveHome({ args, env: process.env, homedir: homedir(), config });
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+	// An explicit --env never creates a home: a typo must not silently become
+	// a new, empty env. A persisted default keeps the ordinary bootstrap.
+	// Like the envs list, only a real directory (never a file or a symlink)
+	// counts as an env.
+	if (args.env !== undefined && !isRealDirectory(home.dir)) {
+		fail(`gentle-shell: unknown env "${args.env}" (${home.dir}).\nCreate it with 'gentle-shell envs new ${args.env}' or manage envs with 'gentle-shell envs'.`, 2);
+	}
+	// The env's own Gentle config categories travel with the launch.
+	if (home.env !== undefined) home = { ...home, ownConfig: readEnvScope(home.dir) };
 
 	// Version and help runs (Shell's own or forwarded to Pi) never probe Engram,
 	// ensure the companion, print memory notices or touch provenance.
@@ -2028,9 +2537,10 @@ async function main() {
 	}
 
 	// #2201: the standalone isolated home's own config folder, seeded once from
-	// the shared ~/.pi/gentle-ai. Not when an explicit GENTLE_PI_CONFIG_HOME
-	// decides the config home; never blocks the launch.
-	const configHome = bundled || process.env.GENTLE_PI_CONFIG_HOME ? undefined : standaloneConfigHome(home);
+	// the shared ~/.pi/gentle-ai, also when a named env sharing it launches
+	// first. Not when an explicit GENTLE_PI_CONFIG_HOME decides the config
+	// home; never blocks the launch.
+	const configHome = bundled || process.env.GENTLE_PI_CONFIG_HOME ? undefined : launchConfigHome(home, process.env, homedir());
 	if (configHome !== undefined) {
 		try {
 			const migration = migrateStandaloneConfig({ source: join(homedir(), ".pi", "gentle-ai"), target: configHome, fs: configMigrationFs });

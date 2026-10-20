@@ -42,7 +42,7 @@ export function parseCardContentFile(raw: string): CardContent | undefined {
 }
 
 export function resolveCardContent(options: CardContentOptions = {}): CardContentResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_CONTENT_FILE);
+	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance"), CARD_CONTENT_FILE);
 	try {
 		const content = parseCardContentFile(readFileSync(globalFile, "utf8"));
 		return { content: content ?? CARD_CONTENT.DEFAULT, source: "global_file", malformed: content === undefined, globalFile };
@@ -54,7 +54,7 @@ export function resolveCardContent(options: CardContentOptions = {}): CardConten
 
 export function writeCardContent(content: CardContent, options: CardContentOptions = {}): string {
 	if (!isCardContent(content)) throw new TypeError("Invalid card content");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.gentlePiConfigHome ?? gentlePiConfigHome(undefined, "appearance");
 	const current = resolveCardContent({ gentlePiConfigHome: home });
 	if (current.malformed) throw new Error(`Cannot update malformed or unreadable card content preference: ${current.globalFile}`);
 	const path = current.globalFile;

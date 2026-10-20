@@ -399,6 +399,18 @@ test("the resolver attributes the project file, with its path", () => {
 	assert.equal(resolution.envValue, "off");
 });
 
+test("the resolver reads the behavior home from the env it was given, not the process env", () => {
+	const cwd = makeScratch("gp-bg-src-scope-");
+	const ownHome = join(makeScratch("gp-bg-own-"), "gentle-ai");
+	writePolicyFile(ownHome, "on");
+	const resolution = resolveBackgroundSubagentsPolicy(cwd, {
+		env: { GENTLE_SHELL_ENV_CONFIG_HOME: ownHome, GENTLE_SHELL_ENV_OWN_CONFIG: "behavior" },
+	});
+	assert.equal(resolution.globalFile, join(ownHome, "background-subagents.json"));
+	assert.equal(resolution.policy, "on");
+	assert.equal(resolution.source, "global_file");
+});
+
 test("the resolver attributes the global file when no project file exists", () => {
 	const cwd = makeScratch("gp-bg-src-global-");
 	const configHome = join(makeScratch("gp-bg-home-"), "gentle-ai");

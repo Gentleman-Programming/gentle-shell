@@ -322,3 +322,35 @@ test("standalone setup gives Gentle AI the config pair and keeps both persona fi
 	assert.equal(readFileSync(join(w.home, ".pi", "gentle-ai", "persona.json"), "utf8"), "{\"mode\":\"neutral\"}");
 	assert.equal(readFileSync(join(w.shellConfig, "persona.json"), "utf8"), "{\"mode\":\"neutral\"}", "the migrated copy is restored too");
 });
+
+// --- named envs share the base home's config (#2259) -----------------------------
+
+test("a named env launch shares the base isolated home's config folder, and only that", () => {
+	const env: ResolvedHome = { mode: "path", dir: "/os-home/.gentle-shell/envs/work", source: "flag", env: "work" };
+	assert.equal(launch(env).env[MARKER], "/os-home/.gentle-shell/gentle-ai", "the base home's own config, not ~/.pi/gentle-ai");
+	assert.equal(MARKER in launch(env, { GENTLE_SHELL_HOME: "/custom/shell/agent" }).env, false, "a base without its own folder keeps the shared one");
+	assert.equal(MARKER in launch({ mode: "path", dir: "/custom/home", source: "flag" }).env, false, "a plain --home is not an env");
+	assert.equal(MARKER in launch(env, {}, true).env, false, "bundled resolves its own prefix config");
+});
+
+test("named envs read, seed from and migrate the base home's config, not ~/.pi/gentle-ai", posixOnly, () => {
+	const w = launcherWorld();
+	mkdirSync(w.shellConfig, { recursive: true });
+	writeFileSync(join(w.shellConfig, "persona.json"), "{\"persona\":\"base\"}\n");
+	writeFileSync(join(w.home, ".pi", "gentle-ai", "persona.json"), "{\"persona\":\"pi\"}\n");
+	assert.equal(w.run(["envs", "new", "work"]).status, 0);
+	const launched = w.run(["--env", "work", "list"]);
+	assert.equal(launched.status, 0, launched.stderr);
+	assert.deepEqual(JSON.parse(launched.stdout.trim().split("\n").at(-1)!), { marker: w.shellConfig, explicit: null });
+	const created = w.run(["envs", "new", "own", "--own", "persona"]);
+	assert.equal(created.status, 0, created.stderr);
+	assert.equal(readFileSync(join(w.home, ".gentle-shell", "envs", "own", "gentle-ai", "persona.json"), "utf8"), "{\"persona\":\"base\"}\n", "seeded from the base home");
+});
+
+test("an env launched before the base home ever was still gets the base config migrated", posixOnly, () => {
+	const w = launcherWorld();
+	assert.equal(w.run(["envs", "new", "work"]).status, 0);
+	const launched = w.run(["--env", "work", "list"]);
+	assert.equal(launched.status, 0, launched.stderr);
+	assert.equal(readFileSync(join(w.shellConfig, "banner.json"), "utf8"), "{\"showTextLogo\":false}\n");
+});

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { ROSE_ART as ROSE_LARGE_RAW } from "../lib/gentle-brand.ts";
+import type { ConfigCategory } from "../lib/gentle-config-scope.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -42,35 +44,15 @@ const TEXT_LOGO = [
   "     ▒▒▒▒▒▒",
 ];
 
-const ROSE_LARGE_RAW = [
-  "             ⣠⣾⣷⣶⣦⣤⣤⣄⣠⣄⣀  ⢀⣀⣀",
-  "          ⢀⣴⣿⣿⠿⣋⣭⣭⣯⣭⣍⣭⣿⣟⠛⠛⠿⣿⣷⣄",
-  "      ⢀⣴⣾⡟⢻⣿⡟⠁⣼⣿⠏⣵⢻⣿⣻⣿⣿⢿⡻⣿⣿⣶⡌⢿⣿⣷⣦⣤⡄",
-  "   ⣤⣶⣾⣿⣿⠏ ⠈⢿⣄ ⢹⣏⠠⠟⣾⣿⣿⣿⣿⣿⠷⣏⣼⠟⢡⣿⡟⠋⢻⣿⣿⡄",
-  "   ⠈⣿⣿⣿⣿⡆   ⣽⢧⡘⠈⠳⣦⣍⠛⠛⢦⣉⣴⣛⣫⣭⣴⡟⠋  ⣾⣿⣿⡿",
-  "   ⢀⠹⣿⣿⣿⣷⣤⡄ ⠋ ⠙⢆ ⣠⠴⠟⠛⣛⣛⣛⠟⠋⠁⠺⡇ ⣀⣴⣿⣿⡟⠁",
-  "   ⠈⣀⠈⠛⠷⠿⣿⣿⣷⣤⣀ ⢠⠋   ⠈⠉⠉    ⣠⣴⣥⠾⠛⠉⣰⣿⣷",
-  "          ⠹⣯⣝⠛⠛⠷⢶⣤⣤⣀   ⢀⡠⠖⠋⠉⢉⣀⣀⣴⣾⣿⠿⠟⠃",
-  "             ⠘⠻⢿⣦⣄⡀  ⠉⠛⢦⠠⢊⠤⠴⢒⣛⣛⣩⣽⡿⠟⠁",
-  "        ⠶⢶⣤⣄⡀⠨⠭⠽⠟⣓⢦⣀⠈⢇⡥⠖⠛⠋⠉⠉",
-  "           ⠈⢷ ⠐⠂⢤⣽⣄ ⠰⡎⠙⠳⣄⡀ ⠈⢣⠘⢦⠋",
-  "            ⠈⢳⣀⡒⠉⠉⣉⠙⡲⣽⣄ ⣏⠳⡄ ⠘⡇ ⡾⠁",
-  "              ⠛⠻⢦⣄⣉⡁⣀⣀⣈⣙⣺⣌⡇⢠⢀⡇⡾",
-  "                   ⠈⠉    ⠈⠳⡄⣸⢱⠇",
-  "                           ⡷⠡⡯⢖⠉",
-  "                        ⢀⡴⢪⠔⣉⠔⠋",
-  "                           ⠐⠈",
-];
-
 function rgb(r: number, g: number, b: number, text: string): string {
   return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
 }
 
-function gentleAiConfigHome(): string {
-  return gentlePiConfigHome(process.env);
+function gentleAiConfigHome(category: ConfigCategory = "appearance"): string {
+  return gentlePiConfigHome(process.env, category);
 }
 
-function bannerConfigPath(configHome = gentleAiConfigHome()): string {
+function bannerConfigPath(configHome = gentleAiConfigHome("appearance")): string {
   return join(configHome, "banner.json");
 }
 
@@ -86,7 +68,7 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
 
 // Modal mutations must not turn an unreadable or malformed existing file into defaults.
 // Legacy banner commands retain their original tolerant read behavior below.
-export async function readBannerConfigForEdit(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+export async function readBannerConfigForEdit(configHome = gentleAiConfigHome("appearance")): Promise<BannerConfig> {
   const path = bannerConfigPath(configHome);
   let raw: string;
   try {
@@ -105,7 +87,7 @@ export async function readBannerConfigForEdit(configHome = gentleAiConfigHome())
   return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
 }
 
-export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+export async function readBannerConfig(configHome = gentleAiConfigHome("appearance")): Promise<BannerConfig> {
   try {
     return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(configHome), "utf8")));
   } catch {
@@ -113,7 +95,7 @@ export async function readBannerConfig(configHome = gentleAiConfigHome()): Promi
   }
 }
 
-export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome()): Promise<void> {
+export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome("appearance")): Promise<void> {
   const path = bannerConfigPath(configHome);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -665,7 +647,7 @@ export default function (pi: ExtensionAPI) {
     // clearing stdout here would leave its previous-frame cache out of sync.
     const bannerConfig = await readBannerConfig();
     const palette = BANNER_PALETTES[bannerConfig.color];
-    const roseBase = padLines(normalizeAscii(ROSE_LARGE_RAW));
+    const roseBase = padLines(normalizeAscii([...ROSE_LARGE_RAW]));
     const logoBase = padLines(TEXT_LOGO);
     void warmupLetterStrokes();
 

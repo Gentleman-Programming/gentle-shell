@@ -431,6 +431,20 @@ test("each completion carries its own sessionId, never the parent session's", as
 	assert.notEqual(second, "ses-live-1");
 });
 
+test("an OpenCode model with a live parent keeps the parent id in the attribution header while options.sessionId stays synthetic", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "opencode/sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "opencode", id: "sonnet-4", baseUrl: "https://opencode.ai" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.options?.headers?.["x-opencode-session"], "ses-live-1");
+	const sessionId = calls[0]!.options?.sessionId;
+	assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+	assert.notEqual(sessionId, "ses-live-1");
+});
+
 test("a non-OpenCode model adds no attribution headers and leaves the options unchanged", async () => {
 	const { complete, calls } = capturingComplete(assistantText("ok"));
 	const outcome = await runInProcessReviewer(baseRequest({ selection: "anthropic/claude-sonnet-4", sessionId: "ses-live-1" }), {

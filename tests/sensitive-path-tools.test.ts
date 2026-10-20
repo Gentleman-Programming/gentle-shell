@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -16,8 +19,13 @@ function toolCall() {
 		events: { on() {}, emit() {} },
 		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
-	const ctx = { cwd: process.cwd(), hasUI: false, ui: { confirm: async () => false } } as unknown as ExtensionContext;
+	// An isolated config home keeps the permission mode at its default, so every
+	// later tool_call check admits an ordinary path and the whole chain returns
+	// undefined. A block from any check is then observable, not just this guard's.
+	const home = mkdtempSync(join(tmpdir(), "gentle-shell-2349-"));
+	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0", GENTLE_PI_CONFIG_HOME: home }, nativeReviewCli: null })(pi);
+	const sessionManager = { getSessionId: () => "session-2349", getBranch: () => [], getEntries: () => [] };
+	const ctx = { cwd: process.cwd(), hasUI: false, sessionManager, ui: { confirm: async () => false } } as unknown as ExtensionContext;
 	return async (toolName: string, input: unknown) => {
 		for (const handler of handlers) {
 			const result = await handler({ toolName, input, toolCallId: "probe" }, ctx);
@@ -37,14 +45,13 @@ test("grep, find, and ls deny a sensitive path exactly like read (gentle-shell#2
 		["find", { pattern: "*", path: "~/.ssh" }, "~/.ssh"],
 		["ls", { path: "secrets" }, "secrets"],
 		["ls", { path: "/home/u/.aws/credentials" }, "/home/u/.aws/credentials"],
+		["grep", { pattern: "x", paths: ["src", ".env"] }, ".env"],
 	] as const) {
 		assert.deepEqual(await call(toolName, input), { block: true, reason: reason(path) }, `${toolName} ${path}`);
 	}
 });
 
-test("grep, find, and ls keep ordinary paths and their default scope out of the sensitive-path guard (gentle-shell#2349)", async () => {
-	// Later tool_call checks (the auto-permission classifier) fail closed on this
-	// minimal context, so assert only that the sensitive-path guard stays silent.
+test("grep, find, and ls admit ordinary paths and their default scope (gentle-shell#2349)", async () => {
 	const call = toolCall();
 	for (const [toolName, input] of [
 		["grep", { pattern: "TODO", path: "src" }],
@@ -53,9 +60,9 @@ test("grep, find, and ls keep ordinary paths and their default scope out of the 
 		["find", { pattern: "*.ts" }],
 		["ls", { path: "docs" }],
 		["ls", {}],
+		["grep", { pattern: "TODO", paths: ["src", "lib"] }],
 	] as const) {
-		const result = await call(toolName, input);
-		assert.doesNotMatch(result?.reason ?? "", /sensitive path/, `${toolName} ${JSON.stringify(input)}`);
+		assert.equal(await call(toolName, input), undefined, `${toolName} ${JSON.stringify(input)}`);
 	}
 });
 

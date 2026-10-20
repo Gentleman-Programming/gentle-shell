@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { compare, outputDescriptor, percentile, summarize } from "../scripts/render-cache-performance.mjs";
 
 test("summaries preserve raw samples and interpolate percentiles", () => {
@@ -32,7 +34,28 @@ test("comparison requires identical cold and warm outputs and host identity", ()
 	assert.throws(() => compare(before, after), "cannot compare different Pi versions");
 });
 
-test("report outputs cannot overwrite files or enter protected roots via symlinks", () => {
+/**
+ * Windows without Developer Mode cannot create symlinks at all, so the protection below cannot be
+ * exercised there. Probing keeps the test honest instead of failing on an environment limitation.
+ */
+function hostAllowsSymlinks(): boolean {
+	const probe = mkdtempSync(join(tmpdir(), "render-cache-symlink-probe-"));
+	try {
+		mkdirSync(join(probe, "target"));
+		symlinkSync(join(probe, "target"), join(probe, "link"), "dir");
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(probe, { recursive: true, force: true });
+	}
+}
+
+test("report outputs cannot overwrite files or enter protected roots via symlinks", (t) => {
+	if (!hostAllowsSymlinks()) {
+		t.skip("host does not permit creating symlinks (Windows without Developer Mode); this protection is exercised on hosts that do");
+		return;
+	}
 	const home = mkdtempSync(join(tmpdir(), "render-cache-output-"));
 	try {
 		const source = join(home, "source"); mkdirSync(source);
@@ -45,4 +68,20 @@ test("report outputs cannot overwrite files or enter protected roots via symlink
 		assert.equal(readFileSync(existing, "utf8"), "keep");
 		closeSync(outputDescriptor(join(home, "new.json"), [source]));
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("the worker names the host it refuses instead of reporting an unrelated version", () => {
+	const root = mkdtempSync(join(tmpdir(), "render-cache-host-"));
+	try {
+		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "some-other-package", version: "9.9.9" }));
+		const tui = join(root, "node_modules", "@earendil-works", "pi-tui");
+		mkdirSync(tui, { recursive: true });
+		writeFileSync(join(tui, "package.json"), JSON.stringify({ name: "@earendil-works/pi-tui", version: "9.9.9" }));
+		const worker = fileURLToPath(new URL("../scripts/render-cache-performance-worker.mjs", import.meta.url));
+		const result = spawnSync(process.execPath, [worker, JSON.stringify({ piRoot: root })], { encoding: "utf8" });
+		assert.notEqual(result.status, 0, "a mismatched host must fail closed");
+		assert.match(result.stderr, /is some-other-package@9\.9\.9/, "the error must name the package that was found");
+		assert.match(result.stderr, /audited only on 1\.1\.0/, "the error must name the audited version");
+		assert.match(result.stderr, /Point --pi-root at a Pi 1\.1\.0 install/, "the error must say how to satisfy it");
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });

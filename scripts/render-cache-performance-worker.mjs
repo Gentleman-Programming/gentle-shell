@@ -5,11 +5,34 @@ import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
+const SUPPORTED_PI_VERSION = "1.1.0";
+const PI_ROOT_LAYOUT = "dist/ plus node_modules/@earendil-works/{pi-tui,pi-ai,pi-agent-core} and node_modules/jiti";
+
+function hostPackage(piRoot, relative) {
+	const path = resolve(piRoot, relative);
+	let manifest;
+	try {
+		manifest = JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		throw new Error(`--pi-root ${piRoot} is not a Pi install root: ${path} is unreadable. It must carry ${PI_ROOT_LAYOUT}.`);
+	}
+	if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
+		throw new Error(`--pi-root ${piRoot} is not a Pi install root: ${path} declares no package name and version.`);
+	}
+	return { name: manifest.name, version: manifest.version };
+}
+
 const config = JSON.parse(process.argv[2]);
-const piVersion = JSON.parse(readFileSync(resolve(config.piRoot, "package.json"), "utf8")).version;
-const tuiVersion = JSON.parse(readFileSync(resolve(config.piRoot, "node_modules/@earendil-works/pi-tui/package.json"), "utf8")).version;
-assert.equal(piVersion, "1.1.0", "private frame API audited only on Pi 1.1.0");
-assert.equal(tuiVersion, piVersion, "host TUI package must match");
+const host = hostPackage(config.piRoot, "package.json");
+const hostTui = hostPackage(config.piRoot, "node_modules/@earendil-works/pi-tui/package.json");
+if (host.version !== SUPPORTED_PI_VERSION) {
+	throw new Error(`--pi-root ${config.piRoot} is ${host.name}@${host.version}, but the private frame API is audited only on ${SUPPORTED_PI_VERSION}. Point --pi-root at a Pi ${SUPPORTED_PI_VERSION} install (${PI_ROOT_LAYOUT}).`);
+}
+if (hostTui.version !== host.version) {
+	throw new Error(`--pi-root ${config.piRoot} mixes ${host.name}@${host.version} with ${hostTui.name}@${hostTui.version}; a mixed host cannot be measured.`);
+}
+const piVersion = host.version;
+const tuiVersion = hostTui.version;
 const hostImport = (path) => import(pathToFileURL(resolve(config.piRoot, "dist", path)).href);
 const { createJiti } = await hostImport("core/extensions/jiti-loader.js");
 const { VIRTUAL_MODULES } = await hostImport("core/extensions/virtual-modules.js");

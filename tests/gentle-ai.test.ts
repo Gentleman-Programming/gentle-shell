@@ -2957,6 +2957,8 @@ function chooseEffort(panel: RoutingConsumerPanel, effort: string): void {
 
 test("models explicit orchestrator choice wins over live/defaults and agent bulk edits", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// Enter in /gentle:profiles binds the fixture session in a process-wide store.
+	t.after(() => resetSessionProfileBindingsForTesting());
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
 	fixture.setLiveModel("openai", "alpha", "high");
@@ -2993,6 +2995,8 @@ test("models explicit orchestrator choice wins over live/defaults and agent bulk
 
 test("models leave untouched removes stale orchestrator and preserves live model/effort on apply", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// Enter in /gentle:profiles binds the fixture session in a process-wide store.
+	t.after(() => resetSessionProfileBindingsForTesting());
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
 	fixture.setLiveModel("openai", "alpha", "low");

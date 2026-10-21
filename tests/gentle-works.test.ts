@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
-	mkdtemp, rm, writeFile, mkdir, readFile, realpath, symlink, stat,
+	mkdtemp, rm, writeFile, mkdir, readFile, realpath, symlink, stat, utimes,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,6 +85,24 @@ test("S4: rejected changes preserve bytes, public records and revisions", async 
 	const changed = await updateWork(context, work.id, { status: "completed", summary: "Explicitly done" });
 	assert.equal(changed.status, "completed");
 	assert.equal(changed.summary, "Explicitly done");
+});
+
+test("S4: a stale lock is never removed automatically; the error names it for manual removal", async t => {
+	const { context } = await fixture(t);
+	const work = await createWork(context, input);
+	const before = await readFile(context.registryFile, "utf8");
+	await writeFile(context.lockFile, "");
+	await assert.rejects(updateWork(context, work.id, { summary: "no" }), { message: "Work registry busy" });
+	const old = new Date(Date.now() - 10 * 60_000);
+	await utimes(context.lockFile, old, old);
+	await assert.rejects(updateWork(context, work.id, { summary: "no" }), error => {
+		const { message } = error as Error;
+		assert.match(message, /^Work registry lock is \d+s old; if no other Shell is updating works, delete /);
+		assert.ok(message.endsWith(context.lockFile));
+		return true;
+	});
+	assert.ok((await stat(context.lockFile)).isFile());
+	assert.equal(await readFile(context.registryFile, "utf8"), before);
 });
 
 test("S4/S5: corrupt schema, nonregular targets and busy locks are errors, never empty", async t => {

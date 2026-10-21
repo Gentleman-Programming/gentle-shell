@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { registerWorks } from "../extensions/gentle-works.ts";
-import { createWork, listWorks, resolveWorkContext } from "../lib/gentle-works.ts";
+import { createWork, listWorks, resolveWorkContext, updateWork } from "../lib/gentle-works.ts";
 
 async function harness(t: TestContext) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "works-ui-")));
@@ -70,6 +70,28 @@ test("S3: cancel at every create/edit step preserves public revisions and bytes;
 		assert.deepEqual(await listWorks(h.context), before);
 	}
 	assert.equal(await readFile(h.context.registryFile, "utf8"), bytes);
+});
+test("edit saves only the fields the user changed, so a concurrent change to another field survives", async t => {
+	const h = await harness(t);
+	const work = await createWork(h.context, input);
+	h.ctx.ui.editor = (async (title: string, prefill?: string) => {
+		if (title === "Explicit summary") await updateWork(h.context, work.id, { summary: "Changed elsewhere" });
+		return prefill ?? "";
+	}) as typeof h.ctx.ui.editor;
+	h.actions.push([DOWN, ENTER], ["e"], [ESC], [ESC]); h.answers.push("blocked");
+	await h.run();
+	const saved = (await listWorks(h.context)).works[0];
+	assert.equal(saved.status, "blocked"); assert.equal(saved.summary, "Changed elsewhere");
+});
+test("S3: saving an edit with no changes writes nothing and says so", async t => {
+	const h = await harness(t);
+	await createWork(h.context, { ...input, odd: "odd/tasks/kept.md" });
+	const before = await listWorks(h.context), bytes = await readFile(h.context.registryFile, "utf8");
+	h.actions.push([DOWN, ENTER], ["e"], [ESC], [ESC]); h.answers.push(input.status, input.summary, "");
+	await h.run();
+	assert.deepEqual(await listWorks(h.context), before);
+	assert.equal(await readFile(h.context.registryFile, "utf8"), bytes);
+	assert.ok(h.notices.includes("No changes to save"));
 });
 test("S2,S3,S5: inspect missing locations, explicitly edit/link; runtime activity never writes", async t => {
 	const h = await harness(t);

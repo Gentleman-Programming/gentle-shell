@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { resolveWorkContext, listWorks, createWork, updateWork, type Work, type WorkSession, type WorkStatus } from "../lib/gentle-works.ts";
+import { resolveWorkContext, listWorks, createWork, updateWork, type Work, type WorkInput, type WorkSession, type WorkStatus } from "../lib/gentle-works.ts";
 import { WorksView, observeActivity, safeWorkText, type WorksResult } from "../lib/gentle-works-view.ts";
 
 const HELP = "Usage: /gentle:works [help]\nOpen the work center: create an objective, inspect location/activity, edit explicit status and summary/ODD, or link the current session. Esc cancels without saving. No agents or worktrees are launched; stored locators do not promise resumability.";
@@ -75,7 +75,13 @@ export function registerWorks(pi: ExtensionAPI, resolve = resolveWorkContext) {
 							const status = await ctx.ui.select(`Explicit work status (current: ${work.status})`, STATUSES); if (status === undefined) continue;
 							const summary = await ctx.ui.editor("Explicit summary", safeWorkText(work.summary)); if (summary === undefined) continue;
 							const odd = await ctx.ui.editor("ODD reference (blank preserves existing)", safeWorkText(work.odd ?? "")); if (odd === undefined) continue;
-							await updateWork(context, result.id, { status: status as WorkStatus, summary, ...(odd.trim() ? { odd } : {}) });
+							// Send only what the user changed; untouched fields keep whatever another writer saved meanwhile.
+							const patch: Partial<WorkInput> = {};
+							if (status !== work.status) patch.status = status as WorkStatus;
+							if (summary !== safeWorkText(work.summary)) patch.summary = summary;
+							if (odd.trim() && odd !== safeWorkText(work.odd ?? "")) patch.odd = odd;
+							if (!Object.keys(patch).length) { ctx.ui.notify("No changes to save", "info"); continue; }
+							await updateWork(context, result.id, patch);
 						}
 					} catch (error) { ctx.ui.notify(safeWorkText(error instanceof Error ? error.message : "Work update failed"), "error"); }
 				}

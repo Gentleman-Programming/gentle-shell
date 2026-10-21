@@ -158,6 +158,23 @@ export async function listWorks(
 	}
 }
 
+// A holder that was killed leaves its lock behind. A mutation takes milliseconds, so a lock this old is
+// probably abandoned. S4 forbids automatic destructive recovery, so name the file for manual removal instead.
+const LOCK_STALE_MS = 60_000;
+
+async function busyError(path: string): Promise<Error> {
+	try {
+		const info = await lstat(path);
+		if (info.isFile() && Date.now() - info.mtimeMs >= LOCK_STALE_MS) {
+			const seconds = Math.floor((Date.now() - info.mtimeMs) / 1000);
+			return new Error(`Work registry lock is ${seconds}s old; if no other Shell is updating works, delete ${path}`);
+		}
+	} catch (error) {
+		if (!missing(error)) throw error;
+	}
+	return new Error("Work registry busy");
+}
+
 async function mutate(
 	context: WorkContext,
 	change: (registry: WorkRegistry) => Work,
@@ -173,7 +190,7 @@ async function mutate(
 			break;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			if (attempt === 99) throw new Error("Work registry busy");
+			if (attempt === 99) throw await busyError(context.lockFile);
 			await new Promise(resolve => setTimeout(resolve, 20));
 		}
 	}

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compare, outputDescriptor, percentile, summarize } from "../scripts/render-cache-performance.mjs";
+import { validatePiRoot } from "../scripts/render-cache-host.mjs";
 
 test("summaries preserve raw samples and interpolate percentiles", () => {
 	const samples = [4, 1, 3, 2];
@@ -174,5 +175,43 @@ test("a mixed host names the audited version and the layout it needs", () => {
 		assert.match(result.stderr, /mixes @earendil-works\/pi-coding-agent@1\.2\.0 with @earendil-works\/pi-tui@1\.2\.1/);
 		assert.match(result.stderr, /Point --pi-root at a Pi 1\.2\.0 install/, "the error must name the audited version");
 		assert.match(result.stderr, /node_modules\/@earendil-works\/\{pi-tui,pi-ai,pi-agent-core\}/, "the error must name the required layout");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+const driverScript = fileURLToPath(new URL("../scripts/render-cache-performance.mjs", import.meta.url));
+
+/** Writes every path the host contract requires, so the positive case cannot drift from it. */
+function writeCompleteHost(): string {
+	const root = writeHost();
+	const entry = join(root, "dist", "core", "extensions", "jiti-loader.js");
+	mkdirSync(dirname(entry), { recursive: true });
+	writeFileSync(entry, "");
+	for (const name of ["pi-ai", "pi-agent-core"]) mkdirSync(join(root, "node_modules", "@earendil-works", name), { recursive: true });
+	mkdirSync(join(root, "node_modules", "jiti"), { recursive: true });
+	return root;
+}
+
+test("a complete Pi root passes validation instead of being refused", () => {
+	const root = writeCompleteHost();
+	try {
+		const { host, hostTui } = validatePiRoot(root);
+		assert.equal(host.name, "@earendil-works/pi-coding-agent");
+		assert.equal(host.version, "1.2.0");
+		assert.equal(hostTui.version, "1.2.0");
+		const result = runWorker(root);
+		assert.doesNotMatch(result.stderr, /is not a Pi install root/, "a complete root must reach the host import, not the layout guard");
+		assert.ok(result.stderr.length > 0, "the worker must keep going until the host import fails");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the documented command refuses a bad --pi-root before it fingerprints anything", () => {
+	const root = mkdtempSync(join(tmpdir(), "render-cache-empty-host-"));
+	try {
+		const result = spawnSync(process.execPath, [driverScript,
+			`--baseline-root=${dirname(workerScript)}`, `--candidate-root=${dirname(workerScript)}`,
+			`--pi-root=${root}`, `--output=${join(root, "report.json")}`], { encoding: "utf8" });
+		assert.notEqual(result.status, 0, "a bad host must fail closed");
+		assert.match(result.stderr, /is not a Pi install root/, "the driver must reuse the curated layout message");
+		assert.doesNotMatch(result.stderr, /ENOENT|ENOTDIR/, "the driver must not surface a bare read error");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

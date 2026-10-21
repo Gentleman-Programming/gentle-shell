@@ -6,6 +6,7 @@ import { closeSync, ftruncateSync, openSync, readFileSync, readdirSync, realpath
 import { cpus, loadavg } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validatePiRoot } from "./render-cache-host.mjs";
 
 export function percentile(values, fraction) {
 	if (!values.length) return null;
@@ -60,6 +61,9 @@ async function main() {
 		const split = arg.indexOf("="); return [arg.slice(2, split), arg.slice(split + 1)];
 	}));
 	for (const key of ["baseline-root", "candidate-root", "pi-root", "output"]) assert.ok(options[key], `--${key} is required`);
+	// Refuse a bad host before hashing either worktree: the driver used to reach
+	// a bare ENOENT/ENOTDIR from hostFingerprint instead of the layout message.
+	validatePiRoot(resolve(options["pi-root"]));
 	const roots = { before: resolve(options["baseline-root"]), after: resolve(options["candidate-root"]) };
 	const initial = Object.fromEntries(Object.entries(roots).map(([key, root]) => [key, fingerprint(root)]));
 	assert.equal(initial.before.head, initial.after.head, "compare worktrees based on the same commit");
@@ -76,7 +80,8 @@ async function main() {
 	const report = { schema: "gentle-shell.render-performance/v1", started: new Date().toISOString(), node: process.version,
 		cpu: cpus()[0]?.model, loadAtStart: loadavg(), sources: initial, config, runs: [], comparisons: [] };
 	const worker = fileURLToPath(new URL("render-cache-performance-worker.mjs", import.meta.url));
-	const instrumentationHash = () => createHash("sha256").update(readFileSync(fileURLToPath(import.meta.url))).update(readFileSync(worker)).digest("hex");
+	const hostHost = fileURLToPath(new URL("render-cache-host.mjs", import.meta.url));
+	const instrumentationHash = () => createHash("sha256").update(readFileSync(fileURLToPath(import.meta.url))).update(readFileSync(worker)).update(readFileSync(hostHost)).digest("hex");
 	report.instrumentationSha256 = instrumentationHash();
 	report.host = hostFingerprint(config.piRoot);
 	const fd = outputDescriptor(options.output, [...Object.values(roots), config.piRoot, ...report.host.map((entry) => entry.root), resolve(dirname(fileURLToPath(import.meta.url)), "..")]);

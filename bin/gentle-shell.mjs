@@ -461,8 +461,13 @@ function resolveVersionProbeIdentity(command) {
 	const npmShim = /^@ECHO[ \t]+off[ \t]*\nGOTO[ \t]+start[ \t]*\n:find_dp0[ \t]*\nSET[ \t]+dp0=%~dp0[ \t]*\nEXIT[ \t]+\/b[ \t]*\n:start[ \t]*\nSETLOCAL[ \t]*\nCALL[ \t]+:find_dp0[ \t]*\n[ \t]*\nIF[ \t]+EXIST[ \t]+"%dp0%\\node\.exe"[ \t]+\([ \t]*\n[ \t]*SET[ \t]+"_prog=%dp0%\\node\.exe"[ \t]*\n\)[ \t]+ELSE[ \t]+\([ \t]*\n[ \t]*SET[ \t]+"_prog=node"[ \t]*\n[ \t]*SET[ \t]+PATHEXT=%PATHEXT:;\.JS;=;%[ \t]*\n\)[ \t]*\n[ \t]*\nendLocal[ \t]+&[ \t]+goto[ \t]+#_undefined_#[ \t]+2>NUL[ \t]+\|\|[ \t]+title[ \t]+%COMSPEC%[ \t]+&[ \t]+"%_prog%"[ \t]+"%dp0%\\([^"\n]+)"[ \t]+%\*[ \t]*(?:\n)?$(?![\s\S])/i;
 	const pnpmShim = /^@SETLOCAL[ \t]*\n@IF[ \t]+EXIST[ \t]+"%~dp0\\node\.exe"[ \t]+\([ \t]*\n[ \t]*"%~dp0\\node\.exe"[ \t]+"%~dp0\\([^"\n]+)"[ \t]+%\*[ \t]*\n\)[ \t]+ELSE[ \t]+\([ \t]*\n[ \t]*@SET[ \t]+PATHEXT=%PATHEXT:;\.JS;=;%[ \t]*\n[ \t]*node[ \t]+"%~dp0\\([^"\n]+)"[ \t]+%\*[ \t]*\n\)[ \t]*(?:\n)?$(?![\s\S])/i;
 	const template = npmShim.exec(normalized) ?? pnpmShim.exec(normalized);
+	// A leading "\" or "/" would make resolve() treat the capture as rooted
+	// at the drive, not literally concatenated under %dp0% the way cmd.exe
+	// does; a ":" could name another drive outright. Neither is a shape
+	// npm's or pnpm's generators ever emit, so reject rather than mis-resolve.
+	const isSafeRelativeScript = (value) => value !== undefined && !/^[\\/]/.test(value) && !value.includes(":");
 	// The case-insensitive template still requires textually identical paths.
-	if (template !== null && (template[2] === undefined || template[1] === template[2])) {
+	if (template !== null && isSafeRelativeScript(template[1]) && (template[2] === undefined || template[1] === template[2])) {
 		try {
 			const target = statSync(resolvePath(dirname(command), template[1]));
 			return {

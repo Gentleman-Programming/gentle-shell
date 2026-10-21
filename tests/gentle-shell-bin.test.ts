@@ -308,7 +308,7 @@ for (const extension of ["cmd", "bat"]) {
 	});
 }
 
-for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-js-shim"]) {
+for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-js-shim", "pnpm-divergent-branches"]) {
 	test(`wrapper cache recognizes only supported execution shapes: ${shape}`, { skip: process.platform !== "win32" }, (t) => {
 		const f = fixture(t);
 		const { command, log } = writeCountingPiScript(f.root, "1.2.5");
@@ -323,7 +323,13 @@ for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-j
 			? `@echo off\r\nset "_prog=${actual}"\r\n"%_prog%" "${decoy}" %*\r\n`
 			: shape === "npm-cmd-shim"
 			? `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${script.slice(dirname(script).length + 1)}" %*\r\n`
-			: `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`);
+			: shape === "pnpm-js-shim"
+			? `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`
+			// Same real pnpm template, but the two branches point at two
+			// different scripts. The ELSE branch is the one cmd.exe actually
+			// runs here (no node.exe sits beside the wrapper); it must still
+			// never cache, since a different machine could pick the other.
+			: `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\decoy.js" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`);
 		const env = { ...f.env, GENTLE_SHELL_PI: command };
 		const check = (version: string) => {
 			const result = run(env, ["--version"]);

@@ -41,8 +41,9 @@ function hostPackage(piRoot, relative, expectedName) {
 function directoryAt(path) {
 	try {
 		return statSync(path).isDirectory();
-	} catch {
-		return false;
+	} catch (error) {
+		if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+		throw error;
 	}
 }
 

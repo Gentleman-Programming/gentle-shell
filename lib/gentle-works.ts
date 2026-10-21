@@ -89,7 +89,7 @@ export async function resolveWorkContext(
 	// An aliased agent home (e.g. a redirected profile folder) must resolve to the
 	// same canonical path every time, or safePath's ancestor check below sees it
 	// as an attacker-controlled symlink and the registry becomes unreachable.
-	await mkdir(agentHome, { recursive: true });
+	await mkdir(agentHome, { recursive: true, mode: 0o700 });
 	const canonicalAgentHome = await realpath(agentHome);
 	const registryFile = join(canonicalAgentHome, "gentle-works", cloneIdentity.slice(7), "registry.json");
 	return { cloneIdentity, worktreeRoot, registryFile, lockFile: `${registryFile}.lock` };

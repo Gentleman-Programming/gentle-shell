@@ -18,7 +18,7 @@ const MAX_SESSION_BYTES = 4 * 1024 * 1024;
 // Which bound fired, said separately: the two have different remedies, and the
 // old shared wording read as though the session itself had failed.
 const FILE_LIMIT_NOTICE =
-	`Session change capture limit reached; ${MAX_FILES} files are shown and later files are not tracked. Earlier files keep updating.`;
+	`Session change capture limit reached; ${MAX_FILES} files are tracked and later files are not. Earlier files keep updating.`;
 const BYTE_LIMIT_NOTICE =
 	"Session change capture limit reached; the snapshot budget is full and later changes are not captured.";
 const MAX_LINES = 2000;
@@ -108,13 +108,16 @@ export class SessionChanges {
 		// the entry it would have updated is already held. Only a file that would
 		// be the 257th is turned away, and the byte budget above bounds the
 		// evidence a long session can keep whatever its shape.
-		if (!previous && this.trackedFiles >= MAX_FILES) {
+		// A write that changes nothing would not be tracked anyway, so it is not
+		// a file the cap turned away.
+		const noOp = sameSnapshot(evidence.before, evidence.after);
+		if (!noOp && !previous && this.trackedFiles >= MAX_FILES) {
 			this.notice = FILE_LIMIT_NOTICE;
 			return false;
 		}
 		this.seen.add(evidence.id);
 		this.bytes += bytes;
-		if (sameSnapshot(evidence.before, evidence.after)) return false;
+		if (noOp) return false;
 		if (!files) this.files.set(evidence.root, files = new Map());
 		const state: FileState = { before: previous?.before ?? structuredClone(evidence.before), after: structuredClone(evidence.after) };
 		state.unavailable = previous?.unavailable;

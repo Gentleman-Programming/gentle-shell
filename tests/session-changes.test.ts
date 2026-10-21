@@ -155,7 +155,7 @@ test("the notice names which bound fired (#1043)", () => {
 	// told an operator neither what filled up nor that the session was fine.
 	const files = new SessionChanges("session");
 	for(let i=0;i<257;i++) files.record(evidence(String(i),"/repo",String(i)+".ts"));
-	assert.match(files.notice!,/files are shown/);
+	assert.match(files.notice!,/files are tracked/);
 
 	const bytes = new SessionChanges("session");
 	const big = "x".repeat(60*1024);
@@ -173,4 +173,14 @@ test("a no-op edit to an unseen path does not spend a file slot (#1043)", () => 
 	assert.equal(changes.record(evidence("real","/repo","real.ts")),true);
 	assert.equal(changes.model.files.length,256);
 	assert.equal(changes.notice,undefined);
+});
+
+test("a no-op edit to an unseen path past the cap raises no notice (#1043)", () => {
+	// It would not have been tracked below the cap either, so nothing was turned away.
+	const changes = new SessionChanges("session");
+	for(let i=0;i<256;i++) changes.record(evidence("seed-"+String(i),"/repo",String(i)+".ts"));
+	assert.equal(changes.record(evidence("noop","/repo","noop.ts",text("same\n"),text("same\n"))),false);
+
+	assert.equal(changes.notice,undefined);
+	assert.equal(changes.model.files.length,256);
 });

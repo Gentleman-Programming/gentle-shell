@@ -298,8 +298,8 @@ for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-j
 			: shape === "non-node-variable"
 			? `@echo off\r\nset "_prog=${actual}"\r\n"%_prog%" "${decoy}" %*\r\n`
 			: shape === "npm-cmd-shim"
-			? `@ECHO off\r\nSETLOCAL\r\nSET "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "${script}" %*\r\n`
-			: `@SETLOCAL\r\n@SET "NODE_PATH=${f.root}"\r\n"${process.execPath}" "${script}" %*\r\n`);
+			? `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${script.slice(dirname(script).length + 1)}" %*\r\n`
+			: `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`);
 		const env = { ...f.env, GENTLE_SHELL_PI: command };
 		const check = (version: string) => {
 			const result = run(env, ["--version"]);

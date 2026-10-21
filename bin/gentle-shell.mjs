@@ -455,6 +455,24 @@ function resolveVersionProbeIdentity(command) {
 	} catch {
 		return undefined;
 	}
+	// Recognize only these fixed package-manager templates, not arbitrary
+	// batch control flow. Both branches of pnpm must name the same target.
+	const normalized = text.replace(/\r\n/g, "\n");
+	const npmShim = /^@ECHO[ \t]+off[ \t]*\nGOTO[ \t]+start[ \t]*\n:find_dp0[ \t]*\nSET[ \t]+dp0=%~dp0[ \t]*\nEXIT[ \t]+\/b[ \t]*\n:start[ \t]*\nSETLOCAL[ \t]*\nCALL[ \t]+:find_dp0[ \t]*\n[ \t]*\nIF[ \t]+EXIST[ \t]+"%dp0%\\node\.exe"[ \t]+\([ \t]*\n[ \t]*SET[ \t]+"_prog=%dp0%\\node\.exe"[ \t]*\n\)[ \t]+ELSE[ \t]+\([ \t]*\n[ \t]*SET[ \t]+"_prog=node"[ \t]*\n[ \t]*SET[ \t]+PATHEXT=%PATHEXT:;\.JS;=;%[ \t]*\n\)[ \t]*\n[ \t]*\nendLocal[ \t]+&[ \t]+goto[ \t]+#_undefined_#[ \t]+2>NUL[ \t]+\|\|[ \t]+title[ \t]+%COMSPEC%[ \t]+&[ \t]+"%_prog%"[ \t]+"%dp0%\\([^"\n]+)"[ \t]+%\*[ \t]*(?:\n)?$(?![\s\S])/i;
+	const pnpmShim = /^@SETLOCAL[ \t]*\n@IF[ \t]+EXIST[ \t]+"%~dp0\\node\.exe"[ \t]+\([ \t]*\n[ \t]*"%~dp0\\node\.exe"[ \t]+"%~dp0\\([^"\n]+)"[ \t]+%\*[ \t]*\n\)[ \t]+ELSE[ \t]+\([ \t]*\n[ \t]*@SET[ \t]+PATHEXT=%PATHEXT:;\.JS;=;%[ \t]*\n[ \t]*node[ \t]+"%~dp0\\([^"\n]+)"[ \t]+%\*[ \t]*\n\)[ \t]*(?:\n)?$(?![\s\S])/i;
+	const template = npmShim.exec(normalized) ?? pnpmShim.exec(normalized);
+	// The case-insensitive template still requires textually identical paths.
+	if (template !== null && (template[2] === undefined || template[1] === template[2])) {
+		try {
+			const target = statSync(resolvePath(dirname(command), template[1]));
+			return {
+				dev: primary.dev, ino: primary.ino, size: primary.size, mtimeMs: primary.mtimeMs,
+				target: { dev: target.dev, ino: target.ino, size: target.size, mtimeMs: target.mtimeMs },
+			};
+		} catch {
+			// Failed template targets retain the existing conservative fallback.
+		}
+	}
 	// Batch is not a format we can safely interpret in general. Only cache
 	// a single quoted script passed directly to a recognizable Node command;
 	// comments, assignments, or multiple script paths must not pick a target.

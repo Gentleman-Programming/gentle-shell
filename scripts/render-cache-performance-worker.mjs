@@ -10,6 +10,12 @@ const PI_ROOT_LAYOUT = "dist/ plus node_modules/@earendil-works/{pi-tui,pi-ai,pi
 const HOST_PACKAGE = "@earendil-works/pi-coding-agent";
 const TUI_PACKAGE = "@earendil-works/pi-tui";
 const HOST_ENTRY = "core/extensions/jiti-loader.js";
+const HOST_DEPENDENCIES = [
+	"node_modules/@earendil-works/pi-tui",
+	"node_modules/@earendil-works/pi-ai",
+	"node_modules/@earendil-works/pi-agent-core",
+	"node_modules/jiti",
+];
 
 function layoutError(piRoot, detail) {
 	return new Error(`--pi-root ${piRoot} is not a Pi install root: ${detail} It must carry ${PI_ROOT_LAYOUT}.`);
@@ -23,7 +29,7 @@ function hostPackage(piRoot, relative, expectedName) {
 	} catch {
 		throw layoutError(piRoot, `${path} is unreadable.`);
 	}
-	if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
+	if (manifest === null || typeof manifest !== "object" || typeof manifest.name !== "string" || typeof manifest.version !== "string") {
 		throw layoutError(piRoot, `${path} declares no package name and version.`);
 	}
 	if (manifest.name !== expectedName) {
@@ -41,6 +47,10 @@ function requireHostLayout(piRoot) {
 	if (!isDirectory) throw layoutError(piRoot, `${dist} is not a directory.`);
 	const entry = resolve(dist, HOST_ENTRY);
 	if (!existsSync(entry)) throw layoutError(piRoot, `${entry} is missing.`);
+	for (const relative of HOST_DEPENDENCIES) {
+		const path = resolve(piRoot, relative);
+		if (!existsSync(path)) throw layoutError(piRoot, `${path} is missing.`);
+	}
 }
 
 const config = JSON.parse(process.argv[2]);

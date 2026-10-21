@@ -3,7 +3,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compare, outputDescriptor, percentile, summarize } from "../scripts/render-cache-performance.mjs";
 
@@ -121,6 +121,30 @@ test("a host without the required dist layout is reported as a layout problem", 
 		assert.notEqual(result.status, 0, "a root without dist must fail closed");
 		assert.match(result.stderr, /is not a Pi install root/);
 		assert.match(result.stderr, /dist is not a directory/, "the error must name the missing layout");
+		assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, "the layout must be reported, not a module resolution error");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a manifest that is not an object is refused as a layout problem", () => {
+	const root = writeHost();
+	try {
+		writeFileSync(join(root, "package.json"), "null");
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "a null manifest must fail closed");
+		assert.match(result.stderr, /declares no package name and version/);
+		assert.doesNotMatch(result.stderr, /TypeError/, "the root must be described, not dereferenced");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a host missing a required dependency is refused as a layout problem", () => {
+	const root = writeHost();
+	try {
+		const entry = join(root, "dist", "core", "extensions", "jiti-loader.js");
+		mkdirSync(dirname(entry), { recursive: true });
+		writeFileSync(entry, "");
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "an incomplete layout must fail closed");
+		assert.match(result.stderr, /pi-ai is missing/, "the error must name the dependency that is missing");
 		assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, "the layout must be reported, not a module resolution error");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

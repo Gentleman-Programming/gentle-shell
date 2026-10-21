@@ -138,9 +138,9 @@ function harness(t: test.TestContext, fake: FakeOptions = {}, io: Record<string,
 		...io,
 	});
 	const send = (message: unknown) => input.emit("data", `${typeof message === "string" ? message : JSON.stringify(message)}\n`);
-	const waitFor = async (predicate: () => boolean) => {
+	const waitFor = async (predicate: () => boolean, label = "condition") => {
 		for (let i = 0; i < 500 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 2));
-		assert.ok(predicate(), `timed out; messages: ${JSON.stringify(messages)}`);
+		assert.ok(predicate(), `timed out waiting for ${label}; messages: ${JSON.stringify(messages)}`);
 	};
 	const types = () => messages.map((message) => message.type);
 	return { paths, input, messages, raw, loaded, streams, recognizers, done, send, waitFor, types, exitCode: () => exitCode };
@@ -349,7 +349,10 @@ test("capture opens and reports recording before the model is verified; sherpa l
 	assert.equal(worker.streams.length, 1, "capture is open");
 	assert.equal(worker.loaded.length, 1);
 	assert.ok(isCpal(worker.loaded[0]!), "only node-cpal is loaded while recording");
-	assert.ok(reads.opened.length >= 1, "model digests are streamed while recording");
+	// Recording is reported before verification starts; the first digest read
+	// opens asynchronously while recording, so wait for it instead of racing
+	// the model tree walk (#2435).
+	await worker.waitFor(() => reads.opened.length >= 1, "model digests are streamed while recording");
 	// Audio captured during verification is kept.
 	worker.streams[0]!.options.onData(interleaved(4800, 2, (_frame, channel) => (channel === 0 ? 16384 : 0)));
 	worker.send({ schema: SCHEMA, type: "stop" });
@@ -411,6 +414,10 @@ test("cancel during model verification discards everything, stops hashing and ne
 	worker.send(startRequest(worker.paths));
 	await worker.waitFor(() => worker.types().includes("recording"));
 	worker.streams[0]!.options.onData(interleaved(4800, 2, () => 1000));
+	// Cancel must interrupt a digest that is actually in flight: wait for the
+	// first model read to open, otherwise an early cancel is indistinguishable
+	// from verification that never started (#2435).
+	await worker.waitFor(() => reads.opened.length === 1, "the first digest read is in flight");
 	worker.send({ schema: SCHEMA, type: "cancel" });
 	await worker.done;
 	reads.release();

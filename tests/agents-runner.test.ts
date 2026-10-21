@@ -978,6 +978,12 @@ test("AgentRunner classifies terminal assistant outcomes only after settlement",
 		{ name: "error", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error: secret=never-copy" }], status: TASK_STATUS.FAILED, error: /assistant reported an error/ },
 		{ name: "aborted", messages: [{ role: "assistant", content: [], stopReason: "aborted" }], status: TASK_STATUS.FAILED, error: /assistant aborted/ },
 		{ name: "empty", messages: [{ role: "assistant", content: [], stopReason: "stop" }], status: TASK_STATUS.FAILED, error: /no final report/ },
+		{ name: "empty-trailing-recovers-prior", messages: [
+			{ role: "assistant", content: [{ type: "text", text: "recovered summary report" }], stopReason: "stop" },
+			{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }], stopReason: "toolUse" },
+			{ role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "file data" }] },
+			{ role: "assistant", content: [], stopReason: "stop" },
+		], status: TASK_STATUS.COMPLETED, error: null, expectedResult: "recovered summary report" },
 		{ name: "success", messages: [{ role: "assistant", content: [{ type: "text", text: "final report" }], stopReason: "stop" }], status: TASK_STATUS.COMPLETED, error: null },
 	] as const;
 	for (const scenario of scenarios) {
@@ -990,7 +996,7 @@ test("AgentRunner classifies terminal assistant outcomes only after settlement",
 		const finished = await runner.waitFor(task.id);
 		assert.equal(finished.status, scenario.status, scenario.name);
 		if (scenario.error) assert.match(finished.error ?? "", scenario.error);
-		else assert.equal(finished.result, "final report");
+		else assert.equal(finished.result, (scenario as { expectedResult?: string }).expectedResult ?? "final report");
 	}
 });
 

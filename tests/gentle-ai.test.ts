@@ -2019,6 +2019,7 @@ test("bash tool_call confirms every compound action and centers a long git -C pu
 	assert.match(preview, /push origin main && npm publish --tag beta/);
 	assert.ok(preview.startsWith("…"));
 });
+
 // /gentle:profiles reopens its panel after actions that finish the interaction,
 // so a test that applies once must confirm on the first visit and close on the
 // next, or the panel and the action loop feed each other forever.
@@ -4236,3 +4237,64 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(notifications.at(-1)?.severity, "warning");
 	resetSessionProfileBindingsForTesting();
 });
+
+test("context event hook prunes verbose older tool results while keeping recent turns intact", async () => {
+	const handlers = new Map<string, (event: any, ctx: any) => any>();
+	const pi = {
+		on(name: string, handler: (event: any, ctx: any) => any) {
+			handlers.set(name, handler);
+		},
+		registerCommand() {},
+		registerTool() {},
+	} as unknown as ExtensionAPI;
+
+	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	const contextHook = handlers.get("context");
+	assert.equal(typeof contextHook, "function", "context hook should be registered");
+
+	const verboseOutput = "long output line\n".repeat(300);
+	const user1 = { role: "user", content: "first prompt" };
+	const tool1 = { role: "toolResult", toolName: "bash", toolCallId: "call_1", content: [{ type: "text", text: verboseOutput }] };
+	const user2 = { role: "user", content: "second prompt" };
+	const tool2 = { role: "toolResult", toolName: "bash", toolCallId: "call_2", content: [{ type: "text", text: verboseOutput }] };
+	const user3 = { role: "user", content: "third prompt" };
+	const tool3 = { role: "toolResult", toolName: "bash", toolCallId: "call_3", content: [{ type: "text", text: verboseOutput }] };
+
+	const messages = [user1, tool1, user2, tool2, user3, tool3];
+	const result = contextHook!({ type: "context", messages }, {} as ExtensionContext);
+
+	assert.ok(result, "should return a result with pruned messages");
+	assert.ok(Array.isArray(result.messages), "result should contain messages array");
+	assert.equal(result.messages.length, 6);
+	assert.notEqual(result.messages[1], tool1);
+	assert.match(result.messages[1].content[0].text, /\[Output omitted from LLM context:/);
+	assert.equal(result.messages[3], tool2);
+	assert.equal(result.messages[5], tool3);
+
+	const recentOnlyMessages = [user2, tool2, user3, tool3];
+	const unchangedResult = contextHook!({ type: "context", messages: recentOnlyMessages }, {} as ExtensionContext);
+	assert.equal(unchangedResult, undefined, "should return undefined when no pruning occurs");
+
+	const emptyResult = contextHook!({ type: "context", messages: [] }, {} as ExtensionContext);
+	assert.equal(emptyResult, undefined, "should return undefined when messages is empty");
+
+	const undefinedMessagesResult = contextHook!({ type: "context" } as any, {} as ExtensionContext);
+	assert.equal(undefinedMessagesResult, undefined, "should return undefined when messages is undefined");
+
+	// Pruned error results preserve error summary
+	const errorTool = { role: "toolResult", toolName: "bash", toolCallId: "call_err", content: [{ type: "text", text: `fatal error: command failed\n${verboseOutput}` }], isError: true };
+	const errorMessages = [user1, errorTool, user2, tool2, user3, tool3];
+	const errorResult = contextHook!({ type: "context", messages: errorMessages }, {} as ExtensionContext);
+	assert.ok(errorResult);
+	assert.match(errorResult.messages[1].content[0].text, /Error summary: fatal error: command failed/);
+
+	// Bypassed when env flag is disabled
+	process.env.GENTLE_PI_CONTEXT_PRUNING = "off";
+	try {
+		const disabledResult = contextHook!({ type: "context", messages }, {} as ExtensionContext);
+		assert.equal(disabledResult, undefined, "should bypass pruning when disabled via env");
+	} finally {
+		delete process.env.GENTLE_PI_CONTEXT_PRUNING;
+	}
+});
+

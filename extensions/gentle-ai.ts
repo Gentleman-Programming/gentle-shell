@@ -1,4 +1,5 @@
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { pruneContextMessages } from "../lib/context-pruning.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
@@ -6,12 +7,14 @@ import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal } from "../lib/context-backstop.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
-import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
+import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, resolveTargetRepositoryRoot, safeBootstrapDirectory, sourcePathWithinProject, tryNormalizeInRepoAbsolutePath } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
+import { EvidenceBudgetGuard, ReadThrashingGuard, TurnToolCallGuard, rejectContextBackstopInlineMutation, resolveCurrentContextTokens } from "../lib/inline-runaway-guard.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
+import { inspectMcpConfigStatus, removeBuiltinMcpExclusion } from "../lib/mcp-config-guard.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -59,7 +62,7 @@ import {
 	type BackgroundSubagentsPolicy,
 	type BackgroundSubagentsResolution,
 } from "../lib/background-subagents-policy.ts";
-import { installPackageAssets, getPackageAssetOwner, hasPackageAssetOwnerInstallation, type PackageAssetOwner, isPackageManagedSddAsset, updatePackageManagedSddAgentOwnership } from "../lib/agent-assets.ts";
+import { installPackageAssets, getPackageAssetOwner, type PackageAssetOwner, isPackageManagedSddAsset, updatePackageManagedSddAgentOwnership } from "../lib/agent-assets.ts";
 import {
 	THINKING_LEVELS,
 	normalizeModelConfig,
@@ -9755,6 +9758,8 @@ export const __testing = {
 	getPiModelOptions,
 	MODEL_CONTROL_OPTIONS,
 	switchLiveOrchestrator,
+	tryNormalizeInRepoAbsolutePath,
+	resolveTargetRepositoryRoot,
 };
 
 export interface GentleAiRuntimeDependencies {
@@ -9799,6 +9804,9 @@ function createGentleAiExtensionForTesting(
 	const resolveTelemetryTriggerBinary = dependencies.resolveTelemetryTriggerBinary ?? resolveGentleAiBinary;
 	const telemetryExecFileAdapter = dependencies.telemetryExecFileAdapter ?? createNodeExecFileAdapter();
 	return function gentleAi(pi: ExtensionAPI): void {
+	const evidenceBudgetGuard = new EvidenceBudgetGuard();
+	const readThrashingGuard = new ReadThrashingGuard();
+	const turnToolCallGuard = new TurnToolCallGuard();
 	declareReviewRelayHandshake(dependencies.processEnv ?? process.env);
 	const pendingReviewConsentFallbackKey = Symbol("pending-review-consent-fallback");
 	const candidateViews = dependencies.candidateViews === undefined ? new CandidateViewRegistry() : dependencies.candidateViews;
@@ -10339,6 +10347,17 @@ function createGentleAiExtensionForTesting(
 					"info",
 				);
 			}
+
+			// Proactively check if built-in MCP is disabled while servers are configured.
+			if (ctx.hasUI) {
+				const mcpStatus = inspectMcpConfigStatus();
+				if (mcpStatus.isBuiltinMcpExcluded && mcpStatus.hasConfiguredServers) {
+					ctx.ui.notify(
+						`el Gentleman warning: Pi built-in MCP is disabled (-builtin:mcp in settings.json). Configured MCP servers (${mcpStatus.serverCount}) and the /mcp command are inactive. Run /gentle:mcp-repair to restore them.`,
+						"warning",
+					);
+				}
+			}
 		} catch (error) {
 			if (ctx.hasUI) {
 				const message =
@@ -10366,6 +10385,11 @@ function createGentleAiExtensionForTesting(
 		const isNamedAgent = isNamedAgentStartEvent(event);
 		const isChildSession = permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1";
 		const isPrimarySession = !isNamedAgent && !isChildSession;
+		if (isPrimarySession) {
+			evidenceBudgetGuard.reset();
+			readThrashingGuard.reset();
+			turnToolCallGuard.reset();
+		}
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		if (isNamedAgent || isChildSession) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
@@ -10444,6 +10468,12 @@ function createGentleAiExtensionForTesting(
 		return undefined;
 	});
 
+	pi.on("turn_start", async (_event, _ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+			turnToolCallGuard.resetTurn();
+		}
+	});
+
 	// gentle-pi#556 / gentle-ai#4051: with RDD enabled, the agent could finish
 	// an authorized implementation and report completion without ever running
 	// the review STATUS preflight or offering the consent question. This
@@ -10451,6 +10481,9 @@ function createGentleAiExtensionForTesting(
 	// consent, or chooses a partial candidate. Durable own-mutation receipts
 	// gate STATUS and consume only the generation captured before that await.
 	pi.on("agent_end", async (_event, ctx) => {
+		evidenceBudgetGuard.reset();
+		readThrashingGuard.reset();
+		turnToolCallGuard.reset();
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
 		if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return;
 		if (ctx.hasUI !== true || !reminderSessionActive) return;
@@ -10496,7 +10529,23 @@ function createGentleAiExtensionForTesting(
 		consumeReviewMutation(pi, ctx.sessionManager, root, mutation, "nudged", targetIdentity);
 	});
 
+	pi.on("context", (event, _ctx) => {
+		if (event.messages && event.messages.length > 0) {
+			const pruned = pruneContextMessages(event.messages);
+			const hasChanged = pruned !== event.messages && (pruned.length !== event.messages.length || pruned.some((msg, index) => msg !== event.messages[index]));
+			if (hasChanged) {
+				return { messages: pruned };
+			}
+		}
+		return undefined;
+	});
+
 	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
+		if (event.isError === false && (event.toolName === "write" || event.toolName === "edit")) {
+			if (isRecord(event.input) && typeof event.input.path === "string") {
+				readThrashingGuard.recordMutation(event.input.path);
+			}
+		}
 		if (!reminderSessionActive || (reminderManager && reminderManager !== ctx.sessionManager) || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
 		try {
@@ -10536,6 +10585,19 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		if (primaryToolCall) {
+			const contextTokens = resolveCurrentContextTokens(ctx);
+			const contextBackstopDenied = rejectContextBackstopInlineMutation(event, {
+				contextTokens,
+			});
+			if (contextBackstopDenied) return contextBackstopDenied;
+			const evidenceBudgetDenied = evidenceBudgetGuard.checkRead(event);
+			if (evidenceBudgetDenied) return evidenceBudgetDenied;
+			const readThrashingDenied = readThrashingGuard.checkRead(event);
+			if (readThrashingDenied) return readThrashingDenied;
+			const turnBudgetDenied = turnToolCallGuard.checkCall(event);
+			if (turnBudgetDenied) return turnBudgetDenied;
+		}
 		const yoloActive = primaryToolCall && await yolo.active(ctx);
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
@@ -10547,17 +10609,31 @@ function createGentleAiExtensionForTesting(
 		if (event.toolName === "subagent_run") {
 			const judgmentDayFixDenied = rejectInvalidJudgmentDayFixDispatch(event.input);
 			if (judgmentDayFixDenied) return judgmentDayFixDenied;
-			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(event.input);
+			const writerScopeDenied = rejectUnscopedBoundedWriterDispatch(
+				event.input,
+				ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+			);
 			if (writerScopeDenied) return writerScopeDenied;
 			if (primaryToolCall) {
 				const launch = event.input as Record<string, unknown>;
 				const selected = [launch.workspace_root, launch.repository_root].find((value): value is string => typeof value === "string" && value.trim() !== "");
 				const root = selected ? resolve(ctx.cwd, selected) : ctx.cwd;
-				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
+				const contextTokens = resolveCurrentContextTokens(ctx);
+				const turnBudgetExceeded = turnToolCallGuard.isBudgetExceeded();
+				const undocumentedWriter = rejectUndocumentedWriterLaunch(event.input, {
+					root,
+					contextUsage: ctx.getContextUsage?.(),
+					contextTokens,
+					env: permissionEnvironment,
+					turnBudgetExceeded,
+				});
 				if (undocumentedWriter) return undocumentedWriter;
 				const unriskedVerifier = rejectUnriskedVerifierLaunch(event.input, { root, contextUsage: ctx.getContextUsage?.(), env: permissionEnvironment });
 				if (unriskedVerifier) return unriskedVerifier;
 			}
+			evidenceBudgetGuard.recordDelegation();
+			readThrashingGuard.reset();
+			turnToolCallGuard.recordDelegation();
 			try {
 				injectReviewCandidateView(event.input, candidateViews);
 				return undefined;
@@ -10697,6 +10773,7 @@ function createGentleAiExtensionForTesting(
 			const modelConfig = await readSavedModelConfigAsync(ctx.cwd);
 			const engramActive = hasWritableEngramTool(pi);
 			const devBinary = await describeDevBinaryOverride();
+			const mcpStatus = inspectMcpConfigStatus();
 			const lines = [
 				"el Gentleman doctor",
 				...assetLines,
@@ -10705,6 +10782,9 @@ function createGentleAiExtensionForTesting(
 				`${modelConfig.status === "invalid" ? "fail" : "pass"}: Global model config ${modelConfig.status}`,
 				"pass: Sensitive-path guard active for read/write/edit tools",
 				`${engramActive ? "pass" : "warn"}: Engram memory tools ${engramActive ? "active" : "not active in this session"}`,
+				...(mcpStatus.isBuiltinMcpExcluded && mcpStatus.hasConfiguredServers
+					? ["fail: Pi built-in MCP is disabled (-builtin:mcp in settings.json) while mcp.json defines servers", `remedy: run /gentle:mcp-repair or remove "-builtin:mcp" from ${mcpStatus.settingsPath}`]
+					: ["pass: Pi built-in MCP runtime configuration healthy"]),
 				...(devBinary.state === "active" ? [`warn: ${devBinary.line}`] : []),
 				...(devBinary.state === "invalid" ? [`fail: ${devBinary.line}`, "remedy: fix the dev binary override or clear it with /gentle:dev-binary off (or unset GENTLE_PI_GENTLE_AI_DEV_BINARY)"] : []),
 			];
@@ -10719,6 +10799,26 @@ function createGentleAiExtensionForTesting(
 				lines.join("\n"),
 				lines.some((line) => line.startsWith("fail:")) || assetLines.some((line) => line.startsWith("warn:")) ? "warning" : "info",
 			);
+		},
+	});
+
+	pi.registerCommand("gentle:mcp-repair", {
+		description: "Check and repair Pi built-in MCP configuration (removes -builtin:mcp from settings.json).",
+		handler: async (_args, ctx) => {
+			const status = inspectMcpConfigStatus();
+			if (!status.isBuiltinMcpExcluded) {
+				ctx.ui.notify("Pi built-in MCP is not excluded in settings.json. Configuration is healthy.", "info");
+				return;
+			}
+			const fixed = removeBuiltinMcpExclusion();
+			if (fixed) {
+				ctx.ui.notify(
+					`Removed "-builtin:mcp" from ${status.settingsPath}. Please run /reload or restart Pi to re-enable MCP servers and the /mcp command.`,
+					"info",
+				);
+			} else {
+				ctx.ui.notify(`Failed to automatically update ${status.settingsPath}. Please remove "-builtin:mcp" manually.`, "error");
+			}
 		},
 	});
 

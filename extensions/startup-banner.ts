@@ -671,6 +671,7 @@ export default function (pi: ExtensionAPI) {
 
     let gitBranch = "Not a git repo";
     let mcpServersCount = 0;
+    let mcpDisabled = false;
     let extensionsCount = 0;
     let packagesCount = 0;
     let backgroundAgentsCount = 0;
@@ -716,6 +717,11 @@ export default function (pi: ExtensionAPI) {
             "utf8",
           );
           const cfg = JSON.parse(raw);
+          if (Array.isArray(cfg?.extensions)) {
+            mcpDisabled = cfg.extensions.some(
+              (e: unknown) => typeof e === "string" && e.replace(/^[+!]/, "") === "-builtin:mcp",
+            );
+          }
           const packages = Array.isArray(cfg.packages) ? cfg.packages : [];
           packagesCount = packages.length;
           extensionsCount = await countPackageExtensions(packages);
@@ -804,7 +810,7 @@ export default function (pi: ExtensionAPI) {
           /** Renders the persistent header grid; memoized per width, tick, mode and stats so static passes reuse the built lines. */
           render(width: number): string[] {
             if (state.mode === "skip") return [];
-            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
+            const headerKey = `${width}|${tick}|${state.mode}|${gitBranch}|${mcpServersCount}|${mcpDisabled}|${extensionsCount}|${packagesCount}|${backgroundAgentsCount}|${ctx.cwd}|${skills.length}|${customTools.length}`;
             if (headerCache?.key === headerKey) return headerCache.out;
 
             const flashStartTick = 10;
@@ -936,11 +942,15 @@ export default function (pi: ExtensionAPI) {
                 b.center(width);
               };
 
+              const mcpValue = mcpDisabled && mcpServersCount > 0
+                ? "disabled (-builtin:mcp)"
+                : `${mcpServersCount} server(s)`;
+
               if (wideStats) {
                 addWideRow("GIT:", gitBranch, "PATH:", ctx.cwd);
                 addWideRow(
                   "MCP:",
-                  `${mcpServersCount} server(s)`,
+                  mcpValue,
                   "PLUGINS:",
                   `${packagesCount} package(s)`,
                 );
@@ -960,7 +970,7 @@ export default function (pi: ExtensionAPI) {
               } else {
                 addNarrowRow("GIT:", gitBranch);
                 addNarrowRow("PATH:", ctx.cwd);
-                addNarrowRow("MCP:", `${mcpServersCount} server(s)`);
+                addNarrowRow("MCP:", mcpValue);
                 addNarrowRow("PLUGINS:", `${packagesCount} package(s)`);
                 addNarrowRow("AGENTS:", `${backgroundAgentsCount} agents`);
                 addNarrowRow("SKILLS:", `${skills.length} loaded`);

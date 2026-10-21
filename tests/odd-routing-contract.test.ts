@@ -246,9 +246,16 @@ test("user documentation shows recovery and candidate-level consent without clai
 test("one feature document carries intent, accepted rationale and worker context", () => {
 	containsAll(memory, [
 		"one feature document, not a separate plan file or topic",
-		"verification evidence, progress, and next step",
-		"rationale for meaningful accepted changes",
+		"objective, problem, why, scope, constraints",
+		"progress, verification evidence, and next step",
+		"concise rationale for meaningful accepted changes",
 		"Routine corrections stay brief; no exhaustive decision journal",
+		"4-part Hybrid ODD Unified Specification Pattern",
+		"Diagnosis & Technical Proposal",
+		"Technical Specification & Contracts",
+		"Tasks & Evidence",
+		"Acceptance Criteria & Verification",
+		"offloads context weight from the live chat session into the physical file",
 		"Accepted user, review, or verification changes",
 		"automatically update affected intent and TODOs",
 		"add genuinely new tasks or reopen invalidated items with a reason",

@@ -75,7 +75,8 @@ const PROCESS_MAX_BUFFER = MAX_OUTPUT_CHARS * 2;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
 // query and explore read an existing index; on a slow filesystem (for example
 // WSL /mnt mounts) they could otherwise block the turn indefinitely (#1901).
-// init is the legitimately slow first index, so only the user's signal bounds it.
+// init is the legitimately slow first index, so only the user's signal bounds it
+// unless an explicit initTimeoutMs is provided.
 const CODEGRAPH_QUERY_TIMEOUT_MS = 180_000;
 const execFileAsync = promisify(execFile);
 
@@ -186,7 +187,7 @@ function requireQuery(query: string | undefined): string {
 function commandArguments(parameters: CodeGraphToolParameters, cwd: string): string[] {
 	switch (parameters.operation) {
 		case CODEGRAPH_OPERATION.INIT:
-			return [CODEGRAPH_OPERATION.INIT, cwd];
+			return indexExists(cwd) ? ["sync", cwd] : [CODEGRAPH_OPERATION.INIT, cwd];
 		case CODEGRAPH_OPERATION.QUERY: {
 			const query = requireQuery(parameters.query);
 			return [
@@ -308,6 +309,8 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		signal: options.signal,
 		maxBuffer: options.maxBuffer,
 		windowsHide: true,
+		stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+		env: { ...process.env, CI: "1", TERM: "dumb" },
 	};
 	let unavailableError: unknown;
 
@@ -339,7 +342,10 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 
 export function createCodeGraphTool(
 	runner: CodeGraphRunner = runCodeGraphCommand,
-	{ queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS }: { queryTimeoutMs?: number } = {},
+	{
+		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
+		initTimeoutMs,
+	}: { queryTimeoutMs?: number; initTimeoutMs?: number } = {},
 ) {
 	return {
 		name: "codegraph",
@@ -364,7 +370,8 @@ export function createCodeGraphTool(
 			const cwd = resolveWorkspaceCwd(ctx.cwd);
 			assertSafeIndexDirectory(cwd);
 			const args = commandArguments(parameters, cwd);
-			const timeout = parameters.operation === "init" ? undefined : AbortSignal.timeout(queryTimeoutMs);
+			const effectiveTimeoutMs = parameters.operation === "init" ? initTimeoutMs : queryTimeoutMs;
+			const timeout = effectiveTimeoutMs !== undefined ? AbortSignal.timeout(effectiveTimeoutMs) : undefined;
 			const runSignal = timeout && signal ? AbortSignal.any([signal, timeout]) : (timeout ?? signal);
 			try {
 				const result = await runner(args, { cwd, signal: runSignal, maxBuffer: PROCESS_MAX_BUFFER });
@@ -383,7 +390,7 @@ export function createCodeGraphTool(
 				if (localExclude) details.localExclude = localExclude;
 				const timedOut = timeout?.aborted === true && signal?.aborted !== true;
 				const text = timedOut
-					? `CodeGraph timed out after ${queryTimeoutMs} ms (a slow filesystem such as a WSL /mnt mount, or a very large workspace). ${FALLBACK_INSTRUCTIONS}`
+					? `CodeGraph timed out after ${effectiveTimeoutMs} ms (a slow filesystem such as a WSL /mnt mount, or a very large workspace). ${FALLBACK_INSTRUCTIONS}`
 					: codeGraphFailureMessage(details.status);
 				return {
 					content: [{ type: "text" as const, text: withLocalExcludeNote(text, localExclude) }],

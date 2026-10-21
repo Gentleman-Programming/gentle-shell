@@ -102,6 +102,15 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "aborted" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "aborted", diagnostic: "assistant aborted" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "empty", diagnostic: "assistant returned no final report" }]);
+	assert.deepEqual(normalizeRpcEvent({
+		type: "agent_end",
+		messages: [
+			{ role: "assistant", content: [{ type: "text", text: "Architectural findings in postgres and ftp." }], stopReason: "stop" },
+			{ role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }], stopReason: "toolUse" },
+			{ role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "file content" }] },
+			{ role: "assistant", content: [], stopReason: "stop" },
+		],
+	}), [{ type: TASK_EVENT.AGENT_END, text: "Architectural findings in postgres and ftp.", outcome: "success" }], "recovers prior assistant report when trailing assistant message is empty");
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_settled" }), [{ type: TASK_EVENT.AGENT_SETTLED }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "message_update", assistantMessageEvent: { type: "error", reason: "error", error: { message: "rate limited" } } }), [{ type: TASK_EVENT.ERROR, message: "rate limited" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u1", method: "confirm", title: "Delete?" }), [{ type: TASK_EVENT.ASK, request: { id: "u1", method: "confirm", title: "Delete?" } }]);

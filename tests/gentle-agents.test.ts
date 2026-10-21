@@ -3640,7 +3640,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	const result = await running;
 	const runId = (result.details.gentleAgents as { taskId: string }).taskId;
 	assert.equal(result.content[0].text, `Subagent explore (task ${runId}, "map lib modules") finished.\n\nlib has three agent files.`, "the model sees the real task id and label, not only details");
-	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["lib has three agent files."], "the collapsed card still leads with the answer");
+	assert.deepEqual(tools.get("subagent_run")!.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).map((line) => line.trimEnd()), ["│ lib has three agent files.                                                   │", "╰──────────────────────────────────────────────────────────────────────────────╯"], "the collapsed card still leads with the answer");
 	assert.equal((result.details.gentleAgents as { status: string }).status, "completed");
 	assert.match(widget()![1], /✓  explore  map lib modules/);
 	const orphan = tools.get("subagent_run")!.execute("c9", { agent: "explore", task: "Orphan", mode: "background" }, undefined, undefined, ctx);
@@ -3649,7 +3649,7 @@ test("subagent_list_agents and subagent_run in task mode launch a child with the
 	await fire("session_shutdown", ctx);
 	await tick();
 	assert.deepEqual(harness.children[1].killed, ["SIGTERM"], "closing pi stops the running children");
-	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /❀ agent run · explore/);
+	assert.match(tools.get("subagent_run")!.renderCall({ agent: "explore" }, plainTheme).render(60).join(""), /Gentle AI · running · explore/);
 });
 
 test("running subagent_result polls hide only their tool chrome, not the model result or final completion", async () => {
@@ -3668,7 +3668,7 @@ test("running subagent_result polls hide only their tool chrome, not the model r
 		assert.deepEqual(resultTool.renderCall({ task_id: id }, plainTheme).render(80), [], "poll title is hidden");
 		assert.deepEqual(resultTool.renderResult(poll as Parameters<Registered["renderResult"]>[0], { expanded }, plainTheme).render(80), [], "poll body is hidden");
 	}
-	assert.match(tools.get("subagent_status")!.renderCall({ task_id: id }, plainTheme).render(80).join(""), /agent status/, "other tools retain their rendering");
+	assert.match(tools.get("subagent_status")!.renderCall({ task_id: id }, plainTheme).render(80).join(""), /Gentle AI · running · status/, "other tools retain their rendering");
 	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "All done." }] }] });
 	harness.children[0].emit({ type: "agent_settled" });
 	await tick();

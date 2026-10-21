@@ -106,6 +106,22 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 	]);
 });
 
+test("CodeGraph tool switches init to sync when index already exists", async (t) => {
+	const cwd = workspace(t);
+	mkdirSync(join(cwd, ".codegraph"));
+	const calls: Array<{ args: readonly string[]; cwd: string }> = [];
+	const runner: CodeGraphRunner = async (args, options) => {
+		calls.push({ args, cwd: options.cwd });
+		return { stdout: "synced", stderr: "" };
+	};
+	const tool = createCodeGraphTool(runner);
+	const ctx = { cwd } as ExtensionContext;
+
+	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.deepEqual(result.content, [{ type: "text", text: "synced" }]);
+	assert.deepEqual(calls, [{ args: ["sync", cwd], cwd }]);
+});
+
 test("CodeGraph tool rejects pre-existing .codegraph symlinks and non-directories", async (t) => {
 	for (const kind of ["symlink", "file"] as const) {
 		const cwd = workspace(t);

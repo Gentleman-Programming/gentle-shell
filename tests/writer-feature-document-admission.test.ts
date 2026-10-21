@@ -77,6 +77,17 @@ test("S16: the admission backstop scales with the measured context window and ho
 	assert.equal(decide(120_000, 1_000_000, { [CONTEXT_BACKSTOP_TOKENS_ENV]: "100000" }), false, "the cap is overridable");
 });
 
+test("Turn budget exceeded admits a writer without a pre-existing feature document", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const input = { agent: "gentle-ai-worker", task: `Implement annual budgets.${surfaces}` };
+	assert.equal(
+		rejectUndocumentedWriterLaunch(input, { root, contextTokens: 20_000, turnBudgetExceeded: true }),
+		undefined,
+		"must admit worker when runaway turn budget is exceeded",
+	);
+});
+
 test("S16: previous behavior holds for non-writers and Judgment Day fix agents", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));

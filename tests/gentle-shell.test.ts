@@ -4979,6 +4979,33 @@ test("a timed-out scan whose child never exits has its pipes cut", (t) => {
 	assert.deepEqual(events, ["tree", "kill", "stdout", "stderr"], "then the pipes are cut so the scan can settle");
 });
 
+// Cutting the pipes makes execFile report the dead child's own exit code, so a
+// timed-out scan can arrive as a clean exit with a truncated porcelain. The
+// deadline has to win over that: a partial inventory must never read as success.
+test("a timed-out scan that ends with exit 0 still reports failure", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let answer: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+	const fake = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options;
+		answer = callback;
+		return {
+			pid: 8,
+			exitCode: null,
+			signalCode: null,
+			kill() {},
+			stdout: { destroy() { answer?.(null, "partial porcelain", ""); } },
+			stderr: { destroy() {} },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	const scan = shellGitRunner("/big-repo", { PATH: process.env.PATH }, fake, Infinity, () => {})(["status", "--porcelain=v1", "-z"]);
+	t.mock.timers.tick(5_000);
+	t.mock.timers.tick(5_000);
+	const result = await scan;
+	assert.equal(result.code, 1, "a scan that passed its deadline is a failure, not a partial success");
+	assert.equal(result.stdout, "partial porcelain", "the partial output is still available for diagnostics");
+});
+
 test("a timed-out scan whose direct child already exited skips the tree kill", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const events: string[] = [];

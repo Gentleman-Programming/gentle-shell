@@ -4940,7 +4940,7 @@ test("a shell Git scan that passes its timeout kills the whole process tree", as
 	const fake = (answer: (callback: (error: Error | null, stdout: string, stderr: string) => void) => void, pid: number) => ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
 		void command; void args; void options;
 		answer(callback);
-		return { pid, kill() {} } as unknown as import("node:child_process").ChildProcess;
+		return { pid, exitCode: null, signalCode: null, kill() {} } as unknown as import("node:child_process").ChildProcess;
 	}) as typeof import("node:child_process").execFile;
 
 	// A scan that never answers is tree-killed once the timeout elapses.
@@ -4977,6 +4977,30 @@ test("a timed-out scan whose child never exits has its pipes cut", (t) => {
 	assert.deepEqual(events, ["tree"], "the tree kill lands when the scan passes its timeout");
 	t.mock.timers.tick(5_000);
 	assert.deepEqual(events, ["tree", "kill", "stdout", "stderr"], "then the pipes are cut so the scan can settle");
+});
+
+test("a timed-out scan whose direct child already exited skips the tree kill", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const events: string[] = [];
+	// taskkill walks the tree from a live parent, so with the direct child gone
+	// the call can only answer "process not found": the pipes are all that is left.
+	const exited = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+		void command; void args; void options; void callback;
+		return {
+			pid: 6,
+			exitCode: 0,
+			signalCode: null,
+			kill() { events.push("kill"); },
+			stdout: { destroy() { events.push("stdout"); } },
+			stderr: { destroy() { events.push("stderr"); } },
+		} as unknown as import("node:child_process").ChildProcess;
+	}) as typeof import("node:child_process").execFile;
+
+	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, exited, Infinity, () => events.push("tree"))(["status"]);
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, [], "an exited direct child is not killed again");
+	t.mock.timers.tick(5_000);
+	assert.deepEqual(events, ["stdout", "stderr"], "the pipes are still cut so the scan can settle");
 });
 
 test("openInExternalEditor stops the TUI around the editor and honors $VISUAL over $EDITOR", () => {

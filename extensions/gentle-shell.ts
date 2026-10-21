@@ -1286,7 +1286,11 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 		const pid = child.pid;
 		deadline = setTimeout(() => {
 			timedOut = true;
-			treeKiller(pid);
+			// taskkill walks the tree from a live parent. If the direct child
+			// already exited, only a descendant can be holding the inherited
+			// pipes, and a PID-based kill would just report "process not found";
+			// the grace below still cuts those pipes so the scan can settle.
+			if (child.exitCode === null && child.signalCode === null) treeKiller(pid);
 			grace = setTimeout(() => {
 				if (child.exitCode === null && child.signalCode === null) child.kill();
 				child.stdout?.destroy();

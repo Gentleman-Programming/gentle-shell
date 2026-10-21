@@ -505,7 +505,7 @@ test("every selected companion must advertise private support, including mixed l
 	writeFileSync(join(local, "package.json"), JSON.stringify({ name: "gentle-engram", engram: { startupPolicy: 1 } }));
 	writeFileSync(prefix.metadata, JSON.stringify({ name: "gentle-engram", engram: { startupPolicy: 1, sessionOwned: 1 } }));
 	const settings = join(prefix.home, ".gentle-shell", "agent", "settings.json");
-	const selected = JSON.stringify({ packages: [local, "npm:gentle-engram@0.4.2"] });
+	const selected = JSON.stringify({ packages: [local, "npm:gentle-engram@0.5.0"] });
 	writeFileSync(settings, selected);
 	const result = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID });
 	assert.equal(result.status, 0, result.stderr);

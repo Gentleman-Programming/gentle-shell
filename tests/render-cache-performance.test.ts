@@ -70,18 +70,68 @@ test("report outputs cannot overwrite files or enter protected roots via symlink
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test("the worker names the host it refuses instead of reporting an unrelated version", () => {
+const workerScript = fileURLToPath(new URL("../scripts/render-cache-performance-worker.mjs", import.meta.url));
+
+function runWorker(piRoot: string) {
+	return spawnSync(process.execPath, [workerScript, JSON.stringify({ piRoot })], { encoding: "utf8" });
+}
+
+/** Writes only the two manifests the worker validates first, so each test controls what is missing. */
+function writeHost(options: { name?: string; version?: string; tuiName?: string; tuiVersion?: string } = {}): string {
 	const root = mkdtempSync(join(tmpdir(), "render-cache-host-"));
+	writeFileSync(join(root, "package.json"), JSON.stringify({
+		name: options.name ?? "@earendil-works/pi-coding-agent",
+		version: options.version ?? "1.2.0",
+	}));
+	const tui = join(root, "node_modules", "@earendil-works", "pi-tui");
+	mkdirSync(tui, { recursive: true });
+	writeFileSync(join(tui, "package.json"), JSON.stringify({
+		name: options.tuiName ?? "@earendil-works/pi-tui",
+		version: options.tuiVersion ?? "1.2.0",
+	}));
+	return root;
+}
+
+test("the worker names the host it refuses instead of reporting an unrelated version", () => {
+	const root = writeHost({ version: "9.9.9", tuiVersion: "9.9.9" });
 	try {
-		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "some-other-package", version: "9.9.9" }));
-		const tui = join(root, "node_modules", "@earendil-works", "pi-tui");
-		mkdirSync(tui, { recursive: true });
-		writeFileSync(join(tui, "package.json"), JSON.stringify({ name: "@earendil-works/pi-tui", version: "9.9.9" }));
-		const worker = fileURLToPath(new URL("../scripts/render-cache-performance-worker.mjs", import.meta.url));
-		const result = spawnSync(process.execPath, [worker, JSON.stringify({ piRoot: root })], { encoding: "utf8" });
+		const result = runWorker(root);
 		assert.notEqual(result.status, 0, "a mismatched host must fail closed");
-		assert.match(result.stderr, /is some-other-package@9\.9\.9/, "the error must name the package that was found");
+		assert.match(result.stderr, /is @earendil-works\/pi-coding-agent@9\.9\.9/, "the error must name the package that was found");
 		assert.match(result.stderr, /audited only on 1\.2\.0/, "the error must name the audited version");
 		assert.match(result.stderr, /Point --pi-root at a Pi 1\.2\.0 install/, "the error must say how to satisfy it");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a host whose manifests are not Pi's is refused before anything is imported", () => {
+	const root = writeHost({ name: "some-other-package" });
+	try {
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "a foreign root must fail closed");
+		assert.match(result.stderr, /is not a Pi install root/);
+		assert.match(result.stderr, /expected @earendil-works\/pi-coding-agent/, "the error must name the expected package");
+		assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, "the layout must be reported, not a module resolution error");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a host without the required dist layout is reported as a layout problem", () => {
+	const root = writeHost();
+	try {
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "a root without dist must fail closed");
+		assert.match(result.stderr, /is not a Pi install root/);
+		assert.match(result.stderr, /dist is not a directory/, "the error must name the missing layout");
+		assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, "the layout must be reported, not a module resolution error");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a mixed host names the audited version and the layout it needs", () => {
+	const root = writeHost({ tuiVersion: "1.2.1" });
+	try {
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "a mixed host must fail closed");
+		assert.match(result.stderr, /mixes @earendil-works\/pi-coding-agent@1\.2\.0 with @earendil-works\/pi-tui@1\.2\.1/);
+		assert.match(result.stderr, /Point --pi-root at a Pi 1\.2\.0 install/, "the error must name the audited version");
+		assert.match(result.stderr, /node_modules\/@earendil-works\/\{pi-tui,pi-ai,pi-agent-core\}/, "the error must name the required layout");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

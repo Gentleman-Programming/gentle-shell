@@ -1,36 +1,58 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 const SUPPORTED_PI_VERSION = "1.2.0";
 const PI_ROOT_LAYOUT = "dist/ plus node_modules/@earendil-works/{pi-tui,pi-ai,pi-agent-core} and node_modules/jiti";
+const HOST_PACKAGE = "@earendil-works/pi-coding-agent";
+const TUI_PACKAGE = "@earendil-works/pi-tui";
+const HOST_ENTRY = "core/extensions/jiti-loader.js";
 
-function hostPackage(piRoot, relative) {
+function layoutError(piRoot, detail) {
+	return new Error(`--pi-root ${piRoot} is not a Pi install root: ${detail} It must carry ${PI_ROOT_LAYOUT}.`);
+}
+
+function hostPackage(piRoot, relative, expectedName) {
 	const path = resolve(piRoot, relative);
 	let manifest;
 	try {
 		manifest = JSON.parse(readFileSync(path, "utf8"));
 	} catch {
-		throw new Error(`--pi-root ${piRoot} is not a Pi install root: ${path} is unreadable. It must carry ${PI_ROOT_LAYOUT}.`);
+		throw layoutError(piRoot, `${path} is unreadable.`);
 	}
 	if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
-		throw new Error(`--pi-root ${piRoot} is not a Pi install root: ${path} declares no package name and version.`);
+		throw layoutError(piRoot, `${path} declares no package name and version.`);
+	}
+	if (manifest.name !== expectedName) {
+		throw layoutError(piRoot, `${path} is ${manifest.name}@${manifest.version}, expected ${expectedName}.`);
 	}
 	return { name: manifest.name, version: manifest.version };
 }
 
+function requireHostLayout(piRoot) {
+	const dist = resolve(piRoot, "dist");
+	let isDirectory = false;
+	try {
+		isDirectory = statSync(dist).isDirectory();
+	} catch {}
+	if (!isDirectory) throw layoutError(piRoot, `${dist} is not a directory.`);
+	const entry = resolve(dist, HOST_ENTRY);
+	if (!existsSync(entry)) throw layoutError(piRoot, `${entry} is missing.`);
+}
+
 const config = JSON.parse(process.argv[2]);
-const host = hostPackage(config.piRoot, "package.json");
-const hostTui = hostPackage(config.piRoot, "node_modules/@earendil-works/pi-tui/package.json");
+const host = hostPackage(config.piRoot, "package.json", HOST_PACKAGE);
+const hostTui = hostPackage(config.piRoot, "node_modules/@earendil-works/pi-tui/package.json", TUI_PACKAGE);
 if (host.version !== SUPPORTED_PI_VERSION) {
 	throw new Error(`--pi-root ${config.piRoot} is ${host.name}@${host.version}, but the private frame API is audited only on ${SUPPORTED_PI_VERSION}. Point --pi-root at a Pi ${SUPPORTED_PI_VERSION} install (${PI_ROOT_LAYOUT}).`);
 }
 if (hostTui.version !== host.version) {
-	throw new Error(`--pi-root ${config.piRoot} mixes ${host.name}@${host.version} with ${hostTui.name}@${hostTui.version}; a mixed host cannot be measured.`);
+	throw new Error(`--pi-root ${config.piRoot} mixes ${host.name}@${host.version} with ${hostTui.name}@${hostTui.version}; a mixed host cannot be measured. Point --pi-root at a Pi ${SUPPORTED_PI_VERSION} install (${PI_ROOT_LAYOUT}).`);
 }
+requireHostLayout(config.piRoot);
 const piVersion = host.version;
 const tuiVersion = hostTui.version;
 const hostImport = (path) => import(pathToFileURL(resolve(config.piRoot, "dist", path)).href);

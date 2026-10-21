@@ -379,8 +379,10 @@ export function engramProvenanceMatches(record: EngramProvenance | undefined, ob
 // tagged sources v3.3.2 and v3.4.0: internal/store/store.go `const schemaVersion = 1`.
 // v3.5.1: 41f1254796d49233d7bcb11741093bc09eb386ff, internal/store/store.go:1252,
 // also declares schemaVersion = 1. Source verification is not binary provenance approval.
+// v3.5.2: d85c45701129d19c2a165266d279c5c195283726, internal/store/store.go:1252,
+// retains schemaVersion = 1. Published archive identity is checked separately.
 // A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA: Record<string, number> = { "3.3.2": 1, "3.4.0": 1, "3.5.1": 1 };
+const BUNDLED_ENGRAM_SCHEMA: Record<string, number> = { "3.3.2": 1, "3.4.0": 1, "3.5.1": 1, "3.5.2": 1 };
 
 export function bundledEngramSchema(coreVersion: string): number | undefined {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;

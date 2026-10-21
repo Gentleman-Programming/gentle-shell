@@ -17,11 +17,17 @@ test("candidate core schema accepts verified 3.5.1 without accepting unknown cor
 	assert.equal(shell.bundledEngramSchema("3.5.1"), 1);
 	assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema("3.5.1")), true);
 	assert.equal(shell.engramHeaderAllows(2, shell.bundledEngramSchema("3.5.1")), false);
-	for (const version of ["3.5.0", "3.5.2", "4.0.0", "__proto__"]) {
+	for (const version of ["3.5.0", "3.5.3", "4.0.0", "__proto__"]) {
 		assert.equal(shell.bundledEngramSchema(version), undefined);
 		assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema(version)), false);
 	}
 	for (const version of ["3.3.2", "3.4.0"]) assert.equal(shell.bundledEngramSchema(version), 1);
+});
+
+test("published core 3.5.2 schema accepts its version-1 header and rejects newer stores", () => {
+	assert.equal(shell.bundledEngramSchema("3.5.2"), 1);
+	assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema("3.5.2")), true);
+	assert.equal(shell.engramHeaderAllows(2, shell.bundledEngramSchema("3.5.2")), false);
 });
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));

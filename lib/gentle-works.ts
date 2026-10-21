@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { resolveGentlePiAgentHome } from "./agent-home.ts";
 import {
@@ -86,7 +86,12 @@ export async function resolveWorkContext(
 		resolveCanonicalGitWorktreeRoot(cwd),
 	]);
 	if (!cloneIdentity || !worktreeRoot) throw new Error("Git work context unavailable");
-	const registryFile = join(agentHome, "gentle-works", cloneIdentity.slice(7), "registry.json");
+	// An aliased agent home (e.g. a redirected profile folder) must resolve to the
+	// same canonical path every time, or safePath's ancestor check below sees it
+	// as an attacker-controlled symlink and the registry becomes unreachable.
+	await mkdir(agentHome, { recursive: true });
+	const canonicalAgentHome = await realpath(agentHome);
+	const registryFile = join(canonicalAgentHome, "gentle-works", cloneIdentity.slice(7), "registry.json");
 	return { cloneIdentity, worktreeRoot, registryFile, lockFile: `${registryFile}.lock` };
 }
 

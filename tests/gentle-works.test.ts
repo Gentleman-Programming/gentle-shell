@@ -65,6 +65,17 @@ test("S1: linked worktrees share stable works across reload; independent clones 
 	assert.ok(work.id);
 });
 
+test("S1: an aliased agent home canonicalizes to the same registry as the real directory", async t => {
+	const f = await fixture(t);
+	const alias = join(f.root, "home-alias");
+	if (!await linkOrSkip(t, f.home, alias, true)) return;
+	const aliased = await resolveWorkContext(f.repo, alias);
+	assert.equal(aliased.registryFile, f.context.registryFile);
+	assert.equal(aliased.lockFile, f.context.lockFile);
+	const work = await createWork(aliased, input);
+	assert.deepEqual((await listWorks(f.context)).works, [work]);
+});
+
 test("S4: rejected changes preserve bytes, public records and revisions", async t => {
 	const { context } = await fixture(t);
 	const work = await createWork(context, input);

@@ -4,7 +4,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, realpath, rm, writeFile, unlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { createWork, listWorks, resolveWorkContext, updateWork } from "../lib/gentle-works.ts";
 
 test("S6: three branches survive fresh-process reload with absent sessions and a removed worktree", async t => {
@@ -36,8 +35,8 @@ test("S6: three branches survive fresh-process reload with absent sessions and a
 	const expected = await listWorks(await resolveWorkContext(clone, home));
 	assert.equal(expected.works.length, 3);
 	assert.equal(new Set(expected.works.map(work => work.cloneIdentity)).size, 1);
-	const api = pathToFileURL(join(process.cwd(), "lib/gentle-works.ts")).href;
-	const extension = pathToFileURL(join(process.cwd(), "extensions/gentle-works.ts")).href;
+	const api = new URL("../lib/gentle-works.ts", import.meta.url).href;
+	const extension = new URL("../extensions/gentle-works.ts", import.meta.url).href;
 	// Each call loads both the API and registered command in an independent Node process.
 	const reload = (cwd: string) => {
 		const code = `
@@ -73,7 +72,9 @@ test("S6: three branches survive fresh-process reload with absent sessions and a
 			assert.deepEqual(notices, []);
 			console.log(JSON.stringify({registry: before, screens}));
 		`;
-		const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], { env, encoding: "utf8" });
+		const result = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], {
+			env, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL",
+		});
 		assert.equal(result.error, undefined);
 		assert.equal(result.status, 0, result.stderr);
 		assert.equal(result.signal, null);

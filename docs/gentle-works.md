@@ -42,18 +42,6 @@ The optional final `WorkReadIO` argument on list/create/update injects only the 
 
 `tests/gentle-works-continuity.test.ts` adds the three-work acceptance journey: a real isolated clone and two linked worktrees on distinct branches, with distinct session locators, explicit statuses, summaries and ODD references. Fresh Node processes reload through the public API and registered command harness, first with locations present and then with all session files absent and one worktree removed. All three records and public revisions remain unchanged; details retain exact locators, report unknown activity and missing locations, and inspection neither recreates session files nor changes the Git worktree list. Fixtures use the system temporary directory and are removed in teardown.
 
-This is functional reload acceptance, not an actual interactive Shell restart or live TUI validation. The continuity test passed on Windows (1 passed, 0 failed, 0 skipped); POSIX execution remains unverified. Typecheck reported zero diagnostics and the runtime-module check passed. The whole-suite result and its limitations are recorded below. This acceptance coverage exercises already-working behavior, so no meaningful RED phase was claimed.
+This is functional reload acceptance, not an actual interactive Shell restart or live TUI validation. POSIX execution remains unverified. This acceptance coverage exercises already-working behavior, so no meaningful RED phase was claimed. Delivery history, test-run counts and native-review status are tracked in `odd/tasks/gentle-works.md`, not here.
 
-Historical RED evidence was a missing-module failure before implementation, not individual rule-level assertion failures. Later passing tests do not strengthen that historical evidence.
-
-## Local delivery evidence and open limits
-
-The feature branch contains the durable registry (`1c5f0dd62`) and the command, palette, docs and continuity acceptance (`13f371587`). This is local delivery, not a release or approval to publish.
-
-- **Observed passes:** registry tests 7 passed/1 POSIX-only skip; command/view/palette tests 47 passed; continuity test 1 passed; typecheck zero diagnostics; runtime-module check matched all 16 generated modules. Independent verification found no reproduced implementation blockers. Provider-contract and runtime-harness suite stages passed.
-- **Human-observed Windows TUI:** one work survived creation, editing and an actual Shell close/relaunch with its identity, explicit status, objective, summary and original session locator preserved. Its conversation file changed from missing to present after a message/relaunch; activity became unknown in the new session, independently of work status. File presence does not establish conversation resumability.
-- **Whole suite failed:** 7,061 tests, 6,369 passed, 381 failed, 4 cancelled and 307 skipped. Only two path-format failures were independently reproduced at the pre-feature baseline; the remaining 379 failures and 4 cancellations are unclassified. No failing Works/palette test entry is evidence only about those tests, not proof that other regressions are absent.
-- **Native review unavailable:** the existing registry review stopped on a non-retryable bound STATUS timeout, tracked in [gentle-ai#5422](https://github.com/Gentleman-Programming/gentle-ai/issues/5422). No approval or acknowledgement was obtained, and the lineage remains untouched. Functional/independent checks are separate evidence, not a native verdict.
-- **Still unverified:** POSIX execution, real ACL-denial behavior, conversation resumption, and the full three-branch journey in an interactive terminal. Palette/cancellation behavior has harness coverage, not a reported live terminal check.
-
-Review the persistence/locking boundary first, then the command's explicit mutations and activity projection, followed by acceptance tests and the limits above. Windows-suite triage and the native-review defect are follow-ups, not resolved by this documentation commit.
+Still unverified: POSIX execution, real ACL-denial behavior, and conversation resumption across an interactive terminal restart.

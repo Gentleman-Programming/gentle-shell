@@ -8,10 +8,16 @@ exiting the extension leaves no `git` process behind scanning the repository.
 ## Problem
 
 `shellGitRunner` in `extensions/gentle-shell.ts` bounded a scan by killing the direct child on
-timeout. On Windows that is not sufficient. libuv places children in a Job Object, so killing the
-direct child also kills descendants that are not detached — but a descendant spawned with
-`detached: true` escapes the job and survives. That surviving process is the orphan reported in
-#927: it keeps running after the extension is gone and competes for the same worktree.
+timeout. On Windows that is not sufficient. Neither libuv nor `execFile` groups the children in a Job
+Object: the timeout ends in `TerminateProcess` on the direct child, which never reaches descendants.
+A `git` scan that delegated its work to a child keeps that child running, and the surviving process
+is the orphan reported in #927: it keeps running after the extension is gone and competes for the
+same worktree.
+
+The empirical check that settled this: killing a `cmd.exe` parent left its non-detached child
+writing to the inherited pipe (217 → 272 → 382 bytes after the kill). Only `taskkill /T` issued from
+a live parent walks the tree; `detached: true` is a Node spawn flag and has no bearing on children
+`git` creates natively.
 
 ## Why
 
@@ -44,10 +50,11 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 
 ## Tasks
 
-- [x] **T1 — Reproduce the orphan semantics.** Confirmed against libuv's Windows job handling that a
-  direct-child kill reaches non-detached descendants and that a `detached: true` descendant escapes,
-  which is the only way the reported orphan can exist. Testing the timeout path therefore has to
-  assert that the tree is gone, not that the child exited.
+- [x] **T1 — Reproduce the orphan semantics.** Probed on this Windows host: a direct-child kill
+  (`TerminateProcess`, what `child.kill()` and libuv's timeout do) leaves non-detached descendants
+  alive and still writing to the inherited pipes, so the reported orphan needs no `detached: true`.
+  Only `taskkill /T` from a still-live parent walks the tree. Testing the timeout path therefore has
+  to assert that the tree kill is issued while the parent lives, not that the child exited.
 - [x] **T2 — Kill the tree on the deadline.** `shellGitRunner` now accepts `killProcessTree`; on
   Windows the deadline calls the tree kill while the direct child is alive, the grace callback kills
   the direct child and cuts the pipes, `settle()` resolves once, and a timed-out scan returns
@@ -77,6 +84,10 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 - Typecheck: `node scripts/check-types.mjs` — 0 recorded diagnostics, no regressions.
 - Runtime harness: `node --experimental-strip-types tests/runtime-harness.mjs` — exit 0.
 - Diff scope: only `extensions/gentle-shell.ts`, `tests/gentle-shell.test.ts` and this task document.
+- Deadline-wins regression: `tests/gentle-shell.test.ts` — "a timed-out scan that ends with exit 0
+  still reports failure" models execFile answering cleanly with truncated porcelain once the grace
+  cuts the pipes. Mutation-checked: deleting the `timedOut` branch in `settle()` turns it red
+  (`0 !== 1`), while every other scan test stays green.
 
 ## Progress
 

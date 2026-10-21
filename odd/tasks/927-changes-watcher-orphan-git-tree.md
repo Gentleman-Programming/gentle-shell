@@ -22,10 +22,12 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 ## Scope
 
 - Add a `killProcessTree` parameter to `shellGitRunner`, threaded from the caller.
-- On Windows, enforce a dedicated deadline at `GIT_TIMEOUT_MS` and escalate with
-  `GIT_TREE_KILL_GRACE_MS` (1,000 ms) to a tree kill instead of a direct-child kill.
-- Track `settled` / `timedOut` so `settle()` closes pipes exactly once and a timed-out scan resolves
-  with `code: 1` rather than hanging on a half-closed stream.
+- On Windows, enforce a dedicated deadline at `GIT_TIMEOUT_MS`: when it fires, call
+  `killProcessTree(pid)` while the direct child is still alive, and after `GIT_TREE_KILL_GRACE_MS`
+  (1,000 ms) fall back to a direct-child kill and cut the inherited pipes.
+- Track `settled` / `timedOut` so `settle()` clears the timers and resolves once, while the grace
+  callback kills the direct child and destroys `stdout` / `stderr`; a timed-out scan resolves with
+  `code: 1` rather than hanging on a half-closed stream.
 - Unref the timers so they cannot hold the event loop open.
 - Leave non-Windows behaviour unchanged.
 
@@ -47,20 +49,23 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
   which is the only way the reported orphan can exist. Testing the timeout path therefore has to
   assert that the tree is gone, not that the child exited.
 - [x] **T2 — Kill the tree on the deadline.** `shellGitRunner` now accepts `killProcessTree`; on
-  Windows the timeout path escalates to a tree kill after `GIT_TREE_KILL_GRACE_MS`, `settle()` closes
-  pipes and resolves once, and a timed-out scan returns `code: 1`. Non-Windows paths are untouched.
+  Windows the deadline calls the tree kill while the direct child is alive, the grace callback kills
+  the direct child and cuts the pipes, `settle()` resolves once, and a timed-out scan returns
+  `code: 1`. Non-Windows paths are untouched.
 - [x] **T3 — Verify the work unit.** 321 tests, 316 passing; the 5 failures are pre-existing on this
   Windows host and reproduce on a pristine checkout of the same base. Typecheck ratchet at 0
   diagnostics. `tests/runtime-harness.mjs` exits 0.
 
 ## Acceptance Criteria
 
-- A scan that exceeds the deadline on Windows terminates the entire process tree, including detached
-  descendants.
+- On Windows, a scan that exceeds the deadline attempts to terminate the entire process tree while
+  its direct child is still alive. A descendant that outlives its parent keeps the pipe but cannot be
+  reached by PID from a dead parent, so the tree kill is best effort: `taskkill` itself may also fail
+  under AppLocker or a broken PATH, and only the direct child and the pipes are handled then.
 - A timed-out scan resolves with `code: 1` instead of hanging.
 - Timers do not keep the process alive after settlement.
 - Non-Windows behaviour and the existing scan contract are unchanged.
-- No orphaned `git` process remains after the extension stops.
+- No orphaned `git` process remains after a deadline that lands while the direct child is alive.
 
 ## Checks
 

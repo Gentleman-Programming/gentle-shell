@@ -50,6 +50,17 @@ export const requiredPaths = [
   "assets/sounds/LICENSE.md",
   "docs/sound-notifications.md",
   "docs/sound-notifications-proposal.md",
+  "extensions/gentle-voice.ts",
+  "lib/voice-artifacts.ts",
+  "lib/voice-command.ts",
+  "lib/voice-install.ts",
+  "lib/voice-platform.ts",
+  "lib/voice-session.ts",
+  "lib/voice-ui.ts",
+  // The dictation worker is spawned by path, never imported, so nothing else
+  // would notice it missing from the packed tarball.
+  "scripts/voice-worker.cjs",
+  "docs/voice.md",
   "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",

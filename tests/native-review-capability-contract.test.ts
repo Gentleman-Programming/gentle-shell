@@ -103,9 +103,10 @@ test("2.4.0 repeats 2.2.3 because the START envelope Pi consumes still omits ris
 	//             the envelope carries, not a capability it lost.
 	//   delivery  `review validate --gate pre-commit` still answers
 	//             `gentle-ai.review-gate-result/v1` with
-	//             `delivery: "disabled/unmanaged"` at exit 0. Under opt-in RDD
-	//             this is now the DEFAULT delivery answer for an install that
-	//             never enabled review, so the column matters more, not less.
+	//             `delivery: "disabled/unmanaged"` at exit 0. RDD is on by
+	//             default again since gentle-ai v4.0.0, so this is the answer
+	//             for an install that turned review off, and the column still
+	//             matters.
 	//
 	// riskEvidence and hint stay dark for exactly the reason the 2.2.0 comment
 	// gives, re-proven rather than inherited: the negotiated

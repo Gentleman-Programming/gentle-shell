@@ -12,6 +12,15 @@ Run `gentle-shell update` to update the Pi this launcher runs. It also works whe
 
 Unknown or ambiguous ownership, npm source/link packages, and pnpm groups shared with other top-level packages refuse without installation changes. Separate groups in one aggregated listing are allowed. After the install, Shell reads the supplied Pi version back from a fresh listing and reports whether it changed. pnpm installs only releases older than its `minimumReleaseAge` setting (pnpm 11 defaults to 4320 minutes), so a very recent Pi release is picked up once it is old enough; Shell reports that rule instead of overriding it. Package managers run from the system temporary directory so a project's `packageManager` pin never changes which pnpm answers. Use the supplying package manager for source checkouts or unsupported layouts. `gentle-shell update --extensions-only` remains an extension-only Pi command; prefix-bundled Pi still updates with `gentle-shell upgrade`. See [managing packages](readme-reference.md#managing-packages) for the ownership contract.
 
+When the install fails, `update` names the package manager and the exact command it ran, then one sanitized line of that manager's own output. That line is the last error line (`Error:` or an `ERR_` code) in its stdout or stderr, stderr's when both have one, because npm prints its error on stderr while pnpm 11 prints `ERR_PNPM_*` on stdout. A warning on stderr never hides that error. Without any error line, it is the last line of stderr, else of stdout. Terminal escapes and control characters are removed, your home directory becomes `~`, and the line is at most 300 characters. For example:
+
+```text
+gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi/gentle-ai/main/packages/gentle-pi-<version>.tgz
+[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "gentle-pi@file:...". Use exact versions only.
+```
+
+`ERR_PNPM_INVALID_VERSION_UNION` during `update` usually means more than one pnpm is installed: an older pnpm on `PATH` cannot read the `allowBuilds` key a newer pnpm wrote to the global `pnpm-workspace.yaml`. Keep a single standalone pnpm.
+
 ## v2.6.0 workspace updates
 
 The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) makes the workspace state more durable and inspectable:

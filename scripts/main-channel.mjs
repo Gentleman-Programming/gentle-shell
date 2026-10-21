@@ -424,6 +424,21 @@ async function mainGo({ userGo, pinnedGo, acquire, run }) {
 	}
 }
 
+/** A thrown value's message when it has one (an Error or not), otherwise the value as text. */
+function describe(error) {
+	return typeof error?.message === "string" ? error.message : String(error);
+}
+
+/** `error` with `detail` appended to its message, keeping its code and cause; any
+ * other error becomes `main-upgrade-incomplete` with its message and itself as cause. */
+function withDetail(error, detail) {
+	if (!(error instanceof MainChannelError)) {
+		return new MainChannelError("main-upgrade-incomplete", `${describe(error)}; ${detail}`, error);
+	}
+	const message = error.message.slice(`${error.code}: `.length);
+	return new MainChannelError(error.code, `${message}; ${detail}`, error.cause);
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
@@ -478,11 +493,33 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+	// Fail forward (#2356): a Gentle AI step that fails still installs a main Shell that
+	// moved, so the retry runs the new Shell's code; the channel is recorded only when
+	// both steps succeed, so that retry rebuilds Gentle AI. Verification stays fail-closed.
+	// A flag, not the caught value: a rejection may be any value, even a falsy one.
+	let aiFailed = false;
+	let aiError;
+	if (!aiCurrent) {
+		try {
+			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+		} catch (error) {
+			if (shellCurrent) throw error;
+			aiFailed = true;
+			aiError = error;
+		}
+	}
 	if (!shellCurrent) {
-		const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
-		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
-		await installGlobal(manager, tgz, run);
+		try {
+			const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
+			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
+			await installGlobal(manager, tgz, run);
+		} catch (error) {
+			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
+		}
+	}
+	if (aiFailed) {
+		out(`Updated Gentle Shell to the latest main (${shellCommit.slice(0, 12)}); Gentle AI was not updated.`);
+		throw withDetail(aiError, `Gentle Shell was updated to main ${shellCommit.slice(0, 12)} but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
 	}
 	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);
 	out(`Updated to the latest main: ${summary}.`);

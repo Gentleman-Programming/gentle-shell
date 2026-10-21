@@ -149,6 +149,23 @@ test("a host missing a required dependency is refused as a layout problem", () =
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a required dependency that is not a directory is refused as a layout problem", () => {
+	const root = writeHost();
+	try {
+		const entry = join(root, "dist", "core", "extensions", "jiti-loader.js");
+		mkdirSync(dirname(entry), { recursive: true });
+		writeFileSync(entry, "");
+		for (const name of ["pi-ai", "pi-agent-core"]) {
+			mkdirSync(join(root, "node_modules", "@earendil-works", name), { recursive: true });
+		}
+		writeFileSync(join(root, "node_modules", "jiti"), "not a directory");
+		const result = runWorker(root);
+		assert.notEqual(result.status, 0, "a dependency that is not a directory must fail closed");
+		assert.match(result.stderr, /jiti is missing or not a directory/, "the error must name the dependency that is not a directory");
+		assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, "the layout must be reported, not a module resolution error");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("a mixed host names the audited version and the layout it needs", () => {
 	const root = writeHost({ tuiVersion: "1.2.1" });
 	try {

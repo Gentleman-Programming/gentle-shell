@@ -38,18 +38,22 @@ function hostPackage(piRoot, relative, expectedName) {
 	return { name: manifest.name, version: manifest.version };
 }
 
+function directoryAt(path) {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function requireHostLayout(piRoot) {
 	const dist = resolve(piRoot, "dist");
-	let isDirectory = false;
-	try {
-		isDirectory = statSync(dist).isDirectory();
-	} catch {}
-	if (!isDirectory) throw layoutError(piRoot, `${dist} is not a directory.`);
+	if (!directoryAt(dist)) throw layoutError(piRoot, `${dist} is not a directory.`);
 	const entry = resolve(dist, HOST_ENTRY);
 	if (!existsSync(entry)) throw layoutError(piRoot, `${entry} is missing.`);
 	for (const relative of HOST_DEPENDENCIES) {
 		const path = resolve(piRoot, relative);
-		if (!existsSync(path)) throw layoutError(piRoot, `${path} is missing.`);
+		if (!directoryAt(path)) throw layoutError(piRoot, `${path} is missing or not a directory.`);
 	}
 }
 

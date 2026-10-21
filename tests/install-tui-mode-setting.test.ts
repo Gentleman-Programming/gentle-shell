@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const helperUrl = new URL("../scripts/install-tui-mode-setting.mjs", import.meta.url);
-const { installTuiModeSetting } = await import(helperUrl.href);
+const { installTuiModeSetting, installIsolatedTuiModeSetting, DEFAULT_THEME_NAME, withIsolatedHomeDefaults } = await import(helperUrl.href);
 
 function fixture(t: { after(fn: () => void): void }, packagePath: readonly string[] = ["npm", "node_modules", "gentle-pi"]) {
 	const root = mkdtempSync(join(tmpdir(), "gentle-tui-test-"));
@@ -269,6 +269,62 @@ for (const fault of ["write", "rename", "concurrent-change"]) {
 	});
 }
 
+// --- installIsolatedTuiModeSetting -------------------------------------------
+// gentle-shell's own isolated-home bootstrap (T2): unlike installTuiModeSetting,
+// there is no "physically installed under this home's npm/node_modules"
+// ownership check to satisfy, because gentle-shell just created `dir` itself
+// moments ago; a plain agent-home-shaped temp directory is enough.
+
+test("installIsolatedTuiModeSetting writes fullscreen and the default Gentleman-Cute theme into a freshly created directory", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const dir = join(root, "gentle-shell", "agent");
+	mkdirSync(dir, { recursive: true });
+	assert.deepEqual(await installIsolatedTuiModeSetting(dir), { changed: true, recognized: true });
+	assert.deepEqual(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")), { tuiMode: "fullscreen", theme: "Gentleman-Cute" });
+});
+
+test("installIsolatedTuiModeSetting preserves other settings fields already present, including an existing theme", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "settings.json"), JSON.stringify({ tuiMode: "regular", theme: "rose" }));
+	assert.deepEqual(await installIsolatedTuiModeSetting(root), { changed: true, recognized: true });
+	assert.deepEqual(JSON.parse(readFileSync(join(root, "settings.json"), "utf8")), { tuiMode: "fullscreen", theme: "rose" });
+});
+
+// --- DEFAULT_THEME_NAME / withIsolatedHomeDefaults (pure, no filesystem) -----
+
+test("DEFAULT_THEME_NAME is Gentleman-Cute", () => {
+	assert.equal(DEFAULT_THEME_NAME, "Gentleman-Cute");
+});
+
+test("withIsolatedHomeDefaults sets fullscreen and the default theme on an empty settings object", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({}), { tuiMode: "fullscreen", theme: "Gentleman-Cute" });
+});
+
+test("withIsolatedHomeDefaults never overwrites an already-declared theme", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({ theme: "kanagawa" }), { tuiMode: "fullscreen", theme: "kanagawa" });
+});
+
+test("withIsolatedHomeDefaults preserves unrelated fields", () => {
+	assert.deepEqual(withIsolatedHomeDefaults({ packages: ["npm:example"] }), { tuiMode: "fullscreen", theme: "Gentleman-Cute", packages: ["npm:example"] });
+});
+
+test("installIsolatedTuiModeSetting is a no-op when already fullscreen", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	writeFileSync(join(root, "settings.json"), JSON.stringify({ tuiMode: "fullscreen" }));
+	const before = lstatSync(join(root, "settings.json"));
+	assert.deepEqual(await installIsolatedTuiModeSetting(root), { changed: false, recognized: true });
+	assert.equal(lstatSync(join(root, "settings.json")).ino, before.ino);
+});
+
+test("installIsolatedTuiModeSetting rejects a missing directory", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-shell-isolated-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	await assert.rejects(installIsolatedTuiModeSetting(join(root, "absent")));
+});
+
 type PostinstallRoute = "skip" | "success" | "failure";
 
 function writePostinstallFixture(f: ReturnType<typeof fixture>, route: PostinstallRoute) {
@@ -322,3 +378,18 @@ for (const [name, packagePath] of [
 		});
 	}
 }
+
+// #1258 / #2109: on recent Windows, lstat by path reports dev 0 while fstat on
+// the opened handle reports the volume serial, so settings.json looked replaced
+// and every `pi install npm:gentle-pi` postinstall exited 1.
+test("sameOpenedFile accepts the same Windows file whose path stat has no volume id", async () => {
+	const { sameOpenedFile } = await import("../scripts/install-tui-mode-setting.mjs");
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), true);
+	assert.equal(sameOpenedFile({ dev: 2384917313, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), true);
+	// A different file is still refused on Windows, and a known volume id still has to match.
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 43 }, "win32"), false);
+	assert.equal(sameOpenedFile({ dev: 7, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), false);
+	// POSIX keeps the full device and inode check.
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 42 }, "linux"), false);
+	assert.equal(sameOpenedFile({ dev: 66, ino: 42 }, { dev: 66, ino: 42 }, "darwin"), true);
+});

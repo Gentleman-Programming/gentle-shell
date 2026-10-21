@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, rename, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import test, { after, before } from "node:test";
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+
+// S5 (startup-home-repo-and-changes): startup review negotiation runs after
+// session_start returns and passes its deadline signal to native STATUS.
+// These tests observe negotiation outcomes, so they wait for it, and they
+// compare request contracts without the per-call signal.
+const settleStartup = () => __testing.startupNegotiationSettled();
+function withoutSignal<T>(request: T): T {
+	if (request === null || typeof request !== "object" || !("signal" in request)) return request;
+	const { signal: _signal, ...rest } = request as Record<string, unknown>;
+	return rest as T;
+}
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
@@ -29,8 +40,41 @@ type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 type SentMessage = { message: Record<string, unknown>; options: Record<string, unknown> };
 
+let fixtureCwd: string;
+let fixtureRoot: string | undefined;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(async () => {
+	const root = await mkdtemp(join(tmpdir(), "gentle-pi-preflight-"));
+	fixtureRoot = root;
+	fixtureCwd = join(root, "project");
+	const home = join(root, "home");
+	for (const directory of [fixtureCwd, home, join(fixtureCwd, "src"), join(fixtureCwd, "tests")]) await mkdir(directory);
+	await writeFile(join(fixtureCwd, "src/example.ts"), "export const value = 1;");
+	childProcess.execFileSync("git", ["init", "--quiet", fixtureCwd]);
+	fixtureCwd = realpathSync(fixtureCwd);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(async () => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) await rm(fixtureRoot, { recursive: true, force: true });
+});
+
 type CustomEntry = { type: string; customType: string; data: unknown };
-function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[] = []): {
+function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[] = [], processEnv?: NodeJS.ProcessEnv): {
 	handlers: Map<string, AnyHandler>;
 	sent: SentMessage[];
 	tools: Map<string, RegisteredTool>;
@@ -53,11 +97,16 @@ function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[]
 			sent.push({ message, options });
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
+	createGentleAiExtension({
+		nativeReviewCli,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Preflight fixtures must not spawn telemetry"),
+	})(pi);
 	return { handlers, sent, tools };
 }
 
-function ctx(sessionId: string, hasUI = true, cwd = process.cwd()): ExtensionContext {
+function ctx(sessionId: string, hasUI = true, cwd = fixtureCwd): ExtensionContext {
 	return {
 		cwd,
 		hasUI,
@@ -66,17 +115,32 @@ function ctx(sessionId: string, hasUI = true, cwd = process.cwd()): ExtensionCon
 	} as unknown as ExtensionContext;
 }
 
-async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>): Promise<T> {
+function toolContext(context: ExtensionContext): ExtensionToolContext {
+	return {
+		...context,
+		tools: [],
+		async executeTool() {
+			assert.fail("Review preflight must not execute nested tools");
+		},
+	};
+}
+
+async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	// Each call made three temp dirs and never removed them (87 left behind per suite run).
+	const created: string[] = [];
 	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-agent-home-"));
+	created.push(process.env.GENTLE_PI_AGENT_HOME);
 	// Isolates both the model-config sweep and the dev-binary registration
 	// lookup from this machine's real ~/.pi/gentle-ai, so `session_start`'s
 	// unrelated notifications never leak into these assertions.
 	process.env.GENTLE_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-config-home-"));
+	created.push(process.env.GENTLE_PI_CONFIG_HOME);
 	try {
 		const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-cwd-"));
-		childProcess.execFileSync("git", ["init", "--quiet", cwd]);
+		created.push(cwd);
+		if (initializeGit) childProcess.execFileSync("git", ["init", "--quiet", cwd]);
 		await mkdir(join(cwd, "src"));
 		await writeFile(join(cwd, "src/example.ts"), "export const value = 1;");
 		return await callback(cwd);
@@ -85,6 +149,7 @@ async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>): Pr
 		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		for (const dir of created) await rm(dir, { recursive: true, force: true });
 	}
 }
 
@@ -127,7 +192,7 @@ const agentEndEvent = { type: "agent_end", messages: [] };
 let mutationCall = 0;
 async function directWrite(handlers: Map<string, AnyHandler>, session: ExtensionContext): Promise<void> {
 	await handlers.get("tool_result")!({ type: "tool_result", toolName: "write", toolCallId: `own-${++mutationCall}`,
-		input: { path: session.cwd === process.cwd() || session.cwd === realpathSync(process.cwd()) ? "tests/review-agent-end-preflight.test.ts" : "src/example.ts" },
+		input: { path: "src/example.ts" },
 		content: [], isError: false }, session);
 }
 
@@ -138,7 +203,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 	test(`agent_end after approved acknowledgement: ${scenario}`, async (t) => {
 		const changedTarget = scenario === "changed";
 		const unsuccessful = scenario === "failed" || scenario === "unknown";
-		const cwd = realpathSync(process.cwd());
+		const cwd = fixtureCwd;
 		const siblingRoot = realpathSync(tmpdir());
 		if (scenario === "sibling-root") {
 			// Model a sibling worktree sharing the real common directory without
@@ -187,7 +252,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		const native = {
 			reviewMode: onMode("on"),
 			targetStatus: async (request: unknown) => {
-				statusRequests.push(request);
+				statusRequests.push(withoutSignal(request));
 				return burned ? executeStartStatus(nextTarget) : approved;
 			},
 			acknowledgeApproved: async (request: unknown) => {
@@ -210,8 +275,9 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		const review = tools.get("gentle_review");
 		assert.ok(review);
 		await directWrite(handlers, session);
-		const result = await review.execute("post-ack", { operation: "acknowledge-approved", lineageId }, undefined, undefined, session);
+		const result = await review.execute("post-ack", { operation: "acknowledge-approved", lineageId }, undefined, undefined, toolContext(session));
 		if (unsuccessful) {
+			assert.ok(typeof result.details === "object" && result.details !== null && "outcome" in result.details && "mutation_outcome" in result.details);
 			assert.equal(result.details.outcome, scenario === "failed" ? "native-operation-failed" : "native-mutation-status-reconciled");
 			assert.equal(result.details.mutation_outcome, scenario === "failed" ? "none" : "unknown");
 		} else assert.deepEqual(result.details, {
@@ -242,12 +308,29 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 	});
 }
 
+test("passive session events outside Git with RDD off never invoke native STATUS or initialize Git", async () => {
+	await withSessionStartEnv(async (cwd) => {
+		const calls: string[] = [];
+		const native = {
+			reviewMode: async () => { calls.push("reviewMode"); return onMode("off")!({} as never); },
+			targetStatus: async () => { calls.push("targetStatus"); return executeStartStatus("outside-git"); },
+		} as unknown as NativeReviewCli;
+		const { handlers } = harness(native);
+		const session = ctx("outside-git", true, cwd);
+		await handlers.get("session_start")!({ type: "session_start" }, session);
+		await settleStartup();
+		await handlers.get("agent_end")!(agentEndEvent, session);
+		assert.deepEqual(calls, [], "passive non-Git events need no native entry");
+		assert.equal(existsSync(join(cwd, ".git")), false, "passive events must not initialize Git");
+	}, false);
+});
+
 test("agent_end performs no STATUS call and sends nothing when RDD is off", async () => {
 	const statusRequests: unknown[] = [];
 	const native = {
 		reviewMode: onMode("off"),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			throw new Error("targetStatus must not be called when RDD is off");
 		},
 	} as unknown as NativeReviewCli;
@@ -265,7 +348,7 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: { agent?: string }) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			return executeStartStatus(targetIdentity);
 		},
 	} as unknown as NativeReviewCli;
@@ -285,6 +368,30 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 	assert.ok(content.includes(targetIdentity), "message must name the target identity");
 	assert.equal(entry?.options.triggerTurn, true);
 	assert.equal(statusRequests[0]?.agent, "pi");
+});
+
+// verify-always-rdd-high S2: automatic review is for high risk only. When the
+// native assessment reports review_due false (a medium or passive candidate),
+// agent_end never nudges; review_due true still nudges. An assessment that
+// cannot answer keeps the nudge, so a reminder is never lost to an error.
+test("agent_end nudges only when the native assessment reports review_due", async () => {
+	const targetIdentity = `sha256:${"b".repeat(64)}`;
+	for (const [label, assess, wantNudges] of [
+		["medium, not due", async () => ({ risk: "medium", reviewDue: false, reviewDueReason: "under_budget" }), 0],
+		["high, due", async () => ({ risk: "high", reviewDue: true, reviewDueReason: "high_risk" }), 1],
+		["assessment rejects", async () => { throw new Error("assess failed"); }, 1],
+	] as const) {
+		const native = {
+			reviewMode: onMode("on"),
+			targetStatus: async () => executeStartStatus(targetIdentity),
+			assess,
+		} as unknown as NativeReviewCli;
+		const { handlers, sent } = harness(native);
+		const session = ctx(`agent-end-review-due-${label.replace(/\W+/g, "-")}`);
+		await directWrite(handlers, session);
+		await handlers.get("agent_end")!(agentEndEvent, session);
+		assert.equal(sent.length, wantNudges, label);
+	}
 });
 
 test("agent_end nudges once per target identity and again for a fresh identity", async () => {
@@ -367,7 +474,7 @@ test("gentle-ai-worker agent_end never queries native review", async () => {
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			throw new Error("a bounded worker must not own native review");
 		},
 	} as unknown as NativeReviewCli;
@@ -377,6 +484,25 @@ test("gentle-ai-worker agent_end never queries native review", async () => {
 	const session = ctx("agent-end-generic-worker");
 	assert.equal(typeof beforeAgentStart, "function");
 	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "" }, session);
+	await directWrite(handlers, session);
+	await agentEnd!(agentEndEvent, session);
+	assert.deepEqual(statusRequests, []);
+	assert.deepEqual(sent, []);
+});
+
+test("agent_end sends nothing and performs no STATUS call when GENTLE_PI_AGENTS_CHILD is 1", async () => {
+	const statusRequests: unknown[] = [];
+	const native = {
+		reviewMode: onMode("on"),
+		targetStatus: async (request: unknown) => {
+			statusRequests.push(withoutSignal(request));
+			throw new Error("targetStatus must not be called in a child session");
+		},
+	} as unknown as NativeReviewCli;
+	const { handlers, sent } = harness(native, [], { GENTLE_PI_AGENTS_CHILD: "1" });
+	const agentEnd = handlers.get("agent_end");
+	assert.equal(typeof agentEnd, "function");
+	const session = ctx("agent-end-child");
 	await directWrite(handlers, session);
 	await agentEnd!(agentEndEvent, session);
 	assert.deepEqual(statusRequests, []);
@@ -455,12 +581,14 @@ for (const scenario of ["reload", "fork", "new", "off-branch"] as const) {
 			const first = harness(native, entries);
 			const session = ctx(`receipt-${scenario}`, true, cwd);
 			await first.handlers.get("session_start")!({}, session);
+			await settleStartup();
 			await directWrite(first.handlers, session);
 			await first.handlers.get("session_shutdown")!({ reason: "reload" }, session);
 			const resumed = harness(native, entries);
 			const next = ctx(scenario === "reload" || scenario === "off-branch" ? `receipt-${scenario}` : `replacement-${scenario}`, true, cwd);
 			if (scenario === "off-branch") next.sessionManager.getBranch = () => [];
 			await resumed.handlers.get("session_start")!({ reason: scenario }, next);
+			await settleStartup();
 			const beforeEnd = statusCalls;
 			await resumed.handlers.get("agent_end")!(agentEndEvent, next);
 			assert.equal(statusCalls - beforeEnd, scenario === "reload" ? 1 : 0);
@@ -520,13 +648,98 @@ for (const toolName of ["read", "bash", "subagent_run", "edit", "write"]) {
 	});
 }
 
+for (const mode of ["on", "off", "unknown", "missing", "malformed", "incompatible", "throws"] as const) {
+	test(`non-Git successful source write, never startup, prepares only with validated RDD on: ${mode}`, async () => {
+		await withSessionStartEnv(async (cwd) => {
+			const requests: unknown[] = [];
+			const native = {
+				reviewMode: mode === "missing" ? undefined : async () => {
+					if (mode === "throws") throw new Error("unavailable");
+					if (mode === "incompatible") throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, "review/mode", false, false, "incompatible");
+					if (mode === "malformed") return { status: { effective: "on", source: "unrecognized" } };
+					return { operation: "status", scope: "clone", status: { global: "", cloneLocal: "", effective: mode, source: "global" } };
+				},
+				targetStatus: async (request: unknown) => {
+					requests.push(request);
+					// The fake native owns bootstrap, not the extension.
+					childProcess.execFileSync("git", ["init", "--quiet", cwd]);
+					return executeStartStatus(`sha256:${"8".repeat(64)}`);
+				},
+			} as unknown as NativeReviewCli;
+			const { handlers, sent } = harness(native);
+			const session = ctx(`non-git-${mode}`, true, cwd);
+			await handlers.get("session_start")!({}, session);
+			await settleStartup();
+			assert.equal(requests.length, 0, "passive startup cannot bootstrap");
+			assert.equal(existsSync(join(cwd, ".git")), false);
+			await handlers.get("agent_end")!(agentEndEvent, session);
+			assert.equal(requests.length, 0, "conversation cannot bootstrap");
+			await directWrite(handlers, session);
+			assert.equal(requests.length, mode === "on" ? 1 : 0);
+			assert.equal(existsSync(join(cwd, ".git")), mode === "on");
+			assert.deepEqual(sent, [], "preparation alone does not remind");
+		}, false);
+	});
+}
+
+for (const path of ["odd/tasks/feature.md", "README.md", ".pi/settings.json", "memory.md", "secrets/app.ts", "../foreign.ts"]) {
+	test(`bookkeeping or unsafe write cannot prepare: ${path}`, async () => {
+		await withSessionStartEnv(async (cwd) => {
+			let calls = 0;
+			const h = harness({ reviewMode: onMode("on"), targetStatus: async () => { calls++; return stopStatus("unused"); } } as unknown as NativeReviewCli);
+			const session = ctx("non-source", false, cwd);
+			await h.handlers.get("session_start")!({}, session);
+			await settleStartup();
+			await h.handlers.get("tool_result")!({ toolName: "write", toolCallId: "bookkeeping", input: { path }, isError: false }, session);
+			assert.equal(calls, 0);
+			assert.equal(existsSync(join(cwd, ".git")), false);
+		}, false);
+	});
+}
+
+for (const initiallyGit of [true, false]) {
+	test(`source preparation never reinitializes established metadata after loss: initially Git=${initiallyGit}`, async () => {
+		await withSessionStartEnv(async cwd => {
+			let calls = 0;
+			const h = harness({ reviewMode: onMode("on"), targetStatus: async () => {
+				calls++; childProcess.execFileSync("git", ["init", "--quiet", cwd]); return stopStatus("prepared");
+			} } as unknown as NativeReviewCli);
+			const session = ctx("established-source", false, cwd);
+			await h.handlers.get("session_start")!({}, session);
+			await settleStartup();
+			if (!initiallyGit) { await directWrite(h.handlers, session); assert.equal(calls, 1); }
+			await rename(join(cwd, ".git"), join(cwd, "saved-git"));
+			calls = 0;
+			await directWrite(h.handlers, session);
+			assert.equal(calls, 0, "no native bootstrap STATUS after previously established Git disappears");
+			assert.equal(existsSync(join(cwd, ".git")), false, "lost metadata remains lost, not reinitialized");
+		}, initiallyGit);
+	});
+}
+
+test("headless successful source write prepares after binding without a reminder", async () => {
+	await withSessionStartEnv(async cwd => {
+		let calls = 0;
+		const h = harness({ reviewMode: onMode("on"), targetStatus: async () => {
+			calls++; childProcess.execFileSync("git", ["init", "--quiet", cwd]); return stopStatus("prepared");
+		} } as unknown as NativeReviewCli);
+		const session = ctx("headless-source", false, cwd);
+		await h.handlers.get("session_start")!({}, session);
+		await settleStartup();
+		await directWrite(h.handlers, session);
+		assert.equal(calls, 1);
+		assert.equal(existsSync(join(cwd, ".git")), true);
+		assert.deepEqual(h.sent, []);
+	}, false);
+});
+
 test("session_start negotiates the current target identity when RDD is on", async () => {
 	const targetIdentity = `sha256:${"2".repeat(64)}`;
 	const statusRequests: Array<{ agent?: string }> = [];
 	const native = {
 		reviewMode: onMode("on"),
 		targetStatus: async (request: { agent?: string }) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			return executeStartStatus(targetIdentity);
 		},
 	} as unknown as NativeReviewCli;
@@ -537,9 +750,10 @@ test("session_start negotiates the current target identity when RDD is on", asyn
 		const notifications: Array<{ message: string; severity: string }> = [];
 		const session = {
 			...ctx("session-baseline-record", true, cwd),
-			ui: { notify: (message: string, severity: string) => notifications.push({ message, severity }) },
+			ui: { ...ctx("session-baseline-record", true, cwd).ui, notify: (message: string, severity: string) => { notifications.push({ message, severity }); } },
 		};
 		await sessionStart!({}, session);
+		await settleStartup();
 		assert.equal(statusRequests[0]?.agent, "pi");
 		assert.deepEqual(sent, []);
 		assert.deepEqual(notifications, []);
@@ -559,6 +773,8 @@ test("agent_end skips pre-session work, then nudges after an own mutation", asyn
 		const session = ctx("session-baseline-skip", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		await agentEnd!(agentEndEvent, session);
 		assert.deepEqual(sent, [], "the baseline candidate predates the session and is not nudged");
 
@@ -582,7 +798,7 @@ for (const ownsMutation of [false, true]) {
 		const native = {
 			reviewMode: onMode("on"),
 			targetStatus: async (request: unknown) => {
-				statusRequests.push(request);
+				statusRequests.push(withoutSignal(request));
 				return executeStartStatus(targetIdentity);
 			},
 		} as unknown as NativeReviewCli;
@@ -596,6 +812,8 @@ for (const ownsMutation of [false, true]) {
 			assert.equal(typeof agentEnd, "function");
 
 			await sessionStart!({}, session);
+
+			await settleStartup();
 			assert.deepEqual(statusRequests, [{ cwd, agent: "pi" }], "startup records targetA separately");
 			assert.deepEqual(sent, []);
 			// Like host event delivery, an event without a subscriber is a no-op.
@@ -646,7 +864,7 @@ test("agent_end reminds for an own write after startup with RDD off", async () =
 			status: { global: "", cloneLocal: mode === "on" ? "on" : "", effective: mode, source: "clone_local" },
 		}),
 		targetStatus: async (request: unknown) => {
-			statusRequests.push(request);
+			statusRequests.push(withoutSignal(request));
 			if (mode === "off") throw new Error("targetStatus must not be called when RDD is off");
 			return executeStartStatus(targetIdentity);
 		},
@@ -658,6 +876,8 @@ test("agent_end reminds for an own write after startup with RDD off", async () =
 		const session = ctx("session-baseline-rdd-off", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		assert.deepEqual(statusRequests, []);
 
 		mode = "on";
@@ -706,6 +926,8 @@ test("session_shutdown does not turn the baseline into an own mutation", async (
 		const session = ctx("session-baseline-shutdown", true, cwd);
 
 		await sessionStart!({}, session);
+
+		await settleStartup();
 		await agentEnd!(agentEndEvent, session);
 		assert.deepEqual(sent, [], "the baseline candidate is skipped");
 

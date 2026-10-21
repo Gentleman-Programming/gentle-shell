@@ -312,7 +312,10 @@ test("bundled Pi theme maps roles to the subtle OpenCode gentleman theme", () =>
 	assert.equal(colors.accent, "blue");
 	assert.equal(colors.selectedBg, "selection");
 	assert.equal(colors.borderAccent, "blue");
-	assert.equal(colors.userMessageBg, "bgElement");
+	// The user prompt gets its own tinted surface: bgElement equals the terminal
+	// background here, so a prompt painted with it is invisible in the transcript.
+	assert.equal(colors.userMessageBg, "userMessageBg");
+	assert.notEqual(resolveThemeColor(theme, "userMessageBg"), vars.bg, "the user prompt must stand apart from the background");
 	assert.equal(colors.customMessageBg, "bgSubtle");
 	assert.notEqual(resolveThemeColor(theme, "borderAccent"), "#E0C15A");
 	assert.equal(colors.thinkingText, "muted");

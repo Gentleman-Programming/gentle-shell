@@ -9,7 +9,7 @@ export interface FakeChild {
 	child: ChildLike;
 	written: Array<Record<string, unknown>>;
 	emit(event: Record<string, unknown>): void;
-	exit(code: number): void;
+	exit(code: number | null, signal?: string | null): void;
 	fail(message: string): void;
 	killed: string[];
 	sent: Array<Record<string, unknown>>;
@@ -62,5 +62,5 @@ export function fakeChild(options: { exitOnKill?: boolean; pid?: number } = {}):
 			return child;
 		},
 	};
-	return { child, written, killed, sent, get disconnects() { return disconnects; }, message: (event) => emitter.emit("message", event), emit: (event) => stdout.write(`${JSON.stringify(event)}\n`), exit: (code) => emitter.emit("exit", code, null), fail: (message) => emitter.emit("error", new Error(message)) };
+	return { child, written, killed, sent, get disconnects() { return disconnects; }, message: (event) => emitter.emit("message", event), emit: (event) => stdout.write(`${JSON.stringify(event)}\n`), exit: (code, signal = null) => emitter.emit("exit", code, signal), fail: (message) => emitter.emit("error", new Error(message)) };
 }

@@ -1,26 +1,22 @@
 import { constants } from "node:fs";
-import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import { changesModel, type ChangedFile, type WorktreeChanges } from "./shell-changes.ts";
+import { SESSION_WORKTREE_ENTRY } from "./session-worktree-registry.ts";
 
+// Captured write/edit evidence of a session and its subagents. It feeds
+// session statistics and tells /gentle:changes which roots the session
+// touched; the files Changes lists always come from Git.
 export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";
-export const SESSION_CHANGE_EVENT = "gentle-pi:session-change";
 export const SESSION_CHANGE_RELAY = "gentle-pi:child-session-change";
 export const MAX_CHANGE_BYTES = 64 * 1024;
-// The panel shows FILES, so that is what is bounded. Counting mutation records
-// instead meant every repeat `write`/`edit` of a file already on screen spent a
-// slot, and a long session froze the panel well before it had touched 256
-// distinct files (#1043).
+// Files are what is bounded. Counting mutation records instead meant every
+// repeat `write`/`edit` of a file already captured spent a slot, so a long
+// session stopped capturing well before it had touched 256 distinct files
+// (#1043).
 const MAX_FILES = 256;
 const MAX_SESSION_BYTES = 4 * 1024 * 1024;
-// Which bound fired, said separately: the two have different remedies, and the
-// old shared wording read as though the session itself had failed.
-const FILE_LIMIT_NOTICE =
-	`Session change capture limit reached; ${MAX_FILES} files are tracked and later files are not. Earlier files keep updating.`;
-const BYTE_LIMIT_NOTICE =
-	"Session change capture limit reached; the snapshot budget is full and later changes are not captured.";
 const MAX_LINES = 2000;
 export type ChangeSnapshot = { kind: "text"; text: string } | { kind: "absent" } | { kind: "unavailable"; reason: string };
 export interface SessionChangeEvidence {
@@ -75,14 +71,30 @@ export function isSessionChangeEvidence(value: unknown): value is SessionChangeE
 export const sameSnapshot = (a: ChangeSnapshot, b: ChangeSnapshot): boolean =>
 	a.kind === b.kind && (a.kind === "absent" || (a.kind === "text" && b.kind === "text" && a.text === b.text));
 const snapshotText = (value: ChangeSnapshot) => value.kind === "text" ? value.text : "";
+const shown = (state: FileState) => Boolean(state.unavailable) || !sameSnapshot(state.before, state.after);
+
+/**
+ * Roots this session works in: its registered worktrees (own root, explicit and
+ * subagent registrations) and the roots of captured evidence (subagents in an
+ * independent repository). Only roots, never files.
+ */
+export function sessionChangeRoots(sessionId: string, entries: readonly Entry[]): string[] {
+	const roots = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || !entry.data || typeof entry.data !== "object") continue;
+		const data = entry.data as { sessionId?: unknown; root?: unknown; evidence?: unknown };
+		if (data.sessionId !== sessionId) continue;
+		if (entry.customType === SESSION_WORKTREE_ENTRY && typeof data.root === "string" && isAbsolute(data.root)) roots.add(data.root);
+		if (entry.customType === SESSION_CHANGE_ENTRY && isSessionChangeEvidence(data.evidence)) roots.add(data.evidence.root);
+	}
+	return [...roots];
+}
 
 export class SessionChanges {
 	private readonly seen = new Set<string>();
 	private readonly files = new Map<string, Map<string, FileState>>();
 	private trackedFiles = 0;
 	private bytes = 0;
-	private announced = false;
-	notice: string | undefined;
 	readonly sessionId: string;
 	private cached: WorktreeChanges[] | undefined;
 	constructor(sessionId: string, entries: readonly Entry[] = []) { this.sessionId = sessionId; this.restore(entries); }
@@ -97,24 +109,16 @@ export class SessionChanges {
 	record(evidence: SessionChangeEvidence): boolean {
 		if (!isSessionChangeEvidence(evidence) || this.seen.has(evidence.id)) return false;
 		const bytes = Buffer.byteLength(JSON.stringify(evidence));
-		if (this.bytes + bytes > MAX_SESSION_BYTES) {
-			this.notice = BYTE_LIMIT_NOTICE;
-			return false;
-		}
+		// Bounds session-file growth; Changes itself lists from Git without a cap.
+		if (this.bytes + bytes > MAX_SESSION_BYTES) return false;
 		let files = this.files.get(evidence.root);
 		const previous = files?.get(evidence.path);
-		// A file already on screen is admitted whatever the count is: refusing it
-		// froze the panel on a stale state rather than bounding anything, since
-		// the entry it would have updated is already held. Only a file that would
-		// be the 257th is turned away, and the byte budget above bounds the
-		// evidence a long session can keep whatever its shape.
-		// A write that changes nothing would not be tracked anyway, so it is not
-		// a file the cap turned away.
+		// A file already captured is admitted whatever the count is, so its
+		// session diff keeps up with later edits; only a file that would be the
+		// 257th is turned away. A write that changes nothing would not be
+		// captured anyway, so the cap does not turn it away either.
 		const noOp = sameSnapshot(evidence.before, evidence.after);
-		if (!noOp && !previous && this.trackedFiles >= MAX_FILES) {
-			this.notice = FILE_LIMIT_NOTICE;
-			return false;
-		}
+		if (!noOp && !previous && this.trackedFiles >= MAX_FILES) return false;
 		this.seen.add(evidence.id);
 		this.bytes += bytes;
 		if (noOp) return false;
@@ -133,13 +137,13 @@ export class SessionChanges {
 	}
 	private changed(root: string): ChangedFile[] {
 		return [...(this.files.get(root) ?? [])].flatMap(([path, state]) => {
-			if (!state.unavailable && sameSnapshot(state.before, state.after)) return [];
+			if (!shown(state)) return [];
 			const patch = this.patch(path, state);
 			const patchLines = patch.split("\n");
 			const firstHunk = patchLines.findIndex(line => line.startsWith("@@"));
 			const lines = firstHunk < 0 ? [] : patchLines.slice(firstHunk + 1);
 			return [{
-				path, diffRevision: createHash("sha256").update(patch).digest("hex"), status: state.before.kind === "absent" ? "added" as const : state.after.kind === "absent" ? "deleted" as const : "modified" as const,
+				path, status: state.before.kind === "absent" ? "added" as const : state.after.kind === "absent" ? "deleted" as const : "modified" as const,
 				added: state.unavailable ? 0 : lines.filter(line => line.startsWith("+")).length,
 				deleted: state.unavailable ? 0 : lines.filter(line => line.startsWith("-")).length,
 				...(state.unavailable ? { countsUnavailable: state.unavailable } : {}),
@@ -155,17 +159,6 @@ export class SessionChanges {
 	}
 	get model() {
 		const trees = this.worktrees;
-		return { ...changesModel(trees.flatMap(tree => tree.model.files.map(file => ({ ...file, path: trees.length === 1 ? file.path : tree.root + "/" + file.path })))), ...(this.notice ? { notice: this.notice } : {}) };
-	}
-	/** Return the capture-limit notice once, for a single user notification. The `notice` field stays set. */
-	takeNotice(): string | undefined {
-		if (!this.notice || this.announced) return undefined;
-		this.announced = true;
-		return this.notice;
-	}
-	async refresh() { return this.model; }
-	loadDiff(root: string, file: ChangedFile): string {
-		const state = this.files.get(root)?.get(file.path);
-		return state ? this.patch(file.path, state) : "No captured agent diff for this file.";
+		return changesModel(trees.flatMap(tree => tree.model.files.map(file => ({ ...file, path: trees.length === 1 ? file.path : tree.root + "/" + file.path }))));
 	}
 }

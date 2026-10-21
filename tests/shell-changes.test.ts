@@ -9,7 +9,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	CHANGE_STATUS,
 	ChangesTracker,
+	FILE_WORK_CONCURRENCY,
 	WorktreeChangesTracker,
+	UNKNOWN_BRANCH,
+	foreignRootBranch,
 	parseWorktrees,
 	changesSummary,
 	emptyChanges,
@@ -19,6 +22,7 @@ import {
 	changesModel,
 	snapshotChanges,
 	type ChangedFile,
+	type GitResult,
 } from "../lib/shell-changes.ts";
 
 // The changes view shows the working tree against HEAD, new files included,
@@ -72,6 +76,16 @@ test("parsePorcelain reads NUL-separated status entries including renames and un
 	);
 });
 
+test("parsePorcelain drops embedded-repository markers, never a real file", () => {
+	// Git reports a nested .git directory (an embedded/foreign repository, the
+	// live evidence's ~/work/NaN-builders inside ~/work) as one directory-shaped
+	// "?? path/" line, never expanded into files, even with --untracked-files=all.
+	// Treating that line as a changed file creates a phantom entry for whatever
+	// ancestor repository happens to contain the nested one.
+	const raw = ["?? NaN-builders/", "?? notes.md", " M lib/a.ts"].join("\0") + "\0";
+	assert.deepEqual([...parsePorcelain(raw).entries()], [["notes.md", CHANGE_STATUS.UNTRACKED], ["lib/a.ts", CHANGE_STATUS.MODIFIED]]);
+});
+
 test("snapshotChanges merges status with counts and keeps untracked files without counts", () => {
 	const files = snapshotChanges({
 		numstat: "4\t2\tlib/a.ts\n",
@@ -96,14 +110,6 @@ test("changesSummary and the widget describe the session at a glance", () => {
 	assert.equal(rest.length, 0);
 	assert.match(line, /^✎ 3 files · \+42 −7 · extensions\/gentle-shell\.ts · lib\/shell-bar\.ts · tests\/x\.test\.ts {2,}\/gentle:changes$/);
 	assert.equal(visibleWidth(line), 120, "the command sits on the right edge");
-});
-
-test("changesSummary and the widget surface the capture limit", () => {
-	const model = changesModel([file("a.ts", 1, 0)]);
-	model.notice = "Session change capture limit reached; additional changes are not displayed.";
-	assert.equal(changesSummary(model), "1 file · +1 −0 · capture limit reached");
-	assert.match(renderChangesWidget(model, plainTheme, 200)[0], /capture limit reached/);
-	assert.doesNotMatch(changesSummary(changesModel([file("a.ts", 1, 0)])), /capture limit reached/);
 });
 
 test("renderChangesWidget colors counts by direction and yields nothing when clean", () => {
@@ -153,6 +159,24 @@ test("ChangesTracker reads the working tree on start and again on refresh", asyn
 	assert.deepEqual(calls[1], ["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
 });
 
+test("ChangesTracker skips untracked dependency backups but preserves tracked edits and legitimate new files", async () => {
+	const backup = "node_modules.backup-20261007-192802/pkg/index.js";
+	const nestedBackup = "packages/app/node_modules.backup-local/pkg/index.js";
+	const tracked = "node_modules.backup-local/tracked.ts";
+	const legitimate = ["src/new.ts", "node_modules.backup-notes.md", "node_modules.backup-/new.ts"];
+	const { git } = fakeGit(
+		[`4\t2\t${tracked}\n`],
+		[[`?? ${backup}`, `?? ${nestedBackup}`, ` M ${tracked}`, ...legitimate.map((path) => `?? ${path}`)].join("\0") + "\0"],
+	);
+	const counted: string[] = [];
+	const tracker = new ChangesTracker(git, async (path) => { counted.push(path); return 3; });
+	await tracker.start();
+	assert.deepEqual(counted.sort(), [...legitimate].sort());
+	assert.deepEqual(tracker.model, changesModel([
+		file(tracked, 4, 2), ...legitimate.map((path) => file(path, 3, 0, CHANGE_STATUS.UNTRACKED)),
+	]));
+});
+
 test("ChangesTracker stays quiet outside a git repository", async () => {
 	const { git, calls } = fakeGit([""], [""], 128);
 	const tracker = new ChangesTracker(git);
@@ -196,6 +220,7 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	assert.equal(tracker.model.files.length, 2, "identical filenames in different roots remain distinct");
 	assert.equal(new Set(tracker.model.files.map((file) => file.path)).size, 2);
 	assert.ok(!calls.includes("/pruned") && !calls.includes("/bare"));
+	assert.deepEqual(tracker.failedRoots, ["/gone"], "a registered root Git cannot read is a failure, not a clean root");
 	roots += "worktree /new\0branch refs/heads/new\0\0";
 	registered.push("/new");
 	await tracker.refresh();
@@ -205,6 +230,29 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	await tracker.refresh();
 	assert.deepEqual(tracker.worktrees, []);
 	assert.deepEqual(tracker.model, emptyChanges());
+});
+
+test("a root whose Git status fails or rejects is kept apart from clean roots", async () => {
+	let broken = true;
+	const tracker = new WorktreeChangesTracker(async () => ({ stdout: "", code: 0 }), (root) => async (args) => {
+		if (broken && root === "/rejects") throw new Error("git timed out");
+		if (broken && root === "/fails" && args[0] === "status") return { stdout: "", code: 128 };
+		return { stdout: args[0] === "status" && root === "/dirty" ? "?? a.ts\0" : "", code: 0 };
+	}, undefined, () => ["/dirty", "/clean", "/fails", "/rejects"]);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/dirty"]);
+	assert.deepEqual([...tracker.failedRoots].sort(), ["/fails", "/rejects"], "a failed scan is not a clean root");
+	assert.equal(tracker.scannedRootCount, 4);
+	broken = false;
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRoots, [], "a later successful scan clears the failure");
+});
+
+test("no registered root is neither a failure nor a scan", async () => {
+	const tracker = new WorktreeChangesTracker(async () => { throw new Error("no Git expected"); }, () => async () => { throw new Error("no Git expected"); });
+	await tracker.start();
+	assert.deepEqual(tracker.failedRoots, []);
+	assert.equal(tracker.scannedRootCount, 0);
 });
 
 test("only registered worktrees are scanned, with whole preexisting and untracked contents", async () => {
@@ -230,7 +278,7 @@ test("worktree refresh shares one scan so polling faster than discovery cannot p
 		scans++;
 		if (scans === 2) await new Promise<void>((resolve) => { release = resolve; });
 		return { stdout: "", code: 0 };
-	}, () => async () => ({ stdout: "", code: 0 }));
+	}, () => async () => ({ stdout: "", code: 0 }), undefined, () => ["/root"]); // A root to scan; none means no Git at all.
 	await tracker.start();
 	const first = tracker.refresh();
 	const overlapping = tracker.refresh();
@@ -263,6 +311,114 @@ test("registration during an in-flight status scan is included before refresh re
 
 test("worktree porcelain preserves unusual directory names and detached fallback", () => {
 	assert.deepEqual(parseWorktrees("worktree /a\nbranch strange\0HEAD abc\0detached\0\0"), [{ root: "/a\nbranch strange" }]);
+});
+
+// A GitRunner that cannot even ask (root removed, git missing, the runner
+// itself rejecting) must reject foreignRootBranch too -- never resolve to the
+// same undefined a genuinely detached HEAD produces. Swallowing the two into
+// one shape is exactly the bug: the caller has no way left to tell "asked and
+// there is no branch" from "could not ask at all".
+test("foreignRootBranch propagates a GitRunner failure instead of reporting detached", async () => {
+	const failing = async (): Promise<GitResult> => { throw new Error("git unavailable"); };
+	await assert.rejects(() => foreignRootBranch(failing), /git unavailable/);
+});
+
+test("foreignRootBranch still reports a genuine detached HEAD as undefined, not a failure", async () => {
+	const detached = async (args: string[]): Promise<GitResult> => (args[0] === "symbolic-ref" ? { stdout: "", code: 1 } : { stdout: "deadbeef\n", code: 0 });
+	assert.equal(await foreignRootBranch(detached), undefined);
+});
+
+// C3 (odd/tasks/usage-click-and-changes-attribution.md): a root registered by
+// the session but absent from a single `git worktree list` scan -- because it
+// belongs to a different Git clone entirely, e.g. an inner repository nested
+// inside an outer one -- must not default to "detached". It must be asked
+// directly, and "no commits yet" must read differently from a real branch.
+test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
+	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
+		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
+		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
+		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
+	];
+	for (const scenario of scenarios) {
+		await t.test(scenario.name, async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }), // /foreign never appears in this clone's own worktree list
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "status") return { stdout: "?? changed.ts\0", code: 0 };
+					if (args[0] === "symbolic-ref") return scenario.symbolic;
+					if (args[0] === "rev-parse") return scenario.verify;
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
+			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
+		});
+	}
+});
+
+// The direct per-root ask (for a root missing from worktree list) can fail on
+// its own -- root gone, git unavailable -- independently of the change scan
+// that already found real files. That failure must label the root
+// UNKNOWN_BRANCH, distinct from "detached", and must never drop the
+// already-captured changes.
+test("a root missing from worktree list keeps its changes and reads UNKNOWN_BRANCH when the direct ask fails", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "", code: 0 }),
+		() => async (args) => {
+			if (args[0] === "status") return { stdout: "?? changed.ts\0", code: 0 };
+			if (args[0] === "diff") return { stdout: "", code: 0 };
+			throw new Error("git unavailable"); // symbolic-ref / rev-parse: the direct branch ask
+		},
+		undefined,
+		() => ["/foreign"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", UNKNOWN_BRANCH]]);
+	assert.equal(tracker.worktrees[0]!.model.files.length, 1, "a failed branch lookup must not drop the root's real changes");
+});
+
+// A root already described by the same clone's own worktree list is trusted
+// as-is: a real "detached" marker there is already 100% accurate, so no
+// redundant per-root call is needed (and none happens).
+test("a root already described by worktree list is trusted without a redundant lookup", async () => {
+	const calls: string[][] = [];
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /known\0detached\0\0", code: 0 }),
+		() => async (args) => {
+			calls.push(args);
+			return { stdout: args[0] === "status" ? "?? changed.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/known"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/known", undefined]]);
+	assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a known worktree-list entry must not trigger a fallback call");
+});
+
+// The live evidence: an outer repo (~/work, no commits) whose ONLY change is
+// the embedded inner repository (~/work/NaN-builders) itself must never show
+// up as a phantom tree once the embedded-repo marker is filtered out of its
+// own file list -- it never had a real file to show in the first place.
+test("an outer ancestor whose only change is the embedded inner repository is never a phantom tree", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "", code: 0 }), // neither root belongs to the other's clone
+		(root) => async (args) => {
+			if (args[0] !== "status") return { stdout: "", code: 0 };
+			// The outer root's only "change" is the nested repo directory marker;
+			// the inner root has a real file of its own.
+			return { stdout: root === "/outer" ? "?? NaN-builders/\0" : "?? jpg-png-converter.md\0", code: 0 };
+		},
+		undefined,
+		() => ["/outer", "/outer/NaN-builders"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/outer/NaN-builders"]);
 });
 
 test("registered roots remain scannable during metadata discovery failure", async () => {
@@ -355,4 +511,42 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(model.files, [file("empty.md", 0, 0, CHANGE_STATUS.UNTRACKED), file("notes.md", 3, 0, CHANGE_STATUS.UNTRACKED)]);
 	assert.equal(model.added, 3);
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
+});
+
+test("ChangesTracker counts lines and reads revisions for every file with bounded concurrency", async () => {
+	const paths = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.ts`);
+	const porcelain = [" M tracked.ts\0", ...paths.map((path) => `?? ${path}\0`)].join("");
+	const git = async (args: string[]) => ({ stdout: args[0] === "status" ? porcelain : "4\t1\ttracked.ts\n", code: 0 });
+	const pending = new Map<string, number>();
+	const counted: string[] = [];
+	let maxFiles = 0;
+	let overlapped = false;
+	// Every per-file call stays pending for a moment, so concurrent work overlaps.
+	const work = async <T>(path: string, result: () => T): Promise<T> => {
+		pending.set(path, (pending.get(path) ?? 0) + 1);
+		if (pending.get(path)! > 1) overlapped = true;
+		maxFiles = Math.max(maxFiles, pending.size);
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		const left = pending.get(path)! - 1;
+		if (left === 0) pending.delete(path); else pending.set(path, left);
+		return result();
+	};
+	const tracker = new ChangesTracker(git, (path) => work(path, () => {
+		counted.push(path);
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return 2;
+	}), (path) => work(path, () => {
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return `rev:${path}`;
+	}));
+	await tracker.start();
+	const files = new Map(tracker.model.files.map((entry) => [entry.path, entry]));
+	assert.equal(maxFiles, FILE_WORK_CONCURRENCY, "files run concurrently up to the limit, never past it");
+	assert.equal(FILE_WORK_CONCURRENCY, 8);
+	assert.ok(overlapped, "a file's line count and revision lookup run together");
+	assert.deepEqual([...counted].sort(), paths, "every untracked file is counted once; tracked files keep numstat counts");
+	assert.equal(files.size, 31);
+	assert.deepEqual(files.get("tracked.ts"), { ...file("tracked.ts", 4, 1), diffRevision: "rev:tracked.ts" });
+	assert.deepEqual(files.get("file-07.ts"), file("file-07.ts", 0, 0, CHANGE_STATUS.UNTRACKED), "a failing lookup keeps its fallback");
+	for (const path of paths.filter((path) => path !== "file-07.ts")) assert.deepEqual(files.get(path), { ...file(path, 2, 0, CHANGE_STATUS.UNTRACKED), diffRevision: `rev:${path}` });
 });

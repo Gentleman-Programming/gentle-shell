@@ -97,7 +97,30 @@ const TONE_COLOR: Record<Tone, string> = {
 };
 
 // Two border glyphs ("│ " and " │") plus the padding space on each side.
-const CARD_PADDING = 4;
+export const CARD_PADDING = 4;
+
+/** Commands card chrome shared with other fullscreen overlay panels. */
+export function renderPaletteCard(lines: string[], width: number, theme?: CommandPaletteTheme): string[] {
+	const innerWidth = Math.max(1, width - CARD_PADDING);
+	const border = (text: string) => theme ? theme.fg("border", text) : text;
+	const horizontal = "─".repeat(innerWidth + 2);
+	return [border(`╭${horizontal}╮`), ...lines.map((content) => {
+		const visible = visibleWidth(stripAnsi(content));
+		const fitted = visible > innerWidth ? truncateToWidth(content, innerWidth, "…", true) : content + " ".repeat(innerWidth - visible);
+		return `${border("│")} ${fitted} ${border("│")}`;
+	}), border(`╰${horizontal}╯`)];
+}
+
+export function renderPaletteSelection(label: string, width: number, focused: boolean, theme?: CommandPaletteTheme): string {
+	const safe = sanitizeTerminalText(label);
+	if (focused && theme?.bg) {
+		const row = truncateToWidth(`  ${safe}`, width, "…", true);
+		return theme.bg("selectedBg", row + " ".repeat(Math.max(0, width - visibleWidth(stripAnsi(row)))));
+	}
+	const prefix = focused ? (theme ? theme.fg("accent", "▸ ") : "▸ ") : "  ";
+	const text = truncateToWidth(safe, Math.max(0, width - 2), "…", true);
+	return prefix + (theme ? theme.fg("text", text) : text);
+}
 const CARD_BORDER_ROWS = 2;
 // Fixed content rows outside the grouped match list: header, query/search,
 // a blank row, a blank row before the footer, and the footer itself.
@@ -194,7 +217,7 @@ export class CommandPalette {
 	render(width: number): string[] {
 		const innerWidth = Math.max(1, width - CARD_PADDING);
 		const maxTotalLines = Math.max(MIN_TOTAL_ROWS, Math.floor(this.rowsFn() * HEIGHT_RATIO));
-		return this.renderCard(this.renderBody(innerWidth, maxTotalLines), innerWidth);
+		return renderPaletteCard(this.renderBody(innerWidth, maxTotalLines), width, this.theme);
 	}
 
 	/**
@@ -305,18 +328,6 @@ export class CommandPalette {
 		const used = leftWidth + gap + rightWidth;
 		const trailingPad = Math.max(0, width - used);
 		return `${left}${" ".repeat(gap)}${right}${" ".repeat(trailingPad)}`;
-	}
-
-	private renderCard(lines: string[], innerWidth: number): string[] {
-		const horizontal = "─".repeat(innerWidth + 2);
-		const border = (text: string) => this.renderText(text, "border");
-		return [border(`╭${horizontal}╮`), ...lines.map((content) => `${border("│")} ${this.fitStyledLine(content, innerWidth)} ${border("│")}`), border(`╰${horizontal}╯`)];
-	}
-
-	private fitStyledLine(content: string, width: number): string {
-		const visible = visibleWidth(stripAnsi(content));
-		if (visible > width) return truncateToWidth(content, Math.max(1, width), "…", true);
-		return `${content}${" ".repeat(Math.max(0, width - visible))}`;
 	}
 
 	private renderLine(text = "", width: number, tone?: Tone): string {

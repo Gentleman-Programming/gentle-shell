@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
@@ -27,6 +28,24 @@ import {
 	decodeReviewStartV3,
 	type ReviewStatusV3,
 } from "../lib/review-integration-v2.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
+
+test("coordination suites isolate Windows ACL authority with teardown", () => {
+	for (const file of ["native-review-parity", "review-controller-native-routing", "review-session-standing-permission-controller"]) {
+		const source = readFileSync(new URL(`./${file}.test.ts`, import.meta.url), "utf8");
+		assert.match(source, /import \{ setWindowsAclAuthorityForTesting \} from/, file);
+		assert.match(source, /after\(\(\) => setWindowsAclAuthorityForTesting\(\)\)/, file);
+	}
+});
 
 const CAPTURED_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
 
@@ -181,8 +200,6 @@ interface ParityRuntime {
 interface ParityRuntimeOptions {
 	candidateViews?: CandidateViewRegistry;
 	pendingReviewConsentRegistry?: PendingReviewConsentRegistry;
-	now?: () => number;
-	scheduleTimer?: (callback: () => void, delayMs: number) => { unref: () => void };
 }
 
 function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityRuntimeOptions = {}): ParityRuntime {
@@ -193,8 +210,6 @@ function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityR
 		nativeReviewCli,
 		candidateViews: options.candidateViews ?? new CandidateViewRegistry(),
 		pendingReviewConsentRegistry: options.pendingReviewConsentRegistry ?? new PendingReviewConsentRegistry(),
-		now: options.now,
-		scheduleTimer: options.scheduleTimer,
 	} as unknown as Parameters<typeof createGentleAiExtension>[0];
 	__testing.createGentleAiExtension(dependencies)({
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
@@ -222,7 +237,9 @@ function repository(t: test.TestContext): string {
 
 function startStatus(cwd: string): ReviewStatusV3 {
 	const candidates = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const candidate = candidates.create({ contributorRoot: cwd });
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",
@@ -330,7 +347,7 @@ async function answerConsent(runtime: ParityRuntime, cwd: string, binding: unkno
 // that names itself and its exit. It still carries the current negotiated
 // STATUS as reconciliation context, but it never reads as a healthy
 // pre-start "ready".
-function assertStaleConsentBinding(outcome: Record<string, unknown>, binding: unknown, code: "consent-binding-unknown" | "consent-binding-expired" | "consent-binding-already-consumed"): void {
+function assertStaleConsentBinding(outcome: Record<string, unknown>, binding: unknown, code: "consent-binding-unknown" | "consent-binding-already-consumed"): void {
 	assert.equal(outcome.status, "blocked");
 	assert.equal(outcome.outcome, "consent-binding-stale");
 	assert.equal(outcome.consent_binding, binding);
@@ -344,11 +361,30 @@ function assertStaleConsentBinding(outcome: Record<string, unknown>, binding: un
 	assert.equal(outcome.next_action, "restart-for-fresh-consent");
 }
 
+test("synthetic default-ON status reaches review consent without changing RDD mode", async (t) => {
+	const cwd = repository(t);
+	const fixture = consentNative(cwd);
+	const operations: string[] = [];
+	fixture.native.reviewMode = async ({ operation }) => {
+		operations.push(operation);
+		return {
+			operation: "status",
+			scope: "clone",
+			status: { global: "", cloneLocal: "", effective: "on", source: "default" },
+		};
+	};
+	await beginConsent(parityRuntime(fixture.native), cwd);
+	assert.equal(fixture.starts.count, 1, "default ON must not skip native review START");
+	assert.ok(operations.length > 0);
+	assert.ok(operations.every((operation) => operation === "status"), "automation must only read RDD mode");
+	assert.deepEqual(fixture.answers, [], "default ON does not grant candidate consent");
+});
+
 test("review-mode gate retains every off-source continuation and fails closed on native errors", async () => {
 	for (const [source, expected] of [
 		["clone_local", /clear this clone-local override/],
 		["global", /cannot override a global off/],
-		["default", /off by default until explicitly enabled/],
+		["default", /RDD is on by default, but this install could not resolve the review mode and failed closed to off/],
 	] as const) {
 		const native = {
 			reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: source === "global" ? "off" : "", cloneLocal: source === "clone_local" ? "off" : "", effective: "off" as const, source } }),
@@ -658,7 +694,7 @@ test("unavailable and ambiguous consent follow-ups never replay a consumed bindi
 	assert.equal(statusCalls, callsBeforeStaleReconciliation + 1, "already-consumed binding reconciliation performs exactly one additional STATUS call");
 });
 
-test("concurrent answers atomically claim consent before review-mode gating and ignore a queued expiry callback", async (t) => {
+test("concurrent answers atomically claim consent before review-mode gating", async (t) => {
 	const cwd = repository(t);
 	const fixture = consentNative(cwd);
 	const candidateViews = new CandidateViewRegistry();
@@ -668,7 +704,6 @@ test("concurrent answers atomically claim consent before review-mode gating and 
 		cleanupCalls += 1;
 		cleanup(token);
 	};
-	const scheduled: Array<() => void> = [];
 	let releaseModeGate: (() => void) | undefined;
 	const modeGate = new Promise<void>((resolve) => { releaseModeGate = resolve; });
 	let modeCalls = 0;
@@ -683,13 +718,12 @@ test("concurrent answers atomically claim consent before review-mode gating and 
 	let nativeAnswerCalls = 0;
 	fixture.native.answerConsent = async (request) => {
 		nativeAnswerCalls += 1;
-		assert.equal(cleanupCalls, 0, "a queued expiry callback must not clean claimed candidate authority before the provider answer");
+		assert.equal(cleanupCalls, 0, "candidate authority remains live before the provider answer");
 		await providerGate;
 		return await nativeAnswer(request);
 	};
 	const runtime = parityRuntime(fixture.native, {
 		candidateViews,
-		scheduleTimer: (callback) => { scheduled.push(callback); return { unref() {} }; },
 	});
 	const blocked = await beginConsent(runtime, cwd);
 	fixture.native.reviewMode = async () => {
@@ -707,9 +741,7 @@ test("concurrent answers atomically claim consent before review-mode gating and 
 	assert.equal(modeCalls, 1, "the first answer pauses at the asynchronous review-mode gate");
 	const second = answerConsent(runtime, cwd, blocked.consent_binding, "declined");
 	await new Promise<void>((resolve) => setImmediate(resolve));
-	assert.equal(scheduled.length, 1);
-	scheduled[0]!();
-	assert.equal(cleanupCalls, 0, "a queued expiry callback is a harmless no-op after the answer claim");
+	assert.equal(cleanupCalls, 0, "claimed consent retains candidate authority until the answer settles");
 
 	releaseModeGate!();
 	releaseProvider!();
@@ -722,47 +754,19 @@ test("concurrent answers atomically claim consent before review-mode gating and 
 	assert.equal(cleanupCalls, 1, "only the answered binding cleans candidate authority");
 });
 
-test("timer-cleaned and synchronously pruned consent bindings remain expired within their session", async (t) => {
+test("unanswered consent remains reusable after the former deadline and answers only once", async (t) => {
 	const cwd = repository(t);
 	const fixture = consentNative(cwd);
-	const registry = new PendingReviewConsentRegistry();
-	const start = 1_000;
-	let now = start;
-	const scheduled: Array<() => void> = [];
-	const runtime = parityRuntime(fixture.native, {
-		pendingReviewConsentRegistry: registry,
-		now: () => now,
-		scheduleTimer: (callback) => { scheduled.push(callback); return { unref() {} }; },
-	});
+	const runtime = parityRuntime(fixture.native);
+	let now = 1_000;
+	t.mock.method(Date, "now", () => now);
 	const first = await beginConsent(runtime, cwd);
+	now += 24 * 60 * 60 * 1000;
 	const reused = await beginConsent(runtime, cwd);
 	assert.equal(reused.consent_binding, first.consent_binding);
-	assert.equal(scheduled.length, 1);
-	now += 10 * 60 * 1000;
-	// The real TTL callback drops the frozen candidate immediately. Its
-	// session-local disposition remains only to classify this stale answer.
-	scheduled[0]!();
-	const timerExpired = await answerConsent(runtime, cwd, first.consent_binding, "declined");
-	assert.equal(timerExpired.operation, "answer-consent");
-	assertStaleConsentBinding(timerExpired, first.consent_binding, "consent-binding-expired");
-	assert.match(String((timerExpired.diagnostics as { message?: unknown }).message), /expired after 10 minutes/);
-	const second = await beginConsent(runtime, cwd);
-	assert.notEqual(second.consent_binding, first.consent_binding);
-	assert.equal(scheduled.length, 2);
-	assertStaleConsentBinding(await answerConsent(runtime, cwd, first.consent_binding, "declined"), first.consent_binding, "consent-binding-expired");
-
-	// No second callback runs: START synchronously prunes this unused binding
-	// before it can reuse the frozen candidate, and its answer stays typed expiry.
-	now += 10 * 60 * 1000;
-	const third = await beginConsent(runtime, cwd);
-	assert.notEqual(third.consent_binding, second.consent_binding);
-	assertStaleConsentBinding(await answerConsent(runtime, cwd, second.consent_binding, "declined"), second.consent_binding, "consent-binding-expired");
-
-	const reloaded = parityRuntime(fixture.native, { pendingReviewConsentRegistry: new PendingReviewConsentRegistry() });
-	assertStaleConsentBinding(await answerConsent(reloaded, cwd, first.consent_binding, "declined"), first.consent_binding, "consent-binding-unknown");
-	const afterReload = await beginConsent(reloaded, cwd);
-	assert.notEqual(afterReload.consent_binding, third.consent_binding);
-	assert.equal(fixture.starts.count, 5);
+	const answered = await answerConsent(runtime, cwd, first.consent_binding, "declined");
+	assert.equal(answered.outcome, "consent-declined-this-candidate");
+	assertStaleConsentBinding(await answerConsent(runtime, cwd, first.consent_binding, "declined"), first.consent_binding, "consent-binding-already-consumed");
 });
 
 test("native START maps only provider facts and omits absent evidence", async (t) => {

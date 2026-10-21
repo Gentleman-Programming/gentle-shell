@@ -142,9 +142,12 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				const match = /^([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([A-Za-z0-9_-]{22})\.json$/.exec(entry.name);
+				// Foreign-schema records (orchestrator headers, activity, and discovery
+				// sidecars) share this directory without ever being activations, so
+				// only schema-matching entries count toward the spam guard.
 				if (!match) continue;
+				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), match[1], match[2]);
@@ -170,9 +173,11 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				const match = new RegExp(`^${id}\\.([A-Za-z0-9_-]{22})\\.json$`).exec(entry.name);
+				// Same shared-directory rule as listActivations: foreign-schema
+				// records are skipped before counting toward the cap.
 				if (!match) continue;
+				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), id, match[1]);

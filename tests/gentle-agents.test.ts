@@ -17,7 +17,7 @@ import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-t
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
@@ -4733,6 +4733,33 @@ test("registered orchestrator_list joins peer metadata without child launches or
 		assert.equal(h.userMessages.length, 0);
 		await h.fire("session_shutdown", ctx);
 	} finally { publisher.dispose(); }
+});
+
+test("orchestrator_list surfaces the real session-presence failure code", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-failure-")));
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => { throw new SessionPresenceError("busy", "presence registry is busy"); } };
+	runtime.deps.agentHome = profile;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	try {
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /session discovery is unavailable \(busy\)/);
+		assert.equal((result.details as { error?: string }).error, "unavailable");
+		assert.equal((result.details as { reason?: string }).reason, "busy");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
 });
 
 test("orchestrator_list labels a live peer that predates discovery publication (#2305)", async () => {

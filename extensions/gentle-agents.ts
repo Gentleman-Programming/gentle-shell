@@ -35,7 +35,7 @@ import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskSto
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
@@ -2099,8 +2099,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
-			} catch {
-				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+			} catch (error) {
+				// SessionPresenceError codes are a fixed enum with no record content,
+				// so surfacing the reason is safe and keeps diagnosis possible.
+				const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+				return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 			}
 		},
 	});
@@ -2158,8 +2161,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						recipient = candidates[index].sessionId;
 						activation = candidates[index];
 					}
-				} catch {
-					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				} catch (error) {
+					const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+					return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 				}
 			}
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });

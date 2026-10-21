@@ -164,6 +164,30 @@ test("isolates two sessions and bounds registry discovery at 65 entries", async 
 	await rejected(transport.resolve("capped"), "busy");
 });
 
+test("foreign-schema presence files never count toward the activation cap", async (t) => {
+	const transport = await registry(t);
+	// The orchestrator publisher shares this directory with a different naming
+	// schema (<sessionHash>.<incarnation>.<kind>.json, three files per peer),
+	// and long-lived profiles accumulate hundreds of those records. They are
+	// never transport activations, so they must not trip the spam guard.
+	const incarnation = (index: number) => `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
+	for (let index = 0; index < 80; index++) {
+		for (const kind of ["header", "activity", "discovery"]) {
+			await writeFile(join(transport.paths.presence, `${"b".repeat(64)}.${incarnation(index)}.${kind}.json`), "{}");
+		}
+	}
+	const self = await raw(t, transport, "self", null);
+	const peer = await raw(t, transport, "peer", null);
+	assert.deepEqual(await transport.list(self.sessionId), [{ sessionId: "peer", reachability: "unknown" }], "listing survives a foreign-schema flood and still sees real activations");
+	assert.deepEqual(await transport.resolve("peer"), peer);
+	// The cap still bounds real transport activations exactly as before: the
+	// 65 advertised here plus the two above overflow the guard for list, and
+	// the 65 same-ID records overflow it for resolve.
+	for (let index = 0; index < 65; index++) await transport.publish(await transport.record("capped", index + 10));
+	await rejected(transport.list(), "busy");
+	await rejected(transport.resolve("capped"), "busy");
+});
+
 test("rejects unsafe IDs, v1 schema violations, prototypes, and content-leaking errors", async (t) => {
 	const transport = await registry(t);
 	for (const id of ["", "/absolute", "a/b", "line\nbreak", "x".repeat(129)]) await rejected(transport.record(id), "invalid_session", id);

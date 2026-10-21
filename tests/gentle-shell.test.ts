@@ -5006,28 +5006,43 @@ test("a timed-out scan that ends with exit 0 still reports failure", async (t) =
 	assert.equal(result.stdout, "partial porcelain", "the partial output is still available for diagnostics");
 });
 
-test("a timed-out scan whose direct child already exited skips the tree kill", (t) => {
+test("a timed-out scan whose direct child already exited skips the tree kill", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const events: string[] = [];
+	let answer: ((error: Error | null, stdout: string, stderr: string) => void) | undefined;
+	// execFile answers only once every inherited pipe has closed, so the scan
+	// must stay pending until the last one is cut.
+	const closed = new Set<string>();
+	const cutPipe = (name: "stdout" | "stderr") => {
+		events.push(name);
+		closed.add(name);
+		if (closed.size === 2) answer?.(null, "", "");
+	};
+	let settled = false;
 	// taskkill walks the tree from a live parent, so with the direct child gone
 	// the call can only answer "process not found": the pipes are all that is left.
 	const exited = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
-		void command; void args; void options; void callback;
+		void command; void args; void options;
+		answer = callback;
 		return {
 			pid: 6,
 			exitCode: 0,
 			signalCode: null,
 			kill() { events.push("kill"); },
-			stdout: { destroy() { events.push("stdout"); } },
-			stderr: { destroy() { events.push("stderr"); } },
+			stdout: { destroy() { cutPipe("stdout"); } },
+			stderr: { destroy() { cutPipe("stderr"); } },
 		} as unknown as import("node:child_process").ChildProcess;
 	}) as typeof import("node:child_process").execFile;
 
-	void shellGitRunner("/big-repo", { PATH: process.env.PATH }, exited, Infinity, () => events.push("tree"))(["status"]);
+	const scan = shellGitRunner("/big-repo", { PATH: process.env.PATH }, exited, Infinity, () => events.push("tree"))(["status"]);
+	void scan.then(() => { settled = true; });
 	t.mock.timers.tick(5_000);
 	assert.deepEqual(events, [], "an exited direct child is not killed again");
+	await Promise.resolve();
+	assert.equal(settled, false, "the deadline alone does not settle the scan while a pipe is open");
 	t.mock.timers.tick(5_000);
 	assert.deepEqual(events, ["stdout", "stderr"], "the pipes are still cut so the scan can settle");
+	assert.equal((await scan).code, 1, "a timed-out scan stays a failure after the pipes are cut");
 });
 
 test("openInExternalEditor stops the TUI around the editor and honors $VISUAL over $EDITOR", () => {

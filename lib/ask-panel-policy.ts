@@ -37,14 +37,17 @@ export interface AskPanelResolution {
 	globalFile: string;
 }
 
+/** Accepts only indicator names supported by the minimized-panel renderer. */
 function isAskPanelIndicator(value: unknown): value is AskPanelIndicator {
 	return value === ASK_PANEL_INDICATOR.MINIMAL || value === ASK_PANEL_INDICATOR.TABBED || value === ASK_PANEL_INDICATOR.ANSWERS;
 }
 
+/** Rejects unknown startup policies rather than silently persisting a typo. */
 function isAskPanelDefaultState(value: unknown): value is AskPanelDefaultState {
 	return value === ASK_PANEL_DEFAULT_STATE.EXPANDED || value === ASK_PANEL_DEFAULT_STATE.AUTO || value === ASK_PANEL_DEFAULT_STATE.COLLAPSED;
 }
 
+/** Validates both preference values before the writer touches the filesystem. */
 function isAskPanelPreferences(value: unknown): value is AskPanelPreferences {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		&& isAskPanelIndicator((value as AskPanelPreferences).indicator)

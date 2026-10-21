@@ -1,14 +1,18 @@
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Duplex, Readable, Writable } from "node:stream";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { tmpdir, userInfo } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
+import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -16,12 +20,12 @@ import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_S
 // and enforces an inactivity watchdog per task.
 
 export interface ChildLike {
-	pid: number | undefined;
+	pid?: number;
 	connected?: boolean;
-	stdin: Writable;
-	stdout: Readable;
+	stdin: Writable | null;
+	stdout: Readable | null;
 	stderr: Readable | null | undefined;
-	stdio?: Array<Duplex | null | undefined>;
+	stdio?: Array<Readable | Writable | null | undefined>;
 	kill(signal?: NodeJS.Signals): boolean;
 	send?(message: Record<string, unknown>, callback?: (error: Error | null) => void): boolean;
 	disconnect?(): void;
@@ -35,6 +39,7 @@ export interface SpawnOptions {
 	cwd: string;
 	env: NodeJS.ProcessEnv;
 	detached?: boolean;
+	windowsHide?: boolean;
 	stdio?: Array<"pipe" | "ignore" | "inherit" | "ipc" | "overlapped">;
 }
 
@@ -126,8 +131,23 @@ export interface TaskRequest {
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
-	// Untrusted narrowing intent; paths come only from matching host provenance.
+	// Host-provided only: the launcher's package injection signal (#1690) or
+	// the curated fallback. Never derived from tool input or agent definitions.
 	extensionPaths?: string[];
+	// Host-computed launch-layer token for the card (#2180): which profile layer
+	// supplied `model` (`binding`, `frozen:*`, `pin:*`, `declaration`, `profile`,
+	// `definition`, `default`). Same host-only provenance as `extensionPaths`:
+	// never derived from tool input or agent definitions.
+	modelSource?: string;
+	// Same host-only provenance as extensionPaths (#1690).
+	noExtensions?: boolean;
+	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
+	// queued or running it claims them in `cwd`; run() rejects an overlapping
+	// claim (gentle-shell#1731). Read-only agents leave this unset.
+	writerSurfaces?: readonly string[];
+	// Canonical worktree root the claim is keyed to; the parent computes it before
+	// run() so admission stays synchronous. Defaults to `cwd`.
+	writerRoot?: string;
 	// Synchronous admission recheck at dequeue, before any OS spawn. Throws fail
 	// only this task; unlike onLaunch, it must never persist Changes evidence.
 	beforeSpawn?: () => void;
@@ -188,6 +208,8 @@ interface LiveTask {
 	childExit: number | null | undefined;
 	childExitSignal?: string | null;
 	instructionsTransportDir?: string;
+	/** The child's own TMPDIR, removed when the child ends unless its exit is unconfirmed. */
+	scratchDir?: string;
 	cleanupDeadlineAt: number | undefined;
 	quarantined: boolean;
 	nextId: number;
@@ -216,10 +238,13 @@ const MAX_TRANSPORT_PREFIX_CHARS = 64;
 const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
 const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
+/** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
+export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
+const QUARANTINE_PROBE_MS = 1_000;
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -255,14 +280,53 @@ export function formatChildExit(code: number | null | undefined, signal?: string
 
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
+// The --tools value, or undefined when Pi keeps its default tools.
+function requestedTools(request: TaskRequest): string | undefined {
+	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
+	return tools.length > 0 ? tools.join(",") : undefined;
+}
+
+const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
+
+/** Resolve one already installed, explicitly requested package. Pi's own loader
+ * follows its manifest and supplies SDK aliases; no install or ambient discovery. */
+function requestedWebPackagePaths(request: TaskRequest): string[] {
+	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
+	try {
+		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
+			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
+			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");
+		}
+		const manager = new DefaultPackageManager({
+			cwd: request.cwd,
+			agentDir,
+			settingsManager: SettingsManager.inMemory(),
+		});
+		const installed = manager.getInstalledPath("npm:pi-web-access", "user");
+		return installed ? [realpathSync(installed)] : [];
+	} catch {
+		// Missing/incompatible package remains an observable child capability gap.
+		return [];
+	}
+}
+
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
 	const args = ["--mode", "rpc", "--session-dir", request.sessionDir];
-	for (const path of request.extensionPaths ?? []) args.push("--extension", path);
+	const extensionPaths = [...new Set(request.extensionPaths ?? [])];
+	for (const packagePath of requestedWebPackagePaths(request)) {
+		const injected = extensionPaths.some(path => {
+			try { return realpathSync(resolve(request.cwd, path)) === packagePath; }
+			catch { return false; }
+		});
+		if (!injected) extensionPaths.push(packagePath);
+	}
+	args.push(...childPackageExtensionArgs({ noExtensions: request.noExtensions === true, extensionPaths }));
 	if (request.resumeSessionPath) args.push("--session", request.resumeSessionPath);
 	if (request.model) args.push("--model", request.thinking ? `${formatModelRef(request.model)}:${request.thinking}` : formatModelRef(request.model));
 	else if (request.thinking) args.push("--thinking", request.thinking);
-	const tools = request.agent.tools.length > 0 ? [...new Set([...request.agent.tools, PARENT_NOTIFICATION_TOOL])] : DEFAULT_TOOLS;
-	if (tools.length > 0) args.push("--tools", tools.join(","));
+	const tools = requestedTools(request);
+	if (tools !== undefined) args.push("--tools", tools);
 	if (instructionsPath) {
 		args.push("--append-system-prompt", instructionsPath);
 	} else if (request.agent.instructions.length > 0) {
@@ -325,6 +389,7 @@ export class AgentRunner {
 	private readonly waiters = new Map<string, Array<(task: TaskRecord) => void>>();
 	private readonly queryWaiters = new Map<string, Array<(query: TaskQuery | undefined) => void>>();
 	private readonly firstQueries = new Map<string, TaskQuery>();
+	private readonly writers = new WriterSurfaceRegistry();
 	private counter = 0;
 
 	constructor(store: TaskStore, limits: RunnerLimits, deps: RunnerDeps, hooks: RunnerHooks) {
@@ -351,6 +416,8 @@ export class AgentRunner {
 			startedAt: null,
 			endedAt: null,
 			model: formatModelRef(request.model),
+			// Copied, never recomputed: the layer token was resolved once at the seam (#2180).
+			...(request.modelSource === undefined ? {} : { modelSource: request.modelSource }),
 			thinking: request.thinking,
 			sessionPath: request.resumeSessionPath ?? null,
 			error: null,
@@ -366,8 +433,15 @@ export class AgentRunner {
 		return task;
 	}
 
+	// Check and claim happen in this one synchronous call, so two launches can
+	// never both pass admission for overlapping surfaces; finish() releases.
 	run(request: TaskRequest): TaskRecord {
+		if (request.writerSurfaces) {
+			const conflicts = this.writers.conflicts(request.writerRoot ?? request.cwd, request.writerSurfaces);
+			if (conflicts.length) throw new Error(writerSurfaceConflictMessage(conflicts));
+		}
 		const task = this.createTask(request);
+		if (request.writerSurfaces) this.writers.claim(task.id, request.writerRoot ?? request.cwd, request.writerSurfaces);
 		this.queue.push({ task, request });
 		queueMicrotask(() => this.pump());
 		return task;
@@ -477,6 +551,9 @@ export class AgentRunner {
 		// Do not forward stale legacy child selection or authorization.
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
+		const tools = requestedTools(request);
+		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
+		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;
 		let instructionsTransportPath: string | undefined;
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
@@ -496,6 +573,22 @@ export class AgentRunner {
 				return;
 			}
 		}
+		// Harness roadmap T3: scratch the child makes with mktemp lands in its own
+		// TMPDIR, under the inherited one, so the runtime removes it at the end
+		// instead of asking the parent. Best effort: without it the child keeps
+		// the inherited TMPDIR.
+		let scratchDir: string | undefined;
+		try {
+			const inherited = request.env.TMPDIR?.trim();
+			// A relative TMPDIR would resolve against this process, not the child cwd.
+			// A short name and no real path: socket paths under TMPDIR are capped near 104 bytes.
+			scratchDir = mkdtempSync(join(inherited && isAbsolute(inherited) ? inherited : tmpdir(), SUBAGENT_SCRATCH_PREFIX));
+			// Session shutdown keeps it while it is held (extensions/session-scratch.ts).
+			holdSubagentScratch(scratchDir);
+			try { chmodSync(scratchDir, DIR_MODE); } catch { /* best effort */ }
+			env.TMPDIR = scratchDir;
+			if (this.processControl.platform === "win32") { env.TMP = scratchDir; env.TEMP = scratchDir; }
+		} catch { scratchDir = undefined; }
 		let child: ChildLike;
 		try {
 			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
@@ -503,18 +596,20 @@ export class AgentRunner {
 				cwd: request.cwd,
 				env,
 				detached,
+				windowsHide: true,
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
-			if (instructionsTransportDir) {
-				try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			for (const dir of [instructionsTransportDir, scratchDir]) {
+				if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
 			}
+			if (scratchDir) releaseSubagentScratch(scratchDir);
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
 			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -528,7 +623,7 @@ export class AgentRunner {
 		}
 		this.live.set(id, live);
 		const permissionPipe = child.stdio?.[3];
-		if (hasParentPermissionChannel && permissionPipe !== undefined && permissionPipe !== null) {
+		if (hasParentPermissionChannel && permissionPipe instanceof Duplex) {
 			live.permissionBroker = new ParentStandingReviewPermissionBroker(
 				{ readable: permissionPipe, writable: permissionPipe },
 				(repositoryIdentity) => this.live.get(id) === live && !live.terminal && request.authorizeParentStandingReviewPermission?.(repositoryIdentity) === true,
@@ -546,6 +641,11 @@ export class AgentRunner {
 			try { request.onLaunch?.(); }
 			catch (error) { this.requestStop(id, TASK_STATUS.FAILED, `could not register launched worktree: ${error instanceof Error ? error.message : String(error)}`); }
 		});
+		child.on("exit", (code, signal) => this.exited(id, code, signal));
+		if (!child.stdin || !child.stdout) {
+			this.requestStop(id, TASK_STATUS.FAILED, "could not start pi: missing RPC streams");
+			return;
+		}
 		child.stdin.on("error", () => {});
 		this.armStall(id, live);
 		const lines = new JsonLines((value) => this.receive(id, request, value));
@@ -556,7 +656,6 @@ export class AgentRunner {
 			const tail = live.stderrTail + chunk;
 			live.stderrTail = tail.length > STDERR_TAIL_MAX ? tail.slice(-STDERR_TAIL_MAX) : tail;
 		});
-		child.on("exit", (code, signal) => this.exited(id, code, signal));
 		void this.send(id, { type: "get_state" }).then((response) => {
 			const data = response.data as { sessionFile?: unknown; model?: { provider?: unknown; id?: unknown } | null; thinkingLevel?: unknown } | undefined;
 			if (response.success !== true || live.terminal || this.live.get(id) !== live || !data) return;
@@ -726,7 +825,7 @@ export class AgentRunner {
 
 	private write(live: LiveTask, payload: Record<string, unknown>): void {
 		try {
-			live.child.stdin.write(`${JSON.stringify(payload)}\n`);
+			live.child.stdin?.write(`${JSON.stringify(payload)}\n`);
 		} catch {
 			// the child is gone; the exit handler settles the task
 		}
@@ -926,7 +1025,8 @@ export class AgentRunner {
 		live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
 	}
 
-	private cleanupLive(live: LiveTask): void {
+	/** `exitProven` is true only in completeExit, after the child's exit was observed or its group is gone. */
+	private cleanupLive(live: LiveTask, exitProven = false): void {
 		live.permissionBroker?.close();
 		this.closeIpc(live);
 		live.cancelStall();
@@ -934,6 +1034,13 @@ export class AgentRunner {
 		if (live.instructionsTransportDir) {
 			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
 			live.instructionsTransportDir = undefined;
+		}
+		// A quarantined child's exit is unconfirmed: a live descendant may still
+		// hold files there, so its scratch stays until the exit is proven.
+		if (live.scratchDir && (!live.quarantined || exitProven)) {
+			try { rmSync(live.scratchDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			releaseSubagentScratch(live.scratchDir);
+			live.scratchDir = undefined;
 		}
 	}
 
@@ -959,16 +1066,30 @@ export class AgentRunner {
 		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
 			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);
+			else if (live.quarantined) live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
+			return;
+		}
+		this.completeExit(id, live);
+	}
+
+	// Quarantine stopped probing, and a descendant outlives the child's observed
+	// exit: no later event reports the group's end, so keep probing until it is
+	// gone, then release the slot and scratch.
+	private awaitQuarantinedGroup(id: string, live: LiveTask): void {
+		if (this.live.get(id) !== live) return;
+		if (this.groupExists(live)) {
+			live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
 			return;
 		}
 		this.completeExit(id, live);
 	}
 
 	private completeExit(id: string, live: LiveTask): void {
-		this.cleanupLive(live);
+		this.cleanupLive(live, true);
 		this.live.delete(id);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {
+			this.writers.release(id);
 			queueMicrotask(() => this.pump());
 			return;
 		}
@@ -978,6 +1099,9 @@ export class AgentRunner {
 	}
 
 	private finish(id: string, status: TaskRecord["status"], error: string | null, live?: LiveTask): void {
+		// A quarantined child may still be writing: its claim lives as long as its
+		// reserved slot and is released in completeExit on proven exit.
+		if (!live?.quarantined) this.writers.release(id);
 		const current = this.store.get(id);
 		if (!current || isFinished(current.status)) return;
 		const finished = this.store.update(id, { status, endedAt: this.deps.now(), error, lastStep: error ?? "done" });

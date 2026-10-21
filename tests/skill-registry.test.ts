@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { __testing } from "../extensions/skill-registry.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import skillRegistry, { __testing } from "../extensions/skill-registry.ts";
+
+// Registered startup reads process.env directly; a suite launched from a
+// delegated child must still exercise the parent paths (gentle-shell#1690).
+delete process.env.GENTLE_PI_AGENTS_CHILD;
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -115,34 +120,73 @@ test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async
 	);
 });
 
-test("findSkillFiles scans one skill directory level only", async () => {
+test("findSkillFiles scans flat skills and category-nested skills without descending further", async () => {
 	const root = join(tmpdir(), `gentle-pi-shallow-${Date.now()}`);
 	const skillPath = join(root, "docs", "SKILL.md");
 	const nestedSkillPath = join(root, "fixtures", "nested", "SKILL.md");
+	const deeperSkillPath = join(root, "fixtures", "nested", "deeper", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	mkdirSync(dirname(deeperSkillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
 	writeFileSync(nestedSkillPath, "---\nname: nested\ndescription: Nested fixture.\n---\n");
+	writeFileSync(deeperSkillPath, "---\nname: deeper\ndescription: Deeper fixture.\n---\n");
 
-	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath, nestedSkillPath]);
 });
 
-test("findSkillFiles follows symlinked skill directories", async (t) => {
+test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested collisions", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-precedence-${Date.now()}`);
+	const directSkillPath = join(cwd, "skills", "zeta", "SKILL.md");
+	const nestedSkillPath = join(cwd, "skills", "alpha", "duplicate", "SKILL.md");
+	mkdirSync(dirname(directSkillPath), { recursive: true });
+	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	writeFileSync(directSkillPath, "---\nname: duplicate\ndescription: Direct skill.\n---\n");
+	writeFileSync(nestedSkillPath, "---\nname: duplicate\ndescription: Nested skill.\n---\n");
+
+	await __testing.regenerateRegistry(cwd, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(directSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.doesNotMatch(registry, new RegExp(nestedSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("findSkillFiles does not descend into excluded categories", async () => {
+	const root = join(tmpdir(), `gentle-pi-excluded-category-${Date.now()}`);
+	for (const category of ["_shared", "skill-registry", "sdd-fixtures"]) {
+		const nestedSkillPath = join(root, category, "hidden", "SKILL.md");
+		mkdirSync(dirname(nestedSkillPath), { recursive: true });
+		writeFileSync(nestedSkillPath, "---\nname: hidden\ndescription: Hidden skill.\n---\n");
+	}
+
+	assert.deepEqual(await __testing.findSkillFiles(root), []);
+});
+
+test("findSkillFiles follows direct symlinked skills but not symlinked categories", async (t) => {
 	const root = join(tmpdir(), `gentle-pi-symlink-root-${Date.now()}`);
 	const realSkillDir = join(tmpdir(), `gentle-pi-symlink-target-${Date.now()}`);
+	const categoryTarget = join(tmpdir(), `gentle-pi-symlink-category-${Date.now()}`);
 	const linkedSkillDir = join(root, "linked");
 	const skillPath = join(linkedSkillDir, "SKILL.md");
 	mkdirSync(root, { recursive: true });
 	mkdirSync(realSkillDir, { recursive: true });
+	mkdirSync(join(categoryTarget, "nested"), { recursive: true });
 	writeFileSync(join(realSkillDir, "SKILL.md"), "---\nname: linked\ndescription: Linked skill.\n---\n");
+	writeFileSync(join(categoryTarget, "nested", "SKILL.md"), "---\nname: nested\ndescription: Nested skill.\n---\n");
 	try {
 		symlinkSync(realSkillDir, linkedSkillDir, "dir");
+		symlinkSync(categoryTarget, join(root, "category"), "dir");
 	} catch (error) {
 		t.skip(`symlink creation unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		return;
 	}
 
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+});
+
+test("only missing skill-file errors allow category scanning", () => {
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOENT" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOTDIR" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "EACCES" }), false);
 });
 
 test("skill registry watchers close on shutdown", async () => {
@@ -177,6 +221,8 @@ test("startup skip honors no skill registry controls", () => {
 		true,
 	);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], {}), false);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "1" }), true);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "0" }), false);
 });
 
 test("duplicate extension load is skipped only across different sources", () => {
@@ -322,10 +368,8 @@ test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-git-atl-${Date.now()}-`));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
-	// Initialize real git repo with a commit
+	// An empty index is sufficient; fixtures never need commits.
 	execSync("git init", { cwd, stdio: "ignore" });
-	writeFileSync(join(cwd, "README.md"), "# Test\n");
-	execSync("git add README.md && git -c user.name='Test' -c user.email='test@example.com' commit -m \"initial\"", { cwd, stdio: "ignore" });
 
 	const rootGitignore = join(cwd, ".gitignore");
 	const atlGitignore = join(cwd, ".atl", ".gitignore");
@@ -364,4 +408,305 @@ test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore
 		.map((l) => l.trim())
 		.filter((l) => l !== "" && !l.startsWith("#"));
 	assert.equal(updatedRules.at(-1), "*", "final active ignore rule must be *");
+});
+
+// Keep runtime scans inside an isolated home, including the existing watcher tests.
+const fixtureHome = mkdtempSync(join(tmpdir(), "gentle-pi-registry-home-"));
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
+const originalGitCeiling = process.env.GIT_CEILING_DIRECTORIES;
+process.env.GIT_CEILING_DIRECTORIES = tmpdir();
+process.env.HOME = fixtureHome;
+process.env.USERPROFILE = fixtureHome;
+test.after(() => {
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
+	if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+	else process.env.USERPROFILE = originalUserProfile;
+	if (originalGitCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+	else process.env.GIT_CEILING_DIRECTORIES = originalGitCeiling;
+});
+
+function registeredRegistry(cwd: string, suppressed = false) {
+	type Context = { cwd: string; hasUI: boolean; ui: { notify: (message: string, level?: string) => void } };
+	const events = new Map<string, (event: unknown, ctx: Context) => Promise<void>>();
+	const commands = new Map<string, { handler: (args: string, ctx: Context) => Promise<void> }>();
+	const notices: { message: string; level?: string }[] = [];
+	skillRegistry({
+		on: (name: string, handler: (event: unknown, ctx: Context) => Promise<void>) => events.set(name, handler),
+		registerCommand: (name: string, command: { handler: (args: string, ctx: Context) => Promise<void> }) => commands.set(name, command),
+		registerFlag: () => undefined,
+		getFlag: () => suppressed,
+	} as unknown as ExtensionAPI);
+	const ctx = { cwd, hasUI: true, ui: { notify: (message: string, level?: string) => notices.push({ message, level }) } };
+	return {
+		notices,
+		// Startup work runs after session_start returns; settle it for assertions.
+		start: async () => { await events.get("session_start")!(undefined, ctx); await __testing.startupSettled(); },
+		startOnly: () => events.get("session_start")!(undefined, ctx),
+		refresh: () => commands.get("skill-registry:refresh")!.handler("", ctx),
+		stop: () => events.get("session_shutdown")!(undefined, ctx),
+	};
+}
+
+function registryFixture(git = true, nested = false) {
+	const root = mkdtempSync(join(tmpdir(), "gentle-pi-protected-"));
+	if (git) execSync("git init", { cwd: root, stdio: "ignore" });
+	const cwd = nested ? join(root, "nested") : root;
+	mkdirSync(join(cwd, ".atl"), { recursive: true });
+	const skill = join(cwd, "skills", "local", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: local\ndescription: Initial skill.\n---\n");
+	return { root, cwd, skill, registry: join(cwd, ".atl", "skill-registry.md"), ignore: join(cwd, ".atl", ".gitignore") };
+}
+
+for (const target of ["registry", "ignore"] as const) {
+	test(`registered startup preserves tracked ${target} in nested cwd and explicit refresh remains intentional`, async (t) => {
+		const fixture = registryFixture(true, true);
+		writeFileSync(fixture[target], target === "registry" ? "Reviewed registry\n" : "!*.md\n");
+		execSync(`git add -f nested/.atl/${target === "registry" ? "skill-registry.md" : ".gitignore"}`, { cwd: fixture.root, stdio: "ignore" });
+		const before = readFileSync(fixture[target], "utf8");
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		assert.equal(readFileSync(fixture[target], "utf8"), before);
+		assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes(`.atl/${target === "registry" ? "skill-registry.md" : ".gitignore"}`) && message.includes("/skill-registry:refresh")));
+		if (target === "registry") assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+		await runtime.refresh();
+		assert.notEqual(readFileSync(fixture[target], "utf8"), before);
+		assert.ok(runtime.notices.some(({ message }) => message.includes("written to .atl/skill-registry.md")));
+	});
+}
+
+test("registered watcher protects registry tracked after a cache hit", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	await runtime.start();
+	const before = readFileSync(fixture.registry, "utf8");
+	execSync("git add -f .atl/skill-registry.md", { cwd: fixture.root, stdio: "ignore" });
+	runtime.notices.length = 0;
+	writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+	const deadline = Date.now() + 5000;
+	while (runtime.notices.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(readFileSync(fixture.registry, "utf8"), before);
+	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("/skill-registry:refresh")));
+	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+});
+
+for (const git of [true, false]) {
+	test(`registered startup and watcher regenerate normally in ${git ? "untracked Git" : "non-Git"} fixtures`, async (t) => {
+		const fixture = registryFixture(git);
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+		assert.equal(readFileSync(fixture.ignore, "utf8"), "*\n");
+		writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+		const deadline = Date.now() + 5000;
+		while (!readFileSync(fixture.registry, "utf8").includes("Changed skill") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.match(readFileSync(fixture.registry, "utf8"), /Changed skill/);
+	});
+}
+
+test("automatic forced freshness protects tracked cache without partial registry writes", async () => {
+	const fixture = registryFixture();
+	await __testing.regenerateRegistry(fixture.cwd, false);
+	const cache = join(fixture.cwd, ".atl", ".skill-registry.cache.json");
+	execSync("git add -f .atl/.skill-registry.cache.json", { cwd: fixture.root, stdio: "ignore" });
+	const beforeCache = readFileSync(cache, "utf8");
+	const beforeRegistry = readFileSync(fixture.registry, "utf8");
+	writeFileSync(fixture.skill, "---\nname: local\ndescription: Changed skill.\n---\n");
+	const result = await __testing.regenerateRegistry(fixture.cwd, true);
+	assert.equal(result.regenerated, false);
+	assert.match(result.warning ?? "", /\.atl\/\.skill-registry\.cache\.json/);
+	assert.equal(readFileSync(cache, "utf8"), beforeCache);
+	assert.equal(readFileSync(fixture.registry, "utf8"), beforeRegistry);
+});
+
+test("registered Git detection failure skips automatic writes and reports deliberate refresh", async (t) => {
+	const fixture = registryFixture(false);
+	writeFileSync(join(fixture.cwd, ".git"), "invalid gitfile\n");
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(existsSync(fixture.registry), false);
+	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes(".atl/.gitignore") && message.includes("/skill-registry:refresh")));
+	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+	await runtime.refresh();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+});
+
+for (const nested of [false, true]) {
+	test(`registered startup fails closed for broken Git redirect with nested=${nested}`, async (t) => {
+		const fixture = registryFixture(false, nested);
+		writeFileSync(join(fixture.root, ".git"), "gitdir: missing-git-directory\n");
+		const runtime = registeredRegistry(fixture.cwd);
+		t.after(() => runtime.stop());
+		await runtime.start();
+		for (const path of [fixture.ignore, fixture.registry, join(fixture.cwd, ".atl", ".skill-registry.cache.json")]) {
+			assert.equal(existsSync(path), false, `automatic startup must not create ${path}`);
+		}
+		assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("Resolve Git detection")));
+		assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
+	});
+}
+
+test("registered startup preserves tracked generated legacy source with accurate manual remedy", async (t) => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
+	mkdirSync(dirname(legacy), { recursive: true });
+	writeFileSync(legacy, source);
+	execSync("git add .pi/extensions/skill-registry.ts", { cwd: fixture.root, stdio: "ignore" });
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+	assert.ok(!runtime.notices.some(({ message }) => /quarantined/i.test(message)));
+	const warning = runtime.notices.find(({ message, level }) => level === "warning" && message.includes(".pi/extensions/skill-registry.ts"))?.message ?? "";
+	assert.match(warning, /manually.*tracked legacy extension/i);
+	assert.doesNotMatch(warning, /\/skill-registry:refresh/);
+	await runtime.refresh();
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+});
+
+for (const control of ["environment", "--no-skills", "-ns"]) {
+	test(`registered ${control} suppression skips startup writes and watchers`, async (t) => {
+		const fixture = registryFixture();
+		const runtime = registeredRegistry(fixture.cwd);
+		const previousEnv = process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		const previousArgv = process.argv;
+		if (control === "environment") process.env.GENTLE_PI_NO_SKILL_REGISTRY = "1";
+		else process.argv = [...process.argv, control];
+		t.after(() => {
+			process.argv = previousArgv;
+			if (previousEnv === undefined) delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+			else process.env.GENTLE_PI_NO_SKILL_REGISTRY = previousEnv;
+			return runtime.stop();
+		});
+		await runtime.start();
+		assert.equal(existsSync(fixture.registry), false);
+		assert.equal(existsSync(fixture.ignore), false);
+		assert.equal(__testing.activeWatcherCount(), 0);
+		await runtime.refresh();
+		assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+	});
+}
+
+// gentle-shell#1690: delegated rpc children have hasUI=true but must not write
+// .atl/, rename the legacy registry or start a watcher in the shared cwd.
+test("registered startup in a delegated child avoids writes, legacy rename and watchers", async (t) => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
+	writeFileSync(legacy, source);
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.registry), false);
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+});
+
+test("registered suppression avoids writes and watchers but permits explicit refresh", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd, true);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.registry), false);
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	await runtime.refresh();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+});
+
+// S7 CR4: the delayed regeneration after a legacy quarantine belongs to the
+// session that scheduled it; a shutdown before it fires cancels it.
+test("registered startup skips the delayed quarantine regeneration after shutdown", async () => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	writeFileSync(legacy, 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n');
+	const runtime = registeredRegistry(fixture.cwd);
+	await runtime.start();
+	assert.equal(existsSync(`${legacy}.disabled`), true, "the legacy registry was quarantined");
+	await runtime.stop();
+	rmSync(fixture.registry);
+	await new Promise((resolve) => setTimeout(resolve, 800));
+	assert.equal(existsSync(fixture.registry), false, "a shut-down session must not regenerate the registry");
+});
+
+// S4: regeneration must not hold Pi's serial session_start chain.
+test("registered startup returns before regenerating and settles to the same output", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.startOnly();
+	assert.equal(existsSync(fixture.registry), false, "session_start must not await regeneration");
+	await __testing.startupSettled();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+	assert.equal(readFileSync(fixture.ignore, "utf8"), "*\n");
+	assert.ok(runtime.notices.some(({ message }) => message === "Skill registry refreshed (1 skills)"));
+});
+
+// S4: a Git lookup that never answers (a repository rooted at HOME) takes the
+// existing fail-closed path instead of hanging.
+test("automatic Git tracking check times out into the fail-closed path", { skip: process.platform === "win32" }, async (t) => {
+	const fixture = registryFixture();
+	const bin = mkdtempSync(join(tmpdir(), "gentle-pi-slow-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	const previousTimeout = __testing.setGitTimeoutMs(200);
+	t.after(() => {
+		process.env.PATH = previousPath;
+		__testing.setGitTimeoutMs(previousTimeout);
+		rmSync(bin, { recursive: true, force: true });
+	});
+	const started = Date.now();
+	await assert.rejects(__testing.ensureAtlIgnored(fixture.cwd), /Cannot verify Git tracking/);
+	assert.ok(Date.now() - started < 2000, "the lookup must stop at its timeout");
+	assert.equal(existsSync(fixture.ignore), false);
+});
+
+// S2: a repository rooted at HOME makes every Git call scan the whole home.
+// Startup skips the automatic Git work there; deliberate refresh still works.
+test("registered startup skips Git work and watchers when the repository is rooted at HOME", async (t) => {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-registry-git-home-")));
+	execSync("git init", { cwd: home, stdio: "ignore" });
+	const cwd = join(home, "project");
+	const skill = join(cwd, "skills", "local", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: local\ndescription: Initial skill.\n---\n");
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	const runtime = registeredRegistry(cwd);
+	t.after(async () => {
+		await runtime.stop();
+		process.env.HOME = fixtureHome;
+		process.env.USERPROFILE = fixtureHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	await runtime.start();
+	assert.equal(existsSync(join(cwd, ".atl", ".gitignore")), false);
+	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+	await runtime.refresh();
+	assert.match(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"), /Initial skill/);
 });

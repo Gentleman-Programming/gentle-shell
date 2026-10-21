@@ -947,7 +947,7 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 		["status/v3", decodeReviewStatusV3],
 		["start/v3", decodeReviewStartV3],
 		["start/v4", decodeReviewStartV4],
-		["capabilities/v2", decodeReviewCapabilitiesV2],
+		["capabilities/v2", (value) => decodeReviewCapabilitiesV2(value, CAPTURED_DIGEST)],
 		["consent/v2", decodeReviewConsentV2],
 		["consent/v3", decodeReviewConsentV3],
 		["last-event-closure/v1", decodeReviewLastEventClosureV1],
@@ -1003,4 +1003,24 @@ test("v7 escalation strictly decodes all causes and optional refuter evidence", 
 	for (const version of [3, 5, 6]) {
 		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), schema: `gentle-ai.review-integration.status/v${version}` }), /not allowed/);
 	}
+});
+
+test("START/v4 accepts every risk reason code and signal the published start schema allows", () => {
+	// gentle-ai publishes dangerous_sink (code and signal) and agent_escalation
+	// (code and signal) in start-v4.schema.json; a high-risk START that names
+	// them must decode instead of failing as schema-incompatible (#5374).
+	const start = reviewingStartV4();
+	start.risk_reasons = [
+		{ code: "dangerous_sink", signal: "dangerous_sink", path: "auth/session.py" },
+		{ code: "hot_path", signal: "auth", path: "auth/session.py" },
+		{ code: "process_boundary", signal: "shell_process", path: "auth/session.py" },
+		{ code: "agent_escalation", signal: "agent_escalation" },
+	];
+	const decoded = decodeReviewStartV4(start);
+	assert.deepEqual(decoded.riskReasons.map((reason) => reason.code), ["dangerous_sink", "hot_path", "process_boundary", "agent_escalation"]);
+	assert.deepEqual(decoded.riskReasons.map((reason) => reason.signal), ["dangerous_sink", "auth", "shell_process", "agent_escalation"]);
+
+	const unknown = reviewingStartV4();
+	unknown.risk_reasons = [{ code: "code_from_a_newer_cli" }];
+	assert.throws(() => decodeReviewStartV4(unknown), /risk_reasons\[0\]\.code is unsupported/);
 });

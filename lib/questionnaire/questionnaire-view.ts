@@ -180,6 +180,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	private lineOwners: Array<LineOwner | undefined> = [];
 	private _focused = false;
 
+	/** Snapshots preferences and terminal height for one questionnaire invocation. */
 	constructor(options: QuestionnaireViewOptions) {
 		super();
 		this.questions = options.questions;
@@ -223,6 +224,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		return this.focusedQuestion;
 	}
 
+	/** Routes the panel toggle first; minimized panels accept only toggle or cancellation. */
 	handleInput(data: string): void {
 		if (this.completed || isKeyRelease(data)) return;
 
@@ -296,6 +298,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		}
 	}
 
+	/** Expands a clicked minimized bar without selecting or committing an answer. */
 	override handleMouse(event: TuiMouseEvent) {
 		if (this.completed) return undefined;
 		if (this.editingQuestion !== undefined) return this.editor.handleMouse(event);
@@ -340,6 +343,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		return undefined;
 	}
 
+	/** Renders the active presentation and rebuilds pointer ownership for its wrapped lines. */
 	override render(width: number): string[] {
 		const viewport = Math.max(1, width);
 		if (this.questions.length === 0) {
@@ -478,10 +482,12 @@ export class QuestionnaireView extends Container implements Focusable {
 		return `${this.accent("▸")} ${rest}`;
 	}
 
+	/** Short active-question chip used in the minimized bar, empty for an absent question. */
 	private activeHeader(): string {
 		return this.questions[this.focusedQuestion]?.header ?? "";
 	}
 
+	/** Counts authored options only; the always-present custom row is not an option. */
 	private activeOptionCount(): number {
 		return this.questions[this.focusedQuestion]?.options.length ?? 0;
 	}
@@ -499,6 +505,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		return this.keybindings?.getKeys?.("app.tools.expand")?.[0] ?? "ctrl+o";
 	}
 
+	/** Honors the injected expand binding; standalone views use the default Ctrl+O. */
 	private matchesToggle(data: string): boolean {
 		if (this.keybindings?.matches) return this.keybindings.matches(data, "app.tools.expand");
 		return matchesKey(data, "ctrl+o");
@@ -512,6 +519,7 @@ export class QuestionnaireView extends Container implements Focusable {
 		this.invalidate();
 	}
 
+	/** Drops stale pointer rows when presentation changes and restores editor focus. */
 	override invalidate(): void {
 		this.lineOwners = [];
 		super.invalidate();

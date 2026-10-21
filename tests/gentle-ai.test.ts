@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -14,9 +15,10 @@ import type {
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { PROFILES_KIND, PROFILES_VERSION } from "../lib/agent-profiles.ts";
-import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel">;
+import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, type CandidateViewRegistry } from "../lib/review-candidate-view.ts";
@@ -24,8 +26,34 @@ import { installPackageAssets } from "../lib/agent-assets.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 initTheme("dark");
+
+// Observe the actual UI boundary, not a guessed number of identity-read microtasks.
+function confirmationObserver() {
+	let count = 0;
+	const listeners = new Set<() => void>();
+	return {
+		observe() { count++; for (const listener of listeners) listener(); },
+		waitFor(expected: number): Promise<void> {
+			if (count >= expected) return Promise.resolve();
+			return new Promise((resolve, reject) => {
+				const deadline = setTimeout(() => {
+					listeners.delete(check);
+					reject(new Error(`Confirmation deadline: expected ${expected}, observed ${count}`));
+				}, 1000);
+				const check = () => {
+					if (count < expected) return;
+					clearTimeout(deadline);
+					listeners.delete(check);
+					resolve();
+				};
+				listeners.add(check);
+			});
+		},
+	};
+}
 
 function writeMarkdown(path: string, content: string): void {
 	mkdirSync(dirname(path), { recursive: true });
@@ -293,7 +321,7 @@ test("registered Gentle Review tools preserve result envelopes and preview usefu
 		{ manifest: encoded, sha256, cursor: 0 },
 		undefined,
 		undefined,
-		{ cwd: process.cwd() } as ExtensionContext,
+		{ cwd: process.cwd() } as unknown as ExtensionContext,
 	);
 	const visibleEnvelope = JSON.parse(result.content[0].text);
 	assert.deepEqual(visibleEnvelope, {
@@ -414,14 +442,23 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		{ provider: "openai", id: "beta" },
 		{ provider: "nan", id: "glm5.3" },
 	];
+	let onConfirm: (title: string, message: string) => Promise<boolean> = async () => true;
+	const confirmCalls: Array<[string, string]> = [];
 	const ctx = {
 		cwd: root,
 		hasUI: true,
+		// A real Pi session always has an id; the profiles panel resolves the
+		// session binding through it, so the fixture models one stable session.
+		sessionManager: { getSessionId: () => "session-panel" },
 		modelRegistry: {
 			getAvailable: async () => registryModels.filter((model) => model.provider === "openai"),
 			find: (provider: string, id: string) => registryModels.find((model) => model.provider === provider && model.id === id),
 		},
 		ui: {
+			confirm: async (title: string, message: string) => {
+				confirmCalls.push([title, message]);
+				return onConfirm(title, message);
+			},
 			notify(message: string, severity: string) { notifications.push({ message, severity }); },
 			input: async (title: string, placeholder?: string) => {
 				inputPrompts.push({ title, placeholder });
@@ -453,6 +490,8 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 		},
 		refuseSetModel() { setModelResult = false; },
 		rejectThinkingLevel() { thinkingRejects = true; },
+		confirmCalls,
+		onConfirm(handler: (title: string, message: string) => Promise<boolean>) { onConfirm = handler; },
 		onPanel(action: typeof onPanel) { onPanel = action; },
 		onInput(action: (panel: RoutingConsumerPanel) => void) { onInput = action; },
 		answerInputs(...answers: Array<string | undefined>) { inputAnswers.push(...answers); },
@@ -487,6 +526,7 @@ test("models saves and clears independent provider review roles without local ar
 		}
 		assert.match(initial, /Pi persisted default model/);
 		assert.match(initial, /Pi persisted default effort/);
+		panel.handleInput("j"); // Skip the snapshot-only orchestrator row.
 		for (const [index, model] of ["alpha", "beta"].entries()) {
 			panel.handleInput("j");
 			panel.handleInput("\r");
@@ -511,6 +551,7 @@ test("models saves and clears independent provider review roles without local ar
 
 	fixture.onInput((panel) => {
 		panel.handleInput("j");
+		panel.handleInput("j");
 		panel.handleInput("i");
 		panel.handleInput("\x13");
 	});
@@ -522,6 +563,7 @@ test("models saves and clears independent provider review roles without local ar
 	assertNoLocalArtifacts();
 
 	fixture.onInput((panel) => {
+		panel.handleInput("j");
 		panel.handleInput("j");
 		panel.handleInput("j");
 		panel.handleInput("i");
@@ -715,7 +757,7 @@ test("session startup reports invalid project routing without mutating the profi
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_PI_AGENTS_CHILD: "0" } })(pi);
 	const sessionStart = handlers.get("session_start");
 	assert.equal(typeof sessionStart, "function");
 	const notifications: Array<{ message: string; severity: string }> = [];
@@ -875,7 +917,7 @@ test("runtime guidance keeps review policy out of the static orchestrator and te
 	}
 
 	const orchestrator = readFileSync("assets/orchestrator.md", "utf8")
-		+ readFileSync("assets/orchestrator-delegation.md", "utf8");
+		+ readDelegationDetail();
 	assert.match(orchestrator, /injects the mirrored provider-bundle review execution contract/);
 	assert.match(orchestrator, /this package invents no lifecycle instructions/);
 	for (const lifecycleMarker of ["review-risk", "review-reliability", "review-resilience", "review-readability", "Authority-First Terminal Procedure", "reconcile-terminal-mirrors"]) {
@@ -969,7 +1011,10 @@ test("ordinary START adopts the committed-range selectors the provider just offe
 		targetStatus: async () => offeredCommittedRangeStatus(baseCommit, baseTree, candidateTree),
 		start: async (request: Record<string, unknown>) => { starts.push(request); return startedReviewResult(); },
 	} as unknown as NativeReviewCli;
-	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, native);
+	const parameters = validateToolArguments(registeredGentleTools().get("gentle_review"), {
+		type: "toolCall", id: "object-start", name: "gentle_review", arguments: { operation: "start", input: { mode: "ordinary" } },
+	});
+	const result = await __testing.executeReviewControllerOperation(parameters, cwd, native);
 	assert.equal(result.operation, "start");
 	assert.equal(starts.length, 1);
 	assert.equal(starts[0]?.baseRef, baseCommit);
@@ -1255,8 +1300,8 @@ test("model panel lists grow with the terminal height instead of a fixed window"
 		.renderSddModelPanel({}, models, agents, 100, undefined, 40)
 		.map(stripAnsi);
 	assert.equal(agentLines.length, 40);
-	// 40 rows minus 15 rows of chrome: every remaining row lists an agent or "Set all".
-	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=/.test(line)).length, 25);
+	// 40 rows minus 15 rows of chrome: agents, "Set all", and the orchestrator share the space.
+	assert.equal(agentLines.filter((line) => /(agent-\d\d|Set all agents)\s+model=|orchestrator\s+leave untouched/.test(line)).length, 25);
 	assert.ok(agentLines.some((line) => /x export/.test(line)));
 
 	const pickerLines = __testing
@@ -1321,7 +1366,7 @@ test("delivery commands bypass RDD under every mode outcome while command safety
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: { confirm: async () => true },
-		} as ExtensionContext;
+		} as unknown as ExtensionContext;
 
 		for (const command of commands) {
 			const result = await toolCall!({ toolName: "bash", input: { command } }, ctx);
@@ -1353,6 +1398,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 	const handlers = new Map<string, ToolCallHandler>();
 	const emitted: EmittedEvent[] = [];
 	const sequence: string[] = [];
+	const confirmation = confirmationObserver();
 	let confirm!: () => Promise<boolean>;
 	const pi = {
 		on(name: string, handler: ToolCallHandler) {
@@ -1363,7 +1409,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 				sequence.push(
 					channel === "herdr:blocked"
 						? `herdr:${"active" in data && data.active ? "active" : "inactive"}`
-						: `event:${data.state}`,
+						: `event:${"state" in data ? data.state : "unknown"}`,
 				);
 				emitted.push({ channel, data } as EmittedEvent);
 			},
@@ -1382,10 +1428,11 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 			ui: {
 				confirm: async () => {
 					sequence.push("confirm");
+					confirmation.observe();
 					return confirm();
 				},
 			},
-		} as ExtensionContext;
+		} as unknown as ExtensionContext;
 		let resolveConfirmation!: (approved: boolean) => void;
 		confirm = () => new Promise<boolean>((resolve) => { resolveConfirmation = resolve; });
 		const denied = toolCall!({
@@ -1393,7 +1440,7 @@ test("guarded command confirmation emits a generic correlated permission lifecyc
 			input: { command: "git rebase main --secret-command-content" },
 		}, ctx);
 
-		await Promise.resolve();
+		await confirmation.waitFor(1);
 		assert.equal(emitted[0].channel, "pi-permission-system:permission-request");
 		assert.equal(emitted[0].data.state, "waiting");
 		assert.deepEqual(emitted[1], {
@@ -1497,6 +1544,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 	const createHarness = () => {
 		const handlers = new Map<string, ToolCallHandler>();
 		const emitted: EmittedEvent[] = [];
+		const confirmation = confirmationObserver();
 		const confirmations: Array<(approved: boolean) => void> = [];
 		const pi = {
 			on(name: string, handler: ToolCallHandler) {
@@ -1507,7 +1555,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			registerTool() {},
 		} as unknown as ExtensionAPI;
 		createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: "0" }, nativeReviewCli: null })(pi);
-		return { handlers, emitted, confirmations };
+		return { handlers, emitted, confirmations, confirmation };
 	};
 	const first = createHarness();
 	const second = createHarness();
@@ -1517,12 +1565,15 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 			cwd,
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => {
+					confirmations.push(resolve);
+					(confirmations === first.confirmations ? first : second).confirmation.observe();
+				}),
 			},
-		} as ExtensionContext);
+		} as unknown as ExtensionContext);
 		const firstRequest = first.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main" } }, context(first.confirmations));
 		const secondRequest = first.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main --another-command" } }, context(first.confirmations));
-		await Promise.resolve();
+		await first.confirmation.waitFor(2);
 		assert.deepEqual(first.emitted.map(({ channel, data }) => ({ channel, state: data.state, active: data.active })), [
 			{ channel: "pi-permission-system:permission-request", state: "waiting", active: undefined },
 			{ channel: "herdr:blocked", state: undefined, active: true },
@@ -1545,7 +1596,7 @@ test("concurrent guarded confirmations coalesce the Herdr lifecycle per extensio
 		]);
 
 		const independentRequest = second.handlers.get("tool_call")!({ toolName: "bash", input: { command: "git rebase main --independent-command" } }, context(second.confirmations));
-		await Promise.resolve();
+		await second.confirmation.waitFor(1);
 		assert.equal(second.emitted.filter(({ channel }) => channel === "herdr:blocked").length, 1);
 		assert.equal(second.emitted.find(({ channel }) => channel === "herdr:blocked")?.data.active, true);
 		assert.equal(second.confirmations.length, 1);
@@ -1652,6 +1703,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		const handlers = new Map<string, ToolCallHandler>();
 		const eventHandlers = new Map<string, (data: unknown) => void>();
 		const herdrEvents: HerdrBlockedEvent[] = [];
+		const confirmation = confirmationObserver();
 		const confirmations: Array<(approved: boolean) => void> = [];
 		const pi = {
 			on(name: string, handler: ToolCallHandler) {
@@ -1676,10 +1728,10 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); confirmation.observe(); }),
 			},
-		} as ExtensionContext;
-		return { confirmations, context, herdrEvents, pi, toolCall: handlers.get("tool_call")! };
+		} as unknown as ExtensionContext;
+		return { confirmations, confirmation, context, herdrEvents, pi, toolCall: handlers.get("tool_call")! };
 	};
 
 	const guardedFirst = createHarness();
@@ -1687,7 +1739,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		{ toolName: "bash", input: { command: "git rebase main" } },
 		guardedFirst.context,
 	);
-	await Promise.resolve();
+	await guardedFirst.confirmation.waitFor(1);
 	guardedFirst.pi.events.emit("rpiv:ask-user:blocked", { active: true });
 	guardedFirst.confirmations[0]!(true);
 	assert.equal(await guardedRequest, undefined);
@@ -1708,7 +1760,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		const request = overlap.toolCall(
 			{ toolName: "bash", input: { command: "git rebase main" } }, overlap.context,
 		);
-		await Promise.resolve();
+		await overlap.confirmation.waitFor(1);
 		for (const channel of channels.filter((channel) => channel !== lastChannel)) {
 			overlap.pi.events.emit(channel, { active: false });
 			overlap.pi.events.emit(channel, { active: false });
@@ -1728,7 +1780,7 @@ test("Herdr preserves the initial label and balanced edges across overlapping so
 		{ toolName: "bash", input: { command: "git rebase main" } },
 		questionnaireFirst.context,
 	);
-	await Promise.resolve();
+	await questionnaireFirst.confirmation.waitFor(1);
 	questionnaireFirst.pi.events.emit("rpiv:ask-user:blocked", { active: false });
 	questionnaireFirst.confirmations[0]!(false);
 	await questionnaireRequest;
@@ -1748,6 +1800,7 @@ test("closed choice blockers retain the visible choice label through guarded-con
 	const eventHandlers = new Map<string, (data: unknown) => void>();
 	const herdrEvents: HerdrBlockedEvent[] = [];
 	const choiceEvents: Array<{ active: boolean }> = [];
+	const confirmation = confirmationObserver();
 	const confirmations: Array<(approved: boolean) => void> = [];
 	const pi = {
 		on(name: string, handler: ToolCallHandler) {
@@ -1785,11 +1838,11 @@ test("closed choice blockers retain the visible choice label through guarded-con
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: {
-				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); }),
+				confirm: async () => new Promise<boolean>((resolve) => { confirmations.push(resolve); confirmation.observe(); }),
 			},
-		} as ExtensionContext,
+		} as unknown as ExtensionContext,
 	);
-	await Promise.resolve();
+	await confirmation.waitFor(1);
 	assert.equal(confirmations.length, 1);
 	assert.deepEqual(herdrEvents, [{ active: true, label: "Choice awaiting input" }]);
 
@@ -1837,12 +1890,12 @@ test("permission lifecycle is inactive for unguarded and headless commands", asy
 			cwd,
 			hasUI: false,
 			ui: { confirm },
-		} as ExtensionContext), undefined);
+		} as unknown as ExtensionContext), undefined);
 		assert.deepEqual(await toolCall!({ toolName: "bash", input: { command: "git rebase main" } }, {
 			cwd,
 			hasUI: false,
 			ui: { confirm },
-		} as ExtensionContext), {
+		} as unknown as ExtensionContext), {
 			block: true,
 			reason: "Gentle AI safety policy requires interactive confirmation before this command.",
 		});
@@ -1897,7 +1950,7 @@ test("bash tool_call confirms a late guarded npm publish and denies on non-appro
 				return false;
 			},
 		},
-	} as ExtensionContext;
+	} as unknown as ExtensionContext;
 
 	const prefix = "noise ".repeat(80);
 	const command = `${prefix}npm publish --tag beta`;
@@ -1949,7 +2002,7 @@ test("bash tool_call confirms every compound action and centers a long git -C pu
 			cwd: process.cwd(),
 			hasUI: true,
 			ui: { confirm: async (title: string, message: string) => (confirmArgs.push([title, message]), false) },
-		} as ExtensionContext);
+		} as unknown as ExtensionContext);
 		assert.deepEqual(result, {
 			block: true,
 			reason: "Gentle AI safety policy blocked the command because it was not confirmed.",
@@ -1973,9 +2026,11 @@ function applyOnce(
 	fixture: { onInput(action: (panel: { handleInput(data: string): void }) => void): void },
 ): void {
 	let visits = 0;
+	// gentle-shell#1064: Enter now binds the parent session, so the legacy global
+	// apply these tests exercise is the explicit `a` key.
 	fixture.onInput((panel) => {
 		visits += 1;
-		panel.handleInput(visits === 1 ? "\r" : "\x1b");
+		panel.handleInput(visits === 1 ? "a" : "\x1b");
 	});
 }
 
@@ -2035,6 +2090,9 @@ test("applying a profile persists its orchestrator and never leaks the key into 
 			worker: { model: "openai/alpha" },
 		},
 	});
+	// Every global apply now confirms, so this populated apply approves the
+	// dialog explicitly before running.
+	fixture.onConfirm(async () => true);
 	applyOnce(fixture);
 	await fixture.run("gentle:profiles");
 
@@ -2060,6 +2118,8 @@ test("applying a profile persists its orchestrator and never leaks the key into 
 		{ kind: "model", provider: "nan", id: "glm5.3" },
 		{ kind: "thinking", level: "max" },
 	], "the live session switches to the profile's orchestrator");
+	assert.equal(fixture.confirmCalls.length, 1, "every global apply asks for confirmation");
+	assert.match(fixture.confirmCalls[0]?.[0] ?? "", /Apply profile/);
 });
 
 test("applying a profile whose orchestrator model is unknown to the registry persists the default and says the session did not switch", async (t) => {
@@ -2123,6 +2183,624 @@ test("a profile store entry with only the orchestrator key counts zero roles", a
 	const applied = fixture.notifications.at(-1)?.message ?? "";
 	assert.match(applied, /0 agents updated/);
 	assert.match(applied, /Orchestrator set to nan\/glm5\.3 · high/);
+});
+
+test("applying an empty profile asks for confirmation and aborts when declined", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		empty: {},
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an empty profile");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, "Apply empty profile?");
+	assert.match(message, /has no routing entries/);
+	assert.match(message, /replace global routing/);
+	assert.match(message, /empty configuration/);
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+	const models = JSON.parse(before.models);
+	assert.deepEqual(models, { worker: { model: "openai/alpha" } }, "global routing must NOT be wiped when declined");
+
+	const store = JSON.parse(before.store);
+	assert.equal(store.active, "team", "active profile must not change when declined");
+});
+
+test("applying an empty profile with explicit confirmation replaces global routing with empty config", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		empty: {},
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an empty profile");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, {}, "global routing must be replaced with empty config when confirmed");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "empty", "active profile must be set to empty when confirmed");
+
+	const subagents = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(subagents, {}, "confirmed empty apply clears the seeded omitted worker route (shared clearing semantics drop the empty key)");
+});
+
+test("applying an orchestrator-only profile asks for confirmation and aborts when declined", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		orchOnly: { orchestrator: { model: "nan/glm5.3", thinking: "high" } },
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an orchestrator-only profile");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, "Apply orchestrator-only profile?");
+	assert.match(message, /has an orchestrator entry but no agent routing entries/);
+	assert.match(message, /clear every materialized agent route/);
+	assert.match(message, /inherit/);
+	assert.match(message, /orchestrator entry/);
+	assert.match(message, /settings\.json/);
+	assert.match(message, /attempt to switch this session/, "the dialog must not promise an unconditional live switch; registry/auth refusal can keep the session model");
+	assert.doesNotMatch(message, /empty configuration/, "orchestrator-only must not promise an entirely empty config");
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+
+	const store = JSON.parse(before.store);
+	assert.equal(store.active, "team", "active profile must not change when declined");
+});
+
+test("applying an orchestrator-only profile with explicit confirmation updates orchestrator and active profile", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		orchOnly: { orchestrator: { model: "nan/glm5.3", thinking: "high" } },
+		team: { worker: { model: "openai/alpha" } },
+	}, "team");
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "confirm dialog must be displayed when applying an orchestrator-only profile");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, { orchestrator: { model: "nan/glm5.3", thinking: "high" } }, "global routing must hold only orchestrator");
+
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "orchOnly", "active profile must be set to orchOnly when confirmed");
+
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+	assert.equal(settings.defaultProvider, "nan");
+	assert.equal(settings.defaultModel, "glm5.3");
+	assert.equal(settings.defaultThinkingLevel, "high");
+
+	const subagents = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.deepEqual(subagents, {}, "confirmed orchestrator-only apply clears the seeded omitted worker route (shared clearing semantics drop the empty key)");
+	assert.equal("orchestrator" in subagents, false, "the orchestrator key never materializes as an agent route");
+	assert.deepEqual(fixture.liveSwitches, [
+		{ kind: "model", provider: "nan", id: "glm5.3" },
+		{ kind: "thinking", level: "high" },
+	], "the live session switches to the profile's orchestrator");
+});
+
+test("applying a populated profile asks for confirmation naming the diff and aborts when declined", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// Current global routing: "worker" will be replaced, "helper" will be
+	// cleared back to inherit, and "tracer" only exists in the profile.
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha", thinking: "high" }, helper: { model: "openai/beta" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/alpha", effort: "high" }, helper: { model: "openai/beta" } } }, null, 2)}\n`);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/beta", thinking: "max" },
+			tracer: { model: "openai/alpha" },
+		},
+	});
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, 'Apply profile "team"?');
+	assert.match(message, /replace global routing/, "the dialog must name the file whose routing is replaced");
+	assert.match(message, /models\.json/);
+	assert.match(message, /worker: openai\/alpha · high → openai\/beta · max/, "the replaced route must name both the old and the new route");
+	assert.match(message, /helper: openai\/beta → inherit/, "the cleared agent must be named with its return to inherit");
+	assert.match(message, /tracer: openai\/alpha \(added\)/, "the added agent must be named");
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile whose routes already match skips the confirmation and applies", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// The profile's agent routes are identical to the effective current routing
+	// and the profile carries no orchestrator entry, so applying changes nothing:
+	// the dialog is pure friction and the apply must proceed without it.
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "a no-op populated apply must not ask for confirmation");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /already matches the current global routing/.test(entry.message)),
+		`the no-op apply is disclosed with an informational notice: ${JSON.stringify(fixture.notifications)}`,
+	);
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "the apply still claims the profile as active");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } }, "the routing is unchanged");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
+});
+
+test("applying a populated profile whose routes match and whose orchestrator is already set skips the confirmation", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// writeSettings defaults to nan/deepseek-v4-flash · high; the profile's
+	// orchestrator entry says the same, and the live session still runs on it,
+	// so nothing changes anywhere.
+	writeSettings();
+	fixture.setLiveModel("nan", "deepseek-v4-flash", "high");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" }, worker: { model: "openai/alpha" } } });
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "an already-active profile must not ask for confirmation");
+	assert.deepEqual(fixture.liveSwitches, [], "the no-op apply performs no live switch: the orchestrator is already there");
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when the live session runs a different model", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// settings.json and the profile agree on openai/alpha · high, but the live
+	// session was switched to openai/beta mid-session: applying would move the
+	// live session, so the no-op skip must not fire and the dialog must stay.
+	writeSettings({ defaultProvider: "openai", defaultModel: "alpha", defaultThinkingLevel: "high" });
+	fixture.setLiveModel("openai", "beta", "high");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" }, worker: { model: "openai/alpha" } } });
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a live-session orchestrator move is a real change and must confirm");
+	assert.deepEqual(fixture.liveSwitches, [], "declining must not switch the live session");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when settings.json holds an invalid thinking level", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	// The stored defaultThinkingLevel is not a valid level: readOrchestratorSettings
+	// drops it from the entry, but applyOrchestratorSettings would delete the key
+	// and rewrite the file, so "unchanged" cannot be proven and the dialog stays.
+	writeSettings({ defaultThinkingLevel: "banana" });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/deepseek-v4-flash" }, worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "an invalid stored thinking level cannot prove a no-op");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "declining preserves the invalid key byte-identically");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile keeps the confirmation when settings.json is unreadable and the profile has an orchestrator", async (t) => {
+	const { fixture, storePath, writeStore, settingsPath } = profilesStoreFixture(t);
+	writeFileSync(settingsPath, "{ not json\n");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3" }, worker: { model: "openai/alpha" } } });
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "an unreadable settings.json cannot prove an orchestrator no-op");
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile with a thinking-only orchestrator entry skips the confirmation", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// An orchestrator entry without a model is a no-op for the orchestrator:
+	// applyOrchestratorSettings treats a missing model as "leave settings.json
+	// alone", so the apply moves nothing and must not confirm (issue #1683).
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { thinking: "max" }, worker: { model: "openai/alpha" } } });
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 0, "a thinking-only orchestrator entry changes nothing and must not confirm");
+	assert.ok(
+		fixture.notifications.some((entry) => entry.severity === "info" && /already matches the current global routing/.test(entry.message)),
+		`the no-op apply is disclosed with an informational notice: ${JSON.stringify(fixture.notifications)}`,
+	);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings.json is untouched");
+	assert.deepEqual(fixture.liveSwitches, [], "a thinking-only orchestrator entry never switches the live session");
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+});
+
+test("applying a populated profile with matching routes but a different orchestrator still confirms", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3", thinking: "max" }, worker: { model: "openai/alpha" } } });
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "an orchestrator change is a real change and must confirm");
+	assert.match(fixture.confirmCalls[0]?.[0] ?? "", /Apply profile/);
+	assert.notEqual(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "declining leaves the store untouched");
+});
+
+test("profile replacement with 23 routes changes files only after confirmation", async (t) => {
+	for (const approved of [false, true]) {
+		await t.test(approved ? "confirmed replacement" : "declined replacement", async (t) => {
+			const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+			writeSettings();
+			writeStore({ team: { worker: { model: "openai/alpha" } } });
+			const names = ["worker", "review-refuter", ...Array.from({ length: 21 }, (_, i) => `helper-${i + 1}`)];
+			const profiles = Object.fromEntries(names.map((name) => [name, { model: "openai/beta", effort: "high" }]));
+			const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+			writeFileSync(subagentsPath, `${JSON.stringify({ max_concurrency: 3, user_setting: { keep: true }, model_profiles: profiles })}\n`);
+			writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/beta", thinking: "high" } })}\n`);
+			const markdown = names.map((name) => join(fixture.root, ".pi", "agents", `${name}.md`));
+			for (const [i, path] of markdown.entries()) writeMarkdown(path, `---\nname: ${names[i]}\ndescription: User agent\nmodel: openai/beta\nthinking: high\n---\nUser instruction for ${names[i]}.\n`);
+			const files = [fixture.globalPath, subagentsPath, storePath, settingsPath, ...markdown];
+			const before = files.map((path) => readFileSync(path, "utf8"));
+			fixture.onConfirm(async () => approved);
+			applyOnce(fixture);
+			await fixture.run("gentle:profiles");
+			assert.equal(fixture.confirmCalls.length, 1);
+			assert.equal(fixture.confirmCalls[0][0], 'Apply profile "team"?');
+			for (const name of names.slice(2)) assert.ok(fixture.confirmCalls[0][1].includes(`${name}: openai/beta · high → inherit`), `confirmation names ${name}`);
+			assert.deepEqual(fixture.liveSwitches, [], "no orchestrator changes were requested");
+			assert.equal(readFileSync(settingsPath, "utf8"), before[3]);
+			if (!approved) {
+				assert.deepEqual(files.map((path) => readFileSync(path, "utf8")), before, "declining preserves all 23 routes and Markdown, stores and settings byte-identically");
+				return;
+			}
+			assert.deepEqual(JSON.parse(readFileSync(subagentsPath, "utf8")), { max_concurrency: 3, user_setting: { keep: true }, model_profiles: { worker: { model: "openai/alpha" }, "review-refuter": profiles["review-refuter"] } });
+			assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+			assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team");
+			for (const [i, path] of markdown.entries()) {
+				const stored = readFileSync(path, "utf8");
+				assert.ok(stored.endsWith(`User instruction for ${names[i]}.\n`));
+				if (i === 0) { assert.match(stored, /^model: openai\/alpha$/m); assert.doesNotMatch(stored, /^thinking:/m); }
+				else if (i === 1) assert.equal(stored, before[4 + i], "provider review role is not cleared");
+				else { assert.doesNotMatch(stored, /^model:/m); assert.doesNotMatch(stored, /^thinking:/m); }
+			}
+		});
+	}
+});
+
+test("applying a populated profile names materialized-only routes it would clear before asking", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// The saved global routing matches the profile exactly: "helper" is routed
+	// only where the runtime actually resolves it (agent frontmatter and
+	// subagents.json model profiles), and the apply clears it because the profile
+	// omits it. models.json alone never speaks for "helper".
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { helper: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+	});
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, 'Apply profile "team"?');
+	assert.match(message, /helper: openai\/beta · high → inherit/, "the materialized-only route the apply clears must be named");
+	assert.doesNotMatch(message, /already match/, "routes matching the saved routing must not hide a cleared materialized-only route");
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile clears the materialized-only route it named when confirmed", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { helper: { model: "openai/beta", effort: "high" } } }, null, 2)}\n`);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+	});
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [, message] = fixture.confirmCalls[0];
+	assert.match(message, /helper: openai\/beta · high → inherit/, "the dialog must name the materialized-only route before it is cleared");
+	const subagents = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.equal("helper" in subagents.model_profiles, false, "confirming the apply clears the materialized-only route the dialog named");
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /^model:/m, "the materialized-only frontmatter route is dropped");
+});
+
+test("applying a populated profile with an orchestrator entry discloses the settings and live-session effects", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/beta" },
+		},
+	});
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [, message] = fixture.confirmCalls[0];
+	assert.match(message, /replace global routing/, "the readable variant must keep naming the routing diff");
+	assert.match(message, /settings\.json/, "the dialog must disclose that the orchestrator entry is set in settings.json");
+	assert.match(message, /attempt to switch this session/, "the dialog must disclose the attempted live-session switch");
+	assert.doesNotMatch(message, /will switch this session/, "the dialog must not promise an unconditional live switch");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile with an orchestrator entry discloses the effects when the routing is unreadable", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// Malformed models.json keeps the unreadable-authority disclosure branch in
+	// charge: the orchestrator effects must be added there, not swap it out.
+	writeFileSync(fixture.globalPath, "{ not json\n");
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/alpha" },
+		},
+	});
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [, message] = fixture.confirmCalls[0];
+	assert.match(message, /could not be read/, "the unreadable-authority disclosure must stay authoritative");
+	assert.match(message, /settings\.json/, "the dialog must disclose that the orchestrator entry is set in settings.json");
+	assert.match(message, /attempt to switch this session/, "the dialog must disclose the attempted live-session switch");
+	assert.doesNotMatch(message, /will switch this session/, "the dialog must not promise an unconditional live switch");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile with an unreadable routing authority discloses the replace effect instead of added labels", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings, settingsPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	// Malformed JSON makes readModelRoutingAuthorityAsync report the global
+	// models.json as invalid: real routes exist on disk but cannot be diffed.
+	writeFileSync(fixture.globalPath, "{ not json\n");
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/alpha", effort: "high" } } }, null, 2)}\n`);
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/alpha" },
+		},
+	});
+	const before = {
+		models: readFileSync(fixture.globalPath, "utf8"),
+		subagents: readFileSync(subagentsPath, "utf8"),
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+
+	fixture.onConfirm(async () => false);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [title, message] = fixture.confirmCalls[0];
+	assert.equal(title, 'Apply profile "team"?');
+	assert.match(message, /could not be read/, "the dialog must disclose that the current global routing is unreadable");
+	assert.match(message, /replace global routing/, "the dialog must name the global replacement");
+	assert.match(message, /inherit/, "the dialog must disclose the clear-back-to-inherit effect");
+	assert.doesNotMatch(message, /\(added\)/, "unread current routes must not be presented as merely added");
+
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models, "declined apply must preserve models.json byte-identically");
+	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents, "declined apply must preserve subagents.json byte-identically");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "declined apply must preserve the profiles store byte-identically");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "declined apply must preserve settings.json byte-identically");
+	assert.deepEqual(fixture.liveSwitches, [], "declined apply must not switch the live session");
+});
+
+test("applying a populated profile with an unreadable routing authority still applies when confirmed", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, "{ not json\n");
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/alpha" },
+		},
+	});
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const [, message] = fixture.confirmCalls[0];
+	assert.match(message, /could not be read/, "the dialog must disclose that the current global routing is unreadable");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, {
+		orchestrator: { model: "nan/glm5.3", thinking: "max" },
+		worker: { model: "openai/alpha" },
+	}, "confirmed apply proceeds as before despite the unreadable authority");
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "active profile must be set to team when confirmed");
+});
+
+test("applying a populated profile with explicit confirmation applies the routing diff", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha", thinking: "high" }, helper: { model: "openai/beta" } }, null, 2)}\n`);
+	const subagentsPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subagentsPath, `${JSON.stringify({ model_profiles: { worker: { model: "openai/alpha", effort: "high" }, helper: { model: "openai/beta" } } }, null, 2)}\n`);
+	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
+	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\n---\nbody\n");
+	const tracerPath = join(fixture.root, ".pi", "agents", "tracer.md");
+	writeMarkdown(tracerPath, "---\nname: tracer\ndescription: Tracer\n---\nbody\n");
+	writeStore({
+		team: {
+			orchestrator: { model: "nan/glm5.3", thinking: "max" },
+			worker: { model: "openai/beta", thinking: "max" },
+			tracer: { model: "openai/alpha" },
+		},
+	});
+
+	fixture.onConfirm(async () => true);
+
+	applyOnce(fixture);
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.confirmCalls.length, 1, "a populated global apply must ask for confirmation");
+	const models = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	assert.deepEqual(models, {
+		orchestrator: { model: "nan/glm5.3", thinking: "max" },
+		worker: { model: "openai/beta", thinking: "max" },
+		tracer: { model: "openai/alpha" },
+	}, "confirmed apply replaces global routing with the profile");
+	const subagents = JSON.parse(readFileSync(subagentsPath, "utf8"));
+	assert.equal("helper" in subagents.model_profiles, false, "the cleared agent loses its materialized route");
+	assert.equal(subagents.model_profiles.worker?.model, "openai/beta", "the replaced route is materialized");
+	assert.equal(subagents.model_profiles.tracer?.model, "openai/alpha", "the added agent is materialized");
+	assert.doesNotMatch(readFileSync(helperPath, "utf8"), /^model:/m, "the cleared agent's frontmatter route is dropped");
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.equal(store.active, "team", "active profile must be set to team when confirmed");
+	assert.deepEqual(fixture.liveSwitches, [
+		{ kind: "model", provider: "nan", id: "glm5.3" },
+		{ kind: "thinking", level: "max" },
+	], "the live session switches to the profile's orchestrator");
 });
 
 test("applying a profile replaces materialized routing for agents the profile omits", async (t) => {
@@ -2218,7 +2896,7 @@ test("s snapshots current routing in place without applying or reopening the pro
 	});
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "z-active");
-	assert.match(fixture.panels[0] ?? "", /enter apply · c create · s snapshot/);
+	assert.match(fixture.panels[0] ?? "", /enter use in this session · a set as global default · c create · s snapshot/);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
 	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
@@ -2232,11 +2910,212 @@ test("s snapshots current routing in place without applying or reopening the pro
 	assert.match(renderComponent(firstPanel!), /Snapshot saved; live routing unchanged\. Profile "a-target" saved from current routing\./);
 });
 
+test("s snapshots the live session's orchestrator over the settings defaults", async (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({
+		"a-target": {},
+		"z-active": { worker: { model: "openai/beta" } },
+	}, "z-active");
+	// The session runs live on openai/omega at low effort while settings.json still
+	// defaults to nan/deepseek-v4-flash at high: the snapshot must capture the
+	// session the user is actually in, not the default new sessions would get.
+	fixture.setLiveModel("openai", "omega", "low");
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.onInput((panel) => {
+		panel.handleInput("s");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
+	assert.deepEqual(
+		store.profiles["a-target"].orchestrator,
+		{ model: "openai/omega", thinking: "low" },
+		"the orchestrator entry comes from the live session, not settings.json",
+	);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "settings are untouched");
+});
+
+function chooseOrchestrator(panel: RoutingConsumerPanel): void {
+	panel.handleInput("g");
+	panel.handleInput("j");
+	assert.match(renderComponent(panel), /▸ orchestrator/);
+}
+
+function chooseModel(panel: RoutingConsumerPanel, query: string): void {
+	panel.handleInput("\r");
+	for (const character of query) panel.handleInput(character);
+	panel.handleInput("\r");
+}
+
+function chooseEffort(panel: RoutingConsumerPanel, effort: string): void {
+	panel.handleInput("e");
+	for (let step = 0; step < 10 && !renderComponent(panel).includes(`▸ ${effort}`); step++) panel.handleInput("j");
+	assert.ok(renderComponent(panel).includes(`▸ ${effort}`));
+	panel.handleInput("\r");
+}
+
+test("models explicit orchestrator choice wins over live/defaults and agent bulk edits", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// Enter in /gentle:profiles binds the fixture session in a process-wide store.
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "high");
+	writeStore({ team: { orchestrator: { model: "nan/glm5.3", thinking: "max" } } }, "team");
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /orchestrator\s+model=nan\/glm5.3, effort=max/);
+		chooseOrchestrator(panel);
+		chooseModel(panel, "beta");
+		chooseEffort(panel, "low");
+		panel.handleInput("g");
+		chooseModel(panel, "alpha");
+		chooseEffort(panel, "high");
+		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/beta, effort=low/);
+		panel.handleInput("u");
+	});
+	await fixture.run("gentle:models");
+	const snapshot = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
+	assert.deepEqual(snapshot.orchestrator, { model: "openai/beta", thinking: "low" });
+	assert.deepEqual(snapshot.worker, { model: "openai/alpha", thinking: "high" });
+	assert.equal("orchestrator" in JSON.parse(readFileSync(fixture.globalPath, "utf8")), false);
+	assert.equal("orchestrator" in JSON.parse(readFileSync(join(fixture.root, ".pi", "subagents.json"), "utf8")).model_profiles, false);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+	assert.deepEqual(fixture.liveSwitches, [], "saving never switches the live model or effort");
+	assert.equal(fixture.notifications.some((entry) => entry.severity === "warning"), false);
+	let profileVisits = 0;
+	fixture.onInput((panel) => { panel.handleInput(profileVisits++ === 0 ? "\r" : "\x1b"); });
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(fixture.liveSwitches, [
+		{ kind: "model", provider: "openai", id: "beta" },
+		{ kind: "thinking", level: "low" },
+	]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+});
+
+test("models leave untouched removes stale orchestrator and preserves live model/effort on apply", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	// Enter in /gentle:profiles binds the fixture session in a process-wide store.
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
+	writeStore({ team: { orchestrator: { model: "openai/beta", thinking: "high" } } }, "team");
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } }));
+	fixture.answerInputs("");
+	let visits = 0;
+	fixture.onInput((panel) => {
+		if (visits++ === 0) {
+			chooseOrchestrator(panel);
+			chooseModel(panel, "leave untouched");
+			panel.handleInput("e");
+			assert.match(renderComponent(panel), /orchestrator\s+leave untouched/);
+			panel.handleInput("j");
+			panel.handleInput("c");
+		} else {
+			assert.match(renderComponent(panel), /orchestrator\s+leave untouched/);
+			panel.handleInput("u");
+		}
+	});
+	await fixture.run("gentle:models");
+	assert.equal(Object.hasOwn(JSON.parse(readFileSync(storePath, "utf8")).profiles.team, "orchestrator"), false);
+	assert.equal(Object.hasOwn(JSON.parse(readFileSync(fixture.globalPath, "utf8")), "orchestrator"), false);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+	assert.deepEqual(fixture.liveSwitches, []);
+	let profileVisits = 0;
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /orchestrator\s+inherit/);
+		panel.handleInput(profileVisits++ === 0 ? "\r" : "\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(fixture.liveSwitches, [], "Enter preserves both live model and effort without the key");
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+});
+
+for (const [name, key] of [["ctrl+s", "\x13"], ["cancel", "\x1b"]]) {
+	test(`models ${name} never snapshots or applies the chosen orchestrator`, async (t) => {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		writeSettings();
+		fixture.setLiveModel("openai", "alpha", "high");
+		writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" } } }, "team");
+		const before = [readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")];
+		fixture.onInput((panel) => {
+			chooseOrchestrator(panel);
+			chooseModel(panel, "beta");
+			chooseEffort(panel, "low");
+			panel.handleInput(key!);
+		});
+		await fixture.run("gentle:models");
+		assert.deepEqual([readFileSync(storePath, "utf8"), readFileSync(settingsPath, "utf8")], before);
+		assert.deepEqual(fixture.liveSwitches, []);
+		if (name === "ctrl+s") assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), {});
+		else assert.equal(existsSync(fixture.globalPath), false);
+	});
+}
+
+for (const action of ["bulk inherit", "custom", "export/restore"]) {
+	for (const leaveUntouched of [false, true]) {
+		test(`models choice survives ${action} with ${leaveUntouched ? "no key" : "explicit pair"}`, async (t) => {
+			const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+			writeSettings();
+			fixture.setLiveModel("openai", "alpha", "high");
+			writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" } } }, "team");
+			writeFileSync(fixture.globalPath, JSON.stringify({ worker: { model: "openai/alpha" } }));
+			const settingsBefore = readFileSync(settingsPath, "utf8");
+			if (action === "custom") fixture.answerInputs("openai/alpha");
+			let visits = 0;
+			const assertChoice = (panel: RoutingConsumerPanel) => {
+				assert.match(renderComponent(panel), leaveUntouched
+					? /orchestrator\s+leave untouched/
+					: /orchestrator\s+model=openai\/beta, effort=low/);
+			};
+			fixture.onInput((panel) => {
+				visits++;
+				assert.ok(visits <= 3, "reopens must be bounded");
+				if (visits === 1) {
+					chooseOrchestrator(panel);
+					if (leaveUntouched) panel.handleInput("i");
+					else {
+						chooseModel(panel, "beta");
+						chooseEffort(panel, "low");
+					}
+					assertChoice(panel);
+					if (action === "bulk inherit") {
+						panel.handleInput("g");
+						panel.handleInput("i");
+						assertChoice(panel);
+						panel.handleInput("u");
+					} else if (action === "custom") {
+						panel.handleInput("g");
+						for (let step = 0; step < 4; step++) panel.handleInput("j");
+						assert.match(renderComponent(panel), /▸ worker/);
+						panel.handleInput("c");
+					} else panel.handleInput("x");
+				} else {
+					assertChoice(panel);
+					panel.handleInput(action === "export/restore" && visits === 2 ? "r" : "u");
+				}
+			});
+			await fixture.run("gentle:models");
+			const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
+			assert.equal(Object.hasOwn(profile, "orchestrator"), !leaveUntouched);
+			if (!leaveUntouched) assert.deepEqual(profile.orchestrator, { model: "openai/beta", thinking: "low" });
+			assert.deepEqual(profile.worker, action === "bulk inherit" ? {} : { model: "openai/alpha" });
+			assert.equal(Object.hasOwn(JSON.parse(readFileSync(fixture.globalPath, "utf8")), "orchestrator"), false);
+			assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+			assert.deepEqual(fixture.liveSwitches, []);
+			assert.equal(fixture.notifications.some((entry) => entry.severity === "warning"), false);
+			assert.equal(visits, action === "bulk inherit" ? 1 : action === "custom" ? 2 : 3);
+			assert.equal(fixture.confirmCalls.length, action === "export/restore" ? 1 : 0);
+		});
+	}
+}
+
 // /gentle:models can finish with `u`: the global save `ctrl+s` performs, followed
-// by the snapshot `/gentle:profiles` performs with `s` on the current profile.
+// by a snapshot of saved agent routing and the explicitly chosen orchestrator.
 function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
-	// Rows: "Set all agents", the two provider review roles, then "worker".
-	for (let step = 0; step < 3; step += 1) panel.handleInput("j");
+	// Rows: "Set all agents", "orchestrator", two provider review roles, then "worker".
+	for (let step = 0; step < 4; step += 1) panel.handleInput("j");
 	assert.match(renderComponent(panel), /▸ worker/);
 	panel.handleInput("\r");
 	for (const character of "alpha") panel.handleInput(character);
@@ -2244,7 +3123,7 @@ function pickWorkerModelThenUpdateProfile(panel: RoutingConsumerPanel): void {
 	panel.handleInput("u");
 }
 
-test("u saves global routing and captures live session orchestrator instead of defaults", async (t) => {
+test("u preserves an active profile's absent orchestrator when editing agents", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
@@ -2255,7 +3134,8 @@ test("u saves global routing and captures live session orchestrator instead of d
 	}, "team");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: team/);
-		assert.match(renderComponent(panel), /u capture session in "team"/);
+		assert.match(renderComponent(panel), /orchestrator\s+leave untouched/);
+		assert.match(renderComponent(panel), /u save choice in "team"/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2264,8 +3144,8 @@ test("u saves global routing and captures live session orchestrator instead of d
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "openai/alpha", thinking: "low" },
 	});
+	assert.deepEqual(fixture.liveSwitches, []);
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "global defaults remain unchanged");
 	assert.deepEqual(store.profiles.other, { worker: { model: "openai/beta", thinking: "high" } });
 	assert.equal(store.active, "team");
@@ -2280,17 +3160,19 @@ test("u saves global routing and captures live session orchestrator instead of d
 	);
 });
 
-test("u updates the pinned profile instead of the active one inside a pinned repository", async (t) => {
-	const { fixture, storePath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
+test("u preserves the pinned profile's stored orchestrator instead of live or active values", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
-	fixture.setLiveModel("openai", "beta", "medium");
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({
 		team: { worker: { model: "openai/beta" } },
-		other: { worker: { model: "openai/beta", thinking: "high" } },
+		other: { worker: { model: "openai/beta", thinking: "high" }, orchestrator: { model: "openai/beta", thinking: "high" } },
 	}, "team");
 	writePin(localPinPath, "other");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: other \(pinned\)/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/beta, effort=high/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2299,8 +3181,10 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha" },
-		orchestrator: { model: "openai/beta", thinking: "medium" },
+		orchestrator: { model: "openai/beta", thinking: "high" },
 	});
+	assert.deepEqual(fixture.liveSwitches, []);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "team");
 	assert.ok(
@@ -2312,10 +3196,12 @@ test("u updates the pinned profile instead of the active one inside a pinned rep
 test("u keeps the global save and reports when no profile is current", async (t) => {
 	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
+	fixture.setLiveModel("openai", "alpha", "low");
 	writeStore({ team: { worker: { model: "openai/beta" } } });
 	const before = readFileSync(storePath, "utf8");
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: none/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=openai\/alpha, effort=low/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2334,6 +3220,7 @@ test("u seeds the profiles store the way /gentle:profiles does when it is missin
 	assert.equal(existsSync(storePath), false);
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /Current profile: none/);
+		assert.match(renderComponent(panel), /orchestrator\s+model=nan\/deepseek-v4-flash, effort=high/);
 		pickWorkerModelThenUpdateProfile(panel);
 	});
 	await fixture.run("gentle:models");
@@ -2464,6 +3351,10 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(text, /Current routing \(effective\)/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
+	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high\s+← no matching agent/);
+	// A matched key stays a plain row: the note is reserved for keys that name
+	// no discovered agent (issue #2196).
+	assert.doesNotMatch(text, /worker\s+openai\/alpha\s+high\s+←/);
 	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high/);
 	assert.doesNotMatch(text, /agents? → /);
 
@@ -2479,6 +3370,89 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.equal(shortLines.length, 9);
 	assert.match(shortLines[0], /^╭/);
 	assert.match(shortLines.at(-1)!, /^╰/);
+});
+
+test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({
+		team: {
+			worker: { model: "openai/alpha", thinking: "high" },
+			"sdd-design": { model: "nan/glm5.3", thinking: "high" },
+		},
+	}, "team");
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	// At 60 columns the routing row fills the detail pane, so the note wraps
+	// onto its own line instead of being truncated away (issue #2196).
+	const narrow = stripAnsi(panel.render(60).join("\n"));
+	assert.match(narrow, /↳ no matching agent/);
+});
+
+// Issue #2400: a model_profiles key that matches no discovered agent and has
+// no suggestion never became a "Current routing (effective)" row, because that
+// table is built per discovered agent. The panel now lists those keys under
+// their own heading; a key with a suggestion is left to the launch warning.
+test("the profiles panel lists model_profiles keys that match no agent and suggest none", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
+		model_profiles: {
+			worker: { model: "openai/alpha" },
+			explor: { model: "openai/beta" },
+			"sdd-orchestratr-x": { model: "openai/beta" },
+			"gentle-ai-worker": { model: "openai/beta" },
+		},
+	}, null, 2)}\n`);
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	const wide = stripAnsi(panel.render(120).join("\n"));
+	assert.match(wide, /Unmatched keys \(ignored\)/);
+	assert.match(wide, /explor\s+← no matching agent/);
+	assert.match(wide, /sdd-orchestratr-x\s+← no matching agent/);
+	assert.doesNotMatch(wide, /gentle-ai-worker/, "a key with a suggestion is not listed as unmatched");
+
+	// At 60 columns the detail pane is 32 wide: the heading and the key stay
+	// whole, and a note that does not fit moves to its own line.
+	const narrow = stripAnsi(panel.render(60).join("\n"));
+	assert.match(narrow, /Unmatched keys \(ignored\)/);
+	assert.match(narrow, /explor\s+← no matching agent/);
+	assert.match(narrow, /sdd-orchestratr-x[^\n]*\n[^\n]*↳ no matching agent/);
+});
+
+// Issue #2400: when a pin wins, launches route from the pinned snapshot, whose
+// keys are already current rows with their own notes, so the subagents.json
+// keys are not listed as the routing in effect.
+test("the unmatched-keys list stays out of the panel while a pin wins", async (t) => {
+	const { fixture, writeStore, writePin, localPinPath } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	writePin(localPinPath, "team");
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explor: { model: "openai/beta" } } }, null, 2)}\n`);
+	let panel: { render(width: number): string[] } | undefined;
+	fixture.onInput((visited) => {
+		panel = visited;
+		visited.handleInput("\x1b");
+	});
+	fixture.tui.terminal.rows = 40;
+	await fixture.run("gentle:profiles");
+
+	assert.ok(panel);
+	const text = stripAnsi(panel.render(120).join("\n"));
+	assert.match(text, /Current routing \(effective\)/);
+	assert.doesNotMatch(text, /Unmatched keys/);
 });
 
 test("j and k scroll the detail pane one line at a time, like the agents view", async (t) => {
@@ -2800,6 +3774,7 @@ test("applying a profile in a pinned repository re-pins the clone and writes no 
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), modelsBefore, "no global routing was written");
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "no orchestrator was written");
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized routing was written");
+	assert.equal(fixture.confirmCalls.length, 0, "a repo-pinned apply never asks for confirmation");
 	assert.match(fixture.notifications.at(-1)?.message ?? "", /repo-scoped/);
 });
 
@@ -2994,4 +3969,270 @@ test("switchLiveOrchestrator returns note when setModel fails", async () => {
 	};
 	const result = await __testing.switchLiveOrchestrator(ctx, live, entry);
 	assert.equal(result, "\nno authentication is configured for openai; this session keeps its current model.");
+});
+
+/** Reads the fixture's profiles store or fails the test: every panel-action fixture writes a valid store before acting. */
+function readValidProfilesStore(path: string) {
+	const result = readProfilesFileResult(path);
+	if (result.status !== "valid") throw new Error(`profiles store at ${path} is ${result.status}, expected valid`);
+	return result.file;
+}
+
+test("Enter switches the live orchestrator, binds the profile, and writes nothing", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const before = {
+		store: readFileSync(storePath, "utf8"),
+		settings: readFileSync(settingsPath, "utf8"),
+	};
+	resetSessionProfileBindingsForTesting();
+	const notifications: Array<{ message: string; severity: string }> = [];
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+		sessionManager: { getSessionId: () => "session-panel" },
+		modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
+	} as unknown as ExtensionContext;
+	const models: unknown[] = [];
+	const thinking: ThinkingLevel[] = [];
+	const live = {
+		setModel: async (model: unknown) => { models.push(model); return true; },
+		setThinkingLevel(level: ThinkingLevel) { thinking.push(level); },
+		getThinkingLevel(): ThinkingLevel { return "medium"; },
+	};
+	const file = readValidProfilesStore(storePath);
+	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
+	assert.deepEqual(models, [{ provider: "openai", id: "beta" }]);
+	assert.deepEqual(thinking, ["high"]);
+	const binding = readSessionProfileBinding("session-panel");
+	assert.equal(binding?.name, "team");
+	assert.equal(binding?.modelProfiles.worker?.model, "openai/alpha");
+	assert.equal(readFileSync(storePath, "utf8"), before.store, "the profiles store is untouched");
+	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
+	assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
+	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
+	const applied = notifications.at(-1)?.message ?? "";
+	assert.match(applied, /bound profile "team" to this session/);
+	assert.match(applied, /shown as "team \(session\)"/);
+	assert.match(applied, /This session now runs on openai\/beta · high/);
+	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
+	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
+	assert.doesNotMatch(applied, /launch routing is unchanged/);
+	resetSessionProfileBindingsForTesting();
+});
+
+test("Enter switches only the selecting session's orchestrator and leaves shared defaults untouched", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { orchestrator: { model: "openai/alpha", thinking: "high" }, worker: { model: "openai/beta" } }, old: {} }, "old");
+	const beforeStore = readFileSync(storePath, "utf8");
+	const beforeSettings = readFileSync(settingsPath, "utf8");
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("other-session", "old", { worker: { model: "openai/old" } });
+	const switches: string[] = [];
+	const thinking: ThinkingLevel[] = [];
+	const ctx = {
+		cwd: fixture.root, hasUI: true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "selecting-session" },
+		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
+	} as unknown as ExtensionContext;
+	const live = {
+		setModel: async (model: { provider: string; id: string }) => { switches.push(`${model.provider}/${model.id}`); return true; },
+		setThinkingLevel: (level: ThinkingLevel) => { thinking.push(level); },
+		getThinkingLevel: (): ThinkingLevel => "medium",
+	} as unknown as LiveSession;
+	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" });
+	assert.deepEqual(switches, ["openai/alpha"]);
+	assert.deepEqual(thinking, ["high"]);
+	assert.equal(readSessionProfileBinding("selecting-session")?.name, "team");
+	assert.equal(readSessionProfileBinding("other-session")?.modelProfiles.worker?.model, "openai/old");
+	assert.equal(readSessionProfileBinding("unbound-session"), undefined);
+	assert.equal(readFileSync(storePath, "utf8"), beforeStore);
+	assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	assert.equal(existsSync(fixture.globalPath), false);
+	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false);
+});
+
+test("reviewer routing uses the selecting session snapshot without leaking to other sessions", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: {} }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" }, "review-reliability": { model: "openai/global" } }));
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("selecting-session", "team", { "review-risk": { model: "openai/session", thinking: "high" } });
+	const selected = __testing.readReviewerModelConfig(fixture.root, "selecting-session");
+	assert.equal(selected["review-risk"]?.model, "openai/session");
+	assert.equal(selected["review-reliability"], undefined, "a complete session snapshot never falls back per role");
+	assert.equal(__testing.readReviewerModelConfig(fixture.root, "other-session")["review-risk"]?.model, "openai/global");
+	assert.equal(__testing.readReviewerModelConfig(fixture.root, undefined)["review-risk"]?.model, "openai/global");
+});
+
+test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
+	for (const rejected of [false, true]) {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		writeSettings();
+		writeStore({ team: {
+			worker: { model: "openai/alpha" },
+			...(rejected ? { orchestrator: { model: "openai/beta", thinking: "high" as const } } : {}),
+		} }, undefined);
+		const storeBefore = readFileSync(storePath, "utf8");
+		const settingsBefore = readFileSync(settingsPath, "utf8");
+		resetSessionProfileBindingsForTesting();
+		t.after(() => resetSessionProfileBindingsForTesting());
+		const notifications: string[] = [];
+		let modelCalls = 0;
+		let thinkingCalls = 0;
+		const ctx = {
+			cwd: fixture.root,
+			hasUI: true,
+			ui: { notify(message: string) { notifications.push(message); } },
+			sessionManager: { getSessionId: () => "session-panel" },
+			modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
+		} as unknown as ExtensionContext;
+		const live = {
+			setModel: async () => { modelCalls++; return false; },
+			setThinkingLevel() { thinkingCalls++; },
+			getThinkingLevel(): ThinkingLevel { return "medium"; },
+		};
+		await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "apply", name: "team" }, {});
+		assert.equal(modelCalls, rejected ? 1 : 0);
+		assert.equal(thinkingCalls, 0);
+		assert.equal(readSessionProfileBinding("session-panel")?.modelProfiles.worker?.model, "openai/alpha");
+		assert.equal(readFileSync(storePath, "utf8"), storeBefore);
+		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+		assert.equal(existsSync(fixture.globalPath), false);
+		assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false);
+		if (rejected) assert.match(notifications.at(-1) ?? "", /no authentication is configured for openai; this session keeps its current model/);
+		else assert.doesNotMatch(notifications.at(-1) ?? "", /This session now runs/);
+	}
+});
+
+test("a keeps the legacy global apply semantics", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify() {}, confirm: async () => true },
+		sessionManager: { getSessionId: () => "session-panel" },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	const file = readValidProfilesStore(storePath);
+	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team" }, {});
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
+	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("Enter with a winning pin binds the session and never touches the pin layers", async (t) => {
+	const { fixture, storePath, writeStore, writePin, localPinPath } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, undefined);
+	writePin(localPinPath, "old");
+	const pinBefore = readFileSync(localPinPath, "utf8");
+	const storeBefore = readFileSync(storePath, "utf8");
+	resetSessionProfileBindingsForTesting();
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "session-panel" },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	const file = readValidProfilesStore(storePath);
+	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
+	assert.equal(readSessionProfileBinding("session-panel")?.name, "team");
+	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(fixture.globalPath), false);
+	resetSessionProfileBindingsForTesting();
+});
+
+test("a session-bound panel renders the binding snapshot as the current routing", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		const rendered = renderComponent(panel);
+		assert.match(rendered, /Current routing \(effective\)/);
+		assert.match(rendered, /openai\/gamma/, "the current routing is the session binding's snapshot");
+		assert.doesNotMatch(rendered, /openai\/alpha/, "the global routing stays out of a bound session's panel");
+		assert.match(
+			rendered,
+			/team \(session\) — launches resolve it ahead of pins/,
+			"the session line states what the binding governs post-#1558 (the panel truncates long lines)",
+		);
+		assert.doesNotMatch(rendered, /launch routing is unchanged/, "no stale slice-1 claim survives in the panel");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("the now line reports the live session's orchestrator over the settings defaults", async (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	// The session runs live on openai/omega at low effort while settings.json still
+	// defaults to nan/deepseek-v4-flash at high: the panel's now line must report
+	// what this session actually runs, not the default new sessions would get.
+	fixture.setLiveModel("openai", "omega", "low");
+	fixture.onInput((panel) => {
+		const rendered = renderComponent(panel);
+		assert.match(rendered, /now\s+openai\/omega/, "the now line shows the live session's orchestrator");
+		assert.doesNotMatch(rendered, /now\s+nan\//, "the settings default stays off the now line when a live model runs");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+});
+
+test("the (session) marker survives a snapshot refresh of the panel list", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	fixture.onInput((panel) => {
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/);
+		panel.handleInput("s");
+		assert.match(renderComponent(panel), /Snapshot saved; live routing unchanged\./);
+		assert.match(renderComponent(panel), /team \(active\) \(session\)/, "the refreshed list keeps the session marker");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	// The snapshot must capture the routing the panel showed as current, so the
+	// saved team profile carries the session binding's model, never the global
+	// layer underneath it.
+	const saved = readValidProfilesStore(storePath);
+	assert.equal(saved.profiles.team?.worker?.model, "openai/gamma", "the saved profile carries the session-bound routing");
+	assert.notEqual(saved.profiles.team?.worker?.model, "openai/alpha", "the global routing never leaks into the saved snapshot");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("Enter without a parent session id fails loud and writes nothing", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	const before = readFileSync(storePath, "utf8");
+	const notifications: Array<{ message: string; severity: string }> = [];
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	const file = readValidProfilesStore(storePath);
+	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply", name: "team" }, {});
+	assert.equal(readSessionProfileBinding(undefined), undefined);
+	assert.equal(readFileSync(storePath, "utf8"), before);
+	assert.equal(existsSync(fixture.globalPath), false);
+	assert.equal(notifications.at(-1)?.severity, "warning");
+	resetSessionProfileBindingsForTesting();
 });

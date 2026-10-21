@@ -34,13 +34,14 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
 	runInProcessReviewer,
 	type InProcessReviewerFailureCode,
 	type InProcessReviewerOutcome,
 	type InProcessReviewerRegistry,
+	type InProcessReviewerRequest,
 } from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
@@ -386,6 +387,8 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Effective Pi transport preference, forwarded without forcing a provider default. */
+	readonly reviewerTransport?: InProcessReviewerRequest["transport"];
 	/**
 	 * The caller's live pi session id, forwarded into the in-process completion
 	 * request so an OpenCode-routed reviewer model carries its
@@ -498,7 +501,8 @@ function collectGentleAiProcess(
 		const startedAt = Date.now();
 		const child = spawn(file, [...arguments_], {
 			cwd: options.cwd,
-			env: options.env,
+			// S9: a bundled install keeps Gentle AI's state inside its prefix.
+			env: gentleAiIsolationEnv(options.env),
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: false,
 			windowsHide: true,
@@ -737,6 +741,7 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.reviewerTransport === undefined ? {} : { transport: preparedRequest.reviewerTransport }),
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,

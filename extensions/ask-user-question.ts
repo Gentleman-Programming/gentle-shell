@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { resolveAskPanelPreferences } from "../lib/ask-panel-policy.ts";
+import { captureQuestionnaireAnswers } from "../lib/auto-permission-answers.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
@@ -265,11 +266,14 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 		): Promise<QuestionnaireToolResult> {
 			const error = validateQuestionnaire(params);
 			if (error) return invalidQuestionnaireResult(error);
+			const captureAnswers = captureQuestionnaireAnswers(ctx, _toolCallId, params, _signal);
 			if (ctx.mode !== "tui") {
 				if (!isInteractiveRpcHost(ctx.mode, process.env)) return unavailableResult();
 				try {
 					pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: true });
-					return await askThroughDialogs(ctx, params);
+					const result = await askThroughDialogs(ctx, params);
+					if (!result.details.cancelled) captureAnswers(result.details.answers);
+					return result;
 				}
 				finally {
 					pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: false });
@@ -313,6 +317,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 					details: { cancelled: true },
 				};
 			}
+			captureAnswers(selection.answers);
 			return {
 				content: [{ type: "text", text: answersText(selection.answers) }],
 				details: { answers: selection.answers },

@@ -1,6 +1,6 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,15 @@ import {
 	writeAskPanelPreferences,
 } from "../lib/ask-panel-policy.ts";
 
-const home = () => mkdtempSync(join(tmpdir(), "gentle-ask-panel-"));
+const temporaryHomes: string[] = [];
+const home = () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-ask-panel-"));
+	temporaryHomes.push(directory);
+	return directory;
+};
+after(() => {
+	for (const directory of temporaryHomes) rmSync(directory, { recursive: true, force: true });
+});
 const file = (dir: string) => join(dir, "ask-panel.json");
 
 test("a missing preference file means the default panel", () => {

@@ -1,31 +1,41 @@
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { spawn } from "node:child_process";
+import { Type } from "typebox";
 import { recordReviewMutation } from "../lib/review-reminder-receipt.ts";
 import { SESSION_CHANGE_RELAY } from "../lib/session-changes.ts";
 import { publishForeignSessionChange } from "../lib/session-change-capture.ts";
-import { SessionWorktreeRegistry, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { SESSION_WORKTREE_ENTRY, SESSION_WORKTREE_CHANGED, SessionWorktreeRegistry, nativeRootSpelling, resolveSessionWorktree, type WorktreeResolver } from "../lib/session-worktree-registry.ts";
+import { canonicalWriterRoot } from "../lib/writer-surfaces.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import { MESSAGING_REASON_MAX_UTF8_BYTES, MESSAGING_REASON_MIN_CHARACTERS, normalizeMessagingReason, SessionMessagingGrants } from "../lib/session-messaging-grants.ts";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
+import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
+import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
+import { JobsView } from "../lib/jobs-view.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
+import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
+import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
-import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
-import { AgentRunner, piCommand, abortReasonText, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
+import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
+import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
@@ -33,18 +43,30 @@ import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from 
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { PresencePublisher, sanitizeDisplayLabel, listPresence, sessionHash } from "../lib/orchestrator-presence.ts";
+import { incomingMessageCard, outgoingMessageCall, outgoingMessageResult, type OrchestratorMessageDetails } from "../lib/orchestrator-message-card.ts";
+import { orchestratorToolRenderers } from "../lib/orchestrator-tool-card.ts";
+import { discoverOrchestrators } from "../lib/orchestrator-discovery.ts";
+import { consultPublishedMetadata, unavailableMetadata, type MetadataReceipt } from "../lib/orchestrator-consultation.ts";
+import { HelperCostPermission } from "../lib/orchestrator-helper-consent.ts";
+import { OrchestratorStateCache } from "../lib/orchestrator-state.ts";
+import { TODO_PROGRESS_EVENT, type TodoProgress } from "../lib/shell-todo.ts";
+import { normalizeTaskSubject } from "../lib/orchestrator-alias.ts";
+import { decodeWorkDescriptor } from "../lib/orchestrator-work.ts";
+import { validateWorkFilter, searchPublishedWork } from "../lib/orchestrator-work-search.ts";
+import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
-import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
-import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
-import { allowedEditSurfaces, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
+import { allowedEditSurfaces, inheritAllowedEditSurfaces, isBoundedWriter, isDevelopmentSurface, isGenericBoundedWriter, prepareBoundSessionRepository, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sessionRepositoryAuthority } from "../lib/bounded-writer-admission.ts";
 import { CHILD_METRICS_EVENT, CHILD_METRICS_REVOKED, childEvent, launchSelection, type LaunchSelection } from "../lib/runtime-metrics-children.ts";
 import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/runtime-metrics-policy.ts";
+import { publishTaskStatusChanges } from "../lib/notification-events.ts";
 
 // Gentle Agents: subagents as isolated `pi --mode rpc` children, a task
 // store that notifies per task, and a Gentle Shell card above the editor.
@@ -53,19 +75,46 @@ import { runtimeMetricsEnvAllows, type RuntimeMetricsPolicyDeps } from "../lib/r
 
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
+export const JOBS_COMMAND_NAME = "gentle:jobs";
+// How long session shutdown waits for stopped jobs to close their logs.
+const JOBS_SHUTDOWN_GRACE_MS = 2000;
 export const AGENTS_RESULT_TYPE = "gentle-agents.result";
 export const AGENTS_MESSAGE_TYPE = "gentle-agents.message";
 export const AGENTS_ORCHESTRATOR_MESSAGE_TYPE = "gentle-agents.orchestrator-message";
+
+// Display labels are best-effort local snapshots, never routing or authority.
+function messagePeerLabel(profile: string, sessionId: string): string | undefined {
+	try {
+		const page = listPresence(profile);
+		if (page.unavailable || page.overflow || page.rejected) return undefined;
+		const matches = page.entries.filter(header => header.sessionHash === sessionHash(sessionId));
+		return matches.length === 1 && matches[0].recent ? sanitizeDisplayLabel(matches[0].label) || undefined : undefined;
+	} catch { return undefined; }
+}
 export const AGENTS_STALE_RESULT_TYPE = "gentle-agents.stale-result";
+export const AGENTS_STALE_NOTICE_TYPE = "gentle-agents.stale-notice";
 const RENDER_COALESCE_MS = 400;
 const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
 // Wakes an idle parent after child content was stored as a custom message.
 // It names itself as automated so the model never attributes it to the human.
 const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const PARENT_WAKE_TYPE = "gentle-agents.wake";
+const BRIDGE_WAKE_IDENTITY_TYPE = "gentle-agents.wake-identity";
+interface BridgeWakeIdentity {
+	sessionId: string;
+	nonce: string;
+	text: string;
+}
+const bridgeWakeText = (nonce: string): string => `${PARENT_WAKE_TEXT} [gentle-agents wake: ${nonce}]`;
+const NATIVE_PARENT_WAKE_TEXT = "Review the delivered subagent output and continue.";
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;
+// A delivery or wake the host rejected while the parent was idle is retried
+// after the grace at most this many times in a row, so a permanently broken
+// runtime never retries forever.
+const PARENT_DELIVERY_RETRY_LIMIT = 3;
 
 const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
@@ -76,6 +125,7 @@ export interface SessionTransportRegistry {
 }
 
 export interface SessionTransportListener {
+	readonly record?: PresenceRecord;
 	readonly registry: SessionTransportRegistry;
 	readonly closesRegistry?: boolean;
 	start(): Promise<void>;
@@ -105,15 +155,22 @@ export interface AgentsDeps extends RunnerDeps {
 	metricsSchedule?: RunnerDeps["schedule"];
 	// Extensions every child loads with --extension (gentle-shell#1587).
 	childExtensionPaths?: string[];
+	/** Shell for background jobs; defaults to Pi's configured Bash. */
+	jobShell?: (cwd: string) => { operations: JobExecOperations; commandPrefix?: string };
+	/** Directory for background job output; defaults to a private temp dir. */
+	jobOutputDir?: () => string;
 }
 
-// gentle-shell#1587: children do not load the gentle-pi package in the
-// isolated Gentle Shell home, so context filtering and destructive-command
-// safety are passed to every child explicitly. Missing files are omitted;
-// installations must include both entries to provide the delegated boundary.
+// gentle-shell#1587: fallback for a parent without the launcher's package
+// injection signal (#1690), e.g. a manual `pi -e <package>` launch. Children
+// then get context filtering, destructive-command safety, and the nan
+// provider (gentle-shell#1731 T32: a model routed to nan/* is not found
+// without it). When the signal is present, children load the whole package
+// instead. This list is frozen: new child-facing behavior ships inside the
+// package, never here. Missing files are omitted.
 export function childContextExtensionPaths(exists: (path: string) => boolean = existsSync): string[] {
 	try {
-		return ["./child-context.ts", "./child-safety.ts"]
+		return ["./child-context.ts", "./child-safety.ts", "./nan-provider.ts"]
 			.map((path) => fileURLToPath(new URL(path, import.meta.url)))
 			.filter(exists);
 	} catch {
@@ -121,10 +178,74 @@ export function childContextExtensionPaths(exists: (path: string) => boolean = e
 	}
 }
 
+// #1690: when the gentle-shell launcher injected the package with -e, the
+// host env carries that exact set and every child loads it too, which already
+// includes the curated entries. Without a valid signal (declared package,
+// regular gentle-pi, malformed value) children keep the curated entries.
+function childExtensionRequest(env: NodeJS.ProcessEnv, curated: string[] | undefined): Pick<TaskRequest, "extensionPaths" | "noExtensions"> {
+	const injection = parseChildPackageInjection(env);
+	if (injection) return { extensionPaths: [...injection.extensionPaths], ...(injection.noExtensions ? { noExtensions: true } : {}) };
+	return curated && curated.length > 0 ? { extensionPaths: [...curated] } : {};
+}
+
+// gentle-shell#2180: a short, stable token for the profile layer that supplied
+// the launch's model, recorded next to the model in the TaskRecord so every
+// task card shows which layer won and stale disk edits below a frozen session
+// become visible. Derived from the resolution the request already performed;
+// the only profile reads are the pin/declaration lookups in the paths where
+// `sessionProfileRoutingAt` itself reads the target's own layers without
+// carrying the origin (a foreign target under a session frozen without a
+// profile, and `follow`/child launches), so no layer is resolved twice to route.
+function modelSourceToken(
+	source: ProfileSource,
+	resolution: SessionProfileResolution,
+	routingTarget: InheritedProfileOptions & { foreignRepository?: boolean },
+): string | undefined {
+	if (source === PROFILE_SOURCE.DEFINITION) return "definition";
+	// Unresolved means no layer supplied a model at all: the card already shows
+	// `default`, and naming a layer next to it would only be noise.
+	if (source === PROFILE_SOURCE.UNRESOLVED) return undefined;
+	if (source !== PROFILE_SOURCE.PROFILE) return "default";
+	if (resolution.kind === "explicit") return "binding";
+	if (resolution.kind === "inherited") {
+		if (resolution.profile !== undefined) return `frozen:${resolution.profile.origin}`;
+		// Frozen without a profile: a foreign target keeps only its own pin
+		// layers, so a winning pin there is named from the same read
+		// `sessionProfileRoutingAt` just performed; otherwise the session keeps
+		// the materialized config routing.
+		if (routingTarget.foreignRepository === true) {
+			const pin = resolveProfilePin(routingTarget);
+			return pin === undefined ? "profile" : `pin:${pin.source}`;
+		}
+		return "profile";
+	}
+	// `follow` and live child launches read the target's own defaults
+	// (pin → declaration → global active); name the layer the same read chose.
+	const pin = resolveProfilePin(routingTarget);
+	if (pin !== undefined) return `pin:${pin.source}`;
+	return resolveUnversionedProjectProfile(routingTarget.cwd, routingTarget.configHome) !== undefined ? "declaration" : "profile";
+}
+
 export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "agent")): { sessions: string; transcripts: string } {
 	const root = join(agentHome, "gentle-agents");
 	return { sessions: join(root, "sessions"), transcripts: join(root, "transcripts") };
 }
+
+const workDescriptorSchema = {
+	type: "object", additionalProperties: false,
+	description: "Explicit non-authoritative classification, not child context. Topic requires area; limits are UTF-8 bytes. No nested tasks.",
+	properties: {
+		area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
+		tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
+		refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
+			type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
+				kind: { type: "string", enum: ["issue", "pr", "task"] },
+				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo; not a URL or inferred identity." },
+				id: { type: "string", maxLength: 256, description: "Canonical positive decimal issue/PR ID or opaque historical task ID; never a peer route." },
+			},
+		} },
+	},
+};
 
 interface ToolText {
 	content: Array<{ type: "text"; text: string }>;
@@ -190,6 +311,43 @@ function ownedChildIpc(env: NodeJS.ProcessEnv, candidate: IpcEndpoint | undefine
 	return candidate;
 }
 
+// Catalog declarations are routing hints, not proof of child availability.
+// Filter non-name entries such as `"*": false`, but do not claim that a
+// syntactically valid name is registered. Empty declarations omit --tools and
+// use Pi defaults. The runner adds parent messaging separately.
+const TOOL_NAME = /^[A-Za-z0-9_.:-]+$/;
+
+function declaredToolInventory(agent: AgentDefinition): string {
+	const usable = agent.tools.filter((name) => TOOL_NAME.test(name));
+	if (usable.length > 0) return `[declared tools (not verified): ${usable.join(", ")}]`;
+	return agent.tools.length === 0
+		? "[declared tools: Pi defaults (no allowlist)]"
+		: "[declared tools: no tool names declared]";
+}
+
+// Pi drops unknown --tools names without a diagnostic (#1690), so the child
+// reports them once through the one notify the parent keeps. The check runs
+// at the first before_agent_start, not session_start: Pi runs session_start
+// handlers in extension load order, so an extension loaded after this one may
+// still register its tools there. MCP tools register later still, and entries
+// that cannot be tool names (the `"*": false` frontmatter entry) are not
+// checkable.
+function registerMissingToolsCheck(pi: ExtensionAPI, env: NodeJS.ProcessEnv): void {
+	const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map((name) => name.trim())
+		.filter((name) => /^[A-Za-z0-9_.:-]+$/.test(name) && !name.startsWith("mcp__"));
+	if (requested.length === 0) return;
+	let reported = false;
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (reported) return;
+		reported = true;
+		try {
+			const available = new Set(pi.getAllTools().map((tool) => tool.name));
+			const missing = [...new Set(requested.filter((name) => !available.has(name)))];
+			if (missing.length > 0) ctx.ui.notify(`${MISSING_TOOLS_NOTE_PREFIX} ${missing.join(", ")}`, "warning");
+		} catch { /* A diagnostic must never break the child's first prompt. */ }
+	});
+}
+
 function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 	const messenger = new ChildMessenger(ipc);
 	pi.registerTool({
@@ -197,7 +355,7 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 		label: "Agent parent message",
 		description: "Send a bounded notification or correlated query to this subagent's parent.",
 		parameters: { type: "object", additionalProperties: false, required: ["message"], properties: { kind: { type: "string", enum: ["notification", "query"] }, message: { type: "string" } } } as never,
-		async execute(_id, params) {
+		async execute(_id, params): Promise<ToolText> {
 			const input = params as { kind?: unknown; message?: unknown };
 			if (typeof input.message !== "string") throw new Error("parent messages require text");
 			if (input.kind === undefined || input.kind === "notification") {
@@ -272,18 +430,27 @@ function expandHint(expanded: boolean): string {
 	}
 }
 
+// pi runs `-p` and `--mode json` through one one-shot runner that disposes
+// the runtime as soon as the prompt returns, so a background result has no
+// parent session left to reach (gentle-shell#1731 T18).
+export function isSingleShotMode(mode: string | undefined): boolean {
+	return mode === "print" || mode === "json";
+}
+
+const SINGLE_SHOT_BACKGROUND_ERROR = "Background subagents are unavailable in single-shot modes: pi -p and pi --mode json exit before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.";
+
 // The default mode for a subagent_run request that named neither an explicit
 // mode nor an agent-defined one. Background is a runtime default only when
 // the background-subagents policy is on AND the parent can receive results:
-// print mode exits before a parent session exists to deliver them to (see
-// the `ctx.mode === "print"` guard in `launch` below), so it must keep the
-// configured default (normally task) even when the policy is on.
+// single-shot modes exit before a parent session exists to deliver them to
+// (see the guard in `launch` below), so they keep the configured default
+// (normally task) even when the policy is on.
 export function resolveDefaultSubagentMode(input: {
 	configuredDefault: AgentMode;
 	policy: "on" | "off";
 	parentMode: string | undefined;
 }): AgentMode {
-	return input.policy === "on" && input.parentMode !== "print"
+	return input.policy === "on" && !isSingleShotMode(input.parentMode)
 		? AGENT_MODE.BACKGROUND
 		: input.configuredDefault;
 }
@@ -342,19 +509,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			return;
 		}
 		if (childIpc) registerChildMessaging(pi, childIpc);
+		registerMissingToolsCheck(pi, env);
 		return;
 	}
 	if (!agentsEnabled(env)) return;
 	const deps: AgentsDeps = { ...defaultDeps(env), ...overrides };
 	// An explicitly injected pi command wins over the default per-spawn resolver.
 	if (overrides?.pi && !overrides.resolvePi) delete deps.resolvePi;
-	const selectedHome = overrides.agentHome ?? (overrides.home === undefined ? resolveGentlePiAgentHome(deps.env) : join(deps.home, ".pi", "agent"));
-	// Expand environment tildes like Pi, but leave explicit path APIs literal.
-	const environmentHome = overrides.agentHome === undefined && overrides.home === undefined;
-	const expandedHome = environmentHome && selectedHome === "~" ? deps.home
-		: environmentHome && (selectedHome.startsWith("~/") || (process.platform === "win32" && selectedHome.startsWith("~\\"))) ? join(deps.home, selectedHome.slice(2)) : selectedHome;
 	// Freeze the host's root before a child uses a different session cwd.
-	const agentHome = resolve(expandedHome);
+	const agentHome = resolveAgentHomeDirectory({ env: deps.env, home: deps.home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
 	const sessionTransport = deps.sessionTransport ?? createDefaultSessionTransport();
 	if (legacySubagentsInstalledAt(agentHome)) {
 		pi.on("session_start", (_event, ctx) => {
@@ -366,6 +529,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const viewKey = agentsViewKey(env);
 	const stopKey = agentsStopKey(env);
 	const store = new TaskStore();
+	// Attach before any live add/start; restore and unchanged updates are silent.
+	// TaskStore contains bus listener failures so notifications cannot fail tools.
+	const stopStatusNotifications = publishTaskStatusChanges(store, pi.events, () => performance.now());
+	pi.on("session_shutdown", () => { stopStatusNotifications(); });
 	const restoredTaskIds = new Set<string>();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
@@ -376,6 +543,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let stopVisualUpdates: (() => void) | undefined;
 	let sessions: ExtensionContext["sessionManager"] | undefined;
 	let presence: PresencePublisher | undefined;
+	const scopeCache = new OrchestratorScopeCache(deps.resolveWorktree);
+	const stateCache = new OrchestratorStateCache();
 	let rpcActivityPublisher: RpcActivityPublisher | undefined;
 	// Messages already surfaced to the user this session through the RPC
 	// activity publisher's `onError`, so a recurring push failure (the
@@ -383,16 +552,65 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session instead of flooding the UI. Reset on every `session_start`.
 	let notifiedRpcActivityErrors: Set<string> | undefined;
 	const overlays = new Set<AgentsView>();
+	const startPresence = (manager: ExtensionContext["sessionManager"]) => {
+		scopeCache.clear();
+		const sessionId = manager.getSessionId() ?? "";
+		const labelSource = () => {
+			if (sessions !== manager || (manager.getSessionId() ?? "") !== sessionId) throw new Error("stale-session");
+			return manager.getSessionName?.() || manager.getCwd().split(/[\\/]/).pop() || "Orchestrator";
+		};
+		return PresencePublisher.start({ profile: agentHome, sessionId, label: labelSource(), labelSource, activity: [] });
+	};
 	const publishActivity = () => {
 		if (!sessions) return;
 		try {
 			if (!presence || presence.error) {
-				presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
-					label: sessions.getSessionName?.() || sessions.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
+				presence?.dispose();
+				presence = startPresence(sessions);
 			}
-			presence?.update(store.list(activeSessionId()).filter((task) => !isFinished(task.status) && !restoredTaskIds.has(task.id)).map((task) => ({ task, thread: store.thread(task.id) })));
+			const tasks = store.list(activeSessionId()).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id));
+			presence?.update(tasks.map((task) => ({ task, thread: store.thread(task.id) })));
+			const transport = activeSessionTransport;
+			if (transport?.sessionManager === sessions && transport.sessionId === activeSessionId() && transport.listener.record) {
+				// Read the existing durable registry, without roots()'s repeated Git validation.
+				// These are recorded contexts, never authority for admission or messaging.
+				const registered = sessions.getEntries().flatMap(entry => {
+					if (entry.type !== "custom" || entry.customType !== SESSION_WORKTREE_ENTRY) return [];
+					const data = entry.data as { sessionId?: string; root?: string; evidence?: string } | undefined;
+					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
+				});
+				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks, registered,
+					scope: scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
+			}
 		} catch { presence?.dispose(); presence = undefined; }
 	};
+	const unsubscribeScope = pi.events.on(SESSION_WORKTREE_CHANGED, (event) => {
+		if ((event as { sessionId?: string } | undefined)?.sessionId !== sessions?.getSessionId()) return;
+		scopeCache.clear();
+		publishActivity();
+	});
+	// The todo list is the session's progress: publish it for peers so the model
+	// spends no turn on orchestrator_session_id. Merged into the owner's curated
+	// state; a publication that cannot be made never fails the todo write.
+	// Counts only: a todo title is private work text, never published to peers.
+	// The last automatic line survives an owner publication that omits `progress`.
+	let automaticProgress: { sessionId: string; text: string } | undefined;
+	const unsubscribeTodoProgress = pi.events.on(TODO_PROGRESS_EVENT, (event) => {
+		const progress = event as Partial<TodoProgress> | undefined;
+		if (!sessions || progress?.sessionId !== sessions.getSessionId() || typeof progress.done !== "number" || typeof progress.total !== "number") return;
+		const text = `${progress.done}/${progress.total} done`;
+		try {
+			const owned = stateCache.get(sessions);
+			// A state the owner withdrew stays withdrawn until the owner publishes again.
+			if (owned?.state === null) return;
+			const { progress: previous, ...curated } = owned?.state ?? {};
+			// A cleared list has no progress to report: drop the line, publish nothing new.
+			if (progress.total === 0 && previous === undefined) return;
+			stateCache.publish(sessions, progress.total === 0 ? curated : { ...curated, progress: text }, (type, data) => pi.appendEntry(type, data));
+			automaticProgress = progress.total === 0 ? undefined : { sessionId: progress.sessionId, text };
+			publishActivity();
+		} catch { /* stale session or over the state budget: keep the previous publication */ }
+	});
 	let worktrees: SessionWorktreeRegistry | undefined;
 	let worktreeManager: ExtensionContext["sessionManager"] | undefined;
 	let worktreeAuthority: (() => boolean) | undefined;
@@ -437,6 +655,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", () => {
 		clearTaskMetrics();
 		unsubscribeMetrics();
+		unsubscribeScope();
+		unsubscribeTodoProgress();
+		scopeCache.clear();
 	});
 	let stopAllConfirmation: Promise<void> | undefined;
 
@@ -498,7 +719,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
 					const active = activeSessionTransport;
 					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
-					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming" } } }, { deliverAs: "followUp", triggerTurn: true });
+					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming", message: notification.message, senderLabel: messagePeerLabel(agentHome, notification.senderSessionId), recipientLabel: sanitizeDisplayLabel(sessionManager.getSessionName?.() ?? "") } } }, { deliverAs: "followUp", triggerTurn: true });
 				});
 				client = sessionTransport.createClient(registry, sessionId);
 				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
@@ -515,6 +736,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					await closeStartupTransport();
 					return;
 				}
+				publishActivity();
 			} catch {
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				await closeStartupTransport();
@@ -589,12 +811,102 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
+	// A job's exit, or a monitor's line events and harness stop, waiting for
+	// the parent delivery router.
+	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
+	const jobNotices: JobNotice[] = [];
+	let jobOutputDir: string | undefined;
+	const jobs = createJobRegistry({
+		outputDir: deps.jobOutputDir ?? (() => (jobOutputDir ??= mkdtempSync(join(os.tmpdir(), "gentle-jobs-")))),
+		now: deps.now,
+		shell: deps.jobShell ?? ((cwd) => {
+			const settings = SettingsManager.create(cwd, agentHome);
+			return { operations: createLocalBashOperations({ shellPath: settings.getShellPath() }), commandPrefix: settings.getShellCommandPrefix() };
+		}),
+		onSettled: (job) => settleJob(job),
+	});
+	const monitors = createMonitorController({
+		registry: jobs,
+		schedule: (fn, ms) => deps.schedule(fn, ms),
+		now: deps.now,
+		deliver: (notice) => queueJobNotice(notice),
+	});
+	// A parent that sleeps while background work runs only burns the turn: each
+	// completion already arrives as a session message (#1903). bash_background
+	// and monitor stay allowed because they are the sanctioned way to wait.
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "bash") return undefined;
+		const command = (event.input as { command?: unknown }).command;
+		if (typeof command !== "string" || !isStandaloneSleep(command)) return undefined;
+		const sessionId = activeSessionId();
+		// Same active-task predicate as publishActivity.
+		const tasks = store.list(sessionId).filter((task) => ownedTaskIds.has(task.id) && !isFinished(task.status) && !restoredTaskIds.has(task.id)).length;
+		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running").length;
+		if (tasks + running === 0) return undefined;
+		return {
+			block: true,
+			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
+		};
+	});
 	let activeAgentRuns = 0;
 	// ExtensionAPI has no idle probe; ctx.isIdle() is the only one. It is live
 	// and also reports compaction, which activeAgentRuns cannot see. The
 	// session_start context is kept for it and dropped at shutdown; a stale
 	// context throws instead of answering, so delivery fails closed.
 	let parentCtx: ExtensionContext | undefined;
+	const helperPermission = new HelperCostPermission(() => parentCtx && activeTransportFor(parentCtx) ? parentCtx : undefined);
+	pi.on("session_before_switch", () => helperPermission.clear());
+	pi.on("session_before_fork", () => helperPermission.clear());
+	pi.on("session_before_tree", () => helperPermission.clear());
+	pi.on("model_select", () => helperPermission.clear());
+	pi.on("resources_discover", () => helperPermission.clear());
+	let bridgeWakeIdentity: BridgeWakeIdentity | undefined;
+	let wakeVisibilityWarning = false;
+	const restoreBridgeWakeIdentity = (ctx: ExtensionContext | undefined) => {
+		bridgeWakeIdentity = undefined;
+		if (!ctx) return;
+		// Rendering is session-wide, not model/branch state: an identity on an
+		// abandoned branch still owns its generated bubbles in the session tree.
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "custom" || entry.customType !== BRIDGE_WAKE_IDENTITY_TYPE) continue;
+			const data = entry.data as Partial<BridgeWakeIdentity> | undefined;
+			if (data?.sessionId === ctx.sessionManager.getSessionId() && typeof data.nonce === "string"
+				&& /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(data.nonce)
+				&& data.text === bridgeWakeText(data.nonce)) {
+				bridgeWakeIdentity = data as BridgeWakeIdentity;
+				break;
+			}
+		}
+	};
+	const hasWakeTransformer = typeof pi.registerMarkdownTransformer === "function";
+	if (hasWakeTransformer) {
+		// Register once in this runtime. Reload replaces the runtime; session
+		// replacement changes the identity, never the transformer registration.
+		pi.registerMarkdownTransformer((markdown, context) =>
+			context.messageType === "user" && bridgeWakeIdentity?.sessionId === parentCtx?.sessionManager.getSessionId()
+				&& markdown === bridgeWakeIdentity?.text ? "" : markdown);
+	}
+	const bridgeWake = (): string => {
+		if (!parentCtx) return PARENT_WAKE_TEXT;
+		try {
+			if (!hasWakeTransformer) throw new Error("Markdown transformer API unavailable");
+			if (!bridgeWakeIdentity || bridgeWakeIdentity.sessionId !== parentCtx.sessionManager.getSessionId()) {
+				const nonce = randomUUID();
+				const identity = { sessionId: parentCtx.sessionManager.getSessionId(), nonce, text: bridgeWakeText(nonce) };
+				// Persist before sending so a restart can reconstruct exact ownership.
+				pi.appendEntry(BRIDGE_WAKE_IDENTITY_TYPE, identity);
+				bridgeWakeIdentity = identity;
+			}
+			return bridgeWakeIdentity.text;
+		} catch {
+			// Compatibility fallback preserves continuation, not invisibility.
+			if (!wakeVisibilityWarning) {
+				wakeVisibilityWarning = true;
+				try { parentCtx.ui.notify("Gentle Agents cannot hide Claude Bridge continuation on this runtime; the generated user wake remains visible.", "warning"); } catch { /* UI failure must not drop continuation. */ }
+			}
+			return PARENT_WAKE_TEXT;
+		}
+	};
 	// Mirrors the host's agent run, which spans agent_start through
 	// agent_settled, including post-run retries and in-run compaction. Unlike
 	// activeAgentRuns it stays set between agent_end and agent_settled, where
@@ -614,6 +926,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let promptStarting = false;
 	let cancelPromptGrace: (() => void) | undefined;
 	let cancelBoundaryFlush: (() => void) | undefined;
+	// An idle parent has no turn boundary coming, so a failed idle delivery or
+	// wake is retried by one bounded timer that runs a full flush.
+	let cancelDeliveryRetry: (() => void) | undefined;
+	let deliveryRetries = 0;
+	const endDeliveryRetry = () => {
+		cancelDeliveryRetry?.();
+		cancelDeliveryRetry = undefined;
+	};
+	const armDeliveryRetry = () => {
+		if (cancelDeliveryRetry || deliveryRetries >= PARENT_DELIVERY_RETRY_LIMIT) return;
+		deliveryRetries += 1;
+		cancelDeliveryRetry = deps.schedule(() => {
+			cancelDeliveryRetry = undefined;
+			flushAll();
+		}, PARENT_WAKE_GRACE_MS);
+	};
 
 	const isTaskLive = (id: string): boolean => {
 		const task = store.get(id);
@@ -629,13 +957,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// branch, so a parent that keeps calling tools would see the content only
 	// when the whole run ends — the original #867 delay.
 	//
-	// An idle parent must not get triggerTurn: the host would run the custom
-	// message as a direct turn that skips the prompt lifecycle
-	// (before_agent_start and the prompt refresh), and prompt-capture
-	// integrations such as the Claude bridge reject that turn. The structured
-	// message is stored durably without a turn instead, and a short
-	// system-generated user message wakes the parent through the normal prompt
-	// path. The wake never repeats child content, so the model sees it once.
+	// Idle child content is stored durably without a turn, then a separate
+	// coalesced wake requests continuation without repeating that content.
+	// Claude Bridge needs a user wake through the prompt lifecycle for capture;
+	// native providers can use a hidden custom-message turn instead.
 	//
 	// A parent that is busy without a run (compaction, or a prompt's pre-run
 	// compaction) is not streaming, so steer + triggerTurn would also start a
@@ -684,14 +1009,31 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// without a run keeps the wake owed until a later boundary flush.
 		if (route !== "idle") return;
 		wakeOwed = false;
+		endDeliveryRetry();
 		beginPromptStart();
 		try {
 			// "steer" matters only when a run started in between: the wake is then
 			// queued into it instead of being rejected as a concurrent prompt.
-			pi.sendUserMessage(PARENT_WAKE_TEXT, { deliverAs: "steer" });
+			// Read the live selection at dispatch, not when child content arrived.
+			// Only Claude Bridge is currently evidenced to require prompt capture;
+			// registering a custom provider alone does not make it a bridge.
+			if (parentCtx?.model?.provider === "claude-bridge") {
+				pi.sendUserMessage(bridgeWake(), { deliverAs: "steer" });
+			} else {
+				pi.sendMessage({
+					customType: PARENT_WAKE_TYPE,
+					content: NATIVE_PARENT_WAKE_TEXT,
+					display: false,
+				}, { deliverAs: "steer", triggerTurn: true });
+			}
+			deliveryRetries = 0;
 		} catch {
 			// A stale runtime fails closed instead of throwing from a microtask.
+			// The stored content still needs a turn, so the wake stays owed and is
+			// retried once per grace, a bounded number of times in a row.
 			endPromptStart();
+			wakeOwed = true;
+			armDeliveryRetry();
 		}
 	};
 
@@ -712,12 +1054,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		sendToParent({ customType: AGENTS_RESULT_TYPE, content: completionText(task), display: true, details: taskDetails(task) }, route);
 	};
 
-	// A stale completion must not re-enter the LLM conversation, so it is
-	// delivered as durable TUI-only content and the human still sees it.
-	const deliverStale = (task: TaskRecord, settledAt: number) => {
+	// A stale report must not re-enter the LLM conversation, but the parent is
+	// told never to poll: it gets a compact model-facing notice naming the task,
+	// and the human gets durable TUI-only content.
+	const deliverStale = (task: TaskRecord, settledAt: number, route: Exclude<ParentRoute, "hold">) => {
 		if (activeSessionId() !== task.parentSessionId) return;
 		const ageSeconds = Math.max(0, Math.round((deps.now() - settledAt) / 1000));
-		pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds });
+		const status = task.status.replace("_", " ");
+		sendToParent({
+			customType: AGENTS_STALE_NOTICE_TYPE,
+			content: `Subagent ${task.agent} (task ${task.id}, "${task.label}") ${status} about ${ageSeconds}s ago while you were busy. Its report was not replayed here; call subagent_result with task_id ${task.id} to read it.`,
+			display: false,
+			details: taskDetails(task),
+		}, route);
+		// The notice already reached the parent; a failed card must not resend it.
+		try { pi.appendEntry(AGENTS_STALE_RESULT_TYPE, { taskId: task.id, agent: task.agent, label: task.label, status: task.status, ageSeconds }); } catch { /* TUI-only content. */ }
 	};
 
 	const deliverMessage = (msg: PendingAgentMessage, route: Exclude<ParentRoute, "hold">) => {
@@ -754,17 +1105,48 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushCompletions = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
-		for (const { task, settledAt, stale } of completions.takeDeliverable(deps.now())) {
+		for (const entry of completions.takeDeliverable(deps.now())) {
 			try {
-				if (stale) deliverStale(task, settledAt);
-				else deliver(task, route);
-			} catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
+				if (entry.stale) deliverStale(entry.task, entry.settledAt, route);
+				else deliver(entry.task, route);
+			} catch {
+				// The parent is told never to poll, so a failed forward must not
+				// lose the completion: it waits for the next boundary instead, and
+				// an idle parent, which has none coming, gets a bounded retry.
+				completions.requeue(entry);
+				if (route === "idle") armDeliveryRetry();
+			}
 		}
+	};
+
+	// A background job's exit notice rides the same router as a completion. It
+	// is compact (no full output), so it has no stale form; a failed forward
+	// requeues it like a completion does.
+	const flushJobNotices = () => {
+		const route = deliveryRoute(false);
+		if (!route) return;
+		const failed: JobNotice[] = [];
+		for (const notice of jobNotices.splice(0)) {
+			const { job } = notice;
+			if (activeSessionId() !== job.ownerSessionId) continue;
+			const content = notice.kind === "events" ? monitorEventsText(job, notice.batch)
+				: notice.kind === "stopped" ? monitorStoppedText(job, notice.reason) : jobNoticeText(job);
+			const event = notice.kind === "events" ? "events" : notice.kind === "stopped" ? notice.reason : undefined;
+			try {
+				sendToParent({ customType: JOB_NOTICE_TYPE, content, display: true, details: jobDetails(job, event) }, route);
+			} catch {
+				failed.push(notice);
+			}
+		}
+		if (failed.length === 0) return;
+		jobNotices.unshift(...failed);
+		if (route === "idle") armDeliveryRetry();
 	};
 
 	const flushAll = () => {
 		flushMessages();
 		flushCompletions();
+		flushJobNotices();
 		// A wake left owed by an earlier held or expired attempt is retried here.
 		requestWake();
 	};
@@ -783,12 +1165,52 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// Session changes discard every pending wake and boundary flush.
 	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		helperPermission.clear(); // Revoke before dropping old callback authority.
 		parentCtx = ctx;
+		restoreBridgeWakeIdentity(ctx);
+		wakeVisibilityWarning = false;
 		parentRunActive = false;
 		wakeOwed = false;
 		endPromptStart();
 		cancelBoundaryFlush?.();
 		cancelBoundaryFlush = undefined;
+		endDeliveryRetry();
+		deliveryRetries = 0;
+	};
+
+	// Structured descriptions feed Status; native hosts keep the compact count.
+	const refreshJobStatus = () => {
+		const sessionId = activeSessionId();
+		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running")
+			.sort((a, b) => b.startedAt - a.startedAt);
+		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running.length === 0 ? undefined : `${JOB_GLYPH} ${running.length} job${running.length === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
+		if (sessionId) {
+			try { pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: running.map(({ id, label, startedAt }) => ({ id, label, startedAt })) } }); } catch { /* Display only. */ }
+		}
+	};
+
+	// A job exit settles like a completion below: flushed at once for an idle
+	// parent, at the next turn boundary for a busy one.
+	// Line events still waiting for a busy parent coalesce per monitor.
+	const queueJobNotice = (notice: JobNotice) => {
+		// Merge into this monitor's latest pending notice when that is still
+		// an events notice, so events never move past its own end.
+		let index = -1;
+		for (let i = jobNotices.length - 1; i >= 0; i--) if (jobNotices[i]!.job === notice.job) { index = i; break; }
+		const pending = index >= 0 ? jobNotices[index]! : undefined;
+		if (notice.kind === "events" && pending?.kind === "events") {
+			jobNotices[index] = { ...pending, batch: mergeMonitorBatches(pending.batch, notice.batch) };
+		} else {
+			jobNotices.push(notice);
+		}
+		refreshJobStatus();
+		requestRender();
+		if (activeAgentRuns === 0) flushAll();
+	};
+	const settleJob = (job: JobRecord) => {
+		// A monitor's pending lines are delivered before its end.
+		if (job.kind === "monitor") monitors.finish(job);
+		queueJobNotice({ job, kind: "exit" });
 	};
 
 	// A completion settles into our queue. An idle parent flushes right away so
@@ -821,6 +1243,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = true;
 		// The run carries everything stored while the parent was idle.
 		wakeOwed = false;
+		endDeliveryRetry();
+		deliveryRetries = 0;
 		endPromptStart();
 	});
 	pi.on("agent_end", () => {
@@ -936,6 +1360,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		},
 	});
 
+	registerBackgroundJobTools(pi, { registry: jobs, monitors, sessionId: (ctx) => ctx.sessionManager.getSessionId() ?? "", now: deps.now, onChange: () => { refreshJobStatus(); requestRender(); } });
+
 	pi.registerMessageRenderer(AGENTS_MESSAGE_TYPE, (message, options, theme) => {
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
@@ -946,11 +1372,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	pi.registerMessageRenderer(AGENTS_ORCHESTRATOR_MESSAGE_TYPE, (message, options, theme) => {
-		const details = (message.details as { gentleAgents?: { senderSessionId?: unknown } } | undefined)?.gentleAgents;
-		const sender = typeof details?.senderSessionId === "string" ? details.senderSessionId : "unknown";
-		const heading = `⇄ Orchestrator message · Received · From ${sanitizeTerminalText(sender)}`;
-		const body = sanitizeTerminalText(messageText(message.content));
-		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
+		const details = (message.details as { gentleAgents?: OrchestratorMessageDetails } | undefined)?.gentleAgents ?? {};
+		return incomingMessageCard(details, messageText(message.content), options.expanded, theme, expandHint(options.expanded));
 	});
 
 	pi.registerMessageRenderer(AGENTS_RESULT_TYPE, (message, options, theme) => {
@@ -1051,6 +1474,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return stored?.task;
 	};
 
+	// A guessed id ("1") leads back to real ids instead of a dead end, so the
+	// parent retries the same call rather than re-summarizing it (gentle-shell#1713).
+	const unknownTask = (id: unknown, ctx: ExtensionContext | undefined) => {
+		const recent = [...store.list(ctx?.sessionManager?.getSessionId() ?? "")].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+		const hint = recent.length ? ` Recent task ids: ${recent.map((task) => `${task.id} (${task.agent})`).join(", ")}.` : "";
+		return text(`Error: no task ${String(id)}.${hint}`, { error: "unknown task" });
+	};
+
 	// Restores this exact session's own finished subagents as visible history
 	// on an explicit resume, or on startup into a session that already has
 	// entries -- never on new, fork, or reload (see the session_start handler's
@@ -1065,12 +1496,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		} catch {
 			return;
 		}
-		// The session may have moved on while disk was read; a stale restore
-		// must never land in the wrong session's store.
-		if (ctx.sessionManager.getSessionId() !== sessionId) return;
-		// Fire-and-forget from session_start: a throwing summary subscriber must
-		// never surface as an unhandled rejection. History is best-effort.
+		// Fire-and-forget from session_start: a stale SDK context or throwing
+		// summary subscriber must never surface as an unhandled rejection.
 		try {
+			// The session may have moved on while disk was read; a stale restore
+			// must never land in the wrong session's store.
+			if (ctx.sessionManager.getSessionId() !== sessionId) return;
 			for (const { task, thread } of history) {
 				if (task.parentSessionId !== sessionId) continue;
 				if (store.restore(task, thread)) restoredTaskIds.add(task.id);
@@ -1184,11 +1615,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	// Issue #2400: parent sessions already told about model_profiles keys that
+	// match no agent and suggest none, so the notice fires once per session.
+	const unmatchedKeysNotifiedSessions = new Set<string>();
 
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");
-		if (ctx.mode === "print" && mode === AGENT_MODE.BACKGROUND) throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
+		if (isSingleShotMode(ctx.mode) && mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		const scopeDenied = rejectUnscopedBoundedWriterDispatch({ agent: agent.name, task: prompt, context });
 		if (scopeDenied) throw new Error(scopeDenied.reason);
 		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
@@ -1201,10 +1635,27 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (isGenericBoundedWriter(agent.name) && !current()) throw new Error("Writer session Git authority changed before admission.");
 		let admittedModel: string | undefined;
 		const surfaces = allowedEditSurfaces(prompt, context);
+		// gentle-shell#1064 slice 2: the session profile is resolved once per task
+		// request, before admission, so the admitted model and the launch routing
+		// resolve the same session layer and can never disagree about it (#1558: a
+		// bound session used to kill its own non-git writer mid-preparation because
+		// admission still read only the pin/global layers). Slice 3b-ii: the same
+		// read covers the frozen inherited profile and `follow` mode.
+		const profileConfigHome = gentlePiConfigHome(deps.env);
+		const sessionProfile = resolveSessionProfile({
+			sessionId: ctx.sessionManager.getSessionId(),
+			cwd: originalCwd,
+			configHome: profileConfigHome,
+			resolveWorktree: deps.resolveWorktree,
+			env: deps.env,
+		});
 		if (!resume && isGenericBoundedWriter(agent.name) && surfaces?.some(isDevelopmentSurface) && !deps.resolveWorktree(originalCwd, originalCwd) && repositoryRoot === undefined) {
 			const root = safeBootstrapDirectory(originalCwd);
 			if (!root || (workspaceRoot !== undefined && (!isAbsolute(workspaceRoot) || safeBootstrapDirectory(workspaceRoot) !== root))) throw new Error("Writer bootstrap requires the original safe project root.");
-			const config = withPinnedModelProfiles(loadAgentsConfig(roots(ctx)), resolveUnversionedProjectProfile(root, gentlePiConfigHome(deps.env))?.modelProfiles);
+			const config = withPinnedModelProfiles(
+				loadAgentsConfig(roots(ctx)),
+				sessionProfileRoutingAt(sessionProfile, { cwd: root, configHome: profileConfigHome, resolveWorktree: deps.resolveWorktree }),
+			);
 			const model = resolveAgentProfile(agent, config).model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
 			if (!catalogModel) throw new Error("Writer bootstrap requires a valid effective model in this session's catalog.");
@@ -1230,7 +1681,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// same-clone registry. Never use a caller-injected resolver for this identity.
 				const identity = resolveSessionWorktree(selectedRoot, parentCwd);
 				const canonicalParent = resolveSessionWorktree(parentCwd, parentCwd);
-				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || selectedRoot !== identity.root || !isAbsolute(selectedRoot) || realpathSync(selectedRoot) !== selectedRoot) throw new Error("repository_root must select a canonical independent Git repository.");
+				const spelling = nativeRootSpelling(selectedRoot);
+				if (!identity || (canonicalParent && identity.commonDir === canonicalParent.commonDir) || spelling !== identity.root || !isAbsolute(spelling) || realpathSync(spelling) !== spelling) throw new Error("repository_root must select a canonical independent Git repository.");
 				await foreignGrants.authorize(ctx, identity, { continuation: resume !== undefined, signal });
 				foreignIdentity = identity;
 				foreignParent = canonicalParent;
@@ -1249,15 +1701,63 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const pinIdentity: WorktreeResolver = foreign ? resolveSessionWorktree : target !== undefined && parentIdentity !== undefined && target === parentIdentity.root
 			? () => parentIdentity
 			: deps.resolveWorktree;
+		// gentle-shell#1064: the session profile outranks the shared defaults for
+		// launches from that session (`session → frozen p → P → G`), with the same
+		// wholesale-replacement contract as the pin. Explicit and frozen profiles
+		// belong to the session and apply to every target, a foreign repository
+		// included; only `follow` reads the defaults of the target. The profile is
+		// resolved here, at task-request creation, so queued and running children
+		// keep the routing frozen into their requests even if the session rebinds.
+		// The routing target this launch reads (#1064), reused to name the winning
+		// layer (#2180) so both answers come from one resolution.
+		const routingTarget = {
+			cwd: target ?? parentCwd,
+			configHome: profileConfigHome,
+			resolveWorktree: pinIdentity,
+			foreignRepository: foreign,
+		};
 		const config = withPinnedModelProfiles(
 			loadAgentsConfig(roots(ctx)),
-			resolveProfilePin({
-				cwd: target ?? parentCwd,
-				configHome: gentlePiConfigHome(deps.env),
-				resolveWorktree: pinIdentity,
-			})?.modelProfiles,
+			sessionProfileRoutingAt(sessionProfile, routingTarget),
 		);
+		// Drift is measured against the defaults of the session's own directory,
+		// where the profile was frozen, never against a delegated target.
+		if (ctx.hasUI) {
+			const drift = inheritedProfileDriftNotice({
+				sessionId: ctx.sessionManager.getSessionId(),
+				cwd: parentCwd,
+				configHome: profileConfigHome,
+				resolveWorktree: deps.resolveWorktree,
+				env: deps.env,
+			});
+			if (drift !== undefined) ctx.ui.notify(drift, "info");
+		}
 		const profile = resolveAgentProfile(agent, config);
+		// Issue #2196 (PR #2233 maintainer decision): a model_profiles key that
+		// names no discovered agent was silently ignored while the child inherited
+		// the orchestrator model. When a configured key suggests this agent, name
+		// it at launch; resolution stays exact-match, so an omitted role keeps
+		// inheriting and a matched key never warns. Keys are checked against every
+		// discovered agent, so a key naming another agent is never reported here.
+		if (ctx.hasUI) {
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
+			if (nearMisses.length > 0) {
+				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
+			}
+			// Issue #2400: a key with no suggestion never names the launched agent,
+			// so the filter above kept it silent. The session's first launch lists
+			// every such key once; later launches in the same session stay quiet.
+			const unsuggested = unmatched.filter((entry) => entry.suggestion === undefined);
+			const parentSession = ctx.sessionManager.getSessionId() ?? "";
+			if (unsuggested.length > 0 && !unmatchedKeysNotifiedSessions.has(parentSession)) {
+				unmatchedKeysNotifiedSessions.add(parentSession);
+				ctx.ui.notify(unsuggested.map((entry) => `"${sanitizeTerminalText(entry.key)}" did not match any agent and was ignored.`).join(" "), "warning");
+			}
+		}
+		// #2180: the winning layer is named from the resolution and routing this
+		// request already performed, never by re-resolving them.
+		const modelSource = modelSourceToken(profile.source.model, sessionProfile, routingTarget);
 		if (admittedModel !== undefined) {
 			const model = profile.model ?? ctx.model;
 			const catalogModel = model?.provider ? ctx.modelRegistry?.find(model.provider, model.id) : ctx.modelRegistry?.getAll().find(candidate => candidate.id === model?.id);
@@ -1298,10 +1798,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			} } : {}),
 			...(target === undefined || foreign ? {} : { onLaunch: () => { registry.register(target, "subagent:spawn"); } }),
 			model: profile.model,
+			...(modelSource === undefined ? {} : { modelSource }),
 			thinking: profile.thinking,
 			sessionDir,
 			resumeSessionPath: resume,
-			...(deps.childExtensionPaths && deps.childExtensionPaths.length > 0 ? { extensionPaths: [...deps.childExtensionPaths] } : {}),
+			...childExtensionRequest(deps.env, deps.childExtensionPaths),
+			// A writer claims its surfaces in its canonical worktree root for its queued
+			// and running lifetime; a continuation is a new task and claims them again.
+			...(isBoundedWriter(agent.name) && surfaces ? { writerSurfaces: surfaces, writerRoot: canonicalWriterRoot(target ?? parentWorktreeRoot, foreign ? resolveSessionWorktree : deps.resolveWorktree) } : {}),
 			env: childEnv,
 			...(foreign || parentRepositoryIdentity === undefined ? {} : {
 				authorizeParentStandingReviewPermission: (repositoryIdentity: string) => {
@@ -1325,10 +1829,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return request;
 	};
 
-	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal): Promise<ToolText> => {
-		if (ctx.mode === "print" && request.mode === AGENT_MODE.BACKGROUND) {
-			throw new Error("Background subagents are unavailable in print mode: pi -p exits before a parent session can receive results. Use task mode, RPC mode, or interactive Pi.");
-		}
+	const launch = async (ctx: ExtensionContext, request: TaskRequest, signal?: AbortSignal, publishWork?: (id: string) => void): Promise<ToolText> => {
+		if (isSingleShotMode(ctx.mode) && request.mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
 		if (retiredSddAgent(request.agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 
 		// Bounded live observation only. Native send owns the fresh policy decision;
@@ -1362,6 +1864,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const foreignRequest = foreignRequests.get(request);
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
+		publishWork?.(task.id);
+		publishActivity(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
@@ -1393,7 +1897,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const finished = await runner.waitFor(task.id);
 			completions.consume(finished.id);
 			messages.invalidateTask(finished.id);
-			return text(finishedText(finished), taskDetails(finished));
+			// The id rides in the text too: details never reach the model, which
+			// otherwise guesses ordinal ids for subagent_continue (#1731 T19).
+			return text(completionText(finished), taskDetails(finished));
 		} finally {
 			signal?.removeEventListener("abort", onAbort);
 		}
@@ -1419,7 +1925,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return { render: () => [], invalidate() {} };
 				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				const visibleBody = options.expanded ? body : theme.fg("muted", body.split("\n")[0] ?? "");
+				const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
 				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
 				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
 			},
@@ -1432,33 +1938,185 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's active ID.",
-		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
-		async execute(_id, _params, _signal, _onUpdate, ctx) {
+		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		...orchestratorToolRenderers("session", expandHint),
+		parameters: { type: "object", additionalProperties: false, properties: {
+			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
+			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
+				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
+				work: { type: "object", additionalProperties: false,
+					description: "Optional historical, non-authoritative classification; topic requires area. Text plus work JSON fits 2048 UTF-8 bytes. Exact duplicate tags/refs are rejected; no ref resolution or routing.",
+					properties: {
+						...workDescriptorSchema.properties,
+						tasks: { type: "object", maxProperties: 8, propertyNames: { type: "string", maxLength: 256 },
+							additionalProperties: workDescriptorSchema,
+							description: "Exact actual owner-declared task IDs, at most 256 UTF-8 bytes; controls, surrogates and __proto__/prototype/constructor rejected. Root-only; nonempty tasks alone are valid. Replacement omitting tasks clears annotations." },
+					},
+				},
+			} }] },
+		} } as never,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const transport = activeTransportFor(ctx);
-			return transport ? text(`Active session ID: ${transport.sessionId}`, { gentleAgents: { senderSessionId: transport.sessionId } }) : text("Error: session messaging is not ready.", { error: "not ready" });
+			if (!transport) return text("Error: session messaging is not ready.", { error: "not ready" });
+			const { subject, state } = params as { subject?: unknown; state?: unknown };
+			const declared = normalizeTaskSubject(subject);
+			// An owner object without `progress` keeps the automatic todo progress still on
+			// display; null and an explicit `progress` win, and an over-budget merge does not fail the call.
+			const shown = stateCache.get(ctx.sessionManager)?.state?.progress;
+			const merged = state && typeof state === "object" && !Array.isArray(state) && !Object.hasOwn(state, "progress")
+				&& automaticProgress?.sessionId === ctx.sessionManager.getSessionId() && shown === automaticProgress.text
+				? { ...state, progress: shown } : undefined;
+			const append = (type: string, data: unknown) => pi.appendEntry(type, data);
+			if (merged) {
+				try { stateCache.publish(ctx.sessionManager, merged, append, Date.now(), declared); }
+				catch (error) {
+					if ((error as Error).message !== "invalid-published-state") throw error;
+					stateCache.publish(ctx.sessionManager, state, append, Date.now(), declared);
+				}
+			} else if (state !== undefined || declared) stateCache.publish(ctx.sessionManager, state, append, Date.now(), declared);
+			if (activeTransportFor(ctx) !== transport) throw new Error("stale-published-state");
+			if (declared && !ctx.sessionManager.getSessionName?.()) pi.setSessionName(declared);
+			const alias = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
+			const aliases = stateCache.get(ctx.sessionManager)?.aliases;
+			if (state !== undefined || declared) publishActivity();
+			presence?.refreshLabel();
+			return text(`Active session ID: ${transport.sessionId}\nCurrent alias (CURRENT TASK): ${aliases?.currentAlias ?? "unknown"}\nInitial alias (FIRST TASK): ${aliases?.initialAlias ?? "unknown"}\nSession name: ${alias || "unnamed"}`,
+				{ gentleAgents: { senderSessionId: transport.sessionId, alias, sessionName: alias, initialAlias: aliases?.initialAlias ?? null, currentAlias: aliases?.currentAlias ?? null } });
+		},
+	});
+	pi.registerTool({
+		name: "orchestrator_consult",
+		label: "Consult published context",
+		...orchestratorToolRenderers("consult", expandHint),
+		description: "Read published metadata (default), request bounded helper reasoning with explicit UI model-cost permission and a question, or revoke-reasoning for an exact target. Never an owner reply, consent or private context access.",
+		parameters: { type: "object", additionalProperties: false, required: ["recipient_session_id"], properties: {
+			kind: { type: "string", enum: ["metadata", "reasoning", "revoke-reasoning"] },
+			question: { type: "string", maxLength: 1024 },
+			recipient_session_id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+			cursor: { type: "string", maxLength: 1024 },
+		} } as never,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const input = params as { kind?: unknown; recipient_session_id?: unknown; cursor?: unknown; question?: unknown };
+			const kind = input?.kind === undefined ? "metadata" : input.kind;
+			if (!input || Object.keys(input).some(k => !["kind", "recipient_session_id", "cursor", "question"].includes(k))
+				|| !["metadata", "reasoning", "revoke-reasoning"].includes(kind as string) || !validTransportSessionId(input.recipient_session_id)
+				|| (kind === "revoke-reasoning" && input.cursor !== undefined)
+				|| (kind !== "reasoning" && input.question !== undefined)
+				|| (kind === "reasoning" && (typeof input.question !== "string" || !input.question.trim()
+					|| Buffer.byteLength(input.question) > 1024 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(input.question)))
+				|| (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 1024))) throw new Error("Invalid metadata consultation parameters.");
+			const selection = { recipientSessionId: input.recipient_session_id, cursor: input.cursor as string | undefined };
+			const transport = activeTransportFor(ctx);
+			const result = (receipt: MetadataReceipt) => {
+				const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
+				return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
+			};
+			if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
+			const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
+			if (kind === "revoke-reasoning") {
+				helperPermission.revoke(selection.recipientSessionId);
+				return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
+			}
+			try {
+				const activations = await transport.listener.registry.listActivations(transport.sessionId);
+				if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
+				const receipt = consultPublishedMetadata(agentHome, activations, selection);
+				if (kind === "metadata") return result(receipt);
+				const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
+				const readSource = async () => {
+					const peers = await transport.listener.registry.listActivations(transport.sessionId);
+					return current() ? consultPublishedMetadata(agentHome, peers, selection)
+						: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+				};
+				const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
+					readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
+				return reply(advice);
+			} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
 		},
 	});
 	pi.registerTool({
 		name: "orchestrator_list",
 		label: "List orchestrators",
-		description: "List other sessions advertised by the trusted local profile. Advertised reachability is unknown and does not prove a session is live.",
-		parameters: { type: "object", additionalProperties: false, properties: {} } as never,
+		...orchestratorToolRenderers("list", expandHint),
+		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
+		parameters: Type.Object({
+			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
+			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
+			filter: Type.Optional(Type.Object({
+				area: Type.Optional(Type.String()),
+				topic: Type.Optional(Type.String({ description: "Requires area." })),
+				tag: Type.Optional(Type.String()),
+				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, never state prose or history." })),
+				ref: Type.Optional(Type.Object({
+					kind: Type.Union([Type.Literal("issue"), Type.Literal("pr"), Type.Literal("task")]),
+					repository: Type.String({ description: "Exact public host/owner/repo scope." }),
+					id: Type.String(),
+				}, { additionalProperties: false })),
+				repository_root: Type.Optional(Type.String({ description: "Recorded absolute Git root; no new Git probe." })),
+				related_to: Type.Optional(Type.Object({
+					session_id: Type.String({ description: "Exact stable source owner session ID." }),
+					task_id: Type.Optional(Type.String({ description: "Actual task ID on the current catalog page, not child session ID." })),
+				}, { additionalProperties: false })),
+			}, { additionalProperties: false, description: "Explicit {} indexes classified work; criteria combine with AND." })),
+		}, { additionalProperties: false }),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const params = _params as { recipient_session_id?: string; cursor?: string; filter?: unknown };
+			let filter;
+			try {
+				if (!params || typeof params !== "object" || Array.isArray(params)
+					|| Object.keys(params).some(key => !["recipient_session_id", "cursor", "filter"].includes(key))
+					|| (params.recipient_session_id !== undefined && !validTransportSessionId(params.recipient_session_id))
+					|| (params.cursor !== undefined && (typeof params.cursor !== "string" || params.cursor.length > 1024))) throw new Error();
+				if (Object.hasOwn(params, "filter")) filter = validateWorkFilter(params.filter);
+			} catch { throw new Error("Invalid orchestrator list parameters."); }
+			if (params.cursor !== undefined && !params.recipient_session_id) return text("Error: cursor requires recipient_session_id.", { error: "invalid-cursor" });
 			const transport = activeTransportFor(ctx);
 			if (!transport) return text("Error: session discovery is not ready.", { error: "not ready" });
 			try {
-				const peers = await transport.listener.registry.list(transport.sessionId);
+				const activations = await transport.listener.registry.listActivations(transport.sessionId);
 				if (activeTransportFor(ctx) !== transport) return text("Error: session discovery became unavailable before results were confirmed.", { error: "stale" });
-				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${peers.map((peer) => `- ${peer.sessionId}`).join("\n")}`, { gentleAgents: { candidates: peers } });
-			} catch {
-				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				if (filter !== undefined) {
+					const workSearch = searchPublishedWork(agentHome, activations, filter, params.recipient_session_id
+						? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+					return text(JSON.stringify(workSearch), { gentleAgents: { workSearch } });
+				}
+				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
+					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+				const repository = (fact?: RepositoryFact) => fact?.root
+					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
+					: "repository: unknown";
+				const rows = peers.map(peer => {
+					const context = peer.freshness === "recent" ? ` · ${peer.aliases?.currentAlias || peer.label || "unnamed"} · Session name: ${peer.label || "unnamed"} · Current alias (CURRENT TASK): ${peer.aliases?.currentAlias ?? "unknown"} · Initial alias (FIRST TASK): ${peer.aliases?.initialAlias ?? "unknown"} · recorded workspace: ${peer.workspace || "unknown"}` : peer.legacyLabel !== undefined
+						? ` · ${peer.legacyLabel || "unnamed"} · context: legacy (this session predates discovery publication; restart it to publish its workspace and repository)`
+						: " · context: unknown";
+					const tasks = peer.tasks?.map(task => `\n  - ${task.label || task.id} [${task.status}] · launch workspace: ${task.workspace || "unknown"} · ${repository(peer.scope?.tasks.find(t => t.id === task.id)?.repository)}`).join("") ?? "";
+					const registered = peer.scope?.registered.map(fact => `\n  registered: ${repository(fact)}`).join("") ?? "";
+					const gaps = peer.scope && !peer.scope.complete ? `\n  (scope incomplete: ${peer.scope.omittedTasks} tasks, ${peer.scope.omittedRegistered} registered roots omitted)` : "";
+					const catalog = peer.catalog ? `\n  recorded catalog (not Git identity): ${JSON.stringify(peer.catalog)}` : "\n  recorded catalog: unknown";
+					const note = params.recipient_session_id ? `\n  owner-curated recorded state (not consent or owner reply; authority none): ${peer.state ? JSON.stringify(peer.state) : "unknown"}` : "";
+					// A legacy peer never publishes its scope: say so instead of reporting an unknown.
+					const legacy = peer.legacyLabel !== undefined;
+					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+				});
+				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
+			} catch (error) {
+				// SessionPresenceError codes are a fixed enum with no record content,
+				// so surfacing the reason is safe and keeps diagnosis possible.
+				const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+				return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 			}
 		},
 	});
 	pi.registerTool({
 		name: "orchestrator_send_message",
 		label: "Send orchestrator message",
+		renderShell: "self",
+		renderCall(args, theme, context) {
+			return outgoingMessageCall(args as { message?: unknown }, theme, context, expandHint(context.expanded));
+		},
+		renderResult(result, options, theme, context) {
+			return outgoingMessageResult(result, options.expanded, options.isPartial, theme, context);
+		},
 		description: "Send a notification to another active session in this trusted local profile. If recipient_session_id is omitted, the sole peer is selected or the user selects one. Acceptance means enqueued, not read or completed.",
 		parameters: {
 			type: "object",
@@ -1503,8 +2161,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						recipient = candidates[index].sessionId;
 						activation = candidates[index];
 					}
-				} catch {
-					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				} catch (error) {
+					const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+					return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 				}
 			}
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
@@ -1517,16 +2176,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			try {
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted" } }) : text("Error: session messaging is not ready.", { error: "stale" });
+				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } }) : text("Error: session messaging is not ready.", { error: "stale" });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}
 		},
 	});
 
-	tool("list_agents", "List the subagents defined for this project and user, with their descriptions.", { properties: {} }, async (_params, ctx) => {
+	tool("list_agents", "List the subagents defined for this project and user, with their descriptions and declared tool inventory.", { properties: {} }, async (_params, ctx) => {
 		const { agents, errors } = discoverAgents(roots(ctx));
-		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"}`);
+		const lines = agents.map((agent) => `- ${agent.name} (${agent.scope}): ${agent.description || "no description"} ${declaredToolInventory(agent)}`);
 		const problems = errors.map((error) => `! ${error}`);
 		return text(lines.length === 0 ? "No subagents defined." : [...lines, ...problems].join("\n"));
 	});
@@ -1541,12 +2200,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				task: { type: "string", description: "What the subagent must do, self-contained." },
 				label: { type: "string", description: "Three to six words naming the work, shown on the agents card, e.g. 'map footer data sources'." },
 				context: { type: "string", description: "Optional extra context appended to the task." },
+				work: workDescriptorSchema,
 				workspace_root: { type: "string", description: "Optional canonical main or linked Git worktree within the parent's same clone only; mutually exclusive with repository_root." },
 				repository_root: { type: "string", description: "Optional canonical independent Git repository; requires direct interactive session-scoped consent before queueing; mutually exclusive with workspace_root." },
 				mode: { type: "string", enum: ["task", "background"], description: "task waits for the result (default); background returns immediately." },
 			},
 		},
 		async (params, ctx, signal) => {
+			const work = Object.hasOwn(params, "work") ? decodeWorkDescriptor(params.work) : undefined;
+			const manager = ctx.sessionManager, sessionId = manager.getSessionId();
 			if (typeof params.agent !== "string" || !params.agent.trim() || typeof params.task !== "string" || !params.task.trim() || (params.context !== undefined && typeof params.context !== "string") || (params.label !== undefined && typeof params.label !== "string")) throw new Error("Subagent dispatch requires a named agent, non-empty task and string context/label.");
 			if (params.mode !== undefined && params.mode !== AGENT_MODE.TASK && params.mode !== AGENT_MODE.BACKGROUND) throw new Error("Subagent mode must be task or background.");
 			// An empty selector names no destination: only real roots are mutually
@@ -1566,18 +2228,33 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			});
 			const workspaceRoot = typeof params.workspace_root === "string" && params.workspace_root !== "" ? params.workspace_root : undefined;
 			const repositoryRoot = typeof params.repository_root === "string" && params.repository_root !== "" ? params.repository_root : undefined;
-			return launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal);
+			const publication: { status: "recorded" | "unavailable" } = { status: "unavailable" };
+			const current = () => ctx.sessionManager === manager && manager.getSessionId() === sessionId && !!activeTransportFor(ctx);
+			const result = await launch(ctx, await buildRequest(ctx, agent, String(params.task ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, undefined, workspaceRoot, signal, repositoryRoot), signal, work ? id => {
+				try {
+					if (!current()) return;
+					const state = stateCache.get(manager)?.state ?? {};
+					stateCache.publish(manager, { ...state, work: { ...state.work, tasks: { ...state.work?.tasks, [id]: work } } }, (type, data) => pi.appendEntry(type, data));
+					if (current()) publication.status = "recorded";
+				} catch { /* Optional metadata cannot invalidate an allocated task. */ }
+			} : undefined);
+			if (!work) return result;
+			if (!current()) publication.status = "unavailable";
+			const note = publication.status === "recorded"
+				? "Work recorded in local curated state; peer advertisement is best-effort."
+				: "Work publication unavailable/unknown. Do not relaunch this allocated task. Use orchestrator_session_id with a bounded replacement state and this actual task ID when the owner session is active.";
+			return { ...result, content: [...result.content, { type: "text", text: note }], details: { ...result.details, workPublication: publication } };
 		},
 	);
 
-	tool("status", "Report the status of one subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
+	tool("status", "Report the status of one subagent task.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
 		const task = await resolveTask(String(params.task_id));
-		return task ? text(describeTask(task), taskDetails(task)) : text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
+		return task ? text(describeTask(task), taskDetails(task)) : unknownTask(params.task_id, ctx);
 	});
 
-	tool("result", "Return the final answer of a finished subagent task, or its current state if it is still running.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params) => {
+	tool("result", "Return the final answer of a finished subagent task, or its current state if it is still running.", { required: ["task_id"], properties: { task_id: { type: "string" } } }, async (params, ctx) => {
 		const task = await resolveTask(String(params.task_id));
-		if (!task) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
+		if (!task) return unknownTask(params.task_id, ctx);
 		// The parent just pulled a finished result; its pending completion must
 		// never be replayed on top of it.
 		if (isFinished(task.status)) {
@@ -1617,7 +2294,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		async (params, ctx, signal) => {
 			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection")) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const previous = await resolveTask(String(params.task_id));
-			if (!previous) return text(`Error: no task ${String(params.task_id)}`, { error: "unknown task" });
+			if (!previous) return unknownTask(params.task_id, ctx);
 			if (retiredSddAgent(previous.agent)) return text("Error: retired SDD agents cannot be continued.", { error: "retired SDD delegation" });
 			if (!isFinished(previous.status) || !previous.sessionPath) return text(`Error: task ${previous.id} cannot be continued yet (${previous.status}).`, { error: "not continuable" });
 			// Continuing acts on the previous result, so any pending completion for
@@ -1628,7 +2305,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!agent) return text(`Error: subagent "${previous.agent}" is no longer defined.`, { error: "unknown agent" });
 			const mode = (params.mode as AgentMode | undefined) ?? (previous.mode as AgentMode);
 			const foreignContinuation = foreignTasks.has(previous.id);
-			return launch(ctx, await buildRequest(ctx, agent, String(params.prompt ?? ""), typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined), signal);
+			const prompt = inheritAllowedEditSurfaces(previous.agent, String(params.prompt ?? ""), params.context, previous.prompt);
+			return launch(ctx, await buildRequest(ctx, agent, prompt, typeof params.label === "string" ? params.label : undefined, typeof params.context === "string" ? params.context : undefined, mode, previous.sessionPath, foreignContinuation ? undefined : previous.cwd, signal, foreignContinuation ? previous.cwd : undefined), signal);
 		},
 	);
 
@@ -1643,6 +2321,37 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
+	pi.registerCommand(JOBS_COMMAND_NAME, {
+		description: "Show background jobs: running first, newest first within each group; status, command, output tail; s stops the selected job.",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("The jobs overlay requires TUI mode.", "warning");
+				return;
+			}
+			let view: JobsView | undefined;
+			await ctx.ui.custom<null>((tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
+				view = new JobsView({
+					theme,
+					rows: () => Math.max(0, tui.terminal.rows),
+					jobs: () => jobs.list(ctx.sessionManager.getSessionId() ?? ""),
+					now: () => deps.now(),
+					// The agent was promised a notice, so a human stop is reported;
+					// a job_stop needs none because the agent itself stopped it.
+					onStop: (job) => {
+						// Lines already seen are delivered before the stop notice.
+						monitors.finish(job);
+						const stopped = jobs.stop(job.id);
+						if (stopped) queueJobNotice({ job: stopped, kind: "exit" });
+					},
+					onClose: () => close(null),
+					requestRender: () => tui.requestRender(),
+				});
+				return view;
+			}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } }).finally(() => view?.dispose());
+		},
+	});
 	pi.registerCommand(AGENTS_COMMAND_NAME, {
 		description: "Show this session's active subagents; a lists open orchestrators in this profile. Peer threads are read-only; o opens a local task's transcript in $EDITOR.",
 		handler: async (_args, ctx) => openOverlay(ctx),
@@ -1660,11 +2369,34 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 	}
 
+	pi.on("session_tree", (_event, ctx) => {
+		helperPermission.clear();
+		if (sessions !== ctx.sessionManager) return;
+		stateCache.load(ctx.sessionManager);
+		publishActivity();
+	});
 	pi.on("session_start", async (event, ctx) => {
+		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
+		// profile binding freezes `p → P → G` now. This handler is parent-only (a
+		// child returns before registering it) and runs for every reason Pi
+		// reports, including `startup` for --resume/--continue/--session. The
+		// freeze is in-memory and idempotent per session id: /reload keeps it, a
+		// new process freezes again until slice 3b-i persists it as an entry.
+		try {
+			freezeSessionProfileAtStartup({
+				sessionId: ctx.sessionManager.getSessionId(),
+				cwd: ctx.sessionManager.getCwd(),
+				configHome: gentlePiConfigHome(deps.env),
+				resolveWorktree: deps.resolveWorktree,
+				env: deps.env,
+			});
+		} catch { /* A launch freezes lazily through the same resolver. */ }
+		stateCache.load(ctx.sessionManager);
 		// A resumed, reloaded, or replaced session starts with an empty completion
 		// queue so nothing pending from another session can replay here.
 		completions.dropAll();
 		messages.dropAll();
+		jobNotices.length = 0;
 		resetParentDelivery(ctx);
 		presence?.dispose();
 		registryFor(ctx);
@@ -1682,8 +2414,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const preexisting = event.reason === "resume" || (event.reason === "startup" && ctx.sessionManager.getEntries().length > 0);
 		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
-			presence = PresencePublisher.start({ profile: agentHome, sessionId: activeSessionId() ?? "",
-				label: ctx.sessionManager.getSessionName?.() || ctx.sessionManager.getCwd().split(/[\\/]/).pop() || "Orchestrator", activity: [] });
+			presence = startPresence(ctx.sessionManager);
 			publishActivity();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);
@@ -1714,10 +2445,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		completions.dropAll();
 		messages.dropAll();
+		// Jobs never outlive their session: a stopped job sends no notice.
+		monitors.cancelAll();
+		const jobsStopped = jobs.stopAll();
+		jobNotices.length = 0;
+		refreshJobStatus();
 		activeAgentRuns = 0;
 		resetParentDelivery(undefined);
 		presence?.dispose();
 		presence = undefined;
+		stateCache.clear();
 		rpcActivityPublisher?.stop();
 		rpcActivityPublisher = undefined;
 		cancelClock?.();
@@ -1733,5 +2470,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const stopped = shutdownSessionTransport();
 		runner.cancelAll("cancelled: parent session shut down");
 		await stopped;
+		// The default log directory goes with the session once every log is
+		// closed, but a process that ignores its stop must not hang shutdown.
+		await new Promise<void>((done) => {
+			const cancel = deps.schedule(done, JOBS_SHUTDOWN_GRACE_MS);
+			void jobsStopped.then(() => { cancel(); done(); });
+		});
+		if (jobOutputDir) {
+			const dir = jobOutputDir;
+			jobOutputDir = undefined;
+			try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* A leftover temp directory is harmless. */ }
+		}
 	});
 }

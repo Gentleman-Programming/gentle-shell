@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -67,7 +67,7 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return gentlePiConfigHome(process.env);
 }
 
 function bannerConfigPath(configHome = gentleAiConfigHome()): string {
@@ -548,12 +548,17 @@ async function countPackageExtensions(packages: unknown[]): Promise<number> {
   return count;
 }
 
-export function readGitBranch(cwd: string, run: typeof execFile = execFile): Promise<string> {
+// A repository rooted at HOME can make even this lookup crawl; a timeout reads
+// as the ordinary failure instead of holding the banner stats.
+const GIT_BRANCH_TIMEOUT_MS = 3000;
+
+export function readGitBranch(cwd: string, run: typeof execFile = execFile, timeoutMs = GIT_BRANCH_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve) => {
     run("git", ["-C", cwd, "branch", "--show-current"], {
       encoding: "utf8",
       shell: false,
       windowsHide: true,
+      timeout: timeoutMs,
     }, (error, stdout) => {
       if (error) {
         resolve("Not a git repo");
@@ -647,6 +652,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
     if (!ctx.hasUI) return;
+    // Delegated rpc children report hasUI=true but have no terminal to paint
+    // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
+    if (process.env.GENTLE_PI_AGENTS_CHILD === "1") return;
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
     if (isPiCliSubcommandInvocation(process.argv)) return;

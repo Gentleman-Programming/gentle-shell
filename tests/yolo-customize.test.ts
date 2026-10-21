@@ -68,7 +68,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		},
 	} as unknown as ExtensionContext;
 	let controller: yolo.YoloSessionController | undefined;
-	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, env); };
+	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }); };
 	const shell = () => gentleShell(pi, { ...env, GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		fetch: async () => { assert.fail("network disabled"); }, activeProfile: () => undefined, devBinary: () => undefined,
 	});
@@ -110,6 +110,21 @@ async function settle(check: () => boolean) {
 	assert.ok(check(), "state settles within the bounded test window");
 }
 function text(view: View) { return view.render(140).map(stripAnsi).join("\n"); }
+
+test("Customize selects Auto for this session and saves either elevated default without changing current mode", async t => {
+ const h=fixture(t,"owner-first",{},true);const open=await h.open();const view=h.view();selectYolo(view);
+ view.handleInput("j");view.handleInput("j");view.render(140);
+ assert.match(text(view),/Session permissions: AUTO/);
+ await h.apply("\r");assert.equal(await h.controller().mode(h.ctx),"auto");
+ view.handleInput("j");view.handleInput("j");view.handleInput("j");view.render(140);
+ assert.match(text(view),/Default permissions: AUTO/);
+ await h.apply("\r");assert.equal(h.controller().defaultMode(),"auto");assert.equal(await h.controller().mode(h.ctx),"auto");
+ view.handleInput("j");view.render(140);await h.apply("\r");
+ assert.equal(h.controller().defaultMode(),"yolo");assert.equal(await h.controller().mode(h.ctx),"auto");
+ assert.equal(JSON.parse(readFileSync(join(h.home,"permission-mode.json"),"utf8")).mode,"yolo");
+ for(const width of [1,20,60,140])assert.ok(view.render(width).every(line=>visibleWidth(line)<=width));
+ open.close();await open.result;
+});
 
 for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and slash share one owner (${order})`, async t => {
 	const h = fixture(t, order, {}, true);
@@ -187,11 +202,11 @@ test("off wins over pending menu on; child/headless/RPC cannot acquire adapter a
 	assert.equal(await h.controller().active(h.ctx), false);
 	open.close(); await open.result;
 	assert.equal(typeof yolo.discoverYoloUiAdapter, "function");
-	for (const variant of ["child", "headless", "rpc", "missing-clone"]) {
+	for (const variant of ["child", "headless", "rpc", "missing-workspace"]) {
 		const f = fixture(t, "owner-first", variant === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
 		if (variant === "headless") Object.assign(f.ctx, { hasUI: false });
 		if (variant === "rpc") Object.assign(f.ctx, { mode: "rpc" });
-		if (variant === "missing-clone") Object.assign(f.ctx, { cwd: "/" });
+		if (variant === "missing-workspace") Object.assign(f.ctx, { cwd: "/nonexistent-gentle-workspace" });
 		const adapter = await yolo.discoverYoloUiAdapter(f.pi, f.ctx);
 		if (adapter) { assert.equal(await adapter.read(), "UNAVAILABLE"); await adapter.toggle(); adapter.dispose(); }
 		assert.equal(await f.controller().active(f.ctx), false, variant);

@@ -7,10 +7,68 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
-const requiredPaths = [
+// Browser installation wizard: bootstrap scripts, entry, host and static assets.
+export const installerPaths = Object.freeze([
+  "bin/gentle-shell-install.mjs",
+  "scripts/installer-server.mjs",
+  "scripts/installer-runner.mjs",
+  "scripts/installer-preflight.mjs",
+  "scripts/installer-probes.mjs",
+  "scripts/installer-downloads.mjs",
+  "scripts/main-channel.mjs",
+  "scripts/installer-windows.mjs",
+  "scripts/installer-windows-artifacts.json",
+  "scripts/bundled-wizard.mjs",
+  "scripts/bundled-install.mjs",
+  "scripts/bootstrap.sh",
+  "scripts/bootstrap.cmd",
+  "assets/install-wizard/index.html",
+  "assets/install-wizard/wizard.js",
+  "assets/install-wizard/wizard.css",
+]);
+
+export const requiredPaths = [
   "bin/gentle-shell.mjs",
+  ...installerPaths,
+  "extensions/gentle-notifications.ts",
+  "lib/notification-audio.ts",
+  "lib/notification-audio-native.ts",
+  "lib/notification-audio-windows.ts",
+  "lib/notification-pulse-protocol.ts",
+  "lib/notification-pulse-client.ts",
+  "lib/notification-pulse-stream.ts",
+  "lib/notification-pulse-worker.ts",
+  "lib/notification-customize.ts",
+  "lib/notification-events.ts",
+  "lib/notification-policy.ts",
+  "lib/notification-scheduler.ts",
+  "lib/notification-service.ts",
+  "lib/notification-ui.ts",
+  "assets/sounds/success.wav",
+  "assets/sounds/error.wav",
+  "assets/sounds/attention.wav",
+  "assets/sounds/LICENSE.md",
+  "docs/sound-notifications.md",
+  "docs/sound-notifications-proposal.md",
+  "extensions/gentle-voice.ts",
+  "lib/voice-artifacts.ts",
+  "lib/voice-command.ts",
+  "lib/voice-install.ts",
+  "lib/voice-platform.ts",
+  "lib/voice-session.ts",
+  "lib/voice-ui.ts",
+  // The dictation worker is spawned by path, never imported, so nothing else
+  // would notice it missing from the packed tarball.
+  "scripts/voice-worker.cjs",
+  "docs/voice.md",
+  "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
+  "assets/orchestrator-delegation-reference.md",
+  "assets/orchestrator-tracking.md",
+  "assets/orchestrator-verification.md",
+  "assets/orchestrator-writer.md",
+  "assets/orchestrator-prompts.md",
   "assets/orchestrator-memory.md",
   "assets/orchestrator-skills.md",
   "assets/agents/gentle-ai-explore.md",
@@ -35,21 +93,38 @@ const requiredPaths = [
   "docs/review-integration.md",
   "extensions/gentle-ai.ts",
   "extensions/resume-hint.ts",
+  "extensions/session-scratch.ts",
   "extensions/skill-registry.ts",
+  "lib/child-package-injection.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
+  "lib/gentle-shell-bundled.ts",
+  "lib/gentle-shell-startup-update.ts",
+  "lib/gentle-shell-update-panel.ts",
+  "lib/gentle-shell-startup-flow.ts",
   "lib/gentle-shell-resume-hint.ts",
+  "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
+  "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",
   "lib/review-integration-v2.ts",
   "lib/review-relay-contract.ts",
   "lib/agent-assets.ts",
   "lib/telemetry-trigger.ts",
+  "lib/session-scratch.ts",
+	"runtime/child-package-injection.mjs",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-bundled.mjs",
+	"runtime/gentle-shell-startup-update.mjs",
+	"runtime/gentle-shell-update-panel.mjs",
+	"runtime/gentle-shell-startup-flow.mjs",
 	"runtime/gentle-shell-resume-hint.mjs",
+	"runtime/gentle-shell-uninstall.mjs",
+	"runtime/gentle-shell-import-pi.mjs",
 	"runtime/native-review-cli.mjs",
+	"runtime/status-timing-diagnostics.mjs",
 	"runtime/review-integration-v2.mjs",
 	"runtime/review-risk-assessment.mjs",
 	"runtime/review-relay-contract.mjs",
@@ -72,17 +147,18 @@ const requiredPaths = [
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/README.md",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/manifest.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/orchestration/pi.md",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/schemas/lens.schema.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/schemas/refuter.schema.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/schemas/targeted-validator.schema.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/vectors/lens.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/vectors/refuter.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/bundle/vectors/targeted-validator.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/generated/provider-capabilities.baseline.json",
-  "contracts/review-provider-contract-mirror/v1.2.0/generated/provider-roles.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/README.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/manifest.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/orchestration/pi.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/routing/pi.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/lens.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/refuter.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/targeted-validator.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/lens.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/refuter.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/targeted-validator.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-capabilities.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
   "skills/_shared/review-ledger-contract.md",
   "skills/branch-pr/SKILL.md",
@@ -172,6 +248,14 @@ const contractHashes = {
 };
 
 requiredPaths.push(...Object.keys(contractHashes));
+
+// Required package-relative paths that are missing or are not regular files.
+export function missingRequiredPaths(packageRoot, paths) {
+  return paths.filter((relativePath) => {
+    const absolutePath = join(packageRoot, relativePath);
+    return !existsSync(absolutePath) || !statSync(absolutePath).isFile();
+  });
+}
 
 function listFilesRecursively(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -287,10 +371,7 @@ async function main() {
     process.exit(1);
   }
 
-  const missing = requiredPaths.filter((relativePath) => {
-    const absolutePath = join(root, relativePath);
-    return !existsSync(absolutePath) || !statSync(absolutePath).isFile();
-  });
+  const missing = missingRequiredPaths(root, requiredPaths);
 
   if (missing.length > 0) {
     console.error("gentle-pi package is missing required Pi resources:");
@@ -331,7 +412,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.0.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.2.0 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -376,7 +457,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.0.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.2.0 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

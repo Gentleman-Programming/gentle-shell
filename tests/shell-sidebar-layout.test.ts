@@ -49,7 +49,7 @@ test("grouped Status preserves structured fields and opaque integration text", (
 		const lines = renderShellSidebarBar({
 			cwd: "/project", branch: "main", dirty: 2, sessionName: "session",
 			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
-			costTotal: 1, subscription: false, statuses: ["opaque integration"],
+			costTotal: 1, subscription: false, usage: undefined, statuses: ["opaque integration"],
 		}, painted, 46);
 		const text = lines.join("\n");
 		let previous = -1;
@@ -365,6 +365,31 @@ test("wheel scrolls the rail and is consumed at both boundaries and blank space"
 	assert.equal(scroll.scrollTop, 0);
 });
 
+test("wheel over a bounded Todo viewport scrolls the section before the surrounding rail", (t) => {
+	const f = fixture();
+	const received: TuiMouseEvent[] = [];
+	let consumes = true;
+	sidebarPart(f.tui, "todo", {
+		render: () => ["Todo viewport", "Todo body"], invalidate() {},
+		handleMouse(event: TuiMouseEvent) {
+			received.push(event);
+			return consumes && event.type === "wheel" ? { handled: true, render: true } : undefined;
+		},
+	});
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	const content = scroll.render(50);
+	scroll.updateLayout(content.length + 20, content.length, () => {});
+	const y = content.findIndex((line) => line.includes("Todo body"));
+	const event: TuiMouseEvent = { type: "wheel", button: "none", wheelDelta: 2, x: 3, y, screenX: 93, screenY: y, width: 50, height: content.length, shift: false, alt: false, ctrl: false };
+	assert.equal(scroll.handleMouse(event)?.handled, true);
+	assert.equal(scroll.scrollTop, 0, "inner viewport consumes wheel without moving the rail");
+	assert.equal(received.at(-1)?.y, 1, "section coordinates are local");
+	consumes = false;
+	assert.equal(scroll.handleMouse(event)?.handled, true);
+	assert.equal(scroll.scrollTop, 2, "unbounded/collapsed sections fall back to rail scrolling");
+});
+
 test("rail dispatches a clipped, scroll-translated left click to only the matching sidebar part", (t) => {
 	const f = fixture();
 	let clicks = 0;
@@ -427,7 +452,7 @@ test("rail rejects removed or replaced parts before cached geometry is prepared 
 			return { handled: true };
 		},
 	};
-	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {} }, original);
+	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {}, dispose() {} }, original);
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = rail(f);

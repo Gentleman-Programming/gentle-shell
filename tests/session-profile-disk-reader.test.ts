@@ -3,7 +3,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { readSessionProfileDisk } from "../lib/session-profile-disk-reader.ts";
+import {
+	type DiskProfileIndeterminateReason,
+	readSessionProfileDisk,
+} from "../lib/session-profile-disk-reader.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE as customType } from "../lib/session-profile-persistence.ts";
 
 const header = { type: "session", id: "session", version: 3 };
@@ -154,13 +157,69 @@ for (const [label, rows] of [
 	});
 }
 
-test("parse failure reports physical line without contents", (t) => {
-	const result = fixture(t, [], [header, "", "bad private contents"]).read();
+test("malformed lines are skipped like Pi's session parser, keeping physical line numbers", (t) => {
+	const selected = entry();
+	for (const rows of [
+		[header, "{bad private contents", selected],
+		["{bad private contents", header, selected],
+		[header, selected, '{"type":"custom","id":"torn'],
+	]) {
+		const result = fixture(t, [selected], rows).read();
+		assert.equal(result.status, "cleared");
+		assert.equal(result.lineNumber, rows.indexOf(selected) + 1);
+	}
+});
+
+test("malformed selected record is missing, never admitted", (t) => {
+	const result = fixture(t, [entry()], [header, "{secret"]).read();
 	assert.deepEqual(result, {
 		status: "indeterminate",
-		reason: "invalid-json",
-		lineNumber: 3,
+		reason: "selected-record-missing",
 	});
+});
+
+test("file with only blank or malformed lines has no header", (t) => {
+	for (const rows of [[], ["", "{bad"]]) {
+		assert.deepEqual(fixture(t, [entry()], rows).read(), {
+			status: "indeterminate",
+			reason: "missing-header",
+		});
+	}
+});
+
+test("non-string customType is ordinary, non-string kind and empty agent name are invalid", (t) => {
+	const ordinary = { ...entry(), customType: 7 };
+	assert.deepEqual(fixture(t, [ordinary]).read(), { status: "absent" });
+	for (const data of [
+		{ kind: 1 },
+		{ kind: ["clear"] },
+		{
+			kind: "bind",
+			origin: "user",
+			name: "chosen",
+			modelProfiles: { "": "provider/model" },
+		},
+	]) {
+		const selected = entry("selected", data);
+		assert.equal(fixture(t, [selected]).read().status, "invalid");
+	}
+});
+
+test("every indeterminate reason is a named literal", () => {
+	const reasons = {
+		"missing-source": true,
+		"invalid-candidate-metadata": true,
+		"unreadable-file": true,
+		"source-changed": true,
+		"invalid-record": true,
+		"session-header-mismatch": true,
+		"duplicate-id": true,
+		"missing-header": true,
+		"selected-record-missing": true,
+		"selected-record-mismatch": true,
+		"unserializable-source": true,
+	} satisfies Record<DiskProfileIndeterminateReason, true>;
+	assert.equal(Object.keys(reasons).length, 11);
 });
 
 test("missing, undefined and unreadable paths are conservative", (t) => {

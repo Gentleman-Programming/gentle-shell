@@ -2,6 +2,7 @@
 // Public API fixtures, never providers or production flush/rollback workarounds.
 import assert from "node:assert/strict";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -73,6 +74,20 @@ test("custom-only public session cannot restore memory; ordinary fixture flush c
 	assert.equal(readSessionProfileDisk(manager).status, "indeterminate");
 	flushFixture(manager);
 	expectBound(manager, "initial");
+});
+
+test("malformed line Pi skips on open does not block corroboration", (t) => {
+	const { manager, sessions } = fixture(t);
+	manager.appendCustomEntry(customType, bind("before"));
+	flushFixture(manager);
+	const path = manager.getSessionFile();
+	assert.ok(path);
+	appendFileSync(path, '{"type":"custom","id":"torn\n');
+	const reopened = SessionManager.open(path, sessions);
+	expectBound(reopened, "before");
+	reopened.appendCustomEntry(customType, bind("after"));
+	flushFixture(reopened);
+	expectBound(reopened, "after");
 });
 
 test("public selected branch, sibling and extracted session stay separated", (t) => {

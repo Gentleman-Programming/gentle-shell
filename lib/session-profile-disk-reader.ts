@@ -3,24 +3,31 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import {
 	readSessionProfileEntry,
-	SESSION_PROFILE_CUSTOM_TYPE,
+	SESSION_PROFILE_FAMILY as profileFamily,
 	type SessionProfileReadResult,
 } from "./session-profile-persistence.ts";
-
-const profileFamily = SESSION_PROFILE_CUSTOM_TYPE.slice(
-	0,
-	SESSION_PROFILE_CUSTOM_TYPE.lastIndexOf("/") + 1,
-);
 
 export interface SessionProfileSource {
 	getSessionId(): string;
 	getSessionFile(): string | undefined;
 	getBranch(): readonly unknown[];
 }
+export type DiskProfileIndeterminateReason =
+	| "missing-source"
+	| "invalid-candidate-metadata"
+	| "unreadable-file"
+	| "source-changed"
+	| "invalid-record"
+	| "session-header-mismatch"
+	| "duplicate-id"
+	| "missing-header"
+	| "selected-record-missing"
+	| "selected-record-mismatch"
+	| "unserializable-source";
 export type DiskProfileResult =
 	| {
 			status: "indeterminate";
-			reason: string;
+			reason: DiskProfileIndeterminateReason;
 			entryIndex?: never;
 			lineNumber?: number;
 	  }
@@ -60,7 +67,9 @@ function snapshot(value: unknown): unknown {
 		throw new TypeError("Unserializable source snapshot");
 	}
 }
-function unavailable(reason: string, lineNumber?: number): DiskProfileResult {
+function unavailable(
+	reason: DiskProfileIndeterminateReason,
+	lineNumber?: number): DiskProfileResult {
 	return lineNumber === undefined
 		? { status: "indeterminate", reason }
 		: { status: "indeterminate", reason, lineNumber };
@@ -136,7 +145,9 @@ export function readSessionProfileDisk(
 			try {
 				value = JSON.parse(lines[index]);
 			} catch {
-				return unavailable("invalid-json", lineNumber);
+				// Pi's session parser skips malformed lines, so a file Pi opens must
+				// not become permanently indeterminate here.
+				continue;
 			}
 			if (!record(value)) return unavailable("invalid-record", lineNumber);
 			if (!foundHeader) {

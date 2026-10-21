@@ -51,7 +51,15 @@ memory.
 
 The result is the decoder result plus `entryIndex` and `lineNumber`, or
 `indeterminate` with one reason: `missing-source`, `invalid-candidate-metadata`,
-`unreadable-file`, `source-changed`, `invalid-json`, `invalid-record`,
+`unreadable-file`, `source-changed`, `invalid-record`,
 `session-header-mismatch`, `duplicate-id`, `missing-header`,
 `selected-record-missing`, `selected-record-mismatch`, or
-`unserializable-source`. Reasons never carry record contents.
+`unserializable-source` (exported as `DiskProfileIndeterminateReason`).
+Reasons never carry record contents.
+
+Malformed JSON lines are skipped, matching Pi's session parser, so a file Pi
+opens never becomes permanently indeterminate here; `lineNumber` still counts
+physical lines. A malformed selected record is therefore
+`selected-record-missing`. `missing-header` means no line parsed at all (an
+empty, all-blank or all-malformed file). Pi writes no byte order mark, so a
+BOM-prefixed header line is skipped as malformed like any other.

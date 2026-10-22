@@ -10,6 +10,12 @@ export const AUTO_MODE_NOTICE = "Auto uses additional model calls with separate 
 
 export const YOLO_STATUS_KEY = "gentle:yolo";
 export const YOLO_STATUS_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
+export const SUPER_YOLO_STATUS_TEXT = "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked";
+export const SUPER_YOLO_DIRECTIVE = `<gentle-super-yolo-session>
+SUPER YOLO session standing permission is ON, authorized by the human for this live primary session and canonical workspace. No permission questions are asked in this mode: proceed through ordinary and destructive shell work (including rm, resets, force operations and configured-guard confirmations) without confirmation dialogs, and make implementation and delivery choices directly.
+The ONLY hard line is private material: never read, print, copy, transmit or commit secrets or private credentials — .env files, .ssh, keychains, *.pem/*.key/*.p12/*.pfx, secrets/ directories, cloud credential files. If a task seems to need them, stop and ask the human.
+This does NOT override explicit human restrictions in the live conversation, and never auto-answers ask_user tools, provider consent, maintenance/recovery authorization or opaque-token decisions. Children remain bounded by their delegated task; they receive no independent delivery grant or Super Yolo inheritance.
+</gentle-super-yolo-session>`;
 export const YOLO_DIRECTIVE = `<gentle-yolo-session>
 YOLO session standing permission is ON, authorized by the human for this live primary session and canonical workspace (directly or through a trusted global default).
 Qualify the default commit, push and PR confirmation clauses: for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation, this activation supplies standing permission instead of repeated permission questions. Make ordinary reversible implementation choices without needless interviews.
@@ -40,12 +46,14 @@ export class YoloSessionPolicy {
 	}
 }
 
-/** Remove our exact block as well as adding it: bridge options can be reused. */
-export function updateYoloPrompt(options: AppendableSystemPromptOptions | null | undefined, active: boolean): void {
+/** Remove our exact blocks as well as adding them: bridge options can be reused. */
+export function updateYoloPrompt(options: AppendableSystemPromptOptions | null | undefined, active: boolean, superActive = false): void {
 	if (!options) return;
 	options.appendSystemPrompt = (options.appendSystemPrompt ?? "")
-		.replace(`\n\n${YOLO_DIRECTIVE}`, "").replace(YOLO_DIRECTIVE, "");
-	if (active) appendSystemPromptOnce(options, YOLO_DIRECTIVE);
+		.replace(`\n\n${YOLO_DIRECTIVE}`, "").replace(YOLO_DIRECTIVE, "")
+		.replace(`\n\n${SUPER_YOLO_DIRECTIVE}`, "").replace(SUPER_YOLO_DIRECTIVE, "");
+	if (superActive) appendSystemPromptOnce(options, SUPER_YOLO_DIRECTIVE);
+	else if (active) appendSystemPromptOnce(options, YOLO_DIRECTIVE);
 }
 const HUMAN_ACTION = { on: "on", off: "off", toggle: "" } as const;
 type HumanAction = (typeof HUMAN_ACTION)[keyof typeof HUMAN_ACTION];
@@ -86,6 +94,7 @@ export function discoverYoloUiAdapter(pi: ExtensionAPI, context: ExtensionContex
 }
 export interface YoloSessionController {
 	active(context: ExtensionContext): Promise<boolean>;
+	superActive(context: ExtensionContext): Promise<boolean>;
 	mode(context: ExtensionContext): Promise<PermissionMode>;
 	setMode(mode: PermissionMode, context: ExtensionContext): Promise<boolean>;
 	defaultMode(): PermissionMode;
@@ -129,9 +138,9 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		const ids = seen.get(scope.manager) ?? new Set<string>(); ids.add(scope.id); seen.set(scope.manager, ids);
 	};
 	const publish = (ctx: ExtensionContext): void => {
-		const yolo = liveMode === "yolo";
-		try { ctx.ui.setStatus(YOLO_STATUS_KEY, yolo ? YOLO_STATUS_TEXT : undefined); } catch { /* display only */ }
-		try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [YOLO_STATUS_TEXT] : undefined); } catch { /* display only */ }
+		const yolo = liveMode === "yolo" ? YOLO_STATUS_TEXT : liveMode === "super-yolo" ? SUPER_YOLO_STATUS_TEXT : undefined;
+		try { ctx.ui.setStatus(YOLO_STATUS_KEY, yolo); } catch { /* display only */ }
+		try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [yolo] : undefined); } catch { /* display only */ }
 		try { ctx.ui.setStatus(MODE_STATUS_KEY, `Permissions: ${liveMode.toUpperCase()}`); } catch { /* display only */ }
 	};
 	const changed = (ctx: ExtensionContext): void => {
@@ -186,6 +195,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		return identity && binding ? liveMode : "normal";
 	};
 	const active = async (ctx: ExtensionContext): Promise<boolean> => await mode(ctx) === "yolo";
+	const superActive = async (ctx: ExtensionContext): Promise<boolean> => await mode(ctx) === "super-yolo";
 	const reset = (ctx: ExtensionContext): void => {
 		ownerGeneration += 1;
 		// Initial session_start remains fresh; shutdown/reload of an observed session revokes.
@@ -228,7 +238,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	};
 	const humanAction = async (action: HumanAction, ctx: ExtensionContext, current = () => true): Promise<boolean> => {
 		if (!current()) return false;
-		const enable = action === HUMAN_ACTION.on || (action === HUMAN_ACTION.toggle && liveMode !== "yolo");
+		const enable = action === HUMAN_ACTION.on || (action === HUMAN_ACTION.toggle && liveMode !== "yolo" && liveMode !== "super-yolo");
 		const pending = setMode(enable ? "yolo" : "normal", ctx, current);
 		const epoch = generation; // setMode revokes synchronously, then publishes once on success.
 		const result = await pending;
@@ -253,7 +263,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 				const epoch = generation, value = await mode(ctx);
 				if (!current()) return YOLO_DISPLAY.unavailable;
 				if (epoch !== generation) return read();
-				return binding ? value === "yolo" ? YOLO_DISPLAY.on : YOLO_DISPLAY.off : YOLO_DISPLAY.unavailable;
+				return binding ? value === "yolo" || value === "super-yolo" ? YOLO_DISPLAY.on : YOLO_DISPLAY.off : YOLO_DISPLAY.unavailable;
 			};
 			request.respond({
 				read,
@@ -276,7 +286,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		} catch { /* obsolete trusted context: discovery expires closed */ }
 	});
 	pi.registerCommand("gentle:mode", {
-		description: "Permissions: normal|auto|yolo|status; default normal|auto|yolo saves for new primary sessions.",
+		description: "Permissions: normal|auto|yolo|super-yolo|status; default normal|auto|yolo|super-yolo saves for new primary sessions.",
 		handler: async (args, ctx) => {
 			const words = args.trim().split(/\s+/);
 			if (!args.trim() || args.trim() === "status") {
@@ -290,7 +300,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 				else notify(ctx, "Mode unchanged — interactive primary session required or the session changed.", true);
 				return;
 			}
-			notify(ctx, "Use /gentle:mode normal|auto|yolo|status or /gentle:mode default normal|auto|yolo. State unchanged.", true);
+				notify(ctx, "Use /gentle:mode normal|auto|yolo|super-yolo|status or /gentle:mode default normal|auto|yolo|super-yolo. State unchanged.", true);
 		},
 	});
 	pi.registerCommand("gentle:yolo", {
@@ -301,7 +311,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			if (!args.trim() && ctx.hasUI && typeof ctx.ui.select === "function") {
 				current = bindCurrent(ctx);
 				const state = await active(ctx) ? YOLO_DISPLAY.on : YOLO_DISPLAY.off;
-				const selected = await ctx.ui.select(`🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`, ["enable", "disable", "status"]);
+				const selected = await ctx.ui.select(`🚀 Gentle YOLO 🔥 — standing permission (current: ${state})`, ["enable", "disable", "status"]);
 				if (selected === undefined) return;
 				action = selected;
 			}
@@ -313,5 +323,5 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			notify(ctx, "YOLO unchanged — the session changed while the menu was open.", true);
 		},
 	});
-	return { active, mode, setMode, defaultMode, saveDefault, epoch: () => generation, humanAction, reset };
+	return { active, superActive, mode, setMode, defaultMode, saveDefault, epoch: () => generation, humanAction, reset };
 }

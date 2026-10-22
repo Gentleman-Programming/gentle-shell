@@ -30,10 +30,6 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:animations", label: "Animation mode" },
 			{ command: "gentle:vim", label: "Vim opt-in · Pi slash commands" },
 			{ command: "gentle:telemetry", label: "Telemetry" },
-			{ command: "gentle:banner", label: "Startup banner" },
-			{ command: "gentle:banner-color", label: "Banner color" },
-			{ command: "gentle:toggle-rose", label: "Toggle banner rose" },
-			{ command: "gentle:toggle-text-logo", label: "Toggle banner text logo" },
 			{ command: "gentle:dev-binary", label: "Gentle AI dev binary" },
 		],
 	},
@@ -46,6 +42,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:jobs", label: "Background jobs" },
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
+			{ command: "gentle:voice", label: "Voice dictation · local Parakeet" },
 		],
 	},
 	{

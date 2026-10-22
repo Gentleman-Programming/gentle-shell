@@ -152,6 +152,14 @@ export function parseLauncherArgs(argv          )                     {
 			commandArgs = argv.slice(i + 1);
 			break;
 		}
+		// `home import-pi` likewise takes the home selectors ahead of it, so it
+		// imports into the home they resolve to; any other `home` after a
+		// selector stays pi's.
+		if (arg === "home" && argv[i + 1] === "import-pi" && command === undefined && passthrough.length === 0) {
+			command = "home";
+			commandArgs = argv.slice(i + 1);
+			break;
+		}
 		if (passthrough.length === 0 && isPiSubcommand(arg)) {
 			piSubcommand = arg;
 		}
@@ -315,6 +323,15 @@ export function homeSelectorFlags(home              )           {
 	if (home.mode === "link") return ["--link"];
 	if (home.mode === "path") return ["--home", home.dir];
 	return [];
+}
+
+// The first-run line of a separate home. `home import-pi` is offered only
+// when the user's pi home has sign-ins (auth.json) to copy.
+export function separateHomeHint(home              , input                        )         {
+	const base = `gentle-shell: using a separate home at ${home.dir}. Run 'gentle-shell --link' to reuse your pi sign-ins and chats`;
+	if (!input.piSignIns) return `${base}.`;
+	const command = ["gentle-shell", ...homeSelectorFlags(home).map(shellQuote), "home", "import-pi"].join(" ");
+	return `${base}, or '${command}' to copy your sign-ins and MCP servers into this home.`;
 }
 
 export function launcherConfigPath(homedir        )         {
@@ -650,6 +667,20 @@ const POST_INSTALL_REMOVAL_PACKAGES                                             
 // (skipped) install would have declared. See runPostInstallCleanup in
 // bin/gentle-shell.mjs.
 export const POST_INSTALL_REMOVAL_SOURCES                    = POST_INSTALL_REMOVAL_PACKAGES.map((entry) => entry.source);
+
+// #2143: a Gentle AI with package exclusion (gentle-ai#5503) skips these
+// managed Pi packages instead of installing them only for the post-install
+// removal above to delete them. An older Gentle AI ignores the variable (a flag
+// would be rejected), so the removal stays as the fallback. Only sources Gentle
+// AI manages belong here: it rejects any other value.
+export const GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV = "GENTLE_AI_PI_EXCLUDE_PACKAGES";
+const LAUNCHER_EXCLUDED_PI_PACKAGES                    = ["npm:gentle-pi"];
+
+export function withLauncherPackagesExcluded(env                                    )                                     {
+	const own = (env[GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV] ?? "").split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+	const merged = [...own, ...LAUNCHER_EXCLUDED_PI_PACKAGES.filter((source) => !own.includes(source))];
+	return { ...env, [GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV]: merged.join(",") };
+}
 
 // Scans a settings.json `packages` list (same string/object-source parsing
 // as settingsDeclareGentlePi/findGentlePiDeclaration above) for any entry
@@ -1137,7 +1168,7 @@ export function planSpawn(input                )            {
 // formatting as practical instead of imposing its own. `indent` is
 // `undefined` for compact (no-whitespace) JSON, matching what
 // `JSON.stringify(value)` (no third argument) produces.
-function detectJsonFormatting(text        )                                                           {
+export function detectJsonFormatting(text        )                                                           {
 	const match = text.match(/\{\r?\n([ \t]+)/);
 	return { indent: match ? match[1] : undefined, trailingNewline: text.endsWith("\n") };
 }
@@ -1259,6 +1290,7 @@ export function helpText()         {
 	return [
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
+		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
@@ -1280,6 +1312,11 @@ export function helpText()         {
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
+		"  home import-pi   Copy your pi sign-ins (auth.json) and MCP servers (mcp.json) into the",
+		"                   resolved separate home, plus your default provider, model and thinking",
+		"                   level when it has none. Never overwrites a file or setting, never copies",
+		"                   packages, extensions or caches, and never changes your pi home.",
+		"                   --dry-run only shows the plan. Refuses --link (nothing to import).",
 		"  setup            Provision the resolved home with the gentle-ai companion packages",
 		"                   (runs the package-local gentle-ai 'install --agent pi --scope global').",
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",

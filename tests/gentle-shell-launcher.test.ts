@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import {
+	GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV,
 	MIN_PI_VERSION,
+	withLauncherPackagesExcluded,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
@@ -37,6 +39,7 @@ import {
 	userPiHome,
 	resolvePiRuntime,
 	restoreJsonField,
+	separateHomeHint,
 	settingsDeclareGentlePi,
 	shellQuote,
 	type PackageJsonPeerShape,
@@ -217,6 +220,40 @@ test("parseLauncherArgs treats home as a plain passthrough token when it is not 
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);
 	assert.deepEqual(parsed.passthrough, ["home"]);
+});
+
+test("parseLauncherArgs accepts home selectors ahead of home import-pi only", () => {
+	const link = parseLauncherArgs(["--link", "home", "import-pi"]);
+	assert.equal(link.link, true);
+	assert.equal(link.command, "home");
+	assert.deepEqual(link.commandArgs, ["import-pi"]);
+	assert.deepEqual(link.passthrough, []);
+	const path = parseLauncherArgs(["--home", "/x", "home", "import-pi", "--dry-run"]);
+	assert.equal(path.home, "/x");
+	assert.equal(path.command, "home");
+	assert.deepEqual(path.commandArgs, ["import-pi", "--dry-run"]);
+	const first = parseLauncherArgs(["home", "import-pi", "--dry-run"]);
+	assert.equal(first.command, "home");
+	assert.deepEqual(first.commandArgs, ["import-pi", "--dry-run"]);
+	// Anything else after a selector stays pi's, as before.
+	assert.deepEqual(parseLauncherArgs(["--link", "home", "link"]).passthrough, ["home", "link"]);
+	assert.deepEqual(parseLauncherArgs(["-p", "home", "import-pi"]).passthrough, ["-p", "home", "import-pi"]);
+});
+
+test("help text documents gentle-shell home import-pi", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell [home selectors] home import-pi [--dry-run]"));
+	assert.match(text, /import-pi\s+Copy your pi sign-ins \(auth\.json\) and MCP servers \(mcp\.json\)/);
+});
+
+test("separateHomeHint mentions home import-pi only when the user's pi home has sign-ins", () => {
+	const isolated: ResolvedHome = { mode: "isolated", dir: "/h/.gentle-shell/agent", source: "default" };
+	const without = separateHomeHint(isolated, { piSignIns: false });
+	assert.equal(without, "gentle-shell: using a separate home at /h/.gentle-shell/agent. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.");
+	const withSignIns = separateHomeHint(isolated, { piSignIns: true });
+	assert.match(withSignIns, /Run 'gentle-shell --link' to reuse your pi sign-ins and chats, or 'gentle-shell home import-pi' to copy your sign-ins and MCP servers into this home\.$/);
+	const path = separateHomeHint({ mode: "path", dir: "/custom", source: "flag" }, { piSignIns: true });
+	assert.match(path, /'gentle-shell --home \/custom home import-pi'/);
 });
 
 // --- setup subcommand ----------------------------------------------------
@@ -2059,3 +2096,18 @@ test("the isolated-home bootstrap creates ~/.gentle-shell as 0700 under umask 00
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+// #2143: Gentle AI installs npm:gentle-pi into the home only for the launcher
+// to remove it again; a Gentle AI with package exclusion (gentle-ai#5503)
+// skips it, and an older one ignores the variable.
+test("withLauncherPackagesExcluded asks Gentle AI to skip npm:gentle-pi, keeping a caller's own exclusions", () => {
+	assert.equal(GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV, "GENTLE_AI_PI_EXCLUDE_PACKAGES");
+	assert.equal(withLauncherPackagesExcluded({ PATH: "/bin" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:pi-btw,npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:gentle-pi, npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi,npm:pi-btw");
+	const input = { PATH: "/bin" };
+	assert.equal(withLauncherPackagesExcluded(input).PATH, "/bin");
+	assert.deepEqual(input, { PATH: "/bin" }, "the caller's env is not mutated");
+});
+

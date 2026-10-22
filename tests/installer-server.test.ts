@@ -306,8 +306,8 @@ test("/api/plan names the found and required version of an older Gentle Shell an
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.2.0 or newer. Nothing was replaced. " +
-			"Update it with `pnpm add -g gentle-pi@4.2.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.3.0 or newer. Nothing was replaced. " +
+			"Update it with `pnpm add -g gentle-pi@4.3.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");
@@ -934,6 +934,10 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	for (const [step, detail, expected] of [
 		["install-global", ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.", guidance.failed["install-global"]],
 		["install-global", rateLimited, guidance.githubRateLimit],
+		// Windows code integrity (Smart App Control) refused the gentle-ai.exe the postinstall built.
+		["install-global", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		["install-version", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		["install-version", "ERR_PNPM_FETCH_401 GET https://npm.acme.dev/x: Unauthorized", guidance.failed["install-version"]],
 		["install-shell-main", mainLimited, guidance.githubRateLimit],
 		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 500)", guidance.failed["install-shell-main"]],
 		["build-gentle-ai-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-ai (HTTP 403)", guidance.githubRateLimit],
@@ -957,6 +961,10 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	assert.match(guidance.githubRateLimit, /GitHub/);
 	assert.match(guidance.githubRateLimit, /hour/);
 	assert.doesNotMatch(guidance.githubRateLimit, /gentle-shell setup|token|credential|password|log in|sign in/i);
+	assert.match(guidance.codeIntegrityBlocked, /Smart App Control/);
+	assert.match(guidance.codeIntegrityBlocked, /WSL/);
+	assert.match(guidance.codeIntegrityBlocked, /cannot be turned back on/);
+	assert.doesNotMatch(guidance.codeIntegrityBlocked, /network|registry/);
 	assert.match(guidance.goDestinationConflict, /earlier/);
 	assert.match(guidance.goDestinationConflict, /Remove that folder/);
 	assert.doesNotMatch(guidance.goDestinationConflict, /network/);

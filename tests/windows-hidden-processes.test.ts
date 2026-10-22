@@ -37,6 +37,8 @@ function fakeGitResult(command: string, args: readonly string[], cwd: string): s
 	if (args.includes("--git-common-dir")) return `${cwd}/.git`;
 	if (args.includes("--show-object-format")) return "sha1";
 	if (args.includes("--is-shallow-repository")) return "false";
+	if (args.includes("--is-inside-work-tree")) return "true";
+	if (args.includes("info/exclude")) return join(cwd, ".git", "info", "exclude");
 	if (args.includes("--git-path")) return join(cwd, ".git", "gentle-ai", "reviews");
 	if (args.includes("--max-parents=0")) return "a".repeat(40);
 	if (args[0] === "cat-file" && args[1] === "-t") return "tree";
@@ -169,6 +171,9 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
 			{ kind: "execFile", command: "codegraph", args: ["init", cwd] },
 			...fallbackCalls,
+			// A successful init keeps .codegraph/ out of git through the local exclude file.
+			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--is-inside-work-tree"] },
+			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-path", "info/exclude"] },
 		]);
 		const graphText = String((graphResult as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? "");
 		assert.match(graphText, /indexed/, "CodeGraph must return the fixture command result");

@@ -1,6 +1,6 @@
 {
   "schema": "gentle-ai.review-provider-contract-bundle/v1",
-  "contract_semver": "1.3.0",
+  "contract_semver": "1.4.0",
   "transport_capability": "gentle-ai.provider-transport/v1",
   "runtimes": [
     "claude-code",
@@ -10,7 +10,7 @@
   ],
   "readme": {
     "path": "README.md",
-    "sha256": "18baab5ee79aefd0bc62a28da0dadcf2162544f57a940c5b859cd6bc4932a085"
+    "sha256": "3a655c2f19aee02636da062f0cae7a189b7e5f691c8ba8010f2ed50e5d8e8d70"
   },
   "roles": [
     {
@@ -68,6 +68,15 @@
       "file": {
         "path": "orchestration/pi.md",
         "sha256": "2d7ddd99f1c739a97f4a6b3929e5e2bdddcbf69aed69356395038d90bca25b2f"
+      }
+    }
+  ],
+  "routing": [
+    {
+      "runtime": "pi",
+      "file": {
+        "path": "routing/pi.md",
+        "sha256": "1c7466e2333c08e386b4b5afb081531146d181030692463431e7695df7f90690"
       }
     }
   ]

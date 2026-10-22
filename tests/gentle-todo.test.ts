@@ -3,6 +3,7 @@ import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
@@ -497,6 +498,166 @@ test("the system prompt carries only a byte-stable todo block; the current list 
 	assert.equal(finishedEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "finishing the list must not change the system prompt");
 });
 
+/**
+ * Drives the extension the way Pi's agent loop does (#2195): every model request
+ * runs the context handlers over the persisted transcript, and a custom message
+ * sent with triggerTurn false while streaming is appended to the transcript at
+ * turn_end, after the tool results (agent-session `_flushPendingCustomMessages`).
+ */
+function liveSession() {
+	const base = fakePi();
+	const queued: ContextMessage[] = [];
+	const pi = {
+		...base.pi,
+		sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn?: boolean }) {
+			assert.equal(options.triggerTurn, false, "todo state must never start a turn");
+			queued.push({ role: "custom", customType: message.customType, content: message.content, display: message.display, timestamp: 0 });
+		},
+	} as unknown as ExtensionAPI;
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	const transcript: ContextMessage[] = [{ role: "user", content: "Work on it", timestamp: 1 }];
+	const requests: ContextMessage[][] = [];
+	let call = 0;
+	const request = async () => {
+		const result = await base.fire("context", ctx, { messages: [...transcript] }) as { messages: ContextMessage[] } | undefined;
+		const messages = result?.messages ?? [...transcript];
+		requests.push(messages);
+		return messages;
+	};
+	/** One model request whose assistant reply calls `todo` (when params are given) or `read`. */
+	const turn = async (todo?: Record<string, unknown>) => {
+		await request();
+		call += 1;
+		const id = `call-${call}`;
+		const name = todo ? "todo" : "read";
+		const assistant = { role: "assistant", content: [{ type: "toolCall", id, name, arguments: todo ?? {} }], timestamp: 0 };
+		transcript.push(assistant);
+		if (todo) await base.tools.get("todo")!.execute(id, todo, undefined, undefined, ctx);
+		transcript.push({ role: "toolResult", content: [{ type: "text", text: "ok" }], timestamp: 0 });
+		await base.fire("turn_end", ctx, { message: assistant, toolResults: [] });
+		transcript.push(...queued.splice(0));
+	};
+	const assertAppendOnly = (from: number) => {
+		for (let index = from + 1; index < requests.length; index++) {
+			const previous = requests[index - 1]!;
+			assert.deepEqual(requests[index]!.slice(0, previous.length), previous, `request ${index} must extend request ${index - 1} byte for byte`);
+		}
+	};
+	const visibleState = (messages: ContextMessage[]) => [...messages].reverse().find((message) => message.customType === "gentle-todo-state")?.content;
+	return { ctx, fire: base.fire, transcript, requests, request, turn, assertAppendOnly, visibleState };
+}
+
+test("a todo write in a running tool loop reaches the transcript before the next request, which stays append-only (#2195)", async () => {
+	const live = liveSession();
+	await live.fire("session_start", live.ctx);
+	await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }, { title: "Ship it" }] });
+	await live.turn();
+	await live.turn();
+	await live.turn({ action: "update", id: 1, status: "done" });
+	await live.turn();
+	await live.request();
+	assert.match(live.visibleState(live.requests.at(-1)!) as string, /1\. \[done\] Fix the bug\n2\. \[pending\] Ship it/);
+	live.assertAppendOnly(0);
+});
+
+test("closing every task does not leave a stale open list in the transcript (#2195)", async () => {
+	for (const close of [{ action: "update", id: 1, status: "done" }, { action: "update", id: 1, status: "dropped" }, { action: "clear" }]) {
+		const live = liveSession();
+		await live.fire("session_start", live.ctx);
+		await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }] });
+		await live.turn(close);
+		await live.turn();
+		const messages = await live.request();
+		assert.equal(live.visibleState(messages), "Current todo list: no open tasks.", `${JSON.stringify(close)}: the model must not see the closed task as still open`);
+		live.assertAppendOnly(0);
+	}
+});
+
+test("an open list missing from the transcript (compaction, branch switch) is persisted again once, then requests stay append-only (#2195)", async () => {
+	const live = liveSession();
+	await live.fire("session_start", live.ctx);
+	await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }] });
+	// Compaction summarises the head of the conversation, including the persisted state.
+	live.transcript.splice(0, live.transcript.length, { role: "user", content: "Summary of earlier work", timestamp: 2 });
+	const healedFrom = live.requests.length;
+	await live.turn();
+	await live.turn();
+	await live.turn();
+	await live.request();
+	for (const messages of live.requests.slice(healedFrom)) assert.match(String(live.visibleState(messages)), /\[pending\] Fix the bug/);
+	assert.equal(live.transcript.filter((message) => message.customType === "gentle-todo-state").length, 1, "the missing state is persisted exactly once");
+	live.assertAppendOnly(healedFrom + 1);
+});
+
+test("consecutive context requests with an unchanged Todo list preserve prefix stability (#2195)", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
+
+	// Request 1: first model request
+	const userMsg = { role: "user", content: "Work on it", timestamp: 100 };
+	const req1 = await fire("context", ctx, { messages: [userMsg] }) as { messages: Array<{ role: string; customType?: string }> };
+	assert.ok(req1, "req1 must return context messages");
+	assert.ok(req1.messages.some((m) => (m as { customType?: string }).customType === "gentle-todo-state"), "req1 must include gentle-todo-state");
+
+	// Model executes a tool (read), producing assistant message and tool result
+	const assistantMsg = { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }], timestamp: 200 };
+	const toolResultMsg = { role: "toolResult", toolCallId: "read-1", content: [{ type: "text", text: "file content" }], timestamp: 300 };
+
+	// Request 2: next model request with unchanged todo list.
+	// The input messages to context include the transcript with the already-delivered state message
+	const inputReq2 = [...req1.messages, assistantMsg, toolResultMsg];
+	const req2 = await fire("context", ctx, { messages: inputReq2 }) as { messages: Array<{ role: string; customType?: string }> } | undefined;
+
+	// req2 must not append a redundant trailing gentle-todo-state that would invalidate prefix caching
+	const effectiveReq2 = req2?.messages ?? inputReq2;
+	assert.deepEqual(
+		effectiveReq2.slice(0, req1.messages.length),
+		req1.messages,
+		"req1 must be an exact prefix of req2 to preserve prompt caching",
+	);
+	// No duplicate trailing state message at the end of req2
+	const stateMessages = effectiveReq2.filter((m) => (m as { customType?: string }).customType === "gentle-todo-state");
+	assert.equal(stateMessages.length, 1, "must not append duplicate gentle-todo-state when unchanged");
+});
+
+test("todo write and update persist gentle-todo-state custom message to transcript (#2195)", async () => {
+	const sent: Array<{ message: unknown; options: unknown }> = [];
+	const base = fakePi();
+	const pi = {
+		...base.pi,
+		sendMessage(message: unknown, options: unknown) {
+			sent.push({ message, options });
+		},
+	} as unknown as ExtensionAPI;
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await base.fire("session_start", ctx);
+
+	// 1. todo write persists state
+	await base.tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Task 1" }] }, undefined, undefined, ctx);
+	assert.equal(sent.length, 1);
+	assert.deepEqual(sent[0]!.options, { triggerTurn: false });
+	const firstMsg = sent[0]!.message as { role: string; customType: string; content: string; display: boolean };
+	assert.equal(firstMsg.customType, "gentle-todo-state");
+	assert.equal(firstMsg.display, false);
+	assert.match(firstMsg.content, /1\. \[pending\] Task 1/);
+
+	// 2. todo update persists new state
+	await base.tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "doing" }, undefined, undefined, ctx);
+	assert.equal(sent.length, 2);
+	assert.deepEqual(sent[1]!.options, { triggerTurn: false });
+	const secondMsg = sent[1]!.message as { content: string };
+	assert.match(secondMsg.content, /1\. \[in_progress\] Task 1 — doing/);
+
+	// 3. todo list does NOT persist extra messages
+	await base.tools.get("todo")!.execute("c3", { action: "list" }, undefined, undefined, ctx);
+	assert.equal(sent.length, 2, "read actions must not emit state messages");
+});
+
 test("before_agent_start is idempotent: a todo block already present in appendSystemPrompt is not duplicated", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
@@ -611,4 +772,22 @@ test("a list left with only dropped tasks open finishes and clears; a blocked-on
 		assert.match(String((await contextState(fire, ctx))!.content), /2\. \[blocked\] Deploy — waiting for an admin/);
 	}
 	assert.match(widget()![2], /⊘ Deploy · waiting for an admin/);
+});
+
+// Harness roadmap T6: the todo list is the session's progress, so the runtime
+// publishes it for peers instead of asking the model to call orchestrator_session_id.
+test("a todo write emits the session's progress; list and errors emit nothing", async () => {
+	const { pi, tools } = fakePi();
+	const emitted: Array<{ name: string; data: unknown }> = [];
+	Object.assign(pi, { events: { emit: (name: string, data: unknown) => { emitted.push({ name, data }); }, on: () => () => {} } });
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	const todo = (params: unknown) => tools.get("todo")!.execute("call", params, undefined, undefined, ctx);
+	await todo({ action: "write", tasks: [{ title: "Write parser", status: "done" }, { title: "Wire CLI", status: "in_progress" }, { title: "Docs" }] });
+	assert.deepEqual(emitted, [{ name: TODO_PROGRESS_EVENT, data: { sessionId: "s1", done: 1, total: 3, current: "Wire CLI" } }]);
+	await todo({ action: "list" });
+	await todo({ action: "update", id: 99, status: "done" });
+	assert.equal(emitted.length, 1, "list and a failed update publish nothing");
+	await todo({ action: "update", id: 2, status: "done" });
+	assert.deepEqual(emitted.at(-1)?.data, { sessionId: "s1", done: 2, total: 3, current: null });
 });

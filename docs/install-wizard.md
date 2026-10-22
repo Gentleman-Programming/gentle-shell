@@ -59,7 +59,7 @@ it lets the window close.
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
 Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 4.1.1. Windows native source builds require Go ≥1.25.10 when the
+Gentle AI 4.2.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -787,9 +787,13 @@ publishes main builds, so main is built on this computer
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
      `go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@<sha>`
      in a sealed Go environment (`GOPROXY=https://proxy.golang.org`,
-     `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`), requires
-     the binary's version to end in that commit's first 12 characters, keeps it
-     under `<config home>/main/gentle-ai/<sha>/` and registers it as the
+     `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`),
+     asks Go (`go list -m -json`, same environment) which module version that
+     commit is (a release tag such as `v4.2.0`, or a pseudo-version) and requires
+     its origin to be that exact commit, requires the binary to embed that module
+     version (`go version -m`) and to report it, all in the `.build` work
+     folder, and only then moves it to `<config home>/main/gentle-ai/<sha>/`
+     (a failed rebuild leaves an already registered build in place) and registers it as the
      `gentle-pi.dev-binary/v1` override, which never falls back to the pinned
      binary silently.
   2. `install-shell-main`: downloads the latest `main` commit's source tarball,
@@ -812,8 +816,28 @@ publishes main builds, so main is built on this computer
   a version it cannot check) it builds with the pinned Go under
   `<config home>/tools/go`, downloading and verifying it there with the same
   `acquireGo` as the wizard when no earlier run published it, and only when
-  Gentle AI is rebuilt. A failed download stops with `main-requires-tools`
-  before anything is built; the user's Go is never run for the build.
+  Gentle AI is rebuilt. A failed download stops the Gentle AI build with
+  `main-requires-tools` before it starts (a main Shell that moved is still
+  installed, as below); the user's Go is never run for the build.
+- When the Gentle AI step of `gentle-shell upgrade --channel main` fails (the
+  build, its verification, or getting the pinned Go) and the main Shell moved,
+  the upgrade still packs and installs that Shell, records no channel, prints
+  `Updated Gentle Shell to the latest main (<sha12>); Gentle AI was not updated.`
+  and exits 1 with the original error (code and message) followed by
+  `; Gentle Shell was updated to main <sha12> but Gentle AI was not: run
+  gentle-shell upgrade --channel main to finish`. The retry then rebuilds Gentle
+  AI with the new Shell's code, so a fix in the main-channel upgrade path reaches
+  an install whose own copy of it is broken; a cause the new Shell does not fix
+  (a Go download that keeps failing, for example) still has to be resolved first. Until then Gentle AI stays the
+  previously registered main build or the pinned binary: a rejected build is
+  never registered. When the Shell install fails as well, its error is reported
+  with `; Gentle AI was not updated either (<Gentle AI error>)`. An unexpected
+  error that has no main-channel code (a filesystem `EACCES`, for example) is
+  reported as `main-upgrade-incomplete` with its own message and the same
+  suffix, so neither the retry advice nor either error is lost. When the Shell
+  is already current, a failed Gentle AI step fails as before, with nothing
+  installed or recorded. The wizard's runner is the one bundled with the
+  downloaded installer and does not get this behavior from a newer main.
 - Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.
@@ -1029,6 +1053,13 @@ again, or add `$PNPM_HOME/bin` to PATH manually. For `acquire-go`, a detail
 starting with `Conflicting Go destination: ` selects
 `guidance.goDestinationConflict`: a folder from an earlier, interrupted run is in
 the way and is never replaced; remove that folder and run the installer again.
+For `install-version` and `install-global`, a detail with `spawn UNKNOWN` selects
+`guidance.codeIntegrityBlocked`: libuv reports a Windows code integrity refusal
+(Smart App Control, CodeIntegrity event 3077) of the `gentle-ai.exe` that
+gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
+exception, so the guidance offers WSL or turning Smart App Control off (on
+Windows 11 it cannot be turned back on without reinstalling Windows) instead of
+network and registry advice.
 `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their

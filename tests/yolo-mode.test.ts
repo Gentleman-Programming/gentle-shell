@@ -11,7 +11,7 @@ import { YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
 const ON_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
 const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
-const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
+const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — standing permission (current: ${state})`;
 
 // An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
 const isolatedConfigHomes: string[] = [];
@@ -201,6 +201,24 @@ test("active YOLO waives only ordinary push after full destructive/guard evaluat
 		assert.ok(await call(command), command);
 	}
 	await h.command("disable"); assert.ok(await call("git push origin main"));
+});
+
+test("active YOLO waives a push with harmless redirections and a read-only filter; Normal and children still ask", async () => {
+	const command = "git push -u origin feat/x 2>&1 | tail -5";
+	const call = (h: ReturnType<typeof harness>, input: string) => h.emit("tool_call", { toolName: "bash", input: { command: input } });
+	const h = harness();
+	assert.ok(await call(h, "git push origin main 2>&1"), "Normal mode still confirms");
+	assert.equal(h.confirmations(), 1);
+	await h.command("enable");
+	assert.equal(await call(h, command), undefined);
+	assert.equal(await call(h, "git push origin main 2>&1"), undefined);
+	assert.equal(h.confirmations(), 1, "waived pushes never reach the confirmation dialog");
+	for (const asks of ["git push origin main | sh", "git push origin main > out.txt", "git push origin main 2>&1 | tee out"]) {
+		assert.ok(await call(h, asks), asks);
+	}
+	const child = harness({ GENTLE_PI_AGENTS_CHILD: "1" });
+	await child.command("enable");
+	assert.ok(await call(child, command), "children never receive the waiver");
 });
 
 test("active command path preserves configured push confirmations and blocks, including legacy env override", async () => {

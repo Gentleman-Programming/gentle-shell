@@ -295,6 +295,29 @@ test("drift notice: shown once per distinct change of the defaults", () => {
 	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "frontier", "the notice never adopts the new default");
 });
 
+test("drift notice: an explicit binding learns its profile definition changed in profiles.json", () => {
+	const f = fixture({ team: { worker: { model: "openai/old" } } });
+	const opts = options(f, "session-a");
+	bindSessionProfile("session-a", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "no drift while the definition matches the binding");
+
+	f.editProfile("team", { worker: { model: "openai/new" } });
+	const notice = inheritedProfileDriftNotice(opts);
+	assert.match(notice ?? "", /the profile definition changed to "team"/);
+	assert.match(notice ?? "", /this session keeps the binding from selection/);
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
+
+	f.editProfile("team", { worker: { model: "openai/older" } });
+	assert.match(inheritedProfileDriftNotice(opts) ?? "", /the profile definition changed to "team"/, "a different edit is a distinct change");
+	assert.equal(inheritedProfileDriftNotice(opts), undefined);
+	f.editProfile("team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "reverting to the bound content is not drift");
+
+	const childOpts = options(f, "session-b", { GENTLE_PI_AGENTS_CHILD: "1" });
+	bindSessionProfile("session-b", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(childOpts), undefined, "children never get the notice");
+});
+
 test("drift notice: an edit of the default profile's content counts as a change", () => {
 	const f = fixture();
 	f.setActive("frontier");

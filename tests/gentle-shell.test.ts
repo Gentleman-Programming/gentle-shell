@@ -6376,3 +6376,52 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.equal(read(), "other (repo)", "the pinned profile exists only in that config home's store");
 	});
 }
+
+// gentle-shell#2464: a pasted image is an atomic chip in the draft and a real
+// image attachment on submit, never a temp-file path the model must `read`.
+const CHIP_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01]);
+const chipKeybindings = { matches: (data: string, action: string) => action === "app.clipboard.pasteImage" && data === "\x1bv" };
+
+async function pastedChipPrompt(model?: ExtensionContext["model"]) {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { readClipboardImage: async () => ({ bytes: CHIP_PNG, mimeType: "image/png" }) });
+	const { ctx, ui } = fakeContext();
+	if (model) (ctx as { model: unknown }).model = model;
+	const editor = installedPrompt(ctx, ui, handlers, chipKeybindings);
+	editor.onPasteImage = () => assert.fail("Pi's path-inserting paste must not run when the clipboard holds an image");
+	editor.setText("what is this?");
+	editor.handleInput("\x1bv");
+	await settle();
+	const input = (text: string, source = "interactive") => handlers.get("input")?.[0]?.({ type: "input", text, source }, ctx);
+	return { editor, ui, input };
+}
+
+test("pasted image chips are submitted as real image attachments (gentle-shell#2464)", async () => {
+	const { editor, ui, input } = await pastedChipPrompt();
+	assert.equal(editor.getText(), "what is this? [Image #1]");
+	const strip = (ui.widgets.get("gentle-shell-image-attachments") as (tui: unknown, theme: unknown) => { render(width: number): string[] })(fakeTui, plainTheme);
+	assert.equal(stripAnsi(strip.render(80)[0] ?? ""), "[Image #1] png · 2×1 · 24 B");
+	assert.deepEqual(input("what is this? [Image #1]"), {
+		action: "transform",
+		text: "what is this? [Image #1]",
+		images: [{ type: "image", data: Buffer.from(CHIP_PNG).toString("base64"), mimeType: "image/png" }],
+	});
+	// The registry empties on submit: the next prompt is ordinary text again.
+	assert.deepEqual(input("what is this? [Image #1]"), { action: "continue" });
+});
+
+test("pasted image chips leave non-interactive input and deleted chips untouched (gentle-shell#2464)", async () => {
+	const { input } = await pastedChipPrompt();
+	assert.deepEqual(input("[Image #1] from an extension", "extension"), { action: "continue" });
+	assert.deepEqual(input("the chip was deleted"), { action: "continue" });
+});
+
+test("pasted image chips warn instead of sending images a text-only model rejects (gentle-shell#2464)", async () => {
+	const { ui, input } = await pastedChipPrompt({ id: "text-only", provider: "acme", input: ["text"] } as unknown as ExtensionContext["model"]);
+	assert.deepEqual(input("what is this? [Image #1]"), {
+		action: "transform",
+		text: "what is this? [Image #1 omitted: the current model does not accept images]",
+		images: [],
+	});
+	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
+});

@@ -6645,6 +6645,48 @@ test("monitor delivers monitor-specific native wake text (#2384)", async () => {
 	}
 });
 
+for (const [kind, pattern] of [
+		["job", /background job exit notice/],
+		["monitor", /Monitor events/],
+		["mixed", /^\[System-generated Gentle Agents notification, not written by the user\] Output was delivered/],
+	] as Array<[string, RegExp]>) {
+	test(`claude-bridge ${kind} wake text names the delivered kind and stays hidden (#2384)`, async () => {
+		const { pi, tools, fire, userMessages, transformers, setIdle } = fakePi("claude-bridge");
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		const jobs = fakeJobShell();
+		gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+		const { ctx } = fakeContext();
+		try {
+			await fire("session_start", ctx);
+			if (kind === "job" || kind === "mixed") await tools.get("bash_background")!.execute("b1", { command: "npm test", label: "test" }, undefined, undefined, ctx);
+			if (kind === "monitor") await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+			if (kind === "mixed") await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+			if (kind === "monitor") jobs.runs[0]!.onData(Buffer.from("EVENT 1\n"));
+			else if (kind === "mixed") {
+				setIdle(false);
+				jobs.runs[1]!.onData(Buffer.from("EVENT 1\n"));
+				timers.run(200);
+				jobs.runs[0]!.exit(0);
+				await jobIo();
+				await fire("session_compact", ctx);
+				setIdle(true);
+				timers.run(0);
+				await tick();
+			} else jobs.runs[0]!.exit(0);
+			if (kind === "monitor") { timers.run(200); await jobIo(); }
+			await eventually(() => userMessages.length > 0, "bridge wake must be dispatched");
+			const text = String(userMessages[0]!.content);
+			assert.match(text, pattern, kind);
+			assert.match(text, /\[gentle-agents wake: [0-9a-f-]+\]$/);
+			assert.equal(transformers[0](text, { messageType: "user", isStreaming: false, availableWidth: 80 }), "", `${kind} wake bubble stays hidden`);
+		} finally {
+			await fire("session_shutdown", ctx);
+			jobs.cleanup();
+		}
+	});
+}
+
 test("nativeParentWakeText maps single and mixed delivery kinds distinctly (#2384)", () => {
 	assert.equal(nativeParentWakeText(new Set(["subagent"])), WAKE_TEXT_SUBAGENT);
 	assert.equal(nativeParentWakeText(new Set(["job"])), WAKE_TEXT_JOB);
@@ -6864,7 +6906,7 @@ test("session shutdown never hangs on a job whose process ignores the stop", { t
 	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-stuck-"));
 	// A process that never exits, even after its abort signal.
 	const stuck = () => ({ operations: { exec: () => new Promise<{ exitCode: number | null }>(() => {}) } });
-	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); timer.unref(); return () => clearTimeout(timer); };
+	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); return () => clearTimeout(timer); };
 	gentleAgents(pi, {}, { ...deps().deps, schedule, jobShell: stuck });
 	const { ctx } = fakeContext();
 	try {

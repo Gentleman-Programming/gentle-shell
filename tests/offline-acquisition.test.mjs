@@ -1,4 +1,8 @@
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { inspectArchive, normalizeLock, requireHostedWindows, requireSuccess } from '../scripts/offline-acquisition/safety.mjs';
 import assert from 'node:assert/strict';
 import { closedEnvironment, pairFiles, commandPlan, admitSources, projectEvidence, PINS } from '../scripts/offline-acquisition/policy.mjs';
 
@@ -85,4 +89,106 @@ test('evidence preserves failure and bounded output, not arbitrary runner fields
   assert.equal(success.exit, 0);
   assert.equal(success.stdoutTruncated, false);
   assert.throws(() => projectEvidence({ ...success, exit: null, error: '' }));
+});
+
+function archive(name = 'package/index.js', type = '0') {
+  const header = Buffer.alloc(512);
+  header.write(name, 0); header.write('0000644\0', 100);
+  header.write('00000000001\0', 124); header.fill(32, 148, 156);
+  header.write(type, 156); header.write('ustar\0', 257);
+  const sum = header.reduce((a, b) => a + b, 0);
+  header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148);
+  return gzipSync(Buffer.concat([header, Buffer.from('x'), Buffer.alloc(511 + 1024)]));
+}
+
+function lockFixture() {
+  const file = `file:${PINS.localTar}`;
+  return {
+    lockfileVersion: '9.0', settings: { autoInstallPeers: true, excludeLinksFromLockfile: false },
+    importers: { '.': { dependencies: { 'gentle-pi': { specifier: file, version: file }, '@earendil-works/pi-coding-agent': { specifier: '1.2.0', version: '1.2.0' } } } },
+    packages: { [`gentle-pi@${file}`]: { resolution: { integrity: sri, tarball: file } }, '@earendil-works/pi-coding-agent@1.2.0': { resolution: { integrity: sri } } },
+    snapshots: { [`gentle-pi@${file}`]: {}, '@earendil-works/pi-coding-agent@1.2.0': {} },
+  };
+}
+
+test('T1b archive inspection admits bytes but rejects traversal, links and corruption', () => {
+  const entries = inspectArchive(archive());
+  assert.equal(entries[0].name, 'package/index.js');
+  assert.equal(entries[0].data.toString(), 'x');
+  for (const name of ['../escape', '/absolute', 'package/../escape', 'package/a:stream', 'package/CON', 'package/a.']) assert.throws(() => inspectArchive(archive(name)));
+  assert.throws(() => inspectArchive(archive('package/link', '2')));
+  assert.throws(() => inspectArchive(Buffer.from('bad gzip')));
+});
+
+test('T1b semantic traversal admits a complete pair and checks optional references', () => {
+  const lock = lockFixture();
+  const before = structuredClone(lock);
+  const sources = normalizeLock(lock, { sha256: local.sha256, integrity: sri });
+  assert.equal(sources.length, 2);
+  assert.equal(sources[0].path, PINS.localTar);
+  assert.deepEqual(lock, before);
+  lock.snapshots[`gentle-pi@file:${PINS.localTar}`].optionalDependencies = { '@earendil-works/pi-coding-agent': '1.2.0', alias: '@earendil-works/pi-coding-agent@1.2.0' };
+  assert.equal(normalizeLock(lock, { sha256: local.sha256, integrity: sri }).length, 2);
+  assert.throws(() => normalizeLock(lock, { sha256: local.sha256, integrity: 'wrong' }));
+  const broken = lockFixture();
+  broken.snapshots['@earendil-works/pi-coding-agent@1.2.0'].optionalDependencies = { evil: 'git:main' };
+  rejectsUnchanged(x => normalizeLock(x, { sha256: local.sha256, integrity: sri }), broken);
+});
+
+test('T1b semantic traversal rejects config, custom protocols, missing and unadmitted nodes', () => {
+  for (const mutate of [
+    x => { x.configDependencies = {}; },
+    x => { x.packages['evil@https://evil.test/a.tgz'] = { resolution: { tarball: 'https://evil.test/a.tgz' } }; },
+    x => { x.packages['@earendil-works/pi-coding-agent@1.2.0'].resolution.tarball = 'https://evil.test/a.tgz'; },
+    x => { delete x.snapshots['@earendil-works/pi-coding-agent@1.2.0']; },
+    x => { x.importers['.'].dependencies['gentle-pi'].specifier = '4.3.0'; },
+    x => { x.settings.injectWorkspacePackages = true; },
+    x => { x.packages['@earendil-works/pi-coding-agent@1.2.0'].resolution.integrity = ''; },
+    x => { x.snapshots['@earendil-works/pi-coding-agent@1.2.0'].dependencies = { missing: '1.0.0' }; },
+  ]) {
+    const lock = lockFixture(); mutate(lock);
+    rejectsUnchanged(x => normalizeLock(x, { sha256: local.sha256, integrity: sri }), lock);
+  }
+});
+
+test('T1b failure guard retains original failure and host refusal is mandatory', () => {
+  const failure = { exit: 17, stderr: 'original', error: '' };
+  assert.throws(() => requireSuccess(failure), e => e.result === failure);
+  assert.equal(requireSuccess({ exit: 0 }), undefined);
+  assert.throws(() => requireHostedWindows({ platform: 'linux', env: {} }), /hosted Windows/);
+  assert.throws(() => requireHostedWindows({ platform: 'win32', env: {} }), /hosted Windows/);
+});
+
+test('T1b public CLI help is inert and actual non-Actions host refuses before effects', () => {
+  const env = { ...process.env }; delete env.NODE_OPTIONS; delete env.NODE_PATH; delete env.NODE_V8_COVERAGE;
+  const help = spawnSync(process.execPath, ['scripts/offline-acquisition/runner.mjs', '--help'], { env, encoding: 'utf8' });
+  assert.equal(help.status, 0); assert.match(help.stdout, /LOCK_AND_NPM_INPUTS_ONLY/);
+  assert.equal(help.stderr, '');
+  assert.notEqual(process.env.GITHUB_ACTIONS, 'true', 'This local refusal test must not invoke acquisition on Actions');
+  const refusal = spawnSync(process.execPath, ['scripts/offline-acquisition/runner.mjs'], { env, encoding: 'utf8' });
+  assert.equal(refusal.status, 1); assert.match(refusal.stderr, /hosted Windows/);
+});
+
+test('T1b workflow has a sole exact push trigger, immutable candidate and owned upload', () => {
+  const text = readFileSync('.github/workflows/1921-offline-acquisition.yml', 'utf8');
+  assert.match(text, /branches: \[ci\/2360-offline-acquisition\]/);
+  assert.doesNotMatch(text, /workflow_dispatch|pull_request|secrets\.|cache:|pnpm install/);
+  assert.match(text, /runs-on: windows-latest/);
+  assert.match(text, /contents: read/);
+  assert.match(text, /node-version: '24\.21\.0'/);
+  assert.match(text, /ref: \$\{\{ github.sha \}\}/);
+  assert.match(text, new RegExp(`ref: ${PINS.candidate}`));
+  assert.equal((text.match(/persist-credentials: false/g) ?? []).length, 2);
+  assert.match(text, /if: always\(\)/);
+  const runner = readFileSync('scripts/offline-acquisition/runner.mjs', 'utf8');
+  const launcher = readFileSync('scripts/offline-acquisition/launch.ps1', 'utf8');
+  assert.match(launcher, /\$start\.Environment\.Clear\(\)/);
+  assert.match(runner, /--fetch-retries=0/);
+  assert.match(runner, /normalizeLock\(parse\(lockText\)/);
+  assert.ok(runner.indexOf('normalizeLock(parse(lockText)') < runner.indexOf('...plans.fetch'));
+  assert.match(runner, /maxAliasCount: 0/);
+  assert.match(runner, /uniqueKeys: true/);
+  assert.doesNotMatch(runner, /ensureRuntime|ensureLauncher|installVersion|build-distribution/);
+  assert.match(text, /path: \$\{\{ runner.temp \}\}\/shell-acquisition\/artifacts/);
+  for (const action of text.matchAll(/uses: ([^\s]+)/g)) assert.match(action[1], /^actions\/(?:checkout|setup-node|upload-artifact)@[a-f0-9]{40}$/);
 });

@@ -1,0 +1,39 @@
+name: Offline fixture acquisition
+on:
+  push:
+    branches: [ci/2360-offline-acquisition]
+permissions:
+  contents: read
+jobs:
+  acquire:
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout acquisition controls
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          path: controls
+          persist-credentials: false
+      - name: Checkout immutable product candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: c1617e90b81bac5a897a10211797bc30169794bf
+          path: candidate
+          persist-credentials: false
+      - name: Setup pinned Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - name: Acquire lock and npm inputs without lifecycle hooks
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE\controls\scripts\offline-acquisition\launch.ps1"'
+      - name: Preserve owned partial acquisition evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: offline-acquisition-${{ github.run_id }}
+          path: ${{ runner.temp }}/shell-acquisition/artifacts
+          if-no-files-found: warn
+          retention-days: 7

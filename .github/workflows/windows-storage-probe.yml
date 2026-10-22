@@ -1,0 +1,33 @@
+name: One Windows storage timing probe
+on:
+  push:
+    branches: [test/2431-windows-storage-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: github.repository == 'Gentleman-Programming/gentle-shell' && github.run_attempt == 1
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.21.0
+      - name: One original storage invocation only
+        shell: pwsh
+        run: |
+          Remove-Item Env:NODE_OPTIONS, Env:NODE_PATH, Env:NODE_V8_COVERAGE -ErrorAction SilentlyContinue
+          & node .github/scripts/windows-storage-probe.mjs
+          exit $LASTEXITCODE
+      - name: Preserve bounded partial evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-storage-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/windows-storage-probe/artifacts/evidence.json
+          if-no-files-found: warn
+          retention-days: 7

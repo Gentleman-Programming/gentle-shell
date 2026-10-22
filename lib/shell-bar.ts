@@ -22,6 +22,8 @@ export interface ShellBarModel {
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	// The named env this session runs in (gentle-shell --env), if any.
+	env?: string;
 	changes?: { files: number; added: number; deleted: number; notice?: string };
 	cwd: string;
 	branch: string | null;
@@ -48,6 +50,7 @@ export interface ShellHeaderModel {
 	modelId: string;
 	effort: string | undefined;
 	profile?: string;
+	env?: string;
 	contextPercent: number | null;
 	costTotal: number;
 	subscription: boolean;
@@ -60,6 +63,7 @@ export interface ShellHeaderModel {
 export function buildShellHeaderModel(model: ShellBarModel, showJobs = false): ShellHeaderModel {
 	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
 	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage,
+		...(model.env ? { env: model.env } : {}),
 		...(showJobs && model.jobs?.length ? { jobs: model.jobs.length } : {}) };
 }
 
@@ -177,6 +181,9 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
+		// As in the header: the env sits beside the brand and, being first, is
+		// never among the trailing segments a narrow line drops.
+		...(model.env ? [`${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}`] : []),
 		location,
 		...(presentation?.visibility.modelDetails === false ? [] : [modelSegment]),
 		...(presentation?.visibility.usageCost === false ? [] : [context, cost, ...(usage ? [usage] : [])]),
@@ -225,6 +232,8 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	// this event-driven card keeps only what a footer/model-switch event does
 	// not already refresh every frame.
 	const groups: Array<{ title: string; lines: string[] }> = [
+		// The named env comes first: it decides which home this session writes to.
+		...(model.env ? [{ title: "Env", lines: [value(sanitizeStatus(model.env))] }] : []),
 		{
 			title: "Project",
 			lines: [
@@ -277,18 +286,21 @@ const HEADER_BRAND = "✿ Gentle Shell";
 // alive as long as anything can still share the row with the right-aligned
 // counters.
 function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showModelDetails: boolean): string[][] {
+	// The env stays beside the brand in every stage: which home this session
+	// writes to matters more than any detail that gives way before it.
 	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const env = model.env ? [`${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}`] : [];
 	const location = locationSegment(model, theme);
-	if (!showModelDetails) return [[brand, location], [brand]];
+	if (!showModelDetails) return [[brand, ...env, location], [brand, ...env]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
 	const modelOnly = executionSegment(model.modelId, undefined, theme);
 	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizeStatus(model.profile))}` : withEffort;
 	return [
-		[brand, location, withProfile],
-		[brand, location, withEffort],
-		[brand, location, modelOnly],
-		[brand, modelOnly],
-		[brand],
+		[brand, ...env, location, withProfile],
+		[brand, ...env, location, withEffort],
+		[brand, ...env, location, modelOnly],
+		[brand, ...env, modelOnly],
+		[brand, ...env],
 	];
 }
 
@@ -412,7 +424,12 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 		const usageStart = visibleWidth(left) + (targetWidth - visibleWidth(left) - visibleWidth(right)) + visibleWidth(ctxCost) + visibleWidth(` ${SHELL_BAR_SEPARATOR} `);
 		return { text, usageSpan: { start: usageStart, end: usageStart + visibleWidth(usageText) } };
 	}
-	const brand = presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	// Narrower than brand plus env: the brand gives way, never the env, as in
+	// the compact bar. Without an env, or when even it does not fit, the brand
+	// (hidden in minimal density) is the last thing left.
+	const envOnly = model.env ? `${theme.fg(ROLE.LABEL, "env")} ${theme.fg(ROLE.VALUE, theme.bold(sanitizeStatus(model.env)))}` : "";
+	const brand = envOnly && visibleWidth(envOnly) <= targetWidth ? envOnly
+		: presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
 	if (jobs && visibleWidth(jobs) <= targetWidth) {
 		const left = visibleWidth(brand) + RIGHT_PADDING + visibleWidth(jobs) <= targetWidth ? brand : "";
 		return { text: left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(jobs)) + jobs };
@@ -517,8 +534,12 @@ export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width
 		segments = buildSegments(compactModel(model), theme, presentation);
 		left = joinSegments(segments, theme);
 	}
+	const brandThenEnv = Boolean(model.env) && presentation?.density !== "minimal";
 	while (segments.length > 1 && visibleWidth(left) > width) {
-		segments.pop();
+		// Down to brand and env, the brand gives way: the env names the home
+		// this session writes to.
+		if (brandThenEnv && segments.length === 2) segments.shift();
+		else segments.pop();
 		left = joinSegments(segments, theme);
 	}
 	return [truncateToWidth(left, width, "…")];

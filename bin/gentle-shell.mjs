@@ -40,6 +40,7 @@ import {
 	forceJsonFieldIfAbsentInOriginal,
 	helpText,
 	homeSelectorFlags,
+	isolatedDir,
 	isSetupCapablePin,
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
@@ -105,6 +106,17 @@ import {
 } from "../runtime/gentle-shell-resume-hint.mjs";
 import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
+import {
+	envDir,
+	envNameForDir,
+	envsRoot,
+	removeEnvFromConfig,
+	renameEnvInConfig,
+	setDefaultEnvInConfig,
+	summarizeEnv,
+	validateEnvName,
+} from "../runtime/gentle-shell-envs.mjs";
+import { initialEnvsState, parseKeys, reduceEnvs, renderEnvsScreen } from "../runtime/gentle-shell-envs-tui.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, supportsBundledSessionOwned, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
 import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
@@ -406,6 +418,7 @@ function emptyArgs() {
 		link: false,
 		isolated: false,
 		home: undefined,
+		env: undefined,
 		packageRoot: undefined,
 		help: false,
 		version: false,
@@ -687,6 +700,360 @@ async function handleImportPiCommand(args) {
 	const result = importPi({ source, target: home.dir, dryRun });
 	for (const line of formatImportPiReport(result, { source, target: home.dir, dryRun })) process.stdout.write(`${line}\n`);
 	process.exitCode = result.failed ? 1 : 0;
+}
+
+// --- named envs (`gentle-shell envs`, lib/gentle-shell-envs*.ts) -------------
+
+function currentEnvsRoot() {
+	return envsRoot(process.env, homedir());
+}
+
+function isRealDirectory(path) {
+	try {
+		return lstatSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function listEnvNames(root) {
+	let entries;
+	try {
+		entries = readdirSync(root, { withFileTypes: true });
+	} catch (error) {
+		if (error.code === "ENOENT") return [];
+		throw error;
+	}
+	return entries
+		.filter((entry) => entry.isDirectory() && validateEnvName(entry.name) === undefined)
+		.map((entry) => entry.name)
+		.sort();
+}
+
+// Session files live in <home>/sessions/<encoded-cwd>/*.jsonl; two levels
+// are walked, never deeper, so a huge home cannot stall the manager.
+function sessionStats(dir) {
+	let count = 0;
+	let last = 0;
+	const visit = (path, depth) => {
+		let entries;
+		try {
+			entries = readdirSync(path, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const child = join(path, entry.name);
+			if (entry.isDirectory() && depth < 2) visit(child, depth + 1);
+			else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+				count += 1;
+				try {
+					last = Math.max(last, statSync(child).mtimeMs);
+				} catch {
+					// Vanished mid-walk: still counted, just undated.
+				}
+			}
+		}
+	};
+	visit(join(dir, "sessions"), 1);
+	return { count, last: last > 0 ? new Date(last).toISOString() : undefined };
+}
+
+function readTextOrUndefined(path) {
+	try {
+		return readJsonIfExists(path);
+	} catch {
+		return undefined;
+	}
+}
+
+// The base home first (the install's own `--isolated` home, exactly as the
+// launcher resolves it), then the named envs. The default follows the same
+// precedence a plain launch uses: a missing, malformed or "isolated" home
+// setting opens the base home, "link" opens none of these, a path opens the
+// env it names.
+function loadEnvSummaries(root) {
+	const rawConfig = readRawConfig(resolveConfigPath());
+	const persisted = loadConfig();
+	const defaultReal = persisted?.mode === "path" ? safeRealpath(resolvePath(persisted.dir)) : undefined;
+	const summarize = (name, dir, extra) => {
+		const real = safeRealpath(dir);
+		const sessions = sessionStats(dir);
+		return summarizeEnv({
+			name,
+			dir,
+			settingsText: readTextOrUndefined(join(dir, "settings.json")),
+			authText: readTextOrUndefined(join(dir, "auth.json")),
+			provisioned: provisionedEntry(rawConfig, real),
+			sessionCount: sessions.count,
+			lastSessionAt: sessions.last,
+			isDefault: defaultReal !== undefined && defaultReal === real,
+			...extra,
+		});
+	};
+	const baseDir = resolvePath(isolatedDir(process.env, homedir()));
+	const base = summarize("base", baseDir, { base: true, ...(persisted === undefined || persisted.mode === "isolated" ? { isDefault: true } : {}) });
+	return [base, ...listEnvNames(root).map((name) => summarize(name, envDir(root, name), {}))];
+}
+
+// The launcher selector that reproduces an entry: `--isolated` for the base
+// home (never an env name, which may even be "base"), `--env <name>` otherwise.
+function entrySelector(target) {
+	return target.base ? ["--isolated"] : ["--env", target.name];
+}
+
+// Same bootstrap a first `--home` launch performs, so the env is owned by
+// gentle-shell and auto-provisions on its first launch.
+async function createEnv(root, name) {
+	const dir = envDir(root, name);
+	if (existsSync(dir)) throw new Error(`env "${name}" already exists`);
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	mkdirSync(dir, { mode: 0o700 });
+	try {
+		await installIsolatedTuiModeSetting(dir);
+		writeHomeOwnershipMarker({ mode: "path", dir });
+	} catch (error) {
+		// This call created `dir`: a half-bootstrapped env would read as "already
+		// exists" and, once non-empty and unmarked, as a foreign home --env never
+		// provisions. Remove it so `envs new` can simply be retried.
+		rmSync(dir, { recursive: true, force: true });
+		throw error;
+	}
+	return dir;
+}
+
+// Guards every destructive path: only a direct, validly named child of the
+// envs root that is a real directory (not a symlink to elsewhere).
+function assertManagedEnvDir(root, name) {
+	const dir = envDir(root, name);
+	if (envNameForDir(root, dir) !== name) throw new Error(`refusing to touch ${dir}: not a managed env`);
+	const stat = lstatSync(dir);
+	if (!stat.isDirectory()) throw new Error(`refusing to touch ${dir}: not a directory`);
+	return dir;
+}
+
+function renameEnv(root, from, to) {
+	const oldDir = assertManagedEnvDir(root, from);
+	const newDir = envDir(root, to);
+	if (validateEnvName(to) !== undefined) throw new Error(validateEnvName(to));
+	if (existsSync(newDir)) throw new Error(`env "${to}" already exists`);
+	const aliases = [...new Set([oldDir, safeRealpath(oldDir)])];
+	renameSync(oldDir, newDir);
+	const configPath = resolveConfigPath();
+	try {
+		writeRawConfig(configPath, renameEnvInConfig(readRawConfig(configPath), aliases, newDir, safeRealpath(newDir)));
+	} catch (error) {
+		// config.json still names the old dir (default home, setup record): put
+		// the env back there rather than leave a launch bootstrapping an empty
+		// home at the old path and the renamed env provisioning again.
+		renameSync(newDir, oldDir);
+		throw error;
+	}
+}
+
+function deleteEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const aliases = [...new Set([dir, safeRealpath(dir)])];
+	rmSync(dir, { recursive: true, force: true });
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, removeEnvFromConfig(readRawConfig(configPath), aliases));
+}
+
+function setDefaultEnv(root, name) {
+	const dir = assertManagedEnvDir(root, name);
+	const configPath = resolveConfigPath();
+	writeRawConfig(configPath, setDefaultEnvInConfig(readRawConfig(configPath), dir));
+}
+
+// Runs this same launcher against one env (setup/install/auth) in the
+// foreground, outside the manager's alternate screen.
+function runLauncherForEnv(target, extraArgs) {
+	const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...entrySelector(target), ...extraArgs], { stdio: "inherit", env: process.env });
+	return result.error ? 1 : (result.status ?? 1);
+}
+
+function printEnvList(root) {
+	const entries = loadEnvSummaries(root);
+	// The default reads like the /gentle:profiles markers: `name (default)`.
+	const label = (env) => `${env.base ? "[base]" : env.name}${env.isDefault ? " (default)" : ""}`;
+	const width = Math.max(...entries.map((env) => label(env).length));
+	for (const env of entries) {
+		process.stdout.write(`${label(env).padEnd(width)}  ${env.dir}  (${env.provisioned})\n`);
+	}
+	if (entries.length === 1) process.stdout.write(`No named envs in ${root} yet. Create one with 'gentle-shell envs new <name>'.\n`);
+}
+
+const ENVS_USAGE = "Usage: gentle-shell envs [list | new <name>]\n  envs        open the env manager (TTY), or list envs\n  envs list   print the base home and every env; (default) marks what a plain launch opens\n  envs new    create an env without launching it";
+
+// Returns the launcher selector to launch with, or undefined when nothing should launch.
+async function handleEnvsCommand(commandArgs) {
+	const root = currentEnvsRoot();
+	const [sub, ...rest] = commandArgs;
+	if (sub === "list" && rest.length === 0) {
+		printEnvList(root);
+		return undefined;
+	}
+	if (sub === "new" && rest.length === 1) {
+		const invalid = validateEnvName(rest[0]);
+		if (invalid !== undefined) fail(`gentle-shell: ${invalid}`, 2);
+		try {
+			process.stdout.write(`Created env ${rest[0]} at ${await createEnv(root, rest[0])}\n`);
+		} catch (error) {
+			fail(`gentle-shell: ${error.message}`, 1);
+		}
+		return undefined;
+	}
+	if (sub === "--help" || sub === "-h") {
+		process.stdout.write(`${ENVS_USAGE}\n`);
+		return undefined;
+	}
+	if (sub !== undefined) fail(`${ENVS_USAGE}`, 2);
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		printEnvList(root);
+		return undefined;
+	}
+	return runEnvsManager(root);
+}
+
+// One alternate-screen session: draws `state`, feeds keys to the reducer and
+// applies in-place effects through `apply`, and resolves with the first
+// effect that needs the real terminal (quit, launch, setup, install, auth).
+// The terminal is always restored, including when `apply` throws.
+function envsScreenSession(initial, apply) {
+	const { stdin, stdout } = process;
+	// Gentle truecolor only where the terminal has it and NO_COLOR is unset;
+	// otherwise the same layout in monochrome.
+	const renderOptions = {
+		color: !process.env.NO_COLOR && stdout.hasColors?.(2 ** 24) === true,
+		version: ownPackageVersion(),
+	};
+	return new Promise((resolve) => {
+		let state = initial;
+		const draw = () => {
+			// Some ptys report 0x0 until resized; fall back to a usable size.
+			const lines = renderEnvsScreen(state, stdout.columns || 80, stdout.rows || 24, renderOptions);
+			stdout.write(`\x1b[H${lines.map((line) => `${line}\x1b[K`).join("\r\n")}\x1b[J`);
+		};
+		const finish = (effect) => {
+			finished = true;
+			stdin.off("data", onData);
+			stdout.off("resize", draw);
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\x1b[?25h\x1b[?1049l");
+			resolve({ state, effect });
+		};
+		// Input is handled strictly in order: a key pressed while `apply` is
+		// still writing to disk waits for it instead of racing it.
+		let queue = Promise.resolve();
+		let finished = false;
+		const onData = (data) => {
+			queue = queue.then(() => handle(data)).catch((error) => {
+				state = { ...state, message: `Error: ${error.message}` };
+				if (!finished) draw();
+			});
+		};
+		const handle = async (data) => {
+			if (finished) return;
+			for (const key of parseKeys(data.toString("utf8"))) {
+				const step = reduceEnvs(state, key);
+				state = step.state;
+				if (step.effect === undefined) continue;
+				const kind = step.effect.kind;
+				if (kind === "create" || kind === "rename" || kind === "delete" || kind === "set-default") {
+					state = await apply(state, step.effect);
+					continue;
+				}
+				finish(step.effect);
+				return;
+			}
+			draw();
+		};
+		stdout.write("\x1b[?1049h\x1b[?25l");
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.on("data", onData);
+		stdout.on("resize", draw);
+		draw();
+	});
+}
+
+function waitForAnyKey(message) {
+	const { stdin, stdout } = process;
+	stdout.write(`\n${message}`);
+	return new Promise((resolve) => {
+		stdin.setRawMode(true);
+		stdin.resume();
+		stdin.once("data", () => {
+			stdin.setRawMode(false);
+			stdin.pause();
+			stdout.write("\n");
+			resolve();
+		});
+	});
+}
+
+async function runEnvsManager(root) {
+	// Reloads from disk after every change so the view never drifts from it.
+	const reload = (message, selectName) => initialEnvsState(loadEnvSummaries(root), message, selectName);
+	const apply = async (state, effect) => {
+		try {
+			if (effect.kind === "create") {
+				await createEnv(root, effect.name);
+				return reload(`Created ${effect.name}. Press enter to launch it (first launch installs the companion packages).`, effect.name);
+			}
+			if (effect.kind === "rename") {
+				renameEnv(root, effect.from, effect.to);
+				return reload(`Renamed ${effect.from} to ${effect.to}.`, effect.to);
+			}
+			if (effect.kind === "delete") {
+				deleteEnv(root, effect.name);
+				return reload(`Deleted ${effect.name}.`);
+			}
+			if (effect.base) {
+				// Exactly what `gentle-shell home isolated` persists.
+				const configPath = resolveConfigPath();
+				writeRawConfig(configPath, { ...readRawConfig(configPath), home: "isolated" });
+				return reload("The base home is now the default: a plain 'gentle-shell' opens it.", { base: true });
+			}
+			setDefaultEnv(root, effect.name);
+			return reload(`${effect.name} is now the default: a plain 'gentle-shell' opens it.`, effect.name);
+		} catch (error) {
+			return { ...state, message: `Error: ${error.message}` };
+		}
+	};
+
+	let state = reload();
+	for (;;) {
+		const { state: last, effect } = await envsScreenSession(state, apply);
+		if (effect.kind === "quit") return undefined;
+		if (effect.kind === "launch") return entrySelector(effect);
+		const what = effect.base ? "the base home" : `env ${effect.name}`;
+		let code;
+		if (effect.kind === "setup") {
+			process.stdout.write(`gentle-shell: setting up ${what}; downloads can take a few minutes (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["setup"]);
+		} else if (effect.kind === "install") {
+			process.stdout.write(`gentle-shell: installing ${effect.source} into ${what} (Ctrl-C cancels)\n`);
+			code = runLauncherForEnv(effect, ["install", effect.source]);
+		} else {
+			// Pi signs in from inside a session (/login); outside one it can
+			// only check readiness, which needs a provider per call.
+			const providers = last.envs.find((env) => (effect.base ? env.base === true : !env.base && env.name === effect.name))?.providers ?? [];
+			if (providers.length === 0) {
+				process.stdout.write(`No providers signed in to ${what}. Launch it and run /login inside the session.\n`);
+				code = 0;
+			} else {
+				code = 0;
+				for (const provider of providers) {
+					const providerCode = runLauncherForEnv(effect, ["auth", "check", "--provider", provider]);
+					if (providerCode !== 0) code = providerCode;
+				}
+			}
+		}
+		await waitForAnyKey(`${code === 0 ? "Done" : `Finished with exit code ${code}`}. Press any key to return to the env manager.`);
+		state = reload(code === 0 ? undefined : `Last action exited with code ${code}.`, effect.base ? { base: true } : effect.name);
+	}
 }
 
 // Test/development-only override for the setup subcommand's gentle-ai
@@ -1896,6 +2263,15 @@ async function main() {
 		else handleHomeCommand(args.commandArgs);
 		return;
 	}
+	if (args.command === "envs") {
+		const selector = await handleEnvsCommand(args.commandArgs);
+		if (selector === undefined) return;
+		// Re-enter the ordinary launch exactly as `gentle-shell --env <name>`
+		// (or `--isolated` for the base home), so startup checks, provisioning
+		// and resume hints all see that argv.
+		process.argv = [...process.argv.slice(0, 2), ...selector];
+		return main();
+	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
@@ -1933,6 +2309,13 @@ async function main() {
 	const config = loadConfig();
 	let home = resolveHome({ args, env: process.env, homedir: homedir(), config });
 	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+	// An explicit --env never creates a home: a typo must not silently become
+	// a new, empty env. A persisted default keeps the ordinary bootstrap.
+	// Like the envs list, only a real directory (never a file or a symlink)
+	// counts as an env.
+	if (args.env !== undefined && !isRealDirectory(home.dir)) {
+		fail(`gentle-shell: unknown env "${args.env}" (${home.dir}).\nCreate it with 'gentle-shell envs new ${args.env}' or manage envs with 'gentle-shell envs'.`, 2);
+	}
 
 	// Version and help runs (Shell's own or forwarded to Pi) never probe Engram,
 	// ensure the companion, print memory notices or touch provenance.

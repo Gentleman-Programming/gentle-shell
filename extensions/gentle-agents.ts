@@ -35,7 +35,7 @@ import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskSto
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
@@ -1615,6 +1615,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	// Issue #2400: parent sessions already told about model_profiles keys that
+	// match no agent and suggest none, so the notice fires once per session.
+	const unmatchedKeysNotifiedSessions = new Set<string>();
 
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
@@ -1737,9 +1740,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// inheriting and a matched key never warns. Keys are checked against every
 		// discovered agent, so a key naming another agent is never reported here.
 		if (ctx.hasUI) {
-			const nearMisses = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents).filter((entry) => entry.suggestion === agent.name);
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
 			if (nearMisses.length > 0) {
 				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
+			}
+			// Issue #2400: a key with no suggestion never names the launched agent,
+			// so the filter above kept it silent. The session's first launch lists
+			// every such key once; later launches in the same session stay quiet.
+			const unsuggested = unmatched.filter((entry) => entry.suggestion === undefined);
+			const parentSession = ctx.sessionManager.getSessionId() ?? "";
+			if (unsuggested.length > 0 && !unmatchedKeysNotifiedSessions.has(parentSession)) {
+				unmatchedKeysNotifiedSessions.add(parentSession);
+				ctx.ui.notify(unsuggested.map((entry) => `"${sanitizeTerminalText(entry.key)}" did not match any agent and was ignored.`).join(" "), "warning");
 			}
 		}
 		// #2180: the winning layer is named from the resolution and routing this
@@ -2086,8 +2099,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
-			} catch {
-				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+			} catch (error) {
+				// SessionPresenceError codes are a fixed enum with no record content,
+				// so surfacing the reason is safe and keeps diagnosis possible.
+				const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+				return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 			}
 		},
 	});
@@ -2145,8 +2161,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						recipient = candidates[index].sessionId;
 						activation = candidates[index];
 					}
-				} catch {
-					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				} catch (error) {
+					const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+					return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 				}
 			}
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });

@@ -17,7 +17,7 @@ import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-t
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
@@ -4735,6 +4735,33 @@ test("registered orchestrator_list joins peer metadata without child launches or
 	} finally { publisher.dispose(); }
 });
 
+test("orchestrator_list surfaces the real session-presence failure code", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-failure-")));
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => { throw new SessionPresenceError("busy", "presence registry is busy"); } };
+	runtime.deps.agentHome = profile;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	try {
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.match(result.content[0].text, /session discovery is unavailable \(busy\)/);
+		assert.equal((result.details as { error?: string }).error, "unavailable");
+		assert.equal((result.details as { reason?: string }).reason, "busy");
+	} finally {
+		await h.fire("session_shutdown", ctx);
+		rmSync(profile, { recursive: true, force: true });
+	}
+});
+
 test("orchestrator_list labels a live peer that predates discovery publication (#2305)", async () => {
 	const h = fakePi();
 	const runtime = deps();
@@ -6833,6 +6860,43 @@ test("subagent_run does not warn about a key that matches another discovered age
 	await tick();
 	assert.equal(runtime.children.length, 1, "the launch proceeds");
 	assert.equal(dialogs.filter((message) => /did not match any agent/.test(message)).length, 0, "a key naming a discovered agent is never unmatched");
+});
+
+// Issue #2400: a model_profiles key that matches no discovered agent and has no
+// did-you-mean suggestion (a typo such as `explor`) was still silent, because
+// the launch warning only named keys suggesting the launched agent. The first
+// launch of a session now lists every such key once; later launches in the
+// same session stay quiet, and the key is never routed.
+test("subagent_run warns once per session about model profile keys with no suggestion", async (t) => {
+	const child = fakePi();
+	const runtime = deps();
+	const captures = captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const subagents = join(cwd, ".pi", "subagents.json");
+	t.after(() => rmSync(subagents, { force: true }));
+	writeFileSync(subagents, `${JSON.stringify({ model_profiles: { explor: { model: "openai/alpha" }, "sdd-desing": { model: "openai/beta" } } })}\n`);
+	await child.fire("session_start", ctx);
+	const unmatched = () => dialogs.filter((message) => /did not match any agent and was ignored/.test(message));
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(unmatched().length, 1, "the first launch names the unmatched keys");
+	assert.match(unmatched()[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.match(unmatched()[0]!, /"sdd-desing" did not match any agent and was ignored\./);
+	assert.equal(dialogs.filter((message) => /did you mean/.test(message)).length, 0, "a key without a suggestion never claims one");
+	assert.equal(captures[0]!.request.modelSource === "profile", false, "an unmatched key is never routed");
+
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "second", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.equal(unmatched().length, 1, "later launches in the same session do not repeat it");
+
+	// A different parent session is told again.
+	const other = fakeContext();
+	other.ctx.sessionManager.getSessionId = () => "s2";
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "other", mode: "background" }, undefined, undefined, other.ctx);
+	await tick();
+	assert.equal(other.dialogs.filter((message) => /"explor" did not match any agent and was ignored\./.test(message)).length, 1);
 });
 
 // Cortex QA adversarial follow-up (end-to-end pin for the #2196 fix): a key

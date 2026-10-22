@@ -1,10 +1,43 @@
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { inspectArchive, normalizeLock, requireHostedWindows, requireSuccess } from '../scripts/offline-acquisition/safety.mjs';
 import assert from 'node:assert/strict';
 import { closedEnvironment, pairFiles, commandPlan, admitSources, projectEvidence, PINS } from '../scripts/offline-acquisition/policy.mjs';
+
+// Isolated launcher boundary: no acquisition runner or positive Actions context.
+for (const multiple of [false, true]) test(`T5 launcher ${multiple ? 'multiple' : 'single'} application matches`, { skip: process.platform !== 'win32' }, () => {
+  mkdirSync(resolve('tmp/offline-acquisition-launcher'), { recursive: true });
+  const root = mkdtempSync(resolve('tmp/offline-acquisition-launcher/case-'));
+  const controls = join(root, 'controls');
+  const scripts = join(controls, 'scripts/offline-acquisition');
+  mkdirSync(scripts, { recursive: true });
+  const runner = join(scripts, 'runner.mjs');
+  writeFileSync(runner, `console.log(JSON.stringify({ sentinel: 'inert-only', executable: process.execPath, env: process.env })); console.error('fixture-stderr'); process.exitCode = 23;`);
+  const preload = join(root, 'preload.cjs');
+  writeFileSync(preload, `require('node:fs').writeFileSync(${JSON.stringify(join(root, 'unexpected-preload'))}, 'BAD');`);
+  const counter = join(root, 'counter');
+  writeFileSync(counter, 'unchanged');
+  const quote = x => `'${x.replaceAll("'", "''")}'`;
+  const wrapper = join(root, 'invoke.ps1');
+  writeFileSync(wrapper, `function Get-Command { param($Name, $CommandType)\n[pscustomobject]@{ Source = ${quote(process.execPath)} }\n${multiple ? `[pscustomobject]@{ Source = ${quote(join(root, 'other-node.exe'))} }` : ''}\n}\n& ${quote(resolve('scripts/offline-acquisition/launch.ps1'))}\nexit $LASTEXITCODE\n`);
+  const snapshot = () => readdirSync(root, { recursive: true }).sort().map(p => [p, p.endsWith('.mjs') || p.endsWith('.cjs') || p.endsWith('.ps1') || p === 'counter' ? readFileSync(join(root, p), 'utf8') : null]);
+  const before = snapshot();
+  const env = { ...process.env, SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT, GITHUB_WORKSPACE: root, RUNNER_TEMP: root, RUNNER_OS: 'local-fixture', RUNNER_ENVIRONMENT: 'local-fixture', GITHUB_ACTIONS: 'false', GITHUB_REPOSITORY: 'fixture/only', GITHUB_REF: 'fixture', GITHUB_EVENT_NAME: 'fixture', GITHUB_SHA: 'fixture', FIXTURE_SECRET: 'must-not-forward', NODE_OPTIONS: `--require "${preload}"`, NODE_PATH: root, NODE_V8_COVERAGE: root };
+  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', wrapper], { env, encoding: 'utf8', timeout: 15000 });
+  assert.ifError(result.error);
+  assert.deepEqual(snapshot(), before, 'no fixture files or counters changed');
+  assert.equal(result.status, 23, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.equal(result.stderr, 'fixture-stderr\n');
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.sentinel, 'inert-only');
+  assert.equal(output.executable, process.execPath, 'first setup-node discovery match only');
+  const allowed = ['SystemRoot', 'RUNNER_TEMP', 'RUNNER_OS', 'RUNNER_ENVIRONMENT', 'GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_REF', 'GITHUB_EVENT_NAME', 'GITHUB_SHA', 'GITHUB_WORKSPACE'];
+  assert.deepEqual(Object.keys(output.env).sort(), allowed.sort());
+  for (const name of allowed) assert.equal(output.env[name], env[name]);
+});
 
 const paths = { root: 'C:\\acquire', nodeDirectory: 'C:\\tools\\node', systemRoot: 'C:\\Windows' };
 const sri = `sha512-${Buffer.alloc(64, 7).toString('base64')}`;

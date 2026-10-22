@@ -3,7 +3,11 @@
 The push-only workflow on `ci/2360-offline-acquisition` acquires inputs on one
 fresh GitHub-hosted Windows runner. It does not execute Shell, Core, Pi, Go,
 native builds or package lifecycle hooks. Publication belongs to the parent
-controller after review; this implementation has not been run on Actions.
+controller after review. Original run 39819379969/attempt1 failed before the
+acquisition runner started: discovery returned two Node paths joined as one
+executable name. No acquisition lock, cache or artifacts were produced; setup-node
+success is separate. S6 authorizes one new corrected run after independent review,
+not a retry of the failed run or a claim of hosted success.
 
 ## Local checks: no acquisition
 
@@ -16,12 +20,27 @@ simulate a positive Actions environment. Workflow tests are bounded source
 checks, not a YAML parser or actionlint proof. PowerShell AST parsing proves
 syntax only, not execution compatibility or isolation.
 
+On Windows, the two `T5 launcher` tests require existing PowerShell 7 (`pwsh`)
+and existing PATH Node; no tools are installed. They invoke the actual launcher
+with only command-discovery metadata controlled, selecting one or two Source
+values in discovery order. An owned scratch controls root contains an inert
+runner that prints executable identity and environment, emits a stderr sentinel
+and exits 23. It never imports the acquisition runner. Invalid local host facts
+include `GITHUB_ACTIONS=false`; there is no positive acquisition-guard simulation.
+Tests assert first-match identity, exact exit/streams, the complete environment
+whitelist (excluding secret/preload variables), and unchanged fixture files and
+counter. Scratch is retained under `tmp/offline-acquisition-launcher/`, not
+uploaded. Non-Windows skips these cases; PowerShell 5 AST alone is not proof.
+This isolated launcher boundary is not acquisition or hosted PASS.
+
 ## Hosted sequence and effects
 
 1. SHA-pinned checkout actions obtain controls at the workflow SHA and a separate
    immutable `c1617e90b81bac5a897a10211797bc30169794bf` candidate. Credentials
    are not persisted. Pinned setup-node supplies Node 24.21.0; no action cache.
-2. The PowerShell launcher clears the Node orchestrator's entire environment,
+2. The launcher selects the first application CommandInfo before reading its
+   Source, preserving setup-node/PATH precedence and the runner's pinned-version
+   check. The PowerShell launcher clears the Node orchestrator's entire environment,
    forwarding only named host facts. The runner rejects non-Windows,
    non-canonical/non-hosted/non-push contexts before creating files. These facts
    are runner context checks, not cryptographic host attestation.

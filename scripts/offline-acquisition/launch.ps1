@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 # Resolve only the setup-node executable; child process inherits no environment.
-$node = (Get-Command node.exe -CommandType Application).Source
+$node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
 $start = [System.Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $node
 $start.UseShellExecute = $false

@@ -188,6 +188,9 @@ let bundledSetupDirs;
 let bundledInstall;
 let bundledCli;
 let bundledMemory;
+// Writable data root when GENTLE_SHELL_ISOLATION_ROOT is set. Undefined keeps
+// the installed prefix. Never a path inside that prefix.
+let isolationDataRoot;
 // The Shell-owned guard ENGRAM_BIN names when memory is disabled (bin/engram-guard).
 const ENGRAM_GUARD = join(packageRoot, "bin", "engram-guard");
 
@@ -332,7 +335,7 @@ function provisionEngramStore() {
 
 function writeEngramProvenance(record) {
 	try {
-		const path = engramProvenancePath(bundledInstall.root, process.platform);
+		const path = engramProvenancePath(isolationDataRoot ?? bundledInstall.root, process.platform);
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		const temporary = `${path}.${process.pid}.tmp`;
 		writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, flag: "wx" });
@@ -565,7 +568,9 @@ function resolveLooseExtensionEntries(dir) {
 // consulted outside these two call sites; see docs/readme-reference.md.
 function resolveConfigPath() {
 	const override = process.env.GENTLE_SHELL_CONFIG;
-	return override !== undefined && override.length > 0 ? override : launcherConfigPath(homedir());
+	if (override !== undefined && override.length > 0) return override;
+	if (isolationDataRoot) return join(isolationDataRoot, "config.json");
+	return launcherConfigPath(homedir());
 }
 
 // Raw config.json as a plain object (see RawLauncherConfig in
@@ -947,6 +952,10 @@ const configMigrationFs = {
 // once in runtime/ (verified, never brew or the user's PATH). A failure stops
 // setup rather than let Gentle AI acquire another Engram.
 async function ensureBundledEngram() {
+	if (isolationDataRoot) {
+		if (verifiedBundledCore()) return { ok: true };
+		return { ok: false, exitCode: 1, message: "gentle-shell: isolation will not download Engram into the installed prefix" };
+	}
 	const { ensureEngram, prefixLayout } = await import("../scripts/bundled-install.mjs");
 	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundledInstall.root });
 	try {
@@ -1741,6 +1750,7 @@ async function handleUpgradeCommand(commandArgs) {
 async function handleBundledUpgrade(bundled, commandArgs) {
 	const parsed = parseBundledUpgradeArgs(commandArgs);
 	if ("error" in parsed) fail(`gentle-shell upgrade: ${parsed.error}`, parsed.usage ? 2 : 1);
+	if (isolationDataRoot) fail("gentle-shell upgrade: refusing while GENTLE_SHELL_ISOLATION_ROOT is set", 2);
 	const { prefixLayout, rollbackBundled, upgradeBundled } = await import("../scripts/bundled-install.mjs");
 	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
 	const out = (line) => process.stdout.write(`${line}\n`);
@@ -1777,7 +1787,9 @@ async function ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootst
 	const previous = provisionedEntry(readRawConfig(resolveConfigPath()), safeRealpath(home.dir));
 	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap) || !isDirectory(home.dir)) return;
 	const { bundledNpmCommand, ensureNpmShim, prefixLayout } = await import("../scripts/bundled-install.mjs");
-	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	const layout = prefixLayout({
+		platform: process.platform, env: process.env, home: homedir(), root: bundled.root, dataRoot: isolationDataRoot,
+	});
 	// The entry npmCommand names, also for a runtime installed before it existed.
 	ensureNpmShim(layout);
 	const settingsPath = join(home.dir, "settings.json");
@@ -1793,6 +1805,7 @@ async function ensureBundledNpmCommand(bundled, home, homeHadContentBeforeBootst
 // folders and exactly the PATH entry its receipt records; on Windows the running
 // node.exe and launcher are removed by a detached process after this one exits.
 async function handleBundledSelfUninstall(bundled, commandArgs) {
+	if (isolationDataRoot) fail("gentle-shell self-uninstall: refusing while GENTLE_SHELL_ISOLATION_ROOT is set", 2);
 	const { askLine, runBundledSelfUninstall } = await import("../runtime/gentle-shell-uninstall.mjs");
 	const { describePathReceipt, prefixLayout, readPathReceipt, removePathEntry, scheduleWindowsRemoval } = await import("../scripts/bundled-install.mjs");
 	const windows = process.platform === "win32";
@@ -1886,6 +1899,18 @@ async function main() {
 	delete process.env.GENTLE_SHELL_SKIP_STARTUP_UPDATE;
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
+	try {
+		const { resolveIsolationRoot } = await import("../scripts/bundled-install.mjs");
+		isolationDataRoot = resolveIsolationRoot({ env: process.env, platform: process.platform });
+	} catch (error) {
+		fail(`${error.message}\n`, 2);
+	}
+	if (isolationDataRoot && args.home === undefined && !args.link && args.command === undefined) {
+		args.home = join(isolationDataRoot, "agent");
+	}
+	if (isolationDataRoot && !(process.env.GENTLE_PI_CONFIG_HOME ?? "").trim()) {
+		process.env.GENTLE_PI_CONFIG_HOME = join(isolationDataRoot, "gentle-ai");
+	}
 	if (args.help) {
 		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nUnknown ownership refuses without installing; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
 		process.stdout.write(`${helpText()}\nBundled Engram safety: memory opens only a fresh, verified or Shell-provisioned store; otherwise ENGRAM_BIN\nis Shell's guard and memory stays off. Matching versions or updating alone do not prove compatibility.\nReuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
@@ -1899,6 +1924,14 @@ async function main() {
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
+	if (isolationDataRoot && bundled) {
+		try {
+			const { resolveIsolationRoot } = await import("../scripts/bundled-install.mjs");
+			resolveIsolationRoot({ env: process.env, platform: process.platform, installRoot: bundled.root });
+		} catch (error) {
+			fail(`${error.message}\n`, 2);
+		}
+	}
 	if (args.command === "memory") {
 		if (args.commandArgs.length !== 2 || args.commandArgs[0] !== "migrate" || args.commandArgs[1] !== "--confirm-quiescent") {
 			process.stderr.write(MIGRATION_USAGE);

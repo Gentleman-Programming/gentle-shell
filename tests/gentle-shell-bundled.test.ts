@@ -1049,6 +1049,26 @@ test("bundled setup puts Gentle AI 4.0.0's background-subagents policy where the
 	assert.equal(resolution.globalFile, join(prefix.root, "config", "gentle-ai", "background-subagents.json"));
 });
 
+test("GENTLE_SHELL_ISOLATION_ROOT keeps bundled npm writes out of the installed prefix", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const sandbox = join(dirname(prefix.home), "sandbox");
+	const isolated = prefix.run(["list"], { GENTLE_SHELL_ISOLATION_ROOT: sandbox });
+	assert.equal(isolated.status, 0, isolated.stderr);
+	const settingsPath = join(sandbox, "agent", "settings.json");
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+	assert.ok(settings.npmCommand?.includes(`--cache=${join(sandbox, "npm", "cache")}`), `${isolated.stderr}\n${JSON.stringify(settings)}`);
+	assert.equal(existsSync(join(sandbox, "runtime", "npm-shim", "npm")), true);
+	assert.equal(existsSync(join(prefix.root, "runtime", "node-24.21.0", "gentle-shell", "npm")), false);
+	assert.equal(existsSync(join(prefix.root, "npm", "cache")), false);
+	assert.equal(lastLaunch(isolated).env.GENTLE_PI_CONFIG_HOME, join(sandbox, "gentle-ai"));
+	const inside = prefix.run(["list"], { GENTLE_SHELL_ISOLATION_ROOT: join(prefix.root, "nested") });
+	assert.notEqual(inside.status, 0);
+	assert.match(inside.stderr, /outside the installed prefix/);
+	const relative = prefix.run(["list"], { GENTLE_SHELL_ISOLATION_ROOT: "sandbox" });
+	assert.notEqual(relative.status, 0);
+	assert.match(relative.stderr, /absolute path/);
+});
+
 test("a home holding the npmCommand written before the npm entry existed gets only that key updated", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const node = join(prefix.root, "runtime", "node-24.21.0");

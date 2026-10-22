@@ -312,6 +312,10 @@ Restoring the old provenance does not authorize the newer core to open it. Use t
 - **Older or other integrations.** gentle-engram versions before 0.4.1, and integrations that do not reach data through `ENGRAM_BIN` (for example an MCP launcher running `engram` from `PATH`), are not covered by the guard.
 - **Non-bundled installs** keep their previous behavior.
 
+### Lab isolation root
+
+`GENTLE_SHELL_ISOLATION_ROOT` is unset for a normal launch, and every path below stays on the installed prefix. Set it to an absolute directory outside that prefix when a lab must not write the installed cache, config, or agent home. The Node runtime, the launcher, and the pinned Engram binary stay on the prefix and are only read. npm's cache, the generated npm shim, temporary files, `config.json`, the default agent home (`<root>/agent`), and Engram provenance go under the isolation root. If `GENTLE_PI_CONFIG_HOME` is unset, the launch points it at `<root>/gentle-ai` so profiles are not copied out of `~/.pi/gentle-ai`. `upgrade` and `self-uninstall` refuse while the variable is set, so they cannot target the installed prefix or the sandbox. `GENTLE_SHELL_NO_AUTO_SETUP=1` only skips first-run provisioning; it does not move the bundled npm cache.
+
 ### Isolation from the user's Gentle AI
 
 S9. Everything Gentle AI and gentle-pi keep lives in the prefix, except Engram's memory data.

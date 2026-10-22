@@ -1,7 +1,7 @@
 name: Issue 1921 real Shell Windows smoke
 on:
   push:
-    branches: [test/1921-real-shell-smoke-c161]
+    branches: [dnlrsls/shell-2431-windows-trial]
 permissions:
   contents: read
 jobs:
@@ -17,7 +17,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: c1617e90b81bac5a897a10211797bc30169794bf
+          ref: ${{ github.sha }}
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

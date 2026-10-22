@@ -4,13 +4,29 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, mkdirSync, mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
 import { resolve, win32 } from 'node:path';
+import * as smoke from './issue-1921-shell-smoke.mjs';
 import { CANDIDATE, BRANCH, admitHosted, isolatedEnvironment, shellArguments, memoryProof, validateCoreQuery, captureChild } from './issue-1921-shell-smoke.mjs';
 
-const host = { platform: 'win32', candidate: CANDIDATE, env: {
+const host = { platform: 'win32', candidate: 'a'.repeat(40), env: {
+  GITHUB_SHA: 'a'.repeat(40), GITHUB_SERVER_URL: 'https://github.com', GITHUB_API_URL: 'https://api.github.com',
   GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Windows',
   GITHUB_REPOSITORY: 'Gentleman-Programming/gentle-shell', GITHUB_REF: BRANCH, GITHUB_EVENT_NAME: 'push',
 } };
 const root = 'C:\\runner\\smoke';
+test('source: only exact diagnostic blobs and four harness paths', () => {
+  const diagnostics = {
+    'docs/bundled-install.md': '30b3486e029d8bff437476cab366993e7819bb18',
+    'scripts/installer-windows.mjs': '162083e786bb55d53c0d77f217afa563fbffa119',
+    'tests/installer-windows-diagnostics.test.ts': '91974c62c4570a1b3e6c444a4d58cd4b34831d45',
+  };
+  const paths = [...Object.keys(diagnostics), '.github/scripts/issue-1921-shell-smoke.mjs',
+    '.github/scripts/issue-1921-shell-smoke.test.mjs', '.github/workflows/issue-1921-shell-smoke.yml',
+    'docs/issue-1921-shell-smoke.md'];
+  smoke.validateSource(paths, diagnostics);
+  for (const bad of [paths.slice(1), [...paths, 'bin/gentle-shell.mjs'], [...paths, paths[0]]])
+    assert.throws(() => smoke.validateSource(bad, diagnostics));
+  assert.throws(() => smoke.validateSource(paths, { ...diagnostics, 'docs/bundled-install.md': '0'.repeat(40) }));
+});
 function unchangedRejection(fn, value) {
   const before = structuredClone(value);
   assert.throws(() => fn(value));
@@ -23,6 +39,16 @@ test('admission: exact hosted candidate and mutation-free refusals', () => {
     unchangedRejection(admitHosted, { ...host, ...change });
   for (const key of Object.keys(host.env))
     unchangedRejection(admitHosted, { ...host, env: { ...host.env, [key]: 'untrusted' } });
+});
+
+test('admission: actual workflow SHA and public GitHub identity required', () => {
+  const candidate = 'a'.repeat(40);
+  const value = { ...host, candidate, env: { ...host.env, GITHUB_SHA: candidate,
+    GITHUB_SERVER_URL: 'https://github.com', GITHUB_API_URL: 'https://api.github.com' } };
+  admitHosted(value);
+  unchangedRejection(admitHosted, { ...value, candidate: CANDIDATE });
+  for (const key of ['GITHUB_SHA', 'GITHUB_SERVER_URL', 'GITHUB_API_URL'])
+    unchangedRejection(admitHosted, { ...value, env: { ...value.env, [key]: 'untrusted' } });
 });
 
 test('isolation: closed environment and actual installed Shell argv', () => {
@@ -80,6 +106,20 @@ test('proof: actual tool results, persisted identity and original native attribu
   const changed = structuredClone(secondEvents);
   changed.at(-1).result.details.data.session_id = 'rewritten-attribution';
   assert.throws(() => memoryProof(changed, marker, 'session-two', first));
+});
+
+test('provenance: canonical directory, exact identity/core and restart persistence', () => {
+  const observed = { dataDir: `${root}\\.engram`, instanceId: 'b'.repeat(32), coreSha256: 'c'.repeat(64) };
+  const record = { schema: 1, ...observed };
+  assert.deepEqual(smoke.provenanceProof(record, observed), record);
+  assert.deepEqual(smoke.provenanceProof(record, observed, record), record);
+  for (const key of ['schema', 'dataDir', 'instanceId', 'coreSha256']) {
+    const bad = { ...record, [key]: 'wrong' };
+    unchangedRejection(value => smoke.provenanceProof(value, observed), bad);
+    assert.throws(() => smoke.provenanceProof(record, observed, bad));
+  }
+  assert.throws(() => smoke.provenanceProof(null, observed));
+  assert.throws(() => smoke.provenanceProof({ ...record, instanceId: '' }, { ...observed, instanceId: '' }));
 });
 
 test('B1: only positively completed Core enumeration proves an empty PID set', () => {
@@ -152,11 +192,11 @@ test('B2: failed termination and held pipes cannot defeat capture or return boun
 
 test('workflow: sole exact push, pinned checkouts/actions and owned evidence only', () => {
   const yaml = readFileSync(resolve('.github/workflows/issue-1921-shell-smoke.yml'), 'utf8');
-  assert.match(yaml, /branches: \[test\/1921-real-shell-smoke-c161\]/);
+  assert.match(yaml, /branches: \[dnlrsls\/shell-2431-windows-trial\]/);
   assert.match(yaml, /runs-on: windows-latest/);
   assert.match(yaml, /contents: read/);
   assert.equal((yaml.match(/persist-credentials: false/g) ?? []).length, 2);
-  assert.ok(yaml.includes(`ref: ${CANDIDATE}`));
+  assert.equal((yaml.match(/ref: \$\{\{ github.sha \}\}/g) ?? []).length, 2);
   assert.ok(yaml.includes('ref: ${{ github.sha }}'));
   assert.match(yaml, /if: always\(\)/);
   assert.ok(yaml.includes('${{ runner.temp }}/issue-1921-shell-smoke/artifacts'));

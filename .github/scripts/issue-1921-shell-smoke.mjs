@@ -8,16 +8,30 @@ import { createServer } from 'node:http';
 import { StringDecoder } from 'node:string_decoder';
 
 export const CANDIDATE = 'c1617e90b81bac5a897a10211797bc30169794bf';
-export const BRANCH = 'refs/heads/test/1921-real-shell-smoke-c161';
+export const BRANCH = 'refs/heads/dnlrsls/shell-2431-windows-trial';
 const requireValue = (value, message) => { if (!value) throw new Error(message); };
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const sleep = ms => new Promise(accept => setTimeout(accept, ms));
 
 export function admitHosted({ platform, candidate, env }) {
-  requireValue(platform === 'win32' && candidate === CANDIDATE && env.GITHUB_ACTIONS === 'true' &&
+  requireValue(platform === 'win32' && /^[a-f0-9]{40}$/.test(candidate ?? '') && candidate === env.GITHUB_SHA &&
+    env.GITHUB_SERVER_URL === 'https://github.com' && env.GITHUB_API_URL === 'https://api.github.com' && env.GITHUB_ACTIONS === 'true' &&
     env.RUNNER_ENVIRONMENT === 'github-hosted' && env.RUNNER_OS === 'Windows' &&
     env.GITHUB_REPOSITORY === 'Gentleman-Programming/gentle-shell' && env.GITHUB_REF === BRANCH &&
     env.GITHUB_EVENT_NAME === 'push', 'Only the exact hosted Windows push is admitted');
+}
+
+export const DIAGNOSTICS = Object.freeze({
+  'docs/bundled-install.md': '30b3486e029d8bff437476cab366993e7819bb18',
+  'scripts/installer-windows.mjs': '162083e786bb55d53c0d77f217afa563fbffa119',
+  'tests/installer-windows-diagnostics.test.ts': '91974c62c4570a1b3e6c444a4d58cd4b34831d45',
+});
+export function validateSource(paths, blobs) {
+  const expected = [...Object.keys(DIAGNOSTICS), '.github/scripts/issue-1921-shell-smoke.mjs',
+    '.github/scripts/issue-1921-shell-smoke.test.mjs', '.github/workflows/issue-1921-shell-smoke.yml',
+    'docs/issue-1921-shell-smoke.md'];
+  requireValue(JSON.stringify([...paths].sort()) === JSON.stringify(expected.sort()) &&
+    Object.entries(DIAGNOSTICS).every(([path, blob]) => blobs[path] === blob), 'Candidate source delta mismatch');
 }
 
 export function isolatedEnvironment(root, node, system) {
@@ -66,6 +80,15 @@ export function memoryProof(events, marker, session, previous) {
     JSON.stringify(selected) === JSON.stringify(previous.observation), 'Restart changed original attribution or reused native session');
   // Companion owns effective attribution; do NOT equate it to Pi's raw session ID.
   return { nativeSession: session, observation: selected };
+}
+
+export function provenanceProof(record, observed, previous) {
+  requireValue(record?.schema === 1 && win32.isAbsolute(record.dataDir ?? '') &&
+    /^[a-f0-9]{32}$/.test(record.instanceId ?? '') && /^[a-f0-9]{64}$/.test(record.coreSha256 ?? '') &&
+    ['dataDir', 'instanceId', 'coreSha256'].every(key => record[key] === observed[key]), 'Invalid Shell provenance');
+  const proof = { schema: 1, dataDir: record.dataDir, instanceId: record.instanceId, coreSha256: record.coreSha256 };
+  if (previous) requireValue(JSON.stringify(proof) === JSON.stringify(previous), 'Restart changed Shell provenance');
+  return proof;
 }
 
 export function validateCoreQuery(result) {
@@ -165,7 +188,7 @@ export async function main() {
     return;
   }
   // Refuse the real local host BEFORE filesystem changes or product imports.
-  admitHosted({ platform: process.platform, candidate: CANDIDATE, env: process.env });
+  admitHosted({ platform: process.platform, candidate: process.env.GITHUB_SHA, env: process.env });
   requireValue(process.argv.length === 2 && process.versions.node === '24.21.0', 'Pinned Node and no arguments required');
   const candidate = join(process.env.GITHUB_WORKSPACE, 'candidate');
   const controls = join(process.env.GITHUB_WORKSPACE, 'controls');
@@ -173,6 +196,20 @@ export async function main() {
   const actual = readFileSync(join(candidate, '.git', 'HEAD'), 'utf8').trim();
   admitHosted({ platform: process.platform, candidate: actual, env: process.env });
   requireValue(readFileSync(join(controls, '.git', 'HEAD'), 'utf8').trim() === workflow, 'Controls checkout mismatch');
+  // Read-only Git checks before any product import. Controls and candidate are
+  // the same trusted workflow commit; no self-referential candidate hash pin.
+  const git = args => {
+    const result = spawnSync('git', ['-C', candidate, ...args], { encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024, shell: false });
+    requireValue(result.status === 0 && !result.error && result.stderr === '', 'Source identity Git proof unavailable');
+    return result.stdout.trim();
+  };
+  git(['merge-base', '--is-ancestor', CANDIDATE, actual]);
+  const sourcePaths = git(['diff', '--name-only', CANDIDATE, actual]).split('\n');
+  const diagnosticBlobs = Object.fromEntries(Object.keys(DIAGNOSTICS).map(path =>
+    [path, git(['rev-parse', `${actual}:${path}`])]));
+  validateSource(sourcePaths, diagnosticBlobs);
+  for (const path of sourcePaths.filter(path => !Object.hasOwn(DIAGNOSTICS, path)))
+    requireValue(sha256(readFileSync(join(candidate, path))) === sha256(readFileSync(join(controls, path))), 'Trusted controls differ from candidate');
   const root = join(process.env.RUNNER_TEMP, 'issue-1921-shell-smoke');
   requireValue(!existsSync(root), 'Fresh smoke root required; never resume an attempt');
   const env = isolatedEnvironment(root, process.execPath, process.env.SystemRoot);
@@ -181,8 +218,9 @@ export async function main() {
   Object.assign(process.env, env);
   const artifacts = join(root, 'artifacts');
   for (const path of [artifacts, env.HOME, env.APPDATA, env.LOCALAPPDATA, env.TEMP]) mkdirSync(path, { recursive: true });
-  const evidence = { status: 'FAILED', candidate: actual, workflow, sourceKind: 'local-candidate-not-published',
-    claims: { installed: false, provisioned: false, memoryEnabled: false, persisted: false, ownedShutdown: false, publicUpgrade: false },
+  const evidence = { status: 'FAILED', candidate: actual, workflow, baseCandidate: CANDIDATE,
+    diagnosticPatch: '8855971bbf9702561c7da2e55d984b09f93a6967', diagnosticBlobs, sourcePaths, sourceKind: 'local-candidate-not-published',
+    claims: { provenanceVerified: false, provenancePersisted: false, installed: false, provisioned: false, memoryEnabled: false, persisted: false, ownedShutdown: false, publicUpgrade: false },
     commands: [], stages: [], limitations: ['One candidate smoke, not public upgrade or offline closure',
       'Normal installer controls including pinned Gentle AI Go/SumDB build are unchanged',
       'Product-internal commands are captured through their enclosing installer command, not independently instrumented'] };
@@ -318,7 +356,22 @@ export async function main() {
       models: [{ id: 'smoke', name: 'Synthetic loopback', reasoning: false, input: ['text'], contextWindow: 200000,
         maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     } } }, null, 2));
-    let previous;
+    const bundled = await import(pathToFileURL(join(candidate, 'runtime', 'gentle-shell-bundled.mjs')).href);
+    let previous, previousProvenance;
+    function readProvenance() {
+      // Only runner-owned synthetic files, after actual Shell provisioning.
+      const paths = [bundled.engramProvenancePath(layout.root, 'win32'), join(env.HOME, '.engram'), layout.engram];
+      const canonical = paths.map(path => realpathSync(path));
+      const privateRoot = realpathSync(root);
+      requireValue(canonical.every(path => path.startsWith(`${privateRoot}\\`)), 'Provenance escaped disposable prefix');
+      const identity = realpathSync(join(canonical[1], '.instance-id'));
+      requireValue(identity.startsWith(`${canonical[1]}\\`), 'Identity escaped synthetic store');
+      const record = JSON.parse(readFileSync(canonical[0], 'utf8'));
+      const proof = provenanceProof(record, { dataDir: canonical[1],
+        instanceId: readFileSync(identity, 'utf8').trim(), coreSha256: sha256(readFileSync(canonical[2])) }, previousProvenance);
+      previousProvenance = proof;
+      return { recordPath: canonical[0], corePath: canonical[2], ...proof };
+    }
     for (const number of [1, 2]) {
       const events = [], sessionPath = join(root, `session-${number}.jsonl`);
       async function result(name) {
@@ -357,6 +410,11 @@ export async function main() {
       requireValue(header.type === 'session' && typeof header.id === 'string' && header.id, 'Native session header absent');
       requireValue(toolData(events, 'mem_current_project').cwd === project, 'Native project cwd mismatch');
       const proof = memoryProof(events, marker, header.id, previous);
+      const provenance = readProvenance();
+      evidence.stages.push({ name: `session-${number}-provenance`, ...provenance });
+      evidence.provenance = provenance;
+      evidence.claims.provenanceVerified = true;
+      if (previous) evidence.claims.provenancePersisted = true;
       requireValue((await ownedCorePids()).length === 0, 'Owned Core survived Shell shutdown');
       evidence.stages.push({ name: `session-${number}-proof`, nativeSession: header.id, observation: proof });
       evidence.claims.memoryEnabled = true;

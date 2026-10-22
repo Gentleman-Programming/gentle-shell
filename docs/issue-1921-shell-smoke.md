@@ -1,9 +1,19 @@
 # One hosted Windows real-Shell memory smoke
 
-This temporary push-only workflow targets `test/1921-real-shell-smoke-c161`.
+This temporary push-only workflow targets `dnlrsls/shell-2431-windows-trial`.
 The parent alone publishes it after review and observes ONE run; no reruns.
-It tests exact candidate `c1617e90b81bac5a897a10211797bc30169794bf`, not a
-registry/public upgrade. Old acquisition failures remain unchanged.
+Both checkouts execute the actual push/workflow SHA, not the unmodified
+`c1617e90b81bac5a897a10211797bc30169794bf` base. Admission binds the public
+GitHub server/API, repository, branch, event and actual SHA before product use.
+Read-only Git checks require c161 ancestry and exactly three diagnostic plus
+four harness paths. The diagnostic change is the exact merged #2459 patch
+(stable patch ID `8855971bbf9702561c7da2e55d984b09f93a6967`). Installer and
+test blobs match upstream directly; the documentation pin identifies the actual
+cherry-picked blob, whose historical base differs from upstream main. Its patch
+is identical; its whole-file blob is not. The four harness sources must match
+the trusted workflow checkout. Evidence separates actual candidate, base,
+workflow SHA, diagnostic blobs and patch identity without a self-hash cycle.
+This is not a registry/public upgrade. Old acquisition failures remain unchanged.
 
 ## Local checks — never execute the candidate
 
@@ -32,6 +42,13 @@ loopback OpenAI-compatible LLM is synthetic. It requests actual native memory
 tools; save id/status, full search and get-observation results must establish
 synthetic content/project/scope and unchanged original attribution after restart.
 Companion effective session attribution is not assumed equal to Pi's raw ID.
+After each actual Shell session, the harness uses the public
+`engramProvenancePath(layout.root, 'win32')` helper and reads only canonical
+paths under the disposable runner root. Shell's schema-1 record must match the
+canonical synthetic `.engram` directory, its actual `.instance-id`, and the
+SHA-256 of the private Core executable. The second session must preserve the
+same record identity and digest. Separate provenance claims/stage receipts are
+not inferred from successful tools or setup; missing proof fails the attempt.
 An exact owned-Core executable-path PID query checks live ownership and natural
 shutdown after each Shell. Query errors terminate PowerShell; validation requires
 exit0, confirmed command close, empty stderr and a nonempty JSON PID-array reply.

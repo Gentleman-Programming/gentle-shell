@@ -187,18 +187,29 @@ function sgrForegroundTurnover(token: string, extensionColored: boolean): boolea
 	return colored;
 }
 
-function sanitizeStatus(text: string): string {
-	// Protect SGR runs, clean the rest like the bar always did, then restore.
-	const sgrs: string[] = [];
-	const guarded = text.replace(ANSI_SGR_RUN, (run) => {
-		sgrs.push(run);
-		return `\uFFFD${sgrs.length - 1}\uFFFD`;
-	});
-	const cleaned = sanitizeTerminalText(guarded.replace(/[\r\n\t]/g, " "))
-		.replace(/\uFFFD(\d+)\uFFFD/g, (_, index) => sgrs[Number(index)] ?? "")
+// Split a status into SGR tokens and text, sanitize only the text (SGR runs
+// are verified structure) and join. The old placeholder surface (hiding SGRs
+// as \uFFFD<index>\uFFFD and restoring by pattern) never sees user text, so an
+// input that already contains that shape survives as text instead of being
+// deleted or duplicating a restored run.
+function sanitizeStatusTokens(text: string, keepSgr: boolean): string {
+	return text
+		.split(/(\x1b\[[0-9;:]*m)/)
+		.map((token) => (/^\x1b\[[0-9;:]*m$/.test(token) ? (keepSgr ? token : "") : sanitizeTerminalText(token.replace(/[\r\n\t]/g, " "))))
+		.join("")
 		.replace(/ +/g, " ")
 		.trim();
-	return colonSgrToSemicolon(cleaned);
+}
+
+function sanitizeStatus(text: string): string {
+	return colonSgrToSemicolon(sanitizeStatusTokens(text, true));
+}
+
+// Non-status paint sites (profile, change notice, review scope, job labels)
+// wrap one string at a time with no paint policy, so the observer's text must
+// not carry SGR into that wrapper: those keep the strip-only path.
+function sanitizePlainText(text: string): string {
+	return sanitizeStatusTokens(text, false);
 }
 
 /**
@@ -222,7 +233,11 @@ function colonSgrToSemicolon(text: string): string {
 				return rest.length === 1 ? `${kind};5;${rest[0]}` : unit;
 			}
 			if (subtype === "2") {
-				return rest.length === 3 ? [kind, "2", ...rest].join(";") : unit;
+				// An explicit sRGB colorspace id ("0") denotes the same set the
+				// empty form carries: drop it so both legal shapes turn into
+				// the semicolon form.
+				const values = rest.length === 4 && rest[0] === "0" ? rest.slice(1) : rest;
+				return values.length === 3 ? [kind, "2", ...values].join(";") : unit;
 			}
 			return unit;
 		});
@@ -246,9 +261,11 @@ function statusSegment(theme: ShellBarTheme, status: string): string {
 			? token
 			: theme.fg(ROLE.STATUS, token);
 	}
-	// Close an extension foreground that survives to the segment end so the
-	// line's remaining segments never inherit it.
-	if (extensionColored) painted += "\x1b[39m";
+	// Close every SGR the extension still has open at the segment end —
+	// foreground, bold, underline, background — with one full reset. Each
+	// segment paints its runs independently, so the reset disturbs nothing
+	// after it, and pi-tui's trackers treat it as a complete clear.
+	if (painted.length > 0) painted += "\x1b[0m";
 	return painted;
 }
 
@@ -340,7 +357,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				value(model.cwd),
 				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
+				...(model.profile ? [`${label("Profile")} ${value(sanitizePlainText(model.profile))}`] : []),
 			],
 		},
 		...(presentation?.visibility.changes === false ? [] : [{
@@ -349,7 +366,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				changes?.files
 					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
 					: label("No captured changes"),
-				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
+				...(changes?.notice ? [theme.fg("warning", sanitizePlainText(changes.notice))] : []),
 				label("/gentle:changes"),
 			],
 		}]),
@@ -358,12 +375,12 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			lines: [
 				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
 				// Unknown scope is an internal sentinel, not something the user acts on.
-				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizePlainText(model.review.scope))] : []),
 			],
 		}] : []),
 		...(model.jobs?.length ? [{
 			title: "Jobs",
-			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
+			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizePlainText(job.label))),
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => statusSegment(theme, status))
@@ -391,7 +408,7 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showMod
 	if (!showModelDetails) return [[brand, location], [brand]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
 	const modelOnly = executionSegment(model.modelId, undefined, theme);
-	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizeStatus(model.profile))}` : withEffort;
+	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizePlainText(model.profile))}` : withEffort;
 	return [
 		[brand, location, withProfile],
 		[brand, location, withEffort],
@@ -540,11 +557,13 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [
-		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
-		...model.statuses.map(sanitizeStatus).filter(Boolean),
+		...(model.jobs?.length ? [theme.fg(ROLE.STATUS, shellJobsCount(model.jobs.length))] : []),
+		...model.statuses
+			.filter((status) => sanitizeStatus(status).length > 0)
+			.map((status) => statusSegment(theme, status)),
 	];
 	const statusRow = statuses.length
-		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
+		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses, theme))
 		: undefined;
 	return {
 		rows: [
@@ -571,7 +590,9 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
 	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
-	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
+	const statuses = model.statuses
+		.filter((status) => sanitizeStatus(status).length > 0)
+		.map((status) => statusSegment(theme, status));
 	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
 }
 

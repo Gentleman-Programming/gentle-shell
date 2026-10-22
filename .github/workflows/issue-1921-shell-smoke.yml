@@ -1,0 +1,40 @@
+name: Issue 1921 real Shell Windows smoke
+on:
+  push:
+    branches: [test/1921-real-shell-smoke-c161]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: controls
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: c1617e90b81bac5a897a10211797bc30169794bf
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.21.0
+      - name: One real install, setup and memory journey
+        shell: pwsh
+        run: |
+          Remove-Item Env:NODE_OPTIONS, Env:NODE_PATH, Env:NODE_V8_COVERAGE -ErrorAction SilentlyContinue
+          $node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
+          & $node "$env:GITHUB_WORKSPACE/controls/.github/scripts/issue-1921-shell-smoke.mjs"
+          exit $LASTEXITCODE
+      - name: Preserve exact partial evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: issue-1921-shell-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue-1921-shell-smoke/artifacts
+          if-no-files-found: warn
+          retention-days: 7

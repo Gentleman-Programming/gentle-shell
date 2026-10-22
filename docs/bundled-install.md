@@ -31,10 +31,13 @@ On Windows the same layout lives under a private folder. The module tries `%LOCA
 signal and selected process-error fields plus bounded stdout/stderr. A sanitized
 `cause.stack` also carries these fields for existing evidence consumers, without
 local callsites, raw spawn errors, commands, argv or environment snapshots.
+Process-error messages use only a sanitized native error code or fixed fallback,
+never raw spawn text that could include a private bare executable name.
 Limits are UTF-16 code units: streams1024 each, error message256, name/code/errno
 text64, signal32 and cause stack8192; numeric status/errno remain numeric.
 Path/SID, encoded ACL/opaque and control-bearing lines are suppressed; credential
-markers suppress the entire field, including continuation lines. This conservative
+markers, including underscore-separated environment names such as `GITHUB_TOKEN`
+and `API_KEY`, suppress the entire field including continuation lines. This conservative
 filter may discard useful output and is not a general-purpose secret parser.
 Nothing prints automatically. CMD/BAT rejection, neutral cwd, shell=false,
 15-second SIGKILL/1MiB capture and all ACL/provenance checks remain unchanged.

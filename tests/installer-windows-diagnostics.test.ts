@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { dirname, join, parse, resolve } from 'node:path';
+import { basename, dirname, join, parse, resolve } from 'node:path';
 import { getSystemErrorName } from 'node:util';
 import { windowsProcessCheck, windowsBootstrapReason } from '../scripts/installer-windows.mjs';
 
@@ -79,6 +79,29 @@ test('privacy: private paths, SID/encoded ACL detail and sensitive output are su
   assert.ok(!cause.stack.includes('synthetic-secret') && !cause.stack.includes('continuation-must-not-survive'));
   const bounded = causeOf(failure(process.execPath, [fixture, 'text', 'safe line\n'.repeat(300), 'safe error\n'.repeat(300)]));
   assert.equal(bounded.stdout.length, 1024); assert.equal(bounded.stderr.length, 1024);
+});
+
+test('PR privacy: credential markers recognize underscore separators without changing API_KEY handling', () => {
+  for (const marker of ['GITHUB_TOKEN', 'PREFIX_API_KEY_SUFFIX', 'AWS_ACCESS_KEY_ID', 'API_KEY', 'access_key']) {
+    const payload = `${marker}=synthetic-value-1921\ncontinuation-value-1921`;
+    assert.equal(payload.includes('\\'), false, 'actual argv bytes must not trigger the path filter');
+    const cause = causeOf(failure(process.execPath,
+      ['-e', 'process.stderr.write(process.argv[1]);process.exit(7)', payload]));
+    assert.equal(cause.status, 7);
+    assert.equal(cause.stderr, '[redacted]');
+    assert.ok(!cause.stack.includes('synthetic-value-1921') && !cause.stack.includes('continuation-value-1921'));
+  }
+});
+
+test('PR privacy: missing bare executable identity never enters cause message or stack', () => {
+  const command = `fixture-private-executable-1921-${basename(root)}`;
+  assert.equal(parse(command).root, '', 'a path-based probe would miss the bare-name leak');
+  const cause = causeOf(failure(command, ['private-argv-sentinel']));
+  assert.equal(cause.status, null); assert.equal(cause.signal, null);
+  assert.equal(cause.error.code, 'ENOENT'); assert.equal(cause.error.name, 'Error');
+  assert.equal(getSystemErrorName(cause.error.errno), 'ENOENT');
+  assert.ok(!JSON.stringify(cause).includes(command) && !cause.stack.includes(command));
+  assert.match(cause.error.message, /ENOENT/);
 });
 
 test('legacy: neutral cwd, trimmed success and pre-spawn CMD/BAT rejection stay exact', () => {

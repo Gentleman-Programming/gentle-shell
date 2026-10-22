@@ -112,19 +112,21 @@ function exists(path) {
 // This is conservative diagnostic filtering, not a general-purpose secret parser.
 function processDiagnosticText(value, limit) {
 	if (typeof value !== "string") return "";
-	if (/\b(?:authorization|bearer|token|password|passphrase|secret|credential|api[_-]?key|access[_-]?key|cookie)\b/i.test(value)) return "[redacted]";
+	if (/(?:^|[^a-z0-9])(?:authorization|bearer|token|password|passphrase|secret|credential|api[_-]?key|access[_-]?key|cookie)(?:$|[^a-z0-9])/i.test(value)) return "[redacted]";
 	return value.split(/\r\n?|\n/).map(line =>
 		/[A-Za-z]:[\\/]|\\|(?:^|[\s"'=])\/\S+|\bS-\d-(?:\d+-)+\d+\b|unsafe:[^|]*\||[A-Za-z0-9+/=_-]{64,}|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/i.test(line) ? "[redacted]" : line
 	).join("\n").slice(0, limit);
 }
 function prerequisiteProcessCause(result) {
 	const failure = result.error;
+	const code = processDiagnosticText(failure?.code, 64);
 	const details = {
 		status: Number.isSafeInteger(result.status) ? result.status : null,
 		signal: processDiagnosticText(result.signal, 32) || null,
 		error: failure ? {
-			code: processDiagnosticText(failure.code, 64), name: processDiagnosticText(failure.name, 64),
-			message: processDiagnosticText(failure.message, 256),
+			code, name: processDiagnosticText(failure.name, 64),
+			// Spawn text may contain a bare private executable name, not just paths.
+			message: /^E[A-Z0-9_]+$/.test(code) ? `Windows prerequisite process error: ${code}` : "Windows prerequisite process error",
 			errno: Number.isSafeInteger(failure.errno) ? failure.errno : processDiagnosticText(failure.errno, 64),
 		} : null,
 		stdout: processDiagnosticText(result.stdout, 1024), stderr: processDiagnosticText(result.stderr, 1024),

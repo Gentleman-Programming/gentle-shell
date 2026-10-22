@@ -24,6 +24,25 @@ The building blocks live in `scripts/bundled-install.mjs`. The web installer and
 
 On Windows the same layout lives under a private folder. The module tries `%LOCALAPPDATA%\gentle-shell` first. It falls back to `%USERPROFILE%\.gentle-shell-bundle` only when an untrusted owner or ACL rejects the first folder, the same rule the bootstrap uses for its tools. The folder is claimed with the bootstrap's protected DACL and marked with `.gentle-shell-bundle` (`ensureWindowsPrivateFolder`). `current` is a pointer file holding the version id. The launcher is `bin\gentle-shell.cmd`, and `tmp\` holds TEMP and TMP for pnpm's children. The agent home stays at `%USERPROFILE%\.gentle-shell\agent`.
 
+### Windows prerequisite failure diagnostics
+
+`windowsProcessCheck` still throws exactly `Windows prerequisite process failed`
+(`process-failed` classification). Its standard Error cause preserves status,
+signal and selected process-error fields plus bounded stdout/stderr. A sanitized
+`cause.stack` also carries these fields for existing evidence consumers, without
+local callsites, raw spawn errors, commands, argv or environment snapshots.
+Process-error messages use only a sanitized native error code or fixed fallback,
+never raw spawn text that could include a private bare executable name.
+Limits are UTF-16 code units: streams1024 each, error message256, name/code/errno
+text64, signal32 and cause stack8192; numeric status/errno remain numeric.
+Path/SID, encoded ACL/opaque and control-bearing lines are suppressed; credential
+markers, including underscore-separated environment names such as `GITHUB_TOKEN`
+and `API_KEY`, suppress the entire field including continuation lines. This conservative
+filter may discard useful output and is not a general-purpose secret parser.
+Nothing prints automatically. CMD/BAT rejection, neutral cwd, shell=false,
+15-second SIGKILL/1MiB capture and all ACL/provenance checks remain unchanged.
+Elapsed time alone does not establish timeout or diagnose the historical CI failure.
+
 ## Ownership rules
 
 - **Runtimes.** Each one is downloaded through `verifiedDownload` (the existing pins and hashes), written to a staging folder and run once to check its version. It is then marked with `.gentle-shell-runtime` and published with one rename. A marked runtime is reused. An unmarked folder is never replaced. Renaming is safe here because the extracted trees hold only regular files and folders, never links. The pnpm tarball's executable bits (`bin/pnpm.mjs`, `dist/node-gyp-bin/node-gyp`) are kept, for the owner only.

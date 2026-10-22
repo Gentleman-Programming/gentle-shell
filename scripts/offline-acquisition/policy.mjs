@@ -39,6 +39,23 @@ export function closedEnvironment(paths) {
   };
 }
 
+// pnpm 11.1.1 reads getConfigDir(process) before applying CLI options.
+// Keep the Windows LOCALAPPDATA fallback identical to config.config-dir; no XDG
+// or npm/pnpm environment overrides enter the existing closed environment.
+export function pnpmConfiguration(paths) {
+  const env = closedEnvironment(paths);
+  const directory = `${env.LOCALAPPDATA}\\pnpm\\config`;
+  const authFile = `${paths.root}\\empty-auth.npmrc`;
+  // General config types are NOT per-command CLI options. The pinned parser
+  // strips config.* before unknown-option checks; assignments avoid ambiguity.
+  return { directory, authFile, flags: [`--config.config-dir=${directory}`, `--config.npmrc-auth-file=${authFile}`] };
+}
+
+export function validateConfigurationProbe(record, expected) {
+  requireValue(record.exit === 0 && record.stderr === '', 'pnpm configuration probe failed');
+  requireValue(record.stdout === `${JSON.stringify(expected)}\n` || record.stdout === `${JSON.stringify(expected)}\r\n`, 'Unexpected pnpm configuration path');
+}
+
 export function pairFiles(candidate) {
   requireValue(candidate === PINS.candidate, 'Candidate SHA rejected');
   const project = {
@@ -58,6 +75,7 @@ export function pairFiles(candidate) {
 export function commandPlan() {
   const flags = ['--ignore-scripts', '--ignore-pnpmfile', '--pm-on-fail=error', '--registry=https://registry.npmjs.org/'];
   return {
+    probe: ['config', 'get', '--json', '--config.ignore-scripts=true', '--config.ignore-pnpmfile=true'],
     pack: ['pack', '--ignore-scripts', '--offline', '--pack-destination', PINS.inputDirectory],
     resolve: ['install', '--lockfile-only', ...flags],
     fetch: ['fetch', ...flags],

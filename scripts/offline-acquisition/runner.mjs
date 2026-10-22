@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { get } from 'node:https';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { PINS, closedEnvironment, pairFiles, commandPlan, projectEvidence } from './policy.mjs';
+import { PINS, closedEnvironment, pairFiles, commandPlan, projectEvidence, pnpmConfiguration, validateConfigurationProbe } from './policy.mjs';
 import { inspectArchive, normalizeLock, requireHostedWindows, requireSuccess } from './safety.mjs';
 
 const HELP = 'Usage: node scripts/offline-acquisition/runner.mjs [--help]\nGitHub-hosted Windows push only; LOCK_AND_NPM_INPUTS_ONLY, never runtime validation.\n';
@@ -54,13 +54,19 @@ async function acquire() {
   try {
     const nodeDirectory = dirname(process.execPath);
     if (process.versions.node !== PINS.node) throw new Error('Pinned Node required');
-    const env = closedEnvironment({ root, nodeDirectory, systemRoot: process.env.SystemRoot });
+    const paths = { root, nodeDirectory, systemRoot: process.env.SystemRoot };
+    const env = closedEnvironment(paths);
+    const configuration = pnpmConfiguration(paths);
     evidence.childEnvironment = env; save();
     const project = join(root, 'project');
     const store = join(root, 'store'), virtual = join(root, 'virtual-store');
     for (const path of [env.HOME, env.APPDATA, env.LOCALAPPDATA, env.TEMP, project, store, virtual, PINS.inputDirectory]) mkdirSync(path, { recursive: true });
     const userconfig = join(root, 'empty-user.npmrc'), globalconfig = join(root, 'empty-global.npmrc');
     writeFileSync(userconfig, ''); writeFileSync(globalconfig, '');
+    mkdirSync(configuration.directory, { recursive: true });
+    writeFileSync(configuration.authFile, '', { flag: 'wx' });
+    writeFileSync(join(configuration.directory, 'auth.ini'), '', { flag: 'wx' });
+    writeFileSync(join(configuration.directory, 'config.yaml'), '{}\n', { flag: 'wx' });
     // No ancestor project configuration may leak into pnpm's fresh pair.
     for (let parent = project; ; parent = dirname(parent)) {
       for (const config of ['.npmrc', '.pnpmfile.cjs', 'pnpmfile.cjs', 'pnpm-workspace.yaml']) if (existsSync(join(parent, config))) throw new Error('Unexpected ancestor configuration');
@@ -123,6 +129,12 @@ async function acquire() {
     if (!workspace || Object.keys(workspace).some(key => !allowedWorkspace.includes(key))) throw new Error('Unadmitted candidate workspace configuration');
     const pnpmRoot = await tool({ name: 'pnpm', version: PINS.pnpm, integrity: PINS.pnpmIntegrity });
     const pnpm = join(pnpmRoot, 'bin', 'pnpm.cjs');
+    // Read-only, real pinned CLI compatibility checks, not offline closure.
+    // Empty project/config roots exist before any pnpm process can load them.
+    for (const [key, expected] of [['config-dir', configuration.directory], ['npmrc-auth-file', configuration.authFile]]) {
+      const result = command(process.execPath, [pnpm, ...commandPlan().probe, key, ...configuration.flags], project);
+      validateConfigurationProbe(result, expected);
+    }
     const npm = join(nodeDirectory, 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const plans = commandPlan();
     command(process.execPath, [npm, ...plans.pack, '--cache', join(root, 'npm-cache'), '--userconfig', userconfig, '--globalconfig', globalconfig], candidate);
@@ -132,7 +144,7 @@ async function acquire() {
     writeFileSync(join(artifacts, 'gentle-pi-4.3.0.tgz'), tar);
     evidence.localTar = { path: PINS.localTar, source: PINS.candidate, sha256: hash(tar), integrity: integrity(tar) }; save();
     for (const [name, contents] of Object.entries(pairFiles(PINS.candidate))) writeFileSync(join(project, name), contents);
-    const isolation = ['--store-dir', store, '--virtual-store-dir', virtual, '--userconfig', userconfig, '--globalconfig', globalconfig, '--fetch-retries=0'];
+    const isolation = ['--store-dir', store, '--virtual-store-dir', virtual, ...configuration.flags, '--fetch-retries=0'];
     command(process.execPath, [pnpm, ...plans.resolve, ...isolation], project);
     const lockText = readFileSync(join(project, 'pnpm-lock.yaml'), 'utf8');
     writeFileSync(join(artifacts, 'pnpm-lock.yaml'), lockText);

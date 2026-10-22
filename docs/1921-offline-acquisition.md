@@ -6,8 +6,10 @@ native builds or package lifecycle hooks. Publication belongs to the parent
 controller after review. Original run 39819379969/attempt1 failed before the
 acquisition runner started: discovery returned two Node paths joined as one
 executable name. No acquisition lock, cache or artifacts were produced; setup-node
-success is separate. S6 authorizes one new corrected run after independent review,
-not a retry of the failed run or a claim of hosted success.
+success is separate. S6's new run 39821542738/attempt1 reached Node but failed:
+pnpm 11.1.1 rejected npm-style `--userconfig`/`--globalconfig`. Both runs remain
+failed and unrerun. S7 authorizes only one config-corrected new run after review;
+real pinned-CLI compatibility remains pending that hosted run.
 
 ## Local checks: no acquisition
 
@@ -29,7 +31,7 @@ and exits 23. It never imports the acquisition runner. Invalid local host facts
 include `GITHUB_ACTIONS=false`; there is no positive acquisition-guard simulation.
 Tests assert first-match identity, exact exit/streams, the complete environment
 whitelist (excluding secret/preload variables), and unchanged fixture files and
-counter. Scratch is retained under `tmp/offline-acquisition-launcher/`, not
+counter. Scratch is retained under `tmp/offline-acquisition-config/`, not
 uploaded. Non-Windows skips these cases; PowerShell 5 AST alone is not proof.
 This isolated launcher boundary is not acquisition or hosted PASS.
 
@@ -55,27 +57,45 @@ This isolated launcher boundary is not acquisition or hosted PASS.
    SHA512 is checked before narrow ustar inspection/extraction. Links, traversal,
    Windows device/ADS paths, duplicate names and unsupported PAX/GNU formats fail
    closed. The verified YAML tool has no runtime dependency closure to install.
-5. Bundled npm packs the candidate with `--ignore-scripts --offline`, explicit
+5. Before packing/resolving, verified pnpm runs two read-only compatibility probes:
+   `config get --json config-dir` and `config get --json npmrc-auth-file`, with
+   `--config.config-dir=<private-directory>` and
+   `--config.npmrc-auth-file=<empty-auth-file>` (single-argument assignments).
+   Probes retain no-hooks through `--config.ignore-scripts=true` and
+   `--config.ignore-pnpmfile=true`; raw equivalents are not config CLI options.
+   Resolve/fetch share the config.* path transport and retain their admitted raw
+   no-hook flags. The pinned parser strips config.* before unknown-option checks;
+   general configuration-schema membership alone does not admit raw CLI flags.
+   The source-derived command-admission fixture models only inspected options,
+   not real pnpm parsing/execution. Exact JSON
+   paths, zero exits and empty stderr are required; full streams are retained.
+   The unchanged closed environment excludes XDG/npm/pnpm overrides. Its private
+   LOCALAPPDATA fallback matches `--config.config-dir`, including pnpm's early global
+   config read. Fresh `config.yaml` (`{}`), `auth.ini` and the explicit auth file
+   contain no credentials/configDependencies. No runner-home config is selected.
+   These probes are compatibility evidence only, not offline closure; local pure
+   plan/output tests do not execute pnpm or establish CLI compatibility.
+6. Bundled npm packs the candidate with `--ignore-scripts --offline`, explicit
    empty user/global config and private cache. Candidate code is never imported;
    its package/workspace are inspected as data. This is a newly measured source
    tar, not historical eebd9 bytes, registry gentle-pi 4.3.0 or a published upgrade.
-6. A genuine distribution pair retains Pi 1.2.0 and changes only gentle-pi's
+7. A genuine distribution pair retains Pi 1.2.0 and changes only gentle-pi's
    dependency to that fixed local tar. The candidate's original `allowBuilds`
    workspace entry is preserved; mandatory command flags disable lifecycle hooks.
    pnpm resolves with `--lockfile-only --ignore-scripts --ignore-pnpmfile
    --pm-on-fail=error`; it does not install product dependencies here.
-7. The verified YAML parser rejects diagnostics/duplicates/aliases. Semantic
+8. The verified YAML parser rejects diagnostics/duplicates/aliases. Semantic
    traversal admits only supported lock v9 settings, the exact pair importer,
    all packages and snapshots, and resolvable dependency/optional references.
    Unknown schema/config fields and Git/custom/file origins fail closed, except
    the exact candidate tar with measured integrity. Registry sources need exact
    canonical npm URLs and SHA512. Strict schema/source rejection may stop a real
    run; local fixture tests do not prove compatibility with an actual resolved lock.
-8. Only after admission does `pnpm fetch --ignore-scripts --ignore-pnpmfile
+9. Only after admission does `pnpm fetch --ignore-scripts --ignore-pnpmfile
    --pm-on-fail=error` download inputs into private store/virtual-store paths,
    with fetch retries disabled. Fetch DOES materialize a virtual store. No fetched
    package is imported or executed. `--registry` is selection, NOT a network ACL.
-9. System tar archives the owned store/virtual-store. Artifact upload runs even
+10. System tar archives the owned store/virtual-store. Artifact upload runs even
    on failure, with only the owned artifact directory selected. One evidence-only
    archive attempt can follow a failed acquisition; acquisition itself never retries.
 

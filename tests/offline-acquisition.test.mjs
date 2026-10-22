@@ -5,12 +5,12 @@ import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { inspectArchive, normalizeLock, requireHostedWindows, requireSuccess } from '../scripts/offline-acquisition/safety.mjs';
 import assert from 'node:assert/strict';
-import { closedEnvironment, pairFiles, commandPlan, admitSources, projectEvidence, PINS } from '../scripts/offline-acquisition/policy.mjs';
+import { closedEnvironment, pairFiles, commandPlan, admitSources, projectEvidence, PINS, pnpmConfiguration, validateConfigurationProbe } from '../scripts/offline-acquisition/policy.mjs';
 
 // Isolated launcher boundary: no acquisition runner or positive Actions context.
 for (const multiple of [false, true]) test(`T5 launcher ${multiple ? 'multiple' : 'single'} application matches`, { skip: process.platform !== 'win32' }, () => {
-  mkdirSync(resolve('tmp/offline-acquisition-launcher'), { recursive: true });
-  const root = mkdtempSync(resolve('tmp/offline-acquisition-launcher/case-'));
+  mkdirSync(resolve('tmp/offline-acquisition-config'), { recursive: true });
+  const root = mkdtempSync(resolve('tmp/offline-acquisition-config/case-'));
   const controls = join(root, 'controls');
   const scripts = join(controls, 'scripts/offline-acquisition');
   mkdirSync(scripts, { recursive: true });
@@ -61,6 +61,72 @@ test('closed child environment ignores inherited configuration and tokens', () =
   rejectsUnchanged(closedEnvironment, { ...paths, root: 'relative' });
   rejectsUnchanged(closedEnvironment, { ...paths, token: 'untrusted' });
   rejectsUnchanged(closedEnvironment, { ...paths, nodeDirectory: 'C:\\tools;C:\\other' });
+});
+
+test('S7 private pinned-pnpm configuration and bounded probe validation', () => {
+  const plan = pnpmConfiguration(paths);
+  assert.equal(plan.directory, 'C:\\acquire\\home\\AppData\\Local\\pnpm\\config');
+  assert.equal(plan.authFile, 'C:\\acquire\\empty-auth.npmrc');
+  assert.deepEqual(plan.flags, [`--config.config-dir=${plan.directory}`, `--config.npmrc-auth-file=${plan.authFile}`]);
+  for (const expected of [plan.directory, plan.authFile]) {
+    const record = { exit: 0, stdout: `${JSON.stringify(expected)}\n`, stderr: '' };
+    validateConfigurationProbe(record, expected);
+    for (const change of [{ exit: 1 }, { stderr: 'warning' }, { stdout: 'undefined\n' }, { stdout: '"C:\\\\runner-home"\n' }]) {
+      const bad = { ...record, ...change };
+      const before = structuredClone(bad);
+      assert.throws(() => validateConfigurationProbe(bad, expected));
+      assert.deepEqual(bad, before);
+    }
+  }
+  rejectsUnchanged(pnpmConfiguration, { ...paths, root: 'relative' });
+  rejectsUnchanged(pnpmConfiguration, { ...paths, XDG_CONFIG_HOME: 'C:\\outside' });
+  plan.flags.push('--userconfig');
+  assert.equal(pnpmConfiguration(paths).flags.includes('--userconfig'), false);
+});
+
+// Bounded fixture MODEL of inspected pnpm11.1.1 command admission, not its CLI.
+// Source: GLOBAL_OPTIONS254465; config types197501; install types165205/165474;
+// fetch reuses install types165568; config.* normalization253433-253456/253489.
+// Only ordinary options used by these public plans are included below.
+function modeledOptions(route, args) {
+  const common = ['pm-on-fail'];
+  const specific = route === 'probe' ? ['global', 'location', 'json'] :
+    ['lockfile-only', 'ignore-scripts', 'ignore-pnpmfile', 'registry'];
+  const allowed = new Set([...common, ...specific]);
+  const unknown = [], normalized = {};
+  for (const arg of args.filter(value => value.startsWith('--'))) {
+    const [name, ...value] = arg.slice(2).split('=');
+    if (name.startsWith('config.')) normalized[name.slice(7)] = value.join('=');
+    else if (!allowed.has(name)) unknown.push(name);
+  }
+  return { unknown, normalized };
+}
+
+for (const route of ['probe', 'resolve', 'fetch']) test(`S7 command admission model ${route}`, () => {
+  const plan = commandPlan();
+  const config = pnpmConfiguration(paths);
+  const old = ['--config-dir', config.directory, '--npmrc-auth-file', config.authFile];
+  assert.deepEqual(modeledOptions(route, old).unknown, ['config-dir', 'npmrc-auth-file']);
+  if (route === 'probe') {
+    assert.deepEqual(modeledOptions(route, ['--ignore-scripts', '--ignore-pnpmfile']).unknown,
+      ['ignore-scripts', 'ignore-pnpmfile']);
+  } else {
+    assert.ok(plan[route].includes('--ignore-scripts'));
+    assert.ok(plan[route].includes('--ignore-pnpmfile'));
+  }
+  if (route === 'probe') assert.deepEqual(plan.probe,
+    ['config', 'get', '--json', '--config.ignore-scripts=true', '--config.ignore-pnpmfile=true']);
+  const args = [...plan[route], ...config.flags];
+  const before = structuredClone(args);
+  const result = modeledOptions(route, args);
+  assert.deepEqual(args, before);
+  assert.deepEqual(result.unknown, [], `${route}: command-specific unknown options`);
+  assert.equal(result.normalized['config-dir'], config.directory);
+  assert.equal(result.normalized['npmrc-auth-file'], config.authFile);
+  if (route === 'probe') {
+    assert.equal(result.normalized['ignore-scripts'], 'true');
+    assert.equal(result.normalized['ignore-pnpmfile'], 'true');
+  }
 });
 
 test('candidate pair is exact and local source identity is honest', () => {

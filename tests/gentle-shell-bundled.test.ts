@@ -255,7 +255,7 @@ const FAKE_PI = [
 	" }",
 	"}",
 	"const pick = ['PATH', 'GENTLE_SHELL_PI', 'GENTLE_PI_AGENTS_PI', 'PI_SKIP_VERSION_CHECK', 'npm_config_prefix', 'npm_config_registry', 'NODE_OPTIONS', 'PI_CODING_AGENT_DIR',",
-	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_SERVER_MODE', 'ENGRAM_SOCKET', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK'];",
+	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_SERVER_MODE', 'ENGRAM_SOCKET', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK', 'GENTLE_SHELL_ENV'];",
 	"const record = join(process.env.GENTLE_SHELL_PREFIX ?? '', 'config', 'engram-provenance.json');",
 	"const provenance = (() => { try { return JSON.parse(readFileSync(record, 'utf8')); } catch { return null; } })();",
 	"console.log(JSON.stringify({ cli: process.argv[1], args, provenance, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }));",
@@ -1196,4 +1196,34 @@ test("gentle-shell self-uninstall in a bundled install never edits or deletes a 
 	assert.equal(readFileSync(dotfile, "utf8"), `${line}\n`);
 	assert.match(result.stdout, /does not describe this install's PATH entry/);
 	assert.match(result.stdout, /\(none recorded; see below\)/);
+});
+
+// Named envs (lib/gentle-shell-envs.ts) inside a bundled install: the envs root
+// shares ~/.gentle-shell with the prefix, launches use the bundled Pi, and a
+// self-uninstall never removes the user's envs.
+test("named envs work in a bundled install and survive its self-uninstall", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const created = prefix.run(["envs", "new", "work"]);
+	assert.equal(created.status, 0, created.stderr);
+	const dir = join(prefix.root, "envs", "work");
+	assert.ok(existsSync(join(dir, ".gentle-shell-home")));
+	assert.match(prefix.run(["envs", "list"]).stdout, /^ {2}work /m);
+
+	const launched = prefix.run(["--env", "work"], { FIXTURE_NO_PROBE: "0" });
+	assert.equal(launched.status, 0, launched.stderr);
+	const seen = lastLaunch(launched);
+	assert.equal(seen.env.PI_CODING_AGENT_DIR, dir);
+	assert.equal(seen.env.GENTLE_SHELL_ENV, "work");
+	assert.equal(seen.env.GENTLE_SHELL_PI, undefined, "the bundled Pi runs, never GENTLE_SHELL_PI");
+
+	const plain = lastLaunch(prefix.run([], { GENTLE_SHELL_ENV: "work" }));
+	assert.equal(plain.env.GENTLE_SHELL_ENV, undefined, "the default home is never labelled as an env");
+
+	const plan = prefix.run(["self-uninstall", "--dry-run"]).stdout;
+	assert.ok(plan.includes(`${join(prefix.root, "envs")}  (your named envs)`), plan);
+	assert.doesNotMatch(plan, /envs: not written by the bundled install/);
+	const removed = prefix.run(["self-uninstall", "--yes"]);
+	assert.equal(removed.status, 0, removed.stderr);
+	assert.ok(existsSync(join(dir, ".gentle-shell-home")), "envs are user data and are kept");
+	assert.deepEqual(readdirSync(prefix.root).sort(), ["agent", "envs"]);
 });

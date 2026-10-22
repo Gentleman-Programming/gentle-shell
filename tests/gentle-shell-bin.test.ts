@@ -3513,3 +3513,85 @@ test("gentle-shell setup asks Gentle AI to skip npm:gentle-pi, so nothing is ins
 	assert.deepEqual(JSON.parse(lines[0]), { args: ["install", "--agent", "pi", "--scope", "global"], excluded: "npm:gentle-pi" });
 });
 
+// --- named envs (`envs`, `--env`; lib/gentle-shell-envs.ts) -------------------
+
+test("envs new creates a managed, owned env that --env launches into", (t) => {
+	const f = fixture(t);
+	const created = run(f.env, ["envs", "new", "work"]);
+	assert.equal(created.status, 0, created.stderr);
+	const dir = join(f.home, ".gentle-shell", "envs", "work");
+	assert.ok(existsSync(join(dir, ".gentle-shell-home")), "carries the ownership marker");
+	const launched = run(f.env, ["--env", "work", "-p", "hi"]);
+	assert.equal(launched.status, 0, launched.stderr);
+	assert.equal(JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}").PI_CODING_AGENT_DIR, dir);
+});
+
+test("envs new removes its partial env when bootstrap fails, so a retry succeeds", (t) => {
+	const f = fixture(t);
+	const preload = join(f.root, "fail-marker.cjs");
+	writeFileSync(preload, [
+		"const fs = require('node:fs');",
+		"const { syncBuiltinESMExports } = require('node:module');",
+		"const original = fs.writeFileSync;",
+		"fs.writeFileSync = (path, ...args) => { if (String(path).endsWith('.gentle-shell-home')) throw new Error('marker write failed'); return original(path, ...args); };",
+		"syncBuiltinESMExports();",
+	].join("\n"));
+	const failed = spawnSync(process.execPath, ["--require", preload, binPath, "envs", "new", "work"], { encoding: "utf8", env: f.env });
+	assert.equal(failed.status, 1, failed.stderr);
+	assert.match(failed.stderr, /marker write failed/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "work")), false, "no half-created env is left behind");
+	const retried = run(f.env, ["envs", "new", "work"]);
+	assert.equal(retried.status, 0, retried.stderr);
+	assert.ok(existsSync(join(f.home, ".gentle-shell", "envs", "work", ".gentle-shell-home")));
+});
+
+test("--env never creates an unknown env and rejects invalid names", (t) => {
+	const f = fixture(t);
+	const unknown = run(f.env, ["--env", "nope"]);
+	assert.equal(unknown.status, 2);
+	assert.match(unknown.stderr, /unknown env "nope"/);
+	assert.equal(existsSync(join(f.home, ".gentle-shell", "envs", "nope")), false);
+	assert.equal(run(f.env, ["envs", "new", "Bad"]).status, 2);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 0);
+	assert.equal(run(f.env, ["envs", "new", "dup"]).status, 1);
+});
+
+test("--env accepts only a real env directory, never a file or a symlink", (t) => {
+	const f = fixture(t);
+	const root = join(f.home, ".gentle-shell", "envs");
+	mkdirSync(root, { recursive: true });
+	writeFileSync(join(root, "file"), "not an env\n");
+	const target = join(f.root, "elsewhere");
+	mkdirSync(target);
+	// A junction on Windows: it needs no symlink privilege and lstat still reports a link.
+	symlinkSync(target, join(root, "link"), process.platform === "win32" ? "junction" : "dir");
+	for (const name of ["file", "link"]) {
+		const result = run(f.env, ["--env", name]);
+		assert.equal(result.status, 2, `${name}: ${result.stderr}`);
+		assert.match(result.stderr, new RegExp(`unknown env "${name}"`));
+	}
+	assert.equal(readFileSync(join(root, "file"), "utf8"), "not an env\n");
+	assert.deepEqual(readdirSync(target), []);
+});
+
+test("envs without a TTY lists envs, marks the default, and honors GENTLE_SHELL_ENVS_DIR", (t) => {
+	const f = fixture(t);
+	const envsDir = join(f.root, "custom-envs");
+	const env = { ...f.env, GENTLE_SHELL_ENVS_DIR: envsDir };
+	assert.equal(run(env, ["envs", "new", "a"]).status, 0);
+	assert.equal(run(env, ["envs", "new", "b"]).status, 0);
+	assert.equal(run(env, ["home", join(envsDir, "b")]).status, 0);
+	const listed = run(env, ["envs"]);
+	assert.equal(listed.status, 0, listed.stderr);
+	assert.match(listed.stdout, /^  a /m);
+	assert.match(listed.stdout, /^\* b /m);
+	const version = run(env, ["--version"]);
+	assert.match(version.stdout, new RegExp(`home path ${join(envsDir, "b").replace(/[\\.]/g, "\\$&")}`));
+});
+
+test("envs rejects unknown subcommands with usage", (t) => {
+	const f = fixture(t);
+	const result = run(f.env, ["envs", "bogus"]);
+	assert.equal(result.status, 2);
+	assert.match(result.stderr, /Usage: gentle-shell envs/);
+});

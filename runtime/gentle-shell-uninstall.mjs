@@ -3,6 +3,9 @@ import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdir
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isolatedDir, launcherConfigPath, parseRawLauncherConfig, provisionedEntry, userPiHome } from "./gentle-shell-launcher.mjs";
+import { envsRoot } from "./gentle-shell-envs.mjs";
+
+const NAMED_ENVS_LABEL = "your named envs";
 
 // `gentle-shell self-uninstall`: removes what Gentle Shell itself created, then
 // the gentle-pi package with the package manager that owns it. Everything is
@@ -120,6 +123,23 @@ function comparable(path        , platform        )         {
 	return platform === "win32" ? path.toLowerCase() : path;
 }
 
+/**
+ * Where each symlink on the way to `path` lives: the root's own link and any
+ * symlinked folder above it, each as its resolved parent plus its name.
+ * Removing a folder that holds one of these breaks the configured path even
+ * when the real target is guarded elsewhere.
+ */
+function symlinkEntries(path        )           {
+	const entries           = [];
+	let current = resolve(path);
+	for (let parent = dirname(current); parent !== current; current = parent, parent = dirname(current)) {
+		let link = false;
+		try { link = lstatSync(current).isSymbolicLink(); } catch { /* missing: nothing to break */ }
+		if (link) entries.push(join(canonical(parent), basename(current)));
+	}
+	return entries;
+}
+
 /** The real path, resolving the nearest existing ancestor when `path` does not exist. */
 function canonical(path        )         {
 	const absolute = resolve(path);
@@ -140,7 +160,9 @@ function canonical(path        )         {
 /** True when `child` is `parent` itself or lies inside it. */
 function within(parent        , child        , platform        )          {
 	const path = relative(comparable(parent, platform), comparable(child, platform));
-	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+	// Only a whole ".." segment leaves the parent: a child folder may itself
+	// be named "..envs".
+	return path === "" || (!/^\.\.(?:[\\/]|$)/.test(path) && !isAbsolute(path));
 }
 
 
@@ -344,6 +366,17 @@ async function planSelfUninstall(input                    , configHome        , 
 
 	const seen = new Set([comparable(isolatedReal, platform), comparable(canonical(piHome), platform)]);
 	plan.notTouched.push({ path: piHome, label: "your Pi home" });
+	// Named envs are user data: their root is listed once, never each env as a
+	// custom --home home, and the overlap check below protects all of them.
+	// Resolved: a trailing slash would make lstat follow a symlinked root.
+	const namedEnvs = resolve(envsRoot(env, homedir));
+	// A symlinked root still holds the user's envs: protect its real target too.
+	const namedEnvsState = inspect(namedEnvs, "dir");
+	const namedEnvsReal = namedEnvsState === "ok" || (namedEnvsState === "symlink" && inspect(canonical(namedEnvs), "dir") === "ok") ? canonical(namedEnvs) : undefined;
+	if (namedEnvsReal !== undefined) {
+		seen.add(comparable(namedEnvsReal, platform));
+		plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
+	}
 	const customHomes = [typeof launcherConfig.home === "string" && !["link", "isolated", ""].includes(launcherConfig.home) ? launcherConfig.home : undefined];
 	const provisioned = launcherConfig.provisioned;
 	if (typeof provisioned === "object" && provisioned !== null && !Array.isArray(provisioned)) customHomes.push(...Object.keys(provisioned));
@@ -351,6 +384,7 @@ async function planSelfUninstall(input                    , configHome        , 
 		if (home === undefined || !isAbsolute(home)) continue;
 		const key = comparable(canonical(home), platform);
 		if (seen.has(key)) continue;
+		if (namedEnvsReal !== undefined && within(namedEnvsReal, canonical(home), platform)) continue;
 		seen.add(key);
 		plan.notTouched.push({ path: home, label: "custom --home home" });
 	}
@@ -359,8 +393,12 @@ async function planSelfUninstall(input                    , configHome        , 
 	// Nothing is both removed and not touched: a removal that is, holds or lies
 	// inside a path listed as not touched refuses the whole run.
 	if (plan.refusals.length === 0) {
+		const namedEnvsLinks = namedEnvsReal !== undefined ? symlinkEntries(namedEnvs) : [];
 		for (const removal of [...plan.own, ...plan.shared]) {
 			const real = canonical(removal.path);
+			if (namedEnvsLinks.some((entry) => within(real, entry, platform))) {
+				plan.refusals.push(`${removal.path} would be removed, but it overlaps ${namedEnvs} (${NAMED_ENVS_LABEL}), which is not touched; refusing to remove anything.`);
+			}
 			for (const kept of plan.notTouched) {
 				if (kept.path === undefined) continue;
 				const target = canonical(kept.path);
@@ -691,8 +729,19 @@ function planBundledSelfUninstall(input                           )             
 	if (windows) consider(join(root, BUNDLED_WINDOWS_MARKER.name), "the bundled install's folder marker", "file", plan.own);
 	consider(join(shellHome, "agent"), "your sign-ins, chats, settings and extensions", "dir", plan.shared);
 	consider(join(shellHome, "config.json"), "the launcher's settings", "file", plan.shared);
+	// Resolved: a trailing slash would make lstat follow a symlinked root.
+	const namedEnvs = resolve(envsRoot(env, homedir));
+	const namedEnvsState = inspect(namedEnvs, "dir");
+	const hasNamedEnvs = namedEnvsState === "ok";
+	// A symlinked root still holds the user's envs: guard and list its real
+	// target too. Only a real folder counts as a known prefix entry; a link
+	// there stays foreign and so keeps the prefix.
+	const guardsNamedEnvs = hasNamedEnvs || (namedEnvsState === "symlink" && inspect(canonical(namedEnvs), "dir") === "ok");
 	const known = new Set([...BUNDLED_OWN.map((item) => item.name), ...(windows ? [BUNDLED_WINDOWS_MARKER.name] : []),
-		...(same(canonical(shellHome), real) ? ["agent", "config.json"] : [])]);
+		...(same(canonical(shellHome), real) ? ["agent", "config.json"] : []),
+		// Named envs are user data that may share the prefix folder: kept, and
+		// listed below instead of as an unknown entry.
+		...(hasNamedEnvs && same(canonical(dirname(namedEnvs)), real) ? [basename(namedEnvs)] : [])]);
 	for (const name of names) {
 		if (known.has(name)) continue;
 		foreign = true;
@@ -700,13 +749,18 @@ function planBundledSelfUninstall(input                           )             
 	}
 	plan.removeRoot = !foreign;
 
+	if (guardsNamedEnvs) guards.push({ path: namedEnvs, label: NAMED_ENVS_LABEL, inside: true });
+	const namedEnvsLinks = guardsNamedEnvs ? symlinkEntries(namedEnvs) : [];
 	for (const removal of [...plan.own, ...plan.shared]) {
-		const reason = collision(canonical(removal.path), guards, platform);
+		const real = canonical(removal.path);
+		const reason = collision(real, guards, platform)
+			?? (namedEnvsLinks.some((entry) => within(real, entry, platform)) ? `contains ${namedEnvs} (${NAMED_ENVS_LABEL})` : undefined);
 		if (reason) plan.refusals.push(`${removal.path} would be removed, but it ${reason}; refusing to remove anything.`);
 	}
 
 	plan.notTouched.push({ path: piHome, label: "your Pi home" }, { path: join(homedir, ".pi", "gentle-ai"), label: "Gentle AI's configuration for Pi" },
 		{ path: join(homedir, ".gentle-ai"), label: "Gentle AI's own state" }, { path: join(homedir, ".engram"), label: "Engram's memory" });
+	if (guardsNamedEnvs) plan.notTouched.push({ path: namedEnvs, label: NAMED_ENVS_LABEL });
 	if (env.GENTLE_SHELL_HOME && !same(canonical(env.GENTLE_SHELL_HOME), canonical(join(shellHome, "agent")))) {
 		plan.notTouched.push({ path: env.GENTLE_SHELL_HOME, label: "the Gentle Shell home GENTLE_SHELL_HOME names" });
 	}

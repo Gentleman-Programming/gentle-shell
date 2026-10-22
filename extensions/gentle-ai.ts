@@ -7432,11 +7432,12 @@ function nativePreLineageCandidateIdentity(
 // view and then verifies cheap non-mutating invariants; when one is
 // deterministically false (the POSIX candidate owner parent is not private,
 // or the frozen tree tracks symlinks this process cannot create natively),
-// inspect runs the same read-only checks first and withholds the ready
+// inspect runs the same non-persistent checks first and withholds the ready
 // advertisement with the exact typed diagnostics the START refusal would
 // carry, so STATUS and START stop disagreeing about operations that cannot
 // begin. The Windows owner boundary keeps its START-time DACL validation for
-// now; this preflight only answers questions a read-only check settles. The
+// now; this preflight only answers questions a non-persistent check settles
+// (the capability probe creates and removes a temporary directory). The
 // symlink scan never claims a confirmed symlink-free tree from an incomplete
 // listing (timeout, output limit, unreadable tree), and the capability probe
 // samples the filesystem that will hold the candidate view — when that

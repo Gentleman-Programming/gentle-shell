@@ -10,7 +10,7 @@ import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 // gentle-ai#2196: inspect must not advertise a review.start whose candidate-view
 // materialization is already known to fail. START verifies cheap non-mutating
 // invariants (candidate owner parent privacy, symlink capability for trees that
-// track symlinks); inspect runs the same read-only checks before a ready
+// track symlinks); inspect runs the same non-persistent checks before a ready
 // advertisement leaves the controller, with the typed codes START would emit.
 
 function git(cwd: string, ...arguments_: string[]): string {

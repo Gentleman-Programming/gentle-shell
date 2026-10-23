@@ -10,7 +10,7 @@ import test, { type TestContext } from "node:test";
 import * as shell from "../lib/gentle-shell-bundled.ts";
 
 test("candidate companion source selects the published session-owned companion", () => {
-	assert.equal(shell.ENGRAM_COMPANION_SOURCE, "npm:gentle-engram@0.5.0");
+	assert.equal(shell.ENGRAM_COMPANION_SOURCE, "npm:gentle-engram@0.5.1");
 });
 
 test("candidate core schema accepts verified 3.5.1 without accepting unknown cores or newer stores", () => {
@@ -28,6 +28,12 @@ test("published core 3.5.2 schema accepts its version-1 header and rejects newer
 	assert.equal(shell.bundledEngramSchema("3.5.2"), 1);
 	assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema("3.5.2")), true);
 	assert.equal(shell.engramHeaderAllows(2, shell.bundledEngramSchema("3.5.2")), false);
+});
+
+test("published core 3.5.4 schema accepts its version-1 header and rejects newer stores", () => {
+	assert.equal(shell.bundledEngramSchema("3.5.4"), 1);
+	assert.equal(shell.engramHeaderAllows(1, shell.bundledEngramSchema("3.5.4")), true);
+	assert.equal(shell.engramHeaderAllows(2, shell.bundledEngramSchema("3.5.4")), false);
 });
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));

@@ -17,7 +17,7 @@ const posixTest = (name: string, fn: (t: TestContext) => void | Promise<void>) =
 const NODE = "24.21.0";
 const PNPM = "11.1.1";
 const NPM = "11.19.0";
-const ENGRAM = "3.5.2";
+const ENGRAM = "3.5.4";
 
 // Every temporary home this file creates is removed when the file's tests end.
 const roots: string[] = [];

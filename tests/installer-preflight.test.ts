@@ -172,6 +172,22 @@ test("Windows requires compatible Go only before a missing native binary", () =>
 	assert.deepEqual(older.actions.slice(0, 2), goActions);
 });
 
+test("Windows acquires the pinned Go for a Shell install even when Gentle AI is already installed", () => {
+	// gentle-pi's postinstall always builds Gentle AI from source on Windows, so an
+	// existing compatible gentle-ai never removes the need for Go.
+	const compatible = { ...tool(requirements.gentleAi), compatible: true };
+	for (const inventory of [{ ...clean("win32"), gentleAi: compatible },
+		{ ...installed("win32"), shell: absent, setup: false, go: absent }]) {
+		const plan = planPreflight(inventory);
+		assert.deepEqual(plan.blockers, []);
+		assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version });
+		assert.ok(ids(inventory).includes("install-shell"));
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions);
+	}
+	// A set-up Windows stack builds nothing, so it still needs no Go.
+	assert.equal(planPreflight({ ...installed("win32"), go: absent }).tools.go.status, "not-required");
+});
+
 for (const [name, version] of [["node", "22.18.0"], ["shell", "3.9.0"], ["node", "banana"], ["pi", "1.0.0-rc.1"]]) {
 	test(`${name} ${version} blocks rather than replacing an existing tool`, () => {
 		const inventory = { ...installed(), [name]: tool(version) };

@@ -77,7 +77,7 @@ function budget(): ReviewBudgetV1 {
 	};
 }
 
-function registerRuntime(): RuntimeRegistration {
+function registerRuntime(nativeReviewCli: NativeReviewCli | null = null): RuntimeRegistration {
 	const handlers = new Map<string, ToolCallHandler>();
 	const tools = new Map<string, RegisteredReviewTool>();
 	const pi = {
@@ -89,7 +89,7 @@ function registerRuntime(): RuntimeRegistration {
 		},
 		registerCommand() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli })(pi);
 	const controller = tools.get("gentle_review");
 	const toolCall = handlers.get("tool_call");
 	assert.ok(controller, "the supported review controller tool must be registered");
@@ -300,14 +300,54 @@ test("controller rejects graph-style ADVANCE without graph-v1 authority", async 
 test("controller successfully starts the explicitly supported judgment-day mode", async (t) => {
 	const fixture = createRepository(t);
 	const { controller } = registerRuntime();
-	const started = await controllerCall(controller, extensionContext(fixture.repository), {
+	const ctx = extensionContext(fixture.repository);
+	const params = {
 		operation: "start",
 		lineageId: "judgment-day-start",
 		idempotencyKey: "judgment-day-start-key",
 		input: JSON.stringify({ mode: "judgment-day", projection: { kind: "complete" }, policyHash: "a".repeat(64), evidenceHash: "b".repeat(64), budget: budget() }),
-	});
+	};
+	const started = await controllerCall(controller, ctx, params);
 	assert.equal(started.operation, "start");
 	assert.equal((started.state as Record<string, unknown>).mode, "judgment-day");
+	const replayed = await controllerCall(controller, ctx, params);
+	assert.deepEqual(replayed.result, started.result);
+	assert.equal((replayed.state as Record<string, unknown>).mode, "judgment-day");
+});
+
+test("ordinary START without legacy credentials does not demand Judgment Day prerequisites", async (t) => {
+	const fixture = createRepository(t);
+	const { controller } = registerRuntime();
+	const started = await controllerCall(controller, extensionContext(fixture.repository), {
+		operation: "start",
+		input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY }),
+	});
+	assert.equal(started.operation, "start");
+	assert.equal(started.outcome, "native-status-unsupported");
+	assert.equal(started.mutation_performed, false);
+	assert.equal(existsSync(join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1")), false);
+});
+
+test("judgment-day START reports missing credentials after a supported mode is accepted", async (t) => {
+	const fixture = createRepository(t);
+	const { controller } = registerRuntime();
+	const ctx = extensionContext(fixture.repository);
+	const input = JSON.stringify({
+		mode: "judgment-day",
+		projection: { kind: "complete" },
+		policyHash: "a".repeat(64),
+		evidenceHash: "b".repeat(64),
+		budget: budget(),
+	});
+	await assert.rejects(
+		controller.execute("judgment-day-missing-idempotency", { operation: "start", input }, undefined, undefined, ctx),
+		/requires idempotencyKey/,
+	);
+	await assert.rejects(
+		controller.execute("judgment-day-missing-lineage", { operation: "start", idempotencyKey: "judgment-day-start-key", input }, undefined, undefined, ctx),
+		/Judgment Day graph-v1 START requires lineageId/,
+	);
+	assert.equal(existsSync(join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1")), false);
 });
 
 test("general STATUS returns the typed native-status-unsupported boundary without authority selection", () => {
@@ -354,18 +394,61 @@ test("gentle-pi#185: general STATUS on a non-negotiated native CLI names the exa
 
 test("failed START gives exact mode and serialization guidance and creates no lineage", async (t) => {
 	const fixture = createRepository(t);
-	const { controller } = registerRuntime();
+	let targetStatusCalls = 0;
+	let startCalls = 0;
+	const native = {
+		targetStatus: async () => {
+			targetStatusCalls += 1;
+			throw new Error("rejected START mode must not call native targetStatus");
+		},
+		start: async () => {
+			startCalls += 1;
+			throw new Error("rejected START mode must not call native start");
+		},
+	} as unknown as NativeReviewCli;
+	const { controller } = registerRuntime(native);
 	const ctx = extensionContext(fixture.repository);
+	const modeGuidance = /only "ordinary" or "judgment-day".*JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is;
+	const graphPath = join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1");
+	const committedRange = { baseRef: fixture.baseCommit, committedOnly: true };
 
 	await assert.rejects(
-		controller.execute("unsupported-start", {
+		controller.execute("issue-992-omitted-mode-idempotency", {
+			operation: "start",
+			idempotencyKey: "unsupported-start-key",
+			input: JSON.stringify(committedRange),
+		}, undefined, undefined, ctx),
+		modeGuidance,
+	);
+	await assert.rejects(
+		controller.execute("issue-992-omitted-mode-lineage", {
 			operation: "start",
 			lineageId: "unsupported-start",
 			idempotencyKey: "unsupported-start-key",
-			input: JSON.stringify({ mode: "standard" }),
+			input: JSON.stringify(committedRange),
 		}, undefined, undefined, ctx),
-		/only "ordinary" or "judgment-day".*JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is,
+		modeGuidance,
 	);
+
+	const credentials = [
+		{},
+		{ idempotencyKey: "unsupported-start-key" },
+		{ lineageId: "unsupported-start" },
+		{ lineageId: "unsupported-start", idempotencyKey: "unsupported-start-key" },
+	] as const;
+	for (const mode of [undefined, null, 1, "standard"] as const) {
+		for (const credential of credentials) {
+			const payload = mode === undefined ? {} : { mode };
+			await assert.rejects(
+				controller.execute("unsupported-start", {
+					operation: "start",
+					...credential,
+					input: JSON.stringify(payload),
+				}, undefined, undefined, ctx),
+				modeGuidance,
+			);
+		}
+	}
 	await assert.rejects(
 		controller.execute("nested-start-input", {
 			operation: "start",
@@ -384,7 +467,9 @@ test("failed START gives exact mode and serialization guidance and creates no li
 		}, undefined, undefined, ctx),
 		/START input must be a JSON string encoding an object.*no lineage was created.*do not call STATUS or ADVANCE/is,
 	);
-	assert.equal(existsSync(join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1")), false);
+	assert.equal(existsSync(graphPath), false);
+	assert.equal(targetStatusCalls, 0);
+	assert.equal(startCalls, 0);
 });
 
 

@@ -3682,6 +3682,24 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	}
 });
 
+test("customize lets users opt into MCP and hide it again with persisted choices", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	assert.ok(findCustomizeRow(ui, "Section mcp: hidden"));
+	await customizeAction(ui, "Section mcp: hidden");
+	assert.equal(JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8")).visibility.mcp, true);
+	assert.ok(findCustomizeRow(ui, "Section mcp: shown"));
+	await customizeAction(ui, "Section mcp: shown");
+	assert.equal(JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8")).visibility.mcp, false);
+	assert.ok(findCustomizeRow(ui, "Section mcp: hidden"));
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});
+
 test("customize previews installed source palette without selecting until Enter", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const source = new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url).pathname;

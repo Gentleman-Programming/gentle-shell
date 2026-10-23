@@ -16,6 +16,7 @@ export interface VisualVisibility {
 	rdd: boolean;
 	agents: boolean;
 	todo: boolean;
+	mcp: boolean;
 	usageCost: boolean;
 	modelDetails: boolean;
 	/** High-context warning notice; independent from audio notifications. */
@@ -31,12 +32,12 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
-	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true },
+	visibility: { changes: true, rdd: true, agents: true, todo: true, mcp: false, usageCost: true, modelDetails: true, contextWarning: true },
 };
 /** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */
-export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"] as const satisfies readonly (keyof VisualVisibility)[];
-/** Keys added after v1 shipped: stored settings may omit them together or one at a time, and they default to shown. */
-const ADDED_SECTION_KEYS: readonly (keyof VisualVisibility)[] = ["rdd", "contextWarning"];
+export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "mcp", "usageCost", "modelDetails", "contextWarning"] as const satisfies readonly (keyof VisualVisibility)[];
+/** Stored settings may omit newer keys; each uses its own visibility default. */
+const ADDED_SECTION_KEYS: readonly (keyof VisualVisibility)[] = ["rdd", "contextWarning", "mcp"];
 const BASE_SECTION_KEYS = VISUAL_SECTION_KEYS.filter((key) => !ADDED_SECTION_KEYS.includes(key));
 interface VisualOptions { gentlePiConfigHome?: string }
 export interface VisualResolution {
@@ -69,7 +70,7 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
 /**
  * Reader-side validation: accepts the current shape plus every historical one.
  * Every key must be known, every base key present, and every present value a
- * boolean; missing added keys (`rdd`, `contextWarning`) then default to shown,
+ * boolean; missing added keys use their defaults (MCP hidden, others shown),
  * while present values (including `rdd: false`) are preserved. Writers stay strict.
  */
 export function normalizeVisualSettings(value: unknown): VisualSettings | undefined {
@@ -77,11 +78,11 @@ export function normalizeVisualSettings(value: unknown): VisualSettings | undefi
 	const visibility = value.visibility;
 	if (!Object.keys(visibility).every((key) => (VISUAL_SECTION_KEYS as readonly string[]).includes(key))) return undefined;
 	if (!BASE_SECTION_KEYS.every((key) => Object.hasOwn(visibility, key))) return undefined;
-	// A key that is present is authoritative: only a missing added key may default to shown.
+	// A key that is present is authoritative: only missing added keys may default.
 	if (!Object.keys(visibility).every((key) => typeof visibility[key] === "boolean")) return undefined;
 	const candidate = keysMatch(visibility, VISUAL_SECTION_KEYS)
 		? value
-		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? true])) };
+		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? DEFAULT_VISUAL_SETTINGS.visibility[key]])) };
 	return isVisualSettings(candidate) ? candidate : undefined;
 }
 export function parseVisualSettingsFile(raw: string): VisualSettings | undefined {

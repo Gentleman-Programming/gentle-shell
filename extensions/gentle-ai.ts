@@ -114,6 +114,7 @@ import {
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
 import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2512,6 +2513,31 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return effective;
 }
 
+/**
+ * The profile routing this session's launches resolve: the Enter binding, then
+ * the profile frozen at startup (gentle-shell#1064 slice 3c). `undefined` means
+ * the session resolves no profile, so launches keep the global routing; a pin
+ * the session did not freeze never reaches them and is not read here.
+ */
+function sessionLaunchProfileRouting(ctx: ExtensionContext): AgentModelConfig | undefined {
+	const routing = sessionProfileModelProfiles(resolveSessionProfile({
+		sessionId: ctx.sessionManager?.getSessionId?.(),
+		cwd: ctx.cwd,
+		configHome: gentleAiConfigHome(),
+	}));
+	return routing === undefined ? undefined : cloneModelConfig(routing);
+}
+
+/** The routing this session's launches use: its resolved profile, or the global effective routing. */
+function readSessionLaunchModelConfig(ctx: ExtensionContext): AgentModelConfig {
+	return sessionLaunchProfileRouting(ctx) ?? readGlobalEffectiveModelConfig(ctx.cwd);
+}
+
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext): Promise<AgentModelConfig> {
+	return sessionLaunchProfileRouting(ctx)
+		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
+}
+
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
 	const pinned = pinnedEffectiveModelConfig(cwd);
 	if (pinned) return pinned;
@@ -4511,9 +4537,10 @@ async function showProfilesPanel(
 	const discoveredAgentNames = [...new Set([...PROVIDER_REVIEW_ROLES, ...discoveredAgents.map((agent) => agent.name)])];
 	// Issue #2400: launches resolve from the subagents.json model_profiles, which
 	// the effective table only reads per discovered agent, so a key with no match
-	// and no suggestion never appeared. When a session binding or a pin wins, the
-	// table already shows that snapshot's own keys with their notes.
-	const unmatchedKeys = sessionBoundName !== undefined || pinnedEffectiveModelConfig(ctx.cwd) !== undefined
+	// and no suggestion never appeared. When the session resolves a profile (its
+	// binding or the one frozen at startup), the table already shows that
+	// snapshot's own keys with their notes.
+	const unmatchedKeys = sessionLaunchProfileRouting(ctx) !== undefined
 		? []
 		: unmatchedProfileKeys(loadAgentsConfig(discoveryRoots).modelProfiles, discoveredAgents)
 			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key))
@@ -5258,10 +5285,9 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			file,
 			name,
 			profileSnapshotFrom(
-				// The snapshot captures the same routing the panel shows as current,
-				// so a session binding outranks the shared layers here too.
-				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-					?? readEffectiveModelConfig(ctx.cwd),
+				// The snapshot captures the same routing the panel shows as current:
+				// what this session's launches resolve.
+				readSessionLaunchModelConfig(ctx),
 				// The orchestrator follows the same honesty rule: capture what the
 				// session actually runs (ctx.model plus the live thinking level)
 				// when a live model exists; settings.json defaults stand in only
@@ -5276,12 +5302,9 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 	let selectedName: string | undefined;
 	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
 	// The panel's "Current routing (effective)" table shows what this session's
-	// launches resolve right now, and a session binding outranks every shared
-	// layer, so a bound session reads its snapshot as the current routing while an
-	// unbound session keeps reading the effective config exactly as before.
-	const currentRoutingForPanel = async () =>
-		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-		?? await readEffectiveModelConfigAsync(ctx.cwd);
+	// launches resolve right now: the session binding, then the profile frozen at
+	// startup, then the global effective routing when the session resolves none.
+	const currentRoutingForPanel = () => readSessionLaunchModelConfigAsync(ctx);
 	let result = await showProfilesPanel(
 		ctx,
 		file,

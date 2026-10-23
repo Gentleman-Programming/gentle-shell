@@ -17,6 +17,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import type { AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -394,7 +395,11 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	process.env.USERPROFILE = isolatedHome;
 	process.env.GENTLE_PI_CONFIG_HOME = configHome;
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	// The panels resolve the profile this session froze at its first read, so
+	// every fixture starts and ends with no frozen session.
+	resetFrozenInheritedProfilesForTesting();
 	t.after(() => {
+		resetFrozenInheritedProfilesForTesting();
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
@@ -2872,10 +2877,12 @@ test("s snapshots current routing in place without applying or reopening the pro
 		worker: readFileSync(workerPath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
 	};
+	// No active profile, so the session resolves none and the snapshot reads the
+	// global routing: models.json where it speaks, over subagents.json.
 	writeStore({
 		"a-target": {},
 		"z-active": { worker: { model: "openai/beta" } },
-	}, "z-active");
+	});
 
 	let firstPanel: RoutingConsumerPanel | undefined;
 	fixture.onInput((panel) => {
@@ -2895,7 +2902,7 @@ test("s snapshots current routing in place without applying or reopening the pro
 		orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" },
 	});
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
-	assert.equal(store.active, "z-active");
+	assert.equal(store.active, undefined, "a snapshot never sets the active profile");
 	assert.match(fixture.panels[0] ?? "", /enter use in this session · a set as global default · c create · s snapshot/);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
@@ -3407,7 +3414,8 @@ test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
 // their own heading; a key with a suggestion is left to the launch warning.
 test("the profiles panel lists model_profiles keys that match no agent and suggest none", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	// No active profile: a session that resolves none launches from subagents.json.
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } });
 	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
 		model_profiles: {
 			worker: { model: "openai/alpha" },

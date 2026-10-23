@@ -230,6 +230,7 @@ public static class WindowsSessionBootstrap {
       [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadFile(IntPtr handle, byte[] buffer, uint length, out uint read, IntPtr overlapped);
       [DllImport("kernel32.dll", SetLastError=true)] static extern bool WriteFile(IntPtr handle, byte[] buffer, uint length, out uint written, IntPtr overlapped);
       [DllImport("kernel32.dll", SetLastError=true)] static extern bool FlushFileBuffers(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool WaitNamedPipe(string name, uint timeout);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateNamedPipe(string name, uint openMode, uint pipeMode, uint maxInstances, uint outBufferSize, uint inBufferSize, uint defaultTimeout, IntPtr securityAttributes);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool GetVolumeNameForVolumeMountPoint(string rootPathName, System.Text.StringBuilder volumeName, uint cchBufferLength);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool GetVolumeInformation(string rootPathName, IntPtr volumeNameBuffer, uint volumeNameSize, out uint volumeSerialNumber, out uint maximumComponentLength, out uint fileSystemFlags, IntPtr fileSystemNameBuffer, uint fileSystemNameSize);
@@ -379,11 +380,14 @@ public static class WindowsSessionBootstrap {
       static string RecordName(string sessionId, string token) { return sessionId + "." + token + ".json"; }
       static string RecordText(string sessionId, string endpoint, long createdAt) { return "{\"version\":1,\"sessionId\":\"" + sessionId + "\",\"endpoint\":\"" + endpoint.Replace("\\", "\\\\") + "\",\"createdAt\":" + createdAt.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"; }
       static OpenResult OpenRecord(IntPtr root, string name, bool create, byte[] descriptor, bool allowDeleteSharing) {
+        return OpenRecord(root, name, create, descriptor, allowDeleteSharing, false);
+      }
+      static OpenResult OpenRecord(IntPtr root, string name, bool create, byte[] descriptor, bool allowDeleteSharing, bool protectIdentity) {
         IntPtr chars = IntPtr.Zero, unicode = IntPtr.Zero, security = IntPtr.Zero, handle = IntPtr.Zero;
         try {
           unicode = Unicode(name, out chars); var attributes = new OBJECT_ATTRIBUTES(); attributes.Length = (uint)Marshal.SizeOf(typeof(OBJECT_ATTRIBUTES)); attributes.RootDirectory = root; attributes.ObjectName = unicode; attributes.Attributes = OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE;
           if (create) { if (descriptor == null || descriptor.Length == 0) Fail("unavailable"); security = Marshal.AllocHGlobal(descriptor.Length); Marshal.Copy(descriptor, 0, security, descriptor.Length); attributes.SecurityDescriptor = security; }
-          IO_STATUS_BLOCK statusBlock; uint status = NtCreateFile(out handle, SYNCHRONIZE | FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE, ref attributes, out statusBlock, IntPtr.Zero, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | (allowDeleteSharing ? FILE_SHARE_DELETE : 0), create ? FILE_CREATE : FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, IntPtr.Zero, 0);
+          IO_STATUS_BLOCK statusBlock; uint status = NtCreateFile(out handle, SYNCHRONIZE | FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | DELETE, ref attributes, out statusBlock, IntPtr.Zero, 0, protectIdentity ? FILE_SHARE_READ : FILE_SHARE_READ | FILE_SHARE_WRITE | (allowDeleteSharing ? FILE_SHARE_DELETE : 0), create ? FILE_CREATE : FILE_OPEN, FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, IntPtr.Zero, 0);
           if (status != 0) { Close(handle); return new OpenResult(IntPtr.Zero, status); } return new OpenResult(handle, status);
         } finally { if (security != IntPtr.Zero) Marshal.FreeHGlobal(security); if (unicode != IntPtr.Zero) Marshal.FreeHGlobal(unicode); if (chars != IntPtr.Zero) Marshal.FreeHGlobal(chars); }
       }
@@ -437,8 +441,61 @@ public static class WindowsSessionBootstrap {
         }
       }
       public static void Publish(string sessionId, string endpoint, long createdAt, byte[] descriptor, string sid) { PublishOwned(sessionId, endpoint, createdAt, descriptor, sid); }
-          public static PresenceRecord[] List(string sid) { return List(null, sid); }
-      public static PresenceRecord[] List(string excluded, string sid) { lock (Gate) { RequirePresence(); if (excluded != null && !Regex.IsMatch(excluded, "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")) Fail("invalid"); var newest = new Dictionary<string, PresenceRecord>(StringComparer.Ordinal); foreach (string name in EnumeratePinned(Presence)) { IntPtr file = IntPtr.Zero; try { RecordIdentity ignoredIdentity; PresenceRecord record = ReadPinnedRecord(name, sid, out file, out ignoredIdentity); if (record.SessionId == excluded) continue; PresenceRecord prior; if (!newest.TryGetValue(record.SessionId, out prior) || record.CreatedAt > prior.CreatedAt || (record.CreatedAt == prior.CreatedAt && String.CompareOrdinal(record.Token, prior.Token) > 0)) newest[record.SessionId] = record; } catch (BootstrapFailure) { } finally { Close(file); } } var records = new List<PresenceRecord>(newest.Values); records.Sort(delegate(PresenceRecord left, PresenceRecord right) { return String.CompareOrdinal(left.SessionId, right.SessionId); }); return records.ToArray(); } }
+      // WaitNamedPipe does not connect, send traffic, or consume an accept slot.
+      // Only ERROR_FILE_NOT_FOUND proves absence; busy, timeout, access denied,
+      // and every other error leave discovery reachability inconclusive.
+      const uint PresenceProbeMilliseconds = 1;
+      const int ERROR_FILE_NOT_FOUND = 2;
+      static bool EndpointAbsent(string endpoint) {
+        if (WaitNamedPipe(endpoint, PresenceProbeMilliseconds)) return false;
+        return Marshal.GetLastWin32Error() == ERROR_FILE_NOT_FOUND;
+      }
+      static void TryRemoveAbsentRecord(string name, PresenceRecord expected, RecordIdentity expectedIdentity, string sid) {
+        IntPtr file = IntPtr.Zero;
+        try {
+          // Reopen relative to the pinned private directory. Denying write and
+          // delete sharing prevents content changes or replacement during this
+          // check; a conflicting handle means leave the record untouched.
+          OpenResult opened = OpenRecord(Presence, name, false, null, false, true);
+          if (opened.Handle == IntPtr.Zero) return;
+          file = opened.Handle;
+          RecordIdentity identity = AssertRecord(file, sid);
+          PresenceRecord current = ParseRecord(name, ReadRecordText(file));
+          if (!identity.Equals(expectedIdentity) || !SameRecord(current, expected.SessionId, expected.Endpoint, expected.CreatedAt)) return;
+          if (!EndpointAbsent(current.Endpoint)) return;
+          DeletePinnedHandle(file);
+        } catch (BootstrapFailure) { /* best effort, never delete an unverified identity */ }
+        finally { Close(file); }
+      }
+      public static PresenceRecord[] List(string sid) { return List(null, sid); }
+      public static PresenceRecord[] List(string excluded, string sid) {
+        lock (Gate) {
+          RequirePresence();
+          if (excluded != null && !Regex.IsMatch(excluded, "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")) Fail("invalid");
+          var newest = new Dictionary<string, PresenceRecord>(StringComparer.Ordinal);
+          // Enumeration is capped at MaxEntries (64); each entry needs at most
+          // two explicit 1ms pipe waits, with no retries or protocol handshake.
+          foreach (string name in EnumeratePinned(Presence)) {
+            IntPtr file = IntPtr.Zero;
+            try {
+              RecordIdentity identity;
+              PresenceRecord record = ReadPinnedRecord(name, sid, out file, out identity);
+              if (record.SessionId == excluded) continue;
+              if (EndpointAbsent(record.Endpoint)) {
+                Close(file); file = IntPtr.Zero;
+                TryRemoveAbsentRecord(name, record, identity, sid);
+                continue;
+              }
+              PresenceRecord prior;
+              if (!newest.TryGetValue(record.SessionId, out prior) || record.CreatedAt > prior.CreatedAt || (record.CreatedAt == prior.CreatedAt && String.CompareOrdinal(record.Token, prior.Token) > 0)) newest[record.SessionId] = record;
+            } catch (BootstrapFailure) { }
+            finally { Close(file); }
+          }
+          var records = new List<PresenceRecord>(newest.Values);
+          records.Sort(delegate(PresenceRecord left, PresenceRecord right) { return String.CompareOrdinal(left.SessionId, right.SessionId); });
+          return records.ToArray();
+        }
+      }
       public static PresenceRecord Resolve(string sessionId, string sid) { PresenceRecord[] records = List(null, sid); foreach (PresenceRecord record in records) if (record.SessionId == sessionId) return record; Fail("not_found"); return null; }
       static void RemoveOwnedPublication(OwnedPublication owned) {
         IntPtr current = IntPtr.Zero;

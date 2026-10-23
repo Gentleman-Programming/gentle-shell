@@ -4190,6 +4190,199 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 	resetSessionProfileBindingsForTesting();
 });
 
+// gentle-shell#1064 slice 3c: the panels show the routing this session launches with.
+function launchRoutingFixture(t: test.TestContext) {
+	const { fixture, storePath, localPinPath, writeStore, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	fixture.tui.terminal.rows = 40;
+	// Every visit closes with Esc unless a test scripts its own input.
+	fixture.onInput((panel) => panel.handleInput("\x1b"));
+	const writeGlobalRouting = (routing: Record<string, unknown>) => {
+		mkdirSync(fixture.configHome, { recursive: true });
+		writeFileSync(fixture.globalPath, `${JSON.stringify(routing, null, 2)}\n`);
+	};
+	return { ...fixture, storePath, localPinPath, writeStore, writePin, writeGlobalRouting };
+}
+
+// The table below the "Current routing (effective)" header: the profile list and
+// the selected profile's own routing can show a model too.
+function currentRouting(rendered: string): string {
+	const header = "Current routing (effective)";
+	const index = rendered.indexOf(header);
+	assert.notEqual(index, -1, `missing "${header}" in:\n${rendered}`);
+	return rendered.slice(index + header.length);
+}
+
+test("a session frozen on the active profile shows that profile as the current routing", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	const storeBefore = readFileSync(fixture.storePath, "utf8");
+	const globalBefore = readFileSync(fixture.globalPath, "utf8");
+
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.panels.length, 1);
+	const table = currentRouting(fixture.panels[0]!);
+	assert.match(table, /worker\s+openai\/beta/, "launches resolve the frozen active profile");
+	assert.doesNotMatch(table, /openai\/alpha/, "the global routing the frozen profile replaces is not shown as effective");
+	assert.equal(readFileSync(fixture.storePath, "utf8"), storeBefore, "reading never writes profiles.json");
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), globalBefore, "reading never writes models.json");
+});
+
+test("a pin written after the session froze without a profile stays out of the current routing", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ fast: { worker: { model: "openai/delta" } } });
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+
+	await fixture.run("gentle:profiles");
+	assert.match(currentRouting(fixture.panels[0]!), /worker\s+openai\/alpha/, "no layer had a profile when the session froze");
+
+	fixture.writePin(fixture.localPinPath, "fast");
+	await fixture.run("gentle:profiles");
+
+	assert.equal(fixture.panels.length, 2);
+	const table = currentRouting(fixture.panels[1]!);
+	assert.match(table, /worker\s+openai\/alpha/, "launches keep the global routing the session froze with");
+	assert.doesNotMatch(table, /openai\/delta/, "a pin the session did not freeze does not reach its launches");
+});
+
+// #2276: with a pin at startup the rows show what launches use. Already true
+// before slice 3c, kept as a regression guard.
+test("a pin present when the session froze is the current routing", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ fast: { worker: { model: "openai/delta" } } });
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	fixture.writePin(fixture.localPinPath, "fast");
+
+	await fixture.run("gentle:profiles");
+
+	const table = currentRouting(fixture.panels[0]!);
+	assert.match(table, /worker\s+openai\/delta/, "launches resolve the pinned profile");
+	assert.doesNotMatch(table, /openai\/alpha/, "the global routing the pin replaces is not shown as effective");
+});
+
+// #2451: the Enter binding outranks the frozen profile and every shared layer.
+test("an Enter binding outranks the frozen profile in the current routing", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+
+	await fixture.run("gentle:profiles");
+	assert.match(currentRouting(fixture.panels[0]!), /worker\s+openai\/beta/);
+
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
+	await fixture.run("gentle:profiles");
+
+	const table = currentRouting(fixture.panels[1]!);
+	assert.match(table, /worker\s+openai\/gamma/, "launches resolve the session binding");
+	assert.doesNotMatch(table, /openai\/beta/, "the frozen profile yields to the binding");
+	assert.doesNotMatch(table, /openai\/alpha/, "the global routing stays out of a bound session's table");
+});
+
+test("a snapshot in a frozen session saves the routing its launches resolve", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	fixture.writeGlobalRouting({ worker: { model: "openai/omega" }, explorer: { model: "openai/alpha" } });
+	const globalBefore = readFileSync(fixture.globalPath, "utf8");
+	let afterSnapshot = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("s");
+		afterSnapshot = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+
+	await fixture.run("gentle:profiles");
+
+	assert.match(afterSnapshot, /Snapshot saved; live routing unchanged\. Profile "team" saved from current routing\./);
+	const store = JSON.parse(readFileSync(fixture.storePath, "utf8"));
+	assert.equal(store.active, "team", "a snapshot does not change the active profile");
+	assert.deepEqual(Object.keys(store.profiles), ["team"]);
+	assert.deepEqual(store.profiles.team, { worker: { model: "openai/beta" } }, "the snapshot is the frozen routing, not the global one");
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), globalBefore, "a snapshot never writes models.json");
+});
+
+test("a frozen profile hides the subagents.json keys it replaces from the unmatched list", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	writeFileSync(join(fixture.agentHome, "subagents.json"), `${JSON.stringify({ model_profiles: { explor: { model: "openai/alpha" } } }, null, 2)}\n`);
+
+	await fixture.run("gentle:profiles");
+
+	const table = currentRouting(fixture.panels[0]!);
+	assert.match(table, /worker\s+openai\/beta/, "the table shows the frozen profile's own keys");
+	assert.doesNotMatch(table, /Unmatched keys/, "launches route from the frozen profile, not subagents.json");
+	assert.doesNotMatch(table, /explor/);
+});
+
+// /gentle:models keeps the saved global routing as its rows (what ctrl+s
+// writes) and names what this session's launches use beside them.
+// #2451
+test("/gentle:models names the Enter binding and marks the rows its launches change", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma", thinking: "high" } });
+
+	await fixture.run("gentle:models");
+
+	const rendered = fixture.panels[0]!;
+	assert.match(rendered, /This session launches with: team \(session\); rows show the saved global routing/);
+	assert.match(rendered, /worker\s+model=openai\/alpha, effort=inherit\s+launches=openai\/gamma, effort=high/);
+});
+
+// #2276
+test("/gentle:models marks the rows a pin present at startup changes", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ fast: { worker: { model: "openai/delta" } } });
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	fixture.writePin(fixture.localPinPath, "fast");
+
+	await fixture.run("gentle:models");
+
+	const rendered = fixture.panels[0]!;
+	assert.match(rendered, /This session launches with: fast \(local\)/);
+	assert.match(rendered, /worker\s+model=openai\/alpha, effort=inherit\s+launches=openai\/delta\s+│/);
+});
+
+test("/gentle:models without a session profile shows no launch line or marks", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+
+	await fixture.run("gentle:models");
+
+	assert.doesNotMatch(fixture.panels[0]!, /launches/);
+});
+
+test("/gentle:models ctrl+s in a bound session writes the global draft, not the binding", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeStore({ team: { worker: { model: "openai/gamma" } } });
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	const storeBefore = readFileSync(fixture.storePath, "utf8");
+	fixture.onInput((panel) => panel.handleInput("\x13"));
+	await fixture.run("gentle:models");
+	const unbound = readFileSync(fixture.globalPath, "utf8");
+
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma", thinking: "high" } });
+	await fixture.run("gentle:models");
+
+	assert.match(fixture.panels[1]!, /launches=openai\/gamma/);
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), unbound, "ctrl+s writes what it writes without a binding");
+	assert.doesNotMatch(unbound, /openai\/gamma/);
+	assert.equal(readFileSync(fixture.storePath, "utf8"), storeBefore, "ctrl+s never writes profiles.json");
+});
+
+test("/gentle:models leaves a row unmarked when the profile entry matches it", async (t) => {
+	const fixture = launchRoutingFixture(t);
+	fixture.writeGlobalRouting({ worker: { model: "openai/alpha" } });
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
+
+	await fixture.run("gentle:models");
+
+	assert.match(fixture.panels[0]!, /This session launches with: team \(session\)/);
+	assert.doesNotMatch(fixture.panels[0]!, /launches=/);
+});
+
 test("the now line reports the live session's orchestrator over the settings defaults", async (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();

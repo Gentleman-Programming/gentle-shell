@@ -114,7 +114,7 @@ import {
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
 import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
-import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
+import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2513,6 +2513,8 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return effective;
 }
 
+type SessionLaunchProfile = { label: string; routing: AgentModelConfig };
+
 /**
  * The profile routing this session's launches resolve: the Enter binding, then
  * the profile frozen at startup (gentle-shell#1064 slice 3c). `undefined` means
@@ -2520,12 +2522,19 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
  * the session did not freeze never reaches them and is not read here.
  */
 function sessionLaunchProfileRouting(ctx: ExtensionContext): AgentModelConfig | undefined {
-	const routing = sessionProfileModelProfiles(resolveSessionProfile({
+	return sessionLaunchProfile(ctx)?.routing;
+}
+
+/** The same resolution with its layer label, e.g. `team (session)` or `fast (local)`. */
+function sessionLaunchProfile(ctx: ExtensionContext): SessionLaunchProfile | undefined {
+	const resolution = resolveSessionProfile({
 		sessionId: ctx.sessionManager?.getSessionId?.(),
 		cwd: ctx.cwd,
 		configHome: gentleAiConfigHome(),
-	}));
-	return routing === undefined ? undefined : cloneModelConfig(routing);
+	});
+	const routing = sessionProfileModelProfiles(resolution);
+	const label = sessionProfileLabel(resolution);
+	return routing === undefined || label === undefined ? undefined : { label, routing: cloneModelConfig(routing) };
 }
 
 /** The routing this session's launches use: its resolved profile, or the global effective routing. */
@@ -3196,6 +3205,9 @@ class SddModelPanel implements OverlayComponent {
 	private readonly profileLabel: string;
 	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
 	private readonly terminalRows: (() => number) | undefined;
+	// The profile this session launches with, when it resolves one. The rows stay
+	// the saved global routing that ctrl+s writes.
+	private readonly launch: SessionLaunchProfile | undefined;
 
 	constructor(
 		initialConfig: AgentModelConfig,
@@ -3205,6 +3217,7 @@ class SddModelPanel implements OverlayComponent {
 		theme?: Theme,
 		profileLabel = "none",
 		terminalRows?: () => number,
+		launch?: SessionLaunchProfile,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
@@ -3214,6 +3227,7 @@ class SddModelPanel implements OverlayComponent {
 		this.theme = theme;
 		this.profileLabel = profileLabel;
 		this.terminalRows = terminalRows;
+		this.launch = launch;
 	}
 
 	invalidate(): void {}
@@ -3495,11 +3509,12 @@ class SddModelPanel implements OverlayComponent {
 			this.renderLine(text, width, tone);
 		lines.push(line("Assign Models and Effort to Agents", "title"));
 		lines.push(line(`Current profile: ${this.profileLabel}`, "muted"));
+		if (this.launch) lines.push(line(`This session launches with: ${this.launch.label}; rows show the saved global routing`, "muted"));
 		lines.push("");
 		lines.push(line("Current assignments:", "muted"));
 		lines.push("");
 		const visibleRows = Math.min(
-			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
+			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS + (this.launch ? 1 : 0)),
 			this.rows.length,
 		);
 		const listCursor = Math.min(this.cursor, this.rows.length - 1);
@@ -3674,7 +3689,19 @@ class SddModelPanel implements OverlayComponent {
 		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
 			", effort=",
 			"muted",
-		)}${this.renderText(effort, "status")}`;
+		)}${this.renderText(effort, "status")}${this.renderText(this.launchMark(row), "muted")}`;
+	}
+
+	// A bridge until /gentle:models edits the session's profile (PRD D2): mark
+	// the rows whose launch differs from the live draft. Roles the profile omits
+	// get no mark, since the profile replaces the routing wholesale.
+	private launchMark(row: string): string {
+		const entry = row === PROFILE_ORCHESTRATOR_KEY ? undefined : this.launch?.routing[row];
+		const modelDiffers = entry?.model !== undefined && entry.model !== this.draft[row]?.model;
+		const effortDiffers = entry?.thinking !== undefined && entry.thinking !== this.draft[row]?.thinking;
+		if (!modelDiffers && !effortDiffers) return "";
+		const model = entry?.model === undefined ? "launches" : `launches=${entry.model}`;
+		return `  ${model}${effortDiffers ? `, effort=${entry?.thinking}` : ""}`;
 	}
 }
 
@@ -3704,13 +3731,14 @@ async function showSddModelPanel(
 	ctx: ExtensionContext,
 	config: AgentModelConfig,
 	profileLabel: string,
+	launch?: SessionLaunchProfile,
 ): Promise<ModelPanelResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<ModelPanelResult>(
 		(tui, theme, _keybindings, done) =>
 			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
-				Math.max(0, tui.terminal.rows),
+				Math.max(0, tui.terminal.rows), launch,
 			),
 		{
 			overlay: true,
@@ -3755,7 +3783,9 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
 	}
 	const profileLabel = describeCurrentProfileTarget(target);
-	let result = await showSddModelPanel(ctx, config, profileLabel);
+	// Resolved once, so every reopen names the same launch profile.
+	const launch = sessionLaunchProfile(ctx);
+	let result = await showSddModelPanel(ctx, config, profileLabel, launch);
 	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
 		config = cloneModelConfig(result.config);
 		if (result.type === "export") {
@@ -3765,14 +3795,14 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 			} catch (error) {
 				ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
+			result = await showSddModelPanel(ctx, config, profileLabel, launch);
 			continue;
 		}
 		if (result.type === "restore") {
 			const restored = await readModelExport(ctx);
 			if (!restored) {
 				ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
-				result = await showSddModelPanel(ctx, config, profileLabel);
+				result = await showSddModelPanel(ctx, config, profileLabel, launch);
 				continue;
 			}
 			const approved = await ctx.ui.confirm("Restore saved model routing?", `Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`);
@@ -3781,7 +3811,7 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 					await writeModelConfigAsync(ctx.cwd, restored);
 				} catch (error) {
 					ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
-					result = await showSddModelPanel(ctx, config, profileLabel);
+					result = await showSddModelPanel(ctx, config, profileLabel, launch);
 					continue;
 				}
 				const orchestratorChoice = config[PROFILE_ORCHESTRATOR_KEY];
@@ -3804,7 +3834,7 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 					].join("\n"), "warning");
 				}
 			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
+			result = await showSddModelPanel(ctx, config, profileLabel, launch);
 			continue;
 		}
 		const current =
@@ -3824,7 +3854,7 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 					"Custom model id must be a single-line provider/model identifier using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.",
 					"warning",
 				);
-				result = await showSddModelPanel(ctx, config, profileLabel);
+				result = await showSddModelPanel(ctx, config, profileLabel, launch);
 				continue;
 			}
 			if (result.agent === "all") {
@@ -3846,7 +3876,7 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 				};
 			}
 		}
-		result = await showSddModelPanel(ctx, config, profileLabel);
+		result = await showSddModelPanel(ctx, config, profileLabel, launch);
 	}
 	if (result.type !== "save" && result.type !== "save-profile") return;
 	// The panel's orchestrator is snapshot-only, never a global agent route.

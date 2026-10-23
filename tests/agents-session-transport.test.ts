@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer, Socket } from "node:net";
@@ -96,17 +95,9 @@ test("publishes immutable v1 activations with private modes and exact discovery"
 	assert.equal(record.endpoint.startsWith(`${transport.paths.sockets}/`), true);
 });
 
-test("lists only advertised peer IDs without mutating the private registry", async (t) => {
+test("lists advertised peer IDs and reclaims only conclusively-absent records", async (t) => {
 	let candidateOpens = 0;
 	const transport = await registry(t, async () => { candidateOpens += 1; });
-	const snapshot = async () => {
-		const entries = await readdir(transport.paths.presence);
-		const files = await Promise.all(entries.map(async (name) => {
-			const path = join(transport.paths.presence, name), stat = await lstat(path);
-			return [name, stat.mode & 0o777, createHash("sha256").update(await readFile(path)).digest("hex")];
-		}));
-		return JSON.stringify({ root: await mode(transport.paths.root), presence: await mode(transport.paths.presence), sockets: await mode(transport.paths.sockets), files: files.sort() });
-	};
 	assert.deepEqual(await transport.list("self"), []);
 	const self = await raw(t, transport, "self");
 	assert.deepEqual(await transport.list(self.sessionId), [], "the one active record is excluded when it belongs to this host");
@@ -116,15 +107,43 @@ test("lists only advertised peer IDs without mutating the private registry", asy
 	const missing = await transport.record("missing", 10); await transport.publish(missing);
 	const malformed = await transport.record("malformed", 11); await writeFile(transport.presencePath(malformed), "{");
 	const symlinked = await transport.record("symlinked", 12); await symlink("missing", symlinked.endpoint); await transport.publish(symlinked);
-	const before = await snapshot();
 	assert.deepEqual(await transport.list(self.sessionId), [
 		{ sessionId: "alpha", reachability: "unknown" },
 	]);
-	assert.equal(candidateOpens, 8, "listing reads candidate records but never connects or repairs them");
-	assert.equal(await snapshot(), before, "listing leaves presence files, directory modes, and socket entries unchanged");
+	assert.equal(candidateOpens, 8, "listing reads candidate records but never connects to their endpoints");
+	assert.equal(await readFile(transport.presencePath(malformed), "utf8"), "{", "a malformed record is retained, never rewritten");
+	await lstat(transport.presencePath(symlinked));
+	assert.equal(await mode(transport.paths.root), 0o700);
+	assert.equal(await mode(transport.paths.presence), 0o700);
+	assert.equal(await mode(transport.paths.sockets), 0o700);
+	await assert.rejects(lstat(transport.presencePath(missing)), { code: "ENOENT" }, "only the conclusively-absent record is reclaimed");
 	assert.equal(alphaNew.createdAt >= alphaOld.createdAt, true);
-	for (let index = 0; index < 65; index++) await transport.publish(await transport.record(`overflow-${index}`, index));
-	await rejected(transport.list(), "busy");
+});
+
+test("safely reclaims orphaned advertisements beyond the discovery budget", async (t) => {
+	const transport = await registry(t);
+	const live = await raw(t, transport, "live");
+	const orphans = await Promise.all(Array.from({ length: 65 }, (_, index) => transport.record(`orphan-${index}`, index)));
+	for (const orphan of orphans) await transport.publish(orphan);
+	assert.equal((await readdir(transport.paths.presence)).length, 66);
+	assert.deepEqual(await transport.list("self"), [{ sessionId: "live", reachability: "unknown" }], "conclusively-absent records never exhaust discovery");
+	assert.equal((await readdir(transport.paths.presence)).length, 1, "every conclusively-absent record is reclaimed");
+	await lstat(transport.presencePath(live));
+	assert.deepEqual(await transport.list("self"), [{ sessionId: "live", reachability: "unknown" }], "reclaim is idempotent");
+});
+
+test("resolves one session past unrelated advertisements beyond the discovery budget", async (t) => {
+	const transport = await registry(t);
+	const target = await transport.record("target", 1);
+	await transport.publish(target);
+	for (let index = 0; index < 65; index++) await transport.publish(await transport.record(`other-${index}`, index));
+	assert.deepEqual(await transport.resolve("target"), target, "unrelated advertisements do not exhaust a single-id resolve");
+});
+
+test("bounds discovery by retained live advertisements", async (t) => {
+	const transport = await registry(t);
+	for (let index = 0; index < 65; index++) await raw(t, transport, `live-${index}`);
+	await rejected(transport.list("self"), "busy");
 });
 
 test("keeps same-session activations distinct and old cleanup preserves the newest", async (t) => {

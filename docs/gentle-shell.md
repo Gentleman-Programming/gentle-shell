@@ -243,6 +243,23 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 - **`gentle_review` / capture tools** — the native review surface for receipt-driven development.
 - **Optional companions** (separately installed, never bundled): `gentle-engram` for persistent memory, `pi-web-access` for web access when a task needs it and your policy allows it, `pi-lens` for additional inspection surfaces, `pi-intercom` for cross-session communication where your Pi setup supports it, and `@juicesharp/rpiv-ask-user-question` for interactive choice support where a separately installed extension fits your setup. These are companions, not hidden prerequisites or a claim that every Pi installation has every capability; persistent memory is **not** bundled with `gentle-pi`.
 
+### Minimize a questionnaire
+
+While `ask_user_question` is open in the TUI, press **Ctrl+O** to minimize or expand its panel without losing answers, option toggles, cursor position, or custom-text drafts. If you remapped Pi's `app.tools.expand` action, use the binding shown in the panel instead. In fullscreen mode, clicking the minimized bar also expands it. Minimization keeps the transcript accessible; it does not dismiss the question or let the agent continue.
+
+While minimized, navigation and selection keys do nothing; **Esc** still cancels. Expanding returns to the choices. If you minimized while typing a custom response, select **Type something.** again to reopen the saved draft.
+
+Open `/gentle:customize` → **Ask**, then press Enter or Space on either row to cycle its saved preference. Changes apply to the **next questionnaire**, not one already open; highlighting a row only previews it.
+
+| Preference | Choices |
+| --- | --- |
+| Default state | `expanded` (default): always opens the body. `auto`: minimizes when the rendered body would leave too little transcript visible. `collapsed`: always opens as a bar. |
+| Minimized indicator | `minimal` (default): progress, question header, option count, and controls. `tabbed`: question tabs plus a compact status bar. `answers`: the active question's committed answer, or `none` if unanswered. |
+
+`auto` uses the terminal height captured when the view mounts, reserving four rows for dock chrome and eight for the transcript. Once it minimizes, it stays minimized until you expand it; an explicit toggle overrides automatic minimization for that questionnaire. Unknown terminal height disables automatic minimization. Bars wrap to fit narrow terminals.
+
+Preferences are stored in `ask-panel.json` in the Gentle Pi config home, following the launcher's config-home selection (including `GENTLE_PI_CONFIG_HOME`). A missing file uses the defaults. A malformed or unreadable file also uses defaults, but Customize refuses to overwrite it and marks the problem in the preview; repair the file before saving. These preferences have no separate environment override and are not included in visual profiles or visual reset. RPC-host question dialogs are unchanged.
+
 ### Gentle Agents
 
 The current package requires Pi 1.2.0 or newer and Node >=22.19.0. Development tests resolve Pi through the open `>=1.0.0` development range. The private Vim editor adapter admits only the audited Pi `0.99.1`, `0.99.2`, `1.0.0`, `1.1.0`, and `1.2.0` releases; any other release keeps ordinary prompt editing until its editor is audited. Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.

@@ -8,6 +8,11 @@ import {
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import {
+	ASK_PANEL_DEFAULT_STATE,
+	ASK_PANEL_INDICATOR,
+	type AskPanelPreferences,
+} from "../lib/ask-panel-policy.ts";
+import {
 	MIN_PREVIEW_WIDTH,
 	QuestionnaireView,
 	type QuestionnaireResult,
@@ -45,21 +50,34 @@ const two = (): QuestionData[] => [
 
 function createView(
 	questions: QuestionData[],
-	options: { onComplete?: (result: QuestionnaireResult) => void; keybindings?: KeybindingsManager } = {},
+	options: {
+		onComplete?: (result: QuestionnaireResult) => void;
+		keybindings?: KeybindingsManager;
+		preferences?: AskPanelPreferences;
+		terminalRows?: number;
+	} = {},
 ): QuestionnaireView {
 	return new QuestionnaireView({
 		questions,
 		theme,
 		onComplete: options.onComplete,
 		...(options.keybindings === undefined ? {} : { keybindings: options.keybindings }),
+		...(options.preferences === undefined ? {} : { preferences: options.preferences }),
+		...(options.terminalRows === undefined ? {} : { terminalRows: options.terminalRows }),
 	});
 }
 
-function viewWithResult(questions: QuestionData[], keybindings?: KeybindingsManager) {
+function viewWithResult(
+	questions: QuestionData[],
+	keybindings?: KeybindingsManager,
+	options: { preferences?: AskPanelPreferences; terminalRows?: number } = {},
+) {
 	const completed: QuestionnaireResult[] = [];
 	const view = createView(questions, {
 		onComplete: (result) => completed.push(result),
 		...(keybindings === undefined ? {} : { keybindings }),
+		...(options.preferences === undefined ? {} : { preferences: options.preferences }),
+		...(options.terminalRows === undefined ? {} : { terminalRows: options.terminalRows }),
 	});
 	return { view, completed };
 }
@@ -70,7 +88,7 @@ function render(view: QuestionnaireView, width = 100): string {
 
 /** Strip SGR styling so assertions see the visible text, not cursor escape codes. */
 function plain(text: string): string {
-	return text.replace(/\x1b\[[0-9;]*m/g, "");
+	return text.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 function assertFits(view: QuestionnaireView, width: number): void {
@@ -107,6 +125,8 @@ const KEY = {
 	tab: "\t",
 	shiftTab: "\x1b[Z",
 	escape: "\x1b",
+	ctrlO: "\x0f",
+	ctrlE: "\x05",
 } as const;
 
 test("renders exactly one active question plus a tab strip for all questions", () => {
@@ -443,4 +463,185 @@ test("every rendered line fits the width across 1-4 questions", () => {
 	for (const width of [40, 60, 80, 100, 140]) {
 		assertFits(view, width);
 	}
+});
+
+// --- Minimized panel (ask_panel preferences) ---
+
+const collapsedPreferences = (
+	indicator: AskPanelPreferences["indicator"] = ASK_PANEL_INDICATOR.MINIMAL,
+): AskPanelPreferences => ({ indicator, defaultState: ASK_PANEL_DEFAULT_STATE.COLLAPSED });
+
+test("the minimal minimized bar names the question and toggle key on one fitting line", () => {
+	const { view } = viewWithResult(single(), undefined, { preferences: collapsedPreferences() });
+	const lines = view.render(100);
+	assert.equal(lines.length, 1);
+	assert.match(plain(lines[0]!), /▸ 1\/1 · Header · 2 options · ctrl\+o expand · esc cancel/);
+	for (const width of [20, 40, 100]) {
+		assertFits(view, width);
+	}
+});
+
+test("the tabbed minimized indicator keeps the tab strip and adds one bar line", () => {
+	const { view } = viewWithResult(two(), undefined, { preferences: collapsedPreferences(ASK_PANEL_INDICATOR.TABBED) });
+	const lines = view.render(100).map(plain);
+	assert.equal(lines.length, 2);
+	assert.match(lines[0]!, /\[1\/2\]/);
+	assert.match(lines[0]!, /▸ First/);
+	assert.match(lines[1]!, /▸ minimized · ctrl\+o expand · esc cancel/);
+	assertFits(view, 100);
+});
+
+test("the answers minimized indicator lists the active answer or none", () => {
+	const unanswered = viewWithResult(single(), undefined, { preferences: collapsedPreferences(ASK_PANEL_INDICATOR.ANSWERS) });
+	assert.match(plain(unanswered.view.render(100)[0]!), /▸ 1\/1 · Header · answered: none · ctrl\+o expand/);
+
+	const { view } = viewWithResult(two(), undefined, { preferences: { indicator: ASK_PANEL_INDICATOR.ANSWERS, defaultState: ASK_PANEL_DEFAULT_STATE.EXPANDED } });
+	view.handleInput(KEY.enter); // commit First Alpha and advance to Second
+	view.handleInput(KEY.tab); // back to First, which now holds an answer
+	assert.equal(view.activeQuestion, 0);
+	view.handleInput(KEY.ctrlO); // collapse
+	assert.match(plain(view.render(100)[0]!), /▸ 1\/2 · First · answered: Alpha · ctrl\+o expand/);
+});
+
+test("the toggle collapses and expands preserving cursor, toggles and committed answers", () => {
+	const questions = [
+		question("First?", [option("Alpha"), option("Beta")], { header: "First", multiSelect: true }),
+		question("Second?", [option("Gamma"), option("Delta")], { header: "Second" }),
+	];
+	const { view } = viewWithResult(questions);
+
+	view.handleInput(KEY.space); // toggle Alpha
+	view.handleInput(KEY.down[0]); // cursor -> Beta
+	view.handleInput(KEY.ctrlO); // collapse
+	assert.match(plain(render(view, 100)), /ctrl\+o expand/);
+
+	view.handleInput(KEY.ctrlO); // expand
+	assert.match(render(view), /\[x\] Alpha/); // toggle preserved
+	assert.match(render(view), /❯ \[ \] Beta/); // cursor preserved
+
+	view.handleInput(KEY.tab);
+	view.handleInput(KEY.enter); // commit Second Gamma
+	assert.equal(view.getResult().answers.length, 1);
+	view.handleInput(KEY.ctrlO); // collapse again
+	view.handleInput(KEY.ctrlO); // expand
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 1, question: "Second?", kind: "option", answer: "Gamma" },
+	]);
+	assert.match(render(view), /\[x\] Alpha/);
+});
+
+test("escape still cancels while minimized", () => {
+	const { view, completed } = viewWithResult(single(), undefined, { preferences: collapsedPreferences() });
+	view.handleInput(KEY.escape);
+	assert.equal(completed.length, 1);
+	assert.deepEqual(view.getResult(), { cancelled: true, answers: [] });
+});
+
+test("arrows, enter and space while minimized move and commit nothing", () => {
+	const { view, completed } = viewWithResult(
+		[question("Pick?", [option("Alpha"), option("Beta")], { multiSelect: true })],
+		undefined,
+		{ preferences: collapsedPreferences() },
+	);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.up[0]);
+	view.handleInput(KEY.space);
+	view.handleInput(KEY.enter);
+	assert.equal(completed.length, 0);
+	assert.equal(view.getResult().answers.length, 0);
+
+	view.handleInput(KEY.ctrlO); // expand
+	assert.match(render(view), /❯ \[ \] Alpha/, "the cursor never moved and space never toggled while minimized");
+});
+
+test("toggling while the free-text editor is open preserves the draft", () => {
+	const { view } = viewWithResult(two());
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.down[0]);
+	view.handleInput(KEY.enter); // open the custom-row editor
+	view.handleInput("draft text");
+	assert.match(render(view), /Custom response/);
+
+	view.handleInput(KEY.ctrlO); // minimize closes the editor through closeEditor()
+	assert.doesNotMatch(render(view), /Custom response/);
+	assert.equal(view.getResult().answers.length, 0, "closing the editor never commits");
+
+	view.handleInput(KEY.ctrlO); // expand
+	view.handleInput(KEY.enter); // reopen the custom row, which is still focused
+	assert.match(plain(render(view)), /draft text/, "the draft is restored on reopen");
+});
+
+test("a left click on the minimized bar expands without committing", () => {
+	const { view, completed } = viewWithResult(single(), undefined, { preferences: collapsedPreferences() });
+	const lines = view.render(100);
+	assert.equal(lines.length, 1);
+	assert.equal(view.handleMouse(mouseEvent(lines, 0, "click"))?.handled, true);
+	assert.equal(completed.length, 0, "the bar click never commits");
+
+	const expanded = render(view, 100);
+	assert.match(expanded, /❯ Alpha/);
+	assert.match(plain(expanded), /ctrl\+o minimize/);
+});
+
+test("defaultState collapsed starts minimized while expanded never minimizes", () => {
+	const collapsed = viewWithResult(single(), undefined, { preferences: collapsedPreferences() });
+	assert.equal(collapsed.view.render(100).length, 1);
+
+	const expanded = viewWithResult(single(), undefined, {
+		preferences: { indicator: ASK_PANEL_INDICATOR.MINIMAL, defaultState: ASK_PANEL_DEFAULT_STATE.EXPANDED },
+		terminalRows: 5,
+	});
+	assert.match(render(expanded.view, 100), /❯ Alpha/, "a tiny terminal never minimizes the default expanded state");
+});
+
+test("auto minimizes on a short terminal but not on a tall or unknown one", () => {
+	const preferences: AskPanelPreferences = { indicator: ASK_PANEL_INDICATOR.MINIMAL, defaultState: ASK_PANEL_DEFAULT_STATE.AUTO };
+
+	const short = viewWithResult(single(), undefined, { preferences, terminalRows: 19 });
+	assert.equal(short.view.render(100).length, 1, "8 expanded lines do not fit 19 rows minus 12 reserved");
+
+	const tall = viewWithResult(single(), undefined, { preferences, terminalRows: 40 });
+	assert.match(render(tall.view, 100), /❯ Alpha/);
+
+	const unknown = viewWithResult(single(), undefined, { preferences });
+	assert.match(render(unknown.view, 100), /❯ Alpha/, "no terminal rows means no automatic minimization");
+});
+
+test("an explicit toggle overrides automatic minimization for the instance", () => {
+	const { view } = viewWithResult(single(), undefined, {
+		preferences: { indicator: ASK_PANEL_INDICATOR.MINIMAL, defaultState: ASK_PANEL_DEFAULT_STATE.AUTO },
+		terminalRows: 19,
+	});
+	assert.equal(view.render(100).length, 1, "auto minimized first");
+
+	view.handleInput(KEY.ctrlO); // explicit expand
+	assert.match(render(view, 100), /❯ Alpha/);
+	assert.match(render(view, 100), /❯ Alpha/, "the user's choice sticks even though it still does not fit");
+});
+
+test("automatic minimization is sticky once it triggers", () => {
+	const questions = [
+		question("Proceed?", [option("Alpha"), option("Beta", "Second choice", "PREVIEW ".repeat(40))]),
+	];
+	const { view } = viewWithResult(questions, undefined, {
+		preferences: { indicator: ASK_PANEL_INDICATOR.MINIMAL, defaultState: ASK_PANEL_DEFAULT_STATE.AUTO },
+		terminalRows: 21,
+	});
+	assert.match(render(view, 80), /minimize/, "Alpha has no preview, so the panel fits and stays expanded");
+
+	view.handleInput(KEY.down[0]); // Beta's long preview no longer fits
+	assert.match(render(view, 80), /ctrl\+o expand/, "the overflowing panel minimizes");
+	assert.match(render(view, 80), /ctrl\+o expand/, "the automatic decision stays minimized");
+});
+
+test("a remapped app.tools.expand binding toggles and labels the minimized bar", () => {
+	const keybindings = new KeybindingsManager(
+		{ ...TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" } },
+		{ "app.tools.expand": "ctrl+e" },
+	);
+	const { view } = viewWithResult(single(), keybindings, { preferences: collapsedPreferences() });
+	assert.match(plain(view.render(100)[0]!), /ctrl\+e expand/);
+
+	view.handleInput(KEY.ctrlE);
+	assert.match(render(view, 100), /❯ Alpha/, "the remapped key expands the panel");
 });

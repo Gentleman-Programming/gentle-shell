@@ -42,7 +42,7 @@ function rowVisible(row: CustomizeRow): boolean {
 	try { return row.visible() !== false; } catch { return false; }
 }
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
+export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Ask" | "Sections" | "Profiles" | "Reset";
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;

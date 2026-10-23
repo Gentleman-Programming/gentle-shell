@@ -68,6 +68,8 @@ import {
 	normalizeRoutingEntry,
 	readSavedModelConfig as readModelRoutingAuthority,
 	readSavedModelConfigAsync as readModelRoutingAuthorityAsync,
+	readModelConfigFile,
+	readModelConfigFileAsync,
 	type AgentModelConfig,
 	type AgentRoutingEntry,
 	type ModelConfigFileResult,
@@ -2263,22 +2265,26 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 	return paths;
 }
 
+// An invalid legacy project file must never block the global config it merges
+// with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
+	const globalPath = modelConfigPath(cwd);
 	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = readModelRoutingAuthority(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const result = readModelRoutingAuthority(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath) return result;
+	const globalResult = readModelConfigFile(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 async function readSavedModelConfigAsync(
 	cwd: string,
 ): Promise<ModelConfigFileResult> {
+	const globalPath = modelConfigPath(cwd);
 	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = await readModelRoutingAuthorityAsync(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath) return result;
+	const globalResult = await readModelConfigFileAsync(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 export function readModelConfig(cwd: string): AgentModelConfig {

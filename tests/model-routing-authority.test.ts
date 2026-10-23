@@ -110,12 +110,24 @@ test("model routing authority normalizes and preserves sync/async source status"
 		path: invalidGlobalPath,
 	});
 
+	// A present global config must merge with, not fully shadow, the legacy project
+	// config (gentle-shell#2163): project-only keys survive, same-name keys prefer global.
+	const globalWithProjectKeyOverride = join(globalDir, "global-with-project-key.json");
+	writeFileSync(globalWithProjectKeyOverride, JSON.stringify({ project: "openai/gpt-5" }));
+	const invalidProjectPath = join(projectConfigDir, "invalid.json");
+	writeFileSync(invalidProjectPath, "[]");
+
 	const sourceCases = [
 		[missingPath, missingPath, { status: "missing" }],
 		[missingPath, projectPath, { status: "valid", config: { project: { model: "google/gemini" } } }],
-		[validGlobalPath, projectPath, validSync],
+		[
+			validGlobalPath, projectPath,
+			{ status: "valid", config: { ...validSync.status === "valid" ? validSync.config : {}, project: { model: "google/gemini" } } },
+		],
+		[globalWithProjectKeyOverride, projectPath, { status: "valid", config: { project: { model: "openai/gpt-5" } } }],
 		[missingPath, invalidGlobalPath, { status: "invalid", path: invalidGlobalPath }],
 		[invalidGlobalPath, projectPath, { status: "invalid", path: invalidGlobalPath }],
+		[validGlobalPath, invalidProjectPath, { status: "invalid", path: invalidProjectPath }],
 	] as const;
 	for (const [globalSource, projectSource, expected] of sourceCases) {
 		assert.deepEqual(authority.readSavedModelConfig(globalSource, projectSource), expected);

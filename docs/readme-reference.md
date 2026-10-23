@@ -1225,6 +1225,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | `/gentle:banner`                 | Configures startup banner rose, text logo, and color preset.        |
 | `/gentle:toggle-rose`            | Toggles the startup rose.                                           |
 | `/gentle:toggle-text-logo`       | Toggles the startup text logo.                                      |
+| `/gentle:toggle-stats`           | Toggles the startup runtime info panel (stats table).               |
 | `/gentle:banner-color`           | Selects a startup banner color preset.                              |
 | `/gentle:install-delegation` | Installs missing global delegation agents only; `--force` refreshes managed copies. |
 | `/gentle:install-review`     | Installs missing global review agents and chains only; `--force` refreshes managed copies. |

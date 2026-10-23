@@ -59,9 +59,10 @@ function valid(v: unknown): v is VisualProfile {
 		!/[\\/\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(v.themeName) &&
 		Object.values(ANIMATION_POLICY).includes(v.animationPolicy as AnimationPolicy) &&
 		record(b) &&
-		exact(b, ["showRose", "showTextLogo", "color"]) &&
+		(exact(b, ["showRose", "showTextLogo", "color"]) || exact(b, ["showRose", "showTextLogo", "showStats", "color"])) &&
 		typeof b.showRose === "boolean" &&
 		typeof b.showTextLogo === "boolean" &&
+		(b.showStats === undefined || typeof b.showStats === "boolean") &&
 		["pink", "cyan", "yellow", "green"].includes(b.color as string) &&
 		isVisualSettings(v.visual)
 	);

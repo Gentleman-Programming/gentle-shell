@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch, writeBannerConfig } from "../extensions/startup-banner.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -511,3 +511,107 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
 	});
 }
+
+test("startup banner supports showStats config option to hide the runtime stats table (#1244)", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-stats-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	// 1. Defaults to showStats: true when not present
+	const initial = await readBannerConfig(home);
+	assert.equal(initial.showStats ?? true, true, "default showStats is true");
+
+	// 2. Can persist and read showStats: false
+	await writeBannerConfig({ ...initial, showStats: false }, home);
+	const updated = await readBannerConfig(home);
+	assert.equal(updated.showStats, false, "reads showStats: false");
+
+	// 3. gentle:toggle-stats command toggles showStats
+	const commands = new Map<string, { handler: Function }>();
+	let notification = "";
+	const mockPi = {
+		on() {},
+		registerCommand(name: string, def: any) { commands.set(name, def); },
+		getCommands: () => [],
+		getAllTools: () => [],
+	} as unknown as ExtensionAPI;
+	startup(mockPi);
+
+	assert.ok(commands.has("gentle:toggle-stats"), "registers gentle:toggle-stats command");
+	const toggleHandler = commands.get("gentle:toggle-stats")!.handler;
+
+	const mockCtx = {
+		ui: {
+			notify(msg: string) { notification = msg; },
+		},
+	};
+
+	// Toggle from false -> true
+	await toggleHandler("", mockCtx);
+	const toggled = await readBannerConfig(home);
+	assert.equal(toggled.showStats, true, "toggled to true");
+	assert.match(notification, /stats=on/);
+
+	// Toggle from true -> false
+	await toggleHandler("", mockCtx);
+	const toggledBack = await readBannerConfig(home);
+	assert.equal(toggledBack.showStats, false, "toggled back to false");
+	assert.match(notification, /stats=off/);
+});
+
+test("when showStats is false, banner renders logo and rose without stats table rows (#1244)", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-render-stats-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	await writeBannerConfig({ showRose: true, showTextLogo: true, showStats: false, color: "pink" }, home);
+
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+
+	let start: Function;
+	let shutdown: Function;
+	let header: { render(width: number): string[]; dispose(): void };
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	t.after(() => shutdown?.());
+
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+	} } });
+
+	t.mock.timers.tick(200);
+	for (let i = 0; i < 5; i++) await Promise.resolve();
+
+	const rendered = stripAnsi(header!.render(160).join("\n"));
+	// Artwork is present
+	assert.match(rendered, /[\u2800-\u28ff]/, "rose is rendered");
+	// Stats table rows are absent
+	assert.doesNotMatch(rendered, /GIT:/, "GIT stats absent when showStats is false");
+	assert.doesNotMatch(rendered, /PATH:/, "PATH stats absent when showStats is false");
+	assert.doesNotMatch(rendered, /MCP:/, "MCP stats absent when showStats is false");
+	assert.doesNotMatch(rendered, /VER:/, "VER stats absent when showStats is false");
+});

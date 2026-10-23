@@ -1,0 +1,41 @@
+name: One Windows metadata native validation
+on:
+  push:
+    branches: [test/2360-windows-metadata-native]
+permissions:
+  contents: read
+jobs:
+  metadata:
+    if: github.repository == 'Gentleman-Programming/gentle-shell' && github.event_name == 'push' && github.ref == 'refs/heads/test/2360-windows-metadata-native' && github.run_attempt == 1
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.21.0
+      - name: Focused metadata cases once
+        shell: pwsh
+        env:
+          GENTLE_S11_METADATA: hosted-once
+        run: |
+          Remove-Item Env:NODE_OPTIONS, Env:NODE_PATH, Env:NODE_V8_COVERAGE -ErrorAction SilentlyContinue
+          $proof = Join-Path $env:RUNNER_TEMP 'windows-metadata-native'
+          New-Item -ItemType Directory -Path $proof -Force | Out-Null
+          & node --test --test-reporter=tap '--test-name-pattern=^native Windows: metadata (single |many |closed-environment timeout )' tests/installer-windows-bootstrap.test.ts 1> (Join-Path $proof 'stdout.tap') 2> (Join-Path $proof 'stderr.txt')
+          $code = $LASTEXITCODE
+          Set-Content -Path (Join-Path $proof 'exit.txt') -Value $code
+          Get-Content (Join-Path $proof 'stdout.tap')
+          Get-Content (Join-Path $proof 'stderr.txt')
+          exit $code
+      - name: Preserve native results including failures and skips
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-metadata-native-${{ github.run_id }}
+          path: ${{ runner.temp }}/windows-metadata-native/
+          if-no-files-found: warn
+          retention-days: 7

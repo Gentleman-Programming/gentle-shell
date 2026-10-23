@@ -1321,6 +1321,207 @@ test("native fixture compositions retain exact production fragments and no trans
 	assert.doesNotMatch(administrators, /GetCurrent\(\)|AddAccessRule|SetAccessRule/);
 });
 
+// S11 is deliberately inert outside the one admitted hosted job, even on Windows.
+const metadataUnavailable = process.platform !== "win32" || process.env.GENTLE_S11_METADATA !== "hosted-once"
+	|| process.env.GITHUB_ACTIONS !== "true" || process.env.GITHUB_REPOSITORY !== "Gentleman-Programming/gentle-shell"
+	|| process.env.GITHUB_REF !== "refs/heads/test/2360-windows-metadata-native" || process.env.GITHUB_RUN_ATTEMPT !== "1";
+const metadataOptions = { skip: metadataUnavailable ? "S11 hosted-only admission unavailable" : false };
+
+// No bootstrap stages, claims, probes or process-tree helpers are used here.
+// The only setup process protects this newly created root; ancestors are read-only.
+function metadataFixture(t: { skip: (reason: string) => void }) {
+	assert.equal(metadataUnavailable, false);
+	const f = fixture();
+	const setup = String.raw`
+$ErrorActionPreference = 'Stop';
+$root = [IO.Path]::GetFullPath($env:GENTLE_METADATA_ROOT);
+if ([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) { throw 'Fixture reparse' };
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
+$acl = [Security.AccessControl.DirectorySecurity]::new();
+$acl.SetOwner($me); $acl.SetAccessRuleProtection($true, $false);
+foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+  $identity = [Security.Principal.SecurityIdentifier]::new($sid);
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow');
+  $acl.AddAccessRule($rule);
+};
+[IO.Directory]::SetAccessControl($root, $acl);
+`;
+	try {
+		const result = spawnSync(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+			["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", setup], {
+				env: { ...process.env, GENTLE_METADATA_ROOT: f.root }, encoding: "utf8", timeout: 15000, maxBuffer: 65536,
+			});
+		assert.equal(result.error, undefined, "fixture setup process must complete");
+		if (result.status !== 0 && /UnauthorizedAccessException|SecurityException/.test(result.stderr)) {
+			t.skip("fixture-owned owner/DACL capability unavailable; no privilege escalation attempted");
+			f.cleanup(); return null;
+		}
+		assert.equal(result.status, 0, `fixture-owned ACL setup failed: ${result.stderr}`);
+		const directory = join(f.root, "directory"); mkdirSync(directory);
+		const file = join(directory, "ordinary.txt"); writeFileSync(file, "preserve");
+		// Failure here is a failure, never a denied-fixture success or inferred skip.
+		verifyWindowsStorage(directory, process.env);
+		verifyWindowsStorage(file, process.env);
+		return { ...f, directory, file };
+	} catch (error) { f.cleanup(); throw error; }
+}
+
+// Measure the capability rather than infer it from elevation. OWNER RIGHTS
+// suppresses implicit owner READ_CONTROL; user denial also covers group allows.
+// WRITE_DAC remains allowed for restoration using a fresh descriptor, no ACL read.
+function metadataDeniedAcl(root: string, target: string, restore = false) {
+	assert.equal(metadataUnavailable, false);
+	assert.equal(dirname(target), root);
+	const script = String.raw`
+$ErrorActionPreference = 'Stop';
+$root = [IO.Path]::GetFullPath($env:GENTLE_METADATA_ROOT);
+$target = [IO.Path]::GetFullPath($env:GENTLE_METADATA_TARGET);
+if ([IO.Path]::GetDirectoryName($target) -ne $root -or
+    ([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint)) { throw 'Not owned fixture file' };
+$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
+$acl = [Security.AccessControl.FileSecurity]::new();
+$acl.SetOwner($me); $acl.SetAccessRuleProtection($true, $false);
+foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+  $identity = [Security.Principal.SecurityIdentifier]::new($sid);
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow'));
+};
+if ($env:GENTLE_METADATA_RESTORE -ne 'true') {
+  $ownerRights = [Security.Principal.SecurityIdentifier]::new('S-1-3-4');
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($ownerRights, 'ChangePermissions', 'Allow'));
+  foreach ($identity in @($ownerRights, $me)) {
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'ReadPermissions', 'Deny'));
+  };
+};
+try { [IO.File]::SetAccessControl($target, $acl) }
+catch [UnauthorizedAccessException] { if ($env:GENTLE_METADATA_RESTORE -eq 'true') { throw }; 'setup-denied'; exit 0 };
+if ($env:GENTLE_METADATA_RESTORE -eq 'true') { 'restored'; exit 0 };
+try { $null = [IO.File]::GetAccessControl($target); 'still-readable' }
+catch [UnauthorizedAccessException] { 'read-control-denied' };
+`;
+	const result = spawnSync(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+		["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+			env: { ...process.env, GENTLE_METADATA_ROOT: root, GENTLE_METADATA_TARGET: target, GENTLE_METADATA_RESTORE: String(restore) },
+			encoding: "utf8", timeout: 15000, maxBuffer: 65536,
+		});
+	assert.equal(result.error, undefined, "denied fixture process must complete within bound");
+	assert.equal(result.status, 0, `denied fixture operation failed: ${result.stderr}`);
+	return result.stdout.trim();
+}
+
+for (const many of [false, true]) {
+	const prefix = `native Windows: metadata ${many ? "many" : "single"}`;
+	test(`${prefix} ordinary file and directory`, metadataOptions, (t) => {
+		const f = metadataFixture(t); if (!f) return;
+		try {
+			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([f.file, f.directory], process.env), [null, null]);
+			else { verifyWindowsStorage(f.file, process.env); verifyWindowsStorage(f.directory, process.env); }
+		} finally { f.cleanup(); }
+	});
+	test(`${prefix} missing is error, not unsafe; safe next continues`, metadataOptions, (t) => {
+		const f = metadataFixture(t); if (!f) return;
+		try {
+			const missing = join(f.root, "missing");
+			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([missing, f.file], process.env),
+				[{ check: "unchecked", at: missing }, null]);
+			else assert.throws(() => verifyWindowsStorage(missing, process.env),
+				(error: { check?: string; cause?: { stderr?: string } }) => error.check === undefined
+					&& /FileNotFoundException|DirectoryNotFoundException/.test(error.cause?.stderr ?? ""));
+		} finally { f.cleanup(); }
+	});
+	test(`${prefix} target and ancestor junction reject before ACL`, metadataOptions, (t) => {
+		const f = metadataFixture(t); if (!f) return;
+		try {
+			const junction = join(f.root, "junction");
+			try { symlinkSync(f.directory, junction, "junction"); }
+			catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) { t.skip(`junction capability unavailable: ${code}`); return; }
+				throw error;
+			}
+			// Two real descendants make the junction an ancestor, not merely parent.
+			const nested = join(f.directory, "parent", "child"); mkdirSync(nested, { recursive: true });
+			const through = join(junction, "parent", "child");
+			const paths = [junction, through];
+			const checks = ["target-reparse", "ancestor-reparse"];
+			if (many) {
+				const results = windowsModule.verifyWindowsStorageMany([...paths, f.file], process.env);
+				assert.deepEqual(results.slice(0, 2).map((entry: { check: string }) => entry.check), checks);
+				assert.equal(results[2], null);
+			} else paths.forEach((path, i) => assert.throws(() => verifyWindowsStorage(path, process.env),
+				(error: { check?: string; detail?: { at: string } }) => error.check === checks[i] && error.detail?.at === junction));
+			assert.equal(readFileSync(f.file, "utf8"), "preserve");
+			assert.deepEqual(readdirSync(f.directory).sort(), ["ordinary.txt", "parent"]);
+		} finally { f.cleanup(); }
+	});
+	test(`${prefix} file symlink rejects before ACL without target mutation`, metadataOptions, (t) => {
+		const f = metadataFixture(t); if (!f) return;
+		try {
+			const link = join(f.root, "file-link");
+			try { symlinkSync(f.file, link, "file"); }
+			catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) { t.skip(`file symlink capability unavailable after creation attempt: ${code}`); return; }
+				throw error;
+			}
+			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([link, f.file], process.env),
+				[{ check: "target-reparse", at: link }, null]);
+			else assert.throws(() => verifyWindowsStorage(link, process.env),
+				(error: { check?: string; detail?: { at: string } }) => error.check === "target-reparse" && error.detail?.at === link);
+			assert.equal(readFileSync(f.file, "utf8"), "preserve");
+		} finally { f.cleanup(); }
+	});
+	test(`${prefix} actual READ_CONTROL denial is error, not unsafe`, metadataOptions, (t) => {
+		const f = metadataFixture(t); if (!f) return;
+		const denied = join(f.root, "denied.txt");
+		writeFileSync(denied, "preserve denied target");
+		try {
+			verifyWindowsStorage(denied, process.env);
+			verifyWindowsStorage(f.file, process.env);
+			const capability = metadataDeniedAcl(f.root, denied);
+			if (capability === "setup-denied" || capability === "still-readable") {
+				t.skip(`READ_CONTROL denial attempted but unavailable: ${capability}; equivalence remains unproved`); return;
+			}
+			assert.equal(capability, "read-control-denied", "must observe actual UnauthorizedAccessException before error assertions");
+			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([denied, f.file], process.env),
+				[{ check: "unchecked", at: denied }, null]);
+			else assert.throws(() => verifyWindowsStorage(denied, process.env),
+				(error: { check?: string; cause?: { stderr?: string } }) => error.check === undefined
+					&& /UnauthorizedAccessException/.test(error.cause?.stderr ?? ""));
+		} finally {
+			// Restore from a fresh safe descriptor, never GetAccessControl on the
+			// denied target. Restoration failure is a failure, not a capability skip.
+			try {
+				assert.equal(metadataDeniedAcl(f.root, denied, true), "restored");
+				verifyWindowsStorage(denied, process.env);
+				assert.equal(readFileSync(denied, "utf8"), "preserve denied target");
+			} finally { f.cleanup(); }
+		}
+	});
+}
+
+test("native Windows: metadata closed-environment timeout safe first existing ancestor", metadataOptions, (t) => {
+	const f = metadataFixture(t); if (!f) return;
+	try {
+		const profile = join(f.root, "profile");
+		const local = join(profile, "AppData", "Local");
+		const roaming = join(profile, "AppData", "Roaming");
+		const temp = join(f.root, "tmp");
+		for (const path of [local, roaming, temp]) mkdirSync(path, { recursive: true });
+		const system = process.env.SystemRoot!;
+		// Exact old isolatedEnvironment key listing, historical constructor as DATA
+		// only. No PSModulePath, inherited environment or old probe chain.
+		const env = { HOME: profile, USERPROFILE: profile, APPDATA: roaming, LOCALAPPDATA: local,
+			TEMP: temp, TMP: temp, SystemRoot: system, WINDIR: system, ComSpec: join(system, "System32", "cmd.exe"),
+			PATHEXT: ".COM;.EXE;.BAT;.CMD", PATH: [dirname(process.execPath), join(system, "System32"), system].join(";"), CI: "true" };
+		assert.equal(existsSync(join(local, ".gentle-shell-bootstrap-tools.primary")), false);
+		const started = performance.now();
+		// Public default adapter retains its original 15000ms bound. ETIMEDOUT
+		// throws and FAILS; it is not an expected rejection or a passing diagnostic.
+		verifyWindowsStorage(local, env);
+		assert.ok(performance.now() - started < 15000, "safe first ancestor must complete within original bound");
+	} finally { f.cleanup(); }
+});
+
 interface NativeResult {
 	status: number | null;
 	stdout: string;

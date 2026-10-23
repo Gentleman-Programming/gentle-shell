@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
 	bindSessionProfile,
@@ -8,6 +8,16 @@ import {
 	resetSessionProfileBindingsForTesting,
 	sessionOrPinModelProfiles,
 } from "../lib/session-profile-binding.ts";
+
+// Suite-level reset hooks guarantee pristine state on entry and reliable teardown
+// on exit for every test in this focused file, protecting against mid-test exception leaks (#1768).
+beforeEach(() => {
+	resetSessionProfileBindingsForTesting();
+});
+
+afterEach(() => {
+	resetSessionProfileBindingsForTesting();
+});
 
 const ROUTING: AgentModelConfig = {
 	worker: { model: "zai/glm-4.7", thinking: "medium" },
@@ -160,4 +170,12 @@ test("each entrypoint still hands out private copies of the shared store", (t) =
 		"mutating one reader's copy never reaches another reader",
 	);
 	resetSessionProfileBindingsForTesting();
+});
+
+test("afterEach teardown cleans the binding store without manual in-test reset (#1768)", (t) => {
+	t.after(() => {
+		assert.equal(readSessionProfileBinding("session-teardown"), undefined, "store is cleaned after teardown");
+	});
+	bindSessionProfile("session-teardown", "work", ROUTING);
+	assert.equal(readSessionProfileBinding("session-teardown")?.name, "work");
 });

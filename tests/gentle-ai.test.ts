@@ -2047,6 +2047,10 @@ function profilesStoreFixture(t: test.TestContext) {
 	for (const dir of [pinRoot, pinCommonDir]) mkdirSync(dir, { recursive: true });
 	setProfilePinWorktreeResolverForTesting(() => ({ root: pinRoot, commonDir: pinCommonDir }));
 	t.after(() => setProfilePinWorktreeResolverForTesting());
+	// Fixture-level teardown ensures binding resets only run for profiles-panel tests,
+	// rather than suite-level hooks running across 100+ unrelated tests in this file (#1768).
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
 	const writePin = (path: string, profile: string) => {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile }, null, 2)}\n`);
@@ -3992,7 +3996,6 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 		store: readFileSync(storePath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
 	};
-	resetSessionProfileBindingsForTesting();
 	const notifications: Array<{ message: string; severity: string }> = [];
 	const ctx = {
 		cwd: fixture.root,
@@ -4026,7 +4029,6 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
 	assert.doesNotMatch(applied, /launch routing is unchanged/);
-	resetSessionProfileBindingsForTesting();
 });
 
 test("Enter switches only the selecting session's orchestrator and leaves shared defaults untouched", async (t) => {
@@ -4132,7 +4134,6 @@ test("a keeps the legacy global apply semantics", async (t) => {
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team" }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
 	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
-	resetSessionProfileBindingsForTesting();
 });
 
 test("Enter with a winning pin binds the session and never touches the pin layers", async (t) => {
@@ -4141,7 +4142,6 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	writePin(localPinPath, "old");
 	const pinBefore = readFileSync(localPinPath, "utf8");
 	const storeBefore = readFileSync(storePath, "utf8");
-	resetSessionProfileBindingsForTesting();
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
@@ -4155,7 +4155,6 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);
-	resetSessionProfileBindingsForTesting();
 });
 
 test("a session-bound panel renders the binding snapshot as the current routing", async (t) => {
@@ -4163,7 +4162,6 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		const rendered = renderComponent(panel);
@@ -4179,7 +4177,6 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
-	resetSessionProfileBindingsForTesting();
 });
 
 test("the now line reports the live session's orchestrator over the settings defaults", async (t) => {
@@ -4204,7 +4201,6 @@ test("the (session) marker survives a snapshot refresh of the panel list", async
 	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/alpha" } }, null, 2)}\n`);
-	t.after(() => resetSessionProfileBindingsForTesting());
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /team \(active\) \(session\)/);
@@ -4220,7 +4216,6 @@ test("the (session) marker survives a snapshot refresh of the panel list", async
 	const saved = readValidProfilesStore(storePath);
 	assert.equal(saved.profiles.team?.worker?.model, "openai/gamma", "the saved profile carries the session-bound routing");
 	assert.notEqual(saved.profiles.team?.worker?.model, "openai/alpha", "the global routing never leaks into the saved snapshot");
-	resetSessionProfileBindingsForTesting();
 });
 
 test("Enter without a parent session id fails loud and writes nothing", async (t) => {
@@ -4240,5 +4235,4 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(readFileSync(storePath, "utf8"), before);
 	assert.equal(existsSync(fixture.globalPath), false);
 	assert.equal(notifications.at(-1)?.severity, "warning");
-	resetSessionProfileBindingsForTesting();
 });

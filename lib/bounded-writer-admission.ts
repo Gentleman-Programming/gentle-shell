@@ -22,11 +22,162 @@ function isTaskScopedRepositoryRelativePath(value: string, backticked: boolean):
 	return !/[?*\[\]{}]/.test(path.split("/")[0]);
 }
 
+export function tryNormalizeInRepoAbsolutePath(candidate: string, targetRoot: string): string | undefined {
+	const normalizedCandidate = candidate.replace(/\\/g, "/");
+	const isWindowsDrive = /^[A-Za-z]:\//.test(normalizedCandidate);
+	const isPosixAbsolute = normalizedCandidate.startsWith("/");
+	if (!isWindowsDrive && !isPosixAbsolute) {
+		return undefined;
+	}
+
+	const roots = [targetRoot];
+	try {
+		const realRoot = realpathSync(targetRoot);
+		if (realRoot !== targetRoot) roots.push(realRoot);
+	} catch {
+		// Target root might not exist on disk in synthetic unit tests
+	}
+
+	for (const root of roots) {
+		const normRoot = root.replace(/\\/g, "/");
+		const rootDriveMatch = normRoot.match(/^([A-Za-z]:)(\/.*)?$/);
+		const candDriveMatch = normalizedCandidate.match(/^([A-Za-z]:)(\/.*)?$/);
+
+		let candPrefix = "";
+		let candPath = normalizedCandidate;
+		if (candDriveMatch) {
+			candPrefix = candDriveMatch[1]!.toLowerCase();
+			candPath = candDriveMatch[2] ?? "/";
+		} else if (isPosixAbsolute) {
+			candPrefix = "";
+			candPath = normalizedCandidate;
+		} else {
+			continue;
+		}
+
+		let rootPrefix = "";
+		let rootPath = normRoot;
+		if (rootDriveMatch) {
+			rootPrefix = rootDriveMatch[1]!.toLowerCase();
+			rootPath = rootDriveMatch[2] ?? "/";
+		} else if (normRoot.startsWith("/")) {
+			rootPrefix = "";
+			rootPath = normRoot;
+		} else {
+			const resolvedRoot = resolve(normRoot).replace(/\\/g, "/");
+			const resDrive = resolvedRoot.match(/^([A-Za-z]:)(\/.*)?$/);
+			if (resDrive) {
+				rootPrefix = resDrive[1]!.toLowerCase();
+				rootPath = resDrive[2] ?? "/";
+			} else {
+				rootPrefix = "";
+				rootPath = resolvedRoot;
+			}
+		}
+
+		if (candPrefix !== rootPrefix) continue;
+
+		const candSegments = candPath.split("/").filter((s) => s.length > 0 && s !== ".");
+		const collapsedCand: string[] = [];
+		for (const seg of candSegments) {
+			if (seg === "..") {
+				collapsedCand.pop();
+			} else {
+				collapsedCand.push(seg);
+			}
+		}
+		const collapsedCandPath = "/" + collapsedCand.join("/");
+
+		const rootSegments = rootPath.split("/").filter((s) => s.length > 0 && s !== ".");
+		if (rootSegments.length === 0) continue;
+
+		const collapsedRoot: string[] = [];
+		for (const seg of rootSegments) {
+			if (seg === "..") {
+				collapsedRoot.pop();
+			} else {
+				collapsedRoot.push(seg);
+			}
+		}
+		if (collapsedRoot.length === 0) continue;
+		const collapsedRootPath = "/" + collapsedRoot.join("/");
+
+		const prefixWithSlash = collapsedRootPath === "/" ? "/" : collapsedRootPath + "/";
+		const isMatch = rootDriveMatch
+			? collapsedCandPath.toLowerCase().startsWith(prefixWithSlash.toLowerCase())
+			: collapsedCandPath.startsWith(prefixWithSlash);
+
+		if (isMatch) {
+			const rel = collapsedCandPath.slice(prefixWithSlash.length);
+			if (rel.length > 0 && rel !== "." && !rel.startsWith("/")) {
+				// Verify symlinks do not escape target root when the root exists on disk.
+				// If the candidate or a segment of it does not exist yet, resolve its
+				// nearest existing ancestor within the root and verify it does not escape.
+				const existingRealRoots: string[] = [];
+				for (const r of roots) {
+					try {
+						existingRealRoots.push(realpathSync(r));
+					} catch {
+						// Synthetic root in unit tests does not exist on disk
+					}
+				}
+
+				if (existingRealRoots.length > 0) {
+					// Use resolve(root, rel) rather than candidate directly to avoid
+					// POSIX resolving Windows-style drive paths (e.g. C:\...) relative to process.cwd()
+					let checkPath: string | undefined = resolve(root, rel);
+					let realTarget: string | undefined;
+					while (checkPath) {
+						try {
+							realTarget = realpathSync(checkPath);
+							break;
+						} catch {
+							const parent = resolve(checkPath, "..");
+							if (parent === checkPath) {
+								break;
+							}
+							checkPath = parent;
+						}
+					}
+
+					if (realTarget) {
+						const escapes = !existingRealRoots.some((r) => {
+							const relToRoot = relative(r, realTarget!);
+							if (relToRoot === "" || (!relToRoot.startsWith("..") && !isAbsolute(relToRoot))) {
+								return true;
+							}
+							if (rootDriveMatch) {
+								const relLower = relative(r.toLowerCase(), realTarget!.toLowerCase());
+								return relLower === "" || (!relLower.startsWith("..") && !isAbsolute(relLower));
+							}
+							return false;
+						});
+						if (escapes) return undefined;
+					}
+				}
+				return rel;
+			}
+		}
+	}
+
+	return undefined;
+}
+
+export function resolveTargetRepositoryRoot(input: Record<string, unknown>, fallbackRoot?: string): string {
+	if (typeof input.repository_root === "string" && input.repository_root.trim().length > 0) {
+		return input.repository_root.trim();
+	}
+	if (typeof input.workspace_root === "string" && input.workspace_root.trim().length > 0) {
+		return input.workspace_root.trim();
+	}
+	return fallbackRoot ?? process.cwd();
+}
+
 // This is the same canonical parser used by both the tool hook and executor.
 // Prose cannot close the section, and repeated sections must agree exactly.
 // A rejection carries the concrete problem so the caller repairs only the
 // section instead of re-summarizing the whole task (gentle-shell#1713).
-function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[] } | { problem: string } {
+function parseAllowedEditSurfaces(values: readonly unknown[], targetRoot?: string): { paths: string[] } | { problem: string } {
 	let expected: string[] | undefined;
 	for (const value of values) {
 		if (typeof value !== "string") continue;
@@ -50,11 +201,17 @@ function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[]
 					const quotable = prose && !quoted && !unlisted.includes("`") && !/\p{Cc}|\p{Zl}|\p{Zp}/u.test(source) && isTaskScopedRepositoryRelativePath(unlisted, true);
 					const shown = (prose ? source.trim() : path).replace(/\p{Cc}|\p{Zl}|\p{Zp}/gu, " ");
 					const bounded = shown.length > 120 ? `${shown.slice(0, 120)}...` : shown;
-					return { problem: quotable
-						? `Line "${bounded}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`
-						: prose
-							? `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.`
-							: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
+					if (quotable) {
+						return { problem: `Line "${bounded}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.` };
+					}
+					if (prose) {
+						return { problem: `Line "${bounded}" is not a valid surface entry; move prose under a following Markdown heading.` };
+					}
+					const suggestedRelative = targetRoot ? tryNormalizeInRepoAbsolutePath(path, targetRoot) : undefined;
+					if (suggestedRelative && isTaskScopedRepositoryRelativePath(suggestedRelative, !!quoted)) {
+						return { problem: `Entry "${bounded}" is not a narrow repository-relative path (use "${suggestedRelative}" instead); remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
+					}
+					return { problem: `Entry "${bounded}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.` };
 				}
 				paths.push(path);
 			}
@@ -71,11 +228,12 @@ export function allowedEditSurfaces(...values: unknown[]): string[] | undefined 
 	return "paths" in parsed ? parsed.paths : undefined;
 }
 
-export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: true; reason: string } | undefined {
+export function rejectUnscopedBoundedWriterDispatch(input: unknown, defaultRoot?: string): { block: true; reason: string } | undefined {
 	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
 	const record = input as Record<string, unknown>;
 	if (typeof record.agent !== "string" || !WRITER_NAMES.includes(record.agent)) return undefined;
-	const parsed = parseAllowedEditSurfaces([record.task, record.context]);
+	const targetRoot = resolveTargetRepositoryRoot(record, defaultRoot);
+	const parsed = parseAllowedEditSurfaces([record.task, record.context], targetRoot);
 	if ("paths" in parsed) return undefined;
 	return { block: true, reason: `${WRITER_EDIT_SURFACE_REJECTION} ${parsed.problem} Resend the same task text unchanged except for that section; never shorten or re-summarize it.` };
 }

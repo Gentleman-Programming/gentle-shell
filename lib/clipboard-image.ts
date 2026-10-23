@@ -67,10 +67,15 @@ function readProcVersion(): string | undefined {
 	try { return readFileSync("/proc/version", "utf8"); } catch { return undefined; }
 }
 
-function supported(bytes: Uint8Array | undefined | null): ClipboardImage | null {
+function supported(bytes: Uint8Array | null): ClipboardImage | null {
 	if (!bytes || bytes.length === 0) return null;
 	const mimeType = sniffImageMimeType(bytes);
 	return mimeType ? { bytes, mimeType } : null;
+}
+
+// A failed read is "backend unavailable", exactly as Pi treats it, so the next backend still runs.
+function supportedRead(bytes: Buffer | undefined): ClipboardImage | null | undefined {
+	return bytes === undefined ? undefined : supported(bytes);
 }
 
 function preferredImageType(listing: Buffer): string | undefined {
@@ -84,7 +89,7 @@ async function viaWlPaste(run: ClipboardCommandRunner): Promise<ClipboardImage |
 	if (listing === undefined) return undefined;
 	const type = preferredImageType(listing);
 	if (!type) return null;
-	return supported(await run("wl-paste", ["--type", type, "--no-newline"]));
+	return supportedRead(await run("wl-paste", ["--type", type, "--no-newline"]));
 }
 
 async function viaXclip(run: ClipboardCommandRunner): Promise<ClipboardImage | null | undefined> {
@@ -92,7 +97,7 @@ async function viaXclip(run: ClipboardCommandRunner): Promise<ClipboardImage | n
 	if (listing === undefined) return undefined;
 	const type = preferredImageType(listing);
 	if (!type) return null;
-	return supported(await run("xclip", ["-selection", "clipboard", "-t", type, "-o"]));
+	return supportedRead(await run("xclip", ["-selection", "clipboard", "-t", type, "-o"]));
 }
 
 async function viaPowerShell(run: ClipboardCommandRunner): Promise<ClipboardImage | null> {
@@ -102,12 +107,15 @@ async function viaPowerShell(run: ClipboardCommandRunner): Promise<ClipboardImag
 	return supported(new Uint8Array(Buffer.from(base64, "base64")));
 }
 
+// Files copied in a file manager stay Pi's: it pastes their paths.
+async function hasCopiedFiles(native: NativeClipboard | undefined): Promise<boolean> {
+	const files = await native?.getFilePaths?.().catch(() => undefined);
+	return Boolean(files && files.length > 0);
+}
+
 async function viaNative(native: NativeClipboard | undefined): Promise<ClipboardImage | null> {
 	if (!native) return null;
-	// Files copied in Finder or Explorer stay Pi's: it pastes their paths.
-	const files = await native.getFilePaths?.().catch(() => undefined);
-	if (files && files.length > 0) return null;
-	return supported(await native.getImage().catch(() => undefined));
+	return supported((await native.getImage().catch(() => undefined)) ?? null);
 }
 
 /**
@@ -122,14 +130,16 @@ export async function readClipboardImage(options: ClipboardImageOptions = {}): P
 	const native = options.native ?? getNativeClipboard;
 	if (env.TERMUX_VERSION) return null;
 	try {
-		if (platform !== "linux") return await viaNative(native());
+		const nativeClipboard = native();
+		if (await hasCopiedFiles(nativeClipboard)) return null;
+		if (platform !== "linux") return await viaNative(nativeClipboard);
 		const wsl = isWsl(env, options.procVersion);
 		let image: ClipboardImage | null | undefined;
 		if (env.WAYLAND_DISPLAY || env.XDG_SESSION_TYPE === "wayland" || wsl) image = await viaWlPaste(run);
 		if (image === undefined) image = await viaXclip(run);
 		// The Linux clipboard never receives Windows screenshots (Win+Shift+S).
 		if (!image && wsl) image = (await viaPowerShell(run)) ?? image;
-		if (image === undefined) image = await viaNative(native());
+		if (image === undefined) image = await viaNative(nativeClipboard);
 		return image ?? null;
 	} catch {
 		return null;

@@ -6393,34 +6393,51 @@ async function pastedChipPrompt(model?: ExtensionContext["model"]) {
 	editor.handleInput("\x1bv");
 	await settle();
 	const input = (text: string, source = "interactive") => handlers.get("input")?.[0]?.({ type: "input", text, source }, ctx);
-	return { editor, ui, input };
+	// Pi's real order: the editor empties its draft, then onSubmit hands the
+	// text to session.prompt(), which runs the input handlers.
+	const submit = () => {
+		let sent = "";
+		editor.onSubmit = (text) => { sent = text; };
+		editor.handleInput("\r");
+		return input(sent);
+	};
+	return { editor, ui, input, submit };
 }
 
 test("pasted image chips are submitted as real image attachments (gentle-shell#2464)", async () => {
-	const { editor, ui, input } = await pastedChipPrompt();
-	assert.equal(editor.getText(), "what is this? [Image #1]");
+	const { editor, ui, input, submit } = await pastedChipPrompt();
+	assert.equal(editor.getText(), "what is this? [Image#1]");
 	const strip = (ui.widgets.get("gentle-shell-image-attachments") as (tui: unknown, theme: unknown) => { render(width: number): string[] })(fakeTui, plainTheme);
-	assert.equal(stripAnsi(strip.render(80)[0] ?? ""), "[Image #1] png · 2×1 · 24 B");
-	assert.deepEqual(input("what is this? [Image #1]"), {
+	assert.equal(stripAnsi(strip.render(80)[0] ?? ""), "[Image#1] png · 2×1 · 24 B");
+	assert.deepEqual(submit(), {
 		action: "transform",
-		text: "what is this? [Image #1]",
+		text: "what is this? [Image#1]",
 		images: [{ type: "image", data: Buffer.from(CHIP_PNG).toString("base64"), mimeType: "image/png" }],
 	});
-	// The registry empties on submit: the next prompt is ordinary text again.
-	assert.deepEqual(input("what is this? [Image #1]"), { action: "continue" });
+	// Sent images are released: recalling the same text later is ordinary text.
+	assert.equal(editor.getText(), "");
+	assert.deepEqual(strip.render(80), []);
+	assert.deepEqual(input("what is this? [Image#1]"), { action: "continue" });
+});
+
+test("a pasted image chip deleted before submit is never sent (gentle-shell#2464)", async () => {
+	const { editor, submit } = await pastedChipPrompt();
+	editor.handleInput("\x7f");
+	assert.equal(editor.getText(), "what is this? ");
+	assert.deepEqual(submit(), { action: "continue" });
 });
 
 test("pasted image chips leave non-interactive input and deleted chips untouched (gentle-shell#2464)", async () => {
 	const { input } = await pastedChipPrompt();
-	assert.deepEqual(input("[Image #1] from an extension", "extension"), { action: "continue" });
+	assert.deepEqual(input("[Image#1] from an extension", "extension"), { action: "continue" });
 	assert.deepEqual(input("the chip was deleted"), { action: "continue" });
 });
 
 test("pasted image chips warn instead of sending images a text-only model rejects (gentle-shell#2464)", async () => {
 	const { ui, input } = await pastedChipPrompt({ id: "text-only", provider: "acme", input: ["text"] } as unknown as ExtensionContext["model"]);
-	assert.deepEqual(input("what is this? [Image #1]"), {
+	assert.deepEqual(input("what is this? [Image#1]"), {
 		action: "transform",
-		text: "what is this? [Image #1 omitted: the current model does not accept images]",
+		text: "what is this? [Image#1 omitted: the current model does not accept images]",
 		images: [],
 	});
 	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));

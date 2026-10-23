@@ -396,7 +396,7 @@ interface PromptEditorDeps {
 	 * generic "working…" label. Never applied to IDLE or QUEUED.
 	 */
 	workingLabel?: () => string | undefined;
-	/** Pasted images become atomic `[Image #N]` chips; absent, Pi's paste handler runs unchanged. */
+	/** Pasted images become atomic `[Image#N]` chips; absent, Pi's paste handler runs unchanged. */
 	attachments?: ImageAttachments;
 	readClipboardImage?: () => Promise<ClipboardImage | null>;
 }
@@ -476,6 +476,7 @@ export class GentlePromptEditor extends CustomEditor {
 	// fallback and routes every paste key, Vim NORMAL included, to pasteImage.
 	private piPasteImage: (() => void) | undefined;
 	private pastingImage = false;
+	private disposed = false;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -500,18 +501,31 @@ export class GentlePromptEditor extends CustomEditor {
 		});
 	}
 
+	/** Registered image chips on `line`; the Vim adapter keeps NORMAL motions out of them. */
+	atomicSpans(line: string): Array<{ start: number; end: number }> {
+		return this.deps.attachments?.spans(line) ?? [];
+	}
+
 	/** Insert the clipboard image as a chip, or hand the paste to Pi. */
 	private pasteImage(): void {
-		const fallback = this.piPasteImage;
 		const attachments = this.deps.attachments;
 		const read = this.deps.readClipboardImage;
-		if (!attachments || !read) { fallback?.(); return; }
+		if (!attachments || !read) { this.piPasteImage?.(); return; }
 		// The Windows clipboard read on WSL takes about a second; a repeated key
 		// press during it must not insert a second chip or a stray path.
 		if (this.pastingImage) return;
 		this.pastingImage = true;
-		void read().then((image) => {
-			if (!image) { fallback?.(); return; }
+		void this.insertClipboardImage(attachments, read).finally(() => { this.pastingImage = false; });
+	}
+
+	private async insertClipboardImage(attachments: ImageAttachments, read: () => Promise<ClipboardImage | null>): Promise<void> {
+		let image: ClipboardImage | null;
+		try { image = await read(); } catch { image = null; }
+		// A read that outlives this editor (session switch, quit) must not
+		// register bytes in the next session or write into a disposed prompt.
+		if (this.disposed) return;
+		try {
+			if (!image) { this.piPasteImage?.(); return; }
 			const { token } = attachments.add(image);
 			const cursor = this.getCursor();
 			const line = this.getLines()[cursor.line] ?? "";
@@ -519,7 +533,10 @@ export class GentlePromptEditor extends CustomEditor {
 			const after = cursor.col < line.length && !/\s/.test(line[cursor.col] ?? "") ? " " : "";
 			this.insertTextAtCursor(`${before}${token}${after}`);
 			this.deps.requestRender();
-		}, () => fallback?.()).finally(() => { this.pastingImage = false; });
+		} catch (error) {
+			// Never let a paste reject unhandled: Node 24 ends the process on it.
+			this.deps.notifyCompatibility?.(`Image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	setAnimationPolicy(policy: AnimationPolicy): void {
@@ -1178,6 +1195,7 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		this.stopPulse();
 	}
 
@@ -2125,7 +2143,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt
-			? (_tui, theme) => imageAttachmentsWidget(imageAttachments, () => prompt?.getText() ?? "", theme, () => modelAcceptsImages(ctx.model))
+			// Kitty re-sends a full image block whenever content above it moves, so
+			// thumbnails show only while idle; while the agent streams, labels only.
+			? (_tui, theme) => imageAttachmentsWidget(imageAttachments, () => prompt?.getText() ?? "", theme, () => modelAcceptsImages(ctx.model),
+				() => getCapabilities().images !== null && ctx.isIdle())
 			: undefined);
 		// Hide native feedback only when our petal replaces it. Native transcript
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
@@ -2146,7 +2167,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// the model sees the image without calling `read` on a temp-file path.
 	pi.on("input", (event, ctx) => {
 		if (event.source !== "interactive" || imageAttachments.size === 0) return { action: "continue" };
-		const submitted = imageAttachments.submit(event.text, modelAcceptsImages(ctx.model));
+		// The editor may already hold the next draft (a prompt Pi queued during
+		// compaction): its chips stay registered for their own submit.
+		const submitted = imageAttachments.submit(event.text, modelAcceptsImages(ctx.model), prompt?.getText() ?? "");
 		if (!submitted) return { action: "continue" };
 		if (submitted.omitted > 0 && ctx.hasUI) {
 			const count = submitted.omitted === 1 ? "1 pasted image was" : `${submitted.omitted} pasted images were`;

@@ -82,6 +82,23 @@ test("macOS reads the native clipboard but leaves copied files to Pi", async () 
 	assert.equal(await readClipboardImage({ env: {}, platform: "win32", native: () => undefined }), null);
 });
 
+test("a failed wl-paste read falls through to xclip, as Pi does", async () => {
+	const { run, calls } = runner({
+		"wl-paste --list-types": Buffer.from("image/png\n"),
+		"xclip -selection": (call) => call.args.includes("TARGETS") ? Buffer.from("image/png\n") : Buffer.from(PNG_2X1),
+	});
+	const image = await readClipboardImage({ env: { WAYLAND_DISPLAY: "wayland-0" }, platform: "linux", run, native: () => undefined, procVersion: noProc });
+	assert.equal(image?.mimeType, "image/png");
+	assert.deepEqual(calls.map((call) => call.command), ["wl-paste", "wl-paste", "xclip", "xclip"]);
+});
+
+test("files copied in a Linux file manager stay Pi's even when an image is offered too", async () => {
+	const { run, calls } = runner({ "wl-paste --list-types": Buffer.from("image/png\ntext/uri-list\n") });
+	const native = () => ({ getText: async () => null, getImage: async () => PNG_2X1, getFilePaths: async () => ["/home/me/shot.png"] });
+	assert.equal(await readClipboardImage({ env: { WAYLAND_DISPLAY: "wayland-0" }, platform: "linux", run, native, procVersion: noProc }), null);
+	assert.equal(calls.length, 0);
+});
+
 test("image formats are identified by signature", () => {
 	assert.equal(sniffImageMimeType(PNG_2X1), "image/png");
 	assert.equal(sniffImageMimeType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");

@@ -4063,10 +4063,10 @@ function profilePinScopeNote(cwd: string): string | undefined {
  * write that already succeeded must not become an error because a probe about sharing
  * it failed.
  */
-function repoDeclarationSharing(root: string, path: string): string {
+export function repoDeclarationSharing(root: string, path: string): string {
 	const relativePath = relative(root, path).split(sep).join("/");
 	const run = (...arguments_: string[]): string =>
-		execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
+		execFileSync("git", arguments_, { cwd: root, encoding: "utf8", windowsHide: true }).trim();
 	try {
 		// Exit 0 means gitignore matches the path; the exact negation line is what makes
 		// the declaration committable again.

@@ -477,6 +477,9 @@ export class GentlePromptEditor extends CustomEditor {
 	private piPasteImage: (() => void) | undefined;
 	private pastingImage = false;
 	private disposed = false;
+	// Counts submitted drafts, so a clipboard read that resolves after its
+	// draft was sent never lands in (and rides along with) the next message.
+	private submittedDrafts = 0;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -488,9 +491,17 @@ export class GentlePromptEditor extends CustomEditor {
 		// SAFETY: Pi's Editor routes cursor movement, wrapping and deletion through
 		// its private segment(). Wrapping it only merges registered chips into one
 		// segment; if a future Pi drops the method, chips degrade to plain text.
-		const host = this as unknown as { segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }> };
+		const host = this as unknown as {
+			segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }>;
+			submitValue?: () => void;
+		};
 		const segment = host.segment;
 		if (typeof segment === "function") host.segment = (text, mode) => attachments.segment(text, segment.call(this, text, mode));
+		// SAFETY: Pi empties the draft in its private submitValue() before onSubmit.
+		// Counting here only marks the draft boundary; if a future Pi drops the
+		// method, a late read falls back to landing in the next draft.
+		const submitValue = host.submitValue;
+		if (typeof submitValue === "function") host.submitValue = () => { this.submittedDrafts += 1; submitValue.call(this); };
 		// Undefined until Pi installs its handler, so Pi's `if (!onPasteImage)`
 		// wiring still runs; afterwards every read returns the chip handler.
 		Object.defineProperty(this, "onPasteImage", {
@@ -519,11 +530,18 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	private async insertClipboardImage(attachments: ImageAttachments, read: () => Promise<ClipboardImage | null>): Promise<void> {
+		const draft = this.submittedDrafts;
 		let image: ClipboardImage | null;
 		try { image = await read(); } catch { image = null; }
 		// A read that outlives this editor (session switch, quit) must not
 		// register bytes in the next session or write into a disposed prompt.
 		if (this.disposed) return;
+		// The draft this paste belonged to was already sent: neither attach the
+		// image to the next message nor run Pi's fallback into the new draft.
+		if (this.submittedDrafts !== draft) {
+			if (image) this.deps.notifyCompatibility?.("Image paste discarded: the message was sent before the clipboard finished reading. Paste again to attach it.");
+			return;
+		}
 		try {
 			if (!image) { this.piPasteImage?.(); return; }
 			const { token } = attachments.add(image);

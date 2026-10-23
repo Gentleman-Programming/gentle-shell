@@ -91,6 +91,7 @@ While a draft holds chips, a strip above the prompt lists each one:
 - **What stays Pi's:** files copied in a file manager, text, and image formats other than PNG, JPEG, WebP and GIF go through Pi's own paste handler unchanged.
 - **Models without image input:** the strip warns before you send. If you send anyway, each chip becomes `[Image#N omitted: the current model does not accept images]` and a notice explains why, so nothing is dropped silently.
 - **Numbering:** numbers keep counting up for the whole session, so a chip recalled from prompt history never points at a newer image. A recalled chip is plain text; paste the image again to attach it.
+- **Sending while the clipboard is read:** reading the Windows clipboard on WSL takes about a second. If you send the message before it finishes, the image is discarded with a notice instead of landing in the next draft; paste again to attach it.
 - **Vim NORMAL:** the paste key enters INSERT and pastes the chip. NORMAL motions step over a chip as one unit; an operator whose range covers a chip removes it whole.
 - **Terminals that capture the paste key:** some terminals keep `ctrl+v` for their own paste, and nothing reaches Pi when the clipboard holds only an image (Warp on Windows does this). Bind a second key in `~/.pi/agent/keybindings.json`, then restart:
 

@@ -8,6 +8,29 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { INSTALLER_ASSETS, buildInstallerBundles, bundleFiles, relativeReferences } from "../scripts/build-installer-bundles.mjs";
 import { installerPaths } from "../scripts/verify-package-files.mjs";
+import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
+
+test("candidate Engram acquisition pins cover the six public 3.5.2 archives", () => {
+	const pins = [
+		["darwin", "x64", "darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
+		["darwin", "arm64", "darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
+		["linux", "x64", "linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
+		["linux", "arm64", "linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
+		["win32", "x64", "windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
+		["win32", "arm64", "windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
+	] as const;
+	for (const [platform, arch, suffix, digest, size] of pins) {
+		const descriptor = artifactFor("engram", platform, arch);
+		assert.deepEqual(descriptor, {
+			name: "engram", version: "3.5.2", platform, arch,
+			url: `https://github.com/Gentleman-Programming/engram/releases/download/v3.5.2/engram_3.5.2_${suffix}`,
+			integrity: `sha256-${digest}`, size, maxBytes: size,
+			redirectHosts: ["objects.githubusercontent.com", "release-assets.githubusercontent.com"],
+		});
+	}
+	assert.equal(engramPinVersion, "3.5.2");
+	assert.throws(() => artifactFor("engram", "linux", "ia32"), /Unsupported acquisition target/);
+});
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const posixOnly = { skip: process.platform === "win32" };

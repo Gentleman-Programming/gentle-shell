@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>
-    <a href="https://gentle-ai.gentlemanprogramming.com/">Website</a>
+    <a href="https://gentlemanprogramming.com/">Website</a>
     &nbsp;·&nbsp;
     <a href="#get-started">Quickstart</a>
     &nbsp;·&nbsp;

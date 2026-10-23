@@ -113,7 +113,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { bindSessionProfile, clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -9927,6 +9927,9 @@ function createGentleAiExtensionForTesting(
 		try { candidateViews?.cleanupAll(); } catch { /* Preserve failed owned views for later recovery. */ }
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") {
+			// The session is ending, not reloading: release its profile binding so the process-wide store does not grow.
+			const endingSessionId = context.sessionManager?.getSessionId?.();
+			if (typeof endingSessionId === "string" && endingSessionId.length > 0) clearSessionProfileBinding(endingSessionId);
 			if (childStandingReviewPermissionLease !== undefined) childStandingReviewPermissionLease.closeIfCurrent();
 			else childStandingReviewPermission?.close();
 			revokeCurrentReviewSessionPermission(context);

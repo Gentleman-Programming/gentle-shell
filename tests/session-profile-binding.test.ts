@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
 	bindSessionProfile,
@@ -159,5 +165,28 @@ test("each entrypoint still hands out private copies of the shared store", (t) =
 		"zai/glm-4.7",
 		"mutating one reader's copy never reaches another reader",
 	);
+	resetSessionProfileBindingsForTesting();
+});
+
+test("the Gentle AI shutdown hook releases the ending session's binding but keeps it across reload", async t => {
+	const home = mkdtempSync(join(tmpdir(), "session-binding-shutdown-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	resetSessionProfileBindingsForTesting();
+	const cwd = process.cwd();
+	const runtime = createExtensionRuntime();
+	const extension = await loadExtensionFromFactory(createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: { GENTLE_PI_CONFIG_HOME: home } }), cwd, createEventBus(), runtime);
+	const manager = SessionManager.inMemory(cwd);
+	const runner = new ExtensionRunner([extension], runtime, cwd, manager, {} as never);
+	runner.setUIContext({ notify() {}, setStatus() {}, setWidget() {}, getAllThemes: () => [{ name: "test" }] } as unknown as ExtensionUIContext, "tui");
+	runner.bindCommandContext();
+	const sessionId = manager.getSessionId();
+	bindSessionProfile(sessionId, "work", ROUTING);
+	bindSessionProfile("other-session", "personal", ROUTING);
+	await runner.emit({ type: "session_shutdown", reason: "reload" });
+	assert.equal(readSessionProfileBinding(sessionId)?.name, "work", "reload keeps the same session's binding");
+	await runner.emit({ type: "session_shutdown", reason: "quit" });
+	assert.equal(readSessionProfileBinding(sessionId), undefined, "an ended session releases its binding");
+	assert.equal(readSessionProfileBinding("other-session")?.name, "personal", "other sessions are untouched");
+	runner.invalidate();
 	resetSessionProfileBindingsForTesting();
 });

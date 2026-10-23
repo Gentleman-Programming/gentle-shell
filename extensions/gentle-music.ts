@@ -76,7 +76,10 @@ export interface GentleMusicDeps {
 /** First executable named `name` on PATH, honoring PATHEXT on Windows. */
 export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
 	const dirs = (env.PATH ?? env.Path ?? "").split(delimiter).filter((entry) => entry.length > 0);
-	const extensions = platform === "win32" ? (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
+	// Without a shell only real executables start on Windows: .cmd/.bat shims would fail to spawn.
+	const extensions = platform === "win32"
+		? (env.PATHEXT || ".COM;.EXE").split(";").filter((extension) => /^\.(com|exe)$/i.test(extension))
+		: [""];
 	for (const dir of dirs) {
 		for (const extension of extensions) {
 			const candidate = join(dir, name + extension);
@@ -204,8 +207,8 @@ async function handOverTerminal<T>(tui: TerminalOwner, signals: MusicSignals, ru
 	// Ctrl+C belongs to the child while it owns the terminal (Pi's ctrl+z suspend does the same).
 	const ignoreSigint = () => {};
 	signals.on("SIGINT", ignoreSigint);
-	tui.stop();
 	try {
+		tui.stop();
 		return await run();
 	} finally {
 		signals.off("SIGINT", ignoreSigint);
@@ -224,7 +227,8 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 	const openTui = async (ctx: ExtensionContext, stream: GentleStreamCommand, mood: string | undefined) => {
 		const args = [...stream.prefix, ...musicTuiArgs({ model: ctx.model, mood })];
 		const result = await ctx.ui.custom<InheritResult>((tui, _theme, _keybindings, done) => {
-			void handOverTerminal(tui, signals, () => runInherit(spawn, stream.command, args)).then(done);
+			// A failing handover must still settle the custom UI, or Pi would wait for it forever.
+			void handOverTerminal(tui, signals, () => runInherit(spawn, stream.command, args)).then(done, (error: unknown) => done({ error }));
 			// The editor slot stays empty while the child owns the terminal.
 			const placeholder: Component = { render: () => [], invalidate: () => {} };
 			return placeholder;

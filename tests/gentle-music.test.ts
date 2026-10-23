@@ -37,13 +37,13 @@ function fakePi() {
 	return { pi, commands, fire };
 }
 
-function fakeContext(mode = "tui", model: { provider: string; id: string } | null = { provider: "anthropic", id: "claude-sonnet-5-5" }) {
+function fakeContext(mode = "tui", model: { provider: string; id: string } | null = { provider: "anthropic", id: "claude-sonnet-5-5" }, failing?: "stop" | "start") {
 	const notices: Array<[string, string | undefined]> = [];
 	const calls: string[] = [];
 	let settled = false;
 	const tui = {
-		stop: () => calls.push("stop"),
-		start: () => calls.push("start"),
+		stop: () => { calls.push("stop"); if (failing === "stop") throw new Error("terminal busy"); },
+		start: () => { calls.push("start"); if (failing === "start") throw new Error("terminal gone"); },
 		requestRender: (force?: boolean) => calls.push(`render:${force === true}`),
 	};
 	const ctx = {
@@ -302,4 +302,34 @@ test("the shutdown stop never blocks longer than its budget", async () => {
 	await fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, context.ctx);
 	assert.ok(Date.now() - started < 1000);
 	assert.ok(context.calls.includes("kill"), "the hung ctl is killed");
+});
+
+test("a failing terminal handover still settles the command, reports it and removes the Ctrl+C guard", async () => {
+	for (const failing of ["stop", "start"] as const) {
+		const { pi, commands } = fakePi();
+		const context = fakeContext("tui", undefined, failing);
+		const { spawn, spawned } = fakeSpawn([{ code: 0 }], context.calls);
+		const { listeners, signals } = fakeSignals();
+		gentleMusic(pi, { which: onPath({ "gentle-stream": "/bin/gentle-stream" }), spawn, signals });
+		await commands.get(MUSIC_COMMAND_NAME)!.handler("", context.ctx);
+		assert.equal(context.settled(), true, `done is called when tui.${failing}() throws`);
+		assert.equal(listeners.size, 0, "the SIGINT guard is removed");
+		assert.equal(spawned.length, failing === "stop" ? 0 : 1);
+		assert.equal(context.notices.length, 1);
+		assert.match(context.notices[0]![0], failing === "stop" ? /terminal busy/ : /terminal gone/);
+	}
+});
+
+test("Windows .cmd and .bat shims are not picked, so resolution falls back to uvx", (t: TestContext) => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-music-win-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	writeFileSync(join(dir, "gentle-stream.CMD"), "@echo off\n");
+	writeFileSync(join(dir, "uvx.BAT"), "@echo off\n");
+	writeFileSync(join(dir, "uv.EXE"), "");
+	const env = { Path: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+	assert.equal(findOnPath("gentle-stream", env, "win32"), undefined);
+	assert.equal(findOnPath("uvx", env, "win32"), undefined);
+	assert.equal(findOnPath("uv", env, "win32"), join(dir, "uv.EXE"));
+	const resolved = resolveGentleStream((name) => findOnPath(name, env, "win32"));
+	assert.equal(resolved?.command, join(dir, "uv.EXE"));
 });

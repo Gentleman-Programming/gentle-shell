@@ -1775,7 +1775,12 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
-const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit"]);
+// Tools whose `path` input names the file or directory they reach. The guard
+// sees only that input: a search scoped to a directory (grep over ".", with or
+// without a glob) still reads whatever the directory contains, and bash is not
+// covered here. Keeping secret bytes out of those results is a separate design
+// (gentle-shell#2349).
+const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
 	"paths",

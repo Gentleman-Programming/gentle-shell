@@ -362,6 +362,10 @@ Expanded cards reserve at most one third of the terminal height (up to 16 rows, 
 - Only top-level session files are read: subagent runs are not included, and the panel says so. The first opening scans every file; later openings reread only files that changed.
 - There is no default shortcut. Set `GENTLE_PI_STATS_VIEW_KEY` (for example `alt+t`) to bind one; `off` or empty leaves it unbound.
 
+### Gentle Music
+
+`/gentle:music [mood]` hands the terminal to the [gentle-stream](https://github.com/Gentleman-Programming/gentle-stream) player, like Pi's external editor, passing the mood and the session model. In the player, `b` returns to Pi with the music playing and `q` returns and stops it. `/gentle:music next`, `pause`, `play`, `stop`, and `status` control the music without leaving Pi. Quitting Pi after using the command stops the music. gentle-stream runs from `PATH`, or through `uvx`/`uv` when it is not installed. See [Gentle Music](gentle-music.md).
+
 ### Bridge providers
 
 Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake.

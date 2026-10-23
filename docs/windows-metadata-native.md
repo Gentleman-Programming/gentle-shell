@@ -31,7 +31,8 @@ reparse-before-ACL rejection from a metadata error or generic unsafe result.
 Separate single/batch file-symlink cases attempt Node `symlinkSync(..., 'file')`,
 require `target-reparse`, and preserve the target contents. Junction and file
 symlink creation skip only after actual EPERM/EACCES/ENOTSUP capability errors.
-Unexpected errors FAIL. Neither link kind has native results yet.
+Unexpected errors FAIL. See the failed S11 results below; link coverage is not
+uniformly proved.
 
 Single/batch denied-file cases first require safe baselines, then attempt a
 protected fixture-file DACL with explicit current-user/trusted FullControl,
@@ -45,12 +46,33 @@ with that native diagnostic and no known unsafe code; batch must return
 `unchecked` followed by a safe result. Setup denied or still-readable observations
 explicitly SKIP with the actual capability reason, never count as denied proof.
 
-A finally block applies a fresh safe FileSecurity descriptor without reading the
-denied ACL, verifies restored public acceptance and contents, then cleans up.
-Restoration errors FAIL. All mutations stay within the newly owned fixture tree;
+S12 canonicalizes only the new fixture ROOT with `realpathSync.native` before
+constructing descendants, retaining the original cleanup closure. The shared
+fixture already uses ordinary `realpathSync`; that did not prevent the observed
+8.3/long-name mismatch. Final junction/symlink paths are never resolved to targets.
+Reparse codes and exact link locations remain mandatory; separate callback field
+assertions expose actual mismatches.
+
+Restoration applies a fresh safe FileSecurity DACL without reading the denied
+ACL or setting owner/group/audit information. Initial denial still sets the owner
+and retains explicit WRITE_DAC. Avoiding SetOwner reduces unnecessary permission
+requirements, but does not prove the native restoration failure fixed.
+Restoration verifies public acceptance and contents, then cleanup is attempted.
+Primary assertion, restoration/verification and cleanup failures are collected
+independently in order: one is rethrown unchanged, multiple become AggregateError.
+Every metadata case, including ordinary/missing/link/timeout cases and failed
+setup, preserves primary and cleanup failures using the same bounded collector.
+Capability reasons are carried as data: `t.skip` is called only after all required
+restoration/verification and cleanup stages succeed. This ordering matters because
+Node can report a previously marked skip even when a later stage throws.
+Restoration or cleanup errors therefore FAIL, never PASS/SKIP.
+Pure source checks require the native ROOT literal and descendant construction to
+be present before checking their order; missing/ordinary-realpath negative controls
+must fail that contract. These checks are not native canonicalization proof.
+All mutations stay within the newly owned fixture tree;
 no privilege enabling, impersonation, policy change or fabricated errors are used.
 Setup uses direct .NET constructors, not New-Object/module autoload. Native denial
-and restoration remain unverified until the single authorized hosted run. Missing
+and restoration remain unverified after that failed run. Missing
 errors and READ_CONTROL denial do not prove every possible metadata/I/O failure.
 
 The timeout test recreates the original closed environment key-for-key, with
@@ -59,6 +81,18 @@ construction. It injects no PSModulePath. It checks the first existing synthetic
 ancestor of the absent primary tools path, using Windows PowerShell 5.1 from
 SystemRoot and the unchanged 15s default adapter bound. Safe acceptance within
 that bound is required; ETIMEDOUT is FAILURE, not an expected passing result.
+
+## Observed S11 and local S12 boundary
+
+Run `39879256076` remains FAILED: **6 PASS / 5 FAIL / 0 SKIP**. The batch
+file-symlink failure confirms short ROOT versus long reported path mismatch;
+the two single reparse callback failures do not prove that same cause. The ROOT
+candidate addresses the confirmed alias, not every possible failure cause.
+Both denied cases failed during restoration, potentially masking primary errors.
+The original closed-environment safe timeout case passed on that runner; this is
+not full Shell proof. No S12 native rerun occurred or is authorized here.
+Local callback/source checks are inert evidence only: native alias handling,
+denial and DACL-only restoration remain UNVERIFIED, not GREEN.
 
 ## Evidence boundary
 

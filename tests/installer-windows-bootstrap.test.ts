@@ -1327,6 +1327,106 @@ const metadataUnavailable = process.platform !== "win32" || process.env.GENTLE_S
 	|| process.env.GITHUB_REF !== "refs/heads/test/2360-windows-metadata-native" || process.env.GITHUB_RUN_ATTEMPT !== "1";
 const metadataOptions = { skip: metadataUnavailable ? "S11 hosted-only admission unavailable" : false };
 
+// Keep primary, restoration and cleanup evidence independently, in attempt order.
+function metadataAttempts(...attempts: (() => void)[]) {
+	const errors: unknown[] = [];
+	for (const attempt of attempts) {
+		try { attempt(); } catch (error) { errors.push(error); }
+	}
+	if (errors.length === 1) throw errors[0];
+	if (errors.length > 1) throw new AggregateError(errors, "Metadata fixture attempts failed");
+}
+
+test("metadata fixture inert attempts preserve all failures and cleanup order", () => {
+	const errors = [new Error("primary"), new Error("restore"), new Error("cleanup")];
+	const order: number[] = [];
+	assert.throws(() => metadataAttempts(...errors.map((error, i) => () => {
+		order.push(i); throw error;
+	})), (error: AggregateError) => {
+		assert.deepEqual(order, [0, 1, 2]);
+		assert.deepEqual(error.errors, errors);
+		error.errors.forEach((entry, i) => assert.equal(entry, errors[i]));
+		return true;
+	});
+	for (let failing = 0; failing < 3; failing++) {
+		const seen: number[] = [];
+		assert.throws(() => metadataAttempts(...errors.map((error, i) => () => {
+			seen.push(i); if (i === failing) throw error;
+		})), (error) => { assert.equal(error, errors[failing]); return true; });
+		assert.deepEqual(seen, [0, 1, 2]);
+	}
+	const passed: number[] = [];
+	metadataAttempts(() => { passed.push(0); }, () => { passed.push(1); }, () => { passed.push(2); });
+	assert.deepEqual(passed, [0, 1, 2]);
+});
+
+function metadataCase(t: { skip: (reason: string) => void }, primary: () => string | void, ...remaining: (() => void)[]) {
+	let reason: string | void;
+	metadataAttempts(() => { reason = primary(); }, ...remaining);
+	// Node's skip flag wins over later throws: set it only after every stage succeeds.
+	if (reason) t.skip(reason);
+}
+
+function metadataCanonicalSource(source: string) {
+	const canonical = source.indexOf("f.root = realpathSync.native(f.root)");
+	const descendant = source.indexOf('join(f.root, "directory")');
+	assert.ok(canonical >= 0, "native ROOT resolution must be present");
+	assert.ok(descendant >= 0, "descendant construction must be present");
+	assert.ok(canonical < descendant, "canonicalize ROOT before descendants");
+}
+
+test("metadata fixture inert deferred skip requires successful restore and cleanup", () => {
+	for (const failing of [-1, 0, 1]) {
+		const order: string[] = [];
+		const failure = new Error("required stage");
+		const run = () => metadataCase({ skip: (reason) => { order.push(`skip:${reason}`); } },
+			() => { order.push("primary"); return "capability"; },
+			...['restore', 'cleanup'].map((stage, i) => () => {
+				order.push(stage); if (i === failing) throw failure;
+			}));
+		if (failing < 0) run();
+		else assert.throws(run, (error) => { assert.equal(error, failure); return true; });
+		assert.deepEqual(order, failing < 0 ? ["primary", "restore", "cleanup", "skip:capability"] : ["primary", "restore", "cleanup"]);
+	}
+});
+
+test("metadata fixture inert ordinary primary and cleanup failures aggregate", () => {
+	const primary = new Error("ordinary assertion"); const cleanup = new Error("cleanup");
+	const order: string[] = [];
+	assert.throws(() => metadataCase({ skip: () => assert.fail("must not skip") },
+		() => { order.push("primary"); throw primary; },
+		() => { order.push("cleanup"); throw cleanup; }), (error: AggregateError) => {
+		assert.deepEqual(order, ["primary", "cleanup"]);
+		assert.ok(error instanceof AggregateError);
+		assert.equal(error.errors[0], primary); assert.equal(error.errors[1], cleanup);
+		assert.equal(error.errors.length, 2); return true;
+	});
+});
+
+test("metadata fixture inert canonical source rejects missing and ordinary resolution", () => {
+	const source = metadataFixture.toString();
+	metadataCanonicalSource(source);
+	for (const replacement of ["", "f.root = realpathSync(f.root)"]) {
+		assert.throws(() => metadataCanonicalSource(source.replace("f.root = realpathSync.native(f.root)", replacement)));
+	}
+});
+
+test("metadata fixture inert source contract keeps canonical root and DACL-only restore", () => {
+	const fixtureSource = metadataFixture.toString();
+	metadataCanonicalSource(fixtureSource);
+	assert.equal((fixtureSource.match(/realpathSync/g) ?? []).length, 1);
+	const metadataBlock = readFileSync(new URL(import.meta.url), "utf8").split(/\nfor \(const many of \[false, true\]\) \{/)[1].split('interface NativeResult')[0];
+	assert.doesNotMatch(metadataBlock, /t\.skip\(|finally/);
+	assert.equal((metadataBlock.match(/metadataCase\(t,/g) ?? []).length, 6);
+	assert.doesNotMatch(fixtureSource, /t\.skip\(|finally/);
+	const deniedSource = metadataDeniedAcl.toString();
+	assert.ok(deniedSource.includes("if ($env:GENTLE_METADATA_RESTORE -ne 'true') { $acl.SetOwner($me) }"));
+	assert.equal((deniedSource.match(/SetOwner/g) ?? []).length, 1);
+	assert.doesNotMatch(deniedSource, /SetGroup|SetAuditRule|Get-Acl/);
+	assert.ok(deniedSource.indexOf("'restored'; exit 0") < deniedSource.indexOf("[IO.File]::GetAccessControl($target)"));
+	assert.ok(deniedSource.includes("[IO.FileAttributes]::ReparsePoint"));
+});
+
 // No bootstrap stages, claims, probes or process-tree helpers are used here.
 // The only setup process protects this newly created root; ancestors are read-only.
 function metadataFixture(t: { skip: (reason: string) => void }) {
@@ -1346,15 +1446,18 @@ foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
 };
 [IO.Directory]::SetAccessControl($root, $acl);
 `;
-	try {
+	let prepared: (typeof f & { directory: string; file: string }) | null = null;
+	metadataCase(t, () => {
+		// Native resolution expands Windows short-name aliases on the ROOT only.
+		// Keep f's original cleanup closure; never resolve a final reparse path.
+		f.root = realpathSync.native(f.root);
 		const result = spawnSync(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
 			["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", setup], {
 				env: { ...process.env, GENTLE_METADATA_ROOT: f.root }, encoding: "utf8", timeout: 15000, maxBuffer: 65536,
 			});
 		assert.equal(result.error, undefined, "fixture setup process must complete");
 		if (result.status !== 0 && /UnauthorizedAccessException|SecurityException/.test(result.stderr)) {
-			t.skip("fixture-owned owner/DACL capability unavailable; no privilege escalation attempted");
-			f.cleanup(); return null;
+			return "fixture-owned owner/DACL capability unavailable; no privilege escalation attempted";
 		}
 		assert.equal(result.status, 0, `fixture-owned ACL setup failed: ${result.stderr}`);
 		const directory = join(f.root, "directory"); mkdirSync(directory);
@@ -1362,8 +1465,9 @@ foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
 		// Failure here is a failure, never a denied-fixture success or inferred skip.
 		verifyWindowsStorage(directory, process.env);
 		verifyWindowsStorage(file, process.env);
-		return { ...f, directory, file };
-	} catch (error) { f.cleanup(); throw error; }
+		prepared = { ...f, directory, file };
+	}, () => { if (!prepared) f.cleanup(); });
+	return prepared;
 }
 
 // Measure the capability rather than infer it from elevation. OWNER RIGHTS
@@ -1380,7 +1484,8 @@ if ([IO.Path]::GetDirectoryName($target) -ne $root -or
     ([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint)) { throw 'Not owned fixture file' };
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
 $acl = [Security.AccessControl.FileSecurity]::new();
-$acl.SetOwner($me); $acl.SetAccessRuleProtection($true, $false);
+if ($env:GENTLE_METADATA_RESTORE -ne 'true') { $acl.SetOwner($me) };
+$acl.SetAccessRuleProtection($true, $false);
 foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
   $identity = [Security.Principal.SecurityIdentifier]::new($sid);
   $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow'));
@@ -1412,30 +1517,33 @@ for (const many of [false, true]) {
 	const prefix = `native Windows: metadata ${many ? "many" : "single"}`;
 	test(`${prefix} ordinary file and directory`, metadataOptions, (t) => {
 		const f = metadataFixture(t); if (!f) return;
-		try {
+		metadataCase(t, () => {
 			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([f.file, f.directory], process.env), [null, null]);
 			else { verifyWindowsStorage(f.file, process.env); verifyWindowsStorage(f.directory, process.env); }
-		} finally { f.cleanup(); }
+		}, f.cleanup);
 	});
 	test(`${prefix} missing is error, not unsafe; safe next continues`, metadataOptions, (t) => {
 		const f = metadataFixture(t); if (!f) return;
-		try {
+		metadataCase(t, () => {
 			const missing = join(f.root, "missing");
 			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([missing, f.file], process.env),
 				[{ check: "unchecked", at: missing }, null]);
 			else assert.throws(() => verifyWindowsStorage(missing, process.env),
-				(error: { check?: string; cause?: { stderr?: string } }) => error.check === undefined
-					&& /FileNotFoundException|DirectoryNotFoundException/.test(error.cause?.stderr ?? ""));
-		} finally { f.cleanup(); }
+				(error: { check?: string; cause?: { stderr?: string } }) => {
+					assert.equal(error.check, undefined);
+					assert.match(error.cause?.stderr ?? "", /FileNotFoundException|DirectoryNotFoundException/);
+					return true;
+				});
+		}, f.cleanup);
 	});
 	test(`${prefix} target and ancestor junction reject before ACL`, metadataOptions, (t) => {
 		const f = metadataFixture(t); if (!f) return;
-		try {
+		metadataCase(t, () => {
 			const junction = join(f.root, "junction");
 			try { symlinkSync(f.directory, junction, "junction"); }
 			catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
-				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) { t.skip(`junction capability unavailable: ${code}`); return; }
+				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) return `junction capability unavailable: ${code}`;
 				throw error;
 			}
 			// Two real descendants make the junction an ancestor, not merely parent.
@@ -1448,60 +1556,68 @@ for (const many of [false, true]) {
 				assert.deepEqual(results.slice(0, 2).map((entry: { check: string }) => entry.check), checks);
 				assert.equal(results[2], null);
 			} else paths.forEach((path, i) => assert.throws(() => verifyWindowsStorage(path, process.env),
-				(error: { check?: string; detail?: { at: string } }) => error.check === checks[i] && error.detail?.at === junction));
+				(error: { check?: string; detail?: { at: string } }) => {
+					assert.equal(error.check, checks[i]);
+					assert.equal(error.detail?.at, junction);
+					return true;
+				}));
 			assert.equal(readFileSync(f.file, "utf8"), "preserve");
 			assert.deepEqual(readdirSync(f.directory).sort(), ["ordinary.txt", "parent"]);
-		} finally { f.cleanup(); }
+		}, f.cleanup);
 	});
 	test(`${prefix} file symlink rejects before ACL without target mutation`, metadataOptions, (t) => {
 		const f = metadataFixture(t); if (!f) return;
-		try {
+		metadataCase(t, () => {
 			const link = join(f.root, "file-link");
 			try { symlinkSync(f.file, link, "file"); }
 			catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
-				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) { t.skip(`file symlink capability unavailable after creation attempt: ${code}`); return; }
+				if (["EPERM", "EACCES", "ENOTSUP"].includes(code ?? "")) return `file symlink capability unavailable after creation attempt: ${code}`;
 				throw error;
 			}
 			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([link, f.file], process.env),
 				[{ check: "target-reparse", at: link }, null]);
 			else assert.throws(() => verifyWindowsStorage(link, process.env),
-				(error: { check?: string; detail?: { at: string } }) => error.check === "target-reparse" && error.detail?.at === link);
+				(error: { check?: string; detail?: { at: string } }) => {
+					assert.equal(error.check, "target-reparse");
+					assert.equal(error.detail?.at, link);
+					return true;
+				});
 			assert.equal(readFileSync(f.file, "utf8"), "preserve");
-		} finally { f.cleanup(); }
+		}, f.cleanup);
 	});
 	test(`${prefix} actual READ_CONTROL denial is error, not unsafe`, metadataOptions, (t) => {
 		const f = metadataFixture(t); if (!f) return;
 		const denied = join(f.root, "denied.txt");
-		writeFileSync(denied, "preserve denied target");
-		try {
+		metadataCase(t, () => {
+			writeFileSync(denied, "preserve denied target");
 			verifyWindowsStorage(denied, process.env);
 			verifyWindowsStorage(f.file, process.env);
 			const capability = metadataDeniedAcl(f.root, denied);
 			if (capability === "setup-denied" || capability === "still-readable") {
-				t.skip(`READ_CONTROL denial attempted but unavailable: ${capability}; equivalence remains unproved`); return;
+				return `READ_CONTROL denial attempted but unavailable: ${capability}; equivalence remains unproved`;
 			}
 			assert.equal(capability, "read-control-denied", "must observe actual UnauthorizedAccessException before error assertions");
 			if (many) assert.deepEqual(windowsModule.verifyWindowsStorageMany([denied, f.file], process.env),
 				[{ check: "unchecked", at: denied }, null]);
 			else assert.throws(() => verifyWindowsStorage(denied, process.env),
-				(error: { check?: string; cause?: { stderr?: string } }) => error.check === undefined
-					&& /UnauthorizedAccessException/.test(error.cause?.stderr ?? ""));
-		} finally {
-			// Restore from a fresh safe descriptor, never GetAccessControl on the
-			// denied target. Restoration failure is a failure, not a capability skip.
-			try {
-				assert.equal(metadataDeniedAcl(f.root, denied, true), "restored");
-				verifyWindowsStorage(denied, process.env);
-				assert.equal(readFileSync(denied, "utf8"), "preserve denied target");
-			} finally { f.cleanup(); }
-		}
+				(error: { check?: string; cause?: { stderr?: string } }) => {
+					assert.equal(error.check, undefined);
+					assert.match(error.cause?.stderr ?? "", /UnauthorizedAccessException/);
+					return true;
+				});
+		}, () => {
+			// Fresh DACL only: no denied ACL read or unnecessary owner write.
+			assert.equal(metadataDeniedAcl(f.root, denied, true), "restored");
+			verifyWindowsStorage(denied, process.env);
+			assert.equal(readFileSync(denied, "utf8"), "preserve denied target");
+		}, f.cleanup);
 	});
 }
 
 test("native Windows: metadata closed-environment timeout safe first existing ancestor", metadataOptions, (t) => {
 	const f = metadataFixture(t); if (!f) return;
-	try {
+	metadataCase(t, () => {
 		const profile = join(f.root, "profile");
 		const local = join(profile, "AppData", "Local");
 		const roaming = join(profile, "AppData", "Roaming");
@@ -1519,7 +1635,7 @@ test("native Windows: metadata closed-environment timeout safe first existing an
 		// throws and FAILS; it is not an expected rejection or a passing diagnostic.
 		verifyWindowsStorage(local, env);
 		assert.ok(performance.now() - started < 15000, "safe first ancestor must complete within original bound");
-	} finally { f.cleanup(); }
+	}, f.cleanup);
 });
 
 interface NativeResult {

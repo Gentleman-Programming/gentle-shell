@@ -109,11 +109,34 @@ export interface TaskThread {
 	limits: ThreadLimits;
 }
 
+export interface SubagentSpecialization {
+	/** Concise badge / label for TUI visualization (e.g. "ODD Architect", "SQL Auditor") */
+	label?: string;
+	/** Domain-specific directives and focus instructions merged into the subagent prompt */
+	instructionsOverlay: string;
+	/** Controlled extension of read-only tools (whitelisted for read-only bases) */
+	extraTools?: string[];
+	/** Expected structure or template for the return report */
+	outputContract?: string;
+}
+
+export const ALLOWED_READONLY_EXTENSIONS: readonly string[] = [
+	"read_symbol",
+	"read_enclosing",
+	"lens_diagnostics",
+	"web_search",
+	"fetch_content",
+	"source_check",
+	"ast_grep_search",
+	"ast_grep_outline",
+];
+
 export interface TaskRecord {
 	/** Retained legacy payload, never interpreted or replayed as launch authority. */
 	sddRemediation?: unknown;
 	/** Exact runtime-generated SDD preflight block retained only for continuation transport. */
 	sddPreflightContext?: string;
+	specialization?: SubagentSpecialization;
 	id: string;
 	agent: string;
 	mode: string;

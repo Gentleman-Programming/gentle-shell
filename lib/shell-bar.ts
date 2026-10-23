@@ -137,10 +137,136 @@ export function formatCost(total: number, subscription = false): string {
 	return subscription ? `$${amount} sub` : `$${amount}`;
 }
 
-// Extensions may paint their status themselves (pi-mcp-adapter does); the bar
-// owns the palette, so their escapes go and the text takes the status role.
+// Extensions may paint their status themselves (pi-mcp-adapter paints role
+// colors; budget/usage gauges paint use thresholds). Colorless statuses take
+// the bar's status role; runs the extension colored render verbatim, and the
+// bar repaints every neutral run in the status role, so an extension's own
+// reset never hands the tail the terminal default.
+const ANSI_SGR_RUN = /\x1b\[[0-9;:]*m/g;
+
+/**
+ * Turnover of the extension's status foreground for one SGR token: whether
+ * after this sequence the active foreground belongs to the extension.
+ * Parses the parameters sequentially so compound resets (\x1b[0;0m), empty
+ * resets (\x1b[m) and extended-color groups (\x1b[38;2;0;0;0m — a 0 inside
+ * the parameters is a color component, not a reset) are all classified;
+ * attribute-only sequences (bold \x1b[1m, underline \x1b[4m) carry no
+ * foreground and leave the turnover untouched.
+ */
+function sgrForegroundTurnover(token: string, extensionColored: boolean): boolean {
+	const match = /^\x1b\[([0-9;:]*)m$/.exec(token);
+	if (!match) return extensionColored;
+	const params = match[1] === "" ? [] : match[1].split(";");
+	if (params.length === 0) return false; // empty reset: \x1b[m
+	let colored = extensionColored;
+	let index = 0;
+	while (index < params.length) {
+		const param = params[index];
+		if (param === "" || param === "0") {
+			colored = false; // full reset (empty parameter or 0)
+		} else if (param === "39") {
+			colored = false; // default foreground
+		} else if (param === "38" || param === "48") {
+			if (param === "38") colored = true;
+			const mode = params[index + 1];
+			index += mode === "2" ? 5 : mode === "5" ? 2 : 0;
+		} else if (param.startsWith("38:") || param.startsWith("48:")) {
+			// ITU T.416 colon form: one unit (38:2::r:g:b / 38:5:P); no sub-scan.
+			if (param.startsWith("38:")) colored = true;
+		} else {
+			const code = Number(param);
+			if (
+				!Number.isNaN(code) &&
+				((code >= 30 && code <= 37) || (code >= 90 && code <= 97))
+			) {
+				colored = true; // classic foreground colors
+			}
+		}
+		index += 1;
+	}
+	return colored;
+}
+
+// Split a status into SGR tokens and text, sanitize only the text (SGR runs
+// are verified structure) and join. The old placeholder surface (hiding SGRs
+// as \uFFFD<index>\uFFFD and restoring by pattern) never sees user text, so an
+// input that already contains that shape survives as text instead of being
+// deleted or duplicating a restored run.
+function sanitizeStatusTokens(text: string, keepSgr: boolean): string {
+	return text
+		.split(/(\x1b\[[0-9;:]*m)/)
+		.map((token) => (/^\x1b\[[0-9;:]*m$/.test(token) ? (keepSgr ? token : "") : sanitizeTerminalText(token.replace(/[\r\n\t]/g, " "))))
+		.join("")
+		.replace(/ +/g, " ")
+		.trim();
+}
+
 function sanitizeStatus(text: string): string {
-	return sanitizeTerminalText(text.replace(/[\r\n\t]/g, " ")).replace(/ +/g, " ").trim();
+	return colonSgrToSemicolon(sanitizeStatusTokens(text, true));
+}
+
+// Non-status paint sites (profile, change notice, review scope, job labels)
+// wrap one string at a time with no paint policy, so the observer's text must
+// not carry SGR into that wrapper: those keep the strip-only path.
+function sanitizePlainText(text: string): string {
+	return sanitizeStatusTokens(text, false);
+}
+
+/**
+ * Rewrite ITU T.416 colon parameter units (CSI 38:2::R:G:Bm / 38:5:Pm) into
+ * the semicolon form pi-tui's trackers understand, so wrapped continuation
+ * lines keep the extension foreground. Color values are preserved; units
+ * other than 38:/48: color specs stay untouched.
+ */
+function colonSgrToSemicolon(text: string): string {
+	return text.replace(ANSI_SGR_RUN, (sgr) => {
+		if (!sgr.includes(":")) return sgr;
+		const inner = sgr.slice(2, -1);
+		const units = inner.split(";").map((unit) => {
+			if (!unit.includes(":")) return unit;
+			const parts = unit.split(":");
+			const kind = parts[0];
+			const subtype = parts[1];
+			if (kind !== "38" && kind !== "48") return unit;
+			const rest = parts.slice(2).filter((p) => p !== "");
+			if (subtype === "5") {
+				return rest.length === 1 ? `${kind};5;${rest[0]}` : unit;
+			}
+			if (subtype === "2") {
+				// An explicit sRGB colorspace id ("0") denotes the same set the
+				// empty form carries: drop it so both legal shapes turn into
+				// the semicolon form.
+				const values = rest.length === 4 && rest[0] === "0" ? rest.slice(1) : rest;
+				return values.length === 3 ? [kind, "2", ...values].join(";") : unit;
+			}
+			return unit;
+		});
+		return `\x1b[${units.join(";")}m`;
+	});
+}
+
+function statusSegment(theme: ShellBarTheme, status: string): string {
+	const text = sanitizeStatus(status);
+	if (!text.includes("\x1b")) return theme.fg(ROLE.STATUS, text);
+	let painted = "";
+	let extensionColored = false;
+	for (const token of text.split(/(\x1b\[[0-9;:]*m)/)) {
+		if (token === "") continue;
+		if (/^\x1b\[[0-9;:]*m$/.test(token)) {
+			painted += token;
+			extensionColored = sgrForegroundTurnover(token, extensionColored);
+			continue;
+		}
+		painted += extensionColored || !token.trim()
+			? token
+			: theme.fg(ROLE.STATUS, token);
+	}
+	// Close every SGR the extension still has open at the segment end —
+	// foreground, bold, underline, background — with one full reset. Each
+	// segment paints its runs independently, so the reset disturbs nothing
+	// after it, and pi-tui's trackers treat it as a complete clear.
+	if (painted.length > 0) painted += "\x1b[0m";
+	return painted;
 }
 
 // Shared by the compact bar, the sidebar Status card, and the fullscreen
@@ -174,7 +300,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const context = contextSegment(model.contextPercent, theme, paint);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
-	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
+	const statuses = model.statuses.map((status) => statusSegment(theme, status));
 	return [
 		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
 		location,
@@ -231,7 +357,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				value(model.cwd),
 				...(branch ? [branch] : []),
 				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
+				...(model.profile ? [`${label("Profile")} ${value(sanitizePlainText(model.profile))}`] : []),
 			],
 		},
 		...(presentation?.visibility.changes === false ? [] : [{
@@ -240,7 +366,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				changes?.files
 					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
 					: label("No captured changes"),
-				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
+				...(changes?.notice ? [theme.fg("warning", sanitizePlainText(changes.notice))] : []),
 				label("/gentle:changes"),
 			],
 		}]),
@@ -249,15 +375,15 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			lines: [
 				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
 				// Unknown scope is an internal sentinel, not something the user acts on.
-				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizePlainText(model.review.scope))] : []),
 			],
 		}] : []),
 		...(model.jobs?.length ? [{
 			title: "Jobs",
-			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
+			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizePlainText(job.label))),
 		}] : []),
 		{ title: "Integrations", lines: model.statuses.length
-			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
+			? model.statuses.map((status) => statusSegment(theme, status))
 			: [label("No status reported")] },
 	];
 	// Wrap and indent every group line before it reaches the card, so Unicode and
@@ -282,7 +408,7 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showMod
 	if (!showModelDetails) return [[brand, location], [brand]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
 	const modelOnly = executionSegment(model.modelId, undefined, theme);
-	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizeStatus(model.profile))}` : withEffort;
+	const withProfile = model.profile ? `${withEffort} ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.MODEL, sanitizePlainText(model.profile))}` : withEffort;
 	return [
 		[brand, location, withProfile],
 		[brand, location, withEffort],
@@ -431,11 +557,13 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [
-		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
-		...model.statuses.map(sanitizeStatus).filter(Boolean),
+		...(model.jobs?.length ? [theme.fg(ROLE.STATUS, shellJobsCount(model.jobs.length))] : []),
+		...model.statuses
+			.filter((status) => sanitizeStatus(status).length > 0)
+			.map((status) => statusSegment(theme, status)),
 	];
 	const statusRow = statuses.length
-		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
+		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses, theme))
 		: undefined;
 	return {
 		rows: [
@@ -462,7 +590,9 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
 	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
-	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
+	const statuses = model.statuses
+		.filter((status) => sanitizeStatus(status).length > 0)
+		.map((status) => statusSegment(theme, status));
 	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
 }
 

@@ -1118,12 +1118,17 @@ const CMD_EXE_SPECIAL_CHARS = /[\s"&|<>^%()]/;
 
 // cmd.exe quoting is deliberately simple, not a full cmd.exe parser: wrap a
 // token in double quotes when it is empty or contains whitespace or any of
-// `"&|<>^%()`, and escape an inner `"` as `\"` — doubling inner quotes is not
-// reliable in cmd.exe, unlike the `\"` convention Node's own Windows spawn
-// helpers use.
+// `&|<>^%()`. A token with an inner `"` cannot be represented: cmd.exe has no
+// backslash escape, so `\"` still ends the quoted section and the rest of the
+// token is parsed as command syntax (`x" & whoami & rem "` would run
+// `whoami`). Doubling the quote is not reliable either, so such a token is
+// refused instead of producing a command line it cannot protect.
 export function quoteForCmdExe(token: string): string {
+	if (token.includes('"')) {
+		throw new Error("cannot pass an argument containing a double quote through cmd.exe: it would end the quoted argument and let the rest run as a command");
+	}
 	if (token.length > 0 && !CMD_EXE_SPECIAL_CHARS.test(token)) return token;
-	return `"${token.replace(/"/g, '\\"')}"`;
+	return `"${token}"`;
 }
 
 const POSIX_SHELL_SPECIAL_CHARS = /[\s"'`\\$&|;<>(){}*?[\]!#~]/;

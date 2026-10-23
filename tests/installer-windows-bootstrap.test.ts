@@ -1061,14 +1061,19 @@ test("storage metadata public adapters preserve verdicts and unexpected failures
 	const single = (output: string) => verifyWindowsStorage(path, env, (_command: string, _args: string[], data: Record<string, string>) => {
 		calls++; assert.equal(data.GENTLE_WINDOWS_CHECK, path); return output;
 	});
-	assert.equal(single("safe"), undefined);
-	for (const check of ["target-reparse", "parent-owner", "ancestor-acl-mask"]) {
-		assert.throws(() => single(`unsafe:${check}|${encoded(`${path}|||`)}`), (error: Error & { check?: string; detail?: { at: string } }) => error.check === check && error.detail?.at === path);
+	if (process.platform === "win32") {
+		assert.equal(single("safe"), undefined);
+		for (const check of ["target-reparse", "parent-owner", "ancestor-acl-mask"]) {
+			assert.throws(() => single(`unsafe:${check}|${encoded(`${path}|||`)}`), (error: Error & { check?: string; detail?: { at: string } }) => error.check === check && error.detail?.at === path);
+		}
+		assert.throws(() => single("malformed"), /Windows ACL evidence rejected/);
+		assert.equal(calls, 5);
+		const failure = Object.assign(new Error("metadata read failed"), { code: "EACCES" });
+		assert.throws(() => verifyWindowsStorage(path, env, () => { throw failure; }), (error: unknown) => error === failure);
+	} else {
+		assert.throws(() => single("safe"), /Native Windows storage verification unavailable/);
+		assert.equal(calls, 0, "unsupported platforms reject before invoking the runner");
 	}
-	assert.throws(() => single("malformed"), /Windows ACL evidence rejected/);
-	assert.equal(calls, 5);
-	const failure = Object.assign(new Error("metadata read failed"), { code: "EACCES" });
-	assert.throws(() => verifyWindowsStorage(path, env, () => { throw failure; }), (error: unknown) => error === failure);
 	const paths = [path, "D:\\metadata fixture\\next.cmd"];
 	assert.deepEqual(windowsModule.verifyWindowsStorageMany(paths, env, { platform: "win32", processAdapter: (_command: string, _args: string[], data: Record<string, string>) => {
 		assert.equal(data.GENTLE_WINDOWS_CHECKS, paths.join("|")); return "unknown\nsafe";
@@ -1077,7 +1082,7 @@ test("storage metadata public adapters preserve verdicts and unexpected failures
 
 // Inspect scripts through the public process seam; never execute PowerShell.
 for (const mode of ["single", "batch"] as const) {
-	test(`storage metadata ${mode} uses throwing static attributes before ACL reads`, () => {
+	test(`storage metadata ${mode} uses throwing static attributes before ACL reads`, { skip: mode === "single" && process.platform !== "win32" ? "single-path script requires the real Windows platform" : false }, () => {
 		let script = "";
 		const processAdapter = (_command: string, args: string[], env: Record<string, string>) => {
 			script = args[4];

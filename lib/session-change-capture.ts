@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch } from "./compat-pi-agent.ts";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { homedir } from "node:os";

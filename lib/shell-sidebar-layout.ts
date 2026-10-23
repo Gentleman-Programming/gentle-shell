@@ -1,4 +1,4 @@
-import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "./compat-pi-tui.ts";
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";

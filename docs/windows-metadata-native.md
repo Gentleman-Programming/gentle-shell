@@ -37,8 +37,7 @@ uniformly proved.
 Single/batch denied-file cases first require safe baselines, then attempt a
 protected fixture-file DACL with explicit current-user/trusted FullControl,
 OWNER RIGHTS ChangePermissions, and OWNER RIGHTS/current-user ReadPermissions
-Deny. Explicit WRITE_DAC is retained: restoration does not rely on implicit owner
-rights. Parent-verified Microsoft [OWNER RIGHTS documentation](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers)
+Deny. Initial owner assignment and explicit WRITE_DAC are retained unchanged. Parent-verified Microsoft [OWNER RIGHTS documentation](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers)
 explains that an OWNER RIGHTS ACE suppresses implicit READ_CONTROL and WRITE_DAC.
 The fixture independently attempts real .NET GetAccessControl: only observed
 UnauthorizedAccessException enables denied-path assertions. Single must throw
@@ -53,26 +52,26 @@ fixture already uses ordinary `realpathSync`; that did not prevent the observed
 Reparse codes and exact link locations remain mandatory; separate callback field
 assertions expose actual mismatches.
 
-Restoration applies a fresh safe FileSecurity DACL without reading the denied
-ACL or setting owner/group/audit information. Initial denial still sets the owner
-and retains explicit WRITE_DAC. Avoiding SetOwner reduces unnecessary permission
-requirements, but does not prove the native restoration failure fixed.
-Restoration verifies public acceptance and contents, then cleanup is attempted.
-Primary assertion, restoration/verification and cleanup failures are collected
-independently in order: one is rethrown unchanged, multiple become AggregateError.
+S15 removes unnecessary fixture ACL restoration, not the production denial checks.
+After the denied case, the original fixture cleanup closure deletes only its owned
+root. Then `lstatSync` must report exact ENOENT for both canonical ROOT and denied
+file, without following final links. A present path or any other error (including
+EACCES/EPERM) fails. Both absence checks run even after deletion or primary failure.
+Errors are collected in attempt order: one is rethrown unchanged, multiple become
+AggregateError; nested cleanup errors retain their original identities.
 Every metadata case, including ordinary/missing/link/timeout cases and failed
 setup, preserves primary and cleanup failures using the same bounded collector.
 Capability reasons are carried as data: `t.skip` is called only after all required
-restoration/verification and cleanup stages succeed. This ordering matters because
+cleanup/deletion and required absence checks succeed. This ordering matters because
 Node can report a previously marked skip even when a later stage throws.
-Restoration or cleanup errors therefore FAIL, never PASS/SKIP.
+Cleanup or absence errors therefore FAIL, never PASS/SKIP.
 Pure source checks require the native ROOT literal and descendant construction to
 be present before checking their order; missing/ordinary-realpath negative controls
 must fail that contract. These checks are not native canonicalization proof.
 All mutations stay within the newly owned fixture tree;
 no privilege enabling, impersonation, policy change or fabricated errors are used.
 Setup uses direct .NET constructors, not New-Object/module autoload. Native denial
-and restoration remain unverified after that failed run. Missing
+and actual deletion remain unverified after local S15 changes. Missing
 errors and READ_CONTROL denial do not prove every possible metadata/I/O failure.
 
 The timeout test recreates the original closed environment key-for-key, with
@@ -93,6 +92,16 @@ The original closed-environment safe timeout case passed on that runner; this is
 not full Shell proof. No S12 native rerun occurred or is authorized here.
 Local callback/source checks are inert evidence only: native alias handling,
 denial and DACL-only restoration remain UNVERIFIED, not GREEN.
+
+## Observed S13 and local S15 boundary
+
+Run `39883170542` remains FAILED: **9 PASS / 2 FAIL / 0 SKIP**.
+Both failures were fixture restoration errors; the capability reason was not
+recorded, so denial equivalence cannot be inferred. S15 removes that unnecessary
+operation but does not prove actual Windows deletion or denial functionality.
+Native RED/GREEN is unavailable under this local-only grant; no new run is authorized.
+Production helpers are unchanged (differential testing N/A); new cleanup control
+flow is tested directly with inert callbacks, not simulated .NET semantics.
 
 ## Evidence boundary
 

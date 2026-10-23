@@ -1327,7 +1327,7 @@ const metadataUnavailable = process.platform !== "win32" || process.env.GENTLE_S
 	|| process.env.GITHUB_REF !== "refs/heads/test/2360-windows-metadata-native" || process.env.GITHUB_RUN_ATTEMPT !== "1";
 const metadataOptions = { skip: metadataUnavailable ? "S11 hosted-only admission unavailable" : false };
 
-// Keep primary, restoration and cleanup evidence independently, in attempt order.
+// Keep primary and required cleanup evidence independently, in attempt order.
 function metadataAttempts(...attempts: (() => void)[]) {
 	const errors: unknown[] = [];
 	for (const attempt of attempts) {
@@ -1365,6 +1365,48 @@ function metadataCase(t: { skip: (reason: string) => void }, primary: () => stri
 	metadataAttempts(() => { reason = primary(); }, ...remaining);
 	// Node's skip flag wins over later throws: set it only after every stage succeeds.
 	if (reason) t.skip(reason);
+}
+
+test("metadata fixture inert absence accepts only ENOENT", () => {
+	metadataAbsent("owned", () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
+	for (const code of ["EACCES", "EPERM", "EIO"]) {
+		const failure = Object.assign(new Error(code), { code });
+		assert.throws(() => metadataAbsent("owned", () => { throw failure; }), (error) => error === failure);
+	}
+	assert.throws(() => metadataAbsent("owned", () => ({})), /still present/);
+});
+
+test("metadata fixture inert deletion and both absence checks precede skip despite failures", () => {
+	for (const failing of ["none", "primary", "delete", "root", "denied", "all"]) {
+		const order: string[] = []; const errors: Error[] = [];
+		const stage = (name: string) => {
+			order.push(name);
+			if (failing === name || failing === "all") { const error = new Error(name); errors.push(error); throw error; }
+		};
+		const run = () => metadataCase({ skip: () => { order.push("skip"); } },
+			() => { stage("primary"); return "capability"; },
+			() => metadataCleanup({ root: "root", cleanup: () => stage("delete") }, ["denied"], (path) => stage(path)));
+		if (failing === "none") run();
+		else assert.throws(run, (error) => {
+			const actual = error instanceof AggregateError ? error.errors.flatMap((entry) => entry instanceof AggregateError ? entry.errors : [entry]) : [error];
+			assert.deepEqual(actual, errors);
+			actual.forEach((entry, i) => assert.equal(entry, errors[i])); return true;
+		});
+		assert.deepEqual(order, ["primary", "delete", "root", "denied", ...(failing === "none" ? ["skip"] : [])]);
+	}
+});
+
+function metadataAbsent(path: string, inspect: (path: string) => unknown = lstatSync) {
+	try { inspect(path); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	assert.fail(`Owned metadata fixture still present: ${path}`);
+}
+
+function metadataCleanup(f: { root: string; cleanup: () => void }, extraOwnedPaths: string[] = [], absent = metadataAbsent) {
+	metadataAttempts(f.cleanup, ...[f.root, ...extraOwnedPaths].map((path) => () => absent(path)));
 }
 
 function metadataCanonicalSource(source: string) {
@@ -1411,7 +1453,7 @@ test("metadata fixture inert canonical source rejects missing and ordinary resol
 	}
 });
 
-test("metadata fixture inert source contract keeps canonical root and DACL-only restore", () => {
+test("metadata fixture inert source contract keeps canonical root and initial denial without restoration", () => {
 	const fixtureSource = metadataFixture.toString();
 	metadataCanonicalSource(fixtureSource);
 	assert.equal((fixtureSource.match(/realpathSync/g) ?? []).length, 1);
@@ -1420,10 +1462,13 @@ test("metadata fixture inert source contract keeps canonical root and DACL-only 
 	assert.equal((metadataBlock.match(/metadataCase\(t,/g) ?? []).length, 6);
 	assert.doesNotMatch(fixtureSource, /t\.skip\(|finally/);
 	const deniedSource = metadataDeniedAcl.toString();
-	assert.ok(deniedSource.includes("if ($env:GENTLE_METADATA_RESTORE -ne 'true') { $acl.SetOwner($me) }"));
+	assert.ok(deniedSource.includes("$acl.SetOwner($me)"));
+	assert.doesNotMatch(deniedSource, /RESTORE|restore/);
+	for (const rule of ["FileSecurity]::new()", "S-1-3-4", "'ChangePermissions', 'Allow'", "'ReadPermissions', 'Deny'", "'FullControl', 'Allow'", "'setup-denied'", "'still-readable'", "'read-control-denied'"]) assert.ok(deniedSource.includes(rule));
+	assert.ok(metadataBlock.includes("metadataCleanup(f, [denied])"));
 	assert.equal((deniedSource.match(/SetOwner/g) ?? []).length, 1);
 	assert.doesNotMatch(deniedSource, /SetGroup|SetAuditRule|Get-Acl/);
-	assert.ok(deniedSource.indexOf("'restored'; exit 0") < deniedSource.indexOf("[IO.File]::GetAccessControl($target)"));
+	assert.ok(deniedSource.includes("[IO.File]::GetAccessControl($target)"));
 	assert.ok(deniedSource.includes("[IO.FileAttributes]::ReparsePoint"));
 });
 
@@ -1466,14 +1511,14 @@ foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
 		verifyWindowsStorage(directory, process.env);
 		verifyWindowsStorage(file, process.env);
 		prepared = { ...f, directory, file };
-	}, () => { if (!prepared) f.cleanup(); });
+	}, () => { if (!prepared) metadataCleanup(f); });
 	return prepared;
 }
 
 // Measure the capability rather than infer it from elevation. OWNER RIGHTS
 // suppresses implicit owner READ_CONTROL; user denial also covers group allows.
-// WRITE_DAC remains allowed for restoration using a fresh descriptor, no ACL read.
-function metadataDeniedAcl(root: string, target: string, restore = false) {
+// Explicit allows and denial construction are retained; cleanup deletes the owned tree.
+function metadataDeniedAcl(root: string, target: string) {
 	assert.equal(metadataUnavailable, false);
 	assert.equal(dirname(target), root);
 	const script = String.raw`
@@ -1484,28 +1529,25 @@ if ([IO.Path]::GetDirectoryName($target) -ne $root -or
     ([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint)) { throw 'Not owned fixture file' };
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
 $acl = [Security.AccessControl.FileSecurity]::new();
-if ($env:GENTLE_METADATA_RESTORE -ne 'true') { $acl.SetOwner($me) };
+$acl.SetOwner($me);
 $acl.SetAccessRuleProtection($true, $false);
 foreach ($sid in @($me.Value, 'S-1-5-18', 'S-1-5-32-544')) {
   $identity = [Security.Principal.SecurityIdentifier]::new($sid);
   $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'Allow'));
 };
-if ($env:GENTLE_METADATA_RESTORE -ne 'true') {
-  $ownerRights = [Security.Principal.SecurityIdentifier]::new('S-1-3-4');
-  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($ownerRights, 'ChangePermissions', 'Allow'));
-  foreach ($identity in @($ownerRights, $me)) {
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'ReadPermissions', 'Deny'));
-  };
+$ownerRights = [Security.Principal.SecurityIdentifier]::new('S-1-3-4');
+$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($ownerRights, 'ChangePermissions', 'Allow'));
+foreach ($identity in @($ownerRights, $me)) {
+  $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'ReadPermissions', 'Deny'));
 };
 try { [IO.File]::SetAccessControl($target, $acl) }
-catch [UnauthorizedAccessException] { if ($env:GENTLE_METADATA_RESTORE -eq 'true') { throw }; 'setup-denied'; exit 0 };
-if ($env:GENTLE_METADATA_RESTORE -eq 'true') { 'restored'; exit 0 };
+catch [UnauthorizedAccessException] { 'setup-denied'; exit 0 };
 try { $null = [IO.File]::GetAccessControl($target); 'still-readable' }
 catch [UnauthorizedAccessException] { 'read-control-denied' };
 `;
 	const result = spawnSync(join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe"),
 		["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
-			env: { ...process.env, GENTLE_METADATA_ROOT: root, GENTLE_METADATA_TARGET: target, GENTLE_METADATA_RESTORE: String(restore) },
+			env: { ...process.env, GENTLE_METADATA_ROOT: root, GENTLE_METADATA_TARGET: target },
 			encoding: "utf8", timeout: 15000, maxBuffer: 65536,
 		});
 	assert.equal(result.error, undefined, "denied fixture process must complete within bound");
@@ -1606,12 +1648,7 @@ for (const many of [false, true]) {
 					assert.match(error.cause?.stderr ?? "", /UnauthorizedAccessException/);
 					return true;
 				});
-		}, () => {
-			// Fresh DACL only: no denied ACL read or unnecessary owner write.
-			assert.equal(metadataDeniedAcl(f.root, denied, true), "restored");
-			verifyWindowsStorage(denied, process.env);
-			assert.equal(readFileSync(denied, "utf8"), "preserve denied target");
-		}, f.cleanup);
+		}, () => metadataCleanup(f, [denied]));
 	});
 }
 

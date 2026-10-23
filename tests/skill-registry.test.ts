@@ -492,6 +492,11 @@ test("registered watcher protects registry tracked after a cache hit", async (t)
 	while (runtime.notices.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.equal(readFileSync(fixture.registry, "utf8"), before);
 	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("/skill-registry:refresh")));
+	// The poll re-asks the same tracked-target state every interval: the
+	// warning stays a one-shot per unchanged state instead of repeating.
+	runtime.notices.length = 0;
+	await new Promise((resolve) => setTimeout(resolve, 3000));
+	assert.deepEqual(runtime.notices, []);
 	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
 });
 

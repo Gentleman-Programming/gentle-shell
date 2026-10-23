@@ -1890,8 +1890,34 @@ test("quoteForCmdExe leaves a plain token untouched", () => {
 	assert.equal(quoteForCmdExe("pi"), "pi");
 });
 
-test("quoteForCmdExe quotes a token with a space and escapes an inner double quote", () => {
-	assert.equal(quoteForCmdExe('say "hi" now'), '"say \\"hi\\" now"');
+test("quoteForCmdExe quotes a token with a space and the other cmd.exe specials", () => {
+	assert.equal(quoteForCmdExe("say hi now"), '"say hi now"');
+	assert.equal(quoteForCmdExe("a&b"), '"a&b"');
+});
+
+// cmd.exe has no backslash escape: a `"` inside a quoted token ends the
+// quoted section, so everything after it is parsed as command syntax. The
+// simple quoting cannot represent such a token, so it refuses it instead of
+// emitting a command line that lets the argument inject commands.
+test("quoteForCmdExe rejects a token with a double quote", () => {
+	for (const token of ['say "hi" now', 'x" & whoami & rem "', '"', 'a"b']) {
+		assert.throws(() => quoteForCmdExe(token), /double quote/);
+	}
+});
+
+test("planSpawn refuses a win32 .cmd launch whose argument carries a double quote", () => {
+	const hostile = 'x" & whoami & rem "';
+	for (const command of ["C:\\Program Files\\nodejs\\pi.cmd", "C:\\pi\\pi.BAT"]) {
+		assert.throws(() => planSpawn({ command, args: ["--version", hostile], platform: "win32" }), /double quote/);
+	}
+	assert.throws(() => planSpawn({ command: 'C:\\pi\\a"b.cmd', args: [], platform: "win32" }), /double quote/);
+});
+
+test("planSpawn passes a double quote through when no cmd.exe command line is built", () => {
+	const args = ["--prompt", 'say "hi"'];
+	assert.deepEqual(planSpawn({ command: "C:\\pi\\pi.exe", args, platform: "win32" }), { command: "C:\\pi\\pi.exe", args, shell: false });
+	assert.deepEqual(planSpawn({ command: "/usr/bin/pi", args, platform: "linux" }), { command: "/usr/bin/pi", args, shell: false });
+	assert.deepEqual(planSpawn({ command: "/usr/local/bin/pi.cmd", args, platform: "darwin" }), { command: "/usr/local/bin/pi.cmd", args, shell: false });
 });
 
 test("quoteForCmdExe quotes an empty token", () => {

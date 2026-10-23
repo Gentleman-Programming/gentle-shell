@@ -1088,7 +1088,7 @@ test("ordinary START reports candidate-owner preparation failure as pre-native n
 		start: async () => { nativeStarts += 1; throw new Error("native START must not run"); },
 	} as unknown as NativeReviewCli;
 	const candidateViews = {
-		createOrReuse: () => { throw new CandidateViewError("candidate view owner preparation failed", "candidate-owner-preparation-failed"); },
+		createOrReuse: () => { throw new CandidateViewError("candidate view owner preparation failed (EACCES)", "candidate-owner-preparation-failed"); },
 	} as unknown as CandidateViewRegistry;
 	const result = await __testing.executeReviewControllerOperation(
 		{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
@@ -1102,7 +1102,7 @@ test("ordinary START reports candidate-owner preparation failure as pre-native n
 	assert.equal(result.mutation_outcome, "none");
 	assert.deepEqual(result.diagnostics, {
 		code: "candidate-owner-preparation-failed",
-		message: "candidate view rejected before native START",
+		message: "candidate view owner preparation failed (EACCES)",
 	});
 
 	let materializationStatusCalls = 0;

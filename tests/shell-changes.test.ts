@@ -119,6 +119,19 @@ test("renderChangesWidget colors counts by direction and yields nothing when cle
 	assert.match(line, /<success>\+1<\/success> <error>−2<\/error>/);
 	assert.match(line, /<dim>\/gentle:changes<\/dim>$/);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120, 0), []);
+});
+
+// A worktree-holder root is hidden from Changes, but silence would read as a
+// broken tracker: one quiet line says why nothing is tracked yet.
+test("renderChangesWidget shows one quiet unborn-HEAD hint when nothing is tracked yet", () => {
+	const [hint] = renderChangesWidget(emptyChanges(), plainTheme, 120, 1);
+	assert.equal(visibleWidth(hint), "◌ make a commit to start tracking changes".length);
+	assert.match(hint, /make a commit to start tracking changes/);
+	const [tagged] = renderChangesWidget(emptyChanges(), taggedTheme, 400, 2);
+	assert.match(tagged, /<dim>◌ make a commit to start tracking changes<\/dim>/);
+	const [tiny] = renderChangesWidget(emptyChanges(), plainTheme, 12, 1);
+	assert.ok(visibleWidth(tiny) <= 12, "the hint truncates instead of overflowing a narrow bar");
 });
 
 test("renderChangesWidget drops the file list before truncating on narrow terminals", () => {
@@ -336,7 +349,6 @@ test("foreignRootBranch still reports a genuine detached HEAD as undefined, not 
 test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
 	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
 		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
-		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
 		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
 	];
 	for (const scenario of scenarios) {
@@ -358,7 +370,55 @@ test("a root missing from worktree list resolves its own branch instead of defau
 			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
 			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
 		});
+		// An unborn foreign root is a holder before it is a branch question: with
+		// no commits there is no baseline to diff against, so it is skipped --
+		// neither dirty nor failed -- before any branch lookup happens.
+		await t.test("an unborn foreign root is skipped as a holder before the branch ask", async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }),
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "rev-parse") return { stdout: "", code: 1 };
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees, []);
+			assert.deepEqual(tracker.unbornRoots, ["/foreign"]);
+			assert.deepEqual(tracker.failedRoots, []);
+			assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a skipped holder is never asked for a branch");
+		});
 	}
+});
+
+// A worktree-holder repository (no commits, only linked worktrees inside) has
+// no baseline: `git diff HEAD` is meaningless and every file reports
+// untracked, so scanning it floods Changes with thousands of phantom files.
+// It is skipped as neither dirty nor failed, and its first commit starts
+// tracking it on the next scan.
+test("a root with no commits is skipped as a holder, neither dirty nor failed, and recovers on its first commit", async () => {
+	let holderHasCommits = false;
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /real\0branch refs/heads/main\0\0", code: 0 }),
+		(root) => async (args) => {
+			if (args[0] === "rev-parse") return { stdout: "", code: root === "/holder" && !holderHasCommits ? 1 : 0 };
+			return { stdout: args[0] === "status" && (root === "/real" || (root === "/holder" && holderHasCommits)) ? "?? a.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/holder", "/real"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/real"], "an unborn root is skipped, not scanned");
+	assert.deepEqual(tracker.unbornRoots, ["/holder"]);
+	assert.deepEqual(tracker.failedRoots, [], "no commits is not a Git failure");
+	assert.equal(tracker.scannedRootCount, 2);
+	holderHasCommits = true;
+	await tracker.refresh();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/holder", "/real"], "the first commit starts tracking");
+	assert.deepEqual(tracker.unbornRoots, []);
 });
 
 // The direct per-root ask (for a root missing from worktree list) can fail on

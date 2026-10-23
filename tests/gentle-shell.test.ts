@@ -163,6 +163,9 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commands
 			if (args.includes("worktree")) return { stdout: "worktree /repo\0branch refs/heads/main\0\0", stderr: "", code: 0, killed: false };
 			// Roots outside the worktree list read as a detached HEAD.
 			if (args.includes("symbolic-ref")) return { stdout: "", stderr: "", code: 1, killed: false };
+			// The unborn-HEAD ask is cheap metadata, not a scan round: the script
+			// models one numstat+porcelain pair per round, exactly like real Git.
+			if (args.includes("rev-parse")) return { stdout: "", stderr: "", code: 0, killed: false };
 			const isNumstat = args.includes("diff");
 			const step = script[Math.min(isNumstat ? round : round++, script.length - 1)];
 			return { stdout: isNumstat ? step.numstat : step.porcelain, stderr: "", code: 0, killed: false };
@@ -4811,6 +4814,9 @@ test("new sessions do not inherit another session's worktrees", async () => {
  const first=fakeContext();
  await fire(h.handlers,"session_start",first.ctx);
  await h.tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,first.ctx);
+ // The registration kicks off its own async scan; settle it so its Git calls
+ // cannot land after the next session clears the shared call log.
+ await changesSettled();
  await fire(h.handlers,"session_shutdown",first.ctx);
  const next=fakeContext({entries:[...first.ctx.sessionManager.getEntries()]});
  (next.ctx.sessionManager as any).getSessionId=()=>"new-session";

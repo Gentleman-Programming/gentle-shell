@@ -856,6 +856,21 @@ test("unified below-input float includes optional Changes and sanitized statuses
 	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, changes), undefined);
 });
 
+// A worktree-holder root shows one quiet unborn-HEAD hint where the Changes
+// row would otherwise disappear, without pretending files are tracked.
+test("the below-input float shows the unborn-HEAD hint for a holder root", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	const empty = { files: [], added: 0, deleted: 0 };
+	const chrome = renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, empty, undefined, 1)!;
+	assert.equal(chrome.headerRow, 3, "the hint row takes the Changes row's slot");
+	assert.match(stripAnsi(chrome.rows[2]!), /make a commit to start tracking changes/);
+	assert.doesNotMatch(stripAnsi(chrome.rows.join("\n")), /\/gentle:changes/);
+	const clean = renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, empty, undefined, 0)!;
+	assert.equal(clean.headerRow, 2, "no unborn roots, no Changes row");
+});
+
 test("the narrow-layout bottom-only bar stays unchanged in the float style", (t) => {
 	const theme = withBackground(taggedTheme);
 	const data = model({ usage: USAGE_TWO_WINDOWS, statuses: ["mcp ok"] });

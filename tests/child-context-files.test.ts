@@ -3,6 +3,8 @@ import test from "node:test";
 import {
 	filterChildContextFiles,
 	filterChildSessionContextFiles,
+	filterSessionContextFiles,
+	isAncestorContextFile,
 	ORCHESTRATOR_ONLY_MANAGED_BLOCKS,
 	stripOrchestratorOnlyBlocks,
 } from "../lib/child-context-files.ts";
@@ -252,4 +254,83 @@ test("the child-context extension never throws on missing or malformed options",
 	const original = malformed.systemPromptOptions.contextFiles;
 	await assert.doesNotReject(async () => handler(malformed, {}));
 	assert.equal(malformed.systemPromptOptions.contextFiles, original);
+});
+
+test("isAncestorContextFile accurately identifies ancestor context files (#1722)", () => {
+	const home = "/home/user";
+	const cwd = "/home/user/projects/my-repo";
+
+	// Home-level AGENTS.md and CLAUDE.md are always ancestors
+	assert.equal(isAncestorContextFile("/home/user/AGENTS.md", cwd, home), true);
+	assert.equal(isAncestorContextFile("/home/user/CLAUDE.md", cwd, home), true);
+	assert.equal(isAncestorContextFile("/home/user/AGENTS.md", home, home), true);
+
+	// Parent directory AGENTS.md is an ancestor
+	assert.equal(isAncestorContextFile("/home/user/projects/AGENTS.md", cwd, home), true);
+
+	// Project-local files in cwd or below are not ancestors
+	assert.equal(isAncestorContextFile("/home/user/projects/my-repo/AGENTS.md", cwd, home), false);
+	assert.equal(isAncestorContextFile("/home/user/projects/my-repo/sub/AGENTS.md", cwd, home), false);
+
+	// Unrelated directory is not an ancestor
+	assert.equal(isAncestorContextFile("/tmp/other/AGENTS.md", cwd, home), false);
+});
+
+test("filterSessionContextFiles strips duplicate gentle-ai blocks from ancestor AGENTS.md (#1722)", () => {
+	const home = "/home/user";
+	const cwd = "/home/user/projects/my-repo";
+
+	const ancestorManagedOnly = [
+		block("codegraph-guidance", "## CodeGraph\nUse CodeGraph first."),
+		"",
+		block("sdd-orchestrator", "Orchestrator instructions"),
+		"",
+		block("engram-protocol", "Engram instructions"),
+		"",
+		block("agent-routing", "Routing instructions"),
+	].join("\n");
+
+	const ancestorWithUserText = [
+		"# Personal Workspace Rules",
+		"",
+		"- Always run tests before PR",
+		"",
+		block("codegraph-guidance", "## CodeGraph\nUse CodeGraph first."),
+		"",
+		block("sdd-orchestrator", "Orchestrator instructions"),
+	].join("\n");
+
+	const projectLocal = [
+		"# Repo conventions",
+		"",
+		block("sdd-orchestrator", "Orchestrator instructions"),
+		"",
+		block("codegraph-guidance", "Repo-specific codegraph guidance"),
+	].join("\n");
+
+	const options = {
+		contextFiles: [
+			{ path: "/home/user/AGENTS.md", content: ancestorManagedOnly },
+			{ path: "/home/user/projects/AGENTS.md", content: ancestorWithUserText },
+			{ path: "/home/user/projects/my-repo/AGENTS.md", content: projectLocal },
+		],
+	};
+
+	filterSessionContextFiles(options, cwd, home);
+
+	// 1. Ancestor with only managed blocks became empty, so it was omitted
+	// 2. Ancestor with user text had managed blocks stripped, keeping user text
+	// 3. Project-local file had orchestrator stripped, but kept non-orchestrator block and user text
+	assert.equal(options.contextFiles?.length, 2);
+
+	const keptAncestor = options.contextFiles?.[0];
+	assert.equal(keptAncestor?.path, "/home/user/projects/AGENTS.md");
+	assert.equal(keptAncestor?.content, "# Personal Workspace Rules\n\n- Always run tests before PR\n");
+	assert.doesNotMatch(keptAncestor?.content ?? "", /codegraph-guidance|sdd-orchestrator/);
+
+	const projectFile = options.contextFiles?.[1];
+	assert.equal(projectFile?.path, "/home/user/projects/my-repo/AGENTS.md");
+	assert.doesNotMatch(projectFile?.content ?? "", /sdd-orchestrator/);
+	assert.match(projectFile?.content ?? "", /Repo-specific codegraph guidance/);
+	assert.match(projectFile?.content ?? "", /# Repo conventions/);
 });

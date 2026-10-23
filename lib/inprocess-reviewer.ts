@@ -62,6 +62,7 @@ export const INPROCESS_REVIEWER_FAILURE = {
 	TOOL_CALL_ATTEMPTED: "tool-call-attempted",
 	EMPTY_OUTPUT: "empty-output",
 	OUTPUT_TOO_LARGE: "output-too-large",
+	OUTPUT_TRUNCATED: "output-truncated",
 	TIMED_OUT: "timed-out",
 	ABORTED: "aborted",
 	PROVIDER_FAILED: "provider-failed",
@@ -78,6 +79,8 @@ export interface InProcessReviewerRequest {
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
+	/** Output token ceiling for the completion; absent leaves the model's own ceiling in force. */
+	readonly maxTokens?: number;
 	readonly signal?: AbortSignal;
 	/**
 	 * The live pi session id, threaded from the extension context. Pi's main
@@ -149,13 +152,16 @@ function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: 
 	return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
 }
 
+/** Narrows a provider content part to its text payload; other part types carry no answer text. */
 function isTextContent(part: { type?: unknown }): part is TextContent {
 	return part.type === "text";
 }
 
 /** Completion diagnostics are facts only; never copy provider text, errors, or payloads. */
-function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
+function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage, reasoningLabel: string | undefined, outputCeiling: number | undefined): Record<string, unknown> {
 	const evidence: Record<string, unknown> = { reviewerModel: `${model.provider}/${model.id}`.slice(0, 512) };
+	if (reasoningLabel !== undefined) evidence.reasoningLabel = reasoningLabel;
+	if (outputCeiling !== undefined) evidence.outputCeiling = outputCeiling;
 	if (["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason)) {
 		evidence.stopReason = assistant.stopReason;
 	}
@@ -230,6 +236,24 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// The model's own token ceiling comes from the model registry and is never
+	// validated upstream, so a declared ceiling can be 0, a negative number, or
+	// NaN. `Math.min(model.maxTokens, request.maxTokens)` would forward exactly
+	// that value to the completion provider as its token ceiling, and a
+	// provider that falls back to `model.maxTokens` forwards it even when the
+	// request sets no ceiling of its own, so an unusable ceiling is refused
+	// here — before the provider is contacted — as a model that cannot serve
+	// this routing key. A model that declares no ceiling at all is not a broken
+	// ceiling: there is no bound to forward, and the request's own ceiling then
+	// applies unclamped.
+	const declaredCeiling = typeof model.maxTokens === "number" ? model.maxTokens : undefined;
+	if (declaredCeiling !== undefined && (!Number.isFinite(declaredCeiling) || declaredCeiling <= 0)) {
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
+			`The model ${JSON.stringify(request.selection)} configured for ${request.routingKey} has an invalid maxTokens ceiling (${String(declaredCeiling)}); assign ${request.routingKey} a model whose token ceiling is finite and positive.`,
+		);
+	}
+
 	// pi's composed provider is the only layer that honors extension-registered
 	// providers (core/provider-composer.ts: `extension.streamSimple` when
 	// `model.api === extension.api`). pi-ai's `completeSimple` resolves against
@@ -289,6 +313,19 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	const timeoutSignal = AbortSignal.timeout(request.timeoutMs);
 	const combinedSignal = request.signal === undefined ? timeoutSignal : AbortSignal.any([request.signal, timeoutSignal]);
 
+	// A reasoning model draws thinking tokens from the same ceiling as the
+	// answer, so an unbounded completion can spend the whole budget on
+	// reasoning (gentle-shell#1607). The relay resolves a bounded ceiling;
+	// clamp it to the model's own ceiling so a low-ceiling model is never
+	// raised, and leave the completion unbounded only when no ceiling is set.
+	// A model that declares no ceiling of its own cannot clamp anything, so the
+	// request's ceiling applies as is — `Math.min(undefined, n)` would be NaN.
+	const effectiveMaxTokens = request.maxTokens === undefined
+		? undefined
+		: declaredCeiling === undefined
+			? request.maxTokens
+			: Math.min(declaredCeiling, request.maxTokens);
+
 	const context: Context = {
 		messages: [
 			{
@@ -305,6 +342,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 		...(request.transport === undefined ? {} : { transport: request.transport }),
+		...(effectiveMaxTokens === undefined ? {} : { maxTokens: effectiveMaxTokens }),
 	};
 
 	// An abort is classified by which signal actually fired, never by the
@@ -359,10 +397,22 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 
 	const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
 	if (text.length === 0) {
-		const evidence = emptyOutputEvidence(model, assistant);
+		const evidence = emptyOutputEvidence(model, assistant, request.thinking ?? "off", effectiveMaxTokens);
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
 			`Reviewer produced no text for ${request.routingKey} (stopReason: ${evidence.stopReason ?? "unknown"}).`,
+			evidence,
+		);
+	}
+
+	// A non-empty completion that the provider cut at the output ceiling is a
+	// partial review, not a result: reasoning can consume the budget and leave
+	// a truncated answer that would otherwise be admitted as complete.
+	if (assistant.stopReason === "length") {
+		const evidence = emptyOutputEvidence(model, assistant, request.thinking ?? "off", effectiveMaxTokens);
+		return refuse(
+			INPROCESS_REVIEWER_FAILURE.OUTPUT_TRUNCATED,
+			`Reviewer output for ${request.routingKey} was truncated at the ${effectiveMaxTokens ?? model.maxTokens}-token ceiling (stopReason: length); the partial text is not a complete review.`,
 			evidence,
 		);
 	}

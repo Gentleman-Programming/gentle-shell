@@ -230,7 +230,7 @@ test("refuses empty assistant text with safe completion evidence", async () => {
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
 	assert.deepEqual(refused.evidence, {
-		reviewerModel: "openai/gpt-5", stopReason: "stop",
+		reviewerModel: "openai/gpt-5", reasoningLabel: "off", stopReason: "stop",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
 		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
 	});
@@ -250,7 +250,7 @@ test("empty-output diagnostics allowlist facts, not provider secrets, and comple
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
 	assert.equal(calls.length, 1);
 	assert.deepEqual(refused.evidence, {
-		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		reviewerModel: "nan/deepseek-v4-flash", reasoningLabel: "off", stopReason: "length",
 		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
 		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
@@ -720,3 +720,103 @@ for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefin
 		});
 	}
 }
+
+test("forwards the request maxTokens to the completion, clamped to the model ceiling", async () => {
+	const model = fakeModel({ maxTokens: 8192 });
+	const registry = fakeRegistry([model]);
+	const captured = capturingComplete(assistantText("review result"));
+	const outcome = await runInProcessReviewer(baseRequest({ maxTokens: 16_384 }), { registry, complete: captured.complete });
+	assert.deepEqual(outcome, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+	assert.equal(captured.calls[0]!.options?.maxTokens, 8192);
+});
+
+test("omits maxTokens from the completion when the request has none", async () => {
+	const model = fakeModel();
+	const registry = fakeRegistry([model]);
+	const captured = capturingComplete(assistantText("review result"));
+	await runInProcessReviewer(baseRequest(), { registry, complete: captured.complete });
+	assert.equal(Object.hasOwn(captured.calls[0]!.options!, "maxTokens"), false);
+});
+
+test("empty-output evidence names the reasoning label and the effective output ceiling", async () => {
+	const model = fakeModel({ provider: "nan", id: "deepseek-v4-flash", maxTokens: 8192 });
+	const assistant = assistantText("", { content: [], stopReason: "length" });
+	const refused = expectRefused(await runInProcessReviewer(baseRequest({ selection: "nan/deepseek-v4-flash", thinking: "high", maxTokens: 16_384 }), {
+		registry: { ...fakeRegistry([model]), find: () => model },
+		complete: async () => assistant,
+	}));
+	assert.equal(refused.evidence?.reasoningLabel, "high");
+	assert.equal(refused.evidence?.outputCeiling, 8192);
+});
+
+test("refuses a truncated non-empty completion instead of admitting partial text", async () => {
+	const model = fakeModel({ maxTokens: 8192 });
+	const assistant = assistantText("partial review", { stopReason: "length" });
+	const refused = expectRefused(await runInProcessReviewer(baseRequest({ maxTokens: 16_384 }), {
+		registry: { ...fakeRegistry([model]), find: () => model },
+		complete: async () => assistant,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.OUTPUT_TRUNCATED);
+	assert.equal(refused.evidence?.stopReason, "length");
+	assert.match(refused.message, /partial text is not a complete review/);
+});
+
+// ---------------------------------------------------------------------------
+// Invalid model ceilings
+//
+// `model.maxTokens` comes from the model registry and is never validated
+// upstream, so it can be 0, negative, or NaN. `Math.min(model.maxTokens,
+// request.maxTokens)` would forward that value to the completion provider as
+// its token ceiling, so the reviewer must refuse such a model before the
+// provider is contacted.
+// ---------------------------------------------------------------------------
+
+const INVALID_MODEL_CEILINGS: ReadonlyArray<{ readonly label: string; readonly maxTokens: number; readonly named: string }> = [
+	{ label: "zero", maxTokens: 0, named: "0" },
+	{ label: "negative", maxTokens: -1, named: "-1" },
+	{ label: "NaN", maxTokens: Number.NaN, named: "NaN" },
+];
+
+for (const { label, maxTokens, named } of INVALID_MODEL_CEILINGS) {
+	test(`refuses a model whose own token ceiling is ${label} without calling the provider`, async () => {
+		for (const requestCeiling of [undefined, 16_384] as const) {
+			const model = fakeModel({ maxTokens });
+			const { complete, calls } = capturingComplete(assistantText("review result"));
+			const refused = expectRefused(await runInProcessReviewer(baseRequest({ maxTokens: requestCeiling }), {
+				registry: fakeRegistry([model]),
+				complete,
+			}));
+			assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
+			assert.match(refused.message, /review-risk/, "the refusal must name the routing key");
+			assert.match(refused.message, new RegExp(`maxTokens ceiling \\(${named}\\)`), "the refusal must name the invalid ceiling value");
+			assert.equal(calls.length, 0, "an invalid model ceiling must be refused before the provider is called");
+		}
+	});
+}
+
+test("refuses an invalid model ceiling before dispatching the composed provider", async () => {
+	const model = fakeModel({ maxTokens: 0 });
+	const { getProvider, calls: providerCalls } = capturingProvider(assistantText("review result"));
+	const { complete, calls: completeCalls } = capturingComplete(assistantText("review result"));
+	const refused = expectRefused(await runInProcessReviewer(baseRequest({ maxTokens: 16_384 }), {
+		registry: { ...fakeRegistry([model]), getProvider },
+		complete,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
+	assert.equal(providerCalls.length, 0, "the composed provider must not be dispatched for an invalid model ceiling");
+	assert.equal(completeCalls.length, 0, "the compat completion must not be reached for an invalid model ceiling");
+});
+
+test("a model that declares no token ceiling keeps the request's own ceiling", async () => {
+	// A registry entry without a `maxTokens` declares no ceiling at all: there
+	// is no broken bound to refuse, and clamping against it would forward NaN.
+	const model = { ...fakeModel(), maxTokens: undefined } as unknown as Model<Api>;
+	const { complete, calls } = capturingComplete(assistantText("review result"));
+	const outcome = await runInProcessReviewer(baseRequest({ maxTokens: 16_384 }), {
+		registry: { ...fakeRegistry([]), find: () => model },
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.options?.maxTokens, 16_384, "an absent model ceiling must not turn the request's ceiling into NaN");
+});

@@ -395,7 +395,7 @@ test("public empty-output report preserves only safe in-process completion facts
 	const result = await runCapture(cwd, native, "safe-evidence-lineage");
 	assert.equal(result.outcome, "pi-host-relay-transport-failure");
 	assert.deepEqual((result.failure as { reviewer: unknown }).reviewer, {
-		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		reviewerModel: "nan/deepseek-v4-flash", reasoningLabel: "off", stopReason: "length", usage: { output: 64, reasoning: 64 },
 		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
 	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);

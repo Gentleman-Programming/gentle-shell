@@ -3327,6 +3327,7 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 			orchestrator: { model: "nan/glm5.3", thinking: "high" },
 			worker: { model: "openai/alpha", thinking: "high" },
 			"sdd-design": { model: "nan/glm5.3", thinking: "high" },
+			"review-refuter": { model: "nan/glm5.3", thinking: "high" },
 		},
 	}, "team");
 	let rendered: string | undefined;
@@ -3355,6 +3356,11 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	// A matched key stays a plain row: the note is reserved for keys that name
 	// no discovered agent (issue #2196).
 	assert.doesNotMatch(text, /worker\s+openai\/alpha\s+high\s+←/);
+	// gentle-pi#2271: review-refuter and review-validator are provider review
+	// roles the relay routes by key; they never have an agent file, so the
+	// panel must not flag them as unmatched.
+	assert.match(text, /review-refuter\s+nan\/glm5\.3\s+high/);
+	assert.doesNotMatch(text, /review-refuter[^\n]*(←|↳)/);
 	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high/);
 	assert.doesNotMatch(text, /agents? → /);
 

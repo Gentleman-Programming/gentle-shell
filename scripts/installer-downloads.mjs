@@ -44,15 +44,15 @@ export const goPinVersion = go.version;
 // checksums.txt and GitHub's asset digests; every archive was downloaded and
 // re-hashed before pinning. GitHub serves the assets from its asset hosts.
 const engram = Object.freeze({
-	version: "3.4.0",
+	version: "3.5.2",
 	redirectHosts: Object.freeze(["objects.githubusercontent.com", "release-assets.githubusercontent.com"]),
 	archives: Object.freeze({
-		"darwin-arm64": ["darwin_arm64.tar.gz", "d0aa59c9a83d17ae3fc7f5dd31fdab6a26fd8c00fc5e692195753cd0719294f7", 7470202],
-		"darwin-x64": ["darwin_amd64.tar.gz", "3c5bdc73d226af5629cf4f4a781e223142e37c1ebb443c4b596f2e284352e381", 7961674],
-		"linux-x64": ["linux_amd64.tar.gz", "715fda625556e46d65ddb4526bb7f88a3fee5339ca3c44ce44cc652f17fa57f1", 7821191],
-		"linux-arm64": ["linux_arm64.tar.gz", "3309e9c0bbb539d183fd5aa9f9a13cd7aa0e81ec2512b5bedefb8b2bdd35b3e5", 7176726],
-		"win32-x64": ["windows_amd64.zip", "3065736ec7ff8137eb3fc607275f542ea13bb743a5157318c8a8770f11ce3289", 8021225],
-		"win32-arm64": ["windows_arm64.zip", "7463872a85a5e5434cf958bdffc71dda1926bced30d3b6b38c80fec9bb98fbba", 7231641],
+		"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
+		"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
+		"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
+		"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
+		"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
+		"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
 	}),
 });
 /** The Engram version the bundled install publishes under runtime/. */

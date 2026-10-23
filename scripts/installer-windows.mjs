@@ -181,9 +181,9 @@ try {
   $depth = 0;
   while ($path) {
     $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
-    $item = Get-Item -LiteralPath $path -Force;
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
-    if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+    $attributes = [IO.File]::GetAttributes($path);
+    if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
+    if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
     if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
     $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };
@@ -216,9 +216,9 @@ foreach ($start in $env:GENTLE_WINDOWS_CHECKS.Split('|')) {
     $depth = 0;
     while ($path) {
       $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
-      $item = Get-Item -LiteralPath $path -Force;
-      if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
-      if ($item.PSIsContainer) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
+      $attributes = [IO.File]::GetAttributes($path);
+      if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };
+      if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };
       $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]);
       if ($trusted -notcontains $owner.Value) { $detail = $path + '|' + $owner.Value + '|' + (& $account $owner) + '|'; throw ($role + '-owner') };
       $allowedRights = 0x1200a9; if ($depth -ge 2) { $allowedRights = 0x1200ad };

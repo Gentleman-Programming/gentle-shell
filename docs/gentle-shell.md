@@ -75,7 +75,31 @@ The prompt follows the selected card style. `neon` keeps pi's editor in its roun
 - The petal is still with a `waiting for input` label in float while pi waits, spins with a `working` label while the agent works, and turns amber with a `queued` label when messages are waiting behind the current turn. In float it lives inside the painted top row; in neon it lives in the top rule. Pi's own "Working" row above the editor is hidden.
 - The empty-editor typing hint appears only while the editor is empty; Esc/queued hints remain inside the painted top row even with a nonempty float draft. Widths below 10 columns or a missing/unusable background keep the complete neon prompt path.
 - With Vim editing off, the prompt selects text natively: `shift+home` / `shift+end` select to the line edge and `alt+e` selects the whole draft; backspace, delete, a printable key or a paste replaces the selection in one undoable edit. `alt+a` also selects all, but only when no extension shortcut claims it: by default it opens Gentle Agents. A registered extension shortcut always wins over these selection keys.
+- Pi's paste-image key (`app.clipboard.pasteImage`: `ctrl+v`, or `alt+v` on Windows) turns a clipboard image into an `[Image#N]` chip instead of a temp-file path. One Backspace or Delete removes the whole chip; cursor and word motions, word deletion, wrapping and Vim NORMAL treat it as one unit. On submit, every chip still in the draft is sent as a real image attachment, so the model sees it without calling `read`. A deleted chip is never sent. The bytes stay in memory; no temp file is written. See [Pasted images](#pasted-images).
 - If another extension already installed a custom editor, Gentle Shell leaves it alone.
+
+### Pasted images
+
+While a draft holds chips, a strip above the prompt lists each one:
+
+```text
+[Image#1] png · 1280×720 · 84 KB
+```
+
+- **Preview:** terminals with an image protocol (Kitty, Ghostty, WezTerm, Warp, iTerm2) draw a small thumbnail under each label while the agent is idle. While it works, and in terminals or multiplexers that hide the protocol (such as tmux), the label alone is shown, so streaming never re-sends the image to the terminal.
+- **Clipboard sources:** the native clipboard on macOS and Windows; `wl-paste` or `xclip` on Linux. On WSL, a Windows screenshot (`Win+Shift+S`) is read from the Windows clipboard through `powershell.exe`, because the Linux clipboard never receives it.
+- **What stays Pi's:** files copied in a file manager, text, and image formats other than PNG, JPEG, WebP and GIF go through Pi's own paste handler unchanged.
+- **Models without image input:** the strip warns before you send. If you send anyway, each chip becomes `[Image#N omitted: the current model does not accept images]` and a notice explains why, so nothing is dropped silently.
+- **Numbering:** numbers keep counting up for the whole session, so a chip recalled from prompt history never points at a newer image. A recalled chip is plain text; paste the image again to attach it.
+- **Sending while the clipboard is read:** reading the Windows clipboard on WSL takes about a second. If you send the message before it finishes, the image is discarded with a notice instead of landing in the next draft; paste again to attach it.
+- **Vim NORMAL:** the paste key enters INSERT and pastes the chip. NORMAL motions step over a chip as one unit; an operator whose range covers a chip removes it whole.
+- **Terminals that capture the paste key:** some terminals keep `ctrl+v` for their own paste, and nothing reaches Pi when the clipboard holds only an image (Warp on Windows does this). Bind a second key in `~/.pi/agent/keybindings.json`, then restart:
+
+  ```json
+  { "app.clipboard.pasteImage": ["ctrl+v", "alt+v"] }
+  ```
+
+### Changes
 
 Changes shows the **current Git state** — working tree against HEAD, untracked files included — of the session's repository and of every worktree or repository its subagents used that still exists. Nothing is scanned at startup; the list fills at the first turn end or when the panel opens, then refreshes at each turn end and while the panel is open. Fullscreen, the sidebar, and mouse interaction are unchanged.
 

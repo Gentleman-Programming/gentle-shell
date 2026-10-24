@@ -123,13 +123,31 @@ export async function readModelConfigFileAsync(
 	}
 }
 
+// A present global config must merge with, not fully shadow, the legacy project
+// config: project-only entries still apply, same-name entries prefer global.
+function mergeSavedModelConfig(
+	globalResult: ModelConfigFileResult,
+	projectResult: ModelConfigFileResult,
+): ModelConfigFileResult {
+	if (globalResult.status === "invalid") return globalResult;
+	if (projectResult.status === "invalid") return projectResult;
+	if (globalResult.status === "missing" && projectResult.status === "missing") return { status: "missing" };
+	return {
+		status: "valid",
+		config: {
+			...(projectResult.status === "valid" ? projectResult.config : {}),
+			...(globalResult.status === "valid" ? globalResult.config : {}),
+		},
+	};
+}
+
 export function readSavedModelConfig(
 	globalPath: string,
 	projectPath: string,
 ): ModelConfigFileResult {
 	const globalResult = readModelConfigFile(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFile(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, readModelConfigFile(projectPath));
 }
 
 export async function readSavedModelConfigAsync(
@@ -137,6 +155,6 @@ export async function readSavedModelConfigAsync(
 	projectPath: string,
 ): Promise<ModelConfigFileResult> {
 	const globalResult = await readModelConfigFileAsync(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFileAsync(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, await readModelConfigFileAsync(projectPath));
 }

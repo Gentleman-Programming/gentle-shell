@@ -977,6 +977,65 @@ test("bundled on Windows: the user Path entry goes first, the running node.exe, 
 	} finally { w.cleanup(); }
 });
 
+// #2469: a home that self-uninstall keeps must not keep Pi pointed at the npm
+// the uninstall removed: a stale `npmCommand` makes every later `pi install`
+// fail with ENOENT naming the deleted node.exe.
+const bundledNpmCommand = (w: BundledWorld) => [w.node, join(dirname(w.node), "gentle-shell", "npm"), "--update-notifier=false"];
+
+const bundledNpmSettings = (w: BundledWorld, npmCommand: unknown) => `${JSON.stringify({ theme: "dark", npmCommand }, null, "  ")}\n`;
+
+test("bundled: keeping the home removes the npmCommand that names the removed prefix and keeps the rest of settings.json", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const settings = join(w.shared.agent, "settings.json");
+		write(settings, bundledNpmSettings(w, bundledNpmCommand(w)));
+		assert.equal(await w.uninstall(["--yes"]), 0, w.err.join("\n"));
+		assert.deepEqual(JSON.parse(readFileSync(settings, "utf8")), { theme: "dark" });
+		assert.ok(w.out.join("\n").includes(`npmCommand from ${settings}`), w.out.join("\n"));
+	} finally { w.cleanup(); }
+});
+
+test("bundled: keeping the home leaves settings.json alone when npmCommand does not name the prefix", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const settings = join(w.shared.agent, "settings.json");
+		const text = bundledNpmSettings(w, ["/usr/local/bin/node", "--update-notifier=false"]);
+		write(settings, text);
+		assert.equal(await w.uninstall(["--yes"]), 0, w.err.join("\n"));
+		assert.equal(readFileSync(settings, "utf8"), text);
+	} finally { w.cleanup(); }
+});
+
+test("bundled: keeping the home never rewrites a settings.json that is not a JSON object", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		const settings = join(w.shared.agent, "settings.json");
+		write(settings, "not json at all\n");
+		assert.equal(await w.uninstall(["--yes"]), 0, w.err.join("\n"));
+		assert.equal(readFileSync(settings, "utf8"), "not json at all\n");
+	} finally { w.cleanup(); }
+});
+
+test("bundled on Windows: keeping the home also removes the npmCommand naming the removed prefix", async () => {
+	const w = bundledWorld({ platform: "win32" });
+	try {
+		const settings = join(w.shared.agent, "settings.json");
+		write(settings, `${JSON.stringify({ npmCommand: bundledNpmCommand(w) }, null, "  ")}\n`);
+		assert.equal(await w.uninstall(["--yes"]), 0, w.err.join("\n"));
+		assert.equal(readFileSync(settings, "utf8"), "{}\n");
+		assert.ok(w.out.join("\n").includes(`npmCommand from ${settings}`), w.out.join("\n"));
+	} finally { w.cleanup(); }
+});
+
+test("bundled: --include-shared removes the home with its settings, so no npmCommand cleanup is needed", posixOnly, async () => {
+	const w = bundledWorld();
+	try {
+		write(join(w.shared.agent, "settings.json"), bundledNpmSettings(w, bundledNpmCommand(w)));
+		assert.equal(await w.uninstall(["--yes", "--include-shared"]), 0, w.err.join("\n"));
+		assert.equal(existsSync(join(w.shared.agent, "settings.json")), false);
+	} finally { w.cleanup(); }
+});
+
 // #2201: the standalone isolated home keeps its config in ~/.gentle-shell/gentle-ai.
 test("Gentle Shell's own config folder next to the isolated home is removed; the shared config home keeps its rule", async () => {
 	const w = world();

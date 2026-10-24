@@ -42,6 +42,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:jobs", label: "Background jobs" },
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
+			{ command: "gentle:voice", label: "Voice dictation · local Parakeet" },
 		],
 	},
 	{

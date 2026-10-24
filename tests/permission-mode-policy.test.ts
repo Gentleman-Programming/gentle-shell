@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerYoloSessionPolicy, discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
-import { parsePermissionModePolicyFile, resolvePermissionModePolicy, writePermissionModePolicy, permissionModePolicyFile, PERMISSION_MODE_SCHEMA } from "../lib/permission-mode-policy.ts";
+import { isPermissionMode, parsePermissionModePolicyFile, resolvePermissionModePolicy, writePermissionModePolicy, permissionModePolicyFile, PERMISSION_MODE_SCHEMA } from "../lib/permission-mode-policy.ts";
 
 function fixture(t: test.TestContext) {
  const home = mkdtempSync(join(tmpdir(), "gentle-mode-"));
@@ -191,4 +191,13 @@ test("stale pending activation, scope loss and malformed preference remain close
  writeFileSync(permissionModePolicyFile(options), "{");
  assert.equal(await h.controller.saveDefault("yolo", h.context), false);
  assert.equal(readFileSync(permissionModePolicyFile(options), "utf8"), "{");
+});
+
+test("super-yolo is a valid saved and parsed permission mode", t => {
+ const options = fixture(t);
+ assert.equal(isPermissionMode("super-yolo"), true);
+ assert.equal(isPermissionMode("superyolo"), false);
+ const path = writePermissionModePolicy("super-yolo", options);
+ assert.equal(parsePermissionModePolicyFile(readFileSync(path, "utf8")), "super-yolo");
+ assert.equal(resolvePermissionModePolicy(options).mode, "super-yolo");
 });

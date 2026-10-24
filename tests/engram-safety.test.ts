@@ -16,7 +16,7 @@ const OTHER_ID = "fedcba9876543210fedcba9876543210";
 const READY = { revision: 1, source: "active", status: "ready", offline_automatic_opening_authorized: false, active_reuse_authorized: true,
 	instance_id: ID, runtime_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", capability: "startup-verified-store-v1" };
 const REFUSED: shell.EngramProbe = { kind: "refused" };
-const CORE = "3.4.0";
+const CORE = "3.5.2";
 const listening = (compatible: boolean, healthInstanceId?: string, healthVersion = CORE): shell.EngramProbe =>
 	({ kind: "listening", compatible, healthInstanceId, healthVersion: healthInstanceId === undefined ? undefined : healthVersion });
 
@@ -28,59 +28,75 @@ const clean = (extra: Record<string, string> = {}) => {
 	return env;
 };
 const classify = (input: Partial<Parameters<typeof shell.classifyEngramStartup>[0]> = {}) =>
-	shell.classifyEngramStartup({ env: {}, store: "absent", endpoint: REFUSED, core: true, coreVersion: CORE, ...input });
+	shell.classifyEngramStartup({ env: {}, endpoint: REFUSED, core: true, coreVersion: CORE, ...input });
 
-test("fresh state with a verified bundled core allows memory and marks the run as provisioning", () => {
-	assert.deepEqual(classify(), { policy: "allow", fresh: true });
+test("nothing listening with a verified bundled core starts the shared server and reuses it through the default URL", () => {
+	assert.deepEqual(classify(), { policy: "allow", url: "http://127.0.0.1:7437", spawn: true });
 });
 
-test("a fresh state without the verified bundled core is disabled, never a PATH fallback", () => {
+test("nothing listening without the verified bundled core is disabled, never a PATH fallback", () => {
 	const result = classify({ core: false });
 	assert.equal(result.policy, "disabled");
+	assert.equal(result.spawn, undefined);
 	assert.match(result.notice!, /bundled Engram core/);
 });
 
-test("existing, unreadable or foreign stores without matching provenance are disabled", () => {
-	for (const store of ["present", "unknown"] as const) {
-		const result = classify({ store });
-		assert.equal(result.policy, "disabled", store);
-		assert.match(result.notice!, /could not verify.*compatibility.*Back up/is);
-		assert.doesNotMatch(result.notice!, /update Engram and restart/i);
+test("an existing store no longer disables memory by itself; only a newer schema header keeps the server stopped", () => {
+	for (const userVersion of [undefined, 0, 1]) {
+		assert.deepEqual(classify({ userVersion }), { policy: "allow", url: "http://127.0.0.1:7437", spawn: true }, String(userVersion));
 	}
-	assert.equal(classify({ store: "present", endpoint: listening(false, ID) }).policy, "disabled");
+	const newer = classify({ userVersion: 2 });
+	assert.deepEqual([newer.policy, newer.spawn, newer.url], ["disabled", undefined, undefined]);
+	assert.equal(newer.notice, shell.ENGRAM_NEWER_SCHEMA_NOTICE);
+	assert.match(newer.notice!, /newer Engram.*Back up/s);
+	// A pin without a verified schema cannot rule out a newer store: never started.
+	assert.equal(classify({ coreVersion: "9.9.9", userVersion: 1 }).policy, "disabled");
+	assert.equal(classify({ coreVersion: "9.9.9" }).spawn, true);
+});
+
+test("a listener that does not verify keeps memory disabled and is never replaced", () => {
+	for (const endpoint of [listening(false), listening(false, ID), { kind: "unknown" } as shell.EngramProbe]) {
+		const result = classify({ endpoint });
+		assert.deepEqual([result.policy, result.spawn, result.url], ["disabled", undefined, undefined], JSON.stringify(endpoint));
+		assert.match(result.notice!, /could not verify.*compatibility.*Back up/is);
+	}
+	// Not even the bundled core version on /health stands in for /compatibility.
+	assert.equal(classify({ endpoint: listening(false, ID, CORE) }).policy, "disabled");
 });
 
 test("a running server older than the first compatibility-capable core is named in the notice, without changing the decision", () => {
 	for (const version of ["3.3.2", "v3.3.2", "2.9.0"]) {
-		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		const result = classify({ endpoint: listening(false, OTHER_ID, version) });
 		assert.equal(result.policy, "disabled", version);
 		assert.equal(result.url, undefined, version);
 		assert.match(result.notice!, new RegExp(`reports version ${version.replace(/^v/, "").replaceAll(".", "\\.")}`), version);
 		assert.match(result.notice!, /update that server to 3\.4\.0 or later.*restart it/s, version);
 		assert.match(result.notice!, /Back up/, version);
 	}
-	// Shell's own store behind an older server gets the same guidance and stays disabled.
-	const own = classify({ store: "present", provenance: { instanceId: ID }, endpoint: listening(false, ID, "3.3.2") });
-	assert.equal(own.policy, "disabled");
-	assert.match(own.notice!, /reports version 3\.3\.2/);
 });
 
 test("a current, unparsable or hostile server version keeps the generic notice and is never echoed", () => {
 	for (const version of ["3.4.0", "3.10.0", "4.0.0", "dev", "", "3.3.2\u001b[31m", "3.3.2 update now", "03.3.2", "3.03.2", "3.3.02", "v03.3.2"]) {
-		const result = classify({ store: "present", endpoint: listening(false, OTHER_ID, version) });
+		const result = classify({ endpoint: listening(false, OTHER_ID, version) });
 		assert.equal(result.policy, "disabled", JSON.stringify(version));
 		assert.equal(result.notice, shell.ENGRAM_RECOVERY_NOTICE, JSON.stringify(version));
 	}
-	assert.equal(classify({ store: "present", endpoint: listening(false) }).notice, shell.ENGRAM_RECOVERY_NOTICE);
+	assert.equal(classify({ endpoint: listening(false) }).notice, shell.ENGRAM_RECOVERY_NOTICE);
 });
 
 test("explicit selections and invalid policies are disabled without depending on probes", () => {
-	for (const key of ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_DATABASE_URL"]) {
-		assert.equal(classify({ env: { [key]: "chosen" }, endpoint: listening(true) }).policy, "disabled", key);
+	for (const key of ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_SOCKET", "ENGRAM_DATABASE_URL", "ENGRAM_SERVER_MODE"]) {
+		for (const endpoint of [listening(true), REFUSED]) {
+			const result = classify({ env: { [key]: "chosen" }, endpoint });
+			assert.deepEqual([result.policy, result.spawn], ["disabled", undefined], key);
+		}
 	}
-	assert.equal(classify({ env: { ENGRAM_STARTUP_POLICY: "allow" } }).policy, "allow");
+	assert.equal(classify({ env: { ENGRAM_STARTUP_POLICY: "allow" } }).spawn, true);
 	for (const value of ["", "disabled", "ALLOW", " allow ", "invalid"]) {
-		assert.equal(classify({ env: { ENGRAM_STARTUP_POLICY: value }, endpoint: listening(true) }).policy, "disabled", value);
+		for (const endpoint of [listening(true), REFUSED]) {
+			const result = classify({ env: { ENGRAM_STARTUP_POLICY: value }, endpoint });
+			assert.deepEqual([result.policy, result.spawn], ["disabled", undefined], value);
+		}
 	}
 	assert.equal(shell.engramProbeAllowed({ ENGRAM_URL: "https://chosen.invalid" }), false);
 	assert.equal(shell.engramProbeAllowed({ ENGRAM_STARTUP_POLICY: "" }), false);
@@ -88,23 +104,10 @@ test("explicit selections and invalid policies are disabled without depending on
 });
 
 test("a verified /compatibility contract reuses the running server through an explicit URL", () => {
-	assert.deepEqual(classify({ store: "present", endpoint: listening(true) }), { policy: "allow", url: "http://127.0.0.1:7437" });
-	for (const endpoint of [listening(false), { kind: "unknown" } as shell.EngramProbe]) {
-		assert.equal(classify({ store: "present", endpoint }).policy, "disabled");
+	// Reused unchanged, whatever the store header or the bundled core.
+	for (const input of [{}, { userVersion: 2 }, { core: false }]) {
+		assert.deepEqual(classify({ ...input, endpoint: listening(true) }), { policy: "allow", url: "http://127.0.0.1:7437" }, JSON.stringify(input));
 	}
-});
-
-test("Shell provenance allows its own store only for the same instance and the same core binary", () => {
-	const provenance = { instanceId: ID };
-	assert.deepEqual(classify({ store: "present", provenance }), { policy: "allow" });
-	assert.deepEqual(classify({ store: "present", provenance, endpoint: listening(false, ID) }), { policy: "allow", url: "http://127.0.0.1:7437" });
-	assert.equal(classify({ store: "present", provenance, endpoint: listening(false, OTHER_ID) }).policy, "disabled");
-	for (const version of ["3.3.3", "v3.4.0", "dev", ""]) {
-		assert.equal(classify({ store: "present", provenance, endpoint: listening(false, ID, version) }).policy, "disabled", version);
-	}
-	assert.equal(classify({ store: "present", provenance, endpoint: listening(false) }).policy, "disabled");
-	assert.equal(classify({ store: "present", provenance, endpoint: { kind: "unknown" } }).policy, "disabled");
-	assert.equal(classify({ store: "present", provenance, core: false }).policy, "disabled");
 });
 
 test("the compatibility contract must match exactly", () => {
@@ -161,20 +164,11 @@ test("the SQLite header user_version is read from raw bytes and malformed header
 	}
 });
 
-test("provenance matches only the same directory, instance and core digest", () => {
-	const record = { schema: 1 as const, dataDir: "/home/ana/.engram", instanceId: ID, coreSha256: "a".repeat(64) };
-	const observed = { dataDir: record.dataDir, instanceId: ID, coreSha256: record.coreSha256 };
-	assert.equal(shell.engramProvenanceMatches(record, observed), true);
-	for (const change of [{ dataDir: "/elsewhere/.engram" }, { instanceId: OTHER_ID }, { coreSha256: "b".repeat(64) }, { instanceId: undefined }, { coreSha256: undefined }]) {
-		assert.equal(shell.engramProvenanceMatches(record, { ...observed, ...change }), false, JSON.stringify(change));
-	}
-	assert.equal(shell.engramProvenanceMatches(undefined, observed), false);
-});
-
 test("the header is a newer-schema tripwire against the verified bundled schema, never a compatibility proof", () => {
 	// v3.3.2:internal/store/store.go declares schemaVersion = 1.
 	assert.equal(shell.bundledEngramSchema("3.3.2"), 1);
 	assert.equal(shell.bundledEngramSchema("3.4.0"), 1);
+	assert.equal(shell.bundledEngramSchema("3.5.2"), 1);
 	assert.equal(shell.bundledEngramSchema("3.3.3"), undefined);
 	for (const userVersion of [0, 1]) assert.equal(shell.engramHeaderAllows(userVersion, 1), true, String(userVersion));
 	assert.equal(shell.engramHeaderAllows(2, 1), false);
@@ -241,10 +235,10 @@ test("probe reports refused for a closed port and unknown for a silent listener"
 	assert.ok(Date.now() - started < 2000);
 });
 
-const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.4.0/engram", guard: GUARD };
+const base = { node: "/node", cli: "/pi", prefix: "/prefix", engram: "/prefix/runtime/engram-3.5.2/engram", guard: GUARD };
 
 test("disabled memory without explicit selections points ENGRAM_BIN at the guard and keeps the policy", () => {
-	const memory = classify({ store: "present" });
+	const memory = classify({ endpoint: listening(false) });
 	const env = shell.bundledChildEnv({ ENGRAM_STARTUP_NOTICE: "display only" }, { ...base, memory });
 	assert.equal(env.ENGRAM_BIN, GUARD);
 	assert.equal(env.ENGRAM_URL, undefined);
@@ -254,7 +248,7 @@ test("disabled memory without explicit selections points ENGRAM_BIN at the guard
 });
 
 test("explicit ENGRAM_BIN or ENGRAM_URL are never replaced or removed", () => {
-	const memory = classify({ store: "present" });
+	const memory = classify({ endpoint: listening(false) });
 	for (const selected of [{ ENGRAM_BIN: "/explicit" }, { ENGRAM_URL: "https://chosen.invalid" }, { ENGRAM_BIN: "/explicit", ENGRAM_URL: "https://chosen.invalid" }]) {
 		const before = { ...selected };
 		const env = shell.bundledChildEnv(selected, { ...base, memory });
@@ -267,11 +261,15 @@ test("explicit ENGRAM_BIN or ENGRAM_URL are never replaced or removed", () => {
 	assert.equal(shell.bundledChildEnv({ ENGRAM_URL: "https://chosen.invalid" }, { ...base, engram: undefined, memory }).ENGRAM_BIN, GUARD);
 });
 
-test("allowed modes select the core, the guard plus a reuse URL, or the guard when the core is missing", () => {
-	assert.equal(shell.bundledChildEnv({}, { ...base, memory: classify() }).ENGRAM_BIN, base.engram);
-	assert.equal(shell.bundledChildEnv({}, { ...base, memory: classify({ store: "present", provenance: { instanceId: ID } }) }).ENGRAM_BIN, base.engram);
-	const reuse = shell.bundledChildEnv({}, { ...base, memory: classify({ store: "present", endpoint: listening(true) }) });
-	assert.deepEqual([reuse.ENGRAM_URL, reuse.ENGRAM_BIN, reuse.ENGRAM_STARTUP_POLICY], ["http://127.0.0.1:7437", GUARD, "allow"]);
+test("allowed memory always reaches the shared server through the reuse URL and the guard, never a session-owned server", () => {
+	for (const memory of [classify(), classify({ endpoint: listening(true) })]) {
+		const env = shell.bundledChildEnv({}, { ...base, memory });
+		assert.deepEqual([env.ENGRAM_URL, env.ENGRAM_BIN, env.ENGRAM_STARTUP_POLICY, env.ENGRAM_SERVER_MODE], ["http://127.0.0.1:7437", GUARD, "allow", undefined]);
+		// The user's own server mode, if any, is passed through untouched.
+		assert.equal(shell.bundledChildEnv({ ENGRAM_SERVER_MODE: "shared" }, { ...base, memory }).ENGRAM_SERVER_MODE, "shared");
+	}
+	assert.equal("ENGRAM_PRIVATE_REQUIRED_NOTICE" in shell, false);
+	assert.equal("supportsEngramSessionOwned" in shell, false);
 	const missing = shell.bundledChildEnv({}, { ...base, engram: undefined, memory: classify({ core: false }) });
 	assert.equal(missing.ENGRAM_BIN, GUARD);
 	assert.throws(() => shell.bundledChildEnv({}, { ...base, guard: undefined, memory: classify() }), /guard/);
@@ -309,7 +307,7 @@ test("the guard fails non-zero, reports the notice and leaves Engram data byte-i
 });
 
 test("a provider-style instance-id spawn against the environment Shell builds fails closed", { skip: process.platform === "win32" }, () => {
-	const env = shell.bundledChildEnv(clean(), { ...base, memory: classify({ store: "present" }) });
+	const env = shell.bundledChildEnv(clean(), { ...base, memory: classify({ endpoint: listening(false) }) });
 	const result = spawnSync(env.ENGRAM_BIN!, ["instance-id"], { env, encoding: "utf8", timeout: 5000 });
 	assert.notEqual(result.status, 0);
 	assert.doesNotMatch(result.stdout, /^[a-f0-9]{32}$/m);

@@ -32,6 +32,8 @@ interface PrivateEditor {
   onChange?: (text: string) => void;
   pastes: Map<number, string>;
   pasteCounter: number;
+  /** Host-owned atomic spans (gentle-shell#2464 image chips) that NORMAL motions must not split. */
+  atomicSpans?(line: string): Array<{ start: number; end: number }>;
   undoStack: Stack;
   history: string[];
   historyIndex: number;
@@ -151,12 +153,13 @@ function highlightRenderedRow(row: string, chunk: LayoutLine, left: number, righ
   return result;
 }
 
-function boundaries(line: string, pastes: Map<number, string>): number[] {
+function boundaries(line: string, editor: Pick<PrivateEditor, "pastes" | "atomicSpans">): number[] {
   const units = [...segmenter.segment(line)].map((part) => part.index);
-  for (const match of line.matchAll(marker)) {
-    if (!pastes.has(Number(match[1]))) continue;
-    const start = match.index;
-    const end = start + match[0].length;
+  const spans = [...line.matchAll(marker)]
+    .filter((match) => editor.pastes.has(Number(match[1])))
+    .map((match) => ({ start: match.index, end: match.index + match[0].length }));
+  if (typeof editor.atomicSpans === "function") spans.push(...editor.atomicSpans(line));
+  for (const { start, end } of spans) {
     for (let i = units.length - 1; i >= 0; i--) {
       if (units[i]! > start && units[i]! < end) units.splice(i, 1);
     }
@@ -177,7 +180,7 @@ function assertUniquePastes(editor: PrivateEditor): void {
 function assertPosition(editor: PrivateEditor, pos: Position): void {
   assertUniquePastes(editor);
   const line = editor.state.lines[pos.line];
-  if (line === undefined || !Number.isInteger(pos.col) || !boundaries(line, editor.pastes).includes(pos.col)) {
+  if (line === undefined || !Number.isInteger(pos.col) || !boundaries(line, editor).includes(pos.col)) {
     throw new Error("Cursor must be on a valid grapheme or paste boundary");
   }
 }
@@ -265,7 +268,7 @@ export function createVimEditorAdapter(value: unknown, version: string, editorCl
     },
     motionBoundaries(): number[][] {
       assertUniquePastes(editor);
-      return editor.state.lines.map((line) => boundaries(line, editor.pastes));
+      return editor.state.lines.map((line) => boundaries(line, editor));
     },
     move(pos: Position): void {
       assertPosition(editor, pos);
@@ -277,7 +280,7 @@ export function createVimEditorAdapter(value: unknown, version: string, editorCl
     moveByGraphemes(delta: number): void {
       if (!Number.isInteger(delta)) throw new Error("Invalid motion");
       const positions = editor.state.lines.flatMap((line, index) =>
-        boundaries(line, editor.pastes).map((col) => ({ line: index, col })));
+        boundaries(line, editor).map((col) => ({ line: index, col })));
       const current = editor.getCursor();
       const at = positions.findIndex((p) => p.line === current.line && p.col === current.col);
       if (at < 0) throw new Error("Invalid cursor boundary");

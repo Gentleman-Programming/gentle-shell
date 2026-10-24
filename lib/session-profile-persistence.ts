@@ -11,7 +11,7 @@ import {
 } from "./model-routing-authority.ts";
 
 export const SESSION_PROFILE_CUSTOM_TYPE = "gentle-pi.session-profile/v1";
-const SESSION_PROFILE_FAMILY = "gentle-pi.session-profile/";
+export const SESSION_PROFILE_FAMILY = "gentle-pi.session-profile/";
 
 export type SessionProfileOrigin = "user" | "local" | "repo" | "global";
 

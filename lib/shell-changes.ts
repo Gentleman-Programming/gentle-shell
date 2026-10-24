@@ -134,6 +134,9 @@ export function changesSummary(model: ChangesModel): string {
 
 // One line: summary, the files joined by dots, and the command pushed to
 // the right edge. The file list goes first when the terminal is narrow.
+// The idle widget exists only while files are tracked. An unborn root (no
+// commits yet) is silence here: /gentle:changes explains the state on demand,
+// where the message has room and context.
 export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number): string[] {
 	if (model.files.length === 0) return [];
 	const noun = model.files.length === 1 ? "file" : "files";
@@ -199,12 +202,24 @@ export async function foreignRootBranch(git: GitRunner): Promise<string | undefi
 	return verified.code === 0 ? branch : "no commits yet";
 }
 
+// A root whose HEAD is unborn (no commits yet) has no baseline: `git diff
+// HEAD` is meaningless and `git status` reports every file as untracked.
+// Worktree-holder folders -- repositories that exist only to parent linked
+// worktrees -- look exactly like this, and scanning them floods Changes with
+// thousands of phantom untracked files (the whole holder's contents). One
+// cheap verify answers "is there anything to diff against" before a scan.
+const HEAD_EXISTS_ARGS = ["rev-parse", "--verify", "-q", "HEAD"];
+
 // /gentle:changes: one group per registered root holding its working tree
 // against HEAD. A root whose Git fails (timed out, rejected) has no group but
 // is listed in failedRoots: a failed scan is never reported as a clean root.
+// A root with no commits has no group either, listed in unbornRoots: there is
+// nothing to track yet, and the bar says so instead of scanning the holder.
 export class WorktreeChangesTracker {
 	worktrees: WorktreeChanges[] = [];
 	failedRoots: string[] = [];
+	/** Registered roots whose HEAD is unborn: skipped, never scanned. */
+	unbornRoots: string[] = [];
 	scannedRootCount = 0;
 	private inFlight: Promise<ChangesModel> | undefined;
 	private readonly discover: GitRunner;
@@ -266,9 +281,17 @@ export class WorktreeChangesTracker {
 		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
 		// Roots scan in parallel so one slow root does not delay the others.
 		const failed: string[] = [];
+		const unborn: string[] = [];
 		const scanned = await Promise.all([...roots].map(async (root): Promise<WorktreeChanges | undefined> => {
 			const known = metadata.get(root);
 			try {
+				// Only an answered "no" means unborn: a rejected verify cannot tell
+				// unborn from broken Git, so the scan below still decides.
+				const head = await this.gitForRoot(root)(HEAD_EXISTS_ARGS).catch(() => undefined);
+				if (head && head.code !== 0) {
+					unborn.push(root);
+					return undefined;
+				}
 				const tracker = new ChangesTracker(this.gitForRoot(root), this.linesForRoot(root), this.revisionForRoot(root));
 				await tracker.start();
 				if (!tracker.statusRead) {
@@ -301,6 +324,7 @@ export class WorktreeChangesTracker {
 		if (latest.size !== roots.size || [...latest].some((root) => !roots.has(root))) return this.capture();
 		this.worktrees = trees;
 		this.failedRoots = failed;
+		this.unbornRoots = unborn;
 		this.scannedRootCount = roots.size;
 		return this.model;
 	}

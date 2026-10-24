@@ -116,12 +116,15 @@ test("Customize selects Auto for this session and saves either elevated default 
  view.handleInput("j");view.handleInput("j");view.render(140);
  assert.match(text(view),/Session permissions: AUTO/);
  await h.apply("\r");assert.equal(await h.controller().mode(h.ctx),"auto");
- view.handleInput("j");view.handleInput("j");view.handleInput("j");view.render(140);
+ view.handleInput("j");view.handleInput("j");view.handleInput("j");view.handleInput("j");view.render(140);
  assert.match(text(view),/Default permissions: AUTO/);
  await h.apply("\r");assert.equal(h.controller().defaultMode(),"auto");assert.equal(await h.controller().mode(h.ctx),"auto");
  view.handleInput("j");view.render(140);await h.apply("\r");
  assert.equal(h.controller().defaultMode(),"yolo");assert.equal(await h.controller().mode(h.ctx),"auto");
  assert.equal(JSON.parse(readFileSync(join(h.home,"permission-mode.json"),"utf8")).mode,"yolo");
+ view.handleInput("j");view.render(140);await h.apply("\r");
+ assert.equal(h.controller().defaultMode(),"super-yolo");assert.equal(await h.controller().mode(h.ctx),"auto");
+ assert.equal(JSON.parse(readFileSync(join(h.home,"permission-mode.json"),"utf8")).mode,"super-yolo");
  for(const width of [1,20,60,140])assert.ok(view.render(width).every(line=>visibleWidth(line)<=width));
  open.close();await open.result;
 });
@@ -269,3 +272,4 @@ test("real Theme and existing component obey narrow dimensions with invisible co
 	assert.equal(await h.controller().active(h.ctx), false);
 	open.close(); await open.result;
 });
+

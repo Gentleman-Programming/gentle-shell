@@ -25,6 +25,11 @@ const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
 const WATCH_DEBOUNCE_MS = 500;
+// inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
+// silently on exhausted systems -- WSL2 hits this constantly -- so a slow
+// poll is the floor that keeps regeneration working when the OS cannot
+// deliver change events. The fingerprint gate makes a redundant poll cheap.
+const WATCH_FALLBACK_POLL_MS = 2_000;
 const REGISTRY_SCHEMA_VERSION = 9;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
@@ -115,6 +120,11 @@ function projectSkillDirs(cwd: string): string[] {
 	];
 }
 
+function isMissingSkillFileError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
 async function findSkillFiles(root: string): Promise<string[]> {
 	if (!(await pathExists(root))) return [];
 	let entries;
@@ -124,7 +134,8 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		return [];
 	}
 
-	const out: string[] = [];
+	const directSkills: string[] = [];
+	const nestedSkills: string[] = [];
 	for (const entry of entries) {
 		const skillDir = join(root, entry.name);
 		let dirInfo;
@@ -138,12 +149,40 @@ async function findSkillFiles(root: string): Promise<string[]> {
 		const candidate = join(skillDir, "SKILL.md");
 		try {
 			const skillInfo = await stat(candidate);
-			if (skillInfo.isFile()) out.push(candidate);
+			if (skillInfo.isFile()) directSkills.push(candidate);
+			continue;
+		} catch (error) {
+			if (!isMissingSkillFileError(error)) continue;
+		}
+		if (entry.isSymbolicLink() || isExcluded(entry.name)) continue;
+
+		let nestedEntries;
+		try {
+			nestedEntries = await readdir(skillDir, { withFileTypes: true });
 		} catch {
-			// Missing or unreadable skill files are ignored; the registry is best-effort.
+			continue;
+		}
+		for (const nestedEntry of nestedEntries) {
+			if (nestedEntry.isSymbolicLink()) continue;
+			const nestedSkillDir = join(skillDir, nestedEntry.name);
+			let nestedDirInfo;
+			try {
+				nestedDirInfo = await stat(nestedSkillDir);
+			} catch {
+				continue;
+			}
+			if (!nestedDirInfo.isDirectory()) continue;
+
+			const nestedCandidate = join(nestedSkillDir, "SKILL.md");
+			try {
+				const nestedSkillInfo = await stat(nestedCandidate);
+				if (nestedSkillInfo.isFile()) nestedSkills.push(nestedCandidate);
+			} catch {
+				// Missing or unreadable skill files are ignored; the registry is best-effort.
+			}
 		}
 	}
-	return out.sort();
+	return [...directSkills.sort(), ...nestedSkills.sort()];
 }
 
 function parseFrontmatter(source: string): { name?: string; description?: string; body: string } {
@@ -614,6 +653,7 @@ async function regenerateRegistry(
 }
 
 const watchedCwds = new Set<string>();
+const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
 // Startup regeneration runs after session_start returns; watcher refreshes
 // wait for it so an older startup scan never overwrites a newer refresh.
 const pendingStartups = new Map<string, Promise<void>>();
@@ -692,6 +732,8 @@ function closeSkillRegistryWatchers(): void {
 		}
 	}
 	activeWatchers.clear();
+	for (const poll of watcherPolls.values()) clearInterval(poll);
+	watcherPolls.clear();
 	watchedCwds.clear();
 }
 
@@ -706,6 +748,9 @@ async function startSkillRegistryWatcher(
 		...userSkillDirs(),
 	]);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	// The poll re-asks a state the watchers already answered: without this,
+	// an unchanged tracked-target warning would repeat every poll interval.
+	let lastWarning: string | undefined;
 	const refresh = () => {
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => {
@@ -713,9 +758,14 @@ async function startSkillRegistryWatcher(
 				try {
 					await pendingStartups.get(cwd);
 					const result = await regenerateRegistry(cwd, false, lastResolvedSkills);
-					if (result.warning) notify(result.warning, "warning");
-					if (result.regenerated) {
-						notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+					if (result.warning) {
+						if (result.warning !== lastWarning) notify(result.warning, "warning");
+						lastWarning = result.warning;
+					} else {
+						lastWarning = undefined;
+						if (result.regenerated) {
+							notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+						}
 					}
 				} catch (error) {
 					notify(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
@@ -738,12 +788,16 @@ async function startSkillRegistryWatcher(
 			// Some filesystems do not support recursive watches; session_start/manual refresh still work.
 		}
 	}
+	// Watchers may be absent (unsupported filesystem) or silently eventless
+	// (exhausted inotify budget): the poll keeps regeneration alive either way.
+	if (!watcherPolls.has(cwd)) watcherPolls.set(cwd, setInterval(refresh, WATCH_FALLBACK_POLL_MS));
 }
 
 export const __testing = {
 	projectSkillDirs,
 	userSkillDirs,
 	findSkillFiles,
+	isMissingSkillFileError,
 	uniqueExistingDirs,
 	dedupeBySkillName,
 	toResolvedEntry,

@@ -3,7 +3,56 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { applySavedModelConfig, readModelConfig, readModelConfigAsync } from "../extensions/gentle-ai.ts";
+import { __testing, applySavedModelConfig, readModelConfig, readModelConfigAsync } from "../extensions/gentle-ai.ts";
+
+test("coincident global and legacy paths preserve invalid-global status", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-coincidence-"));
+	const configHome = join(cwd, ".pi", "gentle-ai");
+	mkdirSync(configHome, { recursive: true });
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	const path = join(configHome, "models.json");
+	assert.equal(path, join(cwd, ".pi", "gentle-ai", "models.json"));
+	writeFileSync(path, "{");
+	const results = [__testing.readSavedModelConfig(cwd), await __testing.readSavedModelConfigAsync(cwd)];
+	assert.deepEqual(results, [ { status: "invalid", path }, { status: "invalid", path } ]);
+	assert.deepEqual(readModelConfig(cwd), {});
+	assert.deepEqual(await readModelConfigAsync(cwd), {});
+});
+
+test("active profile omission prevents stale legacy routing reads and materialization", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-profile-"));
+	const configHome = join(cwd, "global");
+	const projectHome = join(cwd, ".pi", "gentle-ai");
+	mkdirSync(configHome, { recursive: true });
+	mkdirSync(projectHome, { recursive: true });
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
+	}));
+	writeFileSync(join(configHome, "models.json"), "{}");
+	writeFileSync(join(projectHome, "models.json"), JSON.stringify({ "review-risk": { model: "openai/gpt-5" } }));
+	const materialized: unknown[] = [];
+	const result = await applySavedModelConfig({ cwd } as Parameters<typeof applySavedModelConfig>[0], async (target, config) => {
+		assert.equal(target, cwd);
+		materialized.push(config);
+		return { updated: 0, skipped: 0 };
+	});
+	assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd), materialized, result }, {
+		sync: {}, async: {}, materialized: [{}], result: { updated: 0, skipped: 0 },
+	});
+});
 
 test("model routing authority normalizes and preserves sync/async source status", async (t) => {
 	const loaded = await import("../lib/model-routing-authority.ts").then(

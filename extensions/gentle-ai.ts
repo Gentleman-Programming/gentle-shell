@@ -2227,6 +2227,15 @@ function legacyProjectModelConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "models.json");
 }
 
+// A pinned or active profile is a complete routing snapshot (see
+// withOmittedAgentsClearedAsync): omitted agents must inherit. Use only the
+// global file so stale legacy entries cannot resurrect those agents.
+function legacyProjectMergePath(cwd: string): string {
+	return resolveCurrentProfileTarget(cwd) !== undefined
+		? modelConfigPath(cwd)
+		: legacyProjectModelConfigPath(cwd);
+}
+
 function projectPersonaConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "persona.json");
 }
@@ -2269,9 +2278,9 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 // with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
 	const globalPath = modelConfigPath(cwd);
-	const projectPath = legacyProjectModelConfigPath(cwd);
+	const projectPath = legacyProjectMergePath(cwd);
 	const result = readModelRoutingAuthority(globalPath, projectPath);
-	if (result.status !== "invalid" || result.path !== projectPath) return result;
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = readModelConfigFile(globalPath);
 	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
@@ -2280,9 +2289,9 @@ async function readSavedModelConfigAsync(
 	cwd: string,
 ): Promise<ModelConfigFileResult> {
 	const globalPath = modelConfigPath(cwd);
-	const projectPath = legacyProjectModelConfigPath(cwd);
+	const projectPath = legacyProjectMergePath(cwd);
 	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
-	if (result.status !== "invalid" || result.path !== projectPath) return result;
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = await readModelConfigFileAsync(globalPath);
 	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
@@ -3074,7 +3083,7 @@ export async function applySavedModelConfig(
 ): Promise<{ updated: number; skipped: number; invalidPath?: string }> {
 	const result = await readModelRoutingAuthorityAsync(
 		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
+		legacyProjectMergePath(ctx.cwd),
 	);
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
@@ -9724,6 +9733,8 @@ async function executeReviewControllerOperation(
 
 /** @internal */
 export const __testing = {
+	readSavedModelConfig,
+	readSavedModelConfigAsync,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,

@@ -105,3 +105,48 @@ test("session roots come from this session's worktree registrations and captured
 	assert.deepEqual(sessionChangeRoots("session", entries), ["/repo", "/linked", "/foreign"]);
 	assert.deepEqual(sessionChangeRoots("missing", entries), []);
 });
+
+test("many edits to few files never reach the cap, because the cap counts files (#1043)", () => {
+	// The long-session shape the old bound got wrong: every repeat `write`/`edit`
+	// of a file already captured spent a slot, so capture stopped after 256
+	// MUTATIONS while tracking three files.
+	const changes = new SessionChanges("session");
+	const paths = ["a.ts","b.ts","c.ts"];
+	for(let i=0;i<600;i++){
+		const path = paths[i % paths.length]!;
+		changes.record(evidence("edit-"+String(i),"/repo",path,text("v"+String(i)+"\n"),text("v"+String(i+1)+"\n")));
+	}
+	assert.equal(changes.model.files.length,3);
+
+	// And the budget those 600 edits did not spend is still there: a file the
+	// session has not touched yet must still be admitted. A counter that
+	// advanced per record rather than per new file would pass every assertion
+	// above and turn this one away.
+	assert.equal(changes.record(evidence("fresh","/repo","d.ts")),true);
+	assert.equal(changes.model.files.length,4);
+});
+
+test("a file already tracked keeps updating after the file cap is reached (#1043)", () => {
+	// Once the bound fired, a later edit to a file already captured was dropped
+	// too, so its session diff sat at its last admitted state.
+	const changes = new SessionChanges("session");
+	for(let i=0;i<256;i++) changes.record(evidence("seed-"+String(i),"/repo",String(i)+".ts"));
+	assert.equal(changes.model.files.find(file => file.path === "0.ts")!.added,1);
+
+	assert.equal(changes.record(evidence("late-new","/repo","257.ts")),false);
+	assert.equal(changes.record(evidence("late-known","/repo","0.ts",text("new\n"),text("new\nmore\n"))),true);
+
+	assert.equal(changes.model.files.length,256);
+	assert.equal(changes.model.files.find(file => file.path === "0.ts")!.added,2,"the later edit reaches the session diff");
+});
+
+test("a no-op edit to an unseen path does not spend a file slot (#1043)", () => {
+	// before === after is dropped before anything is tracked, so it must not be
+	// the reason a later real edit is refused.
+	const changes = new SessionChanges("session");
+	for(let i=0;i<255;i++) changes.record(evidence("seed-"+String(i),"/repo",String(i)+".ts"));
+	assert.equal(changes.record(evidence("noop","/repo","noop.ts",text("same\n"),text("same\n"))),false);
+
+	assert.equal(changes.record(evidence("real","/repo","real.ts")),true);
+	assert.equal(changes.model.files.length,256);
+});

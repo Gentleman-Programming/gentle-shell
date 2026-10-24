@@ -11,7 +11,11 @@ import { SESSION_WORKTREE_ENTRY } from "./session-worktree-registry.ts";
 export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";
 export const SESSION_CHANGE_RELAY = "gentle-pi:child-session-change";
 export const MAX_CHANGE_BYTES = 64 * 1024;
-const MAX_RECORDS = 256;
+// Files are what is bounded. Counting mutation records instead meant every
+// repeat `write`/`edit` of a file already captured spent a slot, so a long
+// session stopped capturing well before it had touched 256 distinct files
+// (#1043).
+const MAX_FILES = 256;
 const MAX_SESSION_BYTES = 4 * 1024 * 1024;
 const MAX_LINES = 2000;
 export type ChangeSnapshot = { kind: "text"; text: string } | { kind: "absent" } | { kind: "unavailable"; reason: string };
@@ -89,6 +93,7 @@ export function sessionChangeRoots(sessionId: string, entries: readonly Entry[])
 export class SessionChanges {
 	private readonly seen = new Set<string>();
 	private readonly files = new Map<string, Map<string, FileState>>();
+	private trackedFiles = 0;
 	private bytes = 0;
 	readonly sessionId: string;
 	private cached: WorktreeChanges[] | undefined;
@@ -105,13 +110,19 @@ export class SessionChanges {
 		if (!isSessionChangeEvidence(evidence) || this.seen.has(evidence.id)) return false;
 		const bytes = Buffer.byteLength(JSON.stringify(evidence));
 		// Bounds session-file growth; Changes itself lists from Git without a cap.
-		if (this.seen.size >= MAX_RECORDS || this.bytes + bytes > MAX_SESSION_BYTES) return false;
+		if (this.bytes + bytes > MAX_SESSION_BYTES) return false;
+		let files = this.files.get(evidence.root);
+		const previous = files?.get(evidence.path);
+		// A file already captured is admitted whatever the count is, so its
+		// session diff keeps up with later edits; only a file that would be the
+		// 257th is turned away. A write that changes nothing would not be
+		// captured anyway, so the cap does not turn it away either.
+		const noOp = sameSnapshot(evidence.before, evidence.after);
+		if (!noOp && !previous && this.trackedFiles >= MAX_FILES) return false;
 		this.seen.add(evidence.id);
 		this.bytes += bytes;
-		if (sameSnapshot(evidence.before, evidence.after)) return false;
-		let files = this.files.get(evidence.root);
+		if (noOp) return false;
 		if (!files) this.files.set(evidence.root, files = new Map());
-		const previous = files.get(evidence.path);
 		const state: FileState = { before: previous?.before ?? structuredClone(evidence.before), after: structuredClone(evidence.after) };
 		state.unavailable = previous?.unavailable;
 		if (previous && !sameSnapshot(previous.after, evidence.before)) state.unavailable = "Snapshot continuity lost (external or unobserved edit); session diff unavailable.";
@@ -119,6 +130,7 @@ export class SessionChanges {
 		if (evidence.after.kind === "unavailable") state.unavailable ??= evidence.after.reason;
 		// Keep the final state even after an own revert, to detect later external edits.
 		this.patch(evidence.path, state);
+		if (!previous) this.trackedFiles += 1;
 		files.set(evidence.path, state);
 		this.cached = undefined;
 		return true;

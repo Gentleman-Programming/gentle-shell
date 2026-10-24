@@ -10214,7 +10214,10 @@ function createGentleAiExtensionForTesting(
 				void Promise.resolve()
 					.then(() => (dependencies.candidateStartupSweep ?? runCandidateStartupSweep)(ctx.cwd))
 					.then((result) => {
-						if (result.budgetExceeded || result.failed > 0 || result.unavailable) warn();
+						// Unknown, legacy, unsafe, unregistered, and contended entries survive by
+						// design (sweepCandidateOwners) and never warn; only budget exhaustion
+						// and an unavailable store mean cleanup itself did not run to completion.
+						if (result.budgetExceeded || result.unavailable) warn();
 					}, warn);
 			});
 		} else await surfaceDevBinaryOverride(ctx);

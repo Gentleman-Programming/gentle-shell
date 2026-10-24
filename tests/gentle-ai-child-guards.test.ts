@@ -286,6 +286,17 @@ test("parent startup returns while candidate cleanup is pending and reports its 
 	assert.equal(h.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 1);
 });
 
+test("candidate cleanup warns only on budget exhaustion or an unavailable store, never on preserved-by-design entries", async (t) => {
+	const { cwd } = isolate(t);
+	let finish!: (result: CandidateSweepResult) => void;
+	const h = harness(false, cwd, () => new Promise((resolve) => { finish = resolve; }));
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	await nextTurn();
+	finish({ ...sweepDone, examined: 3, failed: 3 });
+	await nextTurn();
+	assert.equal(h.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 0, "unknown, legacy, unsafe, unregistered, and contended entries survive by design and must stay silent");
+});
+
 test("candidate cleanup failures warn without breaking startup or leaking stale session notices", async (t) => {
 	const { cwd } = isolate(t);
 	const h = harness(false, cwd, async () => { throw new Error("private raw path"); });

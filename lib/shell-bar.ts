@@ -22,7 +22,7 @@ export interface ShellBarModel {
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
-	changes?: { files: number; added: number; deleted: number; notice?: string };
+	changes?: { files: number; added: number; deleted: number };
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -240,7 +240,6 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				changes?.files
 					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
 					: label("No captured changes"),
-				...(changes?.notice ? [theme.fg(ROLE.LABEL, sanitizeStatus(changes.notice))] : []),
 				label("/gentle:changes"),
 			],
 		}]),
@@ -422,13 +421,15 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 
 // A single owner supplies real captured filenames, not ShellBarModel's totals.
 // Undefined keeps every legacy surface alive for style/width/theme transitions.
-export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint, unbornRootCount = 0): ShellHeaderChrome | undefined {
+export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint): ShellHeaderChrome | undefined {
 	if (presentation?.headerPlacement !== "below-input") return undefined;
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
 	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, paint);
-	const changesRow = Boolean(changes && (changes.files.length || unbornRootCount > 0)) && presentation.visibility.changes !== false
-		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner, unbornRootCount)[0] ?? "")
+	// The row exists only while files are actually tracked; an unborn-only root
+	// is silence here (/gentle:changes explains the state on demand).
+	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
+		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [
 		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
@@ -456,8 +457,8 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 // header row's own cascade, so context, cost and usage outlive the location
 // on small screens, and keeps extension statuses on a second line instead of
 // dropping them the way the header deliberately does.
-export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint, unbornRootCount = 0): string[] {
-	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes, paint, unbornRootCount);
+export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, changes?: ChangesModel, paint?: GaugePaint): string[] {
+	const grouped = renderShellBelowInputFloat(model, theme, width, usageHint, presentation, changes, paint);
 	if (grouped) return grouped.rows;
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.

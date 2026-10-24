@@ -119,19 +119,14 @@ test("renderChangesWidget colors counts by direction and yields nothing when cle
 	assert.match(line, /<success>\+1<\/success> <error>−2<\/error>/);
 	assert.match(line, /<dim>\/gentle:changes<\/dim>$/);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
-	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120, 0), []);
 });
 
-// A worktree-holder root is hidden from Changes, but silence would read as a
-// broken tracker: one quiet line says why nothing is tracked yet.
-test("renderChangesWidget shows one quiet unborn-HEAD hint when nothing is tracked yet", () => {
-	const [hint] = renderChangesWidget(emptyChanges(), plainTheme, 120, 1);
-	assert.equal(visibleWidth(hint), "◌ make a commit to start tracking changes".length);
-	assert.match(hint, /make a commit to start tracking changes/);
-	const [tagged] = renderChangesWidget(emptyChanges(), taggedTheme, 400, 2);
-	assert.match(tagged, /<dim>◌ make a commit to start tracking changes<\/dim>/);
-	const [tiny] = renderChangesWidget(emptyChanges(), plainTheme, 12, 1);
-	assert.ok(visibleWidth(tiny) <= 12, "the hint truncates instead of overflowing a narrow bar");
+// The unborn state (no commits yet) is silence in the idle bar: the widget
+// renders only tracked files, and /gentle:changes explains the state on demand.
+test("renderChangesWidget stays silent when nothing is tracked", () => {
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), taggedTheme, 400), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 12), []);
 });
 
 test("renderChangesWidget drops the file list before truncating on narrow terminals", () => {

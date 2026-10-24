@@ -132,18 +132,13 @@ export function changesSummary(model: ChangesModel): string {
 	return `${model.files.length} ${noun} · +${model.added} −${model.deleted}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 }
 
-// A root with no commits shows one quiet hint instead of silence, so a
-// worktree-holder folder explains why nothing is tracked without a scan.
-export const UNBORN_CHANGES_HINT = "make a commit to start tracking changes";
-
 // One line: summary, the files joined by dots, and the command pushed to
 // the right edge. The file list goes first when the terminal is narrow.
-// With no files but unborn roots, the hint is the whole line.
-export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number, unbornRootCount = 0): string[] {
-	if (model.files.length === 0) {
-		if (unbornRootCount <= 0) return [];
-		return [truncateToWidth(`${theme.fg("dim", `◌ ${UNBORN_CHANGES_HINT}`)}`, width, "…")];
-	}
+// The idle widget exists only while files are tracked. An unborn root (no
+// commits yet) is silence here: /gentle:changes explains the state on demand,
+// where the message has room and context.
+export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number): string[] {
+	if (model.files.length === 0) return [];
 	const noun = model.files.length === 1 ? "file" : "files";
 	const dot = theme.fg("muted", "·");
 	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;

@@ -98,6 +98,21 @@ test("web lookup uses the child's home instead of the parent agent directory", (
 	}
 });
 
+test("web lookup honors GENTLE_PI_AGENT_HOME ahead of PI_CODING_AGENT_DIR", () => {
+	const f = fixture();
+	try {
+		const gentleHome = join(f.root, "gentle-home");
+		const gentlePackageRoot = join(gentleHome, "npm", "node_modules", "pi-web-access");
+		mkdirSync(join(gentlePackageRoot, "dist"), { recursive: true });
+		writeFileSync(join(gentlePackageRoot, "package.json"), JSON.stringify({ name: "pi-web-access", type: "module", pi: { extensions: ["./dist"] } }));
+		writeFileSync(join(gentlePackageRoot, "dist", "index.js"), "export default function(api) {}\n");
+		const onlyGentleHome = { ...f.request, env: { GENTLE_PI_AGENT_HOME: gentleHome } };
+		assert.deepEqual(paths(childArguments(onlyGentleHome)), [...f.request.extensionPaths!, gentlePackageRoot], "GENTLE_PI_AGENT_HOME alone must resolve the child's actual web package");
+		const bothSet = { ...f.request, env: { GENTLE_PI_AGENT_HOME: gentleHome, PI_CODING_AGENT_DIR: f.request.env.PI_CODING_AGENT_DIR } };
+		assert.deepEqual(paths(childArguments(bothSet)), [...f.request.extensionPaths!, gentlePackageRoot], "GENTLE_PI_AGENT_HOME must win like resolveGentlePiAgentHome's precedence");
+	} finally { rmSync(f.root, { recursive: true, force: true }); }
+});
+
 test("missing or incompatible SDK package lookup never installs or enables ambient extensions", () => {
 	const f = fixture();
 	const original = DefaultPackageManager.prototype.getInstalledPath;

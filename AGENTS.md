@@ -28,10 +28,11 @@ clean-checkout evidence, instead of fixing blindly.
 
 ## Organic Driven Development
 
-- Substantial work gets an ODD task document under `odd/tasks/`. The repo
-  convention is issue-numbered file names when the work tracks an issue
-  (`2256-review-host-relay.md` style), with lettered log entries (L1, L2…)
-  per work session.
+- Substantial work gets an ODD task document under `odd/tasks/`. Both file
+  name styles are accepted: issue-numbered for work tracking a single issue
+  (`2256-review-host-relay.md` style), and a short feature name when one
+  document spans several related issues (`upstream-contrib-oct.md`), with
+  lettered log entries (L1, L2…) per work session.
 - Task documents carry: the goal, the slices, the evidence per slice, the
   open questions, and the permanent rules learned. Update them as the work
   moves; they are the resume point after any interruption.
@@ -48,9 +49,9 @@ clean-checkout evidence, instead of fixing blindly.
 
 ## Upstream coordination — the replicable formula
 
-Issues reported with experiments get fixed the same week. Issue #2256 closed
-the full circle: report with experiments → confirmatory re-test → the
-maintainer's surgical fix (11 lines) → verification on the original
+Issues reported with experiments get fixed the same week. Issue #2256 (now
+closed) ran the full circle: report with experiments → confirmatory re-test →
+the maintainer's surgical fix (11 lines) → verification on the original
 reproduction machine → public confirmation → closed by the maintainer.
 
 The formula:

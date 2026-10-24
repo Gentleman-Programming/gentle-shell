@@ -25,6 +25,31 @@ test("coincident global and legacy paths preserve invalid-global status", async 
 	assert.deepEqual(await readModelConfigAsync(cwd), {});
 });
 
+test("bootstrapped active profile preserves legacy routing while global models are missing", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-bootstrap-"));
+	const configHome = join(cwd, "global");
+	const projectHome = join(cwd, ".pi", "gentle-ai");
+	mkdirSync(configHome, { recursive: true });
+	mkdirSync(projectHome, { recursive: true });
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	const config = { "review-risk": { model: "openai/gpt-5" } };
+	writeFileSync(join(projectHome, "models.json"), JSON.stringify(config));
+	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "current", profiles: { current: config },
+	}));
+	const expected = { "review-risk": { model: "openai/gpt-5", thinking: undefined } };
+	assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd) }, {
+		sync: expected, async: expected,
+	});
+	assert.throws(() => statSync(join(configHome, "models.json")), { code: "ENOENT" });
+});
+
 test("active profile omission prevents stale legacy routing reads and materialization", async (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-profile-"));
 	const configHome = join(cwd, "global");

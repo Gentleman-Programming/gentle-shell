@@ -2229,11 +2229,16 @@ function legacyProjectModelConfigPath(cwd: string): string {
 
 // A pinned or active profile is a complete routing snapshot (see
 // withOmittedAgentsClearedAsync): omitted agents must inherit. Use only the
-// global file so stale legacy entries cannot resurrect those agents.
+// global file so stale legacy entries cannot resurrect those agents — but
+// only once the global file actually exists. bootstrapProfilesFile can
+// activate a profile from a read-only effective-config snapshot without ever
+// writing the global file (e.g. opening /gentle:profiles for the first
+// time); a still-missing global file must never make routing less complete
+// than it already was.
 function legacyProjectMergePath(cwd: string): string {
-	return resolveCurrentProfileTarget(cwd) !== undefined
-		? modelConfigPath(cwd)
-		: legacyProjectModelConfigPath(cwd);
+	if (resolveCurrentProfileTarget(cwd) === undefined) return legacyProjectModelConfigPath(cwd);
+	const globalPath = modelConfigPath(cwd);
+	return existsSync(globalPath) ? globalPath : legacyProjectModelConfigPath(cwd);
 }
 
 function projectPersonaConfigPath(cwd: string): string {

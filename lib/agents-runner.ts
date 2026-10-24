@@ -293,7 +293,7 @@ const WEB_TOOL_NAMES = ["web_enable", "web_search", "source_check", "fetch_conte
 function requestedWebPackagePaths(request: TaskRequest): string[] {
 	if (!WEB_TOOL_NAMES.every(name => request.agent.tools.includes(name))) return [];
 	try {
-		let agentDir = request.env.PI_CODING_AGENT_DIR;
+		let agentDir = request.env.GENTLE_PI_AGENT_HOME || request.env.PI_CODING_AGENT_DIR;
 		if (!agentDir || /^~(?:$|[/\\])/.test(agentDir)) {
 			const home = (process.platform === "win32" ? request.env.USERPROFILE : request.env.HOME) || userInfo().homedir;
 			agentDir = agentDir ? agentDir.replace(/^~/, home) : join(home, ".pi", "agent");

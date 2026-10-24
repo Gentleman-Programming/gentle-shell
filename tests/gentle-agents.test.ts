@@ -16,7 +16,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, nativeParentWakeText, WAKE_TEXT_SUBAGENT, WAKE_TEXT_JOB, WAKE_TEXT_MONITOR, WAKE_TEXT_OUTPUT, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
@@ -6400,6 +6400,141 @@ test("bash_background returns at once, and an idle parent gets one stored exit n
 	}
 });
 
+test("bash_background exit notice delivers job-specific native wake text (#2384)", async () => {
+	const { pi, tools, fire, sent } = fakePi("openai");
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "npm test", label: "test" }, undefined, undefined, ctx);
+		jobs.runs[0]!.exit(0);
+		await eventually(
+			() => sent.some((entry) => entry.message.customType === "gentle-agents.wake"),
+			"wake must be dispatched",
+		);
+		const wake = sent.find((entry) => entry.message.customType === "gentle-agents.wake");
+		assert.ok(wake);
+		assert.equal(wake.message.content, "Review the background job's exit notice and continue.");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("monitor delivers monitor-specific native wake text (#2384)", async () => {
+	const { pi, tools, fire, sent } = fakePi("openai");
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[0]!.onData(Buffer.from("EVENT 1\n"));
+		timers.run(200);
+		await jobIo();
+		await eventually(
+			() => sent.some((entry) => entry.message.customType === "gentle-agents.wake"),
+			"wake must be dispatched",
+		);
+		const wake = sent.find((entry) => entry.message.customType === "gentle-agents.wake");
+		assert.ok(wake);
+		assert.equal(wake.message.content, "Review the delivered monitor events and continue.");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+for (const [kind, pattern] of [
+		["job", /background job exit notice/],
+		["monitor", /Monitor events/],
+		["mixed", /^\[System-generated Gentle Agents notification, not written by the user\] Output was delivered/],
+	] as Array<[string, RegExp]>) {
+	test(`claude-bridge ${kind} wake text names the delivered kind and stays hidden (#2384)`, async () => {
+		const { pi, tools, fire, userMessages, transformers, setIdle } = fakePi("claude-bridge");
+		const harness = deps();
+		const timers = recordTimers(harness.deps);
+		const jobs = fakeJobShell();
+		gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+		const { ctx } = fakeContext();
+		try {
+			await fire("session_start", ctx);
+			if (kind === "job" || kind === "mixed") await tools.get("bash_background")!.execute("b1", { command: "npm test", label: "test" }, undefined, undefined, ctx);
+			if (kind === "monitor") await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+			if (kind === "mixed") await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+			if (kind === "monitor") jobs.runs[0]!.onData(Buffer.from("EVENT 1\n"));
+			else if (kind === "mixed") {
+				setIdle(false);
+				jobs.runs[1]!.onData(Buffer.from("EVENT 1\n"));
+				timers.run(200);
+				jobs.runs[0]!.exit(0);
+				await jobIo();
+				await fire("session_compact", ctx);
+				setIdle(true);
+				timers.run(0);
+				await tick();
+			} else jobs.runs[0]!.exit(0);
+			if (kind === "monitor") { timers.run(200); await jobIo(); }
+			await eventually(() => userMessages.length > 0, "bridge wake must be dispatched");
+			const text = String(userMessages[0]!.content);
+			assert.match(text, pattern, kind);
+			assert.match(text, /\[gentle-agents wake: [0-9a-f-]+\]$/);
+			assert.equal(transformers[0](text, { messageType: "user", isStreaming: false, availableWidth: 80 }), "", `${kind} wake bubble stays hidden`);
+		} finally {
+			await fire("session_shutdown", ctx);
+			jobs.cleanup();
+		}
+	});
+}
+
+test("nativeParentWakeText maps single and mixed delivery kinds distinctly (#2384)", () => {
+	assert.equal(nativeParentWakeText(new Set(["subagent"])), WAKE_TEXT_SUBAGENT);
+	assert.equal(nativeParentWakeText(new Set(["job"])), WAKE_TEXT_JOB);
+	assert.equal(nativeParentWakeText(new Set(["monitor"])), WAKE_TEXT_MONITOR);
+	assert.equal(nativeParentWakeText(new Set(["job", "monitor"])), WAKE_TEXT_OUTPUT);
+	assert.equal(nativeParentWakeText(new Set(["subagent", "job"])), WAKE_TEXT_OUTPUT);
+	assert.equal(nativeParentWakeText(new Set(["subagent", "monitor"])), WAKE_TEXT_OUTPUT);
+	assert.equal(nativeParentWakeText(new Set(["subagent", "job", "monitor"])), WAKE_TEXT_OUTPUT);
+	assert.equal(nativeParentWakeText(new Set()), WAKE_TEXT_SUBAGENT);
+});
+
+test("mixed deliveries held during compaction resolve to neutral wake text upon boundary flush (#2384)", async () => {
+	const { pi, tools, fire, sent, setIdle } = fakePi("openai");
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Mixed check", mode: "background" }, undefined, undefined, ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make test", label: "test" }, undefined, undefined, ctx);
+		setIdle(false);
+		harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Subagent done" }] }] });
+		harness.children[0].emit({ type: "agent_settled" });
+		harness.children[0].exit(0);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		await fire("session_compact", ctx);
+		setIdle(true);
+		assert.equal(timers.run(0), 1);
+		await tick();
+		await eventually(
+			() => sent.some((entry) => entry.message.customType === "gentle-agents.wake"),
+			"wake must be dispatched",
+		);
+		const wake = sent.find((entry) => entry.message.customType === "gentle-agents.wake");
+		assert.ok(wake);
+		assert.equal(wake.message.content, "Review the delivered output and continue.");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
 test("a busy parent gets the exit notice steered into its run at the next turn boundary", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
 	const jobs = fakeJobShell();
@@ -6574,7 +6709,7 @@ test("session shutdown never hangs on a job whose process ignores the stop", { t
 	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-stuck-"));
 	// A process that never exits, even after its abort signal.
 	const stuck = () => ({ operations: { exec: () => new Promise<{ exitCode: number | null }>(() => {}) } });
-	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); timer.unref(); return () => clearTimeout(timer); };
+	const schedule: AgentsDeps["schedule"] = (fn, ms) => { const timer = setTimeout(fn, Math.min(ms, 10)); return () => clearTimeout(timer); };
 	gentleAgents(pi, {}, { ...deps().deps, schedule, jobShell: stuck });
 	const { ctx } = fakeContext();
 	try {

@@ -1251,6 +1251,8 @@ With the policy `on`, `subagent_run` defaults to `mode: "background"` at the run
 
 Background delegation is off unless you turn it on. The policy is user-owned: only an explicit `/gentle:background-subagents enable` or `disable` writes it, and Pi automation never toggles it.
 
+An agent whose explicit `tools` frontmatter includes `bash_background` fails before spawn when the effective background-subagents policy is `off`, in either task or background mode. Admission resolves policy at dispatch using the request's environment and config home, including queued tasks. The error names the policy file, the exact opt-in shape `{"schema":"gentle-pi.background-subagents/v1","policy":"on"}`, and `/gentle:background-subagents enable|disable|status`. Agents without explicit tools are unchanged; the child missing-tools check remains the backstop for other names. Policy `on` passes this admission check only: it does not implement child background tools (future Slices 2–3).
+
 ```text
 /gentle:background-subagents           Report the effective policy, the deciding source, and the resolved capability.
 /gentle:background-subagents enable    Write "on" to the global file.

@@ -95,6 +95,87 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+for (const mode of [AGENT_MODE.TASK, AGENT_MODE.BACKGROUND]) {
+	for (const policy of [undefined, "off", "malformed"] as const) {
+		test(`background capability admission rejects ${mode} with ${policy ?? "default"} policy`, async (t) => {
+			const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+			t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+			const config = join(root, "config");
+			const file = join(config, "background-subagents.json");
+			fs.mkdirSync(config);
+			const raw = policy === "malformed" ? "{broken" : JSON.stringify({ schema: "gentle-pi.background-subagents/v1", policy });
+			if (policy) fs.writeFileSync(file, raw);
+			const h = harness({ maxConcurrency: 1 });
+			let launches = 0;
+			const env = { GENTLE_PI_CONFIG_HOME: config, ...(policy === "malformed" ? { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } : {}) };
+			const task = h.runner.run(request({ cwd: root, env, mode, agent: { ...explorer, tools: ["read", "bash_background"] }, onLaunch: () => { launches++; } }));
+			await tick();
+			assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+			const target = policy ? file : join(root, ".pi", "gentle-ai", "background-subagents.json");
+			assert.equal(h.store.get(task.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${target} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+			assert.equal(h.children.length, 0);
+			assert.equal(h.spawnOptions.length, 0);
+			assert.equal(h.timers.length, 0);
+			assert.equal(launches, 0);
+			assert.deepEqual(h.finishes, [task.id]);
+			assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.FAILED);
+			assert.equal(existsSync(file), policy !== undefined);
+			if (policy) assert.equal(readFileSync(file, "utf8"), raw);
+			const next = h.runner.run(request({ cwd: root, env }));
+			await tick();
+			assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
+			h.runner.cancel(next.id);
+			await tick();
+		});
+	}
+}
+
+for (const { tools, policy } of [
+	...[undefined, "off"].flatMap(policy => [["read", "unknown_tool"], []].map(tools => ({ tools, policy }))),
+	{ tools: ["read", "bash_background", "grep"], policy: "on" },
+]) {
+	test(`background capability admission preserves launch for ${tools.join(",") || "default tools"} with ${policy ?? "default off"} policy`, async (t) => {
+		const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+		const h = harness();
+		const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), ...(policy === undefined ? {} : { GENTLE_PI_BACKGROUND_SUBAGENTS: policy }), KEEP: "yes" };
+		const task = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools } }));
+		await tick();
+		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+		assert.equal(h.store.get(task.id)?.error, null);
+		assert.equal(h.children.length, 1);
+		const expected = tools.length ? [...tools, "subagent_parent_message"].join(",") : undefined;
+		assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], expected);
+		assert.equal(h.spawnOptions[0].env.KEEP, "yes");
+		assert.deepEqual(h.spawnOptions[0].args, childArguments(request({ cwd: root, env, agent: { ...explorer, tools } })));
+		assert.equal(h.timers.filter(timer => !timer.cancelled).length, 1);
+		h.runner.cancel(task.id);
+		await tick();
+	});
+}
+
+test("background capability admission refreshes project policy when queued work dispatches", async (t) => {
+	const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const dir = join(root, ".pi", "gentle-ai");
+	fs.mkdirSync(dir, { recursive: true });
+	const file = join(dir, "background-subagents.json");
+	const h = harness({ maxConcurrency: 1 });
+	const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), GENTLE_PI_BACKGROUND_SUBAGENTS: "on" };
+	const first = h.runner.run(request({ cwd: root, env }));
+	const queued = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools: ["bash_background"] } }));
+	await tick();
+	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.QUEUED);
+	const raw = '{"schema":"gentle-pi.background-subagents/v1","policy":"off"}';
+	fs.writeFileSync(file, raw);
+	h.runner.cancel(first.id);
+	await tick();
+	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.FAILED);
+	assert.equal(h.store.get(queued.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+	assert.equal(h.children.length, 1);
+	assert.equal(readFileSync(file, "utf8"), raw);
+});
+
 const FOUR_MIN_MS = 4 * 60_000;
 
 function argumentUpdate(type: string, fields: Record<string, unknown> = {}): Record<string, unknown> {

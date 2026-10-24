@@ -123,6 +123,18 @@ Shell recognition remains deliberately conservative: commands mentioning the con
 
 Live mode selection is bound to the SessionManager, session ID and canonical Git clone identity, or the canonical workspace directory outside Git. Session replacement, shutdown and reload revoke live callbacks and pending actions. A newly initialized primary session may select its saved default; this is a new application of the global preference, not restoration of an old session grant. Disable the saved default as well if future sessions must stay Normal.
 
+## Outside-worktree path consent
+
+In Git-backed sessions, `read`, `write`, `edit`, `grep`, `find`, and `ls` require per-target, per-session consent outside the session worktree and registered same-clone worktrees. Headless sessions block ungranted outside targets. Paths using `@/absolute/path` or `file:///absolute/path` are checked against the same destination as Pi's built-in tools, not treated as project-relative names.
+
+If a symlink or requested target changes while the confirmation dialog is open, the call is blocked without storing a grant or reporting an approved permission event:
+
+> Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.
+
+Retry the tool call to confirm the current target. Ordinary unchanged approvals, denials, and session-bound grants retain their existing behavior.
+
+**Residual race:** revalidation after the dialog does not bind the built-in filesystem operation to an opened object. A path component can still change between the final check and the actual operation. This is a consent boundary, not an OS sandbox; use process/container isolation for protection against concurrent filesystem replacement. The broader race-resistant execution redesign remains out of scope.
+
 ## Limits
 
 Auto is contextual permission checking, **not an operating-system sandbox or a guarantee against prompt injection**. The model can misjudge an action; bounded file evidence, lexical guards and secret projection are not comprehensive inspection of scripts, their dependencies or tool implementations. Use constrained credentials and process/container isolation for containment.

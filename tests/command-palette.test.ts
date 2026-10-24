@@ -355,6 +355,15 @@ test("commandsKey is disabled by an empty value or off (case-insensitive)", () =
 
 // --- catalog -------------------------------------------------------------------
 
+test("Works is additive, registered-only, and preserves existing Session ordering", () => {
+	const old = [{ name: "gentle:changes" }, { name: "gentle:agents" }];
+	assert.deepEqual(buildCommandPaletteGroups(old, {})[0].items.map(item => item.command), ["gentle:changes", "gentle:agents"]);
+	const groups = buildCommandPaletteGroups([...old, { name: "gentle:works", description: "Work center" }], {});
+	assert.equal(groups[0].title, "Session");
+	assert.deepEqual(groups[0].items.map(item => item.command), ["gentle:changes", "gentle:works", "gentle:agents"]);
+	assert.equal(groups[0].items[1].description, "Work center");
+});
+
 test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => {
 	assert.deepEqual(
 		COMMAND_PALETTE_CATALOG.map((group) => group.title),
@@ -374,7 +383,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:telemetry",
 		"gentle:dev-binary",
 	]);
-	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission", "gentle:voice"]);
+	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:works", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission", "gentle:voice"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);

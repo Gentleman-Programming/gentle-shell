@@ -133,6 +133,10 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 - `GENTLE_PI_SHELL_CHANGES_KEY` rebinds the shortcut; `off` disables it. `GENTLE_PI_SHELL_CHANGES_POLL_MS` controls how often the open overlay re-reads Git. `GENTLE_PI_SHELL_CHANGES_WATCH_MS` no longer enables filesystem polling.
 - No uncommitted changes in the session's roots means no widget and an informational notice.
 
+### Durable works
+
+`/gentle:works` opens a local work center, also available as **Durable works** under Session in the command palette when registered. Create an objective and explicitly link the current saved session; inspect its status, location, full summary, ODD reference and exact conversation locator; press `e` to edit status/summary/ODD or `l` to replace the locator with the current session. Escape cancels dialogs without saving. Work status changes only explicitly; runtime activity is observed only for the exact current session, otherwise unknown. Missing sessions/worktrees are retained, never cleaned up or launched. `/gentle:works help` documents the TUI-only center. See [Durable local works](gentle-works.md) for keys, storage and safety boundaries.
+
 ### Command palette
 
 `/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its shortcut hint where it has one; a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.

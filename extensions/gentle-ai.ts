@@ -1921,17 +1921,20 @@ const HERDR_BLOCKER_LABEL = {
 	CHOICE: "Choice awaiting input",
 	GUARDED_CONFIRMATION: "Guarded command confirmation",
 	QUESTIONNAIRE: "Questionnaire awaiting input",
+	REVIEW_AUTHORIZATION: "Review authorization awaiting input",
 } as const;
 
 type HerdrBlockerLabel = (typeof HERDR_BLOCKER_LABEL)[keyof typeof HERDR_BLOCKER_LABEL];
 
+type HerdrBlockerSource = "guarded-confirmation" | "review-authorization";
+
 type HerdrConfirmationLifecycle = {
-	begin(): void;
-	settle(): void;
+	begin(source?: HerdrBlockerSource): void;
+	settle(source?: HerdrBlockerSource): void;
 };
 
 function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): HerdrConfirmationLifecycle {
-	let pending = 0;
+	const pending: Record<HerdrBlockerSource, number> = { "guarded-confirmation": 0, "review-authorization": 0 };
 	let choiceActive = false;
 	let nativeQuestionnaireActive = false;
 	let legacyQuestionnaireActive = false;
@@ -1941,15 +1944,17 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 			? HERDR_BLOCKER_LABEL.CHOICE
 			: nativeQuestionnaireActive || legacyQuestionnaireActive
 				? HERDR_BLOCKER_LABEL.QUESTIONNAIRE
-				: pending > 0
-					? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
-					: undefined;
+				: pending["review-authorization"] > 0
+					? HERDR_BLOCKER_LABEL.REVIEW_AUTHORIZATION
+					: pending["guarded-confirmation"] > 0
+						? HERDR_BLOCKER_LABEL.GUARDED_CONFIRMATION
+						: undefined;
 		// Herdr bridges count active/inactive edges. Keep the first label until
 		// every source releases; relabel activations would leak a blocked count.
 		if ((nextLabel === undefined) === (emittedLabel === undefined)) return;
 		emittedLabel = nextLabel;
-		if (nextLabel === undefined) events.emit("herdr:blocked", { active: false });
-		else events.emit("herdr:blocked", { active: true, label: nextLabel });
+		if (nextLabel === undefined) events?.emit?.("herdr:blocked", { active: false });
+		else events?.emit?.("herdr:blocked", { active: true, label: nextLabel });
 	};
 
 	events?.on?.(ASK_USER_CHOICE_BLOCKED_EVENT, (event) => {
@@ -1971,16 +1976,52 @@ function createHerdrConfirmationLifecycle(events: ExtensionAPI["events"]): Herdr
 	});
 
 	return {
-		begin() {
-			pending += 1;
+		begin(source = "guarded-confirmation") {
+			pending[source] += 1;
 			emitEffectiveBlocker();
 		},
-		settle() {
-			if (pending === 0) return;
-			pending -= 1;
+		settle(source = "guarded-confirmation") {
+			if (pending[source] === 0) return;
+			pending[source] -= 1;
 			emitEffectiveBlocker();
 		},
 	};
+}
+
+const HERDR_BLOCKING_UI_METHODS = new Set<PropertyKey>(["confirm", "select", "input", "editor", "custom"]);
+
+/**
+ * Projects every human-facing dialog opened through this context's UI as one
+ * Herdr blocker interval. Only `ui` is replaced; every other property reads the
+ * original context so its liveness getters keep their own receiver.
+ */
+function withHerdrBlockingUi<T extends ExtensionContext>(ctx: T, herdrLifecycle: HerdrConfirmationLifecycle, source: HerdrBlockerSource): T {
+	let wrappedUi: ExtensionContext["ui"] | undefined;
+	let wrappedTarget: ExtensionContext["ui"] | undefined;
+	return new Proxy(ctx, {
+		get(target, property) {
+			const value: unknown = Reflect.get(target, property, target);
+			if (property !== "ui" || value === null || typeof value !== "object") return value;
+			const ui = value as ExtensionContext["ui"];
+			if (wrappedUi !== undefined && wrappedTarget === ui) return wrappedUi;
+			wrappedTarget = ui;
+			wrappedUi = new Proxy(ui, {
+				get(uiTarget, uiProperty) {
+					const member = Reflect.get(uiTarget, uiProperty, uiTarget);
+					if (!HERDR_BLOCKING_UI_METHODS.has(uiProperty) || typeof member !== "function") return member;
+					return async (...args: unknown[]) => {
+						herdrLifecycle.begin(source);
+						try {
+							return await Reflect.apply(member, uiTarget, args);
+						} finally {
+							herdrLifecycle.settle(source);
+						}
+					};
+				},
+			});
+			return wrappedUi;
+		},
+	});
 }
 
 // gentle-shell#2172: YOLO waives reversible delivery, not only one bare push.
@@ -10187,6 +10228,8 @@ function createGentleAiExtensionForTesting(
 		},
 		async execute(_toolCallId, parameters, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw reviewCancellation("Review controller operation was cancelled");
+			// Every review authorization dialog blocks the agent on the human.
+			ctx = withHerdrBlockingUi(ctx, herdrLifecycle, "review-authorization");
 			await authorizeDestructiveReviewOperation(parameters, ctx);
 			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 			const retainedSelections = processRetainedNativeStatusSelections.get(sessionKey)

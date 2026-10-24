@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
+import { assertCandidateOwnerParent, createCandidateOwner, PosixCandidateOwnerParentChmodIneffectiveError, PosixCandidateOwnerParentPrivacyError, prepareCandidateOwnerParent, removeCandidateOwner, samePath, sweepCandidateOwners, type CandidateSweepBudget, type CandidateSweepResult, type CandidateViewOwner } from "./review-candidate-view-owner.ts";
 
 const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "review-reliability"] as const;
 export type ReviewLens = (typeof REVIEW_LENS)[number];
@@ -1212,11 +1212,11 @@ export class CandidateViewRegistry {
 		return this.createOrReuse(request);
 	}
 
-	sweepOrphans(contributorRoot: string): void {
+	sweepOrphans(contributorRoot: string, budget?: CandidateSweepBudget): CandidateSweepResult | undefined {
 		try {
 			const cwd = realpathSync(contributorRoot);
 			const common = realpathSync(resolve(cwd, git(cwd, ["rev-parse", "--git-common-dir"], process.env, this.gitExecutor)));
-			sweepCandidateOwners(common, (args) => git(common, args, process.env, this.gitExecutor), makeWritableForCleanup, this.platform);
+			return sweepCandidateOwners(common, (args) => git(common, args, process.env, this.gitExecutor), makeWritableForCleanup, this.platform, budget);
 		} catch { /* Non-repositories and unavailable ownership are preserved. */ }
 	}
 

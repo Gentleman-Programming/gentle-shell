@@ -170,6 +170,7 @@ import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { runCandidateStartupSweep } from "../lib/review-candidate-startup-sweep.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -9804,6 +9805,7 @@ export const __testing = {
 export interface GentleAiRuntimeDependencies {
 	nativeReviewCli?: NativeReviewCli | null;
 	candidateViews?: CandidateViewRegistry | null;
+	candidateStartupSweep?: typeof runCandidateStartupSweep;
 	// An injected registry gives tests and host integrations explicit ownership;
 	// normal package registrations share the module-local process-memory registry.
 	pendingReviewConsentRegistry?: PendingReviewConsentRegistry;
@@ -10319,8 +10321,31 @@ function createGentleAiExtensionForTesting(
 		// Only that parent-owned work is skipped: the session-local resets above,
 		// the dev-binary notice, and any step added after this call, still run in
 		// children.
-		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await startParentSession(event, ctx);
-		else await surfaceDevBinaryOverride(ctx);
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+			await startParentSession(event, ctx);
+			const epoch = reminderEpoch;
+			const manager = ctx.sessionManager;
+			const current = () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager;
+			// Defer the asynchronous child launch until this handler has returned.
+			// Moving only execFileSync into setImmediate would still freeze Pi.
+			setImmediate(() => {
+				if (!current() || !candidateViews) return;
+				const warn = () => {
+					if (!current() || !ctx.hasUI) return;
+					try {
+						ctx.ui.notify("Review candidate cleanup was incomplete or reached its startup budget. Unverified views were preserved; startup continues.", "warning");
+					} catch { /* The session may have closed its UI. */ }
+				};
+				void Promise.resolve()
+					.then(() => (dependencies.candidateStartupSweep ?? runCandidateStartupSweep)(ctx.cwd))
+					.then((result) => {
+						// Unknown, legacy, unsafe, unregistered, and contended entries survive by
+						// design (sweepCandidateOwners) and never warn; only budget exhaustion
+						// and an unavailable store mean cleanup itself did not run to completion.
+						if (result.budgetExceeded || result.unavailable) warn();
+					}, warn);
+			});
+		} else await surfaceDevBinaryOverride(ctx);
 	});
 
 	// Loud, every session: an active dev-binary override means this session
@@ -10361,7 +10386,6 @@ function createGentleAiExtensionForTesting(
 			homeRepositoryWarnings.add(homeRoot);
 			try { ctx.ui.notify(HOME_REPOSITORY_WARNING, "warning"); } catch { /* Nonblocking notice only. */ }
 		}
-		try { candidateViews?.sweepOrphans(ctx.cwd); } catch { /* Ownership sweeping must not block startup. */ }
 		const reason = (event as { reason?: unknown }).reason;
 		if (reason !== "reload") revokeCurrentReviewSessionPermission(ctx);
 		await refreshReviewSessionPermissionStatus(ctx);

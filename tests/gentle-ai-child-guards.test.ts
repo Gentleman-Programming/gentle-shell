@@ -10,6 +10,7 @@ import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admissio
 import { GENTLE_AI_TIMING_ENTRY } from "../lib/gentle-ai-elapsed-store.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import { YOLO_STATUS_KEY } from "../lib/yolo-session-policy.ts";
+import type { CandidateSweepResult } from "../lib/review-candidate-view-owner.ts";
 
 // gentle-shell#1690: the package is forwarded to delegated rpc children
 // (GENTLE_PI_AGENTS_CHILD=1, where ctx.hasUI is true). Parent-owned startup
@@ -37,11 +38,15 @@ function isolate(t: TestContext): { root: string; cwd: string; agentHome: string
 	return { root, cwd, agentHome };
 }
 
-function harness(child: boolean, cwd: string) {
+const sweepDone: CandidateSweepResult = { examined: 0, remaining: 0, failed: 0, budgetExceeded: false, unavailable: false };
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function harness(child: boolean, cwd: string, sweep: () => Promise<CandidateSweepResult> = async () => sweepDone) {
 	const handlers = new Map<string, Handler>();
 	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
 	const nativeAccesses: string[] = [];
 	const sweeps: string[] = [];
+	const notices: string[] = [];
 	const prompts: string[] = [];
 	const statuses: Array<[string, string | undefined]> = [];
 	const emitted: Array<{ name: string; payload: unknown }> = [];
@@ -59,11 +64,12 @@ function harness(child: boolean, cwd: string) {
 	const nativeReviewCli = new Proxy({}, {
 		get: (_target, key) => { nativeAccesses.push(String(key)); return undefined; },
 	});
-	const candidateViews = { sweepOrphans: (path: string) => { sweeps.push(path); }, cleanupAll() {} };
+	const candidateViews = { sweepOrphans: () => assert.fail("startup must never sweep synchronously"), cleanupAll() {} };
 	createGentleAiExtension({
 		processEnv: { GENTLE_PI_AGENTS_CHILD: child ? "1" : "0", GENTLE_AI_TELEMETRY: "0" },
 		nativeReviewCli: nativeReviewCli as never,
 		candidateViews: candidateViews as never,
+		candidateStartupSweep: async (path: string) => { sweeps.push(path); return sweep(); },
 		childStandingReviewPermissionClient: { requestAuthorization: async () => false, close() {} },
 	})(pi);
 	const sessionManager = { getSessionId: () => `session-${child ? "child" : "parent"}`, getCwd: () => cwd, getEntries: () => entries, getBranch: () => entries };
@@ -73,13 +79,13 @@ function harness(child: boolean, cwd: string) {
 		hasUI: true,
 		sessionManager,
 		ui: {
-			notify() {},
+			notify(message: string) { notices.push(message); },
 			setStatus: (key: string, text?: string) => { statuses.push([key, text]); },
 			confirm: async (title: string) => { prompts.push(`confirm:${title}`); return false; },
 			select: async (title: string) => { prompts.push(`select:${title}`); return undefined; },
 		},
 	} as unknown as ExtensionContext;
-	return { handlers, entries, nativeAccesses, sweeps, prompts, statuses, emitted, tools, ctx, sessionManager };
+	return { handlers, entries, nativeAccesses, sweeps, notices, prompts, statuses, emitted, tools, ctx, sessionManager };
 }
 
 function legacySettings(cwd: string): string {
@@ -114,6 +120,8 @@ test("parent session_start still runs the startup work skipped in children", asy
 	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
 	assert.notDeepEqual(readdirSync(agentHome), [], "the parent installs package assets");
 	assert.notEqual(readFileSync(settingsPath, "utf8"), before, "the parent migrates legacy project model overrides");
+	assert.deepEqual(h.sweeps, [], "cleanup is deferred past session_start");
+	await nextTurn();
 	assert.deepEqual(h.sweeps, [cwd]);
 	assert.ok(h.nativeAccesses.length > 0, "the parent negotiates review status");
 });
@@ -260,4 +268,49 @@ test("child confirm-class guardrail commands ask the parent instead of running o
 	assert.equal(h.prompts.length, 1, JSON.stringify(h.prompts));
 	assert.equal(result?.block, true, "the declined confirmation blocks the command");
 	assert.doesNotMatch(result?.reason ?? "", /requires interactive confirmation/);
+});
+
+test("parent startup returns while candidate cleanup is pending and reports its budget once", async (t) => {
+	const { cwd } = isolate(t);
+	let finish!: (result: CandidateSweepResult) => void;
+	const h = harness(false, cwd, () => new Promise((resolve) => { finish = resolve; }));
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	assert.deepEqual(h.sweeps, []);
+	await nextTurn();
+	assert.deepEqual(h.sweeps, [cwd], "cleanup runs outside session_start");
+	let responsive = false;
+	await new Promise<void>((resolve) => setTimeout(() => { responsive = true; resolve(); }, 0));
+	assert.equal(responsive, true, "event loop remains responsive before cleanup resolves");
+	finish({ ...sweepDone, examined: 1, remaining: 6, budgetExceeded: true });
+	await nextTurn();
+	assert.equal(h.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 1);
+});
+
+test("candidate cleanup warns only on budget exhaustion or an unavailable store, never on preserved-by-design entries", async (t) => {
+	const { cwd } = isolate(t);
+	let finish!: (result: CandidateSweepResult) => void;
+	const h = harness(false, cwd, () => new Promise((resolve) => { finish = resolve; }));
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	await nextTurn();
+	finish({ ...sweepDone, examined: 3, failed: 3 });
+	await nextTurn();
+	assert.equal(h.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 0, "unknown, legacy, unsafe, unregistered, and contended entries survive by design and must stay silent");
+});
+
+test("candidate cleanup failures warn without breaking startup or leaking stale session notices", async (t) => {
+	const { cwd } = isolate(t);
+	const h = harness(false, cwd, async () => { throw new Error("private raw path"); });
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	await nextTurn();
+	assert.equal(h.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 1);
+	assert.ok(h.notices.every((notice) => !notice.includes("private raw path")));
+
+	let finish!: (result: CandidateSweepResult) => void;
+	const next = harness(false, cwd, () => new Promise((resolve) => { finish = resolve; }));
+	await next.handlers.get("session_start")!({ reason: "startup" }, next.ctx);
+	await nextTurn();
+	await next.handlers.get("session_shutdown")!({ reason: "quit" }, next.ctx);
+	finish({ ...sweepDone, budgetExceeded: true, remaining: 3 });
+	await nextTurn();
+	assert.equal(next.notices.filter((notice) => /candidate cleanup/i.test(notice)).length, 0);
 });

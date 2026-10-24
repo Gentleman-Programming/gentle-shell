@@ -1024,9 +1024,12 @@ test("candidate lifecycle sweeps startup and cleans every shutdown including rel
 	violations.length = 0;
 	const hooks = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	const registry = new CandidateViewRegistry();
-	t.mock.method(registry, "sweepOrphans", (root: string) => { assert.equal(root, cwd); calls.push("sweep"); });
+	t.mock.method(registry, "sweepOrphans", () => assert.fail("startup must not sweep synchronously"));
 	t.mock.method(registry, "cleanupAll", () => { calls.push("cleanup"); });
-	createGentleAiExtension({ nativeReviewCli: null, candidateViews: registry, processEnv: {} })({
+	createGentleAiExtension({ nativeReviewCli: null, candidateViews: registry, processEnv: {}, candidateStartupSweep: async (root) => {
+		assert.equal(root, cwd); calls.push("sweep");
+		return { examined: 0, remaining: 0, failed: 0, budgetExceeded: false, unavailable: false };
+	} })({
 		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
 			hooks.set(name, [...(hooks.get(name) ?? []), handler]);
 		},
@@ -1035,6 +1038,7 @@ test("candidate lifecycle sweeps startup and cleans every shutdown including rel
 	try {
 		assert.equal(hooks.get("session_start")?.length, 1);
 		await hooks.get("session_start")![0]!({ reason: "startup" }, reviewContext(cwd));
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(violations, []);
 		assert.ok(destinations.length > 0, "startup must actually write fixture assets");
 		assert.ok(discovery.includes(join(cwd, "HOME", ".agents")), "home agent discovery must use the fixture");

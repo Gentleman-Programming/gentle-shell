@@ -490,15 +490,41 @@ export function removeCandidateOwner(owner: CandidateViewOwner, git: Git, makeWr
 	}
 }
 
-export function sweepCandidateOwners(commonDir: string, git: Git, makeWritable: (root: string) => void, platform: NodeJS.Platform = process.platform): void {
+export interface CandidateSweepBudget {
+	maxOwners?: number;
+	budgetMs?: number;
+}
+
+export interface CandidateSweepResult {
+	examined: number;
+	remaining: number;
+	failed: number;
+	budgetExceeded: boolean;
+	unavailable: boolean;
+}
+
+export function sweepCandidateOwners(commonDir: string, git: Git, makeWritable: (root: string) => void, platform: NodeJS.Platform = process.platform, budget?: CandidateSweepBudget): CandidateSweepResult {
+	const result: CandidateSweepResult = { examined: 0, remaining: 0, failed: 0, budgetExceeded: false, unavailable: false };
+	const started = performance.now();
 	try {
 		const parent = assertCandidateOwnerParent(commonDir, platform);
-		for (const name of readdirSync(parent)) {
-			if (!name.endsWith(".owner.json")) continue;
+		const names = readdirSync(parent).filter((name) => name.endsWith(".owner.json"));
+		for (const name of names) {
+			// Cooperative bounds only: never interrupt an in-progress guarded removal.
+			if ((budget?.maxOwners !== undefined && result.examined >= budget.maxOwners) ||
+				(budget?.budgetMs !== undefined && performance.now() - started >= budget.budgetMs)) {
+				result.budgetExceeded = true;
+				result.remaining = names.length - result.examined;
+				break;
+			}
+			result.examined++;
 			try {
 				const owner = readOwner(commonDir, join(parent, name.slice(0, -11)), platform);
 				if (dead(owner)) removeCandidateOwner(owner, git, makeWritable, true, platform);
-			} catch { /* Unknown, legacy, unsafe, unregistered, and contended entries survive. */ }
+			} catch {
+				result.failed++; // Unknown, legacy, unsafe, unregistered, and contended entries survive.
+			}
 		}
-	} catch { /* Startup/materialization sweeps are best-effort; never create a store. */ }
+	} catch { result.unavailable = true; /* Never create a store. */ }
+	return result;
 }

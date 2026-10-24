@@ -11,6 +11,7 @@ import {
 	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
+	cachedPiVersion,
 	checkPeerVersionPin,
 	checkPiVersion,
 	decideTakeOver,
@@ -23,6 +24,7 @@ import {
 	isSetupCapablePin,
 	launcherConfigPath,
 	type LooseExtensionFsEntry,
+	matchesFileIdentity,
 	missingPiMessage,
 	needsProvisioning,
 	otherPackageInjections,
@@ -33,6 +35,7 @@ import {
 	postInstallRemovals,
 	provisionedEntry,
 	quoteForCmdExe,
+	recordPiVersion,
 	recordProvisioned,
 	resolveHome,
 	USER_PI_HOME_ENV,
@@ -635,21 +638,21 @@ test("recordProvisioned overwrites an existing marker for the same home", () => 
 test("resolvePiRuntime prefers GENTLE_SHELL_PI over every other source", () => {
 	const runtime = resolvePiRuntime({
 		env: { GENTLE_SHELL_PI: "/opt/pi/pi" },
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => "/usr/bin/pi",
 		nodeExecPath: "/usr/bin/node",
 	});
 	assert.deepEqual(runtime, { kind: "env", command: "/opt/pi/pi", args: [] });
 });
 
-test("resolvePiRuntime falls back to the bundled CLI run with the current node", () => {
+test("resolvePiRuntime falls back to the bundled CLI run with the current node, carrying its version so main() never has to spawn just to read it", () => {
 	const runtime = resolvePiRuntime({
 		env: {},
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => "/usr/bin/pi",
 		nodeExecPath: "/usr/bin/node",
 	});
-	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] });
+	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"], version: "1.2.3" });
 });
 
 test("resolvePiRuntime falls back to pi on PATH when nothing else resolves", () => {
@@ -675,11 +678,11 @@ test("resolvePiRuntime returns undefined when no source resolves", () => {
 test("resolvePiRuntime treats an empty GENTLE_SHELL_PI as unset", () => {
 	const runtime = resolvePiRuntime({
 		env: { GENTLE_SHELL_PI: "" },
-		resolveBundledCli: () => "/bundled/cli.js",
+		resolveBundledCli: () => ({ path: "/bundled/cli.js", version: "1.2.3" }),
 		findOnPath: () => undefined,
 		nodeExecPath: "/usr/bin/node",
 	});
-	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"] });
+	assert.deepEqual(runtime, { kind: "bundled", command: "/usr/bin/node", args: ["/bundled/cli.js"], version: "1.2.3" });
 });
 
 test("missingPiMessage names the three resolution options", () => {
@@ -687,6 +690,99 @@ test("missingPiMessage names the three resolution options", () => {
 	assert.match(message, /GENTLE_SHELL_PI/);
 	assert.match(message, /@earendil-works\/pi-coding-agent/);
 	assert.match(message, /PATH/);
+});
+
+// --- pi version probe cache (env/path runtimes, #2096) ----------------------
+
+test("cachedPiVersion reads a matching entry for the given path", () => {
+	const config = { piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" } } };
+	assert.deepEqual(cachedPiVersion(config, "/usr/bin/pi"), { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" });
+});
+
+test("cachedPiVersion returns undefined for a path with no entry, or an empty config", () => {
+	assert.equal(cachedPiVersion({}, "/usr/bin/pi"), undefined);
+	assert.equal(cachedPiVersion({ piVersionProbeCache: {} }, "/usr/bin/pi"), undefined);
+});
+
+test("cachedPiVersion tolerates a non-object cache map or a malformed entry instead of throwing", () => {
+	const malformedConfigs: RawLauncherConfig[] = [
+		{ piVersionProbeCache: "nope" },
+		{ piVersionProbeCache: [] },
+		{ piVersionProbeCache: { "/usr/bin/pi": "nope" } },
+		{ piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100 } } },
+		{ piVersionProbeCache: { "/usr/bin/pi": { dev: "1", ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" } } },
+		{ piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: 11 } } },
+	];
+	for (const config of malformedConfigs) assert.equal(cachedPiVersion(config, "/usr/bin/pi"), undefined, JSON.stringify(config));
+});
+
+test("cachedPiVersion rejects a version string with any extra text around a valid-looking version", () => {
+	const config = { piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "garbage 0.1.0" } } };
+	assert.equal(cachedPiVersion(config, "/usr/bin/pi"), undefined);
+});
+
+test("matchesFileIdentity is true only for an exact dev+ino+size+mtimeMs match", () => {
+	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000 };
+	const cached = { ...identity, version: "1.1.0" };
+	assert.equal(matchesFileIdentity(cached, identity), true);
+	assert.equal(matchesFileIdentity(cached, { ...identity, size: 101 }), false);
+	assert.equal(matchesFileIdentity(cached, { ...identity, mtimeMs: 1001 }), false);
+	assert.equal(matchesFileIdentity(cached, { ...identity, dev: 2 }), false);
+	assert.equal(matchesFileIdentity(cached, { ...identity, ino: 3 }), false);
+});
+
+test("matchesFileIdentity compares a nested .cmd-wrapper target identity on its own, not blended into the wrapper's own fields", () => {
+	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 200, mtimeMs: 500 } };
+	const cached = { ...identity, version: "1.1.0" };
+	assert.equal(matchesFileIdentity(cached, identity), true);
+	assert.equal(matchesFileIdentity(cached, { ...identity, target: { ...identity.target, mtimeMs: 501 } }), false, "a changed target mtime must not match, even though the wrapper's own fields are unchanged");
+	assert.equal(matchesFileIdentity(cached, { ...identity, target: { ...identity.target, size: 201 } }), false);
+	assert.equal(matchesFileIdentity(cached, { dev: 1, ino: 2, size: 100, mtimeMs: 1000 }), false, "a cached target identity must not match an identity with no target at all");
+	assert.equal(matchesFileIdentity({ dev: 1, ino: 2, size: 100, mtimeMs: 1000 }, identity), false, "an identity with a target must not match a cached entry with none");
+});
+
+test("cachedPiVersion accepts a nested .cmd-wrapper target identity and rejects a malformed one", () => {
+	const good = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 50, mtimeMs: 500 }, version: "1.1.0" } } };
+	assert.deepEqual(cachedPiVersion(good, "C:\\pi.cmd"), good.piVersionProbeCache["C:\\pi.cmd"]);
+	const malformed = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4 }, version: "1.1.0" } } };
+	assert.equal(cachedPiVersion(malformed, "C:\\pi.cmd"), undefined);
+});
+
+test("cachedPiVersion rejects a null target, and a legacy entry with no target never matches a wrapper identity with one", () => {
+	const nullTarget = { piVersionProbeCache: { "C:\\pi.cmd": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: null, version: "1.2.5" } } };
+	assert.equal(cachedPiVersion(nullTarget, "C:\\pi.cmd"), undefined);
+	const legacy = { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.2.5" };
+	assert.equal(matchesFileIdentity(legacy, { dev: 1, ino: 2, size: 100, mtimeMs: 1000, target: { dev: 3, ino: 4, size: 50, mtimeMs: 500 } }), false);
+});
+
+test("recordPiVersion adds a new entry while preserving every other config key, including another path's entry", () => {
+	const config = { home: "isolated", piVersionProbeCache: { "/other/pi": { dev: 9, ino: 9, size: 9, mtimeMs: 9, version: "9.9.9" } } };
+	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000 };
+	assert.deepEqual(recordPiVersion(config, "/usr/bin/pi", identity, "1.1.0"), {
+		home: "isolated",
+		piVersionProbeCache: {
+			"/other/pi": { dev: 9, ino: 9, size: 9, mtimeMs: 9, version: "9.9.9" },
+			"/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" },
+		},
+	});
+});
+
+test("recordPiVersion overwrites a stale entry for the same path", () => {
+	const config = { piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 50, mtimeMs: 500, version: "1.0.0" } } };
+	const identity = { dev: 1, ino: 2, size: 100, mtimeMs: 1000 };
+	const updated = recordPiVersion(config, "/usr/bin/pi", identity, "1.1.0");
+	assert.deepEqual((updated.piVersionProbeCache as Record<string, unknown>)["/usr/bin/pi"], { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" });
+});
+
+test("recordPiVersion never mutates the config it was given", () => {
+	const config = { piVersionProbeCache: {} };
+	recordPiVersion(config, "/usr/bin/pi", { dev: 1, ino: 2, size: 100, mtimeMs: 1000 }, "1.1.0");
+	assert.deepEqual(config, { piVersionProbeCache: {} });
+});
+
+test("recordPiVersion starts the cache map when the config has none yet", () => {
+	const updated = recordPiVersion({ home: "isolated" }, "/usr/bin/pi", { dev: 1, ino: 2, size: 100, mtimeMs: 1000 }, "1.1.0");
+	assert.deepEqual(updated, { home: "isolated", piVersionProbeCache: { "/usr/bin/pi": { dev: 1, ino: 2, size: 100, mtimeMs: 1000, version: "1.1.0" } } });
 });
 
 // --- checkPiVersion ---------------------------------------------------------

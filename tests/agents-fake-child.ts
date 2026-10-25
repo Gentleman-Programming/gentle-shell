@@ -17,7 +17,7 @@ export interface FakeChild {
 	message(event: Record<string, unknown>): void;
 }
 
-export function fakeChild(options: { exitOnKill?: boolean; pid?: number } = {}): FakeChild {
+export function fakeChild(options: { exitOnKill?: boolean; exitOnStdinEnd?: boolean; pid?: number } = {}): FakeChild {
 	const emitter = new EventEmitter();
 	const stdin = new PassThrough();
 	const stdout = new PassThrough();
@@ -41,7 +41,8 @@ export function fakeChild(options: { exitOnKill?: boolean; pid?: number } = {}):
 	const origEnd = stdin.end.bind(stdin);
 	stdin.end = ((...args: unknown[]) => {
 		const res = (origEnd as Function)(...args);
-		if (options.exitOnKill !== false) queueMicrotask(() => emitter.emit("exit", 0, null));
+		// Preserve existing fixtures while allowing EOF and signal exits to vary independently.
+		if (options.exitOnStdinEnd ?? options.exitOnKill ?? true) queueMicrotask(() => emitter.emit("exit", 0, null));
 		return res;
 	}) as typeof stdin.end;
 	const child: ChildLike = {

@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -48,7 +48,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
 			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
-			const fake = fakeChild({ exitOnKill: options.exitOnKill, pid: options.pid });
+			const fake = fakeChild({ exitOnKill: options.exitOnKill, exitOnStdinEnd: options.exitOnStdinEnd, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
 				fake.child.stdin.on("data", (chunk) => {
@@ -1002,6 +1002,34 @@ test("AgentRunner requests orderly shutdown via stdin on settlement and does not
 	assert.deepEqual(children[0].killed, [], "clean shutdown completes with zero kill signals sent");
 });
 
+test("AgentRunner allows delayed cleanup and cancels escalation after clean exit (#1740)", async () => {
+	// EOF must be independent of kill behavior: this child honors signals but
+	// needs time to finish asynchronous shutdown after its input closes.
+	const { store, runner, children, timers, advance, finishes } = harness({ exitOnStdinEnd: false });
+	const task = runner.run(request());
+	await tick();
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(children[0].child.stdin.writableEnded, true);
+	advance(2_000);
+	await tick();
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(store.get(task.id)?.lastStep, "cleaning up");
+	assert.deepEqual(children[0].killed, []);
+	assert.deepEqual(finishes, []);
+	children[0].exit(0);
+	await tick();
+	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.COMPLETED);
+	assert.equal(store.get(task.id)?.lastStep, "done");
+	assert.deepEqual(finishes, [task.id]);
+	assert.ok(timers.filter((timer) => timer.ms === 5_000).every((timer) => timer.cancelled));
+	advance(5_000);
+	await tick();
+	assert.deepEqual(children[0].killed, []);
+	assert.deepEqual(finishes, [task.id]);
+});
+
 test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cleanupTimeoutMs (#1740)", async () => {
 	const { store, runner, children, timers } = harness({ exitOnKill: false, cleanupTimeoutMs: 3000 });
 	const task = runner.run(request());
@@ -1035,7 +1063,7 @@ test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cl
 
 test("orderly cleanup escalation retains the full exit confirmation deadline after SIGKILL (#1740)", async () => {
 	let groupAlive = true;
-	const { store, runner, children, timers } = harness({
+	const { store, runner, children, timers, advance } = harness({
 		exitOnKill: false,
 		pid: 42,
 		cleanupTimeoutMs: 5_000,
@@ -1058,13 +1086,13 @@ test("orderly cleanup escalation retains the full exit confirmation deadline aft
 	// Advance time by the cleanup window (5000 ms)
 	const cleanupTimer = timers.find((t) => !t.cancelled && t.ms === 5_000);
 	assert.ok(cleanupTimer, "cleanup timeout timer must be scheduled");
-	cleanupTimer.fn();
+	advance(5_000);
 	await tick();
 
 	// Advance time by termination grace (250 ms)
 	const killTimer = timers.find((t) => !t.cancelled && t.ms === 250);
 	assert.ok(killTimer, "SIGKILL timer must be scheduled");
-	killTimer.fn();
+	advance(250);
 	await tick();
 
 	// After SIGKILL, confirmGroupExit checks the process group. Because cleanupDeadlineAt was set
@@ -1076,7 +1104,7 @@ test("orderly cleanup escalation retains the full exit confirmation deadline aft
 	// If the group exits during the confirmation window:
 	groupAlive = false;
 	children[0].exit(0);
-	probeTimer.fn();
+	advance(25);
 	await tick();
 
 	assert.equal(store.get(task.id)?.status, TASK_STATUS.COMPLETED);
@@ -1246,7 +1274,9 @@ test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4
 	const launch = spawnOptions[0];
 	const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 	assert.match(launch?.env.GENTLE_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
-	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", TMPDIR: launch?.env.TMPDIR });
+	const scratch = launch?.env.TMPDIR;
+	const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
+	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
 	assert.match(basename(launch?.env.TMPDIR ?? ""), /^ga[A-Za-z0-9]{6}$/);
 	assert.deepEqual(launch?.stdio, ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"]);
 	assert.equal(launch?.stdio?.length, 5);

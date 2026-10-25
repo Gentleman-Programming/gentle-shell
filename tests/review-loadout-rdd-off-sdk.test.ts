@@ -172,6 +172,7 @@ function assertLeanRequest(request: RecordedRequest, run: SessionRun): void {
 	assert.match(request.systemPrompt, /Receipt-driven development: off /);
 	assert.match(request.systemPrompt, LEAN_GUIDELINE);
 	assert.match(request.systemPrompt, /relay it unchanged but do not execute it while RDD is off/);
+	assert.match(request.systemPrompt, /assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD/);
 	assert.doesNotMatch(request.systemPrompt, /relay it unchanged and follow it/);
 	assert.match(request.systemPrompt, /Continue the returned verification plan/);
 	assert.match(request.systemPrompt, /tests, builds, and functional checks still run/);

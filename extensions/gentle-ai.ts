@@ -2227,18 +2227,31 @@ function legacyProjectModelConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "models.json");
 }
 
-// A pinned or active profile is a complete routing snapshot (see
-// withOmittedAgentsClearedAsync): omitted agents must inherit. Use only the
-// global file so stale legacy entries cannot resurrect those agents — but
-// only once the global file actually exists. bootstrapProfilesFile can
-// activate a profile from a read-only effective-config snapshot without ever
-// writing the global file (e.g. opening /gentle:profiles for the first
-// time); a still-missing global file must never make routing less complete
-// than it already was.
-function legacyProjectMergePath(cwd: string): string {
-	if (resolveCurrentProfileTarget(cwd) === undefined) return legacyProjectModelConfigPath(cwd);
-	const globalPath = modelConfigPath(cwd);
-	return existsSync(globalPath) ? globalPath : legacyProjectModelConfigPath(cwd);
+// bootstrapProfilesFile can activate a profile from a read-only
+// effective-config snapshot without ever writing the global file (e.g.
+// opening /gentle:profiles for the first time). A pinned or active profile is
+// a complete routing snapshot (see withOmittedAgentsClearedAsync): omitted
+// agents must inherit. Before the global file exists there is nothing for the
+// "use only the global file" guarantee to read, and falling back to the raw
+// legacy project file would resurrect agents the profile deliberately omits
+// (that file was never filtered by the profile's omissions). Read the
+// profile's own stored snapshot instead: it is already complete, because
+// bootstrapProfilesFile seeds it from the full effective routing that was
+// visible a moment before the profile existed. Takes the already-resolved
+// target so callers that also branch on it never resolve it twice.
+function activeProfileRoutingSnapshot(cwd: string, target: CurrentProfileTarget): ModelConfigFileResult | undefined {
+	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	if (store.status !== "valid") return undefined;
+	const config = store.file.profiles[target.name];
+	return config === undefined ? undefined : { status: "valid", config };
+}
+
+// The project-merge counterpart to activeProfileRoutingSnapshot: once the
+// global file exists, a pinned or active profile's routing is read from it
+// alone, same as above, so stale legacy entries cannot resurrect omitted
+// agents. Takes the already-resolved target for the same reason.
+function legacyProjectMergePath(cwd: string, target: CurrentProfileTarget | undefined): string {
+	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
 function projectPersonaConfigPath(cwd: string): string {
@@ -2283,7 +2296,11 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 // with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
 	const globalPath = modelConfigPath(cwd);
-	const projectPath = legacyProjectMergePath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+	}
+	const projectPath = legacyProjectMergePath(cwd, target);
 	const result = readModelRoutingAuthority(globalPath, projectPath);
 	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = readModelConfigFile(globalPath);
@@ -2294,7 +2311,11 @@ async function readSavedModelConfigAsync(
 	cwd: string,
 ): Promise<ModelConfigFileResult> {
 	const globalPath = modelConfigPath(cwd);
-	const projectPath = legacyProjectMergePath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+	}
+	const projectPath = legacyProjectMergePath(cwd, target);
 	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
 	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = await readModelConfigFileAsync(globalPath);
@@ -3086,10 +3107,11 @@ export async function applySavedModelConfig(
 	ctx: ExtensionContext,
 	applyConfig: typeof applyModelConfigAsync = applyModelConfigAsync,
 ): Promise<{ updated: number; skipped: number; invalidPath?: string }> {
-	const result = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectMergePath(ctx.cwd),
-	);
+	const applyGlobalPath = modelConfigPath(ctx.cwd);
+	const applyTarget = resolveCurrentProfileTarget(ctx.cwd);
+	const result = applyTarget !== undefined && !existsSync(applyGlobalPath)
+		? activeProfileRoutingSnapshot(ctx.cwd, applyTarget) ?? { status: "valid" as const, config: {} }
+		: await readModelRoutingAuthorityAsync(applyGlobalPath, legacyProjectMergePath(ctx.cwd, applyTarget));
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}

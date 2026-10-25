@@ -2,7 +2,7 @@
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
-import { dirname, posix, win32 } from "node:path";
+import { dirname, isAbsolute, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The launcher in a bundled install (S5, S8): pure decisions over an injected
@@ -27,6 +27,46 @@ import { fileURLToPath } from "node:url";
 
 
 
+
+/**
+ * Builds the detached shared server's environment without retaining session scratch.
+ * Windows Node can reintroduce an omitted TEMP from its parent, so use the
+ * original stable ancestor there; POSIX omits scratch temp settings instead.
+ */
+export function sharedEngramEnv(base     , platform         = process.platform)      {
+	const path = pathFor(platform);
+	const env      = {};
+	const scratch = (value        ) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(path.normalize(value)));
+	let stableTemp                    ;
+	let tempKey                    ;
+	for (const [key, value] of Object.entries(base)) {
+		const name = platform === "win32" ? key.toUpperCase() : key;
+		if (name.startsWith("ENGRAM_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN") continue;
+		if (["TMPDIR", "TMP", "TEMP"].includes(name) && value !== undefined && scratch(value)) {
+			if (platform !== "win32") continue;
+			// A drive-relative or root-relative path depends on ambient state.
+			const root = win32.parse(value).root;
+			if (!/^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/]?)$/.test(root) || value.split(/[\\/]/).includes("..")) {
+				throw new Error("An absolute Windows scratch temp path is required for shared Engram.");
+			}
+			let stable = win32.normalize(value);
+			while (scratch(stable)) {
+				const parent = win32.dirname(stable);
+				if (parent === stable) throw new Error("An absolute Windows scratch temp path is required for shared Engram.");
+				stable = parent;
+			}
+			env[key] = stable;
+			stableTemp ??= stable;
+		} else {
+			env[key] = value;
+		}
+		if (name === "TEMP") tempKey = key;
+	}
+	// Keep an existing custom TEMP, even if TMP/TMPDIR chose another root.
+	if (stableTemp !== undefined && (tempKey === undefined || env[tempKey] === undefined)) env[tempKey ?? "TEMP"] = stableTemp;
+	env.ENGRAM_NO_UPDATE_CHECK = "1";
+	return env;
+}
 
 // The same rules scripts/bundled-install.mjs writes versions and markers with.
 const VERSION_ID = /^[0-9A-Za-z][0-9A-Za-z.-]*$/;
@@ -233,15 +273,14 @@ export function bundledPi(install                , input                        
 // Gentle AI's variables, never set here because the agent's shell would pass
 // them to a gentle-ai the user runs), and the published Engram as
 // gentle-engram's ENGRAM_BIN unless the user chose one. With a memory decision
-// (S2, S6): the startup policy, and ENGRAM_BIN is the verified core only when
-// memory is allowed locally; otherwise the Shell-owned guard, so no provider,
-// whatever loaded it, runs an Engram binary against an unverified store.
+// (S2, S6): the startup policy, and ENGRAM_BIN is the Shell-owned guard, so no
+// provider, whatever loaded it, runs an Engram binary against a store; allowed
+// memory reaches the shared server through ENGRAM_URL only.
 export const ENGRAM_COMPANION_SOURCE = "npm:gentle-engram@0.4.2";
-export const ENGRAM_PRIVATE_REQUIRED_NOTICE = "Engram memory disabled: session-owned servers require a supporting published bundled core and companion. This bundle does not establish both capabilities; it will not fall back to a detached shared server. Install a supporting published bundle and restart Shell. Existing shared services are not stopped or adopted as session-owned.";
-export const ENGRAM_CORE_CHANGED_NOTICE = "Engram memory disabled: the bundled core changed since Shell recorded this store. Install a published bundle supporting migrate-copy, stop every Engram client, retain a complete backup, then run gentle-shell memory migrate --confirm-quiescent. The command verifies and migrates a copy before updating provenance; older bundles refuse safely. Do not edit coreSha256 or delete the original store. Shell remains usable without memory.";
-export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not verify safe store or server reuse. Matching versions or updating alone do not prove compatibility. Reuse requires a server with verified /compatibility evidence or matching Shell-provisioned store identity. Back up existing Engram data before manual changes; do not delete it or bypass the safety check. Shell rechecks on every launch and remains usable without memory.";
+export const ENGRAM_RECOVERY_NOTICE = "Engram memory disabled: Shell could not verify safe server reuse. Matching versions or updating alone do not prove compatibility. Reuse requires a server on 127.0.0.1:7437 with verified /compatibility evidence; Shell never stops or replaces a server already listening there. Back up existing Engram data before manual changes; do not delete it or bypass the safety check. Shell rechecks on every launch and remains usable without memory.";
+export const ENGRAM_START_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not start the shared Engram server, or it did not report ready in time. Restart Shell to retry; if another program holds 127.0.0.1:7437, stop it first. Shell remains usable without memory.";
+export const ENGRAM_NEWER_SCHEMA_NOTICE = "Engram memory disabled: ~/.engram was migrated by a newer Engram than Shell's bundled core, so Shell will not start a server on it. Start that newer Engram's server yourself (engram serve); Shell reuses a running server with verified /compatibility evidence. Back up the store; do not delete or downgrade it. Shell remains usable without memory.";
 // `gentle-shell setup` publishes the verified core (ensureEngram) on every run.
-export const ENGRAM_PROVISION_FAILED_NOTICE = "Engram memory disabled for this launch: Shell could not provision a new Engram store identity, so it cannot vouch for that store. Restart Shell to retry. If Shell keeps reporting unknown compatibility and ~/.engram holds only .instance-id files, back it up and remove it, then restart Shell. Shell remains usable without memory.";
 export const ENGRAM_CORE_MISSING_NOTICE = "Engram memory disabled: the bundled Engram core is not installed yet. Run 'gentle-shell setup' to install the verified core, then restart Shell. Shell remains usable without memory.";
 // The first Engram release whose server answers GET /compatibility (PR #1792).
 export const ENGRAM_COMPATIBILITY_MIN_VERSION = "3.4.0";
@@ -262,12 +301,13 @@ function outdatedServerVersion(version                    )                     
 // The default endpoint gentle-engram uses without ENGRAM_URL or ENGRAM_PORT.
 export const ENGRAM_DEFAULT_PORT = 7437;
 export const ENGRAM_DEFAULT_URL = `http://127.0.0.1:${ENGRAM_DEFAULT_PORT}`;
-const ENGRAM_SELECTIONS = ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_SOCKET", "ENGRAM_DATABASE_URL"];
+const ENGRAM_SELECTIONS = ["ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_DATA_DIR", "ENGRAM_PORT", "ENGRAM_SOCKET", "ENGRAM_DATABASE_URL", "ENGRAM_SERVER_MODE"];
 const HEX32 = /^[a-f0-9]{32}$/;
 
 
-// `fresh`: Shell provisions a new store this run and may record its provenance.
-// `url`: a running server verified through /compatibility, reached explicitly.
+// `url`: the shared server, reached explicitly once /compatibility verified it.
+// `spawn`: nothing listens yet; Shell starts the bundled core's server and must
+// see it verified before Pi starts, or memory is disabled for that launch.
 
 
 // Without an invalid policy or an explicit Engram selection, the default
@@ -278,26 +318,24 @@ export function engramProbeAllowed(env     )          {
 }
 
 // Evidence only: never run an executable, open SQLite or infer compatibility
-// from versions. `provenance` means Shell's own record matched the store
-// (directory, .instance-id, core digest) and its header showed no newer schema.
-// A server version only selects the wording of a disabled decision.
-export function classifyEngramStartup(input
-	                                                          )                {
+// from versions. Like other agents' hooks, Shell shares the global server: a
+// verified listener is reused, and with nothing listening the verified bundled
+// core starts one on Engram's defaults, unless the default store's header
+// (`userVersion`) shows a newer schema than that core's. A listener that does
+// not verify is never replaced. A server version only selects the wording.
+export function classifyEngramStartup(input                                                                                               )                {
 	if (!engramProbeAllowed(input.env)) return { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE };
 	const endpoint = input.endpoint;
-	const outdated = endpoint.kind === "listening" && !endpoint.compatible ? outdatedServerVersion(endpoint.healthVersion) : undefined;
-	const unknown                = { policy: "disabled", notice: outdated === undefined ? ENGRAM_RECOVERY_NOTICE : engramOutdatedServerNotice(outdated) };
 	if (endpoint.kind === "listening" && endpoint.compatible) return { policy: "allow", url: ENGRAM_DEFAULT_URL };
-	if (endpoint.kind === "refused" && input.store === "absent") {
-		return input.core ? { policy: "allow", fresh: true } : { policy: "disabled", notice: ENGRAM_CORE_MISSING_NOTICE };
+	if (endpoint.kind === "refused") {
+		if (!input.core) return { policy: "disabled", notice: ENGRAM_CORE_MISSING_NOTICE };
+		if (input.userVersion !== undefined && !engramHeaderAllows(input.userVersion, bundledEngramSchema(input.coreVersion))) {
+			return { policy: "disabled", notice: ENGRAM_NEWER_SCHEMA_NOTICE };
+		}
+		return { policy: "allow", url: ENGRAM_DEFAULT_URL, spawn: true };
 	}
-	const own = input.provenance;
-	if (own === undefined || !input.core || input.store !== "present") return unknown;
-	// Shell's own store, created by this exact core: offline, the provider starts
-	// that core; a running server must be that store and that exact core.
-	if (endpoint.kind === "refused") return { policy: "allow" };
-	if (endpoint.kind === "listening" && endpoint.healthInstanceId === own.instanceId && endpoint.healthVersion === input.coreVersion) return { policy: "allow", url: ENGRAM_DEFAULT_URL };
-	return unknown;
+	const outdated = endpoint.kind === "listening" ? outdatedServerVersion(endpoint.healthVersion) : undefined;
+	return { policy: "disabled", notice: outdated === undefined ? ENGRAM_RECOVERY_NOTICE : engramOutdatedServerNotice(outdated) };
 }
 
 // The exact contract a startup-verified store reports (Engram GET /compatibility).
@@ -357,8 +395,8 @@ export async function probeEngramEndpoint(input                                 
 	return { kind: "listening", compatible: false, healthInstanceId: identified ? body.instance_id : undefined, healthVersion: identified ? body.version : undefined };
 }
 
-// Shell's own record of a store it provisioned fresh with the verified core.
-// Written only after Shell itself provisioned the store's identity, before Pi starts.
+// Shell's record of a store an earlier Shell provisioned with its bundled core,
+// read only by the explicit `gentle-shell memory migrate` recovery.
 
 
 export function engramProvenancePath(prefix        , platform         = process.platform)         {
@@ -372,14 +410,10 @@ export function parseEngramProvenance(text                    )                 
 	return { schema: 1, dataDir: record.dataDir, instanceId: record.instanceId, coreSha256: record.coreSha256 };
 }
 
-export function engramProvenanceMatches(record                              , observed                                                               )          {
-	return record !== undefined && record.dataDir === observed.dataDir && record.instanceId === observed.instanceId && record.coreSha256 === observed.coreSha256;
-}
-
 // The bundled core's own schema (SQLite user_version), verified from the
-// tagged sources v3.3.2 and v3.4.0: internal/store/store.go `const schemaVersion = 1`.
+// tagged sources v3.3.2, v3.4.0 and v3.5.2: internal/store/store.go `const schemaVersion = 1`.
 // A pin without a verified entry leaves the header check unavailable.
-const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1 };
+const BUNDLED_ENGRAM_SCHEMA                         = { "3.3.2": 1, "3.4.0": 1, "3.5.2": 1 };
 
 export function bundledEngramSchema(coreVersion        )                     {
 	return Object.hasOwn(BUNDLED_ENGRAM_SCHEMA, coreVersion) ? BUNDLED_ENGRAM_SCHEMA[coreVersion] : undefined;
@@ -427,11 +461,6 @@ export function supportsEngramStartupPolicy(metadata                    )       
 	return pkg?.name === "gentle-engram" && pkg.engram?.startupPolicy === 1;
 }
 
-export function supportsEngramSessionOwned(metadata                    )          {
-	const pkg = parseJson(metadata);
-	return supportsEngramStartupPolicy(metadata) && pkg?.engram?.sessionOwned === 1;
-}
-
 export function bundledChildEnv(base     , input                                                                                                        )      {
 	const env      = { ...base, PI_SKIP_VERSION_CHECK: "1", [GENTLE_SHELL_PREFIX_ENV]: input.prefix };
 	delete env.GENTLE_SHELL_PI;
@@ -454,14 +483,7 @@ export function bundledChildEnv(base     , input                                
 		return env;
 	}
 	if (memory.url !== undefined) env.ENGRAM_URL = memory.url;
-	const local = memory.policy === "allow" && memory.url === undefined ? input.engram : undefined;
-	env.ENGRAM_BIN = local ?? input.guard;
-	if (local && memory.owned) {
-		env.ENGRAM_SERVER_MODE = "session-owned";
-		delete env.ENGRAM_URL;
-		delete env.ENGRAM_PORT;
-		delete env.ENGRAM_SOCKET;
-	}
+	env.ENGRAM_BIN = input.guard;
 	return env;
 }
 
@@ -490,6 +512,58 @@ export function withBundledNpmCommand(settingsText                    , command 
 	const indent = settingsText?.match(/\{\r?\n([ \t]+)/)?.[1] ?? "  ";
 	const serialized = JSON.stringify({ ...settings, npmCommand: command }, null, indent);
 	return { status: "write", text: settingsText === undefined || settingsText.endsWith("\n") ? `${serialized}\n` : serialized };
+}
+
+
+
+// settings.json without `npmCommand`: every other key kept in order and the
+// file's indentation and final newline kept.
+function settingsWithoutNpmCommand(settingsText        , settings                         )         {
+	const indent = settingsText.match(/\{\r?\n([ \t]+)/)?.[1] ?? "  ";
+	const { npmCommand: _removed, ...rest } = settings;
+	const serialized = JSON.stringify(rest, null, indent);
+	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
+}
+
+// The agent home's settings.json without a `npmCommand` naming the prefix a
+// bundled self-uninstall removed (gentle-shell-uninstall.ts): one absolute
+// entry inside `withinRemoved` drops the whole key, every other key kept in
+// order and the file's indentation and final newline kept. A file that is not
+// a JSON object is never rewritten; a command naming nothing inside it stays.
+export function withoutBundledNpmCommand(settingsText                    , withinRemoved                           )                           {
+	if (settingsText === undefined) return { status: "unchanged" };
+	const settings = parseJson(settingsText);
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return { status: "malformed" };
+	const current = settings.npmCommand;
+	if (!Array.isArray(current) || !current.some((part) => typeof part === "string" && isAbsolute(part) && withinRemoved(part))) return { status: "unchanged" };
+	return { status: "removed", text: settingsWithoutNpmCommand(settingsText, settings) };
+}
+
+// An `npmCommand` a bundled install wrote (scripts/bundled-install.mjs
+// bundledNpmCommand, with npm-cli.js and --prefix in earlier releases): our
+// node in runtime/node-<v>, then npm's settings and cache flags, and
+// --update-notifier=false last. A command the user chose never matches, even
+// when its program is missing.
+export function isBundledNpmCommand(command                    )          {
+	const [node] = command;
+	return typeof node === "string" && /[\\/]runtime[\\/]node-[^\\/]+[\\/](node\.exe|bin[\\/]node)$/.test(node)
+		&& ["--userconfig=", "--globalconfig=", "--cache="].every((flag) => command.some((part) => typeof part === "string" && part.startsWith(flag)))
+		&& command[command.length - 1] === "--update-notifier=false";
+}
+
+// The agent home's settings.json without an `npmCommand` a bundled install
+// wrote whose executable (its first entry) no longer exists, as after a
+// bundled self-uninstall that kept the home (#2469): Pi runs that command for
+// every package install, so a key naming a deleted node.exe fails them all
+// with ENOENT. A command whose executable exists, that names no absolute
+// path, or that the user set themselves is never touched.
+export function withoutMissingBundledNpmCommand(settingsText                    , exists                           )                           {
+	if (settingsText === undefined) return { status: "unchanged" };
+	const settings = parseJson(settingsText);
+	if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return { status: "malformed" };
+	const executable = Array.isArray(settings.npmCommand) ? settings.npmCommand[0] : undefined;
+	if (typeof executable !== "string" || !isAbsolute(executable) || exists(executable) || !isBundledNpmCommand(settings.npmCommand             )) return { status: "unchanged" };
+	return { status: "removed", text: settingsWithoutNpmCommand(settingsText, settings) };
 }
 
 

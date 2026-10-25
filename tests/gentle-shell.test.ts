@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after, afterEach } from "node:test";
+import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
@@ -163,6 +163,9 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commands
 			if (args.includes("worktree")) return { stdout: "worktree /repo\0branch refs/heads/main\0\0", stderr: "", code: 0, killed: false };
 			// Roots outside the worktree list read as a detached HEAD.
 			if (args.includes("symbolic-ref")) return { stdout: "", stderr: "", code: 1, killed: false };
+			// The unborn-HEAD ask is cheap metadata, not a scan round: the script
+			// models one numstat+porcelain pair per round, exactly like real Git.
+			if (args.includes("rev-parse")) return { stdout: "", stderr: "", code: 0, killed: false };
 			const isNumstat = args.includes("diff");
 			const step = script[Math.min(isNumstat ? round : round++, script.length - 1)];
 			return { stdout: isNumstat ? step.numstat : step.porcelain, stderr: "", code: 0, killed: false };
@@ -2048,7 +2051,7 @@ test("gentleShell shows working while the agent runs and queued when messages wa
 	const editor = installedPrompt(ctx, ui, handlers);
 
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ ✿ working… ─+╮$/);
+	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] working… ─+╮$/);
 	pending.value = true;
 	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] queued ─+╮$/);
 	for (const handler of handlers.get("agent_end") ?? []) handler({}, ctx);
@@ -2821,7 +2824,7 @@ test("vim selector exposes enable, disable and status; status and cancellation d
  } finally { editor.dispose(); }
 });
 
-test("animations command reports without writing and switches the live pulse", async (t) => {
+test("animations command reports without writing and switches the live watchdog", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	const delays: number[] = [];
 	let active = 0;
@@ -2839,9 +2842,9 @@ test("animations command reports without writing and switches the live pulse", a
 	assert.match(ui.notices.at(-1)!, /animations: quality/);
 	assert.equal(existsSync(join(configHome, "animations.json")), false);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 80]);
+	assert.deepEqual(delays, [2000, 1000]);
 	await command.handler("performance", ctx);
-	assert.deepEqual(delays, [2000, 80, 1000]);
+	assert.deepEqual(delays, [2000, 1000, 1000]);
 	assert.equal(active, 2);
 	await command.handler("potato", ctx);
 	assert.equal(active, 1);
@@ -2850,7 +2853,7 @@ test("animations command reports without writing and switches the live pulse", a
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [2000, 80, 1000, 80]);
+	assert.deepEqual(delays, [2000, 1000, 1000, 1000]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
 	editor.dispose();
@@ -2939,7 +2942,7 @@ test("animations with no argument opens a selectable menu and applies the chosen
 	assert.equal(existsSync(join(dismissHome, "animations.json")), false);
 });
 
-test("prompt uses the compact banner cadence and releases its unref timer at settlement", async (t) => {
+test("prompt installs the silence watchdog unref'd and releases it at settlement", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const delays: number[] = [];
@@ -2957,13 +2960,116 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	const editor = installedPrompt(ctx, ui, handlers);
 	assert.equal(active, 1);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 80]);
+	assert.deepEqual(delays, [2000, 1000]);
 	assert.equal(unrefs, 2);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
 	editor.dispose();
 	await fire(handlers, "session_shutdown", ctx);
 	assert.equal(active, 0);
+});
+
+// gentle-shell#994: the working animation is render-driven. Frames the host
+// already paints while streaming advance the petal for free; a low-cadence
+// watchdog repaints only silent phases (long tool runs with no output).
+interface RecordedInterval { tick: () => void; delay: number; stopped: boolean }
+
+function recordIntervals(t: TestContext): RecordedInterval[] {
+	const intervals: RecordedInterval[] = [];
+	t.mock.method(globalThis, "setInterval", (tick: () => void, delay: number) => {
+		const timer: RecordedInterval = { tick, delay, stopped: false };
+		intervals.push(timer);
+		return { unref() {}, timer };
+	});
+	t.mock.method(globalThis, "clearInterval", (handle: { timer: RecordedInterval }) => { handle.timer.stopped = true; });
+	return intervals;
+}
+
+function petalGlyphOf(editor: GentlePromptEditor): string {
+	return stripAnsi(editor.render(60)[0]).match(/[✿❀❁✾]/)?.[0] ?? "";
+}
+
+test("streaming frames advance the working petal and the quality watchdog stays silent while renders flow", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => 1_000_000 });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.find((entry) => entry.delay === 1000);
+	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const glyphs = [0, 1, 2, 3].map(() => petalGlyphOf(editor));
+	assert.ok(new Set(glyphs).size > 1, `each streamed frame must advance the petal, got ${glyphs.join("")}`);
+	const before = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before, "renders are already flowing, so the watchdog must not force one");
+	editor.dispose();
+	assert.equal(watchdog!.stopped, true);
+});
+
+test("silent working phases repaint only through the 1000ms watchdog window", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	let clock = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => clock });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.find((entry) => entry.delay === 1000);
+	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const baseline = petalGlyphOf(editor);
+	const before = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before, "no frame painted within the window, but the window has not elapsed yet");
+	clock += 1000;
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before + 1, "silence past the window forces exactly one repaint");
+	assert.notEqual(petalGlyphOf(editor), baseline, "the watchdog advanced the petal tick");
+	const afterForced = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), afterForced, "the watchdog's own repaint counts as render traffic for the next window");
+	editor.dispose();
+});
+
+test("potato installs no working watchdog and the petal never advances", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
+	const intervals = recordIntervals(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.ok(!intervals.some((entry) => entry.delay !== 2000), "potato must not animate: no watchdog interval at all");
+	const glyphs = [0, 1, 2].map(() => petalGlyphOf(editor));
+	assert.deepEqual(glyphs, ["✿", "✿", "✿"], "potato keeps the petal static");
+	editor.dispose();
+});
+
+test("the working watchdog is cleared on settlement and on dispose", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
+	assert.ok(watchdog && !watchdog.stopped, "working keeps the watchdog armed");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(watchdog!.stopped, true, "settlement must clear the watchdog");
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const rearmWatchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
+	assert.ok(rearmWatchdog && rearmWatchdog !== watchdog && !rearmWatchdog.stopped, "the next turn re-arms a fresh watchdog");
+	editor.dispose();
+	assert.equal(rearmWatchdog!.stopped, true, "dispose must clear the watchdog");
 });
 
 // ---------------------------------------------------------------------------
@@ -4811,6 +4917,9 @@ test("new sessions do not inherit another session's worktrees", async () => {
  const first=fakeContext();
  await fire(h.handlers,"session_start",first.ctx);
  await h.tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,first.ctx);
+ // The registration kicks off its own async scan; settle it so its Git calls
+ // cannot land after the next session clears the shared call log.
+ await changesSettled();
  await fire(h.handlers,"session_shutdown",first.ctx);
  const next=fakeContext({entries:[...first.ctx.sessionManager.getEntries()]});
  (next.ctx.sessionManager as any).getSessionId=()=>"new-session";
@@ -6376,3 +6485,69 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.equal(read(), "other (repo)", "the pinned profile exists only in that config home's store");
 	});
 }
+
+// gentle-shell#2464: a pasted image is an atomic chip in the draft and a real
+// image attachment on submit, never a temp-file path the model must `read`.
+const CHIP_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01]);
+const chipKeybindings = { matches: (data: string, action: string) => action === "app.clipboard.pasteImage" && data === "\x1bv" };
+
+async function pastedChipPrompt(model?: ExtensionContext["model"]) {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { readClipboardImage: async () => ({ bytes: CHIP_PNG, mimeType: "image/png" }) });
+	const { ctx, ui } = fakeContext();
+	if (model) (ctx as { model: unknown }).model = model;
+	const editor = installedPrompt(ctx, ui, handlers, chipKeybindings);
+	editor.onPasteImage = () => assert.fail("Pi's path-inserting paste must not run when the clipboard holds an image");
+	editor.setText("what is this?");
+	editor.handleInput("\x1bv");
+	await settle();
+	const input = (text: string, source = "interactive") => handlers.get("input")?.[0]?.({ type: "input", text, source }, ctx);
+	// Pi's real order: the editor empties its draft, then onSubmit hands the
+	// text to session.prompt(), which runs the input handlers.
+	const submit = () => {
+		let sent = "";
+		editor.onSubmit = (text) => { sent = text; };
+		editor.handleInput("\r");
+		return input(sent);
+	};
+	return { editor, ui, input, submit };
+}
+
+test("pasted image chips are submitted as real image attachments (gentle-shell#2464)", async () => {
+	const { editor, ui, input, submit } = await pastedChipPrompt();
+	assert.equal(editor.getText(), "what is this? [Image#1]");
+	const strip = (ui.widgets.get("gentle-shell-image-attachments") as (tui: unknown, theme: unknown) => { render(width: number): string[] })(fakeTui, plainTheme);
+	assert.equal(stripAnsi(strip.render(80)[0] ?? ""), "[Image#1] png · 2×1 · 24 B");
+	assert.deepEqual(submit(), {
+		action: "transform",
+		text: "what is this? [Image#1]",
+		images: [{ type: "image", data: Buffer.from(CHIP_PNG).toString("base64"), mimeType: "image/png" }],
+	});
+	// Sent images are released: recalling the same text later is ordinary text.
+	assert.equal(editor.getText(), "");
+	assert.deepEqual(strip.render(80), []);
+	assert.deepEqual(input("what is this? [Image#1]"), { action: "continue" });
+});
+
+test("a pasted image chip deleted before submit is never sent (gentle-shell#2464)", async () => {
+	const { editor, submit } = await pastedChipPrompt();
+	editor.handleInput("\x7f");
+	assert.equal(editor.getText(), "what is this? ");
+	assert.deepEqual(submit(), { action: "continue" });
+});
+
+test("pasted image chips leave non-interactive input and deleted chips untouched (gentle-shell#2464)", async () => {
+	const { input } = await pastedChipPrompt();
+	assert.deepEqual(input("[Image#1] from an extension", "extension"), { action: "continue" });
+	assert.deepEqual(input("the chip was deleted"), { action: "continue" });
+});
+
+test("pasted image chips warn instead of sending images a text-only model rejects (gentle-shell#2464)", async () => {
+	const { ui, input } = await pastedChipPrompt({ id: "text-only", provider: "acme", input: ["text"] } as unknown as ExtensionContext["model"]);
+	assert.deepEqual(input("what is this? [Image#1]"), {
+		action: "transform",
+		text: "what is this? [Image#1 omitted: the current model does not accept images]",
+		images: [],
+	});
+	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
+});

@@ -589,6 +589,30 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
+test("structural cache misses skip the whole-rail digest pass", (t) => {
+	const f = fixture();
+	let digests = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		digest: () => { digests++; return "stable"; },
+		render: () => [`Todo ${digests}`],
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	// Every frame evaluates the digest exactly once: the whole-rail comparison
+	// reuses it for the section cache instead of calling each digest twice per
+	// prepare (issue #1681).
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	const prepared = digests;
+	assert.equal(prepared, 1, "preparing the rail evaluates the digest once");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 1, "a cache hit compares the digest once");
+	renderLayoutFrame(f.root, 141, 20, () => {});
+	assert.equal(digests, prepared + 2, "a structural miss re-prepares with a single digest pass");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 3, "returning to the cached structure stays on a single digest pass");
+});
+
 test("reuses final sidebar presentation until a relevant invalidation", (t) => {
 	const f = fixture();
 	sidebarPart(f.tui, "todo", { render: () => Array.from({ length: 10 }, (_, index) => `Todo ${index}`), invalidate() {} });

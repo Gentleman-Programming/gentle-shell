@@ -816,8 +816,28 @@ publishes main builds, so main is built on this computer
   a version it cannot check) it builds with the pinned Go under
   `<config home>/tools/go`, downloading and verifying it there with the same
   `acquireGo` as the wizard when no earlier run published it, and only when
-  Gentle AI is rebuilt. A failed download stops with `main-requires-tools`
-  before anything is built; the user's Go is never run for the build.
+  Gentle AI is rebuilt. A failed download stops the Gentle AI build with
+  `main-requires-tools` before it starts (a main Shell that moved is still
+  installed, as below); the user's Go is never run for the build.
+- When the Gentle AI step of `gentle-shell upgrade --channel main` fails (the
+  build, its verification, or getting the pinned Go) and the main Shell moved,
+  the upgrade still packs and installs that Shell, records no channel, prints
+  `Updated Gentle Shell to the latest main (<sha12>); Gentle AI was not updated.`
+  and exits 1 with the original error (code and message) followed by
+  `; Gentle Shell was updated to main <sha12> but Gentle AI was not: run
+  gentle-shell upgrade --channel main to finish`. The retry then rebuilds Gentle
+  AI with the new Shell's code, so a fix in the main-channel upgrade path reaches
+  an install whose own copy of it is broken; a cause the new Shell does not fix
+  (a Go download that keeps failing, for example) still has to be resolved first. Until then Gentle AI stays the
+  previously registered main build or the pinned binary: a rejected build is
+  never registered. When the Shell install fails as well, its error is reported
+  with `; Gentle AI was not updated either (<Gentle AI error>)`. An unexpected
+  error that has no main-channel code (a filesystem `EACCES`, for example) is
+  reported as `main-upgrade-incomplete` with its own message and the same
+  suffix, so neither the retry advice nor either error is lost. When the Shell
+  is already current, a failed Gentle AI step fails as before, with nothing
+  installed or recorded. The wizard's runner is the one bundled with the
+  downloaded installer and does not get this behavior from a newer main.
 - Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.

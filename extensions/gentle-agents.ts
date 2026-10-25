@@ -20,13 +20,14 @@ import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsTex
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
@@ -35,7 +36,7 @@ import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskSto
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
@@ -58,8 +59,8 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
+import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { CARD_TONE, panelHeaderRow, renderCard } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -561,7 +562,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 		return PresencePublisher.start({ profile: agentHome, sessionId, label: labelSource(), labelSource, activity: [] });
 	};
-	const publishActivity = () => {
+	const publishActivityNow = (deferred = false) => {
 		if (!sessions) return;
 		try {
 			if (!presence || presence.error) {
@@ -580,14 +581,59 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
 				});
 				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks, registered,
-					scope: scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
+					// A deferred (render-cadence trailing) publish must never resolve Git:
+					// its timer can land while a peer metadata query is being served, and
+					// that contract adds no caller Git probes. It reuses the snapshot the
+					// last event-time publication projected; the next event-time publish
+					// refreshes the facts.
+					scope: deferred ? scopeCache.cachedScope() : scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
 			}
 		} catch { presence?.dispose(); presence = undefined; }
+	};
+	// Coalesced like requestRender: the first call publishes immediately so an
+	// idle→working transition or a resumed session never waits, and every call
+	// inside the window collapses into one trailing publish, so a burst of child
+	// deltas costs one publication instead of one per event.
+	let activityPublishQueued = false;
+	let activityPublishTrailing = false;
+	let cancelActivityPublish: (() => void) | undefined;
+	const resetActivityPublish = () => {
+		cancelActivityPublish?.();
+		cancelActivityPublish = undefined;
+		activityPublishQueued = false;
+		activityPublishTrailing = false;
+	};
+	const flushDeferredPublish = () => {
+		cancelActivityPublish = undefined;
+		activityPublishQueued = false;
+		if (!activityPublishTrailing) return;
+		activityPublishTrailing = false;
+		publishActivityNow(true);
+	};
+	const publishActivity = () => {
+		if (activityPublishQueued) {
+			activityPublishTrailing = true;
+			return;
+		}
+		publishActivityNow();
+		activityPublishQueued = true;
+		cancelActivityPublish = deps.schedule(flushDeferredPublish, RENDER_COALESCE_MS);
+	};
+	// Discrete semantic events publish immediately so peers and readers see them
+	// promptly (a consult binds to the published snapshot); the coalescing window
+	// stays armed so a child-delta burst that follows still collapses into one
+	// trailing publish.
+	const publishActivityPrompt = () => {
+		publishActivityNow();
+		if (!activityPublishQueued) {
+			activityPublishQueued = true;
+			cancelActivityPublish = deps.schedule(flushDeferredPublish, RENDER_COALESCE_MS);
+		}
 	};
 	const unsubscribeScope = pi.events.on(SESSION_WORKTREE_CHANGED, (event) => {
 		if ((event as { sessionId?: string } | undefined)?.sessionId !== sessions?.getSessionId()) return;
 		scopeCache.clear();
-		publishActivity();
+		publishActivityPrompt();
 	});
 	// The todo list is the session's progress: publish it for peers so the model
 	// spends no turn on orchestrator_session_id. Merged into the owner's curated
@@ -736,7 +782,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					await closeStartupTransport();
 					return;
 				}
-				publishActivity();
+				// Publish immediately, not on the coalescing trailing edge: this is the
+				// session's first discovery publication, and a peer metadata query binds
+				// to the activation only through it — a 400 ms lag here makes a prompt
+				// consult read publication-unknown-or-stale.
+				publishActivityPrompt();
 			} catch {
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				await closeStartupTransport();
@@ -1597,24 +1647,80 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			host?.requestRender();
 		});
 		tickClock();
-		// Agents is not a rail part: the fullscreen sidebar only suppresses
-		// bottom components registered through sidebarPart, and this widget is
-		// the only Agents surface in every mode, so it stays a plain component.
+		// Agents follows Todos: the fullscreen rail shows it when the terminal is
+		// wide enough, and sidebarPart suppresses the above-editor copy only
+		// while the rail owns the host; narrower terminals keep the widget.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return {
-				render(width: number) {
-					if (!agentsVisible) return [];
-					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
-					return lines.length === 0 ? [] : [...lines, ""];
-				},
-				invalidate() {},
-			};
+			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
 		});
 	};
 
+	const toggleCollapsed = () => {
+		collapsed = !collapsed;
+		if (sidebarTui) invalidateSidebar(sidebarTui);
+		host?.requestRender();
+	};
+
+	// One surface of the Agents card. The rail is natively scrollable, so it
+	// lists every task; the above-editor widget keeps its row budget. Only the
+	// header row is the clickable collapse control, exactly like Todos.
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string } => {
+		let hovered = false;
+		let headerRow = 0;
+		const card: Component = {
+			render(width: number) {
+				if (!agentsVisible) return [];
+				const tasks = visibleTasks();
+				const now = deps.now();
+				headerRow = panelHeaderRow(theme, width, agentsCardTone(tasks, now));
+				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: rail ? undefined : widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered });
+				return lines.length === 0 || rail ? lines : [...lines, ""];
+			},
+			invalidate() {
+				hovered = false;
+			},
+		};
+		const region = new NativePointerRegion(card, {
+			onHover(event) {
+				const next = event.y === headerRow;
+				if (next === hovered) return { handled: true };
+				hovered = next;
+				return { handled: true, render: true };
+			},
+			onLeave() {
+				if (!hovered) return;
+				hovered = false;
+				host?.requestRender();
+			},
+			onClick(event) {
+				if (event.button !== "left" || event.y !== headerRow) return undefined;
+				toggleCollapsed();
+				return { handled: true, render: true };
+			},
+		});
+		return {
+			// The rail memo repaints a part only when its digest moves: task
+			// state, the local controls, and the elapsed clock (to the second)
+			// only while a task is still running, so an idle or finished card
+			// never forces a rail rebuild every second.
+			digest: () => {
+				const tasks = visibleTasks();
+				const clock = tasks.some((task) => !isFinished(task.status)) ? Math.floor(deps.now() / 1000) : 0;
+				return JSON.stringify([agentsVisible, collapsed, hovered, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
+			},
+			render: (width) => region.render(width),
+			handleMouse: (event) => region.handleMouse(event),
+			invalidate: () => region.invalidate(),
+			dispose: () => region.dispose(),
+		};
+	};
+
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
+	// Issue #2400: parent sessions already told about model_profiles keys that
+	// match no agent and suggest none, so the notice fires once per session.
+	const unmatchedKeysNotifiedSessions = new Set<string>();
 
 	const buildRequest = async (ctx: ExtensionContext, agent: AgentDefinition, prompt: string, label: string | undefined, context: string | undefined, mode: AgentMode, resume?: string, workspaceRoot?: string, signal?: AbortSignal, repositoryRoot?: string): Promise<TaskRequest> => {
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
@@ -1730,6 +1836,28 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (drift !== undefined) ctx.ui.notify(drift, "info");
 		}
 		const profile = resolveAgentProfile(agent, config);
+		// Issue #2196 (PR #2233 maintainer decision): a model_profiles key that
+		// names no discovered agent was silently ignored while the child inherited
+		// the orchestrator model. When a configured key suggests this agent, name
+		// it at launch; resolution stays exact-match, so an omitted role keeps
+		// inheriting and a matched key never warns. Keys are checked against every
+		// discovered agent, so a key naming another agent is never reported here.
+		if (ctx.hasUI) {
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
+			if (nearMisses.length > 0) {
+				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
+			}
+			// Issue #2400: a key with no suggestion never names the launched agent,
+			// so the filter above kept it silent. The session's first launch lists
+			// every such key once; later launches in the same session stay quiet.
+			const unsuggested = unmatched.filter((entry) => entry.suggestion === undefined);
+			const parentSession = ctx.sessionManager.getSessionId() ?? "";
+			if (unsuggested.length > 0 && !unmatchedKeysNotifiedSessions.has(parentSession)) {
+				unmatchedKeysNotifiedSessions.add(parentSession);
+				ctx.ui.notify(unsuggested.map((entry) => `"${sanitizeTerminalText(entry.key)}" did not match any agent and was ignored.`).join(" "), "warning");
+			}
+		}
 		// #2180: the winning layer is named from the resolution and routing this
 		// request already performed, never by re-resolving them.
 		const modelSource = modelSourceToken(profile.source.model, sessionProfile, routingTarget);
@@ -1840,7 +1968,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
 		publishWork?.(task.id);
-		publishActivity(); // Admission's summary notification precedes runtime ownership.
+		publishActivityPrompt(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
@@ -1953,7 +2081,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (declared && !ctx.sessionManager.getSessionName?.()) pi.setSessionName(declared);
 			const alias = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
 			const aliases = stateCache.get(ctx.sessionManager)?.aliases;
-			if (state !== undefined || declared) publishActivity();
+			if (state !== undefined || declared) publishActivityPrompt();
 			presence?.refreshLabel();
 			return text(`Active session ID: ${transport.sessionId}\nCurrent alias (CURRENT TASK): ${aliases?.currentAlias ?? "unknown"}\nInitial alias (FIRST TASK): ${aliases?.initialAlias ?? "unknown"}\nSession name: ${alias || "unnamed"}`,
 				{ gentleAgents: { senderSessionId: transport.sessionId, alias, sessionName: alias, initialAlias: aliases?.initialAlias ?? null, currentAlias: aliases?.currentAlias ?? null } });
@@ -2074,8 +2202,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
 				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
-			} catch {
-				return text("Error: session discovery is unavailable.", { error: "unavailable" });
+			} catch (error) {
+				// SessionPresenceError codes are a fixed enum with no record content,
+				// so surfacing the reason is safe and keeps diagnosis possible.
+				const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+				return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 			}
 		},
 	});
@@ -2133,8 +2264,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						recipient = candidates[index].sessionId;
 						activation = candidates[index];
 					}
-				} catch {
-					return text("Error: session discovery is unavailable.", { error: "unavailable" });
+				} catch (error) {
+					const reason = error instanceof SessionPresenceError ? error.code : "unknown";
+					return text(`Error: session discovery is unavailable (${reason}).`, { error: "unavailable", reason });
 				}
 			}
 			if (recipient === undefined || !validTransportSessionId(recipient)) return text("Error: recipient session ID or message is invalid.", { error: "invalid input" });
@@ -2284,11 +2416,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	if (collapseKey) {
 		pi.registerShortcut(collapseKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the agents card",
-			handler: async () => {
-				collapsed = !collapsed;
-				if (sidebarTui) invalidateSidebar(sidebarTui);
-				host?.requestRender();
-			},
+			handler: async () => toggleCollapsed(),
 		});
 	}
 
@@ -2344,7 +2472,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		helperPermission.clear();
 		if (sessions !== ctx.sessionManager) return;
 		stateCache.load(ctx.sessionManager);
-		publishActivity();
+		publishActivityPrompt();
 	});
 	pi.on("session_start", async (event, ctx) => {
 		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
@@ -2386,7 +2514,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = startPresence(ctx.sessionManager);
-			publishActivity();
+			resetActivityPublish();
+			publishActivityPrompt();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);
 		// The desktop app's own pi process: publish live subagent state through
@@ -2429,6 +2558,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		rpcActivityPublisher?.stop();
 		rpcActivityPublisher = undefined;
 		cancelClock?.();
+		resetActivityPublish();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 		sessions = undefined;

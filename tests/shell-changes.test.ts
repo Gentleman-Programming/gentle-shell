@@ -15,6 +15,7 @@ import {
 	foreignRootBranch,
 	parseWorktrees,
 	changesSummary,
+	changesDigest,
 	emptyChanges,
 	parseNumstat,
 	parsePorcelain,
@@ -101,6 +102,36 @@ test("changesModel sorts files by path and totals the counts", () => {
 	assert.equal(model.deleted, 2);
 });
 
+// The footer Status memo reads the changes digest on every keystroke, so the
+// model stores it once per build and reading it never walks the file list.
+// The digest hashes every per-file tuple the renderer consumes (path, status,
+// counts, diffRevision, countsUnavailable); a 64-bit collision could only
+// skip one refresh until the next change moves it again -- never render a
+// wrong picture.
+test("the changes digest is stored on the model and stays equal while nothing moves", () => {
+	const files = [file("lib/a.ts", 4, 2), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED)];
+	const model = changesModel([...files]);
+	assert.equal(Object.hasOwn(model, "digest"), true, "the digest is a stored field, not recomputed per read");
+	assert.equal(model.digest, changesDigest(model), "the stored digest matches an independently computed one");
+	assert.equal(changesModel([...files]).digest, model.digest, "an unchanged model rebuilds to the same digest");
+	assert.equal(emptyChanges().digest, emptyChanges().digest, "the empty model carries a stable digest");
+});
+
+test("the changes digest moves with every per-file detail the renderer consumes", () => {
+	const base = changesModel([file("lib/a.ts", 4, 2)]).digest;
+	const digestFor = (files: ChangedFile[]) => changesModel(files).digest!;
+	assert.notEqual(digestFor([file("lib/a.ts", 4, 2, CHANGE_STATUS.RENAMED)]), base, "a status change moves the digest even at equal counts");
+	assert.notEqual(digestFor([file("lib/a.ts", 5, 2)]), base, "an added-count change moves the digest");
+	assert.notEqual(digestFor([file("lib/a.ts", 4, 3)]), base, "a deleted-count change moves the digest");
+	assert.notEqual(digestFor([file("lib/b.ts", 4, 2)]), base, "a path change moves the digest");
+	const revised = file("lib/a.ts", 4, 2);
+	revised.diffRevision = "abc123";
+	assert.notEqual(digestFor([revised]), base, "a diffRevision change moves the digest");
+	const partial = file("lib/a.ts", 4, 2);
+	partial.countsUnavailable = "timeout";
+	assert.notEqual(digestFor([partial]), base, "countsUnavailable moves the digest");
+});
+
 test("changesSummary and the widget describe the session at a glance", () => {
 	const model = changesModel([file("extensions/gentle-shell.ts", 31, 0, CHANGE_STATUS.ADDED), file("lib/shell-bar.ts", 9, 7), file("tests/x.test.ts", 2, 0)]);
 	assert.equal(changesSummary(model), "3 files · +42 −7");
@@ -119,6 +150,14 @@ test("renderChangesWidget colors counts by direction and yields nothing when cle
 	assert.match(line, /<success>\+1<\/success> <error>−2<\/error>/);
 	assert.match(line, /<dim>\/gentle:changes<\/dim>$/);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+});
+
+// The unborn state (no commits yet) is silence in the idle bar: the widget
+// renders only tracked files, and /gentle:changes explains the state on demand.
+test("renderChangesWidget stays silent when nothing is tracked", () => {
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), taggedTheme, 400), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 12), []);
 });
 
 test("renderChangesWidget drops the file list before truncating on narrow terminals", () => {
@@ -336,7 +375,6 @@ test("foreignRootBranch still reports a genuine detached HEAD as undefined, not 
 test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
 	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
 		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
-		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
 		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
 	];
 	for (const scenario of scenarios) {
@@ -358,7 +396,55 @@ test("a root missing from worktree list resolves its own branch instead of defau
 			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
 			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
 		});
+		// An unborn foreign root is a holder before it is a branch question: with
+		// no commits there is no baseline to diff against, so it is skipped --
+		// neither dirty nor failed -- before any branch lookup happens.
+		await t.test("an unborn foreign root is skipped as a holder before the branch ask", async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }),
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "rev-parse") return { stdout: "", code: 1 };
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees, []);
+			assert.deepEqual(tracker.unbornRoots, ["/foreign"]);
+			assert.deepEqual(tracker.failedRoots, []);
+			assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a skipped holder is never asked for a branch");
+		});
 	}
+});
+
+// A worktree-holder repository (no commits, only linked worktrees inside) has
+// no baseline: `git diff HEAD` is meaningless and every file reports
+// untracked, so scanning it floods Changes with thousands of phantom files.
+// It is skipped as neither dirty nor failed, and its first commit starts
+// tracking it on the next scan.
+test("a root with no commits is skipped as a holder, neither dirty nor failed, and recovers on its first commit", async () => {
+	let holderHasCommits = false;
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /real\0branch refs/heads/main\0\0", code: 0 }),
+		(root) => async (args) => {
+			if (args[0] === "rev-parse") return { stdout: "", code: root === "/holder" && !holderHasCommits ? 1 : 0 };
+			return { stdout: args[0] === "status" && (root === "/real" || (root === "/holder" && holderHasCommits)) ? "?? a.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/holder", "/real"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/real"], "an unborn root is skipped, not scanned");
+	assert.deepEqual(tracker.unbornRoots, ["/holder"]);
+	assert.deepEqual(tracker.failedRoots, [], "no commits is not a Git failure");
+	assert.equal(tracker.scannedRootCount, 2);
+	holderHasCommits = true;
+	await tracker.refresh();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/holder", "/real"], "the first commit starts tracking");
+	assert.deepEqual(tracker.unbornRoots, []);
 });
 
 // The direct per-root ask (for a root missing from worktree list) can fail on

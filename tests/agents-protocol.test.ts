@@ -10,7 +10,9 @@ import {
 	TASK_STATUS,
 	taskLabel,
 	TaskStore,
+	TERMINAL_RETENTION,
 	THREAD_ITEM,
+	isFinished,
 	type TaskRecord,
 } from "../lib/agents-protocol.ts";
 
@@ -272,6 +274,36 @@ test("TaskStore notifies only the listeners of the task that changed and keeps s
 	assert.deepEqual(store.list("s1").map((task) => task.id), ["a", "b"], "newest activity first");
 	assert.equal(store.get("missing"), undefined);
 	assert.deepEqual(store.thread("missing"), emptyThread());
+});
+
+// Finished tasks must release their weight: a bounded window of the most
+// recent ones stays readable, older ones leave the store entirely, and a
+// terminal task's listeners go quiet after the one final transition.
+test("TaskStore keeps a bounded window of finished tasks and silences terminal listeners", () => {
+	const store = new TaskStore();
+	const seen: string[] = [];
+	store.add(record({ id: "watched", status: TASK_STATUS.RUNNING, lastActivityAt: 1 }));
+	store.add(record({ id: "filler", status: TASK_STATUS.RUNNING, lastActivityAt: 2 }));
+	store.subscribe("watched", (task) => seen.push(task.status));
+	// `watched` completes the window once it finishes, so the next terminal
+	// task evicts exactly the oldest one.
+	for (let index = 0; index < TERMINAL_RETENTION - 1; index += 1) {
+		store.add(record({ id: `done-${index}`, status: TASK_STATUS.COMPLETED, lastActivityAt: 10 + index }));
+	}
+	assert.equal(store.list().filter((task) => isFinished(task.status)).length, TERMINAL_RETENTION - 1, "retained finished tasks stay at the cap");
+	assert.ok(store.get("watched") && store.get("filler"), "running tasks are never evicted");
+	store.update("watched", { status: TASK_STATUS.COMPLETED, endedAt: 50 });
+	assert.deepEqual(seen, ["completed"], "the terminal transition itself still notifies exactly once");
+	store.apply("watched", { type: TASK_EVENT.TEXT, text: "late" }, 60);
+	assert.deepEqual(seen, ["completed"], "a terminal task's listener stays quiet afterwards");
+	store.add(record({ id: "newest", status: TASK_STATUS.COMPLETED, lastActivityAt: 1_000 }));
+	assert.equal(store.get("done-0"), undefined, "the oldest finished task is evicted");
+	assert.ok(store.get("done-1") && store.get("newest"), "recent finished tasks remain readable");
+	assert.ok(store.get("filler"), "running tasks survive eviction");
+	assert.equal(store.list().filter((task) => isFinished(task.status)).length, TERMINAL_RETENTION);
+	assert.deepEqual(store.thread("done-0"), emptyThread(), "an evicted task's thread weight is released");
+	assert.ok(store.thread("done-1").limits.maxItems > 0, "a retained finished task stays renderable");
+	assert.equal(store.summary().finished, TERMINAL_RETENTION, "summaries reflect the bounded window");
 });
 
 test("TaskStore.apply moves the task to waiting on ask, back to running on any later event, and counts turns", () => {

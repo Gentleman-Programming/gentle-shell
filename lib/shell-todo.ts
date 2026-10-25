@@ -281,7 +281,7 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 // the tail of the conversation, never the prefix.
 const TODO_PROMPT_BLOCK = [
 	"## Todo list",
-	"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
+	"A small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
 	"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
 	"While tasks stay open, the current list arrives as a hidden conversation message whenever it changes; the latest one is current, and it is not repeated here.",
 ].join("\n");

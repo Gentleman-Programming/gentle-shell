@@ -217,6 +217,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		}
 		const style = cardStyle();
 		const parts = [...state.parts.entries()];
+		// Digest closures read live session state, so they must be evaluated once
+		// per frame and stored for the next comparison (issue #1681): the sections
+		// loop below reuses this pass instead of calling each digest a second time.
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const unchanged = prepared?.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
@@ -228,6 +231,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return prepared.active;
 		}
 		try {
+			const digestByPart = new Map(parts.map(([key], index) => [key, digests[index]]));
 			// The header is a full-width sibling row, not a rail section: it reads
 			// the terminal width (minus the rail's right inset), never the
 			// 50-column rail's content width.
@@ -241,7 +245,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 					sectionCache.delete(key);
 					return { key, component, lines: [] as string[] };
 				}
-				const digest = railDigest(component);
+				const digest = digestByPart.get(key);
 				const existing = sectionCache.get(key);
 				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme &&
 					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);

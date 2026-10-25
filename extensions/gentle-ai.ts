@@ -4,7 +4,7 @@ import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
-import { appendContextBackstopNotice, createContextBackstopSignal } from "../lib/context-backstop.ts";
+import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
@@ -36,6 +36,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -47,7 +48,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -85,6 +86,7 @@ import {
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
+	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
 	readProfilesFileResult,
@@ -1209,7 +1211,7 @@ function pinRddStatusLine(pinned: string | undefined, next: string): string {
 const RDD_OFF_REVIEW_SNIPPET = "Assess an authorized change and return its verification plan (read-only)";
 const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
 	'Receipt-driven development is off, so use gentle_review only for {"operation":"assess"} (read-only): after an authorized implementation, delegated or inline, call it over the diff and follow the returned plan; pass input {"escalate":{"item":1-6,"reason":"<one line>"}} only when the change touches a Task Size high-risk item, or {"baseRef":"<ref>","committedOnly":true} to assess a committed range.',
-	"When ASSESS returns reviewDue or a native continuation, relay it unchanged and follow it; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
+	"When ASSESS returns reviewDue or a native continuation, relay it unchanged but do not execute it while RDD is off; assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD. Continue the returned verification plan; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
 ];
 const RDD_OFF_REVIEW_DESCRIPTION = "Assess the current changes, or a committed range, and return the verification plan. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
 const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];
@@ -1467,7 +1469,7 @@ Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -2075,6 +2077,21 @@ function yoloConfiguredRestriction(cwd: string, keys: readonly GuardedCommandKey
 	return restriction;
 }
 
+/** Super Yolo ignores every configurable guardrail: only code-level denies survive. */
+const SUPER_YOLO_GUARDRAILS: RuntimeGuardrailsConfig = {
+	autonomousMode: true,
+	guardedCommands: { gitPush: "allow", gitRebase: "allow", gitBranchDeleteForce: "allow", npmPublish: "allow", piRemove: "allow" },
+};
+
+/**
+ * Super Yolo command decision: run everything without confirmation except the
+ * code-level catastrophic denies (root/home recursive removal, --no-preserve-root,
+ * hard-denied patterns). Configured guardrails are deliberately not consulted.
+ */
+function evaluateSuperYoloCommand(command: string): GuardAction {
+	return evaluateGuardedCommand(command, SUPER_YOLO_GUARDRAILS).action === "block" ? "block" : "allow";
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
@@ -2082,7 +2099,19 @@ async function confirmCommand(
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	yoloActive = false,
 	autoGate?: () => Promise<ToolCallEventResult | undefined>,
+	superActive = false,
 ): Promise<ToolCallEventResult | undefined> {
+	if (superActive) {
+		// Sensitive-path and delivered-test guards already ran before this call;
+		// here only the code-level catastrophic denies remain.
+		if (evaluateSuperYoloCommand(command) === "block") {
+			return {
+				block: true,
+				reason: "Gentle AI safety policy blocked a catastrophic destructive shell command. Ask the user for an explicit safer plan.",
+			};
+		}
+		return autoGate?.();
+	}
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
 	// Configuration provenance is distinct from legacy autonomy resolution, which
@@ -3098,7 +3127,7 @@ interface OverlayComponent {
 
 type ModelPanelResult =
 	| { type: "save"; config: AgentModelConfig }
-	// `save`, then snapshot saved agent routing and the live orchestrator into
+	// `save`, then snapshot saved agent routing and the chosen orchestrator into
 	// the current profile without changing the global orchestrator defaults.
 	| { type: "save-profile"; config: AgentModelConfig }
 	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
@@ -3107,6 +3136,7 @@ type ModelPanelResult =
 	| { type: "cancel" };
 
 const SET_ALL_AGENTS = "Set all agents";
+const LEAVE_ORCHESTRATOR_UNTOUCHED = "leave untouched";
 
 const PANEL_TONE = {
 	BORDER: "border",
@@ -3137,6 +3167,7 @@ class SddModelPanel implements OverlayComponent {
 	private query = "";
 	private readonly draft: AgentModelConfig;
 	private readonly rows: string[];
+	private readonly agents: string[];
 	private readonly modelOptions: string[];
 	private readonly done: (result: ModelPanelResult) => void;
 	private readonly theme: Theme | undefined;
@@ -3155,7 +3186,8 @@ class SddModelPanel implements OverlayComponent {
 		terminalRows?: () => number,
 	) {
 		this.draft = cloneModelConfig(initialConfig);
-		this.rows = [SET_ALL_AGENTS, ...agents];
+		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
+		this.agents = [...agents];
 		this.modelOptions = modelOptions;
 		this.done = done;
 		this.theme = theme;
@@ -3278,6 +3310,7 @@ class SddModelPanel implements OverlayComponent {
 		}
 		if (matchesKey(data, "e")) {
 			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
+			if (this.selectedRow === PROFILE_ORCHESTRATOR_KEY && !this.draft[this.selectedRow]?.model) return;
 			this.mode = "effort";
 			this.effortCursor = 0;
 			return;
@@ -3359,7 +3392,7 @@ class SddModelPanel implements OverlayComponent {
 				return;
 			}
 			this.applyModelSelection(
-				selected === INHERIT_MODEL ? undefined : selected,
+				selected === INHERIT_MODEL || selected === LEAVE_ORCHESTRATOR_UNTOUCHED ? undefined : selected,
 			);
 			this.mode = "agents";
 			return;
@@ -3373,7 +3406,7 @@ class SddModelPanel implements OverlayComponent {
 	private applyModelSelection(model: string | undefined): void {
 		const row = this.rows[this.cursor];
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setModel(name, model);
+			for (const name of this.agents) this.setModel(name, model);
 			return;
 		}
 		if (!row) return;
@@ -3383,7 +3416,7 @@ class SddModelPanel implements OverlayComponent {
 	private applyThinkingSelection(thinking: ThinkingLevel | undefined): void {
 		const row = this.selectedRow;
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setThinking(name, thinking);
+			for (const name of this.agents) this.setThinking(name, thinking);
 			return;
 		}
 		this.setThinking(row, thinking);
@@ -3392,13 +3425,17 @@ class SddModelPanel implements OverlayComponent {
 	private applyInherit(): void {
 		const row = this.rows[this.cursor];
 		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.clearEntry(name);
+			for (const name of this.agents) this.clearEntry(name);
 			return;
 		}
 		if (row) this.clearEntry(row);
 	}
 
 	private setModel(name: string, model: string | undefined): void {
+		if (name === PROFILE_ORCHESTRATOR_KEY && model === undefined) {
+			delete this.draft[name];
+			return;
+		}
 		const current = this.draft[name] ?? {};
 		if (model === undefined) delete current.model;
 		else current.model = model;
@@ -3407,6 +3444,7 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private setThinking(name: string, thinking: ThinkingLevel | undefined): void {
+		if (name === PROFILE_ORCHESTRATOR_KEY && !this.draft[name]?.model) return;
 		const current = this.draft[name] ?? {};
 		if (thinking === undefined) delete current.thinking;
 		else current.thinking = thinking;
@@ -3415,13 +3453,17 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private clearEntry(name: string): void {
-		this.draft[name] = {};
+		if (name === PROFILE_ORCHESTRATOR_KEY) delete this.draft[name];
+		else this.draft[name] = {};
 	}
 
 	private filteredModelOptions(): string[] {
+		const options = this.selectedRow === PROFILE_ORCHESTRATOR_KEY
+			? this.modelOptions.map((option) => option === INHERIT_MODEL ? LEAVE_ORCHESTRATOR_UNTOUCHED : option)
+			: this.modelOptions;
 		const query = this.query.trim().toLowerCase();
-		if (!query) return this.modelOptions;
-		return this.modelOptions.filter((option) =>
+		if (!query) return options;
+		return options.filter((option) =>
 			option.toLowerCase().includes(query),
 		);
 	}
@@ -3478,13 +3520,13 @@ class SddModelPanel implements OverlayComponent {
 		// longer fits the minimum width once the profile key joins the save keys.
 		lines.push(
 			line(
-				`j/k scroll • enter model/save • e effort • i ${isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
+				`j/k scroll • enter model/save • e effort • i ${this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY ? LEAVE_ORCHESTRATOR_UNTOUCHED : isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
 				"muted",
 			),
 		);
 		lines.push(
 			line(
-				`x export • r restore • ctrl+s save • u capture session in "${this.profileLabel}" • esc back`,
+				`x export • r restore • ctrl+s save agents • u save choice in "${this.profileLabel}" • esc back`,
 				"muted",
 			),
 		);
@@ -3584,11 +3626,9 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private renderSetAllLabel(row: string): string {
-		const models = this.rows
-			.slice(1)
+		const models = this.agents
 			.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
-		const efforts = this.rows
-			.slice(1)
+		const efforts = this.agents
 			.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
 		const firstModel = models[0] ?? "inherit";
 		const firstEffort = efforts[0] ?? "inherit";
@@ -3605,6 +3645,9 @@ class SddModelPanel implements OverlayComponent {
 	}
 
 	private renderAgentLabel(row: string): string {
+		if (row === PROFILE_ORCHESTRATOR_KEY && !this.draft[row]?.model) {
+			return `${this.renderText(row.padEnd(20), "text")} ${this.renderText(LEAVE_ORCHESTRATOR_UNTOUCHED, "status")}`;
+		}
 		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
 		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
 		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
@@ -3679,8 +3722,18 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		);
 		return;
 	}
-	let config = savedConfig.status === "valid" ? savedConfig.config : {};
-	const profileLabel = describeCurrentProfileTarget(resolveCurrentProfileTarget(ctx.cwd));
+	let config = savedConfig.status === "valid" ? cloneModelConfig(savedConfig.config) : {};
+	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	const target = resolveCurrentProfileTarget(ctx.cwd, store);
+	// Existing profiles own the initial choice, including absence. Reopens keep the draft.
+	delete config[PROFILE_ORCHESTRATOR_KEY];
+	if (store.status === "valid" && target && hasOwnProfile(store.file.profiles, target.name)) {
+		const entry = store.file.profiles[target.name][PROFILE_ORCHESTRATOR_KEY];
+		if (entry) config[PROFILE_ORCHESTRATOR_KEY] = { ...entry };
+	} else {
+		config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
+	}
+	const profileLabel = describeCurrentProfileTarget(target);
 	let result = await showSddModelPanel(ctx, config, profileLabel);
 	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
 		config = cloneModelConfig(result.config);
@@ -3710,7 +3763,10 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 					result = await showSddModelPanel(ctx, config, profileLabel);
 					continue;
 				}
-				config = restored;
+				const orchestratorChoice = config[PROFILE_ORCHESTRATOR_KEY];
+				config = cloneModelConfig(restored);
+				delete config[PROFILE_ORCHESTRATOR_KEY];
+				if (orchestratorChoice) config[PROFILE_ORCHESTRATOR_KEY] = orchestratorChoice;
 				try {
 					const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
 					ctx.ui.notify([
@@ -3772,18 +3828,21 @@ async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Pro
 		result = await showSddModelPanel(ctx, config, profileLabel);
 	}
 	if (result.type !== "save" && result.type !== "save-profile") return;
-	writeModelConfig(ctx.cwd, result.config);
-	const applyResult = await applyModelConfigAsync(ctx.cwd, result.config);
+	// The panel's orchestrator is snapshot-only, never a global agent route.
+	const routing = cloneModelConfig(result.config);
+	delete routing[PROFILE_ORCHESTRATOR_KEY];
+	writeModelConfig(ctx.cwd, routing);
+	const applyResult = await applyModelConfigAsync(ctx.cwd, routing);
 	ctx.ui.notify(
 		[
 			"el Gentleman global model config saved.",
 			`Global config: ${modelConfigPath(ctx.cwd)}`,
 			`Agents updated: ${applyResult.updated}`,
-			...describeModelConfig(ctx.cwd, result.config),
+			...describeModelConfig(ctx.cwd, routing),
 		].join("\n"),
 		"info",
 	);
-	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, pi);
+	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, result.config[PROFILE_ORCHESTRATOR_KEY]);
 }
 
 /** The profile `u` in `/gentle:models` writes to, and why it is that one. */
@@ -3815,11 +3874,10 @@ function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined):
 
 /**
  * The second half of `u` captures saved global agent routing (never the pin)
- * and the live session orchestrator. Without a live model it falls back to
- * persisted settings. The global save has already been reported, so every
- * outcome here speaks only about the profile.
+ * and the explicit panel choice, including key absence. The global save has
+ * already been reported, so every outcome here speaks only about the profile.
  */
-function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: ExtensionAPI): void {
+function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, orchestrator: AgentRoutingEntry | undefined): void {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -3829,16 +3887,9 @@ function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: Extensi
 		);
 		return;
 	}
-	const snapshot = profileSnapshotFrom(
-		readGlobalEffectiveModelConfig(ctx.cwd),
-		readOrchestratorSettings(orchestratorSettingsPath()),
-	);
-	if (ctx.model) {
-		snapshot[PROFILE_ORCHESTRATOR_KEY] = {
-			model: `${ctx.model.provider}/${ctx.model.id}`,
-			thinking: pi.getThinkingLevel(),
-		};
-	}
+	const snapshot = cloneModelConfig(readGlobalEffectiveModelConfig(ctx.cwd));
+	delete snapshot[PROFILE_ORCHESTRATOR_KEY];
+	if (orchestrator?.model) snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...orchestrator };
 	if (read.status === "missing") {
 		// The same seed `/gentle:profiles` performs on its first open, so pressing
 		// `u` before ever opening that panel lands on the same "current" profile.
@@ -4072,6 +4123,8 @@ class ProfilesPanel implements OverlayComponent {
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
 	private readonly pinStatus: ProfilePinStatus | undefined;
 	private readonly sessionBoundName: string | undefined;
+	private readonly discoveredAgentNames: string[];
+	private readonly unmatchedKeys: string[];
 	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
 
 	constructor(
@@ -4087,6 +4140,8 @@ class ProfilesPanel implements OverlayComponent {
 		requestRender: () => void,
 		pinStatus: () => ProfilePinStatus | undefined,
 		sessionBound: () => string | undefined,
+		discoveredAgentNames: string[],
+		unmatchedKeys: string[],
 		liveOrchestrator?: () => AgentRoutingEntry | undefined,
 		feedback?: string,
 	) {
@@ -4101,6 +4156,8 @@ class ProfilesPanel implements OverlayComponent {
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
 		this.sessionBoundName = sessionBound();
+		this.discoveredAgentNames = discoveredAgentNames;
+		this.unmatchedKeys = unmatchedKeys;
 		this.liveOrchestrator = liveOrchestrator;
 		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
 		this.listItems = items;
@@ -4336,10 +4393,30 @@ class ProfilesPanel implements OverlayComponent {
 				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
 			"",
 			this.renderLine("Profile routing", width, "accent"),
-			...this.indentLines(this.routingLines(profileRows, widths), width),
+			...this.indentLines(this.routingLines(profileRows, widths, width), width),
 			"",
 			this.renderLine("Current routing (effective)", width, "accent"),
-			...this.indentLines(this.routingLines(currentRows, widths), width),
+			...this.indentLines(this.routingLines(currentRows, widths, width), width),
+			...this.unmatchedKeyLines(currentRows, width),
+		];
+	}
+
+	private unmatchedKeyLines(currentRows: ProfileRoutingRow[], width: number): string[] {
+		// Issue #2400: a model_profiles key that matches no discovered agent and
+		// suggests none never becomes a routing row, so it is listed here, one key
+		// per line, with the same inline-or-↳ note rule as the routing rows. A key
+		// already shown as a current row carries its note there instead.
+		const shown = new Set(currentRows.map((row) => row.agent));
+		const keys = this.unmatchedKeys.filter((key) => !shown.has(key));
+		if (keys.length === 0) return [];
+		const note = "no matching agent";
+		return [
+			"",
+			this.renderLine("Unmatched keys (ignored)", width, "accent"),
+			...this.indentLines(keys.flatMap((key) => {
+				const inline = `${key}  ← ${note}`;
+				return visibleWidth(inline) + 2 <= width ? [inline] : [key, `  ↳ ${note}`];
+			}), width),
 		];
 	}
 
@@ -4361,11 +4438,24 @@ class ProfilesPanel implements OverlayComponent {
 	private routingLines(
 		rows: ProfileRoutingRow[],
 		widths: { agent: number; model: number },
+		width: number,
 	): string[] {
 		if (rows.length === 0) {
 			return ["No routing entries — every agent inherits its default model."];
 		}
-		return rows.map((row) => formatRoutingRow(row, widths));
+		// Issue #2196: a key that names no discovered agent was rendered as a
+		// valid-looking row while its setting was silently ignored at launch, so
+		// each unmatched row now carries its note inline. When the row would push
+		// the note past the pane edge (indentLines adds two columns before
+		// truncating), the note moves to its own line so it is never cut off.
+		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
+		return rows.flatMap((row) => {
+			const line = formatRoutingRow(row, widths);
+			const note = notes.get(row.agent);
+			if (note === undefined) return [line];
+			const inline = `${line}  ← ${note}`;
+			return visibleWidth(inline) + 2 <= width ? [inline] : [line, `  ↳ ${note}`];
+		});
 	}
 
 	private indentLines(lines: string[], width: number): string[] {
@@ -4411,6 +4501,28 @@ async function showProfilesPanel(
 	// Both orchestrator and pin state are snapshots for this panel visit.
 	// Actions (including p/P) reopen the panel and read fresh state.
 	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
+	// Issue #2196: the panel flags routing keys that name no discovered agent, so
+	// it needs one discovery snapshot per visit; a failed or partial discovery is
+	// not an error here, it just renders without notes.
+	const discoveryRoots = {
+		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	};
+	const discoveredAgents = discoverAgents(discoveryRoots).agents;
+	// gentle-pi#2271: review-refuter and review-validator are provider review
+	// roles the relay routes by key; they never have an agent file, so they
+	// count as matched instead of being flagged "no matching agent".
+	const discoveredAgentNames = [...new Set([...PROVIDER_REVIEW_ROLES, ...discoveredAgents.map((agent) => agent.name)])];
+	// Issue #2400: launches resolve from the subagents.json model_profiles, which
+	// the effective table only reads per discovered agent, so a key with no match
+	// and no suggestion never appeared. When a session binding or a pin wins, the
+	// table already shows that snapshot's own keys with their notes.
+	const unmatchedKeys = sessionBoundName !== undefined || pinnedEffectiveModelConfig(ctx.cwd) !== undefined
+		? []
+		: unmatchedProfileKeys(loadAgentsConfig(discoveryRoots).modelProfiles, discoveredAgents)
+			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key))
+			.map((entry) => entry.key);
 	return ctx.ui.custom<ProfilesPanelResult>(
 		(tui, theme, keybindings, done) => {
 			const panel = new ProfilesPanel(
@@ -4426,6 +4538,8 @@ async function showProfilesPanel(
 				() => tui.requestRender(),
 				() => readProfilePinStatus(ctx.cwd),
 				() => sessionBoundName,
+				discoveredAgentNames,
+				unmatchedKeys,
 				() => liveOrchestratorSnapshot(ctx, live)?.entry,
 				status,
 			);
@@ -5298,7 +5412,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -5569,7 +5683,7 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
-		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS)) {
+		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT)) {
 			parameters.input = serializeReviewJsonArgument(optional);
 			continue;
 		}
@@ -5797,21 +5911,18 @@ const REVIEW_MODE_DISABLED_OUTCOME = "review-mode-disabled";
 // to make the global opt-in first when needed, then clear this clone override.
 // Pi never mutates the operator's global gentle-ai state automatically.
 //
-// The default branch changed with the pinned v2.4.0 runtime, which made
-// receipt-driven development opt-in. It used to be unreachable as a reason for
-// reviews being off — an all-sources-unset install resolved to ON with source
-// `default` — so naming a continuation for it would have been a guess, and
-// gentle-ai returned an empty scope to say exactly that. v2.4.0 resolves the
-// same install to OFF with source `default`, which makes it the most common
-// refusal there is: every install that never opted in. gentle-ai answers
-// `global` for it now, not because default is a global opinion but because
-// global is the only scope that can turn reviews on at all, and Pi answers the
-// same. Leaving this undefined would hand the single most common state a dead
-// end.
+// Receipt-driven development is on by default (gentle-ai v4.0.0, #4803): an
+// all-sources-unset install resolves to ON with source `default`. The pinned
+// v2.4.0 runtime had briefly made it opt-in, which is why this branch exists.
+// Today `default` only reaches here as gentle-ai's fail-closed projection: the
+// mode could not be resolved, so it reports OFF with source `default`. The
+// continuation says so instead of claiming the install never opted in, and
+// still names `global`, the only scope that can turn reviews on explicitly.
+// Leaving this undefined would hand that state a dead end.
 function reviewModeContinuation(source: NativeReviewModeSource): string | undefined {
 	if (source === NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL) return "Run `gentle-ai review mode enable --scope=global` if global RDD is still off, then run /gentle:review-mode enable to clear this clone-local override.";
 	if (source === NATIVE_REVIEW_MODE_SOURCE.GLOBAL) return "Run `gentle-ai review mode enable --scope=global` to turn reviews back on; /gentle:review-mode enable only clears the clone-local setting, which cannot override a global off.";
-	return "Run `gentle-ai review mode enable --scope=global` to opt in; RDD is off by default until explicitly enabled. /gentle:review-mode enable only clears a clone-local override and cannot enable global RDD.";
+	return "RDD is on by default, but this install could not resolve the review mode and failed closed to off. Run `gentle-ai review mode status` to see why, or `gentle-ai review mode enable --scope=global` to turn reviews on explicitly. /gentle:review-mode enable only clears a clone-local override and cannot enable global RDD.";
 }
 
 // Names the situation before the mechanism, then the mechanism, mirroring
@@ -7464,11 +7575,24 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // its provider through the live model registry the caller supplies, or it is
 // refused before materialize ever runs (validateReviewerSelectionConfiguration
 // in lib/review-host-relay.ts).
+//
+// gentle-pi#2271: review-refuter and review-validator are provider review
+// roles, not installable agents, so nothing seeds their entries and profiles
+// never carry them. For those two keys only, a snapshot with no model falls
+// back to Pi's persisted default model and effort, the default the routing
+// panel already labels them with. Lens keys keep the fail-closed rule.
 function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; routingKey: string } {
 	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = config[routingKey];
-	const model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
-	const thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
+	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
+	let thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
+	if (model === undefined && isProviderReviewRole(routingKey)) {
+		const persisted = readOrchestratorSettings(orchestratorSettingsPath());
+		if (persisted.status === "valid" && persisted.entry?.model !== undefined) {
+			model = persisted.entry.model;
+			thinking ??= persisted.entry.thinking;
+		}
+	}
 	return {
 		...(model === undefined ? {} : { selection: model }),
 		...(thinking === undefined ? {} : { thinking }),
@@ -9635,6 +9759,7 @@ export const __testing = {
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
 	isReversibleYoloCommand,
+	evaluateSuperYoloCommand,
 	yoloConfiguredRestriction,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
@@ -9705,6 +9830,9 @@ export interface GentleAiRuntimeDependencies {
 	telemetryExecFileAdapter?: ExecFileAdapter;
 	/** Test-only inference seam; production always uses the active session model. */
 	autoPermissionClassifier?: AutoRuntimeClassifier;
+	// The backstop samples the measured context at most once per window (its measure rebuilds the whole
+	// session projection). Tests inject a clock or a zero window; production resolves the env and default.
+	contextBackstopMeasure?: { now?: () => number; minIntervalMs?: number };
 }
 
 export function createGentleAiExtension(dependencies: GentleAiRuntimeDependencies = {}): (pi: ExtensionAPI) => void {
@@ -10363,7 +10491,7 @@ function createGentleAiExtensionForTesting(
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
-		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx));
+		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx), isPrimarySession && await yolo.superActive(ctx));
 		updateAutoPrompt(event.systemPromptOptions, isPrimarySession && await yolo.mode(ctx) === "auto");
 		return undefined;
 	});
@@ -10434,14 +10562,23 @@ function createGentleAiExtensionForTesting(
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	};
 	const contextBackstopSignal = createContextBackstopSignal(permissionEnvironment);
+	// One projection rebuild per session per window, not one per tool result: the measured context is
+	// sampled (see createThrottledContextMeasure), so long sessions stop paying an O(session) scan on
+	// every tool result while the backstop keeps its once-per-crossing notice semantics.
+	const contextBackstopMeasure = createThrottledContextMeasure({
+		now: dependencies.contextBackstopMeasure?.now,
+		minIntervalMs: dependencies.contextBackstopMeasure?.minIntervalMs,
+		env: permissionEnvironment,
+	});
 	pi.on("tool_result", async (event, ctx) => {
-		// Harness roadmap R1: the primary session's measured context is checked
-		// against the backstop on every tool result; the first result at or past
-		// it carries one notice, after any other patch below.
+		// Harness roadmap R1: the primary session's measured context is sampled against the backstop; the
+		// first sampled result at or past it carries one notice, after any other patch below. The sample
+		// runs at most once per window per session (default 5 s, GENTLE_PI_CONTEXT_BACKSTOP_MEASURE_MS),
+		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
 		let notice: string | undefined;
-		try { notice = primary ? contextBackstopSignal(sessionKey, ctx.getContextUsage?.()) : undefined; } catch { notice = undefined; }
+		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.())) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
 		// Harness roadmap T4: a parent commit reports the branch's authored
 		// changed lines so delivery slicing reads a number, not an estimate.
@@ -10460,7 +10597,11 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
-		const yoloActive = primaryToolCall && await yolo.active(ctx);
+		// One early mode read settles the session binding (and its one-time epoch
+		// bump) before the guarded region below captures its own epoch.
+		const settledMode = primaryToolCall ? await yolo.mode(ctx, { toolCallId: event.toolCallId }) : "normal";
+		const yoloActive = primaryToolCall && settledMode === "yolo";
+		const superYoloActive = primaryToolCall && settledMode === "super-yolo";
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
@@ -10506,13 +10647,17 @@ function createGentleAiExtensionForTesting(
 			if (childDenied) return childDenied;
 		}
 		const modeEpoch = yolo.epoch();
+		// The admission's authoritative mode read is always a fresh capture, never
+		// the admission slot: a reselection while this lookup is in flight must
+		// invalidate it (mode() answers Normal, the epoch check below blocks), and
+		// tests/auto-mode-invariants.test.ts holds exactly this lookup to lock it.
 		const permissionMode = primaryToolCall ? await yolo.mode(ctx) : "normal";
 		// A superseded lookup returns Normal for display, not permission to skip Auto.
 		if (primaryToolCall && modeEpoch !== yolo.epoch()) {
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate);
+		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {
@@ -10531,7 +10676,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.registerCommand("gentle:models", {
-		description: "Configure global per-agent models for el Gentleman.",
+		description: "Configure global agent models and choose a profile orchestrator.",
 		handler: async (_args, ctx) => {
 			await handleModelsCommand(ctx, pi);
 		},

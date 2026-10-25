@@ -12,7 +12,7 @@ const CLI = 'dist/bundle/cli.js';
 // same store entry. npm nests the peer under the Shell package.
 function fixture({windows = false, npm = false, runtime = 'adjacent', groups = 'both', peerAfter = '1.2.0', shellVersion = '4.1.0',
  badManifest = false, failed = false, mismatch = false, linked = false, readback = true, unrelatedPeer = false, shim = '',
- artifact = true, configHome = ''} = {}) {
+ artifact = true, configHome = '', installFailure = undefined as undefined | {stdout?: string, stderrTail?: string}} = {}) {
  const base = windows ? 'C:/pnpm' : '/pnpm';
  const home = windows ? 'C:/Users/u' : '/home/u';
  // The tarball `gentle-shell upgrade --channel main` packs, named after its version.
@@ -35,6 +35,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  const mutations: string[][] = [];
  const out: string[] = [];
  const cwds: unknown[] = [];
+ const runOptions: unknown[] = [];
  const entry = (pkg: string, modules: string, extra = {}) => ({[pkg]: {path: `${modules}/${pkg}`, ...extra}});
  const shellEntry = entry('gentle-pi', g1, linked ? {link: true} : {});
  const piEntry = entry(PI, g2, linked ? {resolved: 'file:/src/pi'} : {});
@@ -73,11 +74,13 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
   cwds.push(options?.cwd);
   if (args.includes('list') || args.includes('ls')) return {code: failed ? 1 : 0, stdout: readback || mutations.length === 0 ? JSON.stringify(listing()) : '{'};
   mutations.push(args);
+  runOptions.push(options);
+  if (installFailure) return {code: 1, stdout: installFailure.stdout ?? '', ...('stderrTail' in installFailure ? {stderrTail: installFailure.stderrTail} : {})};
   if (args.some(arg => arg.startsWith('gentle-pi@') || arg.endsWith('.tgz'))) state.peer = peerAfter;
   if (args.some(arg => arg.startsWith(PI + '@'))) state.group = peerAfter;
   return {code: 0};
  };
- return {mutations, out, cwds, state, shell, selectedCli, tarball, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/gentle-pi`, currentVersion: '1.1.0', cwd: '/neutral',
+ return {mutations, out, cwds, runOptions, state, shell, selectedCli, tarball, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/gentle-pi`, currentVersion: '1.1.0', cwd: '/neutral',
   home, env: configHome ? {GENTLE_PI_CONFIG_HOME: configHome} : {},
   runtime: runtime === 'adjacent' ? {kind: 'bundled', command: 'node', args: [selectedCli]} : {kind: runtime, command: shim ? shimFile : selectedCli, args: []},
   out: (line: string) => out.push(line),
@@ -242,4 +245,37 @@ test('an unrelated selected override cannot authorize the adjacent Shell group',
  f.input.runtime = {kind: 'env', command: '/unrelated/pi', args: []};
  await assert.rejects(updateSelectedPi(f.input), /ownership/);
  assert.deepEqual(f.mutations, []);
+});
+
+// #2371: a failed install shows the package manager it ran and one sanitized
+// line of its own output; pnpm 11 prints ERR_PNPM_* on stdout, npm on stderr.
+test('a failed pnpm install names the pnpm it ran and its ERR_PNPM line from stdout', async () => {
+ const f = fixture({shellVersion: MAIN, installFailure: {stderrTail: '',
+  stdout: `Progress: resolved 1\n\u001b[31m[ERR_PNPM_INVALID_VERSION_UNION]\u001b[39m Invalid versions union. Found: "gentle-pi@file:/home/u/x.tgz". Use exact versions only.\nDone\n`}});
+ await assert.rejects(updateSelectedPi(f.input), {message: `gentle-shell update: pnpm (/fake/pnpm) could not install ${f.tarball}\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "gentle-pi@file:~/x.tgz". Use exact versions only.`});
+ assert.deepEqual(f.runOptions, [{deadlineMs: 20 * 60_000, cwd: '/neutral', stderrTail: 4096}]);
+ assert.deepEqual(f.out, []);
+});
+
+test('a failed npm install shows its stderr error line before stdout', async () => {
+ const f = fixture({npm: true, installFailure: {stdout: 'unrelated', stderrTail: 'npm error code EACCES\nnpm error Error: EACCES: permission denied\nnpm error A complete log is in /home/u/.npm/x.log\n'}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: npm (/fake/npm) could not install gentle-pi@4.1.0\nnpm error Error: EACCES: permission denied'});
+ assert.deepEqual(f.out, []);
+});
+
+test('a failed install without output keeps the single line, naming the command it ran', async () => {
+ const f = fixture({installFailure: {}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0'});
+ assert.deepEqual(f.mutations, [['add', '-g', 'gentle-pi@4.1.0', '--allow-build=gentle-pi']]);
+});
+
+test('a stderr warning never hides the ERR_PNPM line pnpm printed on stdout', async () => {
+ const f = fixture({installFailure: {stderrTail: '(node:1) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.\n',
+  stdout: '[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.\n'}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.'});
+});
+
+test('without any error line the last stderr line is shown', async () => {
+ const f = fixture({installFailure: {stderrTail: 'killed\n', stdout: 'Progress: resolved 1\n'}});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\nkilled'});
 });

@@ -302,7 +302,7 @@ test("external editor remains the explicit interactive exemption", async () => {
 		received = options;
 		return { status: 0 };
 	}) as never, process.cwd()), true);
-	assert.equal(received?.shell, process.platform === "win32");
+	assert.equal(received?.shell, false, "interactive editors must not interpret paths through a shell");
 	assert.equal(received?.stdio, "inherit");
 	assert.equal(received?.windowsHide, undefined, "the interactive editor intentionally remains unhidden");
 });

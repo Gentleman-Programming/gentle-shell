@@ -1211,7 +1211,7 @@ function pinRddStatusLine(pinned: string | undefined, next: string): string {
 const RDD_OFF_REVIEW_SNIPPET = "Assess an authorized change and return its verification plan (read-only)";
 const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
 	'Receipt-driven development is off, so use gentle_review only for {"operation":"assess"} (read-only): after an authorized implementation, delegated or inline, call it over the diff and follow the returned plan; pass input {"escalate":{"item":1-6,"reason":"<one line>"}} only when the change touches a Task Size high-risk item, or {"baseRef":"<ref>","committedOnly":true} to assess a committed range.',
-	"When ASSESS returns reviewDue or a native continuation, relay it unchanged and follow it; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
+	"When ASSESS returns reviewDue or a native continuation, relay it unchanged but do not execute it while RDD is off; assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD. Continue the returned verification plan; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
 ];
 const RDD_OFF_REVIEW_DESCRIPTION = "Assess the current changes, or a committed range, and return the verification plan. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
 const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];

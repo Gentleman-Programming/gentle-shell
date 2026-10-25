@@ -16,7 +16,7 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			import assert from "node:assert/strict";
 			import fs from "node:fs";
 			import { syncBuiltinESMExports } from "node:module";
-			import { join } from "node:path";
+			import { join, sep } from "node:path";
 			const root = ${JSON.stringify(root)};
 			const cwd = join(root, "workspace");
 			const home = join(root, "home");
@@ -52,6 +52,8 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			});
 			const ctx = { cwd, hasUI: true, ui: { notify: (message, level) => notices.push({ message, level }) } };
 			const waitFor = async (predicate) => {
+				// Must stay well below the parent's spawnSync timeout so a missed
+				// outcome fails with this assertion instead of an opaque ETIMEDOUT.
 				const deadline = Date.now() + 5000;
 				while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
 				assert.ok(predicate(), "timed out waiting for watcher outcome");
@@ -66,18 +68,28 @@ for (const code of ["ENOENT", "EMFILE"]) {
 				if (code === "ENOENT" && process.platform !== "darwin" && process.platform !== "win32") {
 					// Force the transient missing-directory race at Node's real recursive
 					// readdir boundary, after watcher creation, not in our refresh callback.
+					// Older Node rescans the parent folder; Node 24.22+ resolves new files
+					// via lstat and only readdirs a newly added directory, so trigger with
+					// a directory and fail whichever readdir lands under assets.
 					const nativeReaddir = fs.readdirSync;
 					let reachedRescan = false;
 					fs.readdirSync = function (path, options) {
-						if (path === assets) {
+						if (typeof path === "string" && (path === assets || path.startsWith(assets + sep))) {
 							fs.readdirSync = nativeReaddir;
 							reachedRescan = true;
 							throw Object.assign(new Error("ENOENT: transient skill assets disappeared"), { code, syscall: "scandir", path });
 						}
 						return nativeReaddir(path, options);
 					};
-					fs.writeFileSync(join(assets, "trigger.txt"), "trigger directory rescan");
-					await waitFor(() => reachedRescan);
+					fs.mkdirSync(join(assets, "trigger"));
+					// The rescan race needs live recursive-watch events. Where the OS
+					// cannot deliver them (an exhausted inotify budget, some WSL2
+					// setups), waiting the full waitFor budget is pointless: settle
+					// briefly for the natural race, then exercise the public error
+					// listener directly, as the manual fallback below always did.
+					const raceDeadline = Date.now() + 2000;
+					while (!reachedRescan && Date.now() < raceDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+					fs.readdirSync = nativeReaddir;
 					// Newer Node versions swallow rescan ENOENT themselves. Still
 					// exercise our public error listener without requiring Node's bug.
 					if (!notices.some(({ message, level }) => level === "warning" && message.includes(code))) {
@@ -112,7 +124,7 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			timeout: 15_000,
 			env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
 		});
-		assert.equal(child.error, undefined, child.error?.message);
+		assert.equal(child.error, undefined, `${child.error?.message}\n${child.stderr}`);
 		assert.equal(child.status, 0, child.stderr);
 		assert.match(child.stdout, new RegExp(`SURVIVED ${code}`));
 	});

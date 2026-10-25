@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionChanges, readChangeSnapshot, sessionChangeRoots, SESSION_CHANGE_ENTRY, MAX_CHANGE_BYTES } from "../lib/session-changes.ts";
+import { emptyChanges } from "../lib/shell-changes.ts";
 import { SESSION_WORKTREE_ENTRY } from "../lib/session-worktree-registry.ts";
 
 const text = (text: string) => ({ kind: "text" as const, text });
@@ -12,7 +13,7 @@ const evidence = (id = "a", root = "/repo", path = "file.ts", before = text("old
 
 test("session changes starts empty without reading the worktree or its untracked contents", () => {
 	const changes = new SessionChanges("session");
-	assert.deepEqual(changes.model, { files: [], added: 0, deleted: 0 });
+	assert.deepEqual(changes.model, { ...emptyChanges(), digest: emptyChanges().digest });
 	assert.deepEqual(changes.worktrees, []);
 });
 

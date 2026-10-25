@@ -12,6 +12,15 @@ Run `gentle-shell update` to update the Pi this launcher runs. It also works whe
 
 Unknown or ambiguous ownership, npm source/link packages, and pnpm groups shared with other top-level packages refuse without installation changes. Separate groups in one aggregated listing are allowed. After the install, Shell reads the supplied Pi version back from a fresh listing and reports whether it changed. pnpm installs only releases older than its `minimumReleaseAge` setting (pnpm 11 defaults to 4320 minutes), so a very recent Pi release is picked up once it is old enough; Shell reports that rule instead of overriding it. Package managers run from the system temporary directory so a project's `packageManager` pin never changes which pnpm answers. Use the supplying package manager for source checkouts or unsupported layouts. `gentle-shell update --extensions-only` remains an extension-only Pi command; prefix-bundled Pi still updates with `gentle-shell upgrade`. See [managing packages](readme-reference.md#managing-packages) for the ownership contract.
 
+When the install fails, `update` names the package manager and the exact command it ran, then one sanitized line of that manager's own output. That line is the last error line (`Error:` or an `ERR_` code) in its stdout or stderr, stderr's when both have one, because npm prints its error on stderr while pnpm 11 prints `ERR_PNPM_*` on stdout. A warning on stderr never hides that error. Without any error line, it is the last line of stderr, else of stdout. Terminal escapes and control characters are removed, your home directory becomes `~`, and the line is at most 300 characters. For example:
+
+```text
+gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi/gentle-ai/main/packages/gentle-pi-<version>.tgz
+[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "gentle-pi@file:...". Use exact versions only.
+```
+
+`ERR_PNPM_INVALID_VERSION_UNION` during `update` usually means more than one pnpm is installed: an older pnpm on `PATH` cannot read the `allowBuilds` key a newer pnpm wrote to the global `pnpm-workspace.yaml`. Keep a single standalone pnpm.
+
 ## v2.6.0 workspace updates
 
 The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) makes the workspace state more durable and inspectable:
@@ -36,13 +45,12 @@ At 140 columns or wider, fullscreen defaults to a live header over a transcript-
 ```
 
 - The header carries live session data: session identity on the left (brand, cwd, branch, dirty count, model · effort · profile) and the two live counters right-aligned (the context gauge and session cost). The effort reads `auto` for NaN models that manage their reasoning depth themselves (DeepSeek V4 Flash, Qwen 3.8 Flash, MiMo), with a one-time notice explaining that the selected level does not change the depth. It never shows the working/thinking state or extension statuses — those stay in the prompt indicator and the Status surface. When the terminal is too narrow for everything, segments give way in a fixed order — profile, then effort, then the whole cwd/branch/dirty group — before the counters are touched; below that, only the brand survives, and below that the header renders nothing.
-- The right rail scrolls **Status → MCP (optional) → Changes → TODO**. MCP is hidden by default: open `/gentle:customize` → **Sections** → **Section mcp: hidden** to show it; select **Section mcp: shown** to hide it again. The choice applies immediately and is saved with visual preferences. Existing preferences without an MCP choice also keep it hidden. Hiding the card does not disable any MCP server. Cards cache their rendered content until their own digest or an explicit invalidation changes. `neon` keeps the rounded border and accent title; `float` uses a tone background, a full-height `▎` accent, one-column transparent margins, painted padding above and below, and a blank painted separator between heading and body. Warning/error/success panels retain their tone colors.
+- The right rail scrolls **Status → Changes → Agents → TODO**. Cards cache their rendered content until their own digest or an explicit invalidation changes. `neon` keeps the rounded border and accent title; `float` uses a tone background, a full-height `▎` accent, one-column transparent margins, painted padding above and below, and a blank painted separator between heading and body. Warning/error/success panels retain their tone colors.
 - The Status card carries Project (cwd, branch, session name, active profile), Changes, and Integrations (other extensions' statuses); its live digest detects changes without requiring an event. Model, effort, context, cost, and the per-model usage table live in the header instead — the header ticks every frame, so duplicating them in a card would just make that card repaint every frame too.
-- The MCP card lists the session's MCP servers (`• <name> — Connected · N tools`), read from the same `mcp.json` files pi loads, joined with live tool names. The `▾ Collapse`/`▸ Expand` header toggles the list; clicking a server opens its detail overlay with a working menu: **Tools** (opens a tools screen listing each tool with its description; clicking one shows the full text; `esc` goes back — a disabled server shows an enable-first notice instead), **Disable** / **Disable in this project** (only when enabled) and **Enable** variants (only when disabled), all with the same file semantics as `/mcp`. Everything works inside the panel with mouse or keyboard. Live-only actions (reconnect, sign in) have no public API, so the overlay names `/mcp` for those. The card hides entirely when no servers are configured.
-- Gentle Agents is not part of the rail in any mode: its one card stays above the editor, where it already lived, with fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
+- Gentle Agents follows TODO: while the fullscreen rail is showing, the Agents card moves into it and lists every shown task; without the rail (narrow fullscreen or regular mode) it stays above the editor. Its card has fixed right-aligned columns for `model · effort`, tokens, cost, and elapsed, each sized to the widest value among the shown tasks — so the numbers line up vertically even when one row's values are much shorter than another's. A queued task fills only the elapsed column with the word `queued`, leaving the other columns blank rather than overwriting the row.
 - The sidebar reuses its last frame until something it paints changes, so silent frames stay cheap; a per-section cache means one card's changing digest (or the header's) never forces an unrelated card to redraw.
 - Header placement is configurable. Above input, the float header has a full-width background, painted padding above and below its content, and a transparent `▔` bottom edge. Below input, the float footer groups Changes (when the session's roots have uncommitted work), header data, and locally owned integration statuses under one upper edge; it never duplicates statuses owned by the rail.
-- Below 140 columns, fullscreen has no sidebar. A configured top header owns the narrow status surface; otherwise the bottom bar owns it, unless Status is hidden. Regular mode keeps the compact one-line bottom bar and the above-editor Agents widget, without a fullscreen header or sidebar.
+- Below 140 columns, fullscreen has no sidebar. A configured top header owns the narrow status surface; otherwise the bottom bar owns it, unless Status is hidden. The Agents and TODO cards then return above the editor. Regular mode keeps the compact one-line bottom bar and the above-editor Agents widget, without a fullscreen header or sidebar.
 
 The regular-mode compact bar replaces pi's three-line footer with a single line of segments:
 
@@ -67,7 +75,31 @@ The prompt follows the selected card style. `neon` keeps pi's editor in its roun
 - The petal is still with a `waiting for input` label in float while pi waits, spins with a `working` label while the agent works, and turns amber with a `queued` label when messages are waiting behind the current turn. In float it lives inside the painted top row; in neon it lives in the top rule. Pi's own "Working" row above the editor is hidden.
 - The empty-editor typing hint appears only while the editor is empty; Esc/queued hints remain inside the painted top row even with a nonempty float draft. Widths below 10 columns or a missing/unusable background keep the complete neon prompt path.
 - With Vim editing off, the prompt selects text natively: `shift+home` / `shift+end` select to the line edge and `alt+e` selects the whole draft; backspace, delete, a printable key or a paste replaces the selection in one undoable edit. `alt+a` also selects all, but only when no extension shortcut claims it: by default it opens Gentle Agents. A registered extension shortcut always wins over these selection keys.
+- Pi's paste-image key (`app.clipboard.pasteImage`: `ctrl+v`, or `alt+v` on Windows) turns a clipboard image into an `[Image#N]` chip instead of a temp-file path. One Backspace or Delete removes the whole chip; cursor and word motions, word deletion, wrapping and Vim NORMAL treat it as one unit. On submit, every chip still in the draft is sent as a real image attachment, so the model sees it without calling `read`. A deleted chip is never sent. The bytes stay in memory; no temp file is written. See [Pasted images](#pasted-images).
 - If another extension already installed a custom editor, Gentle Shell leaves it alone.
+
+### Pasted images
+
+While a draft holds chips, a strip above the prompt lists each one:
+
+```text
+[Image#1] png · 1280×720 · 84 KB
+```
+
+- **Preview:** terminals with an image protocol (Kitty, Ghostty, WezTerm, Warp, iTerm2) draw a small thumbnail under each label while the agent is idle. While it works, and in terminals or multiplexers that hide the protocol (such as tmux), the label alone is shown, so streaming never re-sends the image to the terminal.
+- **Clipboard sources:** the native clipboard on macOS and Windows; `wl-paste` or `xclip` on Linux. On WSL, a Windows screenshot (`Win+Shift+S`) is read from the Windows clipboard through `powershell.exe`, because the Linux clipboard never receives it.
+- **What stays Pi's:** files copied in a file manager, text, and image formats other than PNG, JPEG, WebP and GIF go through Pi's own paste handler unchanged.
+- **Models without image input:** the strip warns before you send. If you send anyway, each chip becomes `[Image#N omitted: the current model does not accept images]` and a notice explains why, so nothing is dropped silently.
+- **Numbering:** numbers keep counting up for the whole session, so a chip recalled from prompt history never points at a newer image. A recalled chip is plain text; paste the image again to attach it.
+- **Sending while the clipboard is read:** reading the Windows clipboard on WSL takes about a second. If you send the message before it finishes, the image is discarded with a notice instead of landing in the next draft; paste again to attach it.
+- **Vim NORMAL:** the paste key enters INSERT and pastes the chip. NORMAL motions step over a chip as one unit; an operator whose range covers a chip removes it whole.
+- **Terminals that capture the paste key:** some terminals keep `ctrl+v` for their own paste, and nothing reaches Pi when the clipboard holds only an image (Warp on Windows does this). Bind a second key in `~/.pi/agent/keybindings.json`, then restart:
+
+  ```json
+  { "app.clipboard.pasteImage": ["ctrl+v", "alt+v"] }
+  ```
+
+### Changes
 
 Changes shows the **current Git state** — working tree against HEAD, untracked files included — of the session's repository and of every worktree or repository its subagents used that still exists. Nothing is scanned at startup; the list fills at the first turn end or when the panel opens, then refreshes at each turn end and while the panel is open. Fullscreen, the sidebar, and mouse interaction are unchanged.
 
@@ -256,7 +288,7 @@ In the isolated Gentle Shell home, `settings.json` does not declare gentle-pi; t
 - Presence refresh is paged while the overlay is open. Graceful shutdown withdraws an instance; after abrupt closure its last heartbeat may remain visible for up to 15 seconds plus the time to complete the next directory refresh. A recent heartbeat is a heuristic, not proof that a process is alive. Same-profile, same-user processes share retained activity text; this is not an authorization channel.
 - `alt+s` confirms stopping the current active or queued subagents owned by the current process. `GENTLE_PI_AGENTS_STOP_KEY` rebinds it; `off` disables it.
 - Finished tasks are written to `~/.pi/agent/gentle-agents/tasks/` (one JSON per task, newest `history_max_tasks` kept, default 200) and come back on demand for `subagent_result` and `subagent_continue`; an id looked up this way from an unrelated session never enters the overlay or becomes cancellable. Child sessions live under `~/.pi/agent/gentle-agents/sessions/`.
-- `ctrl+shift+a` collapses the card to its first row (`GENTLE_PI_AGENTS_KEY`), `GENTLE_PI_AGENTS_VIEW_KEY` rebinds the overlay, `GENTLE_PI_AGENTS_PI` overrides the pi command used for children, and `GENTLE_PI_AGENTS=0` disables the tools and the card.
+- `ctrl+shift+a` or a left click on the card's `▾ Collapse` / `▸ Expand` header control collapses the card to its first row (`GENTLE_PI_AGENTS_KEY` rebinds the key), `GENTLE_PI_AGENTS_VIEW_KEY` rebinds the overlay, `GENTLE_PI_AGENTS_PI` overrides the pi command used for children, and `GENTLE_PI_AGENTS=0` disables the tools and the card.
 
 ### Background jobs
 
@@ -329,6 +361,10 @@ Expanded cards reserve at most one third of the terminal height (up to 16 rows, 
 - The heatmap shades come from the active theme's `accent` and `borderMuted` roles, so every Gentle theme recolors it.
 - Only top-level session files are read: subagent runs are not included, and the panel says so. The first opening scans every file; later openings reread only files that changed.
 - There is no default shortcut. Set `GENTLE_PI_STATS_VIEW_KEY` (for example `alt+t`) to bind one; `off` or empty leaves it unbound.
+
+### Gentle Music
+
+`/gentle:music [mood]` hands the terminal to the [gentle-stream](https://github.com/Gentleman-Programming/gentle-stream) player, like Pi's external editor, passing the mood and the session model. In the player, `b` returns to Pi with the music playing and `q` returns and stops it. `/gentle:music next`, `pause`, `play`, `stop`, and `status` control the music without leaving Pi. Quitting Pi after using the command stops the music. gentle-stream runs from `PATH`, or through `uvx`/`uv` when it is not installed. See [Gentle Music](gentle-music.md).
 
 ### Bridge providers
 

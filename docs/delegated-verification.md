@@ -44,6 +44,8 @@ The `gentle_review` tool's `assess` operation (`extensions/gentle-ai.ts`) combin
 
 The plan risk (`risk`) is high only with an escalation; otherwise a native passive stays passive and every other native tier is medium. The native tier stays visible as `nativeRisk`. The independent verifier is for concrete occasions: the plan adds it only when `escalate` names a Task Size high-risk item, never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change.
 
+With RDD off, ASSESS remains read-only even when native reports `reviewDue` or a continuation: relay those fields unchanged, but do not execute the continuation, invoke STATUS or another review lifecycle operation, or enable RDD based on assessment metadata. Continue the verification plan and applicable functional checks; the named-risk independent verifier remains required.
+
 This table applies in every RDD state; a closed native review never removes a verifier the tier requires. An unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
 
 A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. Review outcomes never authorize delivery; human consent for native review and the user-owned RDD switch are unchanged.

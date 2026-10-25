@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, linkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AutoPermissionRuntime } from "../lib/auto-permission-runtime.ts";
@@ -256,6 +256,90 @@ test("Native consent, human questions and delegation remain with their original 
  assert.equal(f.requests.length,0);
  f.setMode("normal");assert.equal((await f.execute("custom_tool",{})).executions,1);assert.equal(f.requests.length,0);
  f.setMode("auto");assert.equal((await f.execute("custom_tool",{},false)).executions,1);assert.equal(f.requests.length,0);
+});
+
+test("Companion update files are not permission authority and still receive ordinary checks", async t=>{
+ const f=fixture(t);f.input("Update the installed companion tools from main.");
+ for(const mode of ["normal","auto","yolo"]) {
+  f.setMode(mode);
+  for(const path of ["dev-binary.json","channel.json","main/gentle-ai","tools/go/bin/go"]) {
+   const input={path:join(f.cwd,"config",path),content:"updated companion data"};
+   for(const toolName of ["write","edit"]) {
+    assert.equal(f.runtime.guard({toolName,input},f.ctx),undefined,`${mode}: ${path} is not policy`);
+    assert.equal((await f.execute(toolName,input)).executions,1);
+   }
+  }
+ }
+ assert.equal(f.requests.length,8,"only Auto requests are classified; other modes keep their own behavior");
+ f.setMode("auto");f.setResponse({status:"available",decision:"deny",reason:"Update not authorized"});
+ assert.equal((await f.execute("write",{path:join(f.cwd,"config","dev-binary.json"),content:"unapproved"})).executions,0);
+ assert.equal(f.requests.length,9,"an update path is not an automatic allow");
+});
+
+test("Permission authority, aliases and parent directories remain protected in every mode", async t=>{
+ const f=fixture(t);f.input("Update companion tools without changing permissions.");
+ const home=join(f.cwd,"config");mkdirSync(home);
+ const projectHome=join(f.cwd,".pi","gentle-ai");mkdirSync(projectHome,{recursive:true});
+ for(const name of ["permission-mode.json","runtime-guardrails.json"])writeFileSync(join(home,name),"{}");
+ writeFileSync(join(projectHome,"runtime-guardrails.json"),"{}");
+ symlinkSync(home,join(f.cwd,"config-alias"));
+ symlinkSync(join(home,"permission-mode.json"),join(f.cwd,"policy-alias"));
+ symlinkSync(join(home,"runtime-guardrails.json"),join(home,"dev-binary.json"));
+ for(const mode of ["normal","auto","yolo"]) {
+  f.setMode(mode);
+  for(const path of [join(home,"permission-mode.json"),join(home,"runtime-guardrails.json"),
+   join(f.cwd,"config-alias","permission-mode.json"),join(f.cwd,"policy-alias"),join(home,"dev-binary.json"),
+   join(projectHome,"runtime-guardrails.json"),projectHome,home,f.cwd,
+   ...["profiles.json","models.json","background-subagents.json","persona.json","builtin-codemode-optout.json",
+    "history-capture.json","scratch/session.json","tools/other-tool"].map(path=>join(home,path))]) {
+   for(const toolName of ["write","edit"]) {
+    const input={path,content:"{}"};
+    assert.equal(f.runtime.guard({toolName,input},f.ctx)?.block,true,`${mode}: ${path} stays protected`);
+    assert.equal((await f.execute(toolName,input)).executions,0);
+   }
+  }
+  for(const toolName of ["bash","bash_background","monitor"]) {
+   for(const command of [`rm -rf '${home}'`,`rm -rf '${home}/'`,`rm -rf '${home}'/*`,
+    `printf '{}' > '${join(home,"permission-mode.json")}'`,`printf '{}' > '${join(home,"runtime-guardrails.json")}'`,
+    `printf '{}' > '${join(projectHome,"runtime-guardrails.json")}'`]) {
+    assert.equal(f.runtime.guard({toolName,input:{command}},f.ctx)?.block,true);
+    assert.equal((await f.execute(toolName,{command})).executions,0);
+   }
+  }
+ }
+ assert.equal(f.requests.length,0,"a classifier allow never overrides the policy guard");
+});
+
+test("Updater exceptions cannot overwrite authority through hardlinks", async t=>{
+ const f=fixture(t);f.input("Update companion tools without changing permission or routing policy.");
+ const home=join(f.cwd,"config");mkdirSync(join(home,"main"),{recursive:true});
+ for(const [policy,alias] of [["permission-mode.json","dev-binary.json"],["models.json","main/routing-alias"]]) {
+  writeFileSync(join(home,policy),"{}");linkSync(join(home,policy),join(home,alias));
+  for(const toolName of ["write","edit"]) {
+   const input={path:join(home,alias),content:"{}"};
+   assert.equal(f.runtime.guard({toolName,input},f.ctx)?.block,true,alias);
+   assert.equal((await f.execute(toolName,input)).executions,0);
+  }
+ }
+ assert.equal(f.requests.length,0);
+});
+
+test("Dangling updater aliases cannot create absent permission authority", async t=>{
+ const f=fixture(t);f.input("Update companion tools without creating or changing permission policy.");
+ const home=join(f.cwd,"config");mkdirSync(join(home,"tools"),{recursive:true});
+ for(const [alias,policy] of [["dev-binary.json","permission-mode.json"],["channel.json","runtime-guardrails.json"],
+  ["main","permission-mode.json"],["tools/go","runtime-guardrails.json"]]) {
+  symlinkSync(join(home,policy),join(home,alias));
+  for(const mode of ["normal","auto","yolo"]) {
+   f.setMode(mode);
+   for(const toolName of ["write","edit"]) {
+    const input={path:join(home,alias),content:"{}"};
+    assert.equal(f.runtime.guard({toolName,input},f.ctx)?.block,true,`${mode}: ${alias} stays protected`);
+    assert.equal((await f.execute(toolName,input)).executions,0);
+   }
+  }
+ }
+ assert.equal(f.requests.length,0,"unresolved aliases never reach an allowing classifier");
 });
 
 test("Policy files cannot be modified by model file tools; symlink escapes are reviewed", async t=>{

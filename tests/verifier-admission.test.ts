@@ -47,6 +47,23 @@ test("S3: a Risk line naming a Task Size high-risk item admits the verifier", (t
 	assert.equal(rejectUnriskedVerifierLaunch(viaContext, { root, contextUsage: quiet }), undefined, "the context carries the line");
 });
 
+// gentle-shell-bench model-economy L9: a DeepSeek verifier launch was refused twice because its valid declaration
+// opened a sentence mid-paragraph ("... on top of commit ebf3f35). Risk: item 1 (...)"), not a line.
+test("S3: a Risk declaration that opens a sentence admits the verifier", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	for (const task of [
+		"Independently verify an ODD change on top of commit ebf3f35. Risk: item 1 (schema migration of stored data).",
+		"Verify the parser change! Risk: item 3 (shared parser)",
+		"Is the guard still sound? Risk: item 2",
+	]) {
+		assert.equal(rejectUnriskedVerifierLaunch({ agent: "gentle-ai-verify", task }, { root, contextUsage: quiet }), undefined, task);
+	}
+	for (const task of ["Verify it. Risk: none (local rename)", "Verify it. Do not write Risk: item 3 here.", "Verify it.Risk: item 3"]) {
+		assert.ok(rejectUnriskedVerifierLaunch({ agent: "gentle-ai-verify", task }, { root, contextUsage: quiet })?.block, task);
+	}
+});
+
 test("S3: an item outside 1-6, a Risk mention inside prose, or none first is rejected", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -128,7 +145,7 @@ test("S3/S5: the orchestrator tool_call hook gates only primary verifier launche
 test("S6: the Verification rule and the reference docs point at the runtime admission", () => {
 	const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path), "utf8");
 	assert.ok(read("assets/orchestrator.md").includes("independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering"), "the core rule names the runtime check");
-	assert.ok(read("assets/orchestrator-verification.md").includes("(the runtime admits its launch on a `Risk: item N` line, a feature-document task line, or past the context backstop)"), "the normative rule names the admitted line");
+	assert.ok(read("assets/orchestrator-verification.md").includes("(runtime admits its launch on a `Risk: item N` line or sentence, a feature-document task line, or past the context backstop)"), "the normative rule names the admitted line");
 	const docs = read("docs/readme-reference.md");
 	const writer = docs.indexOf("A second admission check stops small-task delegation");
 	const verifier = docs.indexOf("A third admission check keeps the independent verifier for high-risk changes");

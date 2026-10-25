@@ -1,11 +1,17 @@
-import { chmod, constants, link, lstat, mkdir, open, opendir, realpath, unlink, writeFile } from "node:fs/promises";
+import { chmod, constants, link, lstat, mkdir, open, opendir, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 
 const DIR_MODE = 0o700, FILE_MODE = 0o600, MAX_RECORD_BYTES = 8192, MAX_ENTRIES = 64, MAX_SOCKET_PATH_BYTES = 100;
+// Over-cap debris collection bounds: a presence directory may hold at most
+// this many schema-matching records before sweeping is refused, and each
+// liveness probe gets a short bounded connect attempt. A genuine flood of
+// live listeners stays over the cap and keeps failing busy, unchanged.
+const SWEEP_MAX_FILES = 4096, SWEEP_PROBE_TIMEOUT_MS = 1_000, SWEEP_PROBE_CONCURRENCY = 8;
 const RUNTIME_TMP = "/tmp", RUNTIME_PREFIX = "gentle-pi-", PROFILE_HASH_HEX_LENGTH = 32, SOCKET_NAME_BYTES = 27;
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/, TOKEN = /^[A-Za-z0-9_-]{22}$/;
+const PRESENCE_FILE = /^([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([A-Za-z0-9_-]{22})\.json$/;
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 type Code = "invalid_session" | "not_found" | "invalid_presence" | "unsafe_path" | "io_error" | "busy";
 
@@ -131,7 +137,25 @@ export class SessionPresenceRegistry {
 		return (await this.listActivations(excludeSessionId)).map(({ sessionId }) => Object.freeze({ sessionId, reachability: "unknown" as const }));
 	}
 
-	async listActivations(excludeSessionId?: string): Promise<readonly PresenceRecord[]> {
+	// An over-cap failure is stale debris until proven otherwise: sessions that
+	// exit uncleanly never remove their record, so a long-lived profile accrues
+	// them until every scan fails busy (gentle-shell#2501: 133 records, oldest
+	// four weeks old, 126 provably dead). Sweep once — bounded, liveness-based —
+	// and retry; a flood of live listeners stays over the cap and still fails.
+	private async withStaleSweep<T>(scan: () => Promise<T>): Promise<T> {
+		try { return await scan(); }
+		catch (error) {
+			if (!(error instanceof SessionPresenceError) || error.code !== "busy") throw error;
+			if (!await this.sweepStaleRecords().catch(() => false)) throw error;
+			return scan();
+		}
+	}
+
+	listActivations(excludeSessionId?: string): Promise<readonly PresenceRecord[]> {
+		return this.withStaleSweep(() => this.scanActivations(excludeSessionId));
+	}
+
+	private async scanActivations(excludeSessionId?: string): Promise<readonly PresenceRecord[]> {
 		const excluded = excludeSessionId === undefined ? undefined : sessionId(excludeSessionId);
 		await privateDirectory(this.paths.root);
 		await privateDirectory(this.paths.presence);
@@ -142,9 +166,12 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
-				const match = /^([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([A-Za-z0-9_-]{22})\.json$/.exec(entry.name);
+				const match = PRESENCE_FILE.exec(entry.name);
+				// Foreign-schema records (orchestrator headers, activity, and discovery
+				// sidecars) share this directory without ever being activations, so
+				// only schema-matching entries count toward the spam guard.
 				if (!match) continue;
+				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), match[1], match[2]);
@@ -160,7 +187,11 @@ export class SessionPresenceRegistry {
 		return [...newest.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
 	}
 
-	async resolve(id: string): Promise<PresenceRecord> {
+	resolve(id: string): Promise<PresenceRecord> {
+		return this.withStaleSweep(() => this.scanResolve(id));
+	}
+
+	private async scanResolve(id: string): Promise<PresenceRecord> {
 		id = sessionId(id);
 		await privateDirectory(this.paths.root);
 		await privateDirectory(this.paths.presence);
@@ -170,9 +201,11 @@ export class SessionPresenceRegistry {
 		try {
 			dir = await opendir(this.paths.presence);
 			for await (const entry of dir) {
-				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				const match = new RegExp(`^${id}\\.([A-Za-z0-9_-]{22})\\.json$`).exec(entry.name);
+				// Same shared-directory rule as listActivations: foreign-schema
+				// records are skipped before counting toward the cap.
 				if (!match) continue;
+				if (++count > MAX_ENTRIES) fail("busy", "presence registry is busy");
 				try { await this.beforeCandidateOpen?.(); } catch { fail("io_error", "transport I/O failed"); }
 				try {
 					const loaded = await this.read(join(this.paths.presence, entry.name), id, match[1]);
@@ -213,6 +246,68 @@ export class SessionPresenceRegistry {
 			if (code === "ENOENT" || code === "ELOOP") return false;
 			throw error;
 		}
+	}
+
+	// One bounded connect attempt against a candidate's own socket endpoint.
+	// Endpoints reaching this probe were validated into this registry's sockets
+	// directory and lstat-verified as same-user sockets by advertises(), so the
+	// probe cannot reach foreign services. Only an active refusal proves the
+	// record dead: an ambiguous outcome (timeout, unexpected error) keeps it.
+	private liveness(endpoint: string): Promise<"live" | "dead" | "unclear"> {
+		return new Promise((resolveProbe) => {
+			const socket = createConnection(endpoint);
+			const settle = (verdict: "live" | "dead" | "unclear") => {
+				clearTimeout(timer);
+				socket.destroy();
+				resolveProbe(verdict);
+			};
+			const timer = setTimeout(() => settle("unclear"), SWEEP_PROBE_TIMEOUT_MS);
+			socket.once("connect", () => settle("live"));
+			socket.once("error", (error: NodeJS.ErrnoException) => settle(error.code === "ETIMEDOUT" ? "unclear" : "dead"));
+		});
+	}
+
+	// Garbage-collects provably dead records once the directory is over cap:
+	// no live endpoint (advertises false, i.e. the socket is gone) or a refused
+	// connect. Removes the record files only — socket files belong to their
+	// owning session. Returns whether anything was removed, so the caller
+	// retries the scan exactly once; nothing here runs on a healthy directory.
+	private async sweepStaleRecords(): Promise<boolean> {
+		const names = (await readdir(this.paths.presence)).filter((name) => PRESENCE_FILE.test(name));
+		if (names.length === 0 || names.length > SWEEP_MAX_FILES) return false;
+		let removed = 0;
+		const remove = async (file: string) => {
+			try { await unlink(file); removed += 1; }
+			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") removed += 1; }
+		};
+		const live: PresenceRecord[] = [];
+		for (const name of names) {
+			const match = PRESENCE_FILE.exec(name);
+			if (!match) continue;
+			try {
+				const loaded = await this.read(join(this.paths.presence, name), match[1], match[2]);
+				const record = loaded?.record;
+				// A record that no longer validates (malformed, pruned endpoint) is
+				// debris; an unsafe_path one is left for its owner, never touched.
+				if (!record) { await remove(join(this.paths.presence, name)); continue; }
+				if (await this.advertises(record)) live.push(record);
+				else await remove(join(this.paths.presence, name));
+			} catch (error) {
+				// Malformed content is debris from an interrupted write and is
+				// collected; unsafe-path records are left for their owner, never
+				// touched by the sweep.
+				if (error instanceof SessionPresenceError && error.code === "invalid_presence") await remove(join(this.paths.presence, name));
+			}
+		}
+		let next = 0;
+		const worker = async () => {
+			while (next < live.length) {
+				const record = live[next++];
+				if (await this.liveness(record.endpoint) === "dead") await remove(this.presencePath(record));
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(SWEEP_PROBE_CONCURRENCY, live.length) }, worker));
+		return removed > 0;
 	}
 
 	private token(endpoint: unknown) {

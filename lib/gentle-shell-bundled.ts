@@ -27,12 +27,15 @@ export interface BundledInstall {
 
 type Env = Record<string, string | undefined>;
 
-// The shared server outlives session scratch. Windows Node can reintroduce
-// an omitted TEMP from its parent, so use the original stable ancestor there.
+/**
+ * Builds the detached shared server's environment without retaining session scratch.
+ * Windows Node can reintroduce an omitted TEMP from its parent, so use the
+ * original stable ancestor there; POSIX omits scratch temp settings instead.
+ */
 export function sharedEngramEnv(base: Env, platform: string = process.platform): Env {
 	const path = pathFor(platform);
 	const env: Env = {};
-	const scratch = (value: string) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(value));
+	const scratch = (value: string) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(path.normalize(value)));
 	let stableTemp: string | undefined;
 	let tempKey: string | undefined;
 	for (const [key, value] of Object.entries(base)) {

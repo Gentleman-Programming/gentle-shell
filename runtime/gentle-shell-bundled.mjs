@@ -28,12 +28,15 @@ import { fileURLToPath } from "node:url";
 
 
 
-// The shared server outlives session scratch. Windows Node can reintroduce
-// an omitted TEMP from its parent, so use the original stable ancestor there.
+/**
+ * Builds the detached shared server's environment without retaining session scratch.
+ * Windows Node can reintroduce an omitted TEMP from its parent, so use the
+ * original stable ancestor there; POSIX omits scratch temp settings instead.
+ */
 export function sharedEngramEnv(base     , platform         = process.platform)      {
 	const path = pathFor(platform);
 	const env      = {};
-	const scratch = (value        ) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(value));
+	const scratch = (value        ) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(path.normalize(value)));
 	let stableTemp                    ;
 	let tempKey                    ;
 	for (const [key, value] of Object.entries(base)) {

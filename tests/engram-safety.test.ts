@@ -55,6 +55,18 @@ test("shared Engram environment drops only session scratch temp paths", () => {
 	assert.equal(shell.sharedEngramEnv({ tmp: "/tmp/gp123456" }, "linux").tmp, "/tmp/gp123456");
 });
 
+test("shared Engram environment detects Windows scratch after a trailing dot", () => {
+	assert.equal(shell.sharedEngramEnv({ TEMP: "C:\\Temp\\gp123456\\." }, "win32").TEMP, "C:\\Temp");
+});
+
+test("shared Engram environment detects POSIX scratch after child/..", () => {
+	assert.deepEqual(shell.sharedEngramEnv({ TMPDIR: "/tmp/gp123456/child/.." }, "linux"), { ENGRAM_NO_UPDATE_CHECK: "1" });
+});
+
+test("shared Engram environment refuses original Windows .. even when normalization hides it", () => {
+	assert.throws(() => shell.sharedEngramEnv({ TEMP: "C:\\Temp\\gp123456\\child\\.." }, "win32"), /absolute.*scratch/i);
+});
+
 test("shared Engram environment refuses scratch-shaped UNC share roots without looping", () => {
 	const script = `import assert from 'node:assert/strict';
 		import { sharedEngramEnv } from './lib/gentle-shell-bundled.ts';

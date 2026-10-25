@@ -28,6 +28,43 @@ import { fileURLToPath } from "node:url";
 
 
 
+// The shared server outlives session scratch. Windows Node can reintroduce
+// an omitted TEMP from its parent, so use the original stable ancestor there.
+export function sharedEngramEnv(base     , platform         = process.platform)      {
+	const path = pathFor(platform);
+	const env      = {};
+	const scratch = (value        ) => /^(gp|ga)[A-Za-z0-9]{6}$/.test(path.basename(value));
+	let stableTemp                    ;
+	let tempKey                    ;
+	for (const [key, value] of Object.entries(base)) {
+		const name = platform === "win32" ? key.toUpperCase() : key;
+		if (name.startsWith("ENGRAM_") || name === "GH_TOKEN" || name === "GITHUB_TOKEN") continue;
+		if (["TMPDIR", "TMP", "TEMP"].includes(name) && value !== undefined && scratch(value)) {
+			if (platform !== "win32") continue;
+			// A drive-relative or root-relative path depends on ambient state.
+			const root = win32.parse(value).root;
+			if (!/^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/]?)$/.test(root) || value.split(/[\\/]/).includes("..")) {
+				throw new Error("An absolute Windows scratch temp path is required for shared Engram.");
+			}
+			let stable = win32.normalize(value);
+			while (scratch(stable)) {
+				const parent = win32.dirname(stable);
+				if (parent === stable) throw new Error("An absolute Windows scratch temp path is required for shared Engram.");
+				stable = parent;
+			}
+			env[key] = stable;
+			stableTemp ??= stable;
+		} else {
+			env[key] = value;
+		}
+		if (name === "TEMP") tempKey = key;
+	}
+	// Keep an existing custom TEMP, even if TMP/TMPDIR chose another root.
+	if (stableTemp !== undefined && (tempKey === undefined || env[tempKey] === undefined)) env[tempKey ?? "TEMP"] = stableTemp;
+	env.ENGRAM_NO_UPDATE_CHECK = "1";
+	return env;
+}
+
 // The same rules scripts/bundled-install.mjs writes versions and markers with.
 const VERSION_ID = /^[0-9A-Za-z][0-9A-Za-z.-]*$/;
 const VERSION_MARKER = ".gentle-shell-version";

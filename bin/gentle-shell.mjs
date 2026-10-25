@@ -73,6 +73,7 @@ import {
 	ENGRAM_START_FAILED_NOTICE,
 	GENTLE_SHELL_CONFIG_HOME_ENV,
 	engramProbeAllowed,
+	sharedEngramEnv,
 	piVersionOrHelpRequested,
 	probeEngramEndpoint,
 	sqliteHeaderUserVersion,
@@ -242,11 +243,10 @@ async function startSharedEngram() {
 	const failed = { policy: "disabled", notice: ENGRAM_START_FAILED_NOTICE };
 	const core = verifiedBundledCore();
 	if (core === undefined) return failed;
-	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ENGRAM_") && key !== "GH_TOKEN" && key !== "GITHUB_TOKEN"));
-	env.ENGRAM_NO_UPDATE_CHECK = "1";
 	let deadline = Date.now() + ENGRAM_START_TIMEOUT_MS;
 	const exited = () => { deadline = Math.min(deadline, Date.now() + ENGRAM_START_EXIT_GRACE_MS); };
 	try {
+		const env = sharedEngramEnv(process.env);
 		const child = spawn(core, ["serve"], { cwd: homedir(), env, detached: true, stdio: "ignore", windowsHide: true });
 		child.once("error", exited);
 		child.once("exit", exited);

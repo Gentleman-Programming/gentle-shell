@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import type { DesignSessionContent } from "../lib/design-canvas-server.ts";
 import { DESIGN_COMMENTS_TOOL_NAME, DESIGN_HELP, DESIGN_PROMPT_HINT, DESIGN_SKILL_NAME, DESIGN_SYNC_REQUEST, DESIGN_TOOL_NAME, createDesignCanvas, designRunMessage, designUsage, hasSystemBoard, listDesigns, parseDesignArgs, planDesignImplement, runDesignCommentsTool, runDesignTool, sendDesignImplement, type DesignCanvasDeps, type DesignCommentsToolParams, type DesignToolParams } from "../lib/gentle-design.ts";
 
 // Gentle Design: /gentle:design <brief> runs the bundled gentle-design skill,
@@ -60,7 +61,8 @@ export default function gentleDesign(pi: ExtensionAPI, deps: GentleDesignDeps = 
 	// Canvas comments arrive between commands; the last command's context answers whether the agent is busy.
 	let latest: ExtensionContext | undefined;
 	// Answers whether the message waits as a follow-up, which a handoff records as queued (S15).
-	const deliver = (message: string) => {
+	// A canvas comment with a screenshot is text plus an image; handoffs stay plain text.
+	const deliver = (message: DesignSessionContent) => {
 		const queued = !isIdle(latest);
 		pi.sendUserMessage(message, queued ? { deliverAs: "followUp" } : undefined);
 		return { queued };

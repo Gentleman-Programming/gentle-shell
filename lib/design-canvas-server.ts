@@ -5,7 +5,7 @@ import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DesignCommentsError, createDesignCommentStore, isDesignCommentId, truncateUtf16, type StoredDesignComment } from "./design-comments.ts";
+import { DESIGN_COMMENTS_FILE, DESIGN_COMMENT_LIMITS, DESIGN_SCREENSHOT_TYPES, DesignCommentsError, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore, isDesignCommentId, truncateUtf16, type StoredDesignComment } from "./design-comments.ts";
 import { DESIGN_FEATURE_PATH, DesignHandoffsError, createDesignHandoffStore, sendDesignHandoff, type DesignHandoffDelivery } from "./design-handoffs.ts";
 
 // Loopback canvas host for gentle-design (S4-S6). Every route lives under a
@@ -39,6 +39,8 @@ const FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 });
 const LIMITS = Object.freeze({
 	bodyBytes: 16 * 1024,
+	/** POST api/comments may carry one base64 screenshot; its other fields keep `bodyBytes`. */
+	commentBodyBytes: 8 * 1024 * 1024,
 	...DESIGN_COMMENT_LIMITS,
 	manifestBytes: 256 * 1024,
 	fileBytes: 32 * 1024 * 1024,
@@ -74,8 +76,20 @@ const CANVAS_CSP = [
 	"frame-ancestors 'none'",
 ].join("; ");
 
+/**
+ * A comment's screenshot as delivered to the session: `path` is relative to the
+ * session cwd (design/<slug>/.screenshots/<id>.<ext>); `data` is base64, absent when unreadable.
+ */
+export type DesignCommentScreenshot = { path: string; mimeType: string; data?: string };
+
 /** A comment as delivered to the session; `id` names it in design/<slug>/comments.json. */
-export type DesignComment = { id: string; slug: string; file: string; selector: string; excerpt: string; comment: string };
+export type DesignComment = { id: string; slug: string; file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignCommentScreenshot };
+
+/** Session message content: plain text, or text followed by the attached screenshots. */
+export type DesignSessionContent = string | Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+
+/** The most screenshots one batch message attaches; later ones are named for the read tool. */
+export const MAX_DESIGN_BATCH_IMAGES = 6;
 
 export type DesignCanvasServerOptions = {
 	/** Absolute `<session cwd>/design` directory. */
@@ -152,6 +166,30 @@ function excerptLine(excerpt: string): string {
 	return `Excerpt: ${excerpt ? JSON.stringify(excerpt) : "(none)"}`;
 }
 
+function screenshotLine(screenshot: DesignCommentScreenshot, attached: boolean): string {
+	return `Screenshot: ${screenshot.path} (${attached ? "attached; open it with the read tool if you cannot see it" : "open it with the read tool"})`;
+}
+
+/** The batch comments whose screenshot is attached: readable ones, in order, up to the cap. */
+function attachedScreenshots(batch: readonly DesignComment[]): Set<DesignComment> {
+	return new Set(batch.filter((comment) => comment.screenshot?.data !== undefined).slice(0, MAX_DESIGN_BATCH_IMAGES));
+}
+
+function withImages(text: string, comments: Iterable<DesignComment>): DesignSessionContent {
+	const images = [...comments].map((comment) => ({ type: "image" as const, data: comment.screenshot!.data!, mimeType: comment.screenshot!.mimeType }));
+	return images.length === 0 ? text : [{ type: "text", text }, ...images];
+}
+
+/** Session content for one canvas comment: its message, with the screenshot attached when readable. */
+export function designCommentContent(comment: DesignComment): DesignSessionContent {
+	return withImages(formatDesignComment(comment), comment.screenshot?.data !== undefined ? [comment] : []);
+}
+
+/** Session content for a batch: one message, with up to MAX_DESIGN_BATCH_IMAGES screenshots attached. */
+export function designCommentBatchContent(batch: readonly DesignComment[]): DesignSessionContent {
+	return withImages(formatDesignCommentBatch(batch), attachedScreenshots(batch));
+}
+
 /** Session message for one canvas comment; paths are relative to the session cwd. */
 export function formatDesignComment(comment: DesignComment): string {
 	const artboard = `design/${comment.slug}/${comment.file}`;
@@ -163,6 +201,7 @@ export function formatDesignComment(comment: DesignComment): string {
 		`Comment id: ${comment.id}`,
 		`Element: ${comment.selector}`,
 		excerptLine(comment.excerpt),
+		...(comment.screenshot ? [screenshotLine(comment.screenshot, comment.screenshot.data !== undefined)] : []),
 		"",
 		"Comment:",
 		comment.comment,
@@ -176,12 +215,14 @@ export function formatDesignComment(comment: DesignComment): string {
 export function formatDesignCommentBatch(batch: readonly DesignComment[]): string {
 	const slug = batch[0]?.slug ?? "";
 	const lines = [`Design comments for design/${slug} (${batch.length})`, ""];
+	const attached = attachedScreenshots(batch);
 	batch.forEach((comment, index) => {
 		lines.push(
 			`${index + 1}. Comment id: ${comment.id}`,
 			`   Artboard: design/${comment.slug}/${comment.file}`,
 			`   Element: ${comment.selector}`,
 			`   ${excerptLine(comment.excerpt)}`,
+			...(comment.screenshot ? [`   ${screenshotLine(comment.screenshot, attached.has(comment))}`] : []),
 			"   Comment:",
 			...comment.comment.split("\n").map((line) => `   ${line}`),
 			"",
@@ -297,14 +338,14 @@ function mediaType(req: IncomingMessage): string {
 	return String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+async function readBody(req: IncomingMessage, limit: number): Promise<string> {
 	const declared = Number(req.headers["content-length"]);
-	if (Number.isFinite(declared) && declared > LIMITS.bodyBytes) throw new HttpError(413, "body-too-large");
+	if (Number.isFinite(declared) && declared > limit) throw new HttpError(413, "body-too-large");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of req) {
 		size += (chunk as Buffer).length;
-		if (size > LIMITS.bodyBytes) throw new HttpError(413, "body-too-large");
+		if (size > limit) throw new HttpError(413, "body-too-large");
 		chunks.push(chunk as Buffer);
 	}
 	return Buffer.concat(chunks).toString("utf8");
@@ -571,8 +612,8 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		raw(res, body, { "Content-Type": type, "Content-Security-Policy": artboardCsp(String(req.headers.host)) });
 	}
 
-	async function readJsonObject(req: IncomingMessage, allowEmpty = false): Promise<Record<string, unknown>> {
-		const raw = await readBody(req);
+	async function readJsonObject(req: IncomingMessage, allowEmpty = false, limit: number = LIMITS.bodyBytes): Promise<Record<string, unknown>> {
+		const raw = await readBody(req, limit);
 		if (allowEmpty && raw.trim() === "") return {};
 		let value: unknown;
 		try {
@@ -584,13 +625,36 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		return value as Record<string, unknown>;
 	}
 
-	/** The stored comment as a session comment of design `slug`. */
-	function toDesignComment(slug: string, stored: StoredDesignComment): DesignComment {
-		return { id: stored.id, slug, file: stored.file, selector: stored.selector, excerpt: stored.excerpt, comment: stored.comment };
+	/** The stored comment as a session comment of design `slug`, with its screenshot loaded when it has one. */
+	async function toDesignComment(slug: string, stored: StoredDesignComment): Promise<DesignComment> {
+		const comment: DesignComment = { id: stored.id, slug, file: stored.file, selector: stored.selector, excerpt: stored.excerpt, comment: stored.comment };
+		if (stored.screenshot) {
+			const image = await store.readScreenshot(slug, stored.id).catch(() => undefined);
+			const ext = extname(stored.screenshot).toLowerCase();
+			comment.screenshot = { path: `design/${slug}/${stored.screenshot}`, mimeType: image?.mimeType ?? FILE_TYPES[ext] };
+			if (image) comment.screenshot.data = image.data.toString("base64");
+		}
+		return comment;
+	}
+
+	/** The optional `screenshot: { mimeType, data: base64 }` of a comment body, decoded. */
+	function parseScreenshot(value: unknown): { mimeType: string; data: Buffer } | undefined {
+		if (value === undefined) return undefined;
+		const invalid = (reason: string) => new HttpError(400, "invalid-screenshot", { error: "invalid-screenshot", reason });
+		if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid("screenshot must be an object with mimeType and data");
+		const { mimeType, data } = value as Record<string, unknown>;
+		if (typeof mimeType !== "string" || !Object.hasOwn(DESIGN_SCREENSHOT_TYPES, mimeType)) throw invalid("screenshot must be a PNG, JPEG, WebP or GIF image");
+		if (typeof data !== "string" || data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw invalid("screenshot data must be base64");
+		const bytes = Buffer.from(data, "base64");
+		if (bytes.length > MAX_DESIGN_SCREENSHOT_BYTES) throw invalid(`screenshot must be at most ${MAX_DESIGN_SCREENSHOT_BYTES} bytes`);
+		return { mimeType, data: bytes };
 	}
 
 	async function receiveComment(req: IncomingMessage, res: ServerResponse): Promise<void> {
-		const body = await readJsonObject(req);
+		const body = await readJsonObject(req, false, LIMITS.commentBodyBytes);
+		// Only the screenshot gets the larger allowance; the rest of the body keeps the usual limit.
+		const shotChars = typeof (body.screenshot as { data?: unknown } | undefined)?.data === "string" ? ((body.screenshot as { data: string }).data.length) : 0;
+		if (Buffer.byteLength(JSON.stringify(body)) - shotChars > LIMITS.bodyBytes) throw new HttpError(413, "body-too-large");
 		const mode = body.mode ?? "send";
 		if (mode !== "send" && mode !== "collect") throw new HttpError(400, "invalid-mode");
 		if (typeof body.slug !== "string" || !SLUG.test(body.slug)) throw new HttpError(400, "invalid-slug");
@@ -608,16 +672,22 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 		const info = target ? await stat(target).catch(() => undefined) : undefined;
 		if (!target || !info?.isFile() || extname(target).toLowerCase() !== ".html") throw new HttpError(400, "invalid-file");
 		const slug = body.slug;
-		const input = { file: segments.join("/"), selector, excerpt, comment };
+		const screenshot = parseScreenshot(body.screenshot);
+		const input = { file: segments.join("/"), selector, excerpt, comment, ...(screenshot ? { screenshot } : {}) };
+		const add = () => store.add(slug, input).catch((error: unknown) => {
+			if (screenshot && error instanceof DesignCommentsError && error.code === "invalid-input") throw new HttpError(400, "invalid-screenshot", { error: "invalid-screenshot", reason: error.message });
+			return storeFailure(error);
+		});
 		if (mode === "collect") {
-			const stored = await store.add(slug, input).catch(storeFailure);
+			const stored = await add();
 			return reply(res, 201, { ok: true, id: stored.id, sent: false });
 		}
 		// Save, deliver and mark sent under the design's delivery lock, so a send-all cannot see it unsent mid-flight.
 		return exclusive(slug, async () => {
-			const stored = await store.add(slug, input).catch(storeFailure);
+			const stored = await add();
+			const delivered = await toDesignComment(slug, stored);
 			try {
-				await options.onComment(toDesignComment(slug, stored));
+				await options.onComment(delivered);
 			} catch {
 				throw new HttpError(500, "delivery-failed", { error: "delivery-failed", id: stored.id, saved: true, sent: false });
 			}
@@ -633,8 +703,9 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			if (unsent.length === 0) return reply(res, 200, { ok: true, sent: 0, ids: [] });
 			if (!options.onComments) throw new HttpError(501, "batch-delivery-unavailable");
 			const ids = unsent.map((comment) => comment.id);
+			const batch = await Promise.all(unsent.map((comment) => toDesignComment(slug, comment)));
 			try {
-				await options.onComments(unsent.map((comment) => toDesignComment(slug, comment)));
+				await options.onComments(batch);
 			} catch {
 				throw new HttpError(500, "delivery-failed", { error: "delivery-failed", ids, saved: true, sent: false });
 			}
@@ -665,6 +736,12 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			}
 		}).catch((error: unknown) => (deliveryFailed !== undefined && error === deliveryFailed ? Promise.reject(error) : handoffFailure(error)));
 		reply(res, 202, { ok: true, slug, file, queued });
+	}
+
+	async function serveScreenshot(res: ServerResponse, slug: string, id: string): Promise<void> {
+		const image = await store.readScreenshot(slug, id).catch(storeFailure);
+		if (!image) throw new HttpError(404, "not-found");
+		reply(res, 200, image.data, { "Content-Type": image.mimeType });
 	}
 
 	async function changeStatus(req: IncomingMessage, res: ServerResponse, slug: string, id: string): Promise<void> {
@@ -805,6 +882,11 @@ export async function startDesignCanvasServer(options: DesignCanvasServerOptions
 			if (tail.length === 3 && tail[2] === "comments") {
 				const slug = safeSegment(tail[1]);
 				return slug && SLUG.test(slug) ? async (_req, res) => reply(res, 200, await store.read(slug).catch(storeFailure)) : undefined;
+			}
+			if (tail.length === 5 && tail[2] === "comments" && tail[4] === "screenshot") {
+				const slug = safeSegment(tail[1]);
+				const id = safeSegment(tail[3]);
+				return slug && SLUG.test(slug) && id && isDesignCommentId(id) ? (_req, res) => serveScreenshot(res, slug, id) : undefined;
 			}
 			if (tail.length === 3 && tail[2] === "handoffs") {
 				const slug = safeSegment(tail[1]);

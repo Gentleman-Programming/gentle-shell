@@ -404,6 +404,49 @@ test("integration: a comment POSTed to the real canvas server sends one session 
 	assert.deepEqual(sent, [{ content: formatDesignComment({ id: stored[0].id, slug: "login", file: "01-a.html", selector: "body > h1", excerpt: "A", comment: "Make it red" }), options: undefined }]);
 });
 
+test("a canvas comment with a screenshot reaches the session as text and an attached image", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const { pi, sent, command } = fakePi();
+	const canvas = fakeCanvas();
+	gentleDesign(pi, canvas);
+	await command().handler("open login", fakeContext(cwd).ctx);
+	const comment: DesignComment = { id: "abc123", slug: "login", file: "01-a.html", selector: "body > h1", excerpt: "A", comment: "It flickers here", screenshot: { path: "design/login/.screenshots/abc123.png", mimeType: "image/png", data: "iVBORw0KGgo=" } };
+	await canvas.starts[0].onComment(comment);
+	assert.deepEqual(sent.at(-1), { content: [{ type: "text", text: formatDesignComment(comment) }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }], options: undefined });
+	await canvas.starts[0].onComments!([comment, { ...comment, id: "def456", screenshot: undefined }]);
+	const batch = sent.at(-1)!.content as Array<{ type: string }>;
+	assert.deepEqual(batch.map((part) => part.type), ["text", "image"], "a batch is one message with its screenshots attached");
+});
+
+test("integration: a comment POSTed with a screenshot reaches the session with the image", async (t) => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const { pi, sent, emit, command } = fakePi();
+	const opens: string[] = [];
+	gentleDesign(pi, { openBrowser: async (url) => { opens.push(url); return { opened: true }; } });
+	t.after(() => emit("session_shutdown", { type: "session_shutdown", reason: "quit" }));
+	await command().handler("open login", fakeContext(cwd).ctx);
+	const url = new URL(opens[0]);
+	const token = url.pathname.split("/")[1];
+	const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString("base64");
+	const body = JSON.stringify({ slug: "login", file: "01-a.html", selector: "body > h1", excerpt: "A", comment: "Mid-transition", screenshot: { mimeType: "image/png", data: png } });
+	const status = await new Promise<number>((resolve, reject) => {
+		const req = httpRequest({ host: "127.0.0.1", port: url.port, path: `/${token}/api/comments`, method: "POST", headers: { Origin: url.origin, "Content-Type": "application/json" } }, (res) => {
+			res.resume();
+			res.on("end", () => resolve(res.statusCode ?? 0));
+		});
+		req.on("error", reject);
+		req.end(body);
+	});
+	assert.equal(status, 202);
+	const [stored] = JSON.parse(readFileSync(join(cwd, "design", "login", "comments.json"), "utf8")).comments;
+	assert.equal(stored.screenshot, `.screenshots/${stored.id}.png`);
+	const path = `design/login/.screenshots/${stored.id}.png`;
+	const text = formatDesignComment({ id: stored.id, slug: "login", file: "01-a.html", selector: "body > h1", excerpt: "A", comment: "Mid-transition", screenshot: { path, mimeType: "image/png", data: png } });
+	assert.deepEqual(sent, [{ content: [{ type: "text", text }, { type: "image", data: png, mimeType: "image/png" }], options: undefined }]);
+});
+
 function writeLinkedDesign(cwd: string, slug: string, feature?: unknown) {
 	mkdirSync(join(cwd, "design", slug), { recursive: true });
 	writeFileSync(join(cwd, "design", slug, "design.json"), JSON.stringify({
@@ -611,6 +654,21 @@ test("the gentle_design_comments tool lists open comments, by design and artboar
 	assert.deepEqual((one.details as { comments: Array<{ id: string }> }).comments.map((entry) => entry.id), ["ccc333"]);
 	const none = await comments.execute("3", { action: "list", slug: "pricing", file: "09-z.html" }, undefined, undefined, ctx);
 	assert.match(toolText(none), /No open comments/);
+});
+
+test("the gentle_design_comments tool names a comment's screenshot for the read tool", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	seedComments(cwd, "login", [{ id: "aaa111" }, { id: "bbb222" }]);
+	const path = join(cwd, "design", "login", "comments.json");
+	const document = JSON.parse(readFileSync(path, "utf8"));
+	document.comments[0].screenshot = ".screenshots/aaa111.png";
+	writeFileSync(path, JSON.stringify(document));
+	const { pi, tool } = fakePi();
+	gentleDesign(pi);
+	const text = toolText(await tool("gentle_design_comments")!.execute("1", { action: "list", slug: "login" }, undefined, undefined, fakeContext(cwd).ctx));
+	assert.match(text, /\[aaa111\][^]*\n  Screenshot: design\/login\/\.screenshots\/aaa111\.png \(open it with the read tool\)\n- \[bbb222\]/);
+	assert.equal(text.match(/Screenshot:/g)?.length, 1);
 });
 
 test("the gentle_design_comments tool resolves comments by id and writes comments.json", async () => {

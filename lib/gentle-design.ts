@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { formatDesignComment, hasSystemTokens, listDesignEntries, formatDesignCommentBatch, readDesignManifest, resolveSystemBoard, startDesignCanvasServer, type DesignArtboard, type DesignCanvasServer, type DesignCanvasServerOptions } from "./design-canvas-server.ts";
+import { designCommentBatchContent, designCommentContent, hasSystemTokens, listDesignEntries, readDesignManifest, resolveSystemBoard, startDesignCanvasServer, type DesignArtboard, type DesignCanvasServer, type DesignCanvasServerOptions, type DesignSessionContent } from "./design-canvas-server.ts";
 import { createDesignCommentStore, DesignCommentsError, type StoredDesignComment } from "./design-comments.ts";
 import { createDesignHandoffStore, DesignHandoffsError, sendDesignHandoff, type DesignHandoff, type DesignHandoffDelivery, type DesignHandoffStatus } from "./design-handoffs.ts";
 import { openInBrowser, type OpenInBrowserResult } from "./design-open-browser.ts";
@@ -237,8 +237,9 @@ function canvasUrl(server: DesignCanvasServer, slug: string | null): string {
 /**
  * One canvas server per session; comment messages go to `deliver`, whose failure the server reports as HTTP 500.
  * For a handoff, `deliver` also answers whether the message was queued behind a busy agent.
+ * A comment with a readable screenshot arrives as text followed by the attached image.
  */
-export function createDesignCanvas(deliver: (message: string) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>, deps: DesignCanvasDeps = {}): DesignCanvas {
+export function createDesignCanvas(deliver: (message: DesignSessionContent) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>, deps: DesignCanvasDeps = {}): DesignCanvas {
 	const startServer = deps.startServer ?? startDesignCanvasServer;
 	const openBrowser = deps.openBrowser ?? ((url: string) => openInBrowser(url));
 	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string } | undefined;
@@ -259,8 +260,8 @@ export function createDesignCanvas(deliver: (message: string) => DesignHandoffDe
 		if (!running) {
 			const server = startServer({
 				designRoot: root,
-				onComment: async (comment) => { await deliver(formatDesignComment(comment)); },
-				onComments: async (batch) => { await deliver(formatDesignCommentBatch(batch)); },
+				onComment: async (comment) => { await deliver(designCommentContent(comment)); },
+				onComments: async (batch) => { await deliver(designCommentBatchContent(batch)); },
 				// The same plan as /gentle:design implement, so both send identical text; the server
 				// has already recorded the handoff, and this answers whether it was queued.
 				onImplement: async ({ slug, file }) => {
@@ -319,6 +320,7 @@ function describeComment(slug: string, comment: StoredDesignComment): string[] {
 		`  Element: ${comment.selector}`,
 		`  Excerpt: ${comment.excerpt ? JSON.stringify(comment.excerpt) : "(none)"}`,
 		`  Comment: ${comment.comment.split("\n").join("\n           ")}`,
+		...(comment.screenshot ? [`  Screenshot: design/${slug}/${comment.screenshot} (open it with the read tool)`] : []),
 	];
 }
 

@@ -23,7 +23,8 @@
 	// Room below a focused artboard for the floating "Back to canvas" button.
 	const BACK_SPACE = 64;
 	const CLICK_SLOP = 4;
-	const LIMITS = { selector: 500, excerpt: 300, comment: 2000, pins: 500 };
+	const LIMITS = { selector: 500, excerpt: 300, comment: 2000, pins: 500, screenshotBytes: 5 * 1024 * 1024 };
+	const SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 	const MODE_KEY = "gentle-design:send-mode";
 	const SYSTEM_LABEL = { title: "Design system", tradeoff: "Project tokens (design/system.md)" };
 	const SYSTEM_NOTE = "Comments apply to design artboards only. To change the system, update the project's design sources and run /gentle:design sync.";
@@ -67,6 +68,11 @@
 		message: $("gd-popover-message"),
 		cancel: $("gd-popover-cancel"),
 		send: $("gd-popover-send"),
+		shotInput: $("gd-shot-input"),
+		shotAttach: $("gd-shot-attach"),
+		shotPreview: $("gd-shot-preview"),
+		shotImage: $("gd-shot-image"),
+		shotRemove: $("gd-shot-remove"),
 		modeSend: $("gd-mode-send"),
 		modeCollect: $("gd-mode-collect"),
 		sendAll: $("gd-send-all"),
@@ -108,6 +114,9 @@
 		y: FIT_PADDING,
 		commenting: false,
 		pick: null,
+		// The one screenshot of the open popover: { mimeType, data: base64 }, or null.
+		shot: null,
+		shotToken: 0,
 		closeTimer: 0,
 		comments: [],
 		filter: "open",
@@ -1113,6 +1122,14 @@
 			text.style.display = "block";
 			text.textContent = comment.comment;
 			show.append(meta, text);
+			if (comment.screenshot) {
+				const shot = document.createElement("img");
+				shot.className = "gd-comment-shot";
+				shot.alt = `Screenshot of comment ${commentNumber(comment)}`;
+				shot.loading = "lazy";
+				shot.src = `${base}api/designs/${encodeURIComponent(state.slug)}/comments/${encodeURIComponent(comment.id)}/screenshot`;
+				show.append(shot);
+			}
 			show.addEventListener("click", () => selectComment(comment.id, { scroll: true, focusList: false }));
 			const actions = document.createElement("div");
 			actions.className = "gd-comment-actions";
@@ -1287,11 +1304,80 @@
 		els.text.focus();
 	}
 
+	function clearShot() {
+		state.shot = null;
+		state.shotToken += 1;
+		els.shotInput.value = "";
+		els.shotImage.removeAttribute("src");
+		els.shotPreview.hidden = true;
+		els.shotAttach.hidden = false;
+	}
+
+	function shotError(message) {
+		els.message.textContent = message;
+		els.message.classList.add("gd-error");
+	}
+
+	/** Reads one image file into the popover; a later attach or a clear discards a read still running. */
+	function attachShot(file) {
+		if (!file || els.popover.hidden) return;
+		if (!SCREENSHOT_TYPES.includes(file.type)) return shotError("Attach a PNG, JPEG, WebP or GIF image.");
+		if (file.size === 0 || file.size > LIMITS.screenshotBytes) return shotError("The screenshot must be at most 5 MB.");
+		const token = ++state.shotToken;
+		const reader = new FileReader();
+		reader.addEventListener("load", () => {
+			if (token !== state.shotToken || typeof reader.result !== "string") return;
+			const url = reader.result;
+			state.shot = { mimeType: file.type, data: url.slice(url.indexOf(",") + 1) };
+			els.shotImage.src = url;
+			els.shotPreview.hidden = false;
+			els.shotAttach.hidden = true;
+			els.message.textContent = "";
+			els.message.classList.remove("gd-error");
+		});
+		reader.addEventListener("error", () => { if (token === state.shotToken) shotError("The screenshot could not be read."); });
+		reader.readAsDataURL(file);
+	}
+
+	function imageFile(list) {
+		return Array.from(list || []).find((file) => file.type.startsWith("image/")) || (list && list[0]) || null;
+	}
+
+	els.shotAttach.addEventListener("click", () => els.shotInput.click());
+	els.shotInput.addEventListener("change", () => attachShot(els.shotInput.files && els.shotInput.files[0]));
+	els.shotRemove.addEventListener("click", () => {
+		clearShot();
+		els.shotAttach.focus();
+	});
+	els.popover.addEventListener("paste", (event) => {
+		const items = Array.from(event.clipboardData ? event.clipboardData.items : []);
+		const item = items.find((entry) => entry.kind === "file" && entry.type.startsWith("image/"));
+		if (!item) return;
+		event.preventDefault();
+		attachShot(item.getAsFile());
+	});
+	els.popover.addEventListener("dragover", (event) => {
+		if (!event.dataTransfer || !Array.from(event.dataTransfer.types).includes("Files")) return;
+		event.preventDefault();
+		event.dataTransfer.dropEffect = "copy";
+		els.popover.classList.add("gd-dropping");
+	});
+	els.popover.addEventListener("dragleave", (event) => {
+		if (!els.popover.contains(event.relatedTarget)) els.popover.classList.remove("gd-dropping");
+	});
+	els.popover.addEventListener("drop", (event) => {
+		els.popover.classList.remove("gd-dropping");
+		if (!event.dataTransfer || event.dataTransfer.files.length === 0) return;
+		event.preventDefault();
+		attachShot(imageFile(event.dataTransfer.files));
+	});
+
 	function closePopover() {
 		if (els.popover.hidden) return;
 		clearTimeout(state.closeTimer);
 		const board = state.pick && state.pick.board;
 		state.pick = null;
+		clearShot();
 		els.popover.hidden = true;
 		board?.frame.contentWindow?.postMessage({ type: "gd:clear" }, "*");
 		if (els.popover.contains(document.activeElement) || document.activeElement === document.body) (state.focus ? state.focus.frame : els.comment).focus();
@@ -1331,12 +1417,13 @@
 		els.send.disabled = true;
 		els.message.classList.remove("gd-error");
 		els.message.textContent = "Sending…";
+		const shot = state.shot;
 		try {
 			const response = await fetch(`${base}api/comments`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				cache: "no-store",
-				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode }),
+				body: JSON.stringify({ slug: pick.board.slug, file: pick.board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, comment, mode: state.mode, ...(shot ? { screenshot: shot } : {}) }),
 			});
 			let reply = {};
 			try { reply = await response.json(); } catch { /* keep the status */ }
@@ -1346,6 +1433,7 @@
 			loadComments();
 			if (state.pick !== pick) return;
 			els.text.value = "";
+			if (state.shot === shot) clearShot();
 			const done = savedOnly ? "Saved, but not sent to the session" : response.status === 201 ? "Saved; use Send all to send it" : "Sent to the session";
 			els.message.textContent = done;
 			els.message.classList.toggle("gd-error", savedOnly);

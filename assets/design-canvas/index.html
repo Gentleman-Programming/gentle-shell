@@ -69,6 +69,14 @@
 			<p class="gd-popover-title" id="gd-popover-title">Comment on <code id="gd-popover-target"></code></p>
 			<label class="gd-visually-hidden" for="gd-popover-text">Comment</label>
 			<textarea id="gd-popover-text" rows="4" maxlength="2000" required placeholder="What should change?"></textarea>
+			<div class="gd-shot">
+				<input type="file" id="gd-shot-input" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-hidden="true" hidden>
+				<button type="button" id="gd-shot-attach" title="Or paste an image, or drop one here (PNG, JPEG, WebP or GIF, up to 5 MB)">Attach screenshot</button>
+				<figure id="gd-shot-preview" class="gd-shot-preview" hidden>
+					<img id="gd-shot-image" alt="Attached screenshot">
+					<button type="button" id="gd-shot-remove">Remove</button>
+				</figure>
+			</div>
 			<div class="gd-popover-actions">
 				<span id="gd-popover-message" class="gd-popover-message" role="status" aria-live="polite"></span>
 				<button type="button" id="gd-popover-cancel">Cancel</button>

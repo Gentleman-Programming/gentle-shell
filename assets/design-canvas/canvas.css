@@ -486,6 +486,36 @@ button:disabled { opacity: 0.5; cursor: default; }
 	padding: 8px;
 }
 
+.gd-popover.gd-dropping { border-color: var(--gd-accent); }
+
+.gd-shot {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.gd-shot-preview {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin: 0;
+}
+
+.gd-shot-preview[hidden] { display: none; }
+
+.gd-shot-preview img, .gd-comment-shot {
+	display: block;
+	max-width: 160px;
+	max-height: 96px;
+	object-fit: contain;
+	border: 1px solid var(--gd-border);
+	border-radius: 4px;
+	background: var(--gd-bg);
+}
+
+.gd-comment-shot { margin-top: 6px; }
+
 .gd-popover-actions {
 	display: flex;
 	align-items: center;

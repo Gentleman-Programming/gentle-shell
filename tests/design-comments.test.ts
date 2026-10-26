@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
-import { DesignCommentsError, MAX_DESIGN_COMMENTS, createDesignCommentStore } from "../lib/design-comments.ts";
+import { DesignCommentsError, MAX_DESIGN_COMMENTS, MAX_DESIGN_SCREENSHOT_BYTES, createDesignCommentStore } from "../lib/design-comments.ts";
 
 // design/<slug>/comments.json has one owner: every read and write goes through
 // lib/design-comments.ts, so the canvas server and the agent tool serialize.
@@ -152,4 +152,50 @@ test("a design directory or comments.json that escapes the root by symlink is re
 	symlinkSync(join(outside, "comments.json"), join(root, "beta", "comments.json"));
 	await assert.rejects(store.add("beta", INPUT), (error: unknown) => error instanceof DesignCommentsError && error.code === "not-found");
 	assert.equal(readFileSync(join(outside, "comments.json"), "utf8"), JSON.stringify({ version: 1, comments: [] }), "the outside file is untouched");
+});
+
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("frame")]);
+
+test("a comment with a screenshot stores the image beside comments.json and reads it back", async (t) => {
+	const root = designRoot(t);
+	const store = fixedStore(root);
+	const added = await store.add("alpha", { ...INPUT, screenshot: { mimeType: "image/png", data: PNG } });
+	assert.deepEqual(added, { id: "id0000", ...INPUT, screenshot: ".screenshots/id0000.png", createdAt: FIXED.toISOString(), status: "open", sentAt: null, resolvedAt: null });
+	assert.deepEqual(readFileSync(join(root, "alpha", ".screenshots", "id0000.png")), PNG);
+	assert.deepEqual(JSON.parse(readFileSync(join(root, "alpha", "comments.json"), "utf8")).comments, [added]);
+	assert.deepEqual(await store.read("alpha"), { version: 1, comments: [added] });
+	assert.deepEqual(await store.readScreenshot("alpha", "id0000"), { path: ".screenshots/id0000.png", mimeType: "image/png", data: PNG });
+	const plain = await store.add("alpha", INPUT);
+	assert.equal("screenshot" in plain, false, "a comment without a screenshot keeps the old shape");
+	assert.equal(await store.readScreenshot("alpha", plain.id), undefined);
+	assert.equal(await store.readScreenshot("alpha", "nope"), undefined);
+	assert.deepEqual(readdirSync(join(root, "alpha", ".screenshots")), ["id0000.png"], "no temp file is left behind");
+});
+
+test("a screenshot of an unknown type, a mismatched signature, or over the size limit is refused and writes nothing", async (t) => {
+	const root = designRoot(t);
+	const store = fixedStore(root);
+	const refused = [
+		{ mimeType: "image/svg+xml", data: PNG },
+		{ mimeType: "image/jpeg", data: PNG },
+		{ mimeType: "image/png", data: Buffer.alloc(0) },
+		{ mimeType: "image/png", data: Buffer.concat([PNG, Buffer.alloc(MAX_DESIGN_SCREENSHOT_BYTES)]) },
+	];
+	for (const screenshot of refused) {
+		await assert.rejects(store.add("alpha", { ...INPUT, screenshot }), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-input");
+	}
+	assert.deepEqual(readdirSync(join(root, "alpha")), []);
+});
+
+test("a stored screenshot path outside .screenshots makes comments.json invalid, and a linked .screenshots is refused", async (t) => {
+	const root = designRoot(t);
+	const store = fixedStore(root);
+	const entry = { id: "a1", ...INPUT, screenshot: "../secret.png", createdAt: FIXED.toISOString(), status: "open", sentAt: null, resolvedAt: null };
+	writeFileSync(join(root, "alpha", "comments.json"), JSON.stringify({ version: 1, comments: [entry] }));
+	await assert.rejects(store.read("alpha"), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-file");
+	rmSync(join(root, "alpha", "comments.json"));
+	const outside = scratch(t, "gentle-design-shots-outside-");
+	symlinkSync(outside, join(root, "alpha", ".screenshots"));
+	await assert.rejects(store.add("alpha", { ...INPUT, screenshot: { mimeType: "image/png", data: PNG } }), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-file");
+	assert.deepEqual(readdirSync(outside), []);
 });

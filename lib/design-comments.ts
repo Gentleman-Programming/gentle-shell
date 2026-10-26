@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { extname, join, sep } from "node:path";
 
 // The single owner of design/<slug>/comments.json (S9). The canvas server and
@@ -18,6 +18,17 @@ const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_ATTEMPTS = 8;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
+/** One screenshot per comment, stored as design/<slug>/.screenshots/<id>.<ext>. */
+export const MAX_DESIGN_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+export const DESIGN_SCREENSHOTS_DIR = ".screenshots";
+export const DESIGN_SCREENSHOT_TYPES: Readonly<Record<string, string>> = Object.freeze({
+	"image/png": "png",
+	"image/jpeg": "jpg",
+	"image/webp": "webp",
+	"image/gif": "gif",
+});
+const SCREENSHOT_PATH = /^\.screenshots\/[A-Za-z0-9_-]{1,32}\.(png|jpg|webp|gif)$/;
+
 export type DesignCommentStatus = "open" | "resolved";
 
 export type StoredDesignComment = {
@@ -30,11 +41,17 @@ export type StoredDesignComment = {
 	status: DesignCommentStatus;
 	sentAt: string | null;
 	resolvedAt: string | null;
+	/** `.screenshots/<id>.<ext>`, relative to the design directory; absent when the comment has none. */
+	screenshot?: string;
 };
 
 export type DesignCommentsDocument = { version: 1; comments: StoredDesignComment[] };
 
-export type DesignCommentInput = { file: string; selector: string; excerpt: string; comment: string };
+export type DesignScreenshotInput = { mimeType: string; data: Buffer };
+
+export type DesignCommentInput = { file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignScreenshotInput };
+
+export type DesignScreenshot = { path: string; mimeType: string; data: Buffer };
 
 export type DesignCommentsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "id-exhausted";
 
@@ -60,6 +77,8 @@ export interface DesignCommentStore {
 	/** Stamps sentAt on comments that have none yet. */
 	markSent(slug: string, ids: readonly string[]): Promise<StoredDesignComment[]>;
 	listOpen(slug: string, file?: string): Promise<StoredDesignComment[]>;
+	/** The screenshot of comment `id`, or undefined when there is no such comment, it has none, or the file is gone. */
+	readScreenshot(slug: string, id: string): Promise<DesignScreenshot | undefined>;
 }
 
 // Keyed by the real path of each design file (comments.json, handoffs.json),
@@ -130,11 +149,11 @@ export async function readDesignFile(path: string, maxBytes: number, tooLarge: (
 }
 
 /** Replaces `<dir>/<name>` (at `path`) atomically: a synced temp file in the same directory, then rename. */
-export async function replaceDesignFile(dir: string, path: string, name: string, content: string): Promise<void> {
+export async function replaceDesignFile(dir: string, path: string, name: string, content: string | Buffer): Promise<void> {
 	const temp = join(dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
 	const handle = await open(temp, "wx", 0o644);
 	try {
-		await handle.writeFile(content, "utf8");
+		await handle.writeFile(content);
 		await handle.sync();
 	} finally {
 		await handle.close();
@@ -178,6 +197,24 @@ function inputProblem(input: DesignCommentInput): string | undefined {
 	return undefined;
 }
 
+function hasSignature(data: Buffer, mimeType: string): boolean {
+	const ascii = (start: number, end: number) => data.subarray(start, end).toString("latin1");
+	if (mimeType === "image/png") return data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+	if (mimeType === "image/jpeg") return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+	if (mimeType === "image/gif") return ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a";
+	if (mimeType === "image/webp") return ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP";
+	return false;
+}
+
+function screenshotProblem(screenshot: DesignScreenshotInput): string | undefined {
+	if (!screenshot || typeof screenshot !== "object") return "screenshot must be an object";
+	if (typeof screenshot.mimeType !== "string" || !Object.hasOwn(DESIGN_SCREENSHOT_TYPES, screenshot.mimeType)) return "screenshot must be a PNG, JPEG, WebP or GIF image";
+	if (!Buffer.isBuffer(screenshot.data) || screenshot.data.length === 0) return "screenshot is empty";
+	if (screenshot.data.length > MAX_DESIGN_SCREENSHOT_BYTES) return `screenshot must be at most ${MAX_DESIGN_SCREENSHOT_BYTES} bytes`;
+	if (!hasSignature(screenshot.data, screenshot.mimeType)) return `screenshot content is not ${screenshot.mimeType}`;
+	return undefined;
+}
+
 function isTimestamp(value: unknown): boolean {
 	return typeof value === "string" && value.length <= 64;
 }
@@ -207,7 +244,10 @@ function parseDocument(raw: string): DesignCommentsDocument {
 		for (const key of ["sentAt", "resolvedAt"] as const) {
 			if (item[key] !== null && !isTimestamp(item[key])) throw new DesignCommentsError("invalid-file", `${where}.${key} must be a string or null`);
 		}
-		return {
+		if (item.screenshot !== undefined && (typeof item.screenshot !== "string" || !SCREENSHOT_PATH.test(item.screenshot))) {
+			throw new DesignCommentsError("invalid-file", `${where}.screenshot must be a .screenshots/<id>.<png|jpg|webp|gif> path`);
+		}
+		const comment: StoredDesignComment = {
 			id: item.id,
 			file: item.file as string,
 			selector: item.selector as string,
@@ -218,6 +258,8 @@ function parseDocument(raw: string): DesignCommentsDocument {
 			sentAt: item.sentAt as string | null,
 			resolvedAt: item.resolvedAt as string | null,
 		};
+		if (typeof item.screenshot === "string") comment.screenshot = item.screenshot;
+		return comment;
 	});
 	return { version: 1, comments };
 }
@@ -255,6 +297,25 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 		});
 	}
 
+	/**
+	 * `<dir>/.screenshots` when it is a real directory (never a link), created when
+	 * `create` is set; undefined when it is missing and not created.
+	 */
+	async function screenshotsDir(dir: string, slug: string, create: boolean): Promise<string | undefined> {
+		const shots = join(dir, DESIGN_SCREENSHOTS_DIR);
+		const refused = new DesignCommentsError("invalid-file", `design/${slug}/${DESIGN_SCREENSHOTS_DIR} must be a directory`);
+		try {
+			if (!(await lstat(shots)).isDirectory()) throw refused;
+			return shots;
+		} catch (error) {
+			if (error === refused || !isMissing(error)) throw error;
+		}
+		if (!create) return undefined;
+		await mkdir(shots).catch((error: NodeJS.ErrnoException) => { if (error?.code !== "EEXIST") throw error; });
+		if (!(await lstat(shots)).isDirectory()) throw refused;
+		return shots;
+	}
+
 	async function read(slug: string): Promise<DesignCommentsDocument> {
 		return load((await locate(slug)).path);
 	}
@@ -263,9 +324,11 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 		read,
 
 		async add(slug, input) {
-			const problem = inputProblem(input);
+			const problem = inputProblem(input) ?? (input.screenshot === undefined ? undefined : screenshotProblem(input.screenshot));
 			if (problem) throw new DesignCommentsError("invalid-input", problem);
-			return mutate(slug, (document) => {
+			const { dir, path } = await locate(slug);
+			return serializeDesignWrite(path, async () => {
+				const document = await load(path);
 				if (document.comments.length >= MAX_DESIGN_COMMENTS) {
 					throw new DesignCommentsError("limit", `design/${slug} already has ${MAX_DESIGN_COMMENTS} comments, the most a design can hold. Delete resolved comments from comments.json to add more.`);
 				}
@@ -287,8 +350,22 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 					sentAt: null,
 					resolvedAt: null,
 				};
+				let image: string | undefined;
+				if (input.screenshot) {
+					const name = `${id}.${DESIGN_SCREENSHOT_TYPES[input.screenshot.mimeType]}`;
+					const shots = (await screenshotsDir(dir, slug, true))!;
+					image = join(shots, name);
+					await replaceDesignFile(shots, image, name, input.screenshot.data);
+					comment.screenshot = `${DESIGN_SCREENSHOTS_DIR}/${name}`;
+				}
 				document.comments.push(comment);
-				return { result: comment, write: true };
+				try {
+					await save(dir, path, document);
+				} catch (error) {
+					if (image) await unlink(image).catch(() => {});
+					throw error;
+				}
+				return comment;
 			});
 		},
 
@@ -324,6 +401,32 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 				}
 				return { result: updated, write: updated.length > 0 };
 			});
+		},
+
+		async readScreenshot(slug, id) {
+			const { dir, path } = await locate(slug);
+			const stored = (await load(path)).comments.find((comment) => comment.id === id);
+			if (!stored?.screenshot) return undefined;
+			const shots = await screenshotsDir(dir, slug, false);
+			if (!shots) return undefined;
+			const name = stored.screenshot.slice(DESIGN_SCREENSHOTS_DIR.length + 1);
+			const target = join(shots, name);
+			const ext = extname(name).slice(1);
+			const mimeType = Object.keys(DESIGN_SCREENSHOT_TYPES).find((type) => DESIGN_SCREENSHOT_TYPES[type] === ext)!;
+			try {
+				if (!(await lstat(target)).isFile()) return undefined;
+				const handle = await open(target, "r");
+				try {
+					const info = await handle.stat();
+					if (!info.isFile() || info.size > MAX_DESIGN_SCREENSHOT_BYTES) return undefined;
+					return { path: stored.screenshot, mimeType, data: await handle.readFile() };
+				} finally {
+					await handle.close();
+				}
+			} catch (error) {
+				if (isMissing(error)) return undefined;
+				throw error;
+			}
 		},
 
 		async listOpen(slug, file) {

@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
+import { designCommentBatchContent, designCommentContent, formatDesignComment, formatDesignCommentBatch, startDesignCanvasServer, type DesignCanvasServerOptions, type DesignComment } from "../lib/design-canvas-server.ts";
 
 const TOKEN = "test-token-0123456789abcdef";
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
 
-type Reply = { status: number; headers: Record<string, string | string[] | undefined>; body: string };
+type Reply = { status: number; headers: Record<string, string | string[] | undefined>; body: string; bytes: Buffer };
 type Options = { method?: string; headers?: Record<string, string>; body?: string; host?: string | null };
 
 function rawRequest(port: number, path: string, options: Options = {}): Promise<Reply> {
@@ -21,7 +21,7 @@ function rawRequest(port: number, path: string, options: Options = {}): Promise<
 		const req = httpRequest({ host: "127.0.0.1", port, path, method: options.method ?? "GET", headers, setHost: false }, (res) => {
 			const chunks: Buffer[] = [];
 			res.on("data", (chunk: Buffer) => chunks.push(chunk));
-			res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
+			res.on("end", () => { const bytes = Buffer.concat(chunks); resolve({ status: res.statusCode ?? 0, headers: res.headers, body: bytes.toString("utf8"), bytes }); });
 			res.on("error", reject);
 		});
 		req.on("error", reject);
@@ -992,4 +992,105 @@ test("canvas assets sandbox artboards without allow-same-origin and reference no
 	const inspector = readFileSync(join(ASSET_DIR, "inspector.js"), "utf8");
 	assert.match(inspector, /gd:pick/);
 	assert.match(canvas, /event\.source/);
+});
+
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64 * 1024, 7)]);
+const SHOT = { mimeType: "image/png", data: PNG.toString("base64") };
+
+test("a comment with a screenshot is stored, delivered with its image, and served by the screenshot route", async (t) => {
+	const { port, root, comments, base } = await start(t);
+	const reply = await postComment(port, { ...VALID, screenshot: SHOT });
+	assert.equal(reply.status, 202, reply.body);
+	const [saved] = storedComments(root);
+	const path = `design/alpha/.screenshots/${saved.id}.png`;
+	assert.deepEqual(comments, [{ ...VALID, id: saved.id, screenshot: { path, mimeType: "image/png", data: SHOT.data } }]);
+	assert.deepEqual(readFileSync(join(root, "alpha", ".screenshots", `${saved.id}.png`)), PNG);
+	const image = await rawRequest(port, `${base}api/designs/alpha/comments/${saved.id}/screenshot`);
+	assert.equal(image.status, 200);
+	assert.equal(image.headers["content-type"], "image/png");
+	assert.deepEqual(image.bytes, PNG);
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha/comments/${saved.id}/screenshot`, { headers: { Origin: "http://evil.example" } })).status, 403);
+	assert.equal((await postComment(port, { ...VALID, mode: "collect" })).status, 201);
+	const plain = storedComments(root)[1];
+	assert.equal("screenshot" in plain, false);
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha/comments/${plain.id}/screenshot`)).status, 404);
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha/comments/nope/screenshot`)).status, 404);
+	assert.equal((await rawRequest(port, `${base}api/designs/alpha/comments/${saved.id}/screenshot`, { method: "POST" })).status, 405);
+});
+
+test("an invalid screenshot is refused with 400 and stores nothing", async (t) => {
+	const { port, root, comments } = await start(t);
+	const invalid = [
+		{ mimeType: "image/png", data: "not base64!" },
+		{ mimeType: "image/png", data: "" },
+		{ mimeType: "image/svg+xml", data: SHOT.data },
+		{ mimeType: "image/jpeg", data: SHOT.data },
+		{ mimeType: "image/png" },
+		"image",
+	];
+	for (const screenshot of invalid) {
+		const reply = await postComment(port, { ...VALID, screenshot });
+		assert.equal(reply.status, 400, JSON.stringify(screenshot).slice(0, 80));
+		assert.equal(JSON.parse(reply.body).error, "invalid-screenshot");
+	}
+	assert.deepEqual(comments, []);
+	assert.equal(existsSync(join(root, "alpha", "comments.json")), false);
+	assert.equal(existsSync(join(root, "alpha", ".screenshots")), false);
+	assert.equal((await postComment(port, { ...VALID, comment: "x".repeat(17 * 1024), screenshot: SHOT })).status, 413, "the comment fields keep their own body limit");
+});
+
+test("send-all delivers the screenshots of collected comments in the batch", async (t) => {
+	const { port, root, batches } = await start(t);
+	await postComment(port, { ...VALID, comment: "first", mode: "collect", screenshot: SHOT });
+	await postComment(port, { ...VALID, comment: "second", mode: "collect" });
+	assert.equal((await postJson(port, "api/designs/alpha/comments/send-all", {})).status, 202);
+	const [first, second] = storedComments(root);
+	assert.deepEqual(batches, [[
+		{ ...VALID, comment: "first", id: first.id, screenshot: { path: `design/alpha/.screenshots/${first.id}.png`, mimeType: "image/png", data: SHOT.data } },
+		{ ...VALID, comment: "second", id: second.id },
+	]]);
+});
+
+test("formatDesignComment names the screenshot, and the session content attaches it", () => {
+	const comment: DesignComment = { id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "#cta", excerpt: "Go", comment: "The button jumps mid-animation.", screenshot: { path: "design/landing/.screenshots/k3x9p2.png", mimeType: "image/png", data: "iVBORw0KGgo=" } };
+	const text = [
+		"Design comment for design/landing/02-bold.html",
+		"",
+		"Design: landing",
+		"Artboard: design/landing/02-bold.html",
+		"Comment id: k3x9p2",
+		"Element: #cta",
+		"Excerpt: \"Go\"",
+		"Screenshot: design/landing/.screenshots/k3x9p2.png (attached; open it with the read tool if you cannot see it)",
+		"",
+		"Comment:",
+		"The button jumps mid-animation.",
+		"",
+		"Edit only the artboard design/landing/02-bold.html, following the gentle-design skill.",
+		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"]), or set its status to \"resolved\" in design/landing/comments.json.",
+	].join("\n");
+	assert.equal(formatDesignComment(comment), text);
+	assert.deepEqual(designCommentContent(comment), [{ type: "text", text }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
+	const { screenshot: _drop, ...plain } = comment;
+	assert.equal(designCommentContent(plain), formatDesignComment(plain));
+	const unreadable = { ...comment, screenshot: { path: comment.screenshot!.path, mimeType: "image/png" } };
+	assert.match(formatDesignComment(unreadable), /\nScreenshot: design\/landing\/\.screenshots\/k3x9p2\.png \(open it with the read tool\)\n/);
+	assert.equal(designCommentContent(unreadable), formatDesignComment(unreadable));
+});
+
+test("a batch attaches at most six screenshots, in order, and names the rest for the read tool", () => {
+	const batch: DesignComment[] = Array.from({ length: 8 }, (_, index) => ({
+		id: `c${index}`, slug: "landing", file: "01-calm.html", selector: "#cta", excerpt: "", comment: `note ${index}`,
+		...(index === 1 ? {} : { screenshot: { path: `design/landing/.screenshots/c${index}.png`, mimeType: "image/png", data: `data${index}` } }),
+	}));
+	const text = formatDesignCommentBatch(batch);
+	assert.match(text, /\n   Excerpt: \(none\)\n   Screenshot: design\/landing\/\.screenshots\/c0\.png \(attached; open it with the read tool if you cannot see it\)\n   Comment:\n/);
+	assert.ok(!text.includes("c1.png"));
+	assert.match(text, /c6\.png \(attached; open it with the read tool if you cannot see it\)/);
+	assert.match(text, /c7\.png \(open it with the read tool\)\n/);
+	const content = designCommentBatchContent(batch);
+	assert.ok(Array.isArray(content));
+	assert.deepEqual(content, [{ type: "text", text }, ...[0, 2, 3, 4, 5, 6].map((index) => ({ type: "image", data: `data${index}`, mimeType: "image/png" }))]);
+	const plain = batch.map(({ screenshot: _drop, ...rest }) => rest);
+	assert.equal(designCommentBatchContent(plain), formatDesignCommentBatch(plain));
 });

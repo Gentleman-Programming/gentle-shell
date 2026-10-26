@@ -3555,6 +3555,52 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(shortLines.at(-1)!, /^╰/);
 });
 
+test("profiles panel pointer: hovering and clicking a profile-routing row opens the routing editor", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({
+		team: {
+			worker: { model: "openai/alpha", thinking: "high" },
+			"review-refuter": { model: "nan/glm5.3", thinking: "high" },
+		},
+	}, "team");
+	let visits = 0;
+	fixture.onInput((visited) => {
+		visits += 1;
+		if (visits === 1) {
+			const lines = renderComponent(visited).split("\n");
+			// The routing row lives in the detail pane; find its overlay line.
+			const rowIndex = lines.findIndex((line) => /worker\s+openai\/alpha\s+high/.test(line));
+			assert.ok(rowIndex > 0, `routing row must render (lines: ${lines.length})`);
+			const hovered = visited.handleMouse({
+				type: "move",
+				x: 100,
+				y: rowIndex,
+				button: "none",
+				screenX: 100,
+				screenY: rowIndex,
+				width: 120,
+				height: 24,
+			} as never);
+			assert.equal(hovered?.render, true, "moving onto a routing row must request a render");
+			const clicked = visited.handleMouse({
+				type: "click",
+				x: 100,
+				y: rowIndex,
+				button: "left",
+				screenX: 100,
+				screenY: rowIndex,
+				width: 120,
+				height: 24,
+			} as never);
+			assert.equal(clicked?.handled, true, "clicking a routing row must be handled");
+			return;
+		}
+		visited.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 3, "profiles → routing editor → profiles");
+});
+
 test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	writeStore({

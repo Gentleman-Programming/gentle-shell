@@ -34,3 +34,4 @@ Two overlapping commands: `/gentle:models` edited global routing in a keyboard-o
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
 - Known flaky under parallel load: 4 TTY launcher tests in `tests/gentle-shell-bin.test.ts` passed in isolation and on main; re-verify in the final full run.
+- Slice boundary: commit `68179a0b8` (1889 authored lines — editor + panel integration + unit tests + docs). Delivery strategy: single feature commit; runtime-harness migration lands as its own commit.

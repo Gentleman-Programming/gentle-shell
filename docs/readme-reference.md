@@ -657,7 +657,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:models             Assign global agent model/effort routing and choose a profile orchestrator.
+/gentle:models             Open the unified agent-model profiles panel (same surface as /gentle:profiles), preselecting this repository's current profile.
 /gentle:profiles           Create, switch, and manage global agent-model profiles.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
@@ -1009,12 +1009,18 @@ A project can still override the global default with:
 /gentle:models
 ```
 
-The modal discovers:
+`/gentle:models` is the shortcut into the unified panel: it migrates legacy project overrides, surfaces an invalid `models.json`, seeds the profiles store on first use, and then opens the same fullscreen panel as `/gentle:profiles`, preselecting the profile this repository resolves (the pin's target, or the globally active profile). Press `m` (or click a routing row in the detail pane) to open the **routing editor** for that profile.
+
+The routing editor is one fullscreen table of every discovered agent with its model and effort, plus the `orchestrator` and **Set all agents** rows. It is fully pointer-driven — hovering a row fills it, clicking a row opens the searchable model picker, clicking an `effort=` value opens the effort picker, the wheel scrolls, and the footer buttons (`Save`, `Custom`, `Inherit`, `Export`, `Restore`, `Cancel`) act on click — while the classic keyboard flow keeps working (`j`/`k`, `enter`, `e`, `i`, `c`, `x`, `r`, `ctrl+s`, `esc`).
+
+`Save` (`ctrl+s`) writes the draft into the selected profile in the profile store and nothing else: no global `models.json` write, no agent materialization, no live-model switch. To make a profile's routing global, apply it with `a` in the panel (see **Agent-model profiles** below).
+
+The editor discovers:
 
 - project agents in `.pi/subagents/`, `.pi/agents/`, and `.agents/`;
 - user agents in `~/.pi/agent/subagents/`, `~/.pi/agent/agents/`, and `~/.agents/`.
 
-When applying routing, project agents write runtime profiles to `.pi/subagents.json`; global and built-in agents write profiles to `~/.pi/agent/subagents.json`.
+When applying a profile globally with `a`, project agents write runtime profiles to `.pi/subagents.json`; global and built-in agents write profiles to `~/.pi/agent/subagents.json`.
 
 Recommended model/effort shape:
 
@@ -1031,15 +1037,15 @@ Saved globally at:
 ~/.pi/gentle-ai/models.json
 ```
 
-Existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy fallback when no global model config exists, but `/gentle:models` writes the shared global config.
+Global routing is owned by profiles: edit a profile's routing in the editor and apply it with `a`. Applying writes the shared global config at `~/.pi/gentle-ai/models.json`; existing project-local `.pi/gentle-ai/models.json` files are still read as a legacy fallback when no global model config exists.
 
-Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, explicitly save an inherit choice in `/gentle:models` or confirm a profile replacement in `/gentle:profiles`. Activation needs no ownership sidecar or lock.
+Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, apply a profile whose entries are inherit (or confirm a profile replacement) in the unified panel. Activation needs no ownership sidecar or lock.
 
-Inside `/gentle:models`, press `x` to export the saved routing to `~/.pi/gentle-ai/models.export.json`, or `r` to restore from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
+Inside the routing editor, press `x` (or click **Export**) to export the saved routing to `~/.pi/gentle-ai/models.export.json`, or `r` (or click **Restore**) to restore from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
 
-The `orchestrator` row selects the model and thinking effort that `u` will store in the current profile. Its initial choice is the target profile's saved entry, or **leave untouched** if that profile has no orchestrator key. Without an existing target profile, it uses the live session model and effort, falling back to `settings.json` when no live model exists; changing the row never switches the live session. Choose **leave untouched** in its model picker, or press `i` on the row, to store no `orchestrator` key—even when replacing a profile that previously carried one. Select a model before editing effort. **Set all agents** never changes this row.
+The editor's `orchestrator` row edits the profile's own orchestrator entry: its initial choice is that profile's saved entry, or **leave untouched** if the profile has no `orchestrator` key. Choose **leave untouched** in its model picker, or press `i` on the row, to store no `orchestrator` key—even when replacing a profile that previously carried one. Select a model before editing effort. **Set all agents** never changes this row. Saving the editor writes the chosen orchestrator into the profile; it never switches the live session or `settings.json` by itself—applying the profile with `a` (or binding it with `enter`) does.
 
-Press `u` to save global agent routing like `ctrl+s`, then snapshot that routing and the explicit orchestrator choice into the current profile. `ctrl+s` saves only agent routing: it neither updates a profile nor applies the chosen orchestrator. Both keys leave orchestrator defaults and the live model/effort unchanged; applying a profile with no orchestrator key preserves both. Custom-model, export and restore reopens retain the choice; exports/restores remain saved-agent-routing operations. `/gentle:profiles` `s` remains unchanged: it captures the live session model/effort when available, the `settings.json` defaults otherwise. The panel names the profile `u` targets: the profile this repository pins when a pin wins, otherwise the globally active profile. When no profiles store exists yet, `u` seeds it with a `current` profile the way `/gentle:profiles` does on first open; when the store exists but nothing is active and nothing is pinned, the global save still happens and the panel points you to `/gentle:profiles`.
+`/gentle:profiles` `s` remains unchanged: it captures the live session model/effort when available, the `settings.json` defaults otherwise. When no profiles store exists yet, opening the unified panel seeds one profile named `current` captured from the effective routing the way `/gentle:profiles` does on first open.
 
 Config shape (per agent):
 
@@ -1063,10 +1069,11 @@ Legacy string entries are still accepted and treated as `model`-only config.
 /gentle:profiles
 ```
 
-Profiles are named, switchable snapshots of the global agent-model routing from `/gentle:models`. The panel fills the terminal, shows the profile list on the left, and a detail pane comparing the selected profile's routing with the currently effective routing, one line per agent in shared columns. Keys:
+Profiles are named, switchable snapshots of the agent-model routing. The panel fills the terminal, shows the profile list on the left, and a detail pane comparing the selected profile's routing with the currently effective routing, one line per agent in shared columns. The detail pane is pointer-aware: hovering a **Profile routing** row fills it, and clicking one opens the routing editor for that profile (the same editor `m` opens). Keys:
 
 | Key     | Action                                                                 |
 | ------- | ---------------------------------------------------------------------- |
+| `m`     | Open the routing editor for the selected profile (mouse clicks on routing rows do the same). Saving the editor writes the profile in the store; nothing global is written until you apply with `a`. |
 | `enter` | Bind the selected profile to this parent session. The panel shows it as `name (session)`; launches from this session resolve the binding ahead of pins and the global default, and a profile with an `orchestrator` entry switches the session you are in to that model right away. Nothing is written: no global routing, no pins, no materialized stores. |
 | `a`     | Set as global default (the pre-binding `enter` semantics): writes `models.json`, replaces the routing of every agent, sets the orchestrator when the profile defines one. Inside a pinned repository it stays repository-scoped instead; see **Per-repository pins** below. |
 | `c`     | Create a new, empty profile.                                           |
@@ -1084,7 +1091,7 @@ Profiles are named, switchable snapshots of the global agent-model routing from 
 
 Selecting a profile with Enter does not write `profiles.json`, `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The binding lasts in the current process (including `/reload`); resuming in another process requires selecting it again. Re-selecting re-copies the profile definition from `profiles.json`; later edits to `subagents.json` or agent frontmatter never reach a bound session, in that session or through a re-selection.
 
-Applying a profile with `a` writes `~/.pi/gentle-ai/models.json`, then reconciles agent frontmatter and `subagents.json` the same way `/gentle:models` does. A profile is a complete snapshot: every discoverable agent it omits returns to inherit, so routing materialized by a previous profile, by `/gentle:models`, or by a migration never survives a switch silently. The active profile is persisted so `/gentle:profiles` reopens with the applied profile marked.
+Applying a profile with `a` writes `~/.pi/gentle-ai/models.json`, then reconciles agent frontmatter and `subagents.json` with the shared materialization rules. A profile is a complete snapshot: every discoverable agent it omits returns to inherit, so routing materialized by a previous profile, by an earlier apply, or by a migration never survives a switch silently. The active profile is persisted so `/gentle:profiles` reopens with the applied profile marked.
 
 A profile also carries the orchestrator under the reserved routing key `orchestrator`. Applying a profile with `a` when it defines one writes `defaultProvider`, `defaultModel`, and `defaultThinkingLevel` to Pi's global `settings.json` (preserving every other key; an unreadable `settings.json` aborts that part and is reported instead of being overwritten) and switches the session you are in to that model and thinking level right away, so the orchestrator answers with the profile's model from the next turn. Binding with `enter` skips the settings write and switches only the session you are in: same live move, nothing persisted. When the model is not in Pi's catalog or its provider has no authentication, `a` still records the default for new sessions and the apply note says this session kept its current model, while `enter` simply reports the refusal. Applying or binding a profile without an `orchestrator` entry never moves the orchestrator, and `s` snapshots the orchestrator the session actually runs together with the routing. `orchestrator` is reserved: it is not a subagent name, is never written to `subagents.json`, and is not counted as a role.
 

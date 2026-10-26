@@ -732,6 +732,31 @@ test("owner preparation failure names the transient cause code in the wrapper me
 	);
 });
 
+test("owner preparation failure surfaces a denial code and omits a code outside the bounded set", (t) => {
+	const cwd = repository(t);
+	let code = "EACCES";
+	t.mock.method(fs, "fsyncSync", () => {
+		const error = new Error("fixture denial") as NodeJS.ErrnoException;
+		error.code = code;
+		throw error;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const messageFor = (): string => {
+		try {
+			new CandidateViewRegistry().create({ contributorRoot: cwd });
+		} catch (error) {
+			assert.ok(error instanceof CandidateViewError);
+			assert.equal(error.reason, "candidate-owner-preparation-failed");
+			return error.message;
+		}
+		throw new Error("owner preparation was expected to fail");
+	};
+	assert.equal(messageFor(), "candidate view owner preparation failed (EACCES)");
+	code = "ENOSPC";
+	assert.equal(messageFor(), "candidate view owner preparation failed");
+});
+
 test("ordinary cleanup preserves mismatched owner and cleanupAll continues other records", (t) => {
 	const cwd = repository(t);
 	const registry = new CandidateViewRegistry();

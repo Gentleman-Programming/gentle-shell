@@ -3,8 +3,7 @@ import test from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
@@ -173,20 +172,27 @@ test("the Gentle AI shutdown hook releases the ending session's binding but keep
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	resetSessionProfileBindingsForTesting();
 	const cwd = process.cwd();
-	const runtime = createExtensionRuntime();
-	const extension = await loadExtensionFromFactory(createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: { GENTLE_PI_CONFIG_HOME: home } }), cwd, createEventBus(), runtime);
-	const manager = SessionManager.inMemory(cwd);
-	const runner = new ExtensionRunner([extension], runtime, cwd, manager, {} as never);
-	runner.setUIContext({ notify() {}, setStatus() {}, setWidget() {}, getAllThemes: () => [{ name: "test" }] } as unknown as ExtensionUIContext, "tui");
-	runner.bindCommandContext();
-	const sessionId = manager.getSessionId();
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+	const pi = {
+		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => { handlers.set(name, handler); },
+		events: { on() {}, emit() {} },
+		getThinkingLevel: () => "medium",
+		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
+	} as unknown as ExtensionAPI;
+	createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: { GENTLE_PI_CONFIG_HOME: home } })(pi);
+	const sessionId = "ending-session";
+	const ctx = {
+		cwd,
+		hasUI: false,
+		sessionManager: { getSessionId: () => sessionId, getCwd: () => cwd, getEntries: () => [], getBranch: () => [] },
+		ui: { notify() {}, setStatus() {} },
+	} as unknown as ExtensionContext;
 	bindSessionProfile(sessionId, "work", ROUTING);
 	bindSessionProfile("other-session", "personal", ROUTING);
-	await runner.emit({ type: "session_shutdown", reason: "reload" });
+	await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx);
 	assert.equal(readSessionProfileBinding(sessionId)?.name, "work", "reload keeps the same session's binding");
-	await runner.emit({ type: "session_shutdown", reason: "quit" });
+	await handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "quit" }, ctx);
 	assert.equal(readSessionProfileBinding(sessionId), undefined, "an ended session releases its binding");
 	assert.equal(readSessionProfileBinding("other-session")?.name, "personal", "other sessions are untouched");
-	runner.invalidate();
 	resetSessionProfileBindingsForTesting();
 });

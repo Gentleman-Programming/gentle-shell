@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { getLanguageFromPath, highlightCode } from "@earendil-works/pi-coding-agent";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename, posix } from "node:path";
 import { CHANGE_STATUS, DIFF_TOO_LARGE, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
@@ -54,17 +55,46 @@ function rule(length: number): string {
 	return "─".repeat(Math.max(0, length));
 }
 
-export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
-	const lines: string[] = [];
+// The pane highlights code with Pi's own tokenizer (highlightCode) and the active
+// theme's syntax roles, so a diff reads like the rest of the application instead
+// of one flat color per line.
+//
+// A git diff line is a marker (+ - space) plus content, and `+const x = 1` is not
+// valid code: the marker is split off before tokenizing and put back afterwards
+// with its own role, so syntax coloring and the added/removed distinction coexist.
+const DIFF_MARKER = /^[+-]/;
+
+export function colorDiff(text: string, theme: ChangesViewTheme, language?: string): string[] {
+	const rows: Array<{ line: string; body: string; marker: string; role: string }> = [];
 	for (const rawLine of text.split("\n")) {
 		const line = sanitizeTerminalText(rawLine.replace(/\r/g, "")).replace(/\t/g, "  ");
 		if (line === "" || HEADER_PREFIXES.some((prefix) => line.startsWith(prefix))) continue;
-		if (line.startsWith("@@")) lines.push(theme.fg(ROLE.HUNK, line));
-		else if (line.startsWith("+")) lines.push(theme.fg("toolDiffAdded", line));
-		else if (line.startsWith("-")) lines.push(theme.fg("toolDiffRemoved", line));
-		else lines.push(theme.fg("toolDiffContext", line));
+		if (line.startsWith("@@")) rows.push({ line, body: line, marker: "", role: ROLE.HUNK });
+		else if (DIFF_MARKER.test(line)) rows.push({ line, body: line.slice(1), marker: line[0], role: line[0] === "+" ? "toolDiffAdded" : "toolDiffRemoved" });
+		else rows.push({ line, body: line, marker: "", role: "toolDiffContext" });
 	}
-	return lines;
+
+	// One call for the whole content: the tokenizer needs context, and a call per
+	// line would multiply the cost without improving the result. Hunk headers stay
+	// out so they cannot be read as code.
+	const content = rows.filter((row) => row.role !== ROLE.HUNK);
+	const tokenized = language && content.length > 0 ? highlightCode(content.map((row) => row.body).join("\n"), language) : undefined;
+	// A tokenizer that produced nothing styled (unknown language, unavailable
+	// theme) must not cost the pane its diff roles: fall back to the shipped view.
+	const aligned = tokenized?.length === content.length && tokenized.some((line) => line.includes("\u001b[")) ? tokenized : undefined;
+	if (aligned === undefined) return rows.map((row) => theme.fg(row.role, row.line));
+
+	let index = 0;
+	return rows.map((row) => {
+		if (row.role === ROLE.HUNK) return theme.fg(ROLE.HUNK, row.line);
+		const styled = aligned[index];
+		index += 1;
+		// A line the tokenizer leaves alone (a bare brace, prose, a heading) would
+		// come back uncolored and lose the pane's context color: the pane's own role
+		// is the better answer there.
+		const body = styled.includes("\u001b[") ? styled : theme.fg(row.role, row.body);
+		return row.marker === "" ? body : theme.fg(row.role, row.marker) + body;
+	});
 }
 
 // New files are two distinct states: `A` is tracked and staged, `U` is still
@@ -651,7 +681,7 @@ export class ChangesView {
 			(text) => {
 				if (this.disposed) return;
 				// An oversized diff arrives as one plain line pointing at the editor.
-				this.diffs.set(file.path, text === DIFF_TOO_LARGE ? [this.deps.theme.fg(ROLE.EMPTY, text)] : colorDiff(text, this.deps.theme));
+				this.diffs.set(file.path, text === DIFF_TOO_LARGE ? [this.deps.theme.fg(ROLE.EMPTY, text)] : colorDiff(text, this.deps.theme, getLanguageFromPath(file.path)));
 				this.deps.requestRender();
 			},
 			() => {

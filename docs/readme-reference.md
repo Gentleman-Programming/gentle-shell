@@ -1217,7 +1217,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle:status`              | Shows package assets and global model config status. |
 | `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
-| `/gentle:models`                 | Opens global model + effort assignment UI. Press `x` to export, `r` to restore saved routing, and `u` to save routing and capture the session in the current profile. |
+| `/gentle:models`                 | Opens the unified profiles panel (same surface as `/gentle:profiles`) preselecting this repository's current profile. Inside the routing editor: `x` exports and `r` restores saved routing. |
 | `/gentle:profiles`               | Opens global agent-model profiles: apply live, create, snapshot, duplicate, rename, delete, export, and import. |
 | `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |
 | `/gentle:persona`                | Switches global persona mode, with project override support.        |

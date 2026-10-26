@@ -367,6 +367,17 @@ test("registered Gentle Review tools preserve result envelopes and preview usefu
 interface RoutingConsumerPanel {
 	render(width: number): string[];
 	handleInput(data: string): void;
+	handleMouse?(event: {
+		type: "move" | "click" | "press" | "wheel";
+		x: number;
+		y: number;
+		button?: string;
+		wheelDelta?: number;
+		screenX?: number;
+		screenY?: number;
+		width?: number;
+		height?: number;
+	}): { handled?: boolean; render?: boolean } | undefined;
 }
 
 function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
@@ -3580,7 +3591,7 @@ test("profiles panel pointer: hovering and clicking a profile-routing row opens 
 				screenY: rowIndex,
 				width: 120,
 				height: 24,
-			} as never);
+			});
 			assert.equal(hovered?.render, true, "moving onto a routing row must request a render");
 			const clicked = visited.handleMouse({
 				type: "click",
@@ -3591,7 +3602,7 @@ test("profiles panel pointer: hovering and clicking a profile-routing row opens 
 				screenY: rowIndex,
 				width: 120,
 				height: 24,
-			} as never);
+			});
 			assert.equal(clicked?.handled, true, "clicking a routing row must be handled");
 			return;
 		}

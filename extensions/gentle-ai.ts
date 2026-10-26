@@ -2544,7 +2544,7 @@ async function readGlobalEffectiveModelConfigFromAsync(
  * discoverable agent it omits on inherit, not on whatever was materialized
  * before. Padding the omitted agents with clear entries makes
  * `applyModelConfig` remove their model profiles and frontmatter routing, the
- * same way `/gentle:models` clears an agent set to inherit.
+ * same way applying a profile with inherit entries clears an agent set.
  */
 async function withOmittedAgentsClearedAsync(
 	cwd: string,
@@ -3990,7 +3990,7 @@ async function handleModelsCommand(ctx: ExtensionContext, live: LiveSession): Pr
 	await openProfilesPanelLoop(ctx, live, target?.name);
 }
 
-/** The profile `u` in `/gentle:models` writes to, and why it is that one. */
+/** The profile `/gentle:models` preselects in the unified panel, and why it is that one. */
 interface CurrentProfileTarget {
 	name: string;
 	source: "pinned" | "active";
@@ -4075,8 +4075,8 @@ function profilePinStateLabel(
  * Every line the panel needs to tell a pinned repository the truth: the winning
  * layer and its exact file, an explicit warning for a file that is not a pin named
  * by path (kept separate from a pin naming a profile this store no longer defines),
- * and one sentence that a winning pin outranks the global active profile and every
- * `/gentle:models` write.
+ * and one sentence that a winning pin outranks the globally active profile and every
+ * global routing write.
  */
 function profilePinDetailLines(
 	status: ProfilePinStatus | undefined,
@@ -4093,7 +4093,7 @@ function profilePinDetailLines(
 		lines.push(`              the ${issue.source} pin names "${issue.profile}", which this store does not define; ignoring it (${issue.path}).`);
 	}
 	if (evaluation.winner) {
-		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and /gentle:models writes do not apply here.");
+		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and global routing writes do not apply here.");
 	}
 	return lines;
 }
@@ -4132,8 +4132,8 @@ function followRenamedPin(
 
 /**
  * One sentence naming the profile this repository resolves, for the commands whose
- * writes a pin outranks: `/gentle:models` materializes global routing that a pinned
- * repository will not use for its subagents. The launch resolver decides, so the note
+ * writes a pin outranks: global routing applied from the unified panel does not
+ * reach a pinned repository's subagents. The launch resolver decides, so the note
  * names exactly what a launch would use.
  */
 function profilePinScopeNote(cwd: string): string | undefined {

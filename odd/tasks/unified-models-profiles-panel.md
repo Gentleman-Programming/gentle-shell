@@ -28,10 +28,10 @@ Two overlapping commands: `/gentle:models` edited global routing in a keyboard-o
 - [x] T4 `/gentle:models` as preselecting alias (`openProfilesPanelLoop` extraction); remove `SddModelPanel`/old handler/`u` helpers.
 - [x] T5 Unit tests: updated model-panel tests + new pointer tests (hover, click-to-picker, option commit, footer buttons, effort cell, wheel).
 - [x] T6 Docs: `docs/readme-reference.md` models/profiles sections and command table.
-- [ ] T7 `tests/runtime-harness.mjs` migration (delegated, in progress).
-- [ ] T8 Full suite green + commit.
+- [x] T7 `tests/runtime-harness.mjs` migration (writer task `mvppl322-1-qm07`; visit sequences profiles→editor→close, store-only save assertions, commit `d82a22014`).
+- [x] T8 Full suite: unit 7348 pass / 0 regressions, provider-contract PASS, runtime-harness PASS. The 4 TTY launcher failures reproduce identically on main (`main-wsl2-01a14c1b`) through the suite runner — pre-existing environment flake, not caused by this change.
 
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
-- Known flaky under parallel load: 4 TTY launcher tests in `tests/gentle-shell-bin.test.ts` passed in isolation and on main; re-verify in the final full run.
+- The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.
 - Slice boundary: commit `68179a0b8` (1889 authored lines — editor + panel integration + unit tests + docs). Delivery strategy: single feature commit; runtime-harness migration lands as its own commit.

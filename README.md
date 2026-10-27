@@ -518,11 +518,10 @@ Every other argument is forwarded to pi unchanged, for example `gentle-shell --m
 
 ### Path B: inside an existing pi
 
-Install the stable release into an existing pi agent, restart Pi, then synchronize the installed assets.
+Install the current npm release into an existing pi agent, restart Pi, then synchronize the installed assets.
 
 ```bash
-# Published stable release: v4.1.0
-pi install npm:gentle-pi@4.1.0
+pi install npm:gentle-pi
 
 # Restart Pi, then run:
 gentle-ai sync
@@ -531,7 +530,7 @@ gentle-ai sync
 pi
 ```
 
-See the [v4.1.0 release notes](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v4.1.0) for version-specific changes.
+For a reproducible pin, use `pi install npm:gentle-pi@<version>` with a published version. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific changes and runtime pairing; the unpinned command follows npm's `latest` dist-tag.
 
 <details>
 <summary><kbd>More</kbd> <strong>Seeing a builtin codemode warning?</strong> — why it appears and how to silence it</summary>

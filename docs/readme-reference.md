@@ -214,11 +214,11 @@ gentle-shell --link
 pi install npm:gentle-pi
 ```
 
-This installs the current npm release; select an explicit version if you need a reproducible pin. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
+This installs the current npm release from the `latest` dist-tag. For a reproducible pin, use `pi install npm:gentle-pi@<version>` with a published version. Restart Pi after installation, then run `gentle-ai sync`. Check the [published releases](https://github.com/Gentleman-Programming/gentle-shell/releases) for version-specific runtime and provider-contract pairing.
 
 ### Source checkout
 
-This checkout declares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.2.0` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
+This checkout declares its `gentle-pi` version in [`package.json`](../package.json), with a package-local Gentle AI `v4.2.0` pin. Checkout metadata alone is not proof of npm publication; verify the registry version and its release workflow.
 
 ### Pi compatibility
 
@@ -236,12 +236,7 @@ Malformed/nonobject JSON, symlink/nonregular settings, unsafe paths, or a busy s
 
 ### RDD history and default
 
-Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. The current stable release, [`v3.5.1`](https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v3.5.1), includes native RDD:
-
-```bash
-# Stable release
-pi install npm:gentle-pi@3.5.1
-```
+Native RDD was introduced in `gentle-pi` `v0.15.0` on 2026-07-10 with bounded review transactions. Current releases include native RDD; use the [installation guidance above](#path-b-inside-an-existing-pi) for the current npm release or an explicit version pin. The introduction version is historical context, not a separate stable/unstable release line.
 
 RDD is optional and on by default (since Gentle AI v4.0.0). Turn it off anytime with `/gentle:review-mode disable` for this clone or `gentle-ai review mode disable` machine-wide; `/gentle:review-mode enable` only clears a clone-local off, and `status` lets you inspect the mode without changing it. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 

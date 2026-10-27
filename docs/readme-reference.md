@@ -1009,11 +1009,15 @@ A project can still override the global default with:
 /gentle:models
 ```
 
-`/gentle:models` is the shortcut into the unified panel: it migrates legacy project overrides, surfaces an invalid `models.json`, seeds the profiles store on first use, and then opens the same fullscreen panel as `/gentle:profiles`, preselecting the profile this repository resolves (the pin's target, or the globally active profile). Press `e` (or click a routing row in the detail pane) to open the **routing editor** for that profile, `o` for the dedicated **orchestrator picker**, or `m` for the **action menu** with every profile action.
+`/gentle:models` and `/gentle:profiles` open the SAME fullscreen surface (table-first design): one agent table is the whole editor. The reserved `orchestrator` entry is its first row, `Set all agents` the one above it, and every discovered agent lists its model and effort. Clicking a model or effort value (or `enter` / `e` on the row) opens a centered search popover while the table stays visible behind it. The title carries the profile being edited plus its markers (`active`, `session`, `pinned`) and a `●` dot whenever the table has unsaved edits.
 
-The routing editor is one fullscreen table of every discovered agent with its model and effort, plus the `orchestrator` and **Set all agents** rows. It is fully pointer-driven — hovering a row fills it, clicking a row opens the searchable model picker, clicking an `effort=` value opens the effort picker, the wheel scrolls, and the footer buttons (`Save`, `Custom`, `Inherit`, `Export`, `Restore`, `Cancel`) act on click — while the classic keyboard flow keeps working (`j`/`k`, `enter`, `e`, `i`, `c`, `x`, `r`, `ctrl+s`, `esc`).
+The footer is the whole vocabulary: `[ Use in session ]  [ Apply global ]  [ Save ]  [ Profiles… ]  [ Cancel ]` — every button clickable, every action keyed (`u`, `a`, `ctrl+s`, `p`, `esc`).
 
-`Save` (`ctrl+s`) writes the draft into the selected profile in the profile store and nothing else: no global `models.json` write, no agent materialization, no live-model switch. To make a profile's routing global, apply it with `a` in the panel (see **Agent-model profiles** below).
+- `Save` (`ctrl+s`) writes what you see into the profile named in the title (type another name to create one).
+- `Use in session` (`u`) binds what you see to this session and switches its live orchestrator; nothing shared is written.
+- `Apply global` (`a`) saves the draft into the profile first, then runs the guarded global apply (diff confirmation, pin honesty, rollback).
+- `Profiles…` (`p`) opens a compact popover listing every profile with its role count and markers; `enter` loads a profile into the table (discarding unsaved edits — the popover says so), and hover/click or keys run use, apply, snapshot, duplicate, rename, delete, new, import, export, pin, and publish.
+- `esc` closes; with unsaved edits the first press warns and the second discards.
 
 The editor discovers:
 
@@ -1043,9 +1047,7 @@ Startup and reload materialize saved non-empty routing, but never treat a saved 
 
 Inside the routing editor, press `x` (or click **Export**) to export the saved routing to `~/.pi/gentle-ai/models.export.json`, or `r` (or click **Restore**) to restore from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
 
-The editor's `orchestrator` row edits the profile's own orchestrator entry: its initial choice is that profile's saved entry, or **leave untouched** if the profile has no `orchestrator` key. Choose **leave untouched** in its model picker, or press `i` on the row, to store no `orchestrator` key—even when replacing a profile that previously carried one. Select a model before editing effort. **Set all agents** never changes this row. Saving the editor writes the chosen orchestrator into the profile; it never switches the live session or `settings.json` by itself—applying the profile with `a` (or binding it with `enter`) does.
-
-`/gentle:profiles` `s` remains unchanged: it captures the live session model/effort when available, the `settings.json` defaults otherwise. When no profiles store exists yet, opening the unified panel seeds one profile named `current` captured from the effective routing the way `/gentle:profiles` does on first open.
+The orchestrator row edits the profile's reserved `orchestrator` entry directly with the same popovers; **Set all agents** applies a value to every agent row at once. Saving the table never switches the live session or `settings.json` by itself — `Use in session` and `Apply global` do.
 
 Config shape (per agent):
 

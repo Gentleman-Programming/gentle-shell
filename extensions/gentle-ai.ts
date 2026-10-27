@@ -3120,14 +3120,13 @@ interface OverlayComponent {
 	invalidate(): void;
 }
 
-type RoutingEditorResult =
-	| { type: "save"; config: AgentModelConfig }
-	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
-	| { type: "export"; config: AgentModelConfig }
-	| { type: "restore"; config: AgentModelConfig }
-	| { type: "cancel" };
+interface RoutingHitRegion {
+	x0: number;
+	x1: number;
+	y: number;
+	action: RoutingTableMouseAction;
+}
 
-const SET_ALL_AGENTS = "Set all agents";
 const LEAVE_ORCHESTRATOR_UNTOUCHED = "leave untouched";
 
 const PANEL_TONE = {
@@ -3150,163 +3149,397 @@ const PANEL_TONE_COLOR: Record<PanelTone, ThemeColor> = {
 	status: "thinkingHigh",
 };
 
-/** What one pointer hit can do inside the routing editor. */
-type RoutingMouseAction =
-	| { kind: "row"; row: string }
-	| { kind: "effort"; row: string }
-	| { kind: "model-option"; index: number }
-	| { kind: "effort-option"; index: number }
-	| { kind: "button"; button: RoutingButton };
-
-type RoutingButton = "save" | "custom" | "inherit" | "export" | "restore" | "back" | "cancel" | "clear";
-
-interface RoutingHitRegion {
-	x0: number;
-	x1: number;
-	y: number;
-	action: RoutingMouseAction;
-}
+type RoutingTableResult =
+	| { type: "use-session"; name: string; config: AgentModelConfig }
+	| { type: "load"; name: string }
+	| { type: "apply-global"; name: string; config: AgentModelConfig }
+	| { type: "save"; name: string; config: AgentModelConfig }
+	| { type: "create" }
+	| { type: "snapshot"; name: string }
+	| { type: "duplicate"; name: string }
+	| { type: "rename"; name: string }
+	| { type: "delete"; name: string }
+	| { type: "export-profile"; name: string }
+	| { type: "import-profile" }
+	| { type: "pin"; source: ProfilePinSource; name: string }
+	| { type: "close" };
 
 /**
- * The fullscreen routing editor inside the unified profiles panel: one table of
- * agents with their model and effort, a searchable model picker, an effort
- * picker, and pointer support everywhere — hover highlight, click to open the
- * pickers, click to choose, wheel to scroll, and clickable footer buttons.
- * Keyboard actions stay as they were in the standalone model panel.
+ * The unified /gentle:models and /gentle:profiles surface (table-first design):
+ * ONE agent table is the whole editor — the orchestrator is its first row, and
+ * clicking a model or effort value opens a centered search popover while the
+ * table stays visible behind it. Profiles are compact states of that table,
+ * reachable from the Profiles… popover. What you see is what Use, Apply, and
+ * Save write.
  */
-class RoutingEditorPanel implements OverlayComponent {
+class RoutingTablePanel implements OverlayComponent {
+	private mode: "table" | "profiles" = "table";
+	private picker: "models" | "effort" | undefined;
 	private cursor = 0;
-	private mode: "agents" | "models" | "effort" = "agents";
-	private selectedRow = SET_ALL_AGENTS;
+	private query = "";
 	private modelCursor = 0;
 	private effortCursor = 0;
-	private query = "";
-	private hovered: RoutingMouseAction | undefined;
+	private profilesCursor = 0;
+	private hovered: { kind: string; id: string } | undefined;
+	private escArmed = false;
+	private feedback: string | undefined;
 	private hitRegions: RoutingHitRegion[] = [];
-	private readonly draft: AgentModelConfig;
+	private draft: AgentModelConfig;
+	private readonly storedDraft: AgentModelConfig;
 	private readonly rows: string[];
 	private readonly agents: string[];
 	private readonly modelOptions: string[];
-	private readonly done: (result: RoutingEditorResult) => void;
+	private readonly done: (result: RoutingTableResult) => void;
 	private readonly theme: Theme | undefined;
-	private readonly profileName: string;
-	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
+	private readonly keybindings: KeybindingsManager | undefined;
 	private readonly terminalRows: (() => number) | undefined;
+	private readonly profileName: string;
+	private readonly stored: AgentModelConfig;
+	private readonly markers: string;
+	private readonly file: AgentProfilesFile;
+	private readonly sessionBoundName: string | undefined;
+	private readonly pinWinner: string | undefined;
 
 	constructor(
 		initialConfig: AgentModelConfig,
 		modelOptions: string[],
 		agents: string[],
-		done: (result: RoutingEditorResult) => void,
+		done: (result: RoutingTableResult) => void,
 		theme?: Theme,
 		profileName = "current",
 		terminalRows?: () => number,
-		focus?: { agent: string; kind: "model" | "effort" },
+		options: {
+			file?: AgentProfilesFile;
+			sessionBoundName?: string;
+			pinWinner?: string;
+			keybindings?: KeybindingsManager;
+		} = {},
 	) {
 		this.draft = cloneModelConfig(initialConfig);
-		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
+		this.stored = cloneModelConfig(initialConfig);
+		this.storedDraft = cloneModelConfig(initialConfig);
+		this.rows = ["Set all agents", PROFILE_ORCHESTRATOR_KEY, ...agents];
 		this.agents = [...agents];
 		this.modelOptions = modelOptions;
 		this.done = done;
 		this.theme = theme;
 		this.profileName = profileName;
 		this.terminalRows = terminalRows;
-		if (focus) {
-			// A click on one agent's routing row lands here: the editor opens
-			// looking at that agent, in the picker the click pointed at.
-			const index = this.rows.indexOf(focus.agent);
-			if (index >= 0) {
-				this.cursor = index;
-				this.selectedRow = focus.agent;
-				const effortBlocked = focus.agent === PROFILE_ORCHESTRATOR_KEY
-					&& !this.draft[focus.agent]?.model;
-				if (focus.kind === "effort" && !effortBlocked) {
-					this.mode = "effort";
-					this.effortCursor = 0;
-				} else {
-					this.mode = "models";
-					this.modelCursor = 0;
-					this.query = "";
-				}
-			}
-		}
+		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(initialConfig));
+		this.sessionBoundName = options.sessionBoundName;
+		this.pinWinner = options.pinWinner;
+		this.keybindings = options.keybindings;
+		this.markers = [
+			this.file.active === profileName ? "active" : undefined,
+			this.sessionBoundName === profileName ? "session" : undefined,
+			this.pinWinner === profileName ? "pinned" : undefined,
+		].filter((marker): marker is string => marker !== undefined).join(" · ");
 	}
 
 	invalidate(): void {
 		this.hovered = undefined;
 	}
 
+	// -- input ----------------------------------------------------------------
+
 	handleInput(data: string): void {
-		if (this.mode === "models") {
-			this.handleModelInput(data);
+		if (this.picker !== undefined) {
+			this.handlePickerInput(data);
 			return;
 		}
-		if (this.mode === "effort") {
-			this.handleEffortInput(data);
+		if (this.mode === "profiles") {
+			this.handleProfilesInput(data);
 			return;
 		}
-		this.handleAgentInput(data);
+		this.handleTableInput(data);
 	}
+
+	private get dirty(): boolean {
+		return JSON.stringify(normalizeModelConfig(this.draft) ?? {}) !== JSON.stringify(normalizeModelConfig(this.stored) ?? {});
+	}
+
+	private handleTableInput(data: string): void {
+		const maxCursor = this.rows.length - 1;
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		if (matchesKey(data, "escape")) {
+			if (this.dirty && !this.escArmed) {
+				this.escArmed = true;
+				this.feedback = "Unsaved changes — press esc again to discard.";
+				return;
+			}
+			this.finish({ type: "close" });
+			return;
+		}
+		this.escArmed = false;
+		if (matchesKey(data, "down") || data === "j") {
+			this.cursor = Math.min(maxCursor, this.cursor + 1);
+			return;
+		}
+		if (matchesKey(data, "up") || data === "k") {
+			this.cursor = Math.max(0, this.cursor - 1);
+			return;
+		}
+		if (data === "e") {
+			this.openPicker("effort");
+			return;
+		}
+		if (matchesKey(data, "return")) {
+			this.openPicker("models");
+			return;
+		}
+		if (matchesKey(data, "ctrl+s")) {
+			this.requestSave();
+			return;
+		}
+		if (data === "u") {
+			this.finish({
+				type: "use-session",
+				name: this.profileName,
+				config: cloneModelConfig(this.draft),
+			});
+			return;
+		}
+		if (data === "a") {
+			this.finish({
+				type: "apply-global",
+				name: this.profileName,
+				config: cloneModelConfig(this.draft),
+			});
+			return;
+		}
+		if (data === "p") {
+			this.mode = "profiles";
+			this.profilesCursor = 0;
+			this.feedback = undefined;
+			return;
+		}
+	}
+
+	private handleProfilesInput(data: string): void {
+		const names = this.profileNames();
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		if (matchesKey(data, "escape") || matchesKey(data, "backspace")) {
+			this.mode = "table";
+			this.feedback = undefined;
+			return;
+		}
+		const name = names[this.profilesCursor];
+		if (data === "j" || matchesKey(data, "down")) {
+			this.profilesCursor = Math.min(names.length - 1, this.profilesCursor + 1);
+			return;
+		}
+		if (data === "k" || matchesKey(data, "up")) {
+			this.profilesCursor = Math.max(0, this.profilesCursor - 1);
+			return;
+		}
+		if (!name) return;
+		if (matchesKey(data, "return")) {
+			this.loadProfile(name);
+			return;
+		}
+		if (data === "u") {
+			this.finish({ type: "use-session", name, config: this.profileConfig(name) });
+			return;
+		}
+		if (data === "a") {
+			this.finish({ type: "apply-global", name, config: this.profileConfig(name) });
+			return;
+		}
+		if (data === "s") {
+			this.finish({ type: "snapshot", name });
+			return;
+		}
+		if (data === "d") {
+			this.finish({ type: "duplicate", name });
+			return;
+		}
+		if (data === "r") {
+			this.finish({ type: "rename", name });
+			return;
+		}
+		if (data === "x") {
+			this.finish({ type: "delete", name });
+			return;
+		}
+		if (data === "n") {
+			this.finish({ type: "create" });
+			return;
+		}
+		if (data === "i") {
+			this.finish({ type: "import-profile" });
+			return;
+		}
+		if (data === "E") {
+			this.finish({ type: "export-profile", name });
+			return;
+		}
+		if (data === "p") {
+			this.finish({ type: "pin", source: "local", name });
+			return;
+		}
+		if (data === "P") {
+			this.finish({ type: "pin", source: "repo", name });
+			return;
+		}
+	}
+
+	private handlePickerInput(data: string): void {
+		const options = this.filteredModelOptions();
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		if (matchesKey(data, "escape")) {
+			this.closePicker();
+			return;
+		}
+		if (matchesKey(data, "backspace")) {
+			this.query = this.query.slice(0, -1);
+			this.modelCursor = Math.min(this.modelCursor, Math.max(0, options.length - 1));
+			return;
+		}
+		if (matchesKey(data, "down") || data === "j") {
+			if (this.picker === "models") {
+				this.modelCursor = Math.min(Math.max(0, options.length - 1), this.modelCursor + 1);
+			} else {
+				this.effortCursor = Math.min(THINKING_OPTIONS.length - 1, this.effortCursor + 1);
+			}
+			return;
+		}
+		if (matchesKey(data, "up") || data === "k") {
+			if (this.picker === "models") {
+				this.modelCursor = Math.max(0, this.modelCursor - 1);
+			} else {
+				this.effortCursor = Math.max(0, this.effortCursor - 1);
+			}
+			return;
+		}
+		if (matchesKey(data, "return")) {
+			if (this.picker === "models") {
+				const selected = options[this.modelCursor];
+				if (selected === undefined) return;
+				this.applyModelSelection(selected === INHERIT_MODEL ? undefined : selected);
+			} else {
+				const selected = THINKING_OPTIONS[this.effortCursor];
+				this.applyThinkingSelection(selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel));
+			}
+			this.closePicker();
+			return;
+		}
+		if (this.picker === "models" && data.length === 1 && data.charCodeAt(0) >= 32) {
+			this.query += data;
+			this.modelCursor = 0;
+		}
+	}
+
+	private openPicker(kind: "models" | "effort"): void {
+		this.selectedRow = this.rows[this.cursor] ?? "Set all agents";
+		if (this.selectedRow === PROFILE_ORCHESTRATOR_KEY && kind === "effort" && !this.draft[this.selectedRow]?.model) return;
+		this.picker = kind;
+		this.query = "";
+		this.modelCursor = 0;
+		this.effortCursor = 0;
+	}
+
+	private selectedRow = "Set all agents";
+
+	private closePicker(): void {
+		this.picker = undefined;
+		this.query = "";
+	}
+
+	private loadProfile(name: string): void {
+		// Loading another profile replaces the draft. The loop reopens the panel
+		// with that profile, so here we only surface it through the result the
+		// loop understands: save the draft first is NOT implied — loading
+		// discards unsaved edits on purpose, and the ● dot already warned.
+		this.mode = "table";
+		this.finish({ type: "load", name });
+	}
+
+	private profileConfig(name: string): AgentModelConfig {
+		return cloneModelConfig(normalizeModelConfig(this.file.profiles[name]) ?? {});
+	}
+
+	private profileNames(): string[] {
+		return Object.keys(this.file.profiles).filter((name) => hasOwnProfile(this.file.profiles, name));
+	}
+
+	// -- render ---------------------------------------------------------------
 
 	render(width: number): string[] {
 		this.hitRegions = [];
-		if (this.mode === "agents") {
-			return this.renderCard(this.renderAgentList(width), width);
+		if (this.picker !== undefined || this.mode === "profiles") {
+			// The background table renders for context only; its regions are
+			// discarded because the card is modal.
+			const live = this.hitRegions;
+			this.hitRegions = [];
+			const tableLines = this.tableLines(width);
+			this.hitRegions = live;
+			const cardBody =
+				this.picker === "models"
+					? this.renderModelPicker(this.pickerWidth(width))
+					: this.picker === "effort"
+						? this.renderEffortPicker(this.pickerWidth(width))
+						: this.renderProfilesCard(this.pickerWidth(width));
+			return this.renderCardOverTable(cardBody, this.pickerWidth(width), tableLines, width);
 		}
-		return this.renderPickerOverTable(width);
+		return this.renderCard(this.tableLines(width), width);
+	}
+
+	private pickerWidth(width: number): number {
+		return Math.min(64, Math.max(36, width - 12));
+	}
+
+	private addRegion(action: RoutingTableMouseAction, y: number, x0: number, x1: number): void {
+		this.hitRegions.push({ y, x0, x1, action });
+	}
+
+	private renderCard(body: string[], width: number): string[] {
+		const inner = Math.max(1, width - 4);
+		const horizontal = "─".repeat(inner + 2);
+		const border = (text: string) => this.renderText(text, "border");
+		const rows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
+		const padded = body.length < rows ? [...body, ...Array<string>(rows - body.length).fill("")] : body;
+		return [
+			border(`╭${horizontal}╮`),
+			...padded.map((line) => `${border("│")} ${this.fitStyledLine(line, inner)} ${border("│")}`),
+			border(`╰${horizontal}╯`),
+		];
 	}
 
 	/**
-	 * Picker modes no longer replace the whole screen — that was the standalone
-	 * panel's look and made Back feel like switching to a second UI. The agent
-	 * table stays rendered behind a centered picker card, the same visual
-	 * language as the action menu and the orchestrator picker, so Back reveals
-	 * the table that was there all along. The picker's regions are recorded in
-	 * its own card coordinates and translated into frame coordinates here.
+	 * A centered card over the table: the table stays visible behind so popovers
+	 * never feel like a different screen. Regions are translated from the card's
+	 * content coordinates into frame coordinates.
 	 */
-	private renderPickerOverTable(width: number): string[] {
-		const discard: RoutingHitRegion[] = [];
-		const live = this.hitRegions;
-		this.hitRegions = discard;
-		const tableLines = this.renderAgentList(width);
-		this.hitRegions = live;
-		const pickerStart = this.hitRegions.length;
-		const pickerWidth = Math.min(64, Math.max(36, width - 12));
-		const pickerInner = pickerWidth - 4;
-		const pickerLines =
-			this.mode === "models"
-				? this.renderModelPicker(pickerInner)
-				: this.renderEffortPicker(pickerInner);
-		const pickerRegions = this.hitRegions.splice(pickerStart);
-		const cardHeight = pickerLines.length + 2;
+	private renderCardOverTable(cardBody: string[], cardWidth: number, tableLines: string[], width: number): string[] {
+		const cardHeight = cardBody.length + 2;
 		const rows = this.terminalRows
-			? Math.max(pickerLines.length + 4, Math.floor(this.terminalRows()))
-			: pickerLines.length + 4;
+			? Math.max(cardHeight + 4, Math.floor(this.terminalRows()))
+			: cardHeight + 4;
 		const top = Math.max(2, Math.floor((rows - cardHeight) / 2));
-		const left = Math.max(2, Math.floor((width - pickerWidth) / 2));
-		// Picker regions are content-relative (y counts picker body lines, x
-		// counts columns inside the card). The card's content line i renders at
-		// body row top+i+1, i.e. frame row top+i+2, and content starts at the
-		// card's left edge plus the border and space columns.
-		for (const region of pickerRegions) {
-			this.hitRegions.push({
-				...region,
-				y: region.y + top + 2,
-				x0: left + 2 + region.x0,
-				x1: left + 2 + region.x1,
-			});
-		}
-		const rule = "─".repeat(pickerWidth - 2);
+		const left = Math.max(2, Math.floor((width - cardWidth) / 2));
+		const translated: RoutingHitRegion[] = this.hitRegions.map((region) => ({
+			...region,
+			y: region.y + top + 2,
+			x0: left + 2 + region.x0,
+			x1: left + 2 + region.x1,
+		}));
+		this.hitRegions = translated;
+		const rule = "─".repeat(cardWidth - 2);
 		const card: string[] = [
 			`╭${rule}╮`,
-			...pickerLines.map((line) =>
-				`│ ${this.fitStyledLine(line, pickerWidth - 4)} │`,
-			),
+			...cardBody.map((line) => `│ ${this.fitStyledLine(line, cardWidth - 4)} │`),
 			`╰${rule}╯`,
 		];
-		const bodyRows = this.terminalRows
-			? Math.floor(this.terminalRows()) - 2
-			: tableLines.length;
+		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : tableLines.length;
 		const body: string[] = [];
 		for (let row = 0; row < bodyRows; row += 1) {
 			const cardRow = row - top;
@@ -3321,91 +3554,11 @@ class RoutingEditorPanel implements OverlayComponent {
 		return this.renderCard(body, width);
 	}
 
-	// In the fullscreen overlay a list owns every row its chrome leaves free;
-	// without a terminal height it keeps the fixed window.
-	private visibleListRows(fixedRows: number, chromeRows: number): number {
-		if (!this.terminalRows) return fixedRows;
-		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
-	}
-
-	private renderCard(body: string[], width: number): string[] {
-		let lines = body;
-		const innerWidth = Math.max(1, width - 4);
-		const horizontal = "─".repeat(innerWidth + 2);
-		const border = (text: string) => this.renderText(text, "border");
-		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
-		if (lines.length < bodyRows) {
-			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
-		}
-		return [
-			border(`╭${horizontal}╮`),
-			...lines.map(
-				(line) =>
-					`${border("│")} ${this.fitStyledLine(line, innerWidth)} ${border("│")}`,
-			),
-			border(`╰${horizontal}╯`),
-		];
-	}
-
-	private fitStyledLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
-
-	private renderLine(text = "", width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-
-	/** The hover highlight the profiles list uses: the pending background fills the whole row. */
-	private hoverWrap(action: RoutingMouseAction, line: string): string {
-		if (!this.theme || JSON.stringify(this.hovered) !== JSON.stringify(action)) return line;
-		return this.theme.bg("toolPendingBg", stripAnsi(line));
-	}
-
-	private renderCursor(focused: boolean): string {
-		return focused ? this.renderText("▸", "accent") : " ";
-	}
-
-	// -- agents table ---------------------------------------------------------
-
-	private agentColumnWidth(): number {
-		const longest = Math.max(
-			SET_ALL_AGENTS.length,
-			PROFILE_ORCHESTRATOR_KEY.length,
-			...this.agents.map((name) => visibleWidth(name)),
-		);
-		return Math.min(28, longest + 2);
-	}
-
-	private renderAgentList(width: number): string[] {
+	private tableLines(width: number): string[] {
 		const lines: string[] = [];
-		// Hit regions live in terminal coordinates: the card chrome renders the body
-		// one row lower (the top border), so every region adds the same offset.
-		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
-			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
-		lines.push(this.renderLine(`Routing — ${this.profileName}`, width, "title"));
-		lines.push(
-			this.renderLine(
-				`${this.agents.length} agent${this.agents.length === 1 ? "" : "s"} discovered · saved to profile "${this.profileName}" on Save`,
-				width,
-				"muted",
-			),
-		);
+		const tableRegion = (action: RoutingTableMouseAction, y: number, x0: number, x1: number) =>
+			this.hitRegions.push({ y, x0, x1, action });
+		lines.push(this.renderTitle(width));
 		lines.push("");
 		const agentCol = this.agentColumnWidth();
 		const header =
@@ -3420,61 +3573,39 @@ class RoutingEditorPanel implements OverlayComponent {
 			this.rows.length,
 		);
 		const listCursor = Math.min(this.cursor, this.rows.length - 1);
-		const start = Math.max(
-			0,
-			Math.min(
-				listCursor - Math.floor(visibleRows / 2),
-				Math.max(0, this.rows.length - visibleRows),
-			),
-		);
+		const start = Math.max(0, Math.min(listCursor - Math.floor(visibleRows / 2), Math.max(0, this.rows.length - visibleRows)));
 		const end = Math.min(this.rows.length, start + visibleRows);
 		if (start > 0) lines.push(this.renderLine(`  ↑ ${start} more agent(s)`, width, "muted"));
 		for (let i = start; i < end; i++) {
-			const row = this.rows[i] ?? SET_ALL_AGENTS;
+			const row = this.rows[i] ?? "Set all agents";
 			const focused = i === this.cursor;
-			const label =
-				row === SET_ALL_AGENTS
-					? this.renderSetAllLabel(row, agentCol)
-					: this.renderAgentLabel(row, agentCol);
+			const label = this.renderRowLabel(row, agentCol);
 			const plain = `${this.renderCursor(focused)} ${label}`;
-			// The effort value is its own click target: clicking where "effort=" is
-			// rendered opens the effort picker instead of the model picker. It is
-			// registered before the whole-row region so it wins the hit test.
 			const effortIdx = stripAnsi(plain).indexOf("effort=");
-			if (effortIdx >= 0) addRegion({ kind: "effort", row }, 2 + effortIdx, width);
-			addRegion({ kind: "row", row }, 0, width);
+			if (effortIdx >= 0) {
+				tableRegion({ kind: "effort", row }, lines.length + 1, 2 + effortIdx, width);
+			}
+			tableRegion({ kind: "row", row }, lines.length + 1, 0, width);
 			lines.push(this.hoverWrap({ kind: "row", row }, plain));
 		}
-		if (end < this.rows.length)
-			lines.push(this.renderLine(`  ↓ ${this.rows.length - end} more agent(s)`, width, "muted"));
+		if (end < this.rows.length) lines.push(this.renderLine(`  ↓ ${this.rows.length - end} more agent(s)`, width, "muted"));
 		lines.push("");
 
-		// Clickable footer buttons, one hit region per rendered bracket group.
-		const buttons: RoutingButton[] = ["save", "custom", "inherit", "export", "restore", "cancel"];
+		// Clickable footer actions — the whole surface's vocabulary.
 		let x = 0;
 		let footer = "";
-		for (const button of buttons) {
-			const label = ROUTING_BUTTON_LABELS[button];
+		for (const button of ["use", "apply", "save", "profiles", "cancel"] as const) {
+			const label = ROUTING_TABLE_BUTTONS[button];
 			const chunk = `[ ${label} ]  `;
-			const enabled = this.buttonEnabled(button);
-			const rendered = enabled
-				? this.renderText(chunk, "accent")
-				: this.renderText(chunk, "muted");
-			if (enabled) this.hitRegions.push({ y: lines.length + 1, x0: 2 + x, x1: 2 + x + chunk.length - 1, action: { kind: "button", button } });
+			tableRegion({ kind: "button", button }, lines.length + 1, 2 + x, 2 + x + chunk.length - 1);
 			x += chunk.length;
-			footer += rendered;
+			footer += this.renderText(chunk, button === "cancel" ? "muted" : "accent");
 		}
 		lines.push(footer);
+		const dirtyDot = this.dirty ? "● unsaved · " : "";
 		lines.push(
 			this.renderLine(
-				`enter model · e effort · i ${this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY ? LEAVE_ORCHESTRATOR_UNTOUCHED : isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} · c custom · ctrl+s save · esc cancel`,
-				width,
-				"muted",
-			),
-		);
-		lines.push(
-			this.renderLine(
-				"x export models.json · r restore models.json · mouse: click row = model, click effort = effort",
+				`${dirtyDot}click model/effort to edit · enter model · e effort · u use · a global · ctrl+s save · p profiles · esc close`,
 				width,
 				"muted",
 			),
@@ -3482,286 +3613,216 @@ class RoutingEditorPanel implements OverlayComponent {
 		return lines;
 	}
 
-	private buttonEnabled(button: RoutingButton): boolean {
-		if (button === "inherit") {
-			const row = this.rows[this.cursor];
-			return row !== PROFILE_ORCHESTRATOR_KEY || Boolean(this.draft[row]?.model);
-		}
-		return true;
+	private renderTitle(width: number): string {
+		const dot = this.dirty ? " ●" : "";
+		const markers = this.markers.length > 0 ? `  (${this.markers})` : "";
+		return this.renderLine(`Routing · ${this.profileName}${dot}${markers}`, width, "title");
 	}
 
-	private handleButton(button: RoutingButton): void {
-		if (!this.buttonEnabled(button)) return;
-		if (button === "save") {
-			this.done({ type: "save", config: this.draft });
-			return;
+	private renderRowLabel(row: string, agentCol: number): string {
+		if (row === "Set all agents") {
+			const models = this.agents.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
+			const efforts = this.agents.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
+			const same = (values: string[]): string => (values.every((entry) => entry === values[0]) ? values[0] : "mixed");
+			return `${this.renderText(sanitizeTerminalText(row).padEnd(agentCol), "muted")} ${this.renderText("model=", "muted")}${this.renderText(same(models), "status")}${this.renderText(", effort=", "muted")}${this.renderText(same(efforts), "status")}`;
 		}
-		if (button === "cancel") {
-			this.done({ type: "cancel" });
-			return;
+		if (row === PROFILE_ORCHESTRATOR_KEY && !this.draft[row]?.model) {
+			return `${this.renderText("ORCHESTRATOR".padEnd(agentCol), "title")} ${this.renderText(LEAVE_ORCHESTRATOR_UNTOUCHED, "status")}`;
 		}
-		if (button === "custom") {
-			const row = this.rows[this.cursor];
-			this.done({
-				type: "custom",
-				agent: row === SET_ALL_AGENTS || !row ? "all" : row,
-				config: this.draft,
-			});
-			return;
-		}
-		if (button === "inherit") {
-			this.applyInherit();
-			return;
-		}
-		if (button === "export") {
-			this.done({ type: "export", config: this.draft });
-			return;
-		}
-		if (button === "restore") {
-			this.done({ type: "restore", config: this.draft });
-			return;
-		}
+		const tone: PanelTone = row === PROFILE_ORCHESTRATOR_KEY ? "title" : "text";
+		const label = row === PROFILE_ORCHESTRATOR_KEY ? "ORCHESTRATOR" : sanitizeTerminalText(row);
+		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
+		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
+		return `${this.renderText(label.padEnd(agentCol), tone)} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(", effort=", "muted")}${this.renderText(effort, "status")}`;
 	}
 
-	private handleAgentInput(data: string): void {
-		const maxCursor = this.rows.length - 1;
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "ctrl+s")) {
-			this.done({ type: "save", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.cursor = Math.min(maxCursor, this.cursor + 1);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			this.cursor = Math.max(0, this.cursor - 1);
-			return;
-		}
-		if (matchesKey(data, "g")) {
-			this.cursor = 0;
-			return;
-		}
-		if (data === "G") {
-			this.cursor = maxCursor;
-			return;
-		}
-		if (matchesKey(data, "i")) {
-			this.applyInherit();
-			return;
-		}
-		if (matchesKey(data, "e")) {
-			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-			if (this.selectedRow === PROFILE_ORCHESTRATOR_KEY && !this.draft[this.selectedRow]?.model) return;
-			this.mode = "effort";
-			this.effortCursor = 0;
-			return;
-		}
-		if (matchesKey(data, "x")) {
-			this.done({ type: "export", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "r")) {
-			this.done({ type: "restore", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "c")) {
-			const row = this.rows[this.cursor];
-			this.done({
-				type: "custom",
-				agent: row === SET_ALL_AGENTS || !row ? "all" : row,
-				config: this.draft,
-			});
-			return;
-		}
-		if (!matchesKey(data, "return")) return;
-		this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-		this.mode = "models";
-		this.modelCursor = 0;
-		this.query = "";
+	private agentColumnWidth(): number {
+		const longest = Math.max(
+			"Set all agents".length,
+			"ORCHESTRATOR".length,
+			...this.agents.map((name) => visibleWidth(name)),
+		);
+		return Math.min(28, longest + 2);
 	}
 
-	// -- model picker ---------------------------------------------------------
+	private renderCursor(focused: boolean): string {
+		return focused ? this.renderText("▸", "accent") : " ";
+	}
+
+	private hoverWrap(action: RoutingTableMouseAction, line: string): string {
+		if (!this.theme) return line;
+		const key = JSON.stringify(this.hoverKey(action));
+		if (JSON.stringify(this.hovered) !== key) return line;
+		return this.theme.bg("toolPendingBg", stripAnsi(line));
+	}
+
+	private renderText(text: string, tone: PanelTone): string {
+		const safe = sanitizeTerminalText(text);
+		if (!this.theme) return safe;
+		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
+	}
+
+	private renderLine(text: string, width: number, tone?: PanelTone): string {
+		const safe = truncateToWidth(sanitizeTerminalText(text), Math.max(1, width), "…", true);
+		return tone ? this.renderText(safe, tone) : safe;
+	}
+
+	private fitStyledLine(line: string, width: number): string {
+		const visible = stripAnsi(line);
+		if (visible.length > width) {
+			return truncateToWidth(visible, Math.max(1, width), "…", true);
+		}
+		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
+	}
+
+	private visibleListRows(fixedRows: number, chromeRows: number): number {
+		if (!this.terminalRows) return fixedRows;
+		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	}
+
+	// -- model / effort popovers ----------------------------------------------
 
 	private filteredModelOptions(): string[] {
-		const options = this.selectedRow === PROFILE_ORCHESTRATOR_KEY
-			? this.modelOptions.map((option) => option === INHERIT_MODEL ? LEAVE_ORCHESTRATOR_UNTOUCHED : option)
-			: this.modelOptions;
 		const query = this.query.trim().toLowerCase();
-		if (!query) return options;
-		return options.filter((option) =>
-			option.toLowerCase().includes(query),
-		);
+		if (!query) return this.modelOptions;
+		return this.modelOptions.filter((option) => option.toLowerCase().includes(query));
 	}
 
 	private renderModelPicker(width: number): string[] {
 		const lines: string[] = [];
-		// Content-relative regions: renderPickerOverTable translates them into
-		// frame coordinates once the card's position is known.
-		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
+		const addRegion = (action: RoutingTableMouseAction, x0: number, x1: number) =>
 			this.hitRegions.push({ y: lines.length, x0, x1, action });
 		const options = this.filteredModelOptions();
-		lines.push(
-			this.renderLine(`Model · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
-		);
+		lines.push(this.renderLine(`Model · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"));
 		lines.push("");
-		const search = `${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`;
-		lines.push(search);
-		lines.push(this.renderText("─".repeat(Math.min(width, 64)), "border"));
+		lines.push(`${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`);
+		lines.push(this.renderText("─".repeat(Math.min(width, 56)), "border"));
 		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
-		const start = Math.max(
-			0,
-			Math.min(
-				this.modelCursor - Math.floor(visibleRows / 2),
-				Math.max(0, options.length - visibleRows),
-			),
-		);
+		const start = Math.max(0, Math.min(this.modelCursor - Math.floor(visibleRows / 2), Math.max(0, options.length - visibleRows)));
 		const end = Math.min(options.length, start + visibleRows);
 		for (let i = start; i < end; i++) {
+			const option = options[i] ?? "";
 			const focused = i === this.modelCursor;
-			const action: RoutingMouseAction = { kind: "model-option", index: i };
-			addRegion(action, 0, width);
-			const label =
-				options[i] === INHERIT_MODEL && isProviderReviewRole(this.selectedRow)
-					? routingDefaultLabel(this.selectedRow, "model")
-					: (options[i] ?? "");
-			const line = `${this.renderCursor(focused)} ${this.renderText(label, focused ? "status" : "text")}`;
-			lines.push(this.hoverWrap(action, line));
+			addRegion({ kind: "model-option", index: i }, 0, width);
+			const current = this.currentModelValue() === option ? "   (current)" : "";
+			const cursor = focused ? this.renderText("▸ ", "accent") : "  ";
+			lines.push(this.hoverWrap({ kind: "model-option", index: i }, `${cursor}${this.renderText(option, focused ? "status" : "text")}${this.renderText(current, "muted")}`));
 		}
 		if (options.length === 0) lines.push(this.renderLine("  No matching models", width, "muted"));
 		lines.push("");
-		this.pushBackButton(lines, addRegion);
-		lines.push(
-			this.renderLine("j/k navigate · type to search · enter select · esc back", width, "muted"),
-		);
+		this.pushCardButtons(lines, width, ["back"]);
+		lines.push(this.renderLine("j/k · type to search · enter select · esc back", width, "muted"));
 		return lines;
 	}
 
-	private pushBackButton(
-		lines: string[],
-		addRegion: (action: RoutingMouseAction, x0: number, x1: number) => void,
-	): void {
-		const chunk = "[ Back ]  ";
-		addRegion({ kind: "button", button: "back" }, 0, chunk.length);
-		lines.push(this.renderText(chunk, "accent"));
-	}
-
-	private handleModelInput(data: string): void {
-		const options = this.filteredModelOptions();
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
+	private currentModelValue(): string | undefined {
+		const row = this.selectedRow;
+		if (row === "Set all agents") {
+			const models = this.agents.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
+			return models.every((entry) => entry === models[0]) ? models[0] : undefined;
 		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			this.query = "";
-			return;
-		}
-		if (matchesKey(data, "backspace")) {
-			this.query = this.query.slice(0, -1);
-			this.modelCursor = Math.min(
-				this.modelCursor,
-				Math.max(0, this.filteredModelOptions().length - 1),
-			);
-			return;
-		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.modelCursor = Math.min(
-				Math.max(0, options.length - 1),
-				this.modelCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			this.modelCursor = Math.max(0, this.modelCursor - 1);
-			return;
-		}
-		if (matchesKey(data, "return")) {
-			this.commitModelSelection(options[this.modelCursor]);
-			return;
-		}
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.query += data;
-			this.modelCursor = 0;
-		}
-	}
-
-	private commitModelSelection(selected: string | undefined): void {
-		if (!selected) return;
-		if (selected === CUSTOM_MODEL) {
-			this.done({
-				type: "custom",
-				agent: this.selectedRow === SET_ALL_AGENTS ? "all" : this.selectedRow,
-				config: this.draft,
-			});
-			return;
-		}
-		if (selected === KEEP_CURRENT) {
-			this.mode = "agents";
-			return;
-		}
-		this.applyModelSelection(
-			selected === INHERIT_MODEL || selected === LEAVE_ORCHESTRATOR_UNTOUCHED ? undefined : selected,
-		);
-		this.mode = "agents";
-	}
-
-	// -- effort picker --------------------------------------------------------
-
-	private handleEffortInput(data: string): void {
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			return;
-		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.effortCursor = Math.min(
-				Math.max(0, THINKING_OPTIONS.length - 1),
-				this.effortCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			this.effortCursor = Math.max(0, this.effortCursor - 1);
-			return;
-		}
-		if (!matchesKey(data, "return")) return;
-		const selected = THINKING_OPTIONS[this.effortCursor];
-		if (selected === INHERIT_THINKING) this.applyThinkingSelection(undefined);
-		else this.applyThinkingSelection(selected);
-		this.mode = "agents";
+		return this.draft[row]?.model ?? routingDefaultLabel(row, "model");
 	}
 
 	private renderEffortPicker(width: number): string[] {
 		const lines: string[] = [];
-		// Content-relative regions, translated by renderPickerOverTable.
-		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
+		const addRegion = (action: RoutingTableMouseAction, x0: number, x1: number) =>
 			this.hitRegions.push({ y: lines.length, x0, x1, action });
-		lines.push(
-			this.renderLine(`Effort · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
-		);
+		lines.push(this.renderLine(`Effort · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"));
 		lines.push("");
-		lines.push(this.renderText("─".repeat(Math.min(width, 64)), "border"));
 		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
 			const focused = i === this.effortCursor;
-			const action: RoutingMouseAction = { kind: "effort-option", index: i };
-			addRegion(action, 0, width);
-			const label =
-				THINKING_OPTIONS[i] === INHERIT_THINKING && isProviderReviewRole(this.selectedRow)
-					? routingDefaultLabel(this.selectedRow, "effort")
-					: (THINKING_OPTIONS[i] ?? "");
-			const line = `${this.renderCursor(focused)} ${this.renderText(label, focused ? "status" : "text")}`;
-			lines.push(this.hoverWrap(action, line));
+			addRegion({ kind: "effort-option", index: i }, 0, width);
+			const cursor = focused ? this.renderText("▸ ", "accent") : "  ";
+			lines.push(this.hoverWrap({ kind: "effort-option", index: i }, `${cursor}${this.renderText(THINKING_OPTIONS[i] ?? "", focused ? "status" : "text")}`));
 		}
 		lines.push("");
-		this.pushBackButton(lines, addRegion);
-		lines.push(this.renderLine("j/k navigate · enter select · esc back", width, "muted"));
+		this.pushCardButtons(lines, width, ["back"]);
+		lines.push(this.renderLine("j/k · enter select · esc back", width, "muted"));
+		return lines;
+	}
+
+	private pushCardButtons(
+		lines: string[],
+		width: number,
+		buttons: ReadonlyArray<"back">,
+	): void {
+		void buttons;
+		const chunk = "[ Back ]  ";
+		this.hitRegions.push({ y: lines.length, x0: 0, x1: chunk.length, action: { kind: "button", button: "back" } });
+		lines.push(this.renderText(chunk, "accent"));
+		void width;
+	}
+
+	// -- profiles popover -----------------------------------------------------
+
+	private renderProfilesCard(width: number): string[] {
+		const lines: string[] = [];
+		const addRegion = (y: number, x0: number, x1: number) =>
+			this.hitRegions.push({ y, x0, x1, action: { kind: "profiles-row", index: y } });
+		const names = this.profileNames();
+		void addRegion;
+		lines.push(this.renderLine("Profiles", width, "title"));
+		lines.push("");
+		for (const [index, name] of names.entries()) {
+			const focused = index === this.profilesCursor;
+			this.hitRegions.push({
+				y: lines.length,
+				x0: 0,
+				x1: width,
+				action: { kind: "profiles-row", index },
+			});
+			const count = Object.keys(normalizeModelConfig(this.file.profiles[name]) ?? {}).filter((key) => !isProfileOrchestratorKey(key)).length;
+			const markers = [
+				this.file.active === name ? "active" : undefined,
+				this.sessionBoundName === name ? "session" : undefined,
+				this.pinWinner === name ? "pinned" : undefined,
+			].filter((marker): marker is string => marker !== undefined);
+			const suffix = markers.length > 0 ? `   (${markers.join(" · ")})` : "";
+			const cursor = focused ? this.renderText("▸ ", "accent") : "  ";
+			lines.push(
+				this.hoverWrap(
+					{ kind: "profiles-row", index },
+					`${cursor}${this.renderText(sanitizeTerminalText(name), focused ? "status" : "text")}${this.renderText(`   ${count} role${count === 1 ? "" : "s"}${suffix}`, "muted")}`,
+				),
+			);
+		}
+		lines.push("");
+		let x = 0;
+		let footer = "";
+		for (const action of ["use", "apply", "snapshot", "duplicate", "rename", "delete"] as const) {
+			const chunk = `[ ${PROFILES_POPOVER_BUTTONS[action]} ]  `;
+			this.hitRegions.push({
+				y: lines.length,
+				x0: x,
+				x1: x + chunk.length,
+				action: { kind: "profiles-button", button: action },
+			});
+			x += chunk.length;
+			footer += this.renderText(chunk, "accent");
+		}
+		lines.push(footer);
+		let x2 = 0;
+		let footer2 = "";
+		for (const action of ["new", "import", "export", "pin", "publish"] as const) {
+			const chunk = `[ ${PROFILES_POPOVER_BUTTONS[action]} ]  `;
+			this.hitRegions.push({
+				y: lines.length,
+				x0: x2,
+				x1: x2 + chunk.length,
+				action: { kind: "profiles-button", button: action },
+			});
+			x2 += chunk.length;
+			footer2 += this.renderText(chunk, "accent");
+		}
+		lines.push(footer2);
+		lines.push(
+			this.renderLine(
+				"↑↓ profile · enter load · key on the buttons · esc back — loading discards unsaved edits",
+				width,
+				"muted",
+			),
+		);
 		return lines;
 	}
 
@@ -3770,16 +3831,22 @@ class RoutingEditorPanel implements OverlayComponent {
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.type === "wheel" && event.wheelDelta) {
 			const delta = event.wheelDelta < 0 ? -1 : 1;
-			if (this.mode === "models") {
+			if (this.picker === "models") {
 				const options = this.filteredModelOptions();
 				const before = this.modelCursor;
 				this.modelCursor = Math.max(0, Math.min(options.length - 1, before + delta));
 				return { handled: true, render: before !== this.modelCursor };
 			}
-			if (this.mode === "effort") {
+			if (this.picker === "effort") {
 				const before = this.effortCursor;
 				this.effortCursor = Math.max(0, Math.min(THINKING_OPTIONS.length - 1, before + delta));
 				return { handled: true, render: before !== this.effortCursor };
+			}
+			if (this.mode === "profiles") {
+				const names = this.profileNames();
+				const before = this.profilesCursor;
+				this.profilesCursor = Math.max(0, Math.min(names.length - 1, before + delta));
+				return { handled: true, render: before !== this.profilesCursor };
 			}
 			const before = this.cursor;
 			this.cursor = Math.max(0, Math.min(this.rows.length - 1, before + delta));
@@ -3788,100 +3855,136 @@ class RoutingEditorPanel implements OverlayComponent {
 		if (event.type !== "move" && event.type !== "press" && event.type !== "click") return undefined;
 		if (event.type === "move" && event.button !== "none") return undefined;
 		if (event.type === "move") {
-			// Hover matches the region's line regardless of column extent, so a
-			// whole row lights up instead of just its cells.
 			const hovered = this.hitRegions.find((region) => event.y === region.y);
-			// An effort cell hover lights up its whole row, so the highlight normalizes
-			// the effort region back to the row action the line is rendered with.
 			const raw = hovered?.action;
-			const next = raw !== undefined && raw.kind === "effort" ? { kind: "row", row: raw.row } as const : raw;
-			const changed = JSON.stringify(this.hovered) !== JSON.stringify(next ?? undefined);
-			this.hovered = next;
+			const key = raw ? JSON.stringify(this.hoverKey(raw)) : undefined;
+			const changed = key !== (this.hovered ? JSON.stringify(this.hovered) : undefined);
+			this.hovered = raw ? this.hoverKey(raw) : undefined;
 			return { handled: hovered !== undefined, render: changed };
 		}
 		const hit = this.hitRegions.find(
-			(region) =>
-				event.y === region.y && event.x >= region.x0 && event.x < region.x1,
+			(region) => event.y === region.y && event.x >= region.x0 && event.x < region.x1,
 		);
 		if (!hit) return undefined;
 		return this.dispatchMouse(hit.action);
 	}
 
-	private dispatchMouse(action: RoutingMouseAction): TuiMouseEventResult | undefined {
+	private hoverKey(action: RoutingTableMouseAction): { kind: string; id: string } {
+		if (action.kind === "row" || action.kind === "effort") return { kind: action.kind, id: action.row };
+		if (action.kind === "profiles-row") return { kind: "profiles-row", id: String(action.index) };
+		if (action.kind === "model-option" || action.kind === "effort-option") return { kind: action.kind, id: String(action.index) };
+		return { kind: "button", id: action.button };
+	}
+
+	private dispatchMouse(action: RoutingTableMouseAction): TuiMouseEventResult | undefined {
 		switch (action.kind) {
 			case "button": {
 				if (action.button === "back") {
-					this.mode = "agents";
-					this.query = "";
+					if (this.picker !== undefined) this.closePicker();
+					else if (this.mode === "profiles") this.mode = "table";
 					return { handled: true, render: true };
 				}
-				this.handleButton(action.button);
+				this.handleTableButton(action.button);
 				return { handled: true };
 			}
 			case "row": {
 				this.cursor = Math.max(0, this.rows.indexOf(action.row));
-				this.selectedRow = action.row;
-				this.mode = "models";
-				this.modelCursor = 0;
-				this.query = "";
+				this.openPicker("models");
 				return { handled: true, render: true };
 			}
 			case "effort": {
 				this.cursor = Math.max(0, this.rows.indexOf(action.row));
-				this.selectedRow = action.row;
-				if (action.row === PROFILE_ORCHESTRATOR_KEY && !this.draft[action.row]?.model) {
-					return { handled: true, render: true };
-				}
-				this.mode = "effort";
-				this.effortCursor = 0;
+				this.openPicker("effort");
 				return { handled: true, render: true };
 			}
 			case "model-option": {
 				this.modelCursor = action.index;
 				const selected = this.filteredModelOptions()[action.index];
 				if (selected === undefined) return { handled: true, render: true };
-				this.commitModelSelection(selected);
+				this.applyModelSelection(selected === INHERIT_MODEL ? undefined : selected);
+				this.closePicker();
 				return { handled: true, render: true };
 			}
 			case "effort-option": {
 				this.effortCursor = action.index;
 				const selected = THINKING_OPTIONS[action.index];
-				if (selected === INHERIT_THINKING) this.applyThinkingSelection(undefined);
-				else if (selected) this.applyThinkingSelection(selected);
-				this.mode = "agents";
+				this.applyThinkingSelection(selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel));
+				this.closePicker();
 				return { handled: true, render: true };
+			}
+			case "profiles-row": {
+				const names = this.profileNames();
+				this.profilesCursor = Math.min(names.length - 1, action.index);
+				return { handled: true, render: true };
+			}
+			case "profiles-button": {
+				const names = this.profileNames();
+				const name = names[this.profilesCursor];
+				if (!name) return { handled: true };
+				switch (action.button) {
+					case "use": this.finish({ type: "use-session", name, config: this.profileConfig(name) }); return { handled: true };
+					case "apply": this.finish({ type: "apply-global", name, config: this.profileConfig(name) }); return { handled: true };
+					case "snapshot": this.finish({ type: "snapshot", name }); return { handled: true };
+					case "duplicate": this.finish({ type: "duplicate", name }); return { handled: true };
+					case "rename": this.finish({ type: "rename", name }); return { handled: true };
+					case "delete": this.finish({ type: "delete", name }); return { handled: true };
+					case "new": this.finish({ type: "create" }); return { handled: true };
+					case "import": this.finish({ type: "import-profile" }); return { handled: true };
+					case "export": this.finish({ type: "export-profile", name }); return { handled: true };
+					case "pin": this.finish({ type: "pin", source: "local", name }); return { handled: true };
+					case "publish": this.finish({ type: "pin", source: "repo", name }); return { handled: true };
+					default: return { handled: true };
+				}
 			}
 		}
 	}
 
-	// -- draft helpers (unchanged semantics from the standalone model panel) --
+	private handleTableButton(button: string): void {
+		switch (button) {
+			case "use":
+				this.finish({ type: "use-session", name: this.profileName, config: cloneModelConfig(this.draft) });
+				return;
+			case "apply":
+				this.finish({ type: "apply-global", name: this.profileName, config: cloneModelConfig(this.draft) });
+				return;
+			case "save":
+				this.requestSave();
+				return;
+			case "profiles":
+				this.mode = "profiles";
+				this.profilesCursor = 0;
+				this.feedback = undefined;
+				return;
+			case "cancel":
+				this.finish({ type: "close" });
+				return;
+			case "back":
+				if (this.picker !== undefined) this.closePicker();
+				else this.mode = "table";
+				return;
+		}
+	}
+
+	private requestSave(): void {
+		this.finish({ type: "save", name: this.profileName, config: cloneModelConfig(this.draft) });
+	}
 
 	private applyModelSelection(model: string | undefined): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
+		const row = this.selectedRow;
+		if (row === "Set all agents") {
 			for (const name of this.agents) this.setModel(name, model);
 			return;
 		}
-		if (!row) return;
 		this.setModel(row, model);
 	}
 
 	private applyThinkingSelection(thinking: ThinkingLevel | undefined): void {
 		const row = this.selectedRow;
-		if (row === SET_ALL_AGENTS) {
+		if (row === "Set all agents") {
 			for (const name of this.agents) this.setThinking(name, thinking);
 			return;
 		}
 		this.setThinking(row, thinking);
-	}
-
-	private applyInherit(): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.agents) this.clearEntry(name);
-			return;
-		}
-		if (row) this.clearEntry(row);
 	}
 
 	private setModel(name: string, model: string | undefined): void {
@@ -3905,65 +4008,25 @@ class RoutingEditorPanel implements OverlayComponent {
 		else this.draft[name] = current;
 	}
 
-	private clearEntry(name: string): void {
-		if (name === PROFILE_ORCHESTRATOR_KEY) delete this.draft[name];
-		else this.draft[name] = {};
-	}
+	private completed = false;
 
-	// -- row labels -----------------------------------------------------------
-
-	private renderSetAllLabel(row: string, agentCol: number): string {
-		const models = this.agents
-			.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
-		const efforts = this.agents
-			.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
-		const firstModel = models[0] ?? "inherit";
-		const firstEffort = efforts[0] ?? "inherit";
-		const modelLabel = models.every((value) => value === firstModel)
-			? firstModel
-			: "mixed";
-		const effortLabel = efforts.every((value) => value === firstEffort)
-			? firstEffort
-			: "mixed";
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(agentCol), "text")} ${this.renderText("model=", "muted")}${this.renderText(modelLabel, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effortLabel, "status")}`;
-	}
-
-	private renderAgentLabel(row: string, agentCol: number): string {
-		if (row === PROFILE_ORCHESTRATOR_KEY && !this.draft[row]?.model) {
-			return `${this.renderText(row.padEnd(agentCol), "text")} ${this.renderText(LEAVE_ORCHESTRATOR_UNTOUCHED, "status")}`;
-		}
-		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
-		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(agentCol), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effort, "status")}`;
+	private finish(result: RoutingTableResult): void {
+		if (this.completed) return;
+		this.completed = true;
+		this.done(result);
 	}
 }
 
-const ROUTING_BUTTON_LABELS: Record<RoutingButton, string> = {
-	save: "Save",
-	custom: "Custom",
-	inherit: "Inherit",
-	export: "Export",
-	restore: "Restore",
-	back: "Back",
-	cancel: "Cancel",
-	clear: "Clear",
-};
+type RoutingTableMouseAction =
+	| { kind: "row"; row: string }
+	| { kind: "effort"; row: string }
+	| { kind: "model-option"; index: number }
+	| { kind: "effort-option"; index: number }
+	| { kind: "profiles-row"; index: number }
+	| { kind: "profiles-button"; button: string }
+	| { kind: "button"; button: string };
 
-interface RoutingMouseEvent {
-	type: "move" | "click" | "press" | "wheel";
-	x: number;
-	y: number;
-	button?: string;
-	wheelDelta?: number;
-}
-
-function renderRoutingEditorForTesting(
+function renderRoutingTableForTesting(
 	initialConfig: AgentModelConfig,
 	modelOptions: string[],
 	agents: string[],
@@ -3971,20 +4034,26 @@ function renderRoutingEditorForTesting(
 	theme?: Theme,
 	terminalRows?: number,
 	inputs: string[] = [],
-	mouseEvents: RoutingMouseEvent[] = [],
-	results: RoutingEditorResult[] = [],
+	mouseEvents: Array<{ type: "move" | "click" | "press" | "wheel"; x: number; y: number; button?: string; wheelDelta?: number }> = [],
+	results: RoutingTableResult[] = [],
+	options: {
+		file?: AgentProfilesFile;
+		sessionBoundName?: string;
+		pinWinner?: string;
+	} = {},
 ): string[] {
-	const panel = new RoutingEditorPanel(
+	const panel = new RoutingTablePanel(
 		initialConfig,
 		modelOptions,
 		agents,
 		(result) => results.push(result),
 		theme,
-		undefined,
+		"current",
 		terminalRows === undefined ? undefined : () => terminalRows,
+		{ ...options, keybindings: undefined },
 	);
-	for (const data of inputs) panel.handleInput(data);
 	panel.render(width);
+	for (const data of inputs) panel.handleInput(data);
 	for (const event of mouseEvents) {
 		panel.handleMouse({
 			type: event.type,
@@ -4002,498 +4071,37 @@ function renderRoutingEditorForTesting(
 	return panel.render(width);
 }
 
-/**
- * The per-profile orchestrator picker: one focused card to choose the model and
- * effort the profile's reserved `orchestrator` entry carries. Saving writes the
- * profile in the store only — applying it to the session or settings.json stays
- * with the panel's apply/bind flows.
- */
-type OrchestratorPickerResult =
-	| { type: "save"; entry: AgentRoutingEntry | undefined }
-	| { type: "cancel" };
-
-class OrchestratorPickerPanel implements OverlayComponent {
-	private mode: "summary" | "model" | "effort" = "summary";
-	private modelCursor = 0;
-	private effortCursor = 0;
-	private query = "";
-	private hovered: { kind: string; id: string } | undefined;
-	private hitRegions: RoutingHitRegion[] = [];
-	private model: string | undefined;
-	private thinking: ThinkingLevel | undefined;
-	private readonly done: (result: OrchestratorPickerResult) => void;
-	private readonly theme: Theme | undefined;
-	private readonly keybindings: KeybindingsManager | undefined;
-	private readonly profileName: string;
-	private readonly modelOptions: string[];
-
-	constructor(
-		initial: AgentRoutingEntry | undefined,
-		modelOptions: string[],
-		done: (result: OrchestratorPickerResult) => void,
-		theme?: Theme,
-		profileName = "",
-		keybindings?: KeybindingsManager,
-	) {
-		this.model = initial?.model;
-		this.thinking = initial?.thinking;
-		this.modelOptions = modelOptions;
-		this.done = done;
-		this.theme = theme;
-		this.profileName = profileName;
-		this.keybindings = keybindings;
-	}
-
-	invalidate(): void {
-		this.hovered = undefined;
-	}
-
-	handleInput(data: string): void {
-		if (this.mode === "model") return this.handleModelInput(data);
-		if (this.mode === "effort") return this.handleEffortInput(data);
-		this.handleSummaryInput(data);
-	}
-
-	render(width: number): string[] {
-		this.hitRegions = [];
-		const lines =
-			this.mode === "model"
-				? this.renderModelList(width)
-				: this.mode === "effort"
-					? this.renderEffortList(width)
-					: this.renderSummary(width);
-		return this.renderCard(lines, width);
-	}
-
-	private addRegion(action: RoutingMouseAction, y: number, x0: number, x1: number): void {
-		this.hitRegions.push({ y, x0, x1, action });
-	}
-
-	private renderCard(body: string[], width: number): string[] {
-		const cardWidth = Math.min(52, Math.max(28, width - 6));
-		const inner = cardWidth - 4;
-		const rule = "─".repeat(cardWidth - 2);
-		const lines = [
-			this.renderText(`╭${rule}╮`, "border"),
-			...body.map((line) =>
-				`${this.renderText("│", "border")} ${this.fit(line, inner)} ${this.renderText("│", "border")}`,
-			),
-			this.renderText(`╰${rule}╯`, "border"),
-		];
-		return lines.map((line) => {
-			const pad = Math.max(0, width - stripAnsi(line).length);
-			return line + " ".repeat(pad);
-		});
-	}
-
-	private fit(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) return truncateToWidth(visible, Math.max(1, width), "…", true);
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-
-	private renderLine(text: string, width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(sanitizeTerminalText(text), Math.max(1, width), "…", true);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private hoverWrap(action: RoutingMouseAction, line: string): string {
-		const key = JSON.stringify(action);
-		if (!this.theme || JSON.stringify(this.hovered) !== key) return line;
-		return this.theme.bg("toolPendingBg", stripAnsi(line));
-	}
-
-	private rowActionOf(action: RoutingMouseAction): { kind: string; id: string } {
-		if (action.kind === "row" || action.kind === "effort") return { kind: action.kind, id: action.row };
-		return { kind: action.kind, id: String((action as { index?: number }).index ?? (action as { button?: string }).button ?? "") };
-	}
-
-	private renderSummary(width: number): string[] {
-		const lines: string[] = [];
-		const row = (label: string, value: string, action: RoutingMouseAction) => {
-			const y = lines.length + 1;
-			this.addRegion(action, y, 2, width);
-			const line = `  ${this.renderText(`${label}  `, "muted")}${this.renderText(value, "status")}`;
-			lines.push(this.hoverWrap(action, line));
-		};
-		lines.push(this.renderLine(`Orchestrator · ${this.profileName}`, width, "title"));
-		lines.push("");
-		row("Model", this.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED, { kind: "row", row: "model" });
-		row("Effort", this.thinking ?? INHERIT_THINKING, { kind: "row", row: "effort" });
-		lines.push("");
-		const buttonRow = lines.length + 1;
-		let x = 2;
-		let footer = "";
-		for (const button of ["save", "clear", "back"] as const) {
-			const label = ORCHESTRATOR_BUTTONS[button];
-			const chunk = `[ ${label} ]  `;
-			this.addRegion({ kind: "button", button }, buttonRow, x, x + chunk.length);
-			x += chunk.length;
-			footer += this.renderText(chunk, button === "back" ? "muted" : "accent");
-		}
-		lines.push(footer);
-		lines.push(this.renderLine("enter/click Save · m model · f effort · l clear · esc back", width, "muted"));
-		return lines;
-	}
-
-	private handleSummaryInput(data: string): void {
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "return")) return this.save();
-		if (data === "m") return this.openModelPicker();
-		if (data === "f") return this.openEffortPicker();
-		if (data === "l") {
-			this.model = undefined;
-			this.thinking = undefined;
-			return;
-		}
-	}
-
-	private openModelPicker(): void {
-		this.mode = "model";
-		this.modelCursor = 0;
-		this.query = "";
-	}
-
-	private openEffortPicker(): void {
-		if (!this.model) return;
-		this.mode = "effort";
-		this.effortCursor = 0;
-	}
-
-	private save(): void {
-		// Save commits the current state, including a removal: an entry-less
-		// profile never moves the orchestrator when applied or bound.
-		this.done({
-			type: "save",
-			entry: this.model === undefined
-				? undefined
-				: { model: this.model, ...(this.thinking === undefined ? {} : { thinking: this.thinking }) },
-		});
-	}
-
-	private filteredModels(): string[] {
-		// The orchestrator picker keeps its own option set: "leave untouched"
-		// (no entry) plus the real catalog models — the routing editor's
-		// Keep-current/Custom controls do not apply here.
-		const options = [
-			LEAVE_ORCHESTRATOR_UNTOUCHED,
-			...this.modelOptions.filter((option) => !(MODEL_CONTROL_OPTIONS as readonly string[]).includes(option)),
-		];
-		const query = this.query.trim().toLowerCase();
-		if (!query) return options;
-		return options.filter((option) => option.toLowerCase().includes(query));
-	}
-
-	private renderModelList(width: number): string[] {
-		const lines: string[] = [];
-		const options = this.filteredModels();
-		lines.push(this.renderLine(`Orchestrator model · ${this.profileName}`, width, "title"));
-		lines.push("");
-		lines.push(`${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`);
-		lines.push(this.renderText("─".repeat(Math.min(width, 48)), "border"));
-		for (let i = 0; i < options.length; i++) {
-			const y = lines.length + 1;
-			const action: RoutingMouseAction = { kind: "model-option", index: i };
-			this.addRegion(action, y, 2, width);
-			const cursor = i === this.modelCursor ? this.renderText("▸ ", "accent") : "  ";
-			lines.push(this.hoverWrap(action, `${cursor}${this.renderText(options[i] ?? "", i === this.modelCursor ? "status" : "text")}`));
-		}
-		if (options.length === 0) lines.push(this.renderLine("  No matching models", width, "muted"));
-		lines.push("");
-		this.pushButtonRow(lines, width, ["back"]);
-		lines.push(this.renderLine("j/k · type to search · enter select · esc back", width, "muted"));
-		return lines;
-	}
-
-	private handleModelInput(data: string): void {
-		const options = this.filteredModels();
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "summary";
-			this.query = "";
-			return;
-		}
-		if (matchesKey(data, "backspace")) {
-			this.query = this.query.slice(0, -1);
-			this.modelCursor = Math.min(this.modelCursor, Math.max(0, options.length - 1));
-			return;
-		}
-		if (matchesKey(data, "down") || data === "j") {
-			this.modelCursor = Math.min(Math.max(0, options.length - 1), this.modelCursor + 1);
-			return;
-		}
-		if (matchesKey(data, "up") || data === "k") {
-			this.modelCursor = Math.max(0, this.modelCursor - 1);
-			return;
-		}
-		if (matchesKey(data, "return")) {
-			const selected = options[this.modelCursor];
-			if (selected === undefined) return;
-			if (selected === LEAVE_ORCHESTRATOR_UNTOUCHED) {
-				this.model = undefined;
-				this.thinking = undefined;
-				this.mode = "summary";
-				this.query = "";
-				return;
-			}
-			this.model = selected;
-			this.openEffortPicker();
-			return;
-		}
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.query += data;
-			this.modelCursor = 0;
-		}
-	}
-
-	private renderEffortList(width: number): string[] {
-		const lines: string[] = [];
-		lines.push(this.renderLine(`Orchestrator effort · ${this.profileName}`, width, "title"));
-		lines.push("");
-		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
-			const y = lines.length + 1;
-			const action: RoutingMouseAction = { kind: "effort-option", index: i };
-			this.addRegion(action, y, 2, width);
-			const cursor = i === this.effortCursor ? this.renderText("▸ ", "accent") : "  ";
-			lines.push(this.hoverWrap(action, `${cursor}${this.renderText(THINKING_OPTIONS[i] ?? "", i === this.effortCursor ? "status" : "text")}`));
-		}
-		lines.push("");
-		this.pushButtonRow(lines, width, ["back"]);
-		lines.push(this.renderLine("j/k · enter select · esc back", width, "muted"));
-		return lines;
-	}
-
-	private handleEffortInput(data: string): void {
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "summary";
-			return;
-		}
-		if (matchesKey(data, "down") || data === "j") {
-			this.effortCursor = Math.min(THINKING_OPTIONS.length - 1, this.effortCursor + 1);
-			return;
-		}
-		if (matchesKey(data, "up") || data === "k") {
-			this.effortCursor = Math.max(0, this.effortCursor - 1);
-			return;
-		}
-		if (!matchesKey(data, "return")) return;
-		const selected = THINKING_OPTIONS[this.effortCursor];
-		this.thinking = selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel);
-		this.mode = "summary";
-	}
-
-	private pushButtonRow(lines: string[], width: number, buttons: ReadonlyArray<"back">): void {
-		void buttons;
-		const y = lines.length + 1;
-		const chunk = "[ Back ]  ";
-		this.addRegion({ kind: "button", button: "back" }, y, 2, 2 + chunk.length);
-		lines.push(this.renderText(chunk, "accent"));
-		void width;
-	}
-
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type === "wheel" && event.wheelDelta) {
-			const delta = event.wheelDelta < 0 ? -1 : 1;
-			if (this.mode === "model") {
-				const options = this.filteredModels();
-				const before = this.modelCursor;
-				this.modelCursor = Math.max(0, Math.min(options.length - 1, before + delta));
-				return { handled: true, render: before !== this.modelCursor };
-			}
-			if (this.mode === "effort") {
-				const before = this.effortCursor;
-				this.effortCursor = Math.max(0, Math.min(THINKING_OPTIONS.length - 1, before + delta));
-				return { handled: true, render: before !== this.effortCursor };
-			}
-			return undefined;
-		}
-		if (event.type !== "move" && event.type !== "press" && event.type !== "click") return undefined;
-		if (event.type === "move" && event.button !== "none") return undefined;
-		if (event.type === "move") {
-			const hovered = this.hitRegions.find((region) => event.y === region.y);
-			const raw = hovered?.action;
-			const key = raw ? JSON.stringify(this.rowKey(raw)) : undefined;
-			const changed = key !== (this.hovered ? JSON.stringify(this.hovered) : undefined);
-			this.hovered = raw ? this.rowKey(raw) : undefined;
-			return { handled: hovered !== undefined, render: changed };
-		}
-		const hit = this.hitRegions.find(
-			(region) => event.y === region.y && event.x >= region.x0 && event.x < region.x1,
-		);
-		if (!hit) return undefined;
-		return this.dispatchMouse(hit.action);
-	}
-
-	private rowKey(action: RoutingMouseAction): { kind: string; id: string } {
-		return this.rowActionOf(action);
-	}
-
-	private dispatchMouse(action: RoutingMouseAction): TuiMouseEventResult | undefined {
-		switch (action.kind) {
-			case "button": {
-				if (action.button === "back") {
-					if (this.mode === "summary") this.done({ type: "cancel" });
-					else this.mode = "summary";
-					return { handled: true, render: true };
-				}
-				if (action.button === "save") this.save();
-				if (action.button === "clear") {
-					this.model = undefined;
-					this.thinking = undefined;
-				}
-				return { handled: true, render: true };
-			}
-			case "row": {
-				if (action.row === "model") this.openModelPicker();
-				else if (action.row === "effort") this.openEffortPicker();
-				return { handled: true, render: true };
-			}
-			case "model-option": {
-				this.modelCursor = action.index;
-				const selected = this.filteredModels()[action.index];
-				if (selected === undefined) return { handled: true, render: true };
-				if (selected === LEAVE_ORCHESTRATOR_UNTOUCHED) {
-					this.model = undefined;
-					this.thinking = undefined;
-					this.mode = "summary";
-					this.query = "";
-					return { handled: true, render: true };
-				}
-				this.model = selected;
-				this.openEffortPicker();
-				return { handled: true, render: true };
-			}
-			case "effort-option": {
-				this.effortCursor = action.index;
-				const selected = THINKING_OPTIONS[action.index];
-				this.thinking = selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel);
-				this.mode = "summary";
-				return { handled: true, render: true };
-			}
-		}
-	}
+interface RoutingTablePanelRequest {
+	name: string;
+	config: AgentModelConfig;
+	file: AgentProfilesFile;
+	sessionBoundName?: string;
+	pinWinner?: string;
+	feedback?: string;
 }
 
-const ORCHESTRATOR_BUTTONS: Record<"save" | "clear" | "back", string> = {
-	save: "Save",
-	clear: "Clear",
-	back: "Back",
-};
-
-interface OrchestratorMouseEvent {
-	type: "move" | "click" | "press" | "wheel";
-	x: number;
-	y: number;
-	button?: string;
-	wheelDelta?: number;
-}
-
-function renderOrchestratorPickerForTesting(
-	initial: AgentRoutingEntry | undefined,
-	modelOptions: string[],
-	width: number,
-	theme?: Theme,
-	inputs: string[] = [],
-	mouseEvents: OrchestratorMouseEvent[] = [],
-	results: OrchestratorPickerResult[] = [],
-): string[] {
-	const panel = new OrchestratorPickerPanel(
-		initial,
-		modelOptions,
-		(result) => results.push(result),
-		theme,
-		"team",
-		undefined,
-	);
-	panel.render(width);
-	for (const data of inputs) panel.handleInput(data);
-	for (const event of mouseEvents) {
-		panel.handleMouse({
-			type: event.type,
-			x: event.x,
-			y: event.y,
-			button: event.button ?? (event.type === "move" ? "none" : "left"),
-			wheelDelta: event.wheelDelta,
-			screenX: event.x,
-			screenY: event.y,
-			width,
-			height: 24,
-		} as TuiMouseEvent);
-		panel.render(width);
-	}
-	return panel.render(width);
-}
-
-async function showOrchestratorPickerPanel(
+async function showRoutingTablePanel(
 	ctx: ExtensionContext,
-	profileName: string,
-	entry: AgentRoutingEntry | undefined,
-): Promise<OrchestratorPickerResult> {
-	const modelOptions = await getPiModelOptions(ctx);
-	return ctx.ui.custom<OrchestratorPickerResult>(
-		(tui, theme, keybindings, done) => {
-			const panel = new OrchestratorPickerPanel(
-				entry,
-				modelOptions,
-				done,
-				theme,
-				profileName,
-				keybindings,
-			);
-			const container = createNativeFullscreenInteraction({
-				keyboardTarget: panel,
-				requestRender: () => tui.requestRender(),
-			});
-			container.addChild(panel);
-			return container;
-		},
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			},
-		},
-	);
-}
-
-async function showRoutingEditorPanel(
-	ctx: ExtensionContext,
-	profileName: string,
-	config: AgentModelConfig,
-	focus?: { agent: string; kind: "model" | "effort" },
-): Promise<RoutingEditorResult> {
+	request: RoutingTablePanelRequest,
+): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
-	return ctx.ui.custom<RoutingEditorResult>(
-		(tui, theme, _keybindings, done) => {
-			const panel = new RoutingEditorPanel(
-				config,
+	return ctx.ui.custom<RoutingTableResult>(
+		(tui, theme, keybindings, done) => {
+			const panel = new RoutingTablePanel(
+				request.config,
 				modelOptions,
 				agents,
 				done,
 				theme,
-				profileName,
+				request.name,
 				() => Math.max(0, tui.terminal.rows),
-				focus,
+				{
+					file: request.file,
+					sessionBoundName: request.sessionBoundName,
+					pinWinner: request.pinWinner,
+					keybindings,
+				},
 			);
 			const container = createNativeFullscreenInteraction({
 				keyboardTarget: panel,
@@ -4504,7 +4112,6 @@ async function showRoutingEditorPanel(
 		},
 		{
 			overlay: true,
-			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
 				width: "100%",
@@ -4515,13 +4122,30 @@ async function showRoutingEditorPanel(
 	);
 }
 
-/**
- * `/gentle:models` is the shortcut into the unified profiles panel. It keeps the
- * housekeeping the old standalone model panel performed — migration of legacy
- * project overrides, surfacing an invalid models.json, the pin scope note — then
- * opens the same fullscreen panel `/gentle:profiles` opens, preselecting the
- * profile this repository resolves (the pin's target, or the active profile).
- */
+const ROUTING_TABLE_BUTTONS: Record<"use" | "apply" | "save" | "profiles" | "cancel", string> = {
+	use: "Use in session",
+	apply: "Apply global",
+	save: "Save",
+	profiles: "Profiles…",
+	cancel: "Cancel",
+};
+
+const PROFILES_POPOVER_BUTTONS: Record<
+	"use" | "apply" | "snapshot" | "duplicate" | "rename" | "delete" | "new" | "import" | "export" | "pin" | "publish",
+	string
+> = {
+	use: "Use in session",
+	apply: "Apply global",
+	snapshot: "Snapshot",
+	duplicate: "Duplicate",
+	rename: "Rename",
+	delete: "Delete",
+	new: "New",
+	import: "Import",
+	export: "Export",
+	pin: "Pin",
+	publish: "Publish",
+};
 async function handleModelsCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	migrateLegacyProjectModelOverrides(ctx.cwd);
 	// A pinned repository resolves its subagent routing from the profile at launch,
@@ -4573,21 +4197,6 @@ function resolveCurrentProfileTarget(
 
 
 
-type ProfilesPanelResult =
-	| { type: "apply"; name: string }
-	| { type: "apply-global"; name: string }
-	| { type: "create" }
-	| { type: "edit-routing"; name: string; focus?: { agent: string; kind: "model" | "effort" } }
-	| { type: "orchestrator"; name: string }
-	| { type: "update"; name: string }
-	| { type: "duplicate"; name: string }
-	| { type: "rename"; name: string }
-	| { type: "delete"; name: string }
-	| { type: "export"; name: string }
-	| { type: "pin"; source: ProfilePinSource; name: string }
-	| { type: "import" }
-	| { type: "close" };
-
 type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
 
 /**
@@ -4601,8 +4210,6 @@ interface ProfilesPanelReport {
 }
 
 const PROFILES_PANEL_MIN_BODY_ROWS = 6;
-
-type ProfilesPanelPointerLayout = AgentsViewLayout & { listTop: number };
 
 function hasOwnProfile(profiles: Record<string, unknown>, name: string): boolean {
 	return Object.prototype.hasOwnProperty.call(profiles, name);
@@ -4745,795 +4352,6 @@ function clampDetailScroll(offset: number, lineCount: number, bodyRows: number):
 // one measured layout; the list rows keep native keyboard, hover, press,
 // click, and wheel handling through NativeChoiceList. The frame takes the full
 // overlay, so its height follows the terminal rows the same way AgentsView does.
-class ProfilesPanel implements OverlayComponent {
-	private completed = false;
-	private pointerLayout: ProfilesPanelPointerLayout | undefined;
-	private detailScroll = 0;
-	private lastDetailLineCount = 0;
-	private lastDetailRows = 0;
-	private lastSelectedId: string | undefined;
-	private feedback: string | undefined;
-	// Action-menu state: `m` (or a second click on the selected profile) opens a
-	// centered menu with every profile action; direct keys stay for daily use.
-	private mode: "list" | "actions" = "list";
-	private clickedId: string | undefined;
-	private actionsList: NativeChoiceList<NativeChoiceItem> | undefined;
-	private actionsLayout: { top: number; height: number; x: number; width: number } | undefined;
-	// Detail-pane pointer state: which rendered detail lines belong to the profile
-	// routing table (clickable), and which one the pointer is on (hover fill).
-	private readonly detailHitLines = new Set<number>();
-	// Clicking one agent's routing row focuses the routing editor on THAT agent,
-	// so the panel records which row (and which column) each hit line belongs to.
-	private readonly detailHitInfo = new Map<number, { agent: string; effortStart: number }>();
-	private hoveredDetailLine: number | undefined;
-	readonly list: NativeChoiceList<ProfileListItem>;
-	private file: AgentProfilesFile;
-	private readonly currentConfig: AgentModelConfig;
-	private readonly done: (result: ProfilesPanelResult) => void;
-	private readonly saveSnapshot: ProfilesSnapshotHandler;
-	private readonly requestRender: () => void;
-	private readonly listItems: ProfileListItem[];
-	private readonly theme: Theme | undefined;
-	private readonly keybindings: KeybindingsManager | undefined;
-	private readonly rows: () => number;
-	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
-	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
-	private readonly pinStatus: ProfilePinStatus | undefined;
-	private readonly sessionBoundName: string | undefined;
-	private readonly discoveredAgentNames: string[];
-	private readonly unmatchedKeys: string[];
-	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
-
-	constructor(
-		file: AgentProfilesFile,
-		currentConfig: AgentModelConfig,
-		done: (result: ProfilesPanelResult) => void,
-		keybindings: KeybindingsManager | undefined,
-		theme: Theme | undefined,
-		selectedName: string | undefined,
-		rows: () => number,
-		orchestratorSettings: OrchestratorSettingsReadResult,
-		saveSnapshot: ProfilesSnapshotHandler,
-		requestRender: () => void,
-		pinStatus: () => ProfilePinStatus | undefined,
-		sessionBound: () => string | undefined,
-		discoveredAgentNames: string[],
-		unmatchedKeys: string[],
-		liveOrchestrator?: () => AgentRoutingEntry | undefined,
-		feedback?: string,
-	) {
-		this.file = file;
-		this.feedback = feedback;
-		this.currentConfig = currentConfig;
-		this.done = done;
-		this.saveSnapshot = saveSnapshot;
-		this.requestRender = requestRender;
-		this.theme = theme;
-		this.keybindings = keybindings;
-		this.rows = rows;
-		this.orchestratorSettings = orchestratorSettings;
-		this.pinStatus = pinStatus();
-		this.sessionBoundName = sessionBound();
-		this.discoveredAgentNames = discoveredAgentNames;
-		this.unmatchedKeys = unmatchedKeys;
-		this.liveOrchestrator = liveOrchestrator;
-		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
-		this.listItems = items;
-		this.list = new NativeChoiceList<ProfileListItem>(
-			items,
-			{
-				selectedPrefix: (text) => this.renderText(text, "accent"),
-				selectedText: (text) => this.renderText(text, "accent"),
-				description: (text) => this.renderText(text, "muted"),
-				hoverBackground: (text) => (this.theme ? this.theme.bg("toolPendingBg", text) : text),
-			},
-			keybindings,
-		);
-		// A click on a profile always opens the action menu, the same menu Enter
-		// opens: click and keyboard are the same surface, never different actions.
-		this.list.onSelect = () => {
-			this.openActions();
-		};
-		this.list.onCancel = () => this.finish({ type: "close" });
-		const selected = selectedName ? items.findIndex((item) => item.id === selectedName) : -1;
-		if (selected >= 0) this.list.setSelectedIndex(selected);
-		this.clickedId = this.list.getSelectedItem()?.id;
-	}
-
-	invalidate(): void {
-		this.pointerLayout = undefined;
-		this.hoveredDetailLine = undefined;
-		this.actionsLayout = undefined;
-		this.list.invalidate();
-		this.actionsList?.invalidate();
-	}
-
-	handleInput(data: string): void {
-		if (isKeyRelease(data)) return;
-		if (this.mode === "actions") {
-			this.handleActionsInput(data);
-			return;
-		}
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.finish({ type: "close" });
-			return;
-		}
-		const name = this.list.getSelectedItem()?.id;
-		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) {
-			this.scrollDetail(this.pageRows());
-			return;
-		}
-		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) {
-			this.scrollDetail(-this.pageRows());
-			return;
-		}
-		// Agents-view line scroll: j/k move the routing one line at a time. The
-		// arrow keys stay with the profile list, exactly as the letters below stay
-		// profile actions.
-		if (data === "j") {
-			this.scrollDetail(1);
-			return;
-		}
-		if (data === "k") {
-			this.scrollDetail(-1);
-			return;
-		}
-		if (data === "c") return this.finish({ type: "create" });
-		if (data === "i") return this.finish({ type: "import" });
-		if (!name) return this.list.handleInput(data);
-		// One letter, one meaning: m opens the action menu, e edits routing,
-		// o edits the orchestrator, E exports. Everything else lives in the menu.
-		if (data === "m") {
-			this.openActions();
-			return;
-		}
-		if (data === "e") return this.finish({ type: "edit-routing", name });
-		if (data === "o") return this.finish({ type: "orchestrator", name });
-		if (data === "s") {
-			try {
-				this.file = this.saveSnapshot(name);
-				this.refreshListItems();
-				this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
-			} catch (error) {
-				this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
-			}
-			this.requestRender();
-			return;
-		}
-		if (data === "a") return this.finish({ type: "apply-global", name });
-		if (data === "d") return this.finish({ type: "duplicate", name });
-		if (data === "r") return this.finish({ type: "rename", name });
-		if (data === "x") return this.finish({ type: "delete", name });
-		if (data === "E") return this.finish({ type: "export", name });
-		if (data === "p") return this.finish({ type: "pin", source: "local", name });
-		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
-		// Enter opens the action menu — the same menu a profile click opens — so
-		// keyboard and pointer share one coherent surface. "Use in this session"
-		// is the menu's first item, one Enter away.
-		if (matchesKey(data, "return")) {
-			this.openActions();
-			return;
-		}
-		this.list.handleInput(data);
-		this.clickedId = this.list.getSelectedItem()?.id;
-	}
-
-	private openActions(): void {
-		const name = this.list.getSelectedItem()?.id;
-		if (!name || this.completed) return;
-		const item = (id: string, label: string, key: string): NativeChoiceItem => ({
-			id,
-			label: `${label}  ${key}`,
-		});
-		const items = [
-			item("apply", "Use in this session", "enter"),
-			item("apply-global", "Apply as global default", "a"),
-			item("edit-routing", "Edit routing", "e"),
-			item("orchestrator", "Choose orchestrator", "o"),
-			item("snapshot", "Snapshot current routing", "s"),
-			item("duplicate", "Duplicate", "d"),
-			item("rename", "Rename", "r"),
-			item("delete", "Delete", "x"),
-			item("export", "Export profile", "E"),
-			item("import", "Import profile", "i"),
-			item("pin", "Pin to this repository", "p"),
-			item("publish", "Publish repository declaration", "P"),
-		];
-		this.mode = "actions";
-		this.actionsList = new NativeChoiceList<NativeChoiceItem>(
-			items,
-			{
-				selectedPrefix: (text) => this.renderText(text, "accent"),
-				selectedText: (text) => this.renderText(text, "accent"),
-				description: (text) => this.renderText(text, "muted"),
-				hoverBackground: (text) => (this.theme ? this.theme.bg("toolPendingBg", text) : text),
-			},
-			this.keybindings,
-		);
-		this.actionsList.onSelect = (action) => this.runAction(action.id, name);
-		this.actionsList.onCancel = () => {
-			this.closeActions();
-			this.requestRender();
-		};
-		this.requestRender();
-	}
-
-	private closeActions(): void {
-		this.mode = "list";
-		this.actionsList = undefined;
-		this.actionsLayout = undefined;
-	}
-
-	private runAction(id: string, name: string): void {
-		switch (id) {
-			case "apply":
-				return this.finish({ type: "apply", name });
-			case "apply-global":
-				return this.finish({ type: "apply-global", name });
-			case "edit-routing":
-				return this.finish({ type: "edit-routing", name });
-			case "orchestrator":
-				return this.finish({ type: "orchestrator", name });
-			case "duplicate":
-				return this.finish({ type: "duplicate", name });
-			case "rename":
-				return this.finish({ type: "rename", name });
-			case "delete":
-				return this.finish({ type: "delete", name });
-			case "export":
-				return this.finish({ type: "export", name });
-			case "import":
-				return this.finish({ type: "import" });
-			case "pin":
-				return this.finish({ type: "pin", source: "local", name });
-			case "publish":
-				return this.finish({ type: "pin", source: "repo", name });
-			case "snapshot": {
-				try {
-					this.file = this.saveSnapshot(name);
-					this.refreshListItems();
-					this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
-				} catch (error) {
-					this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
-				}
-				this.closeActions();
-				this.requestRender();
-				return;
-			}
-		}
-	}
-
-	private handleActionsInput(data: string): void {
-		if (matchesKey(data, "ctrl+c")) {
-			this.finish({ type: "close" });
-			return;
-		}
-		if (matchesKey(data, "escape") || matchesKey(data, "backspace")) {
-			this.closeActions();
-			this.requestRender();
-			return;
-		}
-		this.actionsList?.handleInput(data);
-	}
-
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.mode === "actions") {
-			const layout = this.actionsLayout;
-			if (!layout || !this.actionsList) return undefined;
-			if (event.y < layout.top || event.y >= layout.top + layout.height) return undefined;
-			if (event.x < layout.x || event.x >= layout.x + layout.width) return undefined;
-			return this.actionsList.handleMouse({
-				...event,
-				x: event.x - layout.x,
-				y: event.y - layout.top,
-				width: layout.width,
-				height: layout.height,
-			});
-		}
-		const layout = this.pointerLayout;
-		if (!layout) return undefined;
-		const inBody = event.y >= layout.listTop && event.y < layout.listTop + layout.bodyRows;
-		if (
-			inBody &&
-			event.type === "wheel" &&
-			event.wheelDelta &&
-			layout.mode === "panes" &&
-			event.x >= layout.threadX &&
-			event.x < layout.threadX + layout.threadWidth
-		) {
-			this.scrollDetail(event.wheelDelta);
-			return { handled: true, render: true };
-		}
-		if (!inBody) return undefined;
-		// The detail pane is pointer territory too: hovering a profile-routing row
-		// highlights it, and clicking one opens the routing editor for the profile
-		// the detail pane is showing.
-		if (
-			layout.mode === "panes" &&
-			event.x >= layout.threadX &&
-			event.x < layout.threadX + layout.threadWidth
-		) {
-			return this.handleDetailMouse(event, layout);
-		}
-		if (event.x < layout.listX || event.x >= layout.listX + layout.listWidth) return undefined;
-		return this.list.handleMouse({
-			...event,
-			x: event.x - layout.listX,
-			y: event.y - layout.listTop,
-			width: layout.listWidth,
-			height: layout.bodyRows,
-		});
-	}
-
-	render(width: number): string[] {
-		if (this.mode === "actions") return this.renderActions(width);
-		const safeWidth = Math.max(1, width);
-		const listWidth = measureAgentsViewLayout(safeWidth, PROFILES_PANEL_MIN_BODY_ROWS + 3).listWidth;
-		const listLines = this.list.render(listWidth);
-		// The frame fills the overlay, and the overlay fills the terminal, so the
-		// body height comes from the terminal rows rather than from the content.
-		const rows = Math.max(PROFILES_PANEL_MIN_BODY_ROWS + 3, Math.floor(this.rows()));
-		const layout = measureAgentsViewLayout(safeWidth, rows);
-		if (layout.mode === "fallback" || layout.width === 0) {
-			this.pointerLayout = undefined;
-			this.detailHitLines.clear();
-			return [];
-		}
-		const selectedId = this.list.getSelectedItem()?.id;
-		if (selectedId !== this.lastSelectedId) {
-			this.lastSelectedId = selectedId;
-			this.detailScroll = 0;
-		}
-		const detailLines = this.renderDetailLines(layout.threadWidth, layout.mode === "panes");
-		this.lastDetailLineCount = detailLines.length;
-		this.lastDetailRows = layout.bodyRows;
-		this.detailScroll = clampDetailScroll(this.detailScroll, detailLines.length, layout.bodyRows);
-		this.pointerLayout = { ...layout, listTop: 1 };
-		const rule = "─".repeat(Math.max(0, layout.width - 2));
-		const lines: string[] = [this.renderText(`╭${rule}╮`, "border")];
-		for (let row = 0; row < layout.bodyRows; row += 1) {
-			lines.push(this.renderBodyRow(row, layout, listLines, detailLines));
-		}
-		lines.push(this.renderFooterRow(layout.width));
-		lines.push(this.renderText(`╰${rule}╯`, "border"));
-		return lines;
-	}
-
-	/**
-	 * The action menu: one centered card with every profile action, navigable by
-	 * keys and pointer alike. The rest of the frame stays untouched so the panel
-	 * never feels like a different screen.
-	 */
-	private renderActions(width: number): string[] {
-		const rows = Math.max(PROFILES_PANEL_MIN_BODY_ROWS + 3, Math.floor(this.rows()));
-		const name = this.list.getSelectedItem()?.id ?? "";
-		const menuWidth = Math.min(46, Math.max(24, width - 8));
-		const inner = menuWidth - 4;
-		const actions = this.actionsList;
-		if (!actions) return [];
-		const menuLines = actions.render(inner);
-		const chrome = 7; // top rule, blank, title, rule, blank, hint, bottom
-		const height = Math.min(rows - 4, menuLines.length + chrome);
-		const visible = Math.max(0, height - chrome);
-		const top = Math.max(2, Math.floor((rows - height) / 2));
-		const x = Math.max(2, Math.floor((width - menuWidth) / 2));
-		this.actionsLayout = { top: top + 3, height: Math.max(1, menuLines.length), x, width: inner };
-		const rule = "─".repeat(Math.max(0, menuWidth - 2));
-		const card: string[] = [];
-		card.push(this.renderText(`╭${rule}╮`, "border"));
-		card.push(this.renderText("│", "border") + " " + this.renderLine(`Actions · ${name}`, menuWidth - 4, "title") + " " + this.renderText("│", "border"));
-		card.push(this.renderText(`│${"─".repeat(Math.max(0, menuWidth - 2))}│`, "border"));
-		for (let row = 0; row < visible; row += 1) {
-			const line = menuLines[row] ?? "";
-			card.push(this.renderText("│", "border") + " " + this.fitPaneLine(line, inner) + " " + this.renderText("│", "border"));
-		}
-		card.push(this.renderText("│", "border") + " " + this.renderLine("enter run · esc back", menuWidth - 4, "muted") + " " + this.renderText("│", "border"));
-		card.push(this.renderText(`╰${rule}╯`, "border"));
-		// Center the card inside the usual fullscreen frame.
-		const frameRule = "─".repeat(Math.max(0, width - 2));
-		const lines: string[] = [this.renderText(`╭${frameRule}╮`, "border")];
-		for (let row = 1; row < rows - 1; row += 1) {
-			const cardRow = row - top;
-			if (cardRow < 0 || cardRow >= card.length) {
-				lines.push(this.renderText("│", "border") + " " + this.fitPaneLine("", width - 4) + " " + this.renderText("│", "border"));
-				continue;
-			}
-			const left = " ".repeat(x);
-			const right = " ".repeat(Math.max(0, width - x - stripAnsi(card[cardRow]).length - 2));
-			lines.push(this.renderText("│", "border") + left + card[cardRow] + right + this.renderText("│", "border"));
-		}
-		lines.push(this.renderText(`╰${frameRule}╯`, "border"));
-		return lines;
-	}
-
-	private scrollDetail(delta: number): void {
-		this.detailScroll = clampDetailScroll(
-			this.detailScroll + Math.trunc(delta),
-			this.lastDetailLineCount,
-			this.lastDetailRows,
-		);
-		this.hoveredDetailLine = undefined;
-	}
-
-	/**
-	 * Pointer traffic over the detail pane. Moves highlight the routing row under
-	 * the pointer; clicks on a profile-routing row open the routing editor for the
-	 * profile the detail pane is showing. Everything else stays unhandled so the
-	 * container keeps its native semantics.
-	 */
-	private handleDetailMouse(event: TuiMouseEvent, layout: AgentsViewLayout): TuiMouseEventResult | undefined {
-		const row = event.y - 1;
-		if (row < 0 || row >= layout.bodyRows) {
-			const changed = this.hoveredDetailLine !== undefined;
-			this.hoveredDetailLine = undefined;
-			return { handled: event.type === "move", render: changed };
-		}
-		const line = this.detailScroll + row;
-		if (event.type === "move") {
-			const next = this.detailHitLines.has(line) ? line : undefined;
-			const changed = this.hoveredDetailLine !== next;
-			this.hoveredDetailLine = next;
-			return { handled: true, render: changed };
-		}
-		if (event.button !== "left") return undefined;
-		if (!this.detailHitLines.has(line)) return undefined;
-		const name = this.list.getSelectedItem()?.id;
-		if (!name) return undefined;
-		const hit = this.detailHitInfo.get(line);
-		// The click lands on one agent's row: clicking the effort column focuses
-		// that agent's effort picker, anything else its model picker. The detail
-		// content starts two columns past the pane edge (border + space), and the
-		// row text is indented two more.
-		const focus = hit
-			? {
-				agent: hit.agent,
-				kind: (event.x >= layout.threadX + 4 + hit.effortStart ? "effort" : "model") as "model" | "effort",
-			}
-			: undefined;
-		this.finish({ type: "edit-routing", name, focus });
-		return { handled: true };
-	}
-
-	private refreshListItems(): void {
-		// Keep the list instance (and its pointer observer) alive while refreshing the
-		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
-			const current = this.listItems.find((candidate) => candidate.id === item.id);
-			if (current) Object.assign(current, item);
-		}
-		this.list.refreshItems();
-	}
-
-	private pageRows(): number {
-		return Math.max(1, this.lastDetailRows - 1);
-	}
-
-	private finish(result: ProfilesPanelResult): void {
-		if (this.completed) return;
-		this.completed = true;
-		this.list.setDisabled(true);
-		this.done(result);
-	}
-
-	private renderBodyRow(
-		row: number,
-		layout: AgentsViewLayout,
-		listLines: string[],
-		detailLines: string[],
-	): string {
-		if (layout.mode === "panes") {
-			const detailIndex = this.detailScroll + row;
-			const detailLine = detailLines[detailIndex] ?? "";
-			const detail = this.hoveredDetailLine === detailIndex && this.theme
-				? this.theme.bg("toolPendingBg", stripAnsi(detailLine))
-				: detailLine;
-			return [
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-				" ",
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(detail, layout.threadWidth),
-				this.renderText("│", "border"),
-			].join("");
-		}
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderFooterRow(width: number): string {
-		// One quiet line: the daily keys only. Everything else lives in the m menu.
-		const hints = "↑↓ select · enter/click actions · a global · e edit · esc close";
-		const text = this.feedback ?? hints;
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(this.renderText(text, this.feedback ? "status" : "muted"), width - 4),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderDetailLines(width: number, showDetail: boolean): string[] {
-		this.detailHitLines.clear();
-		if (!showDetail) return [];
-		const name = this.list.getSelectedItem()?.id;
-		if (!name || !hasOwnProfile(this.file.profiles, name)) {
-			return [this.renderLine("No profile selected.", width, "muted")];
-		}
-		const config = this.file.profiles[name];
-		const profileRows = profileRoutingRows(config);
-		const currentRows = profileRoutingRows(this.currentConfig);
-		// One shared measurement across both tables, so the same agent sits in the
-		// same column whether it comes from the profile or from models.json.
-		const widths = routingColumnWidths(profileRows, currentRows);
-		// Built incrementally so every profile-routing row can record its index as a
-		// click target: the pin/session lines above it vary, so positions are not
-		// known ahead of the array literal.
-		const lines: string[] = [];
-		lines.push(this.renderLine(name === this.file.active ? `${name} (active)` : name, width, "title"));
-		lines.push(
-			this.renderLine(
-				`orchestrator  ${formatOrchestratorSelection(readProfileOrchestrator(config))}`,
-				width,
-				"text",
-			),
-		);
-		lines.push(this.renderLine(`now           ${this.effectiveOrchestratorLabel()}`, width, "muted"));
-		// A pin only redirects subagent routing, so it is reported next to the
-		// orchestrator lines it deliberately does not move. The winning layer's path,
-		// any invalid or stale layer, and the scope sentence all come from the shared
-		// precedence rule the launch resolver uses.
-		lines.push(...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")));
-		// gentle-shell#1064: the binding is stored for this session and outranks
-		// the pin in the panel list, so it is named right after the pin layers.
-		// Since #1558 launches resolve it ahead of pins and the global default,
-		// and nothing was written to make that true.
-		if (this.sessionBoundName !== undefined) {
-			lines.push(this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted"));
-		}
-		lines.push("");
-		lines.push(this.renderLine("Profile routing", width, "accent"));
-		for (const entry of this.routingRowLines(profileRows, widths, width)) {
-			// Every profile-routing row opens the routing editor focused on that
-			// agent: the model column opens its model picker, the effort column
-			// its effort picker.
-			this.detailHitLines.add(lines.length);
-			this.detailHitInfo.set(lines.length, { agent: entry.agent, effortStart: entry.effortStart });
-			lines.push(this.renderLine(`  ${entry.text}`, width, "text"));
-		}
-		lines.push("");
-		lines.push(...this.effectiveRoutingDiffLines(profileRows, currentRows, widths, width));
-		lines.push(...this.unmatchedKeyLines(currentRows, width));
-		return lines;
-	}
-
-	/**
-	 * The effective routing used to be dumped as a second full table under the
-	 * profile's own, which read as duplication whenever the two matched. What
-	 * the detail pane really answers is "what would applying this change?": an
-	 * identical effective routing collapses to one honest line, and differences
-	 * list only the agents that change, in `efectivo → perfil` direction.
-	 */
-	private effectiveRoutingDiffLines(
-		profileRows: ProfileRoutingRow[],
-		currentRows: ProfileRoutingRow[],
-		widths: { agent: number; model: number },
-		width: number,
-	): string[] {
-		const currentByAgent = new Map(currentRows.map((row) => [row.agent, row]));
-		const profileByAgent = new Map(profileRows.map((row) => [row.agent, row]));
-		const agents = [...new Set([...currentByAgent.keys(), ...profileByAgent.keys()])].sort();
-		const value = (row: ProfileRoutingRow | undefined): string =>
-			row === undefined ? "inherit" : `${row.model} · ${row.thinking}`;
-		const changes = agents.filter((agent) => {
-			const current = currentByAgent.get(agent);
-			const profile = profileByAgent.get(agent);
-			return (current?.model ?? undefined) !== (profile?.model ?? undefined)
-				|| (current?.thinking ?? undefined) !== (profile?.thinking ?? undefined);
-		});
-		if (changes.length === 0) {
-			return [this.renderLine("Effective: identical to the profile ✓", width, "muted")];
-		}
-		const lines = [this.renderLine(`Changes on apply — effective → profile (${changes.length})`, width, "accent")];
-		for (const agent of changes) {
-			// One plain row: `agent  efectivo → perfil`. The pane's fit truncates an
-			// overflowing tail, so long model ids lose their end, never the arrow.
-			const label = `${sanitizeTerminalText(agent).padEnd(widths.agent)} `;
-			const line = `  ${label}${sanitizeTerminalText(value(currentByAgent.get(agent)))} → ${sanitizeTerminalText(value(profileByAgent.get(agent)))}`;
-			lines.push(
-				this.renderText(this.renderLine(line, width, "text").replace(
-					sanitizeTerminalText(value(profileByAgent.get(agent))),
-					this.theme ? this.theme.fg(PANEL_TONE_COLOR.status, sanitizeTerminalText(value(profileByAgent.get(agent)))) : sanitizeTerminalText(value(profileByAgent.get(agent))),
-				), "text"),
-			);
-		}
-		return lines;
-	}
-
-	private unmatchedKeyLines(currentRows: ProfileRoutingRow[], width: number): string[] {
-		// Issue #2400: a model_profiles key that matches no discovered agent and
-		// suggests none never becomes a routing row, so it is listed here, one key
-		// per line, with the same inline-or-↳ note rule as the routing rows. A key
-		// already shown as a current row carries its note there instead.
-		const shown = new Set(currentRows.map((row) => row.agent));
-		const keys = this.unmatchedKeys.filter((key) => !shown.has(key));
-		if (keys.length === 0) return [];
-		const note = "no matching agent";
-		return [
-			"",
-			this.renderLine("Unmatched keys (ignored)", width, "accent"),
-			...this.indentLines(keys.flatMap((key) => {
-				const inline = `${key}  ← ${note}`;
-				return visibleWidth(inline) + 2 <= width ? [inline] : [key, `  ↳ ${note}`];
-			}), width),
-		];
-	}
-
-	private effectiveOrchestratorLabel(): string {
-		// The now line answers what this session runs: the live orchestrator wins
-		// when one exists, and the settings read only stands in for sessions
-		// without a live model (and still surfaces an unreadable settings file).
-		const live = this.liveOrchestrator?.();
-		if (live !== undefined) {
-			return formatOrchestratorSelection(live);
-		}
-		const settings = this.orchestratorSettings;
-		if (settings.status === "invalid") {
-			return `unreadable (${sanitizeTerminalText(settings.reason)})`;
-		}
-		return formatOrchestratorSelection(settings.status === "valid" ? settings.entry : undefined);
-	}
-
-	private routingLines(
-		rows: ProfileRoutingRow[],
-		widths: { agent: number; model: number },
-		width: number,
-	): string[] {
-		if (rows.length === 0) {
-			return ["No routing entries — every agent inherits its default model."];
-		}
-		return this.routingRowLines(rows, widths, width).map((entry) => entry.text);
-	}
-
-	/**
-	 * The routing table one record per rendered line, keeping the row identity:
-	 * Issue #2196's unmatched note may wrap a row onto a second line, and both
-	 * lines belong to the same agent. The effort column start drives whether a
-	 * click means "edit this agent's model" or "edit its effort".
-	 */
-	private routingRowLines(
-		rows: ProfileRoutingRow[],
-		widths: { agent: number; model: number },
-		width: number,
-	): Array<{ agent: string; text: string; effortStart: number }> {
-		if (rows.length === 0) return [];
-		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
-		const effortStart = 2 + widths.agent + widths.model;
-		return rows.flatMap((row) => {
-			const line = formatRoutingRow(row, widths);
-			const note = notes.get(row.agent);
-			if (note === undefined) return [{ agent: row.agent, text: line, effortStart }];
-			const inline = `${line}  ← ${note}`;
-			if (visibleWidth(inline) + 2 <= width) return [{ agent: row.agent, text: inline, effortStart }];
-			return [
-				{ agent: row.agent, text: line, effortStart },
-				{ agent: row.agent, text: `  ↳ ${note}`, effortStart },
-			];
-		});
-	}
-
-	private indentLines(lines: string[], width: number): string[] {
-		return lines.map((line) => this.renderLine(`  ${line}`, width, "text"));
-	}
-
-	private fitPaneLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
-
-	private renderLine(text: string, width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-}
-
-/** The full-screen profile picker: one visit per action, so every reopen reads fresh store, pin, orchestrator, and session-binding state. */
-async function showProfilesPanel(
-	ctx: ExtensionContext,
-	file: AgentProfilesFile,
-	currentConfig: AgentModelConfig,
-	selectedName: string | undefined,
-	saveSnapshot: ProfilesSnapshotHandler,
-	live: LiveSession,
-	status?: string,
-	sessionBoundName?: string,
-): Promise<ProfilesPanelResult> {
-	// Both orchestrator and pin state are snapshots for this panel visit.
-	// Actions (including p/P) reopen the panel and read fresh state.
-	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
-	// Issue #2196: the panel flags routing keys that name no discovered agent, so
-	// it needs one discovery snapshot per visit; a failed or partial discovery is
-	// not an error here, it just renders without notes.
-	const discoveryRoots = {
-		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
-		home: homedir(),
-		agentHome: resolveGentlePiAgentHome(),
-	};
-	const discoveredAgents = discoverAgents(discoveryRoots).agents;
-	// gentle-pi#2271: review-refuter and review-validator are provider review
-	// roles the relay routes by key; they never have an agent file, so they
-	// count as matched instead of being flagged "no matching agent".
-	const discoveredAgentNames = [...new Set([...PROVIDER_REVIEW_ROLES, ...discoveredAgents.map((agent) => agent.name)])];
-	// Issue #2400: launches resolve from the subagents.json model_profiles, which
-	// the effective table only reads per discovered agent, so a key with no match
-	// and no suggestion never appeared. When a session binding or a pin wins, the
-	// table already shows that snapshot's own keys with their notes.
-	const unmatchedKeys = sessionBoundName !== undefined || pinnedEffectiveModelConfig(ctx.cwd) !== undefined
-		? []
-		: unmatchedProfileKeys(loadAgentsConfig(discoveryRoots).modelProfiles, discoveredAgents)
-			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key))
-			.map((entry) => entry.key);
-	return ctx.ui.custom<ProfilesPanelResult>(
-		(tui, theme, keybindings, done) => {
-			const panel = new ProfilesPanel(
-				file,
-				currentConfig,
-				done,
-				keybindings,
-				theme,
-				selectedName,
-				() => Math.max(0, tui.terminal.rows),
-				orchestratorSettings,
-				saveSnapshot,
-				() => tui.requestRender(),
-				() => readProfilePinStatus(ctx.cwd),
-				() => sessionBoundName,
-				discoveredAgentNames,
-				unmatchedKeys,
-				() => liveOrchestratorSnapshot(ctx, live)?.entry,
-				status,
-			);
-			const container = createNativeFullscreenInteraction({
-				keyboardTarget: panel,
-				requestRender: () => tui.requestRender(),
-				mouseObserver: panel.list.createMouseObserver(() => tui.requestRender()),
-			});
-			container.addChild(panel);
-			return container;
-		},
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			},
-		},
-	);
-}
-
 function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: ProfilesParseDrops): void {
 	// Dropped names are by definition the ones that failed validation, so they are
 	// untrusted input reaching the terminal and must be sanitized like any other
@@ -5634,33 +4452,10 @@ async function runProfilesPanelAction(
 	live: LiveSession,
 	path: string,
 	file: AgentProfilesFile,
-	result: Exclude<ProfilesPanelResult, { type: "close" }>,
+	result: RoutingTableResult,
 	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
-		case "apply": {
-			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Enter applies a complete routing snapshot to this parent session and
-			// switches only its live orchestrator. No shared defaults, materialized
-			// stores, agent frontmatter, pins, or declarations are written.
-			const sessionId = ctx.sessionManager?.getSessionId?.();
-			if (typeof sessionId !== "string" || sessionId.length === 0) {
-				ctx.ui.notify(
-					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Set it as the global default with a instead.`,
-					"warning",
-				);
-				return file;
-			}
-			const snapshot = normalizeModelConfig(file.profiles[result.name]) ?? {};
-			bindSessionProfile(sessionId, result.name, snapshot);
-			const orchestrator = readProfileOrchestrator(snapshot);
-			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
-				"info",
-			);
-			return file;
-		}
 		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			// A pinned repository resolves its subagent routing from the profile at launch,
@@ -5688,7 +4483,7 @@ async function runProfilesPanelAction(
 				ctx.ui.notify(pinNote, "info");
 				return file;
 			}
-			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			const normalized = cloneModelConfig(result.config);
 			const orchestratorEntry = readProfileOrchestrator(normalized);
 			const hasAgentRoutes = Object.keys(normalized).some((name) => !isProfileOrchestratorKey(name));
 			// Every global apply confirms before anything is written: applying replaces
@@ -5941,136 +4736,6 @@ async function runProfilesPanelAction(
 			);
 			return claimed;
 		}
-		case "edit-routing": {
-			// The unified routing editor: every edit happens against the profile's own
-			// draft inside the editor, and nothing is written until Save. Custom model
-			// ids, models.json export, and models.json restore close the editor and
-			// reopen it, exactly like every other panel action, so disk state is never
-			// read while an overlay is rendering.
-			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			let draft = cloneModelConfig(normalizeModelConfig(file.profiles[result.name]) ?? {});
-			let editor = await showRoutingEditorPanel(ctx, result.name, draft, result.focus);
-			while (editor.type !== "save" && editor.type !== "cancel") {
-				draft = cloneModelConfig(editor.config);
-				if (editor.type === "custom") {
-					const current = editor.agent === "all"
-						? "inherit"
-						: (draft[editor.agent]?.model ?? "inherit");
-					const custom = await ctx.ui.input(
-						`${editor.agent === "all" ? "all agents" : sanitizeTerminalText(editor.agent)} custom model id`,
-						current === "inherit" ? "provider/model" : sanitizeTerminalText(current),
-					);
-					if (custom === undefined) {
-						report.status = "Custom model cancelled; the draft keeps its previous values.";
-						return file;
-					}
-					const trimmed = custom.trim();
-					if (trimmed.length > 0) {
-						const model = normalizeModelId(trimmed);
-						if (!model) {
-							ctx.ui.notify(
-								"Custom model id must be a single-line provider/model identifier using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.",
-								"warning",
-							);
-						} else if (editor.agent === "all") {
-							const next: AgentModelConfig = { ...draft };
-							for (const name of modelAssignmentNames(ctx.cwd)) {
-								next[name] = { ...(next[name] ?? {}), model };
-							}
-							draft = next;
-						} else {
-							draft = {
-								...draft,
-								[editor.agent]: {
-									...(draft[editor.agent] ?? {}),
-									model,
-								},
-							};
-						}
-					}
-				}
-				if (editor.type === "export") {
-					try {
-						const count = await exportSavedModelConfig(ctx);
-						ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
-					} catch (error) {
-						ctx.ui.notify(`Model routing export failed: ${profilesErrorMessage(error)}`, "warning");
-					}
-				}
-				if (editor.type === "restore") {
-					const restored = await readModelExport(ctx);
-					if (!restored) {
-						ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
-					} else {
-						const approved = await ctx.ui.confirm(
-							"Restore saved model routing?",
-							`Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`,
-						);
-						if (approved) {
-							try {
-								await writeModelConfigAsync(ctx.cwd, restored);
-								const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
-								ctx.ui.notify([
-									"el Gentleman restored global model config.",
-									`Import: ${modelExportPath(ctx.cwd)}`,
-									`Global config: ${modelConfigPath(ctx.cwd)}`,
-									`Agents updated: ${applyResult.updated}`,
-								].join("\n"), "info");
-							} catch (error) {
-								ctx.ui.notify([
-									"el Gentleman restored global model config, but applying it to agents failed.",
-									`Global config: ${modelConfigPath(ctx.cwd)}`,
-									`Apply error: ${profilesErrorMessage(error)}`,
-								].join("\n"), "warning");
-							}
-						}
-					}
-				}
-				editor = await showRoutingEditorPanel(ctx, result.name, draft);
-			}
-			if (editor.type === "cancel") {
-				report.status = "Routing edit cancelled; the profile kept its saved routing.";
-				return file;
-			}
-			try {
-				const next = updateProfile(file, result.name, cloneModelConfig(editor.config));
-				writeProfilesFileSync(path, next);
-				report.status = `Profile "${result.name}" routing updated; apply it globally with a.`;
-				report.selectedName = result.name;
-				return next;
-			} catch (error) {
-				ctx.ui.notify(`Profile routing not saved: ${profilesErrorMessage(error)}`, "warning");
-				return file;
-			}
-		}
-		case "orchestrator": {
-			// The dedicated orchestrator picker edits only the profile's reserved
-			// `orchestrator` entry: no routing, no global writes, no live switches.
-			// "Clear" removes the key so applying or binding the profile leaves
-			// the orchestrator untouched, exactly like an orchestrator-less profile.
-			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			const current = normalizeModelConfig(file.profiles[result.name]) ?? {};
-			const picking = await showOrchestratorPickerPanel(ctx, result.name, readProfileOrchestrator(current));
-			if (picking.type === "cancel") {
-				report.status = `Orchestrator of "${result.name}" unchanged.`;
-				return file;
-			}
-			const next = cloneModelConfig(current);
-			if (picking.entry === undefined) delete next[PROFILE_ORCHESTRATOR_KEY];
-			else next[PROFILE_ORCHESTRATOR_KEY] = { ...picking.entry };
-			try {
-				const updated = updateProfile(file, result.name, next);
-				writeProfilesFileSync(path, updated);
-				report.status = picking.entry === undefined
-					? `Orchestrator entry removed from "${result.name}"; applying it no longer moves the orchestrator.`
-					: `Orchestrator of "${result.name}" saved: ${formatOrchestratorSelection(picking.entry)}. Apply with a to use it globally.`;
-				report.selectedName = result.name;
-				return updated;
-			} catch (error) {
-				ctx.ui.notify(`Orchestrator not saved: ${profilesErrorMessage(error)}`, "warning");
-				return file;
-			}
-		}
 		case "create": {
 			const answer = await ctx.ui.input("New profile name", "e.g. deep-work");
 			if (answer === undefined) {
@@ -6094,7 +4759,7 @@ async function runProfilesPanelAction(
 				return file;
 			}
 		}
-		case "update": {
+		case "snapshot": {
 			// A profile is a complete snapshot, so capturing the current routing also
 			// captures the orchestrator the routing is running under. A settings file
 			// that cannot be read leaves the snapshot without an orchestrator entry
@@ -6269,7 +4934,7 @@ async function runProfilesPanelAction(
 			);
 			return file;
 		}
-		case "export": {
+		case "export-profile": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			const exportPath = profileExportPath(gentleAiConfigHome());
 			try {
@@ -6282,7 +4947,7 @@ async function runProfilesPanelAction(
 			}
 			return file;
 		}
-		case "import": {
+		case "import-profile": {
 			const importPath = profileExportPath(gentleAiConfigHome());
 			let text: string;
 			try {
@@ -6337,10 +5002,10 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 }
 
 /**
- * One visit loop of the unified panel: seeds the store on first use, then reopens
- * the fullscreen panel after every action until it closes. `initialSelectedName`
- * preselects a profile — `/gentle:models` passes the profile this repository
- * resolves so its routing editor is one keypress (or one click) away.
+ * One visit loop of the unified routing panel: seeds the store on first use,
+ * then reopens the table after every action until it closes. `/gentle:models`
+ * and `/gentle:profiles` both land here; `initialSelectedName` preselects the
+ * profile this repository resolves so its routing is on screen immediately.
  */
 async function openProfilesPanelLoop(
 	ctx: ExtensionContext,
@@ -6373,59 +5038,97 @@ async function openProfilesPanelLoop(
 		file = read.file;
 		reportProfilesDrops(ctx, path, read.drops);
 	}
-	const saveSnapshot: ProfilesSnapshotHandler = (name) => {
-		const next = updateProfile(
-			file,
-			name,
-			profileSnapshotFrom(
-				// The snapshot captures the same routing the panel shows as current,
-				// so a session binding outranks the shared layers here too.
-				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-					?? readEffectiveModelConfig(ctx.cwd),
-				// The orchestrator follows the same honesty rule: capture what the
-				// session actually runs (ctx.model plus the live thinking level)
-				// when a live model exists; settings.json defaults stand in only
-				// when it does not (LCubero's finding on #1064).
-				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
-			),
-		);
-		writeProfilesFileSync(path, next);
-		file = next;
-		return next;
-	};
-	let selectedName: string | undefined = initialSelectedName;
 	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
-	// The panel's "Current routing (effective)" table shows what this session's
-	// launches resolve right now, and a session binding outranks every shared
-	// layer, so a bound session reads its snapshot as the current routing while an
-	// unbound session keeps reading the effective config exactly as before.
-	const currentRoutingForPanel = async () =>
-		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-		?? await readEffectiveModelConfigAsync(ctx.cwd);
-	let result = await showProfilesPanel(
-		ctx,
-		file,
-		await currentRoutingForPanel(),
-		selectedName,
-		saveSnapshot,
-		live,
-		undefined,
-		sessionBoundName(),
-	);
-	while (result.type !== "close") {
+	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
+	let selectedName = initialSelectedName
+		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
+		?? Object.keys(file.profiles)[0];
+	let feedback: string | undefined;
+	while (true) {
+		if (!hasOwnProfile(file.profiles, selectedName)) {
+			selectedName = Object.keys(file.profiles)[0];
+		}
+		const stored = cloneModelConfig(normalizeModelConfig(file.profiles[selectedName]) ?? {});
+		const result = await showRoutingTablePanel(ctx, {
+			name: selectedName,
+			config: cloneModelConfig(stored),
+			file,
+			sessionBoundName: sessionBoundName(),
+			pinWinner: pinWinner(),
+			feedback,
+		});
+		feedback = undefined;
+		if (result.type === "close") return;
+		if (result.type === "load") {
+			// Loading another profile into the table discards unsaved edits on
+			// purpose — the popover says so before the choice is made.
+			selectedName = result.name;
+			feedback = `Loaded profile "${result.name}".`;
+			continue;
+		}
+		if (result.type === "use-session") {
+			const name = hasOwnProfile(file.profiles, result.name) ? result.name : selectedName;
+			const sessionId = ctx.sessionManager?.getSessionId?.();
+			if (typeof sessionId !== "string" || sessionId.length === 0) {
+				ctx.ui.notify(
+					`el Gentleman cannot bind the routing to this session: no parent session id is available here. Apply it as the global default with a instead.`,
+					"warning",
+				);
+				continue;
+			}
+			const snapshot = normalizeModelConfig(result.config) ?? {};
+			bindSessionProfile(sessionId, name, snapshot);
+			const orchestrator = readProfileOrchestrator(snapshot);
+			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
+			ctx.ui.notify(
+				`el Gentleman bound this session to "${name}" — launches resolve the binding ahead of pins and the global default. Nothing was written to shared state.${liveNote}`,
+				"info",
+			);
+			continue;
+		}
+		if (result.type === "save") {
+			const name = result.name.trim() || selectedName;
+			try {
+				const next = hasOwnProfile(file.profiles, name)
+					? updateProfile(file, name, cloneModelConfig(result.config))
+					: createProfile(file, name, cloneModelConfig(result.config));
+				writeProfilesFileSync(path, next);
+				file = next;
+				selectedName = name;
+				feedback = `Profile "${name}" saved.`;
+				ctx.ui.notify(`el Gentleman saved profile "${name}" in ${path}.`, "info");
+			} catch (error) {
+				ctx.ui.notify(`Profile not saved: ${profilesErrorMessage(error)}`, "warning");
+				feedback = `Profile not saved: ${profilesErrorMessage(error)}`;
+			}
+			continue;
+		}
+		if (result.type === "apply-global") {
+			// What you see is what gets applied: the draft lands in the profile
+			// first, then the existing guarded apply-global flow runs with all of
+			// its confirmations, diff disclosure, and rollback compensation.
+			const name = hasOwnProfile(file.profiles, result.name) ? result.name : selectedName;
+			try {
+				const saved = hasOwnProfile(file.profiles, name)
+					? updateProfile(file, name, cloneModelConfig(result.config))
+					: createProfile(file, name, cloneModelConfig(result.config));
+				writeProfilesFileSync(path, saved);
+				file = saved;
+				selectedName = name;
+			} catch (error) {
+				ctx.ui.notify(`Profile not saved before applying: ${profilesErrorMessage(error)}`, "warning");
+				continue;
+			}
+			const report: ProfilesPanelReport = {};
+			file = await runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name, config: cloneModelConfig(result.config) }, report);
+			feedback = report.status;
+			selectedName = report.selectedName ?? name;
+			continue;
+		}
 		const report: ProfilesPanelReport = {};
 		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
-		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
-		result = await showProfilesPanel(
-			ctx,
-			file,
-			await currentRoutingForPanel(),
-			selectedName,
-			saveSnapshot,
-			live,
-			report.status,
-			sessionBoundName(),
-		);
+		selectedName = report.selectedName ?? ("name" in result ? result.name : selectedName);
+		feedback = report.status;
 	}
 }
 
@@ -10886,8 +9589,7 @@ export const __testing = {
 	setReviewHostRelayRunnerForTesting,
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
-	routingEditorPanel: renderRoutingEditorForTesting,
-	orchestratorPicker: renderOrchestratorPickerForTesting,
+	routingTablePanel: renderRoutingTableForTesting,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,

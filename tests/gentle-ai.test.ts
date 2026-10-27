@@ -3483,7 +3483,7 @@ test("the profiles command seeds and shows the routing the runtime uses when mod
 		helper: { model: "openai/beta" },
 	});
 	assert.ok(rendered);
-	assert.match(rendered, /Current routing \(effective\)/);
+	assert.match(rendered, /Efectivo: idéntico al perfil ✓/, "the seeded profile matches the effective routing it came from");
 	assert.match(rendered, /worker\s+openai\/alpha\s+high/);
 	assert.match(rendered, /helper\s+openai\/beta/);
 	assert.doesNotMatch(rendered, /No routing entries/);
@@ -3549,7 +3549,10 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	// Routing is listed one agent per line, aligned in columns, never collapsed
 	// into "N agents → model: a, b, …" summaries.
 	assert.match(text, /Profile routing/);
-	assert.match(text, /Current routing \(effective\)/);
+	// The effective routing is empty here, so the diff names what applying would
+	// change instead of duplicating the profile's own table.
+	assert.match(text, /Cambios al aplicar — efectivo → perfil \(3\)/);
+	assert.match(text, /worker\s+inherit → openai\/alpha · high/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
 	assert.match(text, /sdd-design\s+nan\/glm5\.3\s+high\s+← no matching agent/);
@@ -3859,7 +3862,7 @@ test("the unmatched-keys list stays out of the panel while a pin wins", async (t
 
 	assert.ok(panel);
 	const text = stripAnsi(panel.render(120).join("\n"));
-	assert.match(text, /Current routing \(effective\)/);
+	assert.match(text, /Efectivo: idéntico al perfil ✓/);
 	assert.doesNotMatch(text, /Unmatched keys/);
 });
 
@@ -4569,8 +4572,9 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		const rendered = renderComponent(panel);
-		assert.match(rendered, /Current routing \(effective\)/);
-		assert.match(rendered, /openai\/gamma/, "the current routing is the session binding's snapshot");
+		assert.match(rendered, /Cambios al aplicar — efectivo → perfil \(1\)/);
+		assert.match(rendered, /openai\/gamma/, "the effective value is the session binding's snapshot");
+		assert.match(rendered, /worker\s+openai\/gamma · inherit → openai\/beta · inherit/, "the diff runs efectivo → perfil");
 		assert.doesNotMatch(rendered, /openai\/alpha/, "the global routing stays out of a bound session's panel");
 		assert.match(
 			rendered,

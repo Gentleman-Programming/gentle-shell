@@ -5246,9 +5246,51 @@ class ProfilesPanel implements OverlayComponent {
 			lines.push(this.renderLine(`  ${entry.text}`, width, "text"));
 		}
 		lines.push("");
-		lines.push(this.renderLine("Current routing (effective)", width, "accent"));
-		lines.push(...this.indentLines(this.routingLines(currentRows, widths, width), width));
+		lines.push(...this.effectiveRoutingDiffLines(profileRows, currentRows, widths, width));
 		lines.push(...this.unmatchedKeyLines(currentRows, width));
+		return lines;
+	}
+
+	/**
+	 * The effective routing used to be dumped as a second full table under the
+	 * profile's own, which read as duplication whenever the two matched. What
+	 * the detail pane really answers is "what would applying this change?": an
+	 * identical effective routing collapses to one honest line, and differences
+	 * list only the agents that change, in `efectivo → perfil` direction.
+	 */
+	private effectiveRoutingDiffLines(
+		profileRows: ProfileRoutingRow[],
+		currentRows: ProfileRoutingRow[],
+		widths: { agent: number; model: number },
+		width: number,
+	): string[] {
+		const currentByAgent = new Map(currentRows.map((row) => [row.agent, row]));
+		const profileByAgent = new Map(profileRows.map((row) => [row.agent, row]));
+		const agents = [...new Set([...currentByAgent.keys(), ...profileByAgent.keys()])].sort();
+		const value = (row: ProfileRoutingRow | undefined): string =>
+			row === undefined ? "inherit" : `${row.model} · ${row.thinking}`;
+		const changes = agents.filter((agent) => {
+			const current = currentByAgent.get(agent);
+			const profile = profileByAgent.get(agent);
+			return (current?.model ?? undefined) !== (profile?.model ?? undefined)
+				|| (current?.thinking ?? undefined) !== (profile?.thinking ?? undefined);
+		});
+		if (changes.length === 0) {
+			return [this.renderLine("Efectivo: idéntico al perfil ✓", width, "muted")];
+		}
+		const lines = [this.renderLine(`Cambios al aplicar — efectivo → perfil (${changes.length})`, width, "accent")];
+		for (const agent of changes) {
+			// One plain row: `agent  efectivo → perfil`. The pane's fit truncates an
+			// overflowing tail, so long model ids lose their end, never the arrow.
+			const label = `${sanitizeTerminalText(agent).padEnd(widths.agent)} `;
+			const line = `  ${label}${sanitizeTerminalText(value(currentByAgent.get(agent)))} → ${sanitizeTerminalText(value(profileByAgent.get(agent)))}`;
+			lines.push(
+				this.renderText(this.renderLine(line, width, "text").replace(
+					sanitizeTerminalText(value(profileByAgent.get(agent))),
+					this.theme ? this.theme.fg(PANEL_TONE_COLOR.status, sanitizeTerminalText(value(profileByAgent.get(agent)))) : sanitizeTerminalText(value(profileByAgent.get(agent))),
+				), "text"),
+			);
+		}
 		return lines;
 	}
 

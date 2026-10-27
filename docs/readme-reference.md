@@ -1069,7 +1069,7 @@ Legacy string entries are still accepted and treated as `model`-only config.
 /gentle:profiles
 ```
 
-Profiles are named, switchable snapshots of the agent-model routing. The panel fills the terminal, shows the profile list on the left, and a detail pane comparing the selected profile's routing with the currently effective routing, one line per agent in shared columns. The detail pane is pointer-aware: hovering a **Profile routing** row fills it, and clicking one opens the routing editor for that profile (the same editor `e` opens). In the profile list a click selects, and clicking the already-selected profile opens the action menu. Keys:
+Profiles are named, switchable snapshots of the agent-model routing. The panel fills the terminal, shows the profile list on the left, and a detail pane showing the selected profile's routing one line per agent. Below it, instead of duplicating the effective routing as a second table, the pane answers what applying would change: an identical effective routing collapses to one `Efectivo: idéntico al perfil ✓` line, and differences list only the agents that change in `efectivo → perfil` direction. The detail pane is pointer-aware: hovering a **Profile routing** row fills it, and clicking one opens the routing editor for that profile (the same editor `e` opens). In the profile list a click selects, and clicking the already-selected profile opens the action menu. Keys:
 
 | Key     | Action                                                                 |
 | ------- | ---------------------------------------------------------------------- |

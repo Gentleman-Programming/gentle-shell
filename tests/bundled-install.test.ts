@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
-import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
+import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, ensureUv, filterNpmrc, installMusicPlayer, installVersion, nodeExecutable, uvExecutable,
 	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
 	publishedPi, upgradePiLatest, describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
@@ -381,6 +381,147 @@ test("engramExecutable takes only the top-level engram from the tarball and engr
 	assert.throws(() => engramExecutable(tarGz([tarEntry("engram", { type: "2", link: "/bin/sh" })]), tarball), /Engram archive rejected/);
 	assert.throws(() => engramExecutable(tarGz([tarEntry("bin/engram", { data: engramBytes })]), tarball), /Engram archive rejected/);
 	assert.throws(() => engramExecutable(zip([["engram", exe]]), zipped), /Engram archive rejected/);
+});
+
+// S5: the /gentle:music offer. Only uv is a new runtime; it, the uv-managed
+// Python and gentle-stream all live inside the prefix.
+const UV = "0.13.6";
+const uvBytes = Buffer.from("#!/bin/sh\necho fixture uv\n");
+const uvUrl = `https://github.com/astral-sh/uv/releases/download/${UV}/uv-aarch64-apple-darwin.tar.gz`;
+const uvArchive = tarGz([
+	tarEntry("uv-aarch64-apple-darwin/", { type: "5" }),
+	tarEntry("uv-aarch64-apple-darwin/uvx", { data: Buffer.from("#!/bin/sh\n"), mode: "0000755" }),
+	tarEntry("uv-aarch64-apple-darwin/uv", { data: uvBytes, mode: "0000755" }),
+]);
+const PLAYER_ARCHIVE = "https://github.com/Gentleman-Programming/gentle-stream/archive/381290451544ad2ca3348a68a81b3056bdac73b7.tar.gz";
+// A uv fixture: `--version` answers the pin; `tool install` writes the
+// executable into UV_TOOL_BIN_DIR unless `fail(spec)` says the spec fails.
+function uvAdapters({ version = `uv ${UV} (fixture 2026-10-26 aarch64-apple-darwin)`, fail = (_spec: string): boolean => false, writes = "inside" }: { version?: string; fail?: (spec: string) => boolean; writes?: "inside" | "outside" | "none" } = {}) {
+	const calls: { downloads: string[]; runs: { command: string; args: string[]; cwd: string; env: Record<string, string>; timeout?: number }[] } = { downloads: [], runs: [] };
+	return {
+		calls,
+		adapters: {
+			artifact: (name: string) => {
+				assert.equal(name, "uv");
+				return { name, version: UV, maxBytes: 1 << 20, integrity: `sha256-${sha256(uvArchive)}`, url: uvUrl };
+			},
+			download: async (descriptor: { name: string }) => { calls.downloads.push(descriptor.name); return uvArchive; },
+			run: (command: string, args: string[], options: { cwd: string; env: Record<string, string>; timeout?: number }) => {
+				calls.runs.push({ command, args, ...options });
+				if (args.length === 1 && args[0] === "--version") return { status: 0, stdout: `${version}\n`, stderr: "" };
+				if (args[0] === "tool" && args[1] === "install") {
+					const spec = args.at(-1)!;
+					if (fail(spec)) return { status: 1, stdout: "", stderr: "error: Failed to build `pyfluidsynth`" };
+					// As uv does on POSIX: the executable in the tool's venv, linked from the bin folder.
+					if (writes !== "none") {
+						const target = writes === "inside" ? join(options.env.UV_TOOL_DIR, "gentle-stream", "bin", "gentle-stream") : join(dirname(options.cwd), "elsewhere");
+						mkdirSync(dirname(target), { recursive: true });
+						writeFileSync(target, "#!/bin/sh\n", { mode: 0o755 });
+						mkdirSync(options.env.UV_TOOL_BIN_DIR, { recursive: true });
+						symlinkSync(target, join(options.env.UV_TOOL_BIN_DIR, "gentle-stream"));
+					}
+					return { status: 0, stdout: "Installed 1 executable: gentle-stream\n", stderr: "" };
+				}
+				if (args[0] === "cache" && args[1] === "clean") return { status: 0, stdout: "", stderr: "" };
+				return { status: 1, stdout: "", stderr: "unexpected" };
+			},
+		},
+	};
+}
+
+test("prefixLayout keeps uv, the managed Python and the music player inside the prefix", () => {
+	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
+	const root = "/home/me/.gentle-shell";
+	assert.equal(layout.uvDir, `${root}/runtime/uv-${UV}`);
+	assert.equal(layout.uv, `${root}/runtime/uv-${UV}/uv`);
+	assert.equal(layout.music, `${root}/music`);
+	assert.equal(layout.gentleStream, `${root}/music/bin/gentle-stream`);
+	const windows = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, home: "C:\\Users\\me" });
+	assert.equal(windows.uv, `C:\\Users\\me\\AppData\\Local\\gentle-shell\\runtime\\uv-${UV}\\uv.exe`);
+	assert.equal(windows.gentleStream, "C:\\Users\\me\\AppData\\Local\\gentle-shell\\music\\bin\\gentle-stream.exe");
+});
+
+test("uvExecutable takes only <stem>/uv from the tarball and uv.exe from the zip, regular files only", () => {
+	assert.deepEqual(uvExecutable(uvArchive, { url: uvUrl }), uvBytes);
+	const zipped = { url: `https://github.com/astral-sh/uv/releases/download/${UV}/uv-x86_64-pc-windows-msvc.zip` };
+	const exe = Buffer.from("MZ uv");
+	assert.deepEqual(uvExecutable(zip([["uvx.exe", Buffer.from("MZ uvx")], ["uv.exe", exe], ["uvw.exe", Buffer.from("MZ uvw")]]), zipped), exe);
+	assert.throws(() => uvExecutable(tarGz([tarEntry("uv-aarch64-apple-darwin/uv", { type: "2", link: "/bin/sh" })]), { url: uvUrl }), /uv archive rejected/);
+	assert.throws(() => uvExecutable(tarGz([tarEntry("uv", { data: uvBytes })]), { url: uvUrl }), /uv archive rejected/);
+	assert.throws(() => uvExecutable(zip([["uv", exe]]), zipped), /uv archive rejected/);
+});
+
+posixTest("ensureUv publishes only the verified uv after running it, once", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters();
+	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), true);
+	assert.deepEqual(readdirSync(layout.uvDir).sort(), [".gentle-shell-runtime", "uv"]);
+	assert.deepEqual(readFileSync(layout.uv), uvBytes);
+	assert.equal(lstatSync(layout.uv).mode & 0o777, 0o700);
+	assert.equal(readFileSync(join(layout.uvDir, ".gentle-shell-runtime"), "utf8"), `${uvUrl}\n`);
+	assert.match(calls.runs[0]!.command, /\/runtime\/\.stage-[^/]+\/uv$/);
+	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), false, "reused");
+	assert.deepEqual(calls.downloads, ["uv"]);
+	// Another version's answer, or a tampered archive, publishes nothing.
+	for (const broken of [uvAdapters({ version: "uv 0.9.0" }).adapters, { ...uvAdapters().adapters, download: async () => Buffer.from("x") }]) {
+		const other = claimed().layout;
+		await assert.rejects(ensureUv({ layout: other, platform: "darwin", arch: "arm64", adapters: broken }), /uv|integrity|size/);
+		assert.deepEqual(readdirSync(other.runtime), []);
+	}
+});
+
+posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefix and installs from the pinned archive", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters();
+	const out: string[] = [];
+	const env = { HOME: "/home/me", PATH: "/usr/bin", UV_TOOL_DIR: "/home/me/.local/share/uv/tools", UV_INDEX_URL: "https://example.invalid", VIRTUAL_ENV: "/venv", HTTPS_PROXY: "http://proxy:3128" };
+	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture, out: (line: string) => out.push(line) });
+	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: true, installed: true });
+	const install = calls.runs.find((run) => run.args[0] === "tool")!;
+	assert.equal(install.command, layout.uv);
+	assert.deepEqual(install.args, ["tool", "install", "--python", "3.13", `gentle-stream[samples] @ ${PLAYER_ARCHIVE}`]);
+	assert.ok(!install.args.join(" ").includes("git+"), "an archive URL, so git is never needed");
+	assert.ok(install.cwd.startsWith(layout.root));
+	assert.equal(install.env.UV_TOOL_DIR, join(layout.music, "tools"));
+	assert.equal(install.env.UV_TOOL_BIN_DIR, join(layout.music, "bin"));
+	assert.equal(install.env.UV_PYTHON_INSTALL_DIR, join(layout.music, "python"));
+	assert.equal(install.env.UV_PYTHON_BIN_DIR, join(layout.music, "python", "bin"));
+	assert.equal(install.env.UV_CACHE_DIR, join(layout.music, "cache"));
+	assert.equal(install.env.UV_PYTHON, "3.13");
+	assert.equal(install.env.UV_PYTHON_PREFERENCE, "only-managed");
+	assert.equal(install.env.UV_NO_CONFIG, "1");
+	// The user's uv settings and virtualenv never reach it; the network settings do.
+	assert.equal(install.env.UV_INDEX_URL, undefined);
+	assert.equal(install.env.VIRTUAL_ENV, undefined);
+	assert.equal(install.env.HTTPS_PROXY, "http://proxy:3128");
+	assert.ok(out.length >= 2, "progress is reported");
+	assert.deepEqual(calls.runs.at(-1)!.args, ["cache", "clean"], "the download cache is emptied afterwards");
+	// Idempotent: a second call downloads and runs nothing.
+	const before = calls.runs.length;
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture }), { gentleStream: layout.gentleStream, samples: true, installed: false });
+	assert.equal(calls.runs.length, before);
+	assert.deepEqual(calls.downloads, ["uv"]);
+});
+
+posixTest("installMusicPlayer retries without the samples extra when it cannot be installed, and says so", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters({ fail: (spec) => spec.includes("[samples]") });
+	const out: string[] = [];
+	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture, out: (line: string) => out.push(line) });
+	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: false, installed: true });
+	assert.deepEqual(calls.runs.filter((run) => run.args[0] === "tool").map((run) => run.args.at(-1)), [`gentle-stream[samples] @ ${PLAYER_ARCHIVE}`, `gentle-stream @ ${PLAYER_ARCHIVE}`]);
+	assert.ok(out.some((line) => /without the samples extra/i.test(line) && /FluidSynth/.test(line)));
+	// Reused without samples too, so no retry loop on every /gentle:music.
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture }), { gentleStream: layout.gentleStream, samples: false, installed: false });
+});
+
+posixTest("installMusicPlayer fails clearly when uv cannot install the player at all", async () => {
+	// uv failing twice, no executable, or one that leaves <prefix>/music.
+	for (const fixture of [uvAdapters({ fail: () => true }), uvAdapters({ writes: "none" }), uvAdapters({ writes: "outside" })]) {
+		const { layout } = claimed();
+		await assert.rejects(installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture.adapters }), /gentle-stream/);
+		assert.equal(existsSync(join(layout.music, ".gentle-shell-music")), false);
+	}
 });
 
 test("nodeExecutable takes only node.exe from the Windows zip and only bin/node from the tarball", () => {

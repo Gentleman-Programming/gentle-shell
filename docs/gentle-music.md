@@ -45,14 +45,35 @@ When you quit Pi after using `/gentle:music`, Gentle Shell runs `gentle-stream c
 Gentle Shell looks for gentle-stream in this order:
 
 1. `gentle-stream` on `PATH`.
-2. `uvx`, running gentle-stream straight from its repository (the first run downloads it).
-3. `uv`, through `uv tool run`.
+2. In a bundled Gentle Shell, the gentle-stream it installed inside its own folder (see below).
+3. `uvx`, running gentle-stream straight from its repository (the first run downloads it).
+4. `uv`, through `uv tool run`.
 
-With none of them, `/gentle:music` explains how to install and does nothing else. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), or install gentle-stream permanently:
+With none of them, a pnpm or npm install of Gentle Shell explains how to install and does nothing else. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), or install gentle-stream permanently:
 
 ```bash
 uv tool install 'gentle-stream[samples] @ git+https://github.com/Gentleman-Programming/gentle-stream'
 ```
+
+### Installed by a bundled Gentle Shell
+
+A bundled Gentle Shell (the one the web installer sets up) offers to install the player for you the first time `/gentle:music` finds none:
+
+> Install the gentle-stream music player inside Gentle Shell? It downloads uv, Python 3.13 and the player (about 150 MB) into the Gentle Shell folder.
+
+Decline and you get the manual hint above; nothing is downloaded. Accept and Gentle Shell shows its progress, installs the player, and starts the music. Later runs use it directly, with no question.
+
+Everything stays inside the Gentle Shell folder (`~/.gentle-shell`, or `%LOCALAPPDATA%\gentle-shell` on Windows). Nothing is added to your `PATH`, and your own Python, uv, and uv settings are never used or changed:
+
+| What | Where | Size on disk |
+| :-- | :-- | :-- |
+| [uv](https://github.com/astral-sh/uv) 0.13.6, the release archive pinned by sha256 and checked before use | `runtime/uv-0.13.6/` | about 30 MB |
+| Python 3.13, managed by that uv | `music/python/` | about 70 MB |
+| gentle-stream, from a pinned commit archive of its repository (git is not needed) | `music/tools/`, run from `music/bin/gentle-stream` | about 110 MB |
+
+uv's download cache (`music/cache/`) is emptied after the install. Removing the bundled install removes all of it.
+
+The player is installed with its `samples` extra (pyfluidsynth). If that extra cannot be installed, Gentle Shell says so and installs the player without it. Either way, the sampled instruments need the FluidSynth library from your system (for example `brew install fluid-synth` or `apt install libfluidsynth3`) and the soundfont `gentle-stream setup-samples` downloads; without them gentle-stream plays its synthesized instruments.
 
 ## Limits
 

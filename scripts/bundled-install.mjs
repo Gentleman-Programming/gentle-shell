@@ -11,7 +11,7 @@ import { posix, win32 } from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { crc32, gunzipSync, inflateRawSync } from "node:zlib";
-import { acquireGo, artifactFor, engramPinVersion, verifiedDownload } from "./installer-downloads.mjs";
+import { acquireGo, artifactFor, engramPinVersion, uvPinVersion, verifiedDownload } from "./installer-downloads.mjs";
 import { ensureWindowsPrivateFolder, readWindowsPnpmArchive, verifyWindowsStorage } from "./installer-windows.mjs";
 
 // The acquisition pins already verified for the installer; never a second copy.
@@ -28,6 +28,24 @@ const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 const VERSION_ID = /^[0-9A-Za-z][0-9A-Za-z.-]*$/;
 const MAX_EXPANDED = 512 * 1024 * 1024;
 const INSTALL_TIMEOUT = 15 * 60 * 1000;
+// The gentle-stream commit the /gentle:music offer installs, as a GitHub
+// archive (no git needed); `samples` adds pyfluidsynth for the sample voices.
+export const MUSIC_PLAYER_ARCHIVE = "https://github.com/Gentleman-Programming/gentle-stream/archive/381290451544ad2ca3348a68a81b3056bdac73b7.tar.gz";
+const MUSIC_PYTHON = "3.13";
+const MUSIC_MARKER = ".gentle-shell-music";
+// uv links its tool executables on POSIX (bin/gentle-stream -> tools/…): the
+// player counts when it resolves to a regular file inside <prefix>/music.
+function musicPlayer(layout) {
+	try {
+		const real = realpathSync(layout.gentleStream);
+		const path = pathFor(process.platform);
+		const inside = path.relative(realpathSync(layout.music), real);
+		return !inside.startsWith("..") && !path.isAbsolute(inside) && lstatSync(real).isFile();
+	} catch {
+		return false;
+	}
+}
+const musicSpec = (samples) => `gentle-stream${samples ? "[samples]" : ""} @ ${MUSIC_PLAYER_ARCHIVE}`;
 
 const pathFor = (platform) => (platform === "win32" ? win32 : posix);
 function stat(path) {
@@ -79,6 +97,12 @@ export function prefixLayout({ platform, env = {}, home, root }) {
 		// The pinned Engram (ensureEngram), given to Gentle AI and gentle-engram (S9).
 		engramDir: path.join(runtime, `engram-${engramPinVersion}`),
 		engram: path.join(runtime, `engram-${engramPinVersion}`, windows ? "engram.exe" : "engram"),
+		// Only when /gentle:music's offer is accepted (installMusicPlayer): the
+		// pinned uv, and the Python and gentle-stream it installs under music/.
+		uvDir: path.join(runtime, `uv-${uvPinVersion}`),
+		uv: path.join(runtime, `uv-${uvPinVersion}`, windows ? "uv.exe" : "uv"),
+		music: path.join(base, "music"),
+		gentleStream: path.join(base, "music", "bin", windows ? "gentle-stream.exe" : "gentle-stream"),
 		pnpmHome, store: path.join(pnpmHome, "store"), cache: path.join(pnpmHome, "cache"), state: path.join(pnpmHome, "state"),
 		config: path.join(pnpmHome, "config"), npmrc: path.join(pnpmHome, "config", "npmrc"), tmp: path.join(base, "tmp"),
 		versions: path.join(base, "versions"), history: path.join(base, "versions.history"),
@@ -412,6 +436,94 @@ export async function ensureEngram({ layout, platform, arch, env = {}, adapters 
 		const result = await run(binary, ["version"], { cwd: layout.runtime, env: childEnv });
 		if (result.status !== 0 || String(result.stdout).trim() !== `engram ${descriptor.version}`) throw new Error("Bundled Engram verification failed");
 	});
+}
+
+/** The one executable a verified uv release archive must contain: `uv` in the
+ * archive's own top folder (`uv-<target>/uv`) of the POSIX `.tar.gz`, or the
+ * top-level `uv.exe` of the Windows `.zip`. uvx, uvw and anything else are
+ * never written.
+ */
+export function uvExecutable(bytes, descriptor) {
+	const message = "uv archive rejected";
+	const url = String(descriptor?.url ?? "");
+	if (url.endsWith(".zip")) return zipMember(bytes, "uv.exe", message);
+	const stem = /\/(uv-[A-Za-z0-9_.-]+)\.tar\.gz$/.exec(url)?.[1];
+	if (!stem) throw new Error(message);
+	return tarMember(bytes, `${stem}/uv`, message);
+}
+
+/** The pinned uv in runtime/uv-<v>/, published like Engram: downloaded through
+ * verifiedDownload, only its executable written, `uv --version` run from the
+ * staging folder, marked, then published. Never part of the default install:
+ * only installMusicPlayer asks for it. Returns whether it was acquired.
+ */
+export async function ensureUv({ layout, platform, arch, env = {}, adapters = {} }) {
+	const run = adapters.run ?? runCommand;
+	const path = pathFor(process.platform);
+	const childEnv = pnpmEnvironment(layout, { platform: layout.platform, env });
+	return publishRuntime(layout, "uv", layout.uvDir, layout.uv, { platform, arch, adapters }, async (stage, bytes, descriptor) => {
+		const binary = path.join(stage, path.relative(layout.uvDir, layout.uv));
+		writeFileSync(binary, uvExecutable(bytes, descriptor), { flag: "wx", mode: 0o700 });
+		const result = await run(binary, ["--version"], { cwd: layout.runtime, env: childEnv });
+		if (result.status !== 0 || !String(result.stdout).trim().startsWith(`uv ${descriptor.version} `)) throw new Error("Bundled uv verification failed");
+	});
+}
+
+/** The environment the music player's uv runs in: its tools, their executables,
+ * the uv-managed Python 3.13 and uv's cache all under <prefix>/music; no system
+ * Python and no uv.toml are consulted. Inherited uv settings and Python
+ * environment variables are dropped; the rest (HOME, PATH, proxies, CA
+ * settings) is kept.
+ */
+export function musicEnvironment(layout, { env = {} } = {}) {
+	const path = pathFor(layout.platform);
+	const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(?:uv_.*|virtual_env|conda_prefix|pythonhome|pythonpath)$/i.test(key)));
+	return {
+		...kept,
+		UV_TOOL_DIR: path.join(layout.music, "tools"), UV_TOOL_BIN_DIR: path.dirname(layout.gentleStream),
+		UV_PYTHON_INSTALL_DIR: path.join(layout.music, "python"), UV_PYTHON_BIN_DIR: path.join(layout.music, "python", "bin"),
+		UV_CACHE_DIR: path.join(layout.music, "cache"),
+		UV_PYTHON: MUSIC_PYTHON, UV_PYTHON_PREFERENCE: "only-managed", UV_PYTHON_DOWNLOADS: "automatic", UV_NO_CONFIG: "1",
+	};
+}
+
+/** S5: the /gentle:music offer, after the user accepted it. Publishes the
+ * pinned uv (ensureUv), then `uv tool install`s the pinned gentle-stream
+ * archive with its `samples` extra into <prefix>/music (musicEnvironment);
+ * when that fails (pyfluidsynth, which needs the system FluidSynth library),
+ * once more without the extra. A marker naming the installed spec makes a
+ * second call a no-op. `out` gets one line per step. Returns the executable,
+ * whether the extra is in, and whether anything was installed.
+ */
+export async function installMusicPlayer({ layout, platform = layout.platform, arch = process.arch, env = {}, adapters = {}, out = () => {} }) {
+	const run = adapters.run ?? runCommand;
+	const path = pathFor(process.platform);
+	const marker = path.join(layout.music, MUSIC_MARKER);
+	const done = read(marker);
+	if (musicPlayer(layout) && (done === `${musicSpec(true)}\n` || done === `${musicSpec(false)}\n`)) {
+		return { gentleStream: layout.gentleStream, samples: done === `${musicSpec(true)}\n`, installed: false };
+	}
+	out(`Downloading uv ${uvPinVersion} into Gentle Shell…`);
+	await ensureUv({ layout, platform, arch, env, adapters });
+	ensureDirectory(layout.music, layout.platform);
+	const childEnv = musicEnvironment(layout, { env });
+	const install = (samples) => run(layout.uv, ["tool", "install", "--python", MUSIC_PYTHON, musicSpec(samples)], { cwd: layout.music, env: childEnv, timeout: INSTALL_TIMEOUT });
+	out(`Installing Python ${MUSIC_PYTHON} and gentle-stream; this can take a few minutes…`);
+	let samples = true;
+	let result = await install(true);
+	if (result.status !== 0) {
+		out("The samples extra could not be installed (it needs the system FluidSynth library); retrying without the samples extra…");
+		samples = false;
+		result = await install(false);
+	}
+	if (result.status !== 0 || !musicPlayer(layout)) {
+		const reason = String(result.stderr ?? "").trim().split("\n").filter(Boolean).at(-1);
+		throw new Error(`uv could not install gentle-stream${reason ? `: ${reason}` : ""}`);
+	}
+	replaceAtomically(marker, (temporary) => writeFileSync(temporary, `${musicSpec(samples)}\n`, { flag: "wx", mode: 0o600 }));
+	// The downloaded wheels and archives are not needed once installed.
+	await run(layout.uv, ["cache", "clean"], { cwd: layout.music, env: childEnv, timeout: INSTALL_TIMEOUT });
+	return { gentleStream: layout.gentleStream, samples, installed: true };
 }
 
 /** Our pinned Node with its bundled npm, and pnpm, in runtime/ (and the pinned

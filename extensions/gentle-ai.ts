@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -1814,10 +1815,6 @@ const KEEP_CURRENT = "Keep current";
 const INHERIT_MODEL = "Inherit active/default model";
 const CUSTOM_MODEL = "Custom model id";
 const INHERIT_THINKING = "Inherit effort";
-const THINKING_OPTIONS: (ThinkingLevel | typeof INHERIT_THINKING)[] = [
-	INHERIT_THINKING,
-	...THINKING_LEVELS,
-];
 
 const MODEL_CONTROL_OPTIONS = [
 	KEEP_CURRENT,
@@ -3102,6 +3099,52 @@ async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
 	return [...MODEL_CONTROL_OPTIONS, ...modelIds];
 }
 
+/**
+ * The effort levels each catalog model supports, keyed by its provider/model id.
+ * Pi clamps an unsupported level at launch, so the models screen offers only
+ * these and shows where a saved level would land. Models outside the catalog
+ * are absent: their levels are unknown.
+ */
+async function getPiThinkingSupport(ctx: ExtensionContext): Promise<Record<string, ThinkingLevel[]>> {
+	const support: Record<string, ThinkingLevel[]> = {};
+	let raw: unknown;
+	try {
+		raw = await ctx.modelRegistry?.getAvailable();
+	} catch {
+		return support;
+	}
+	if (!Array.isArray(raw)) return support;
+	for (const model of raw as Parameters<typeof getSupportedThinkingLevels>[0][]) {
+		const id = normalizeModelId(`${model?.provider}/${model?.id}`);
+		if (!id) continue;
+		try {
+			support[id] = getSupportedThinkingLevels(model).filter((level): level is ThinkingLevel =>
+				(THINKING_LEVELS as readonly string[]).includes(level),
+			);
+		} catch {
+			// A model whose metadata cannot be read stays unknown.
+		}
+	}
+	return support;
+}
+
+/**
+ * Where Pi lands a requested level on a model, mirroring pi-ai's
+ * clampThinkingLevel: the level itself when supported, else the nearest
+ * supported level above it, else below it.
+ */
+function clampToSupportedLevel(level: ThinkingLevel, supported: readonly ThinkingLevel[]): ThinkingLevel {
+	if (supported.includes(level)) return level;
+	const start = THINKING_LEVELS.indexOf(level);
+	for (let index = start + 1; index < THINKING_LEVELS.length; index += 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	for (let index = start - 1; index >= 0; index -= 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	return supported[0] ?? "off";
+}
+
 interface OverlayComponent {
 	render(width: number): string[];
 	handleInput(data: string): void;
@@ -3262,6 +3305,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private readonly file: AgentProfilesFile;
 	private readonly sessionBoundName: string | undefined;
 	private readonly pinWinner: string | undefined;
+	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
 
 	constructor(
 		draft: AgentModelConfig,
@@ -3276,8 +3320,10 @@ class RoutingTablePanel implements OverlayComponent {
 			sessionBoundName?: string;
 			pinWinner?: string;
 			feedback?: string;
+			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
 		} = {},
 	) {
+		this.thinkingSupport = options.thinkingSupport ?? {};
 		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
 		const names = Object.keys(this.file.profiles);
 		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
@@ -3348,7 +3394,35 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private effortValue(key: string): string {
 		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return "";
-		return this.draft[key]?.thinking ?? routingDefaultLabel(key, "effort");
+		const thinking = this.draft[key]?.thinking;
+		if (thinking === undefined) return routingDefaultLabel(key, "effort");
+		const supported = this.supportedLevels(key);
+		const landed = supported ? clampToSupportedLevel(thinking, supported) : thinking;
+		return landed === thinking ? thinking : `${thinking} → ${landed}`;
+	}
+
+	/**
+	 * The levels the row's model supports, from the catalog. Every agent at once
+	 * offers what all their known models share. Undefined means unknown: the row
+	 * inherits its model, or the model is not in the catalog.
+	 */
+	private supportedLevels(key: string): readonly ThinkingLevel[] | undefined {
+		if (key !== ROUTING_ALL_ROW) {
+			const model = this.draft[key]?.model;
+			return model === undefined ? undefined : this.thinkingSupport[model];
+		}
+		const known = this.agents
+			.map((agent) => this.draft[agent]?.model)
+			.map((model) => (model === undefined ? undefined : this.thinkingSupport[model]))
+			.filter((levels): levels is readonly ThinkingLevel[] => levels !== undefined);
+		if (known.length === 0) return undefined;
+		return THINKING_LEVELS.filter((level) => known.every((levels) => levels.includes(level)));
+	}
+
+	/** The effort card's choices: inherit, then the supported levels, or every level when unknown. */
+	private effortOptions(): Array<ThinkingLevel | typeof INHERIT_THINKING> {
+		const supported = this.supportedLevels(this.target);
+		return [INHERIT_THINKING, ...THINKING_LEVELS.filter((level) => !supported || supported.includes(level))];
 	}
 
 	/** The value the picker marks as current: one agent's, or every agent's when they agree. */
@@ -3446,8 +3520,10 @@ class RoutingTablePanel implements OverlayComponent {
 		}
 		this.target = key;
 		this.overlay = "effort";
-		const current = this.currentValue(key, "thinking");
-		this.effortCursor = Math.max(0, current === undefined ? 0 : THINKING_OPTIONS.indexOf(current as ThinkingLevel));
+		const current = this.currentValue(key, "thinking") as ThinkingLevel | undefined;
+		const supported = this.supportedLevels(key);
+		const landed = current !== undefined && supported ? clampToSupportedLevel(current, supported) : current;
+		this.effortCursor = Math.max(0, landed === undefined ? 0 : this.effortOptions().indexOf(landed));
 	}
 
 	private openMenu(kind: "menu" | "new"): void {
@@ -3468,7 +3544,7 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private pickEffort(index: number): void {
-		const option = THINKING_OPTIONS[index];
+		const option = this.effortOptions()[index];
 		if (option === undefined) return;
 		const thinking = option === INHERIT_THINKING ? undefined : (option as ThinkingLevel);
 		for (const key of this.targetKeys()) this.setThinking(key, thinking);
@@ -3645,7 +3721,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		if (matchesKey(data, "right") || matchesKey(data, "down")) {
-			this.effortCursor = Math.min(THINKING_OPTIONS.length - 1, this.effortCursor + 1);
+			this.effortCursor = Math.min(this.effortOptions().length - 1, this.effortCursor + 1);
 		}
 	}
 
@@ -3680,7 +3756,7 @@ class RoutingTablePanel implements OverlayComponent {
 			if (this.overlay === "model") {
 				this.modelCursor = Math.max(0, Math.min(this.modelOptions().length - 1, this.modelCursor + delta));
 			} else if (this.overlay === "effort") {
-				this.effortCursor = Math.max(0, Math.min(THINKING_OPTIONS.length - 1, this.effortCursor + delta));
+				this.effortCursor = Math.max(0, Math.min(this.effortOptions().length - 1, this.effortCursor + delta));
 			} else if (this.overlay === "menu" || this.overlay === "new") {
 				this.menuCursor = Math.max(0, Math.min(this.menuItems().length - 1, this.menuCursor + delta));
 			} else if (this.overlay === undefined) {
@@ -4068,7 +4144,7 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private effortCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
-		const chips = THINKING_OPTIONS.map((option, index) => {
+		const chips = this.effortOptions().map((option, index) => {
 			const label = option === INHERIT_THINKING ? "inherit" : option;
 			const text = index === this.effortCursor ? `[${label}]` : ` ${label} `;
 			return { index, text };
@@ -4091,7 +4167,7 @@ class RoutingTablePanel implements OverlayComponent {
 		}
 		const lines: string[] = [];
 		lines.push(this.renderText("Effort for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
-		lines.push("");
+		lines.push(this.renderText(truncateToWidth(this.effortSource(), content, "…"), "dim"));
 		for (const row of rows) {
 			let column = 0;
 			const drawn: string[] = [];
@@ -4111,6 +4187,17 @@ class RoutingTablePanel implements OverlayComponent {
 		lines.push("");
 		lines.push(this.renderText("←→ choose · enter pick · esc back", "dim"));
 		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/** One line under the effort card's title: whose levels these are. */
+	private effortSource(): string {
+		const supported = this.supportedLevels(this.target);
+		if (this.target === ROUTING_ALL_ROW) {
+			return supported ? "Levels every agent's model supports." : "Models unknown to the catalog: every level is shown.";
+		}
+		const model = this.draft[this.target]?.model;
+		if (model === undefined) return "Inherits its model: every level is shown.";
+		return supported ? `Levels ${model} supports.` : `${model} is not in the catalog: every level is shown.`;
 	}
 
 	private menuCard(inner: number, anchor: number): { lines: string[]; width: number; top: number; left: number } {
@@ -4242,6 +4329,8 @@ function renderRoutingTableForTesting(
 		sessionBoundName?: string;
 		pinWinner?: string;
 		profileName?: string;
+		feedback?: string;
+		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
 	} = {},
 ): string[] {
 	const panel = new RoutingTablePanel(
@@ -4295,6 +4384,7 @@ async function showRoutingTablePanel(
 	request: RoutingTablePanelRequest,
 ): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
+	const thinkingSupport = await getPiThinkingSupport(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<RoutingTableResult>(
 		(tui, theme, _keybindings, done) => {
@@ -4311,6 +4401,7 @@ async function showRoutingTablePanel(
 					sessionBoundName: request.sessionBoundName,
 					pinWinner: request.pinWinner,
 					feedback: request.feedback,
+					thinkingSupport,
 				},
 			);
 			const container = createNativeFullscreenInteraction({

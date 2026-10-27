@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
-import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, ensureUv, filterNpmrc, installMusicPlayer, installVersion, nodeExecutable, uvExecutable,
+import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, ensureUv, filterNpmrc, installMusicPlayer, installedMusicPlayer, installVersion, nodeExecutable, uvExecutable,
 	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
 	publishedPi, upgradePiLatest, describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
@@ -470,11 +470,29 @@ posixTest("ensureUv publishes only the verified uv after running it, once", asyn
 	}
 });
 
+posixTest("installedMusicPlayer accepts only a player that resolves to a regular file inside music/", () => {
+	const { layout } = claimed();
+	assert.equal(installedMusicPlayer(layout), false, "missing");
+	mkdirSync(dirname(layout.gentleStream), { recursive: true });
+	const outside = join(mkdtempSync(join(tmpdir(), "gs-player-")), "gentle-stream");
+	writeFileSync(outside, "#!/bin/sh\n");
+	symlinkSync(outside, layout.gentleStream);
+	assert.equal(installedMusicPlayer(layout), false, "a link out of music/");
+	rmSync(layout.gentleStream);
+	const tool = join(layout.music, "tools", "gentle-stream", "bin", "gentle-stream");
+	mkdirSync(dirname(tool), { recursive: true });
+	writeFileSync(tool, "#!/bin/sh\n");
+	symlinkSync(tool, layout.gentleStream);
+	assert.equal(installedMusicPlayer(layout), true, "uv's link into music/tools");
+	rmSync(dirname(outside), { recursive: true, force: true });
+});
+
 posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefix and installs from the pinned archive", async () => {
 	const { layout } = claimed();
 	const { calls, adapters: fixture } = uvAdapters();
 	const out: string[] = [];
-	const env = { HOME: "/home/me", PATH: "/usr/bin", UV_TOOL_DIR: "/home/me/.local/share/uv/tools", UV_INDEX_URL: "https://example.invalid", VIRTUAL_ENV: "/venv", HTTPS_PROXY: "http://proxy:3128" };
+	const env = { HOME: "/home/me", PATH: "/usr/bin", UV_TOOL_DIR: "/home/me/.local/share/uv/tools", UV_INDEX_URL: "https://example.invalid", VIRTUAL_ENV: "/venv", HTTPS_PROXY: "http://proxy:3128",
+		PYTHONUSERBASE: "/home/me/.pybase", PYTHONSTARTUP: "/home/me/startup.py", PIP_INDEX_URL: "https://pip.invalid" };
 	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture, out: (line: string) => out.push(line) });
 	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: true, installed: true });
 	const install = calls.runs.find((run) => run.args[0] === "tool")!;
@@ -493,6 +511,7 @@ posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefi
 	// The user's uv settings and virtualenv never reach it; the network settings do.
 	assert.equal(install.env.UV_INDEX_URL, undefined);
 	assert.equal(install.env.VIRTUAL_ENV, undefined);
+	for (const key of ["PYTHONUSERBASE", "PYTHONSTARTUP", "PIP_INDEX_URL"]) assert.equal(install.env[key], undefined, key);
 	assert.equal(install.env.HTTPS_PROXY, "http://proxy:3128");
 	assert.ok(out.length >= 2, "progress is reported");
 	assert.deepEqual(calls.runs.at(-1)!.args, ["cache", "clean"], "the download cache is emptied afterwards");

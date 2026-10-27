@@ -167,17 +167,11 @@ export function formatMusicStatus(stdout: string): string | undefined {
 async function defaultBundled(): Promise<BundledMusicPlayer | undefined> {
 	const prefix = runningBundledPrefix(process.env);
 	if (prefix === undefined) return undefined;
-	const { installMusicPlayer, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const { installMusicPlayer, installedMusicPlayer, prefixLayout } = await import("../scripts/bundled-install.mjs");
 	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: prefix });
 	return {
 		gentleStream: layout.gentleStream,
-		installed: () => {
-			try {
-				return statSync(layout.gentleStream).isFile();
-			} catch {
-				return false;
-			}
-		},
+		installed: () => installedMusicPlayer(layout),
 		install: async (progress) => {
 			const result = await installMusicPlayer({ layout, platform: process.platform, arch: process.arch, env: process.env, out: progress });
 			return { gentleStream: result.gentleStream, samples: result.samples };

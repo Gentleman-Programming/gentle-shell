@@ -35,7 +35,8 @@ const MUSIC_PYTHON = "3.13";
 const MUSIC_MARKER = ".gentle-shell-music";
 // uv links its tool executables on POSIX (bin/gentle-stream -> tools/…): the
 // player counts when it resolves to a regular file inside <prefix>/music.
-function musicPlayer(layout) {
+// The /gentle:music extension asks the same question before running it.
+export function installedMusicPlayer(layout) {
 	try {
 		const real = realpathSync(layout.gentleStream);
 		const path = pathFor(process.platform);
@@ -471,13 +472,13 @@ export async function ensureUv({ layout, platform, arch, env = {}, adapters = {}
 
 /** The environment the music player's uv runs in: its tools, their executables,
  * the uv-managed Python 3.13 and uv's cache all under <prefix>/music; no system
- * Python and no uv.toml are consulted. Inherited uv settings and Python
- * environment variables are dropped; the rest (HOME, PATH, proxies, CA
+ * Python and no uv.toml are consulted. Inherited UV_*, PYTHON*, PIP_*,
+ * VIRTUAL_ENV and CONDA_PREFIX are dropped; the rest (HOME, PATH, proxies, CA
  * settings) is kept.
  */
 export function musicEnvironment(layout, { env = {} } = {}) {
 	const path = pathFor(layout.platform);
-	const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(?:uv_.*|virtual_env|conda_prefix|pythonhome|pythonpath)$/i.test(key)));
+	const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !/^(?:uv_.*|python.*|pip_.*|virtual_env|conda_prefix)$/i.test(key)));
 	return {
 		...kept,
 		UV_TOOL_DIR: path.join(layout.music, "tools"), UV_TOOL_BIN_DIR: path.dirname(layout.gentleStream),
@@ -500,7 +501,7 @@ export async function installMusicPlayer({ layout, platform = layout.platform, a
 	const path = pathFor(process.platform);
 	const marker = path.join(layout.music, MUSIC_MARKER);
 	const done = read(marker);
-	if (musicPlayer(layout) && (done === `${musicSpec(true)}\n` || done === `${musicSpec(false)}\n`)) {
+	if (installedMusicPlayer(layout) && (done === `${musicSpec(true)}\n` || done === `${musicSpec(false)}\n`)) {
 		return { gentleStream: layout.gentleStream, samples: done === `${musicSpec(true)}\n`, installed: false };
 	}
 	out(`Downloading uv ${uvPinVersion} into Gentle Shell…`);
@@ -516,7 +517,7 @@ export async function installMusicPlayer({ layout, platform = layout.platform, a
 		samples = false;
 		result = await install(false);
 	}
-	if (result.status !== 0 || !musicPlayer(layout)) {
+	if (result.status !== 0 || !installedMusicPlayer(layout)) {
 		const reason = String(result.stderr ?? "").trim().split("\n").filter(Boolean).at(-1);
 		throw new Error(`uv could not install gentle-stream${reason ? `: ${reason}` : ""}`);
 	}

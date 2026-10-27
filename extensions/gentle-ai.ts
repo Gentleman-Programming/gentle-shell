@@ -3148,8 +3148,29 @@ const PANEL_TONE_COLOR: Record<PanelTone, ThemeColor> = {
 /** The pseudo row behind the Model ▾ / Effort ▾ header: it sets every agent at once. */
 const ROUTING_ALL_ROW = "__all";
 const ROUTING_CUSTOM_MODEL = "Custom model id…";
-/** Body lines around the agent rows: tabs, rail, description, blank, orchestrator, rule, header, blank, footer, hints, feedback. */
-const ROUTING_TABLE_FIXED_ROWS = 11;
+/** Body lines around the agent rows: tabs, rail, description, blank, orchestrator, rule, header, blank, footer, hints, two feedback lines. */
+const ROUTING_TABLE_FIXED_ROWS = 12;
+/** Compact button labels for terminals too narrow for the full ones. */
+const ROUTING_TABLE_SHORT_BUTTONS: Partial<Record<RoutingTableButton, string>> = {
+	use: "Use here",
+	default: "Default",
+};
+/**
+ * The key hints in display order, each with a keep priority (lower stays
+ * longer): narrow terminals drop whole hints instead of cutting one in half.
+ */
+const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
+	{ text: "←→ profile", keep: 5 },
+	{ text: "↑↓ agent", keep: 6 },
+	{ text: "enter model", keep: 1 },
+	{ text: "e effort", keep: 2 },
+	{ text: "s save", keep: 3 },
+	{ text: "u use", keep: 7 },
+	{ text: "d default", keep: 8 },
+	{ text: "n new", keep: 10 },
+	{ text: "m ⋯", keep: 9 },
+	{ text: "esc close", keep: 4 },
+];
 /** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
 const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
 
@@ -3821,9 +3842,11 @@ class RoutingTablePanel implements OverlayComponent {
 				+ this.renderText("━".repeat(Math.max(0, activeEnd - activeStart)), "accent")
 				+ this.renderText("─".repeat(Math.max(0, inner - activeEnd)), "border"),
 		);
-		lines.push(
-			` ${this.renderText(sanitizeTerminalText(this.profileName), "title")}   ${this.renderText(this.scopeSentence(this.profileName), "muted")}`,
-		);
+		const title = truncateToWidth(sanitizeTerminalText(this.profileName), Math.max(8, inner - 4), "…");
+		const room = inner - 1 - visibleWidth(title) - 3;
+		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
+			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
+		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
 		lines.push("");
 
 		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(agent))) + 2);
@@ -3853,7 +3876,9 @@ class RoutingTablePanel implements OverlayComponent {
 
 		// The header doubles as the "every agent" row: Model ▾ and Effort ▾.
 		const headerFocused = this.rows[this.cursor] === ROUTING_ALL_ROW;
-		const headerPlain = `${headerFocused ? "▸ " : "  "}${"Agent".padEnd(agentCol)}${"Model ▾".padEnd(modelCol)}Effort ▾   set every agent`;
+		const headerBase = `${headerFocused ? "▸ " : "  "}${"Agent".padEnd(agentCol)}${"Model ▾".padEnd(modelCol)}Effort ▾`;
+		const headerNote = visibleWidth(`${headerBase}   set every agent`) <= inner ? "   set every agent" : "";
+		const headerPlain = `${headerBase}${headerNote}`;
 		region({ kind: "effort", row: ROUTING_ALL_ROW }, effortStart, effortStart + "Effort ▾".length);
 		region({ kind: "row", row: ROUTING_ALL_ROW }, 0, inner);
 		lines.push(
@@ -3863,7 +3888,7 @@ class RoutingTablePanel implements OverlayComponent {
 					+ this.renderText("Agent".padEnd(agentCol), "muted")
 					+ this.renderText("Model ▾".padEnd(modelCol), "muted")
 					+ this.renderText("Effort ▾", "muted")
-					+ this.renderText("   set every agent", "dim"),
+					+ this.renderText(headerNote, "dim"),
 				headerPlain,
 				inner,
 			),
@@ -3877,10 +3902,16 @@ class RoutingTablePanel implements OverlayComponent {
 
 		// Footer: three buttons, the unsaved count on the right.
 		const changes = this.changeCount();
+		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
+		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
+			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
+		const fullLabel = (id: RoutingTableButton) => ROUTING_TABLE_BUTTONS[id];
+		const shortLabel = (id: RoutingTableButton) => ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id];
+		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
 		let footer = "";
 		let footerColumn = 0;
 		const button = (id: RoutingTableButton, tone: PanelTone) => {
-			const text = `[ ${ROUTING_TABLE_BUTTONS[id]} ]`;
+			const text = `[ ${label(id)} ]`;
 			region({ kind: "button", button: id }, footerColumn, footerColumn + text.length);
 			footer += this.hoverWrap(`button:${id}`, this.renderText(text, tone), text);
 			footer += "  ";
@@ -3891,17 +3922,60 @@ class RoutingTablePanel implements OverlayComponent {
 		button("use", "accent");
 		button("default", "accent");
 		button("save", changes > 0 ? "title" : "dim");
-		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
 		const gap = Math.max(1, inner - footerColumn - status.length - 1);
 		lines.push(footer + " ".repeat(gap) + this.renderText(status, changes > 0 ? "edited" : "good"));
-		lines.push(
-			this.renderText(
-				" ←→ profile  ↑↓ agent  enter model  e effort  s save  u use  d default  n new  m ⋯  esc close",
-				"dim",
-			),
-		);
-		lines.push(this.feedback ? this.renderText(` ${this.feedback}`, this.escArmed ? "edited" : "muted") : "");
+		lines.push(this.renderText(this.fitHints(inner), "dim"));
+		const [first = "", second = ""] = this.wrapFeedback(inner);
+		const feedbackTone: PanelTone = this.escArmed ? "edited" : "muted";
+		lines.push(first ? this.renderText(first, feedbackTone) : "");
+		lines.push(second ? this.renderText(second, feedbackTone) : "");
 		return lines;
+	}
+
+	/** The scope in a few characters, for terminals too narrow for the sentence. */
+	private shortScope(name: string): string {
+		const parts = this.scopeGlyphs(name).map((glyph) =>
+			glyph.text === "◉" ? "◉ session" : glyph.text === "★" ? "★ default" : "⌂ repo",
+		);
+		return parts.length > 0 ? parts.join("  ") : "not in use";
+	}
+
+	/** As many key hints as fit, chosen by priority and shown in their usual order. */
+	private fitHints(inner: number): string {
+		const budget = inner - 1;
+		const chosen = new Set<number>();
+		let used = 0;
+		const byPriority = ROUTING_TABLE_HINTS.map((hint, index) => ({ ...hint, index })).sort((a, b) => a.keep - b.keep);
+		for (const hint of byPriority) {
+			const cost = visibleWidth(hint.text) + (chosen.size > 0 ? 2 : 0);
+			if (used + cost > budget) continue;
+			chosen.add(hint.index);
+			used += cost;
+		}
+		return ` ${ROUTING_TABLE_HINTS.filter((_, index) => chosen.has(index)).map((hint) => hint.text).join("  ")}`;
+	}
+
+	/** The feedback message on up to two lines, broken between words. */
+	private wrapFeedback(inner: number): string[] {
+		if (!this.feedback) return [];
+		const width = Math.max(10, inner - 1);
+		const lines: string[] = [];
+		let current = "";
+		for (const word of sanitizeTerminalText(this.feedback).split(/\s+/).filter(Boolean)) {
+			const next = current ? `${current} ${word}` : word;
+			if (visibleWidth(next) <= width) {
+				current = next;
+				continue;
+			}
+			if (current) lines.push(current);
+			current = word;
+		}
+		if (current) lines.push(current);
+		if (lines.length > 2) {
+			lines[1] = truncateToWidth(lines.slice(1).join(" "), width, "…");
+			lines.length = 2;
+		}
+		return lines.map((line) => ` ${line}`);
 	}
 
 	/** Which tabs fit around the active one, and whether more hide on either side. */
@@ -3994,25 +4068,48 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private effortCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
-		const lines: string[] = [];
-		const chips: string[] = [];
-		let column = 0;
-		const chipRegions: RoutingHitRegion[] = [];
-		THINKING_OPTIONS.forEach((option, index) => {
+		const chips = THINKING_OPTIONS.map((option, index) => {
 			const label = option === INHERIT_THINKING ? "inherit" : option;
-			const focused = index === this.effortCursor;
-			const text = focused ? `[${label}]` : ` ${label} `;
-			chipRegions.push({ y: 2, x0: column, x1: column + text.length, action: { kind: "effort-option", index } });
-			chips.push(this.hoverWrap(`effort-option:${index}`, this.renderText(text, focused ? "title" : "status"), text));
-			column += text.length + 1;
+			const text = index === this.effortCursor ? `[${label}]` : ` ${label} `;
+			return { index, text };
 		});
-		const width = Math.min(inner - 4, Math.max(44, column + 4));
+		const oneRow = chips.reduce((sum, chip) => sum + chip.text.length + 1, 0) - 1;
+		const width = Math.min(inner - 4, Math.max(44, oneRow + 4));
+		const content = width - 4;
+		// One row when it fits; otherwise the levels wrap onto a second row, so a
+		// narrow terminal never cuts a level in half.
+		const rows: Array<typeof chips> = [[]];
+		let used = 0;
+		for (const chip of chips) {
+			const cost = chip.text.length + (rows[rows.length - 1].length > 0 ? 1 : 0);
+			if (used + cost > content && rows[rows.length - 1].length > 0) {
+				rows.push([]);
+				used = 0;
+			}
+			rows[rows.length - 1].push(chip);
+			used += chip.text.length + (rows[rows.length - 1].length > 1 ? 1 : 0);
+		}
+		const lines: string[] = [];
 		lines.push(this.renderText("Effort for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
 		lines.push("");
-		lines.push(chips.join(" "));
+		for (const row of rows) {
+			let column = 0;
+			const drawn: string[] = [];
+			for (const chip of row) {
+				this.hitRegions.push({
+					y: lines.length,
+					x0: column,
+					x1: column + chip.text.length,
+					action: { kind: "effort-option", index: chip.index },
+				});
+				const focused = chip.index === this.effortCursor;
+				drawn.push(this.hoverWrap(`effort-option:${chip.index}`, this.renderText(chip.text, focused ? "title" : "status"), chip.text));
+				column += chip.text.length + 1;
+			}
+			lines.push(drawn.join(" "));
+		}
 		lines.push("");
 		lines.push(this.renderText("←→ choose · enter pick · esc back", "dim"));
-		this.hitRegions.push(...chipRegions);
 		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
 	}
 

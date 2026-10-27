@@ -2246,11 +2246,15 @@ function activeProfileRoutingSnapshot(cwd: string, target: CurrentProfileTarget)
 	return config === undefined ? undefined : { status: "valid", config };
 }
 
-// The project-merge counterpart to activeProfileRoutingSnapshot: once the
-// global file exists, a pinned or active profile's routing is read from it
-// alone, same as above, so stale legacy entries cannot resurrect omitted
-// agents. Takes the already-resolved target for the same reason.
-function legacyProjectMergePath(cwd: string, target: CurrentProfileTarget | undefined): string {
+// The second path fed into the global/project merge below. With no active
+// profile it is the real legacy project file, so project-only entries merge
+// in. With a pinned or active profile and an existing global file it is the
+// *global* path again on purpose: merging the legacy project file here would
+// resurrect agent entries the profile deliberately omitted (the profile's
+// own snapshot, read by activeProfileRoutingSnapshot, is already complete).
+// Takes the already-resolved target so callers that also branch on it never
+// resolve it twice.
+function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | undefined): string {
 	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
@@ -2300,7 +2304,7 @@ function readSavedModelConfig(cwd: string): ModelConfigFileResult {
 	if (target !== undefined && !existsSync(globalPath)) {
 		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
 	}
-	const projectPath = legacyProjectMergePath(cwd, target);
+	const projectPath = secondaryMergeSourcePath(cwd, target);
 	const result = readModelRoutingAuthority(globalPath, projectPath);
 	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = readModelConfigFile(globalPath);
@@ -2315,7 +2319,7 @@ async function readSavedModelConfigAsync(
 	if (target !== undefined && !existsSync(globalPath)) {
 		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
 	}
-	const projectPath = legacyProjectMergePath(cwd, target);
+	const projectPath = secondaryMergeSourcePath(cwd, target);
 	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
 	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
 	const globalResult = await readModelConfigFileAsync(globalPath);
@@ -3111,7 +3115,7 @@ export async function applySavedModelConfig(
 	const applyTarget = resolveCurrentProfileTarget(ctx.cwd);
 	const result = applyTarget !== undefined && !existsSync(applyGlobalPath)
 		? activeProfileRoutingSnapshot(ctx.cwd, applyTarget) ?? { status: "valid" as const, config: {} }
-		: await readModelRoutingAuthorityAsync(applyGlobalPath, legacyProjectMergePath(ctx.cwd, applyTarget));
+		: await readModelRoutingAuthorityAsync(applyGlobalPath, secondaryMergeSourcePath(ctx.cwd, applyTarget));
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}

@@ -3308,6 +3308,8 @@ class RoutingTablePanel implements OverlayComponent {
 	private readonly sessionBoundName: string | undefined;
 	private readonly pinWinner: string | undefined;
 	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
+	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
+	private readonly notices: string[];
 
 	constructor(
 		draft: AgentModelConfig,
@@ -3323,9 +3325,11 @@ class RoutingTablePanel implements OverlayComponent {
 			pinWinner?: string;
 			feedback?: string;
 			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+			notices?: string[];
 		} = {},
 	) {
 		this.thinkingSupport = options.thinkingSupport ?? {};
+		this.notices = options.notices ?? [];
 		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
 		const names = Object.keys(this.file.profiles);
 		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
@@ -3925,6 +3929,8 @@ class RoutingTablePanel implements OverlayComponent {
 		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
 			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
 		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
+		const notices = this.noticeLines(inner);
+		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
 
 		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(agent))) + 2);
@@ -3972,7 +3978,7 @@ class RoutingTablePanel implements OverlayComponent {
 			),
 		);
 
-		const window = this.agentWindow();
+		const window = this.agentWindow(notices.length);
 		if (window.start > 0) lines.push(this.renderText(`  ↑ ${window.start} more`, "dim"));
 		for (const agent of this.agents.slice(window.start, window.end)) row(agent, agent, "text");
 		if (window.end < this.agents.length) lines.push(this.renderText(`  ↓ ${this.agents.length - window.end} more`, "dim"));
@@ -4033,6 +4039,36 @@ class RoutingTablePanel implements OverlayComponent {
 		return ` ${ROUTING_TABLE_HINTS.filter((_, index) => chosen.has(index)).map((hint) => hint.text).join("  ")}`;
 	}
 
+	/**
+	 * Each notice wrapped between words under a ⚠, at most four lines in all so
+	 * the table keeps its room; anything beyond is counted, never cut mid-word.
+	 */
+	private noticeLines(inner: number): string[] {
+		const width = Math.max(10, inner - 3);
+		const lines: string[] = [];
+		let shown = 0;
+		for (const notice of this.notices) {
+			const wrapped: string[] = [];
+			let current = "";
+			for (const word of sanitizeTerminalText(notice).split(/\s+/).filter(Boolean)) {
+				const next = current ? `${current} ${word}` : word;
+				if (visibleWidth(next) <= width || current === "") {
+					current = next;
+					continue;
+				}
+				wrapped.push(current);
+				current = word;
+			}
+			if (current) wrapped.push(current);
+			if (lines.length + wrapped.length > 4) break;
+			wrapped.forEach((line, index) => lines.push(`${index === 0 ? " ⚠ " : "   "}${line}`));
+			shown += 1;
+		}
+		const hidden = this.notices.length - shown;
+		if (hidden > 0) lines.push(`   ${hidden} more problem${hidden === 1 ? "" : "s"} not shown.`);
+		return lines;
+	}
+
 	/** The feedback message on up to two lines, broken between words. */
 	private wrapFeedback(inner: number): string[] {
 		if (!this.feedback) return [];
@@ -4082,10 +4118,10 @@ class RoutingTablePanel implements OverlayComponent {
 		return { names: names.slice(start, end), before: start > 0, after: end < names.length };
 	}
 
-	private agentWindow(): { start: number; end: number } {
+	private agentWindow(noticeRows = 0): { start: number; end: number } {
 		const total = this.agents.length;
 		if (!this.terminalRows) return { start: 0, end: total };
-		const room = Math.max(3, Math.floor(this.terminalRows()) - 2 - ROUTING_TABLE_FIXED_ROWS);
+		const room = Math.max(3, Math.floor(this.terminalRows()) - 2 - ROUTING_TABLE_FIXED_ROWS - noticeRows);
 		if (total <= room) return { start: 0, end: total };
 		const visible = Math.max(1, room - 2);
 		const focus = Math.max(0, this.cursor - 2);
@@ -4333,6 +4369,7 @@ function renderRoutingTableForTesting(
 		profileName?: string;
 		feedback?: string;
 		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+		notices?: string[];
 	} = {},
 ): string[] {
 	const panel = new RoutingTablePanel(
@@ -4379,6 +4416,64 @@ interface RoutingTablePanelRequest {
 	sessionBoundName?: string;
 	pinWinner?: string;
 	feedback?: string;
+	notices?: string[];
+}
+
+/**
+ * What the models screen must not hide: a pin layer that does not resolve
+ * (invalid file, or a name no profile defines) silently returns the repository
+ * to the global routing, and a routing key no agent matches is silently ignored
+ * at launch (issues #2196 and #2400).
+ */
+function routingScreenNotices(
+	ctx: ExtensionContext,
+	file: AgentProfilesFile,
+	shownName: string,
+	sessionBoundName: string | undefined,
+): string[] {
+	const notices: string[] = [];
+	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
+	for (const issue of pins.invalid) {
+		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
+	}
+	for (const issue of pins.stale) {
+		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
+	}
+	const roots = {
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	};
+	let discovered: Array<{ name: string }> = [];
+	try {
+		discovered = discoverAgents(roots).agents;
+	} catch {
+		return notices;
+	}
+	// gentle-pi#2271: provider review roles are routed by key and never have an
+	// agent file, so they always count as matched.
+	const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
+	const profileKeys = Object.keys(normalizeModelConfig(file.profiles[shownName]) ?? {}).filter((key) => !isProfileOrchestratorKey(key));
+	const unmatched = unmatchedProfileKeys(Object.fromEntries(profileKeys.map((key) => [key, { model: undefined, thinking: undefined }])), known);
+	const ignored = unmatched.filter((entry) => entry.suggestion === undefined).map((entry) => entry.key);
+	if (ignored.length > 0) {
+		notices.push(`No agent matches ${ignored.map((key) => `"${key}"`).join(", ")} in this profile, so ${ignored.length === 1 ? "it is" : "they are"} ignored at launch.`);
+	}
+	for (const entry of unmatched) {
+		if (entry.suggestion !== undefined) notices.push(`No agent is named "${entry.key}" in this profile; did you mean ${entry.suggestion}?`);
+	}
+	// Issue #2400: model_profiles keys in subagents.json that match nothing and
+	// suggest nothing. A session binding or a winning pin replaces those launches'
+	// routing, so the file's keys do not apply there.
+	if (sessionBoundName === undefined && pinnedEffectiveModelConfig(ctx.cwd) === undefined) {
+		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
+			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
+			.map((entry) => entry.key);
+		if (stray.length > 0) {
+			notices.push(`subagents.json routes ${stray.map((key) => `"${key}"`).join(", ")}, which no agent matches, so ${stray.length === 1 ? "it is" : "they are"} ignored.`);
+		}
+	}
+	return notices;
 }
 
 async function showRoutingTablePanel(
@@ -4404,6 +4499,7 @@ async function showRoutingTablePanel(
 					pinWinner: request.pinWinner,
 					feedback: request.feedback,
 					thinkingSupport,
+					notices: request.notices,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -5426,13 +5522,15 @@ async function openProfilesPanelLoop(
 			return;
 		}
 		const stored = cloneModelConfig(normalizeModelConfig(file.profiles[selectedName]) ?? {});
+		const boundName = sessionBoundName();
 		const result = await showRoutingTablePanel(ctx, {
 			name: selectedName,
 			config: draftOverride ?? stored,
 			file,
-			sessionBoundName: sessionBoundName(),
+			sessionBoundName: boundName,
 			pinWinner: pinWinner(),
 			feedback,
+			notices: routingScreenNotices(ctx, file, selectedName, boundName),
 		});
 		draftOverride = undefined;
 		feedback = undefined;

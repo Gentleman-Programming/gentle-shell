@@ -3201,6 +3201,7 @@ class RoutingEditorPanel implements OverlayComponent {
 		theme?: Theme,
 		profileName = "current",
 		terminalRows?: () => number,
+		focus?: { agent: string; kind: "model" | "effort" },
 	) {
 		this.draft = cloneModelConfig(initialConfig);
 		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
@@ -3210,6 +3211,25 @@ class RoutingEditorPanel implements OverlayComponent {
 		this.theme = theme;
 		this.profileName = profileName;
 		this.terminalRows = terminalRows;
+		if (focus) {
+			// A click on one agent's routing row lands here: the editor opens
+			// looking at that agent, in the picker the click pointed at.
+			const index = this.rows.indexOf(focus.agent);
+			if (index >= 0) {
+				this.cursor = index;
+				this.selectedRow = focus.agent;
+				const effortBlocked = focus.agent === PROFILE_ORCHESTRATOR_KEY
+					&& !this.draft[focus.agent]?.model;
+				if (focus.kind === "effort" && !effortBlocked) {
+					this.mode = "effort";
+					this.effortCursor = 0;
+				} else {
+					this.mode = "models";
+					this.modelCursor = 0;
+					this.query = "";
+				}
+			}
+		}
 	}
 
 	invalidate(): void {
@@ -3522,7 +3542,7 @@ class RoutingEditorPanel implements OverlayComponent {
 			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
 		const options = this.filteredModelOptions();
 		lines.push(
-			this.renderLine(`Model for ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
+			this.renderLine(`Modelo · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
 		);
 		lines.push("");
 		const search = `${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`;
@@ -3661,7 +3681,7 @@ class RoutingEditorPanel implements OverlayComponent {
 		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
 			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
 		lines.push(
-			this.renderLine(`Effort for ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
+			this.renderLine(`Effort · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
 		);
 		lines.push("");
 		lines.push(this.renderText("─".repeat(Math.min(width, 64)), "border"));
@@ -4396,6 +4416,7 @@ async function showRoutingEditorPanel(
 	ctx: ExtensionContext,
 	profileName: string,
 	config: AgentModelConfig,
+	focus?: { agent: string; kind: "model" | "effort" },
 ): Promise<RoutingEditorResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
@@ -4409,6 +4430,7 @@ async function showRoutingEditorPanel(
 				theme,
 				profileName,
 				() => Math.max(0, tui.terminal.rows),
+				focus,
 			);
 			const container = createNativeFullscreenInteraction({
 				keyboardTarget: panel,
@@ -4492,7 +4514,7 @@ type ProfilesPanelResult =
 	| { type: "apply"; name: string }
 	| { type: "apply-global"; name: string }
 	| { type: "create" }
-	| { type: "edit-routing"; name: string }
+	| { type: "edit-routing"; name: string; focus?: { agent: string; kind: "model" | "effort" } }
 	| { type: "orchestrator"; name: string }
 	| { type: "update"; name: string }
 	| { type: "duplicate"; name: string }
@@ -4677,6 +4699,9 @@ class ProfilesPanel implements OverlayComponent {
 	// Detail-pane pointer state: which rendered detail lines belong to the profile
 	// routing table (clickable), and which one the pointer is on (hover fill).
 	private readonly detailHitLines = new Set<number>();
+	// Clicking one agent's routing row focuses the routing editor on THAT agent,
+	// so the panel records which row (and which column) each hit line belongs to.
+	private readonly detailHitInfo = new Map<number, { agent: string; effortStart: number }>();
 	private hoveredDetailLine: number | undefined;
 	readonly list: NativeChoiceList<ProfileListItem>;
 	private file: AgentProfilesFile;
@@ -4741,14 +4766,10 @@ class ProfilesPanel implements OverlayComponent {
 			},
 			keybindings,
 		);
-		// A click selects; clicking the already-selected profile opens the action
-		// menu, so the pointer path never applies anything by accident.
-		this.list.onSelect = (item) => {
-			if (item.id === this.clickedId) {
-				this.openActions();
-				return;
-			}
-			this.clickedId = item.id;
+		// A click on a profile always opens the action menu, the same menu Enter
+		// opens: click and keyboard are the same surface, never different actions.
+		this.list.onSelect = () => {
+			this.openActions();
 		};
 		this.list.onCancel = () => this.finish({ type: "close" });
 		const selected = selectedName ? items.findIndex((item) => item.id === selectedName) : -1;
@@ -4823,10 +4844,13 @@ class ProfilesPanel implements OverlayComponent {
 		if (data === "E") return this.finish({ type: "export", name });
 		if (data === "p") return this.finish({ type: "pin", source: "local", name });
 		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
-		// Enter applies the selected profile. It is intercepted before the list so
-		// NativeChoiceList's confirm never reaches the click-oriented onSelect,
-		// whose job is select-then-menu, not apply.
-		if (matchesKey(data, "return")) return this.finish({ type: "apply", name });
+		// Enter opens the action menu — the same menu a profile click opens — so
+		// keyboard and pointer share one coherent surface. "Usar en esta sesión"
+		// is the menu's first item, one Enter away.
+		if (matchesKey(data, "return")) {
+			this.openActions();
+			return;
+		}
 		this.list.handleInput(data);
 		this.clickedId = this.list.getSelectedItem()?.id;
 	}
@@ -5092,7 +5116,18 @@ class ProfilesPanel implements OverlayComponent {
 		if (!this.detailHitLines.has(line)) return undefined;
 		const name = this.list.getSelectedItem()?.id;
 		if (!name) return undefined;
-		this.finish({ type: "edit-routing", name });
+		const hit = this.detailHitInfo.get(line);
+		// The click lands on one agent's row: clicking the effort column focuses
+		// that agent's effort picker, anything else its model picker. The detail
+		// content starts two columns past the pane edge (border + space), and the
+		// row text is indented two more.
+		const focus = hit
+			? {
+				agent: hit.agent,
+				kind: (event.x >= layout.threadX + 4 + hit.effortStart ? "effort" : "model") as "model" | "effort",
+			}
+			: undefined;
+		this.finish({ type: "edit-routing", name, focus });
 		return { handled: true };
 	}
 
@@ -5151,7 +5186,7 @@ class ProfilesPanel implements OverlayComponent {
 
 	private renderFooterRow(width: number): string {
 		// One quiet line: the daily keys only. Everything else lives in the m menu.
-		const hints = "↑↓ elegir · ⏎ usar · m menú · e editar · a global · esc cerrar";
+		const hints = "↑↓ elegir · ⏎/click acciones · a global · e editar · esc cerrar";
 		const text = this.feedback ?? hints;
 		return [
 			this.renderText("│", "border"),
@@ -5202,10 +5237,13 @@ class ProfilesPanel implements OverlayComponent {
 		}
 		lines.push("");
 		lines.push(this.renderLine("Profile routing", width, "accent"));
-		for (const line of this.indentLines(this.routingLines(profileRows, widths, width), width)) {
-			// Every profile-routing row opens the routing editor for this profile.
+		for (const entry of this.routingRowLines(profileRows, widths, width)) {
+			// Every profile-routing row opens the routing editor focused on that
+			// agent: the model column opens its model picker, the effort column
+			// its effort picker.
 			this.detailHitLines.add(lines.length);
-			lines.push(line);
+			this.detailHitInfo.set(lines.length, { agent: entry.agent, effortStart: entry.effortStart });
+			lines.push(this.renderLine(`  ${entry.text}`, width, "text"));
 		}
 		lines.push("");
 		lines.push(this.renderLine("Current routing (effective)", width, "accent"));
@@ -5256,18 +5294,33 @@ class ProfilesPanel implements OverlayComponent {
 		if (rows.length === 0) {
 			return ["No routing entries — every agent inherits its default model."];
 		}
-		// Issue #2196: a key that names no discovered agent was rendered as a
-		// valid-looking row while its setting was silently ignored at launch, so
-		// each unmatched row now carries its note inline. When the row would push
-		// the note past the pane edge (indentLines adds two columns before
-		// truncating), the note moves to its own line so it is never cut off.
+		return this.routingRowLines(rows, widths, width).map((entry) => entry.text);
+	}
+
+	/**
+	 * The routing table one record per rendered line, keeping the row identity:
+	 * Issue #2196's unmatched note may wrap a row onto a second line, and both
+	 * lines belong to the same agent. The effort column start drives whether a
+	 * click means "edit this agent's model" or "edit its effort".
+	 */
+	private routingRowLines(
+		rows: ProfileRoutingRow[],
+		widths: { agent: number; model: number },
+		width: number,
+	): Array<{ agent: string; text: string; effortStart: number }> {
+		if (rows.length === 0) return [];
 		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
+		const effortStart = 2 + widths.agent + widths.model;
 		return rows.flatMap((row) => {
 			const line = formatRoutingRow(row, widths);
 			const note = notes.get(row.agent);
-			if (note === undefined) return [line];
+			if (note === undefined) return [{ agent: row.agent, text: line, effortStart }];
 			const inline = `${line}  ← ${note}`;
-			return visibleWidth(inline) + 2 <= width ? [inline] : [line, `  ↳ ${note}`];
+			if (visibleWidth(inline) + 2 <= width) return [{ agent: row.agent, text: inline, effortStart }];
+			return [
+				{ agent: row.agent, text: line, effortStart },
+				{ agent: row.agent, text: `  ↳ ${note}`, effortStart },
+			];
 		});
 	}
 
@@ -5791,7 +5844,7 @@ async function runProfilesPanelAction(
 			// read while an overlay is rendering.
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			let draft = cloneModelConfig(normalizeModelConfig(file.profiles[result.name]) ?? {});
-			let editor = await showRoutingEditorPanel(ctx, result.name, draft);
+			let editor = await showRoutingEditorPanel(ctx, result.name, draft, result.focus);
 			while (editor.type !== "save" && editor.type !== "cancel") {
 				draft = cloneModelConfig(editor.config);
 				if (editor.type === "custom") {

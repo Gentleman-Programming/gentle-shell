@@ -31,6 +31,12 @@ Two overlapping commands: `/gentle:models` edited global routing in a keyboard-o
 - [x] T7 `tests/runtime-harness.mjs` migration (writer task `mvppl322-1-qm07`; visit sequences profiles→editor→close, store-only save assertions, commit `d82a22014`).
 - [x] T8 Full suite: unit 7348 pass / 0 regressions, provider-contract PASS, runtime-harness PASS. The 4 TTY launcher failures reproduce identically on main (`main-wsl2-01a14c1b`) through the suite runner — pre-existing environment flake, not caused by this change.
 
+## Live-feedback iteration (2026-09 session)
+- Coherence: `enter` and a profile click now open the SAME action menu ("Usar en esta sesión" is its first item); clicks never apply.
+- A click on one agent's routing row in the detail pane opens the routing editor focused on that agent — model column → model picker, effort column → effort picker (`edit-routing` result carries `focus`).
+- Editor picker titles are Spanish-coherent (`Modelo · <agent>`, `Effort · <agent>`).
+- Pre-existing environment flake confirmed on main: the 4 TTY launcher tests fail through `run-test-suite.mjs` on `main-wsl2-01a14c1b` too.
+
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
 - The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.

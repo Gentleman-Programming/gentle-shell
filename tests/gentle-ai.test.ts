@@ -1413,7 +1413,7 @@ test("routing editor pointer: hovering a row fills it and clicking opens the mod
 		[{ type: "click", x: 2, y: 8 }],
 	);
 	const pickedPlain = picked.map(stripAnsi).join("\n");
-	assert.match(pickedPlain, /Model for safe-agent/, "clicking an agent row must open the model picker");
+	assert.match(pickedPlain, /Modelo · safe-agent/, "clicking an agent row must open the model picker");
 	assert.match(pickedPlain, /\[ Back \]/);
 
 	// The picker's first option sits two chrome rows below the search box: click
@@ -1491,7 +1491,7 @@ test("routing editor pointer: footer buttons act, the effort cell opens its pick
 		[{ type: "click", x: effortX, y: 8 }],
 	);
 	const effortPlain = effort.map(stripAnsi).join("\n");
-	assert.match(effortPlain, /Effort for safe-agent/, "clicking the effort cell must open the effort picker");
+	assert.match(effortPlain, /Effort · safe-agent/, "clicking the effort cell must open the effort picker");
 	assert.match(effortPlain, /Inherit effort/);
 
 	// Wheeling over the table moves the cursor row.
@@ -3078,7 +3078,7 @@ test("s snapshots current routing in place without applying or reopening the pro
 	});
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "z-active");
-	assert.match(fixture.panels[0] ?? "", /↑↓ elegir · ⏎ usar · m menú · e editar · a global · esc cerrar/);
+	assert.match(fixture.panels[0] ?? "", /acciones · a global · e editar · esc cerrar/);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
 	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
@@ -3175,7 +3175,14 @@ test("routing editor saves the explicit orchestrator choice into the profile", a
 
 	// Applying the profile still drives the live session (unchanged semantics).
 	let profileVisits = 0;
-	fixture.onInput((panel) => { panel.handleInput(profileVisits++ === 0 ? "\r" : "\x1b"); });
+	fixture.onInput((panel) => {
+			if (profileVisits++ === 0) {
+				panel.handleInput("\r"); // open the action menu
+				panel.handleInput("\r"); // run "Usar en esta sesión"
+				return;
+			}
+			panel.handleInput("\x1b");
+		});
 	await fixture.run("gentle:profiles");
 	assert.deepEqual(fixture.liveSwitches, [
 		{ kind: "model", provider: "openai", id: "beta" },
@@ -3214,7 +3221,12 @@ test("routing editor leave untouched removes a stale profile orchestrator and pr
 	let profileVisits = 0;
 	fixture.onInput((panel) => {
 		assert.match(renderComponent(panel), /orchestrator\s+inherit/);
-		panel.handleInput(profileVisits++ === 0 ? "\r" : "\x1b");
+		if (profileVisits++ === 0) {
+			panel.handleInput("\r"); // open the action menu
+			panel.handleInput("\r"); // run "Usar en esta sesión"
+			return;
+		}
+		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
 	assert.deepEqual(fixture.liveSwitches, [], "Enter preserves both live model and effort without the key");
@@ -3566,7 +3578,7 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(shortLines.at(-1)!, /^╰/);
 });
 
-test("profiles panel pointer: hovering and clicking a profile-routing row opens the routing editor", async (t) => {
+test("profiles panel pointer: clicking a profile-routing row opens the routing editor focused on that agent", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	writeStore({
 		team: {
@@ -3593,6 +3605,8 @@ test("profiles panel pointer: hovering and clicking a profile-routing row opens 
 				height: 24,
 			});
 			assert.equal(hovered?.render, true, "moving onto a routing row must request a render");
+			// x=100 sits in the effort column, so the editor must open on the
+			// worker's effort picker, not on the whole table's first row.
 			const clicked = visited.handleMouse({
 				type: "click",
 				x: 100,
@@ -3606,13 +3620,22 @@ test("profiles panel pointer: hovering and clicking a profile-routing row opens 
 			assert.equal(clicked?.handled, true, "clicking a routing row must be handled");
 			return;
 		}
+		if (visits === 2) {
+			const editor = renderComponent(visited);
+			assert.match(editor, /Effort · worker/, "the editor opens on the clicked agent's effort picker");
+			// esc first returns to the table, a second esc cancels the editor.
+			visited.handleInput("\x1b");
+			assert.match(renderComponent(visited), /Routing — team/);
+			visited.handleInput("\x1b");
+			return;
+		}
 		visited.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
 	assert.equal(visits, 3, "profiles → routing editor → profiles");
 });
 
-test("m opens the action menu; enter runs the highlighted action; esc returns to the list", async (t) => {
+test("m opens the action menu; esc returns to the list; enter twice applies", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
 	let visits = 0;
@@ -3627,7 +3650,9 @@ test("m opens the action menu; enter runs the highlighted action; esc returns to
 			// esc returns to the list without finishing…
 			panel.handleInput("\x1b");
 			assert.doesNotMatch(renderComponent(panel), /Acciones · team/);
-			// …and enter still applies the selected profile.
+			// …and enter opens the same menu; its first item applies the profile.
+			panel.handleInput("\r");
+			assert.match(renderComponent(panel), /Acciones · team/);
 			panel.handleInput("\r");
 			return;
 		}

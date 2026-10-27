@@ -23,6 +23,8 @@ const LAUNCHER_MARK = "gentle-shell bundled launcher (generated; do not edit)";
 const LAUNCHER_MISSING = "gentle-shell: no active Gentle Shell version; run the Gentle Shell installer again.";
 const PROFILE_MARK = "# gentle-shell bundled install";
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 const VERSION_ID = /^[0-9A-Za-z][0-9A-Za-z.-]*$/;
 const MAX_EXPANDED = 512 * 1024 * 1024;
 const INSTALL_TIMEOUT = 15 * 60 * 1000;
@@ -670,11 +672,15 @@ function pinnedGo(layout, go) {
  * not allowed. An installed version is reused; a folder left by an interrupted
  * install of this id (its process gone) is removed and installed again; any
  * other folder is never replaced. On Windows the pinned Go is required, so
- * gentle-pi's postinstall never builds with the user's go.exe. Adapters (run,
- * and distribution for local fixture packages in place of the registry) are
+ * gentle-pi's postinstall never builds with the user's go.exe. `unverified`
+ * (`gentle-shell update --latest` only) installs without a release lockfile:
+ * no pnpm-lock.yaml is written and pnpm resolves the exact versions itself
+ * (`--no-frozen-lockfile`, so a CI environment cannot turn it frozen); the
+ * installed versions are still checked exactly. Adapters (run, and
+ * distribution for local fixture packages in place of the registry) are
  * trusted local test code only.
  */
-export async function installVersion({ layout, manifest, lockfile, platform = layout.platform, env = {}, go = null, adapters = {} }) {
+export async function installVersion({ layout, manifest, lockfile, unverified = false, platform = layout.platform, env = {}, go = null, adapters = {} }) {
 	const files = (adapters.distribution ?? distributionFiles)(manifest);
 	const { shell, pi, id } = versionsOf(manifest);
 	const destination = versionDirectory(layout, id);
@@ -682,7 +688,7 @@ export async function installVersion({ layout, manifest, lockfile, platform = la
 	const marker = path.join(destination, VERSION_MARKER);
 	if (installedVersion(layout, id)) return { id, path: destination, installed: false };
 	if (platform === "win32" && !pinnedGo(layout, go)) throw new Error("A Windows version install needs the pinned Go from ensureRuntime({ go: true })");
-	if (typeof lockfile !== "string" || lockfile.length === 0) throw new Error("Release lockfile missing");
+	if (!unverified && (typeof lockfile !== "string" || lockfile.length === 0)) throw new Error("Release lockfile missing");
 	const existing = stat(destination);
 	if (existing) {
 		const pending = existing.isDirectory() ? /^installing (\S+) ([1-9]\d*)\n$/.exec(read(marker) ?? "") : null;
@@ -695,8 +701,8 @@ export async function installVersion({ layout, manifest, lockfile, platform = la
 	mkdirSync(destination, { mode: 0o700 });
 	try {
 		writeFileSync(marker, `installing ${id} ${process.pid}\n`, { flag: "wx", mode: 0o600 });
-		for (const [name, text] of Object.entries({ ...files, "pnpm-lock.yaml": lockfile })) writeFileSync(path.join(destination, name), text, { flag: "wx", mode: 0o600 });
-		const result = await (adapters.run ?? runCommand)(layout.node, [layout.pnpm, "install", "--frozen-lockfile"],
+		for (const [name, text] of Object.entries(unverified ? files : { ...files, "pnpm-lock.yaml": lockfile })) writeFileSync(path.join(destination, name), text, { flag: "wx", mode: 0o600 });
+		const result = await (adapters.run ?? runCommand)(layout.node, [layout.pnpm, "install", unverified ? "--no-frozen-lockfile" : "--frozen-lockfile"],
 			{ cwd: destination, env: pnpmEnvironment(layout, { platform, env, go }), timeout: INSTALL_TIMEOUT });
 		// pnpm prints install and postinstall failures on stdout: keep both tails.
 		if (result.status !== 0) {
@@ -704,7 +710,7 @@ export async function installVersion({ layout, manifest, lockfile, platform = la
 				{ stderr: [String(result.stdout ?? "").slice(-6000), String(result.stderr ?? "").slice(-4000)].filter(Boolean).join("\n") });
 		}
 		const shellDirectory = installedPackage(destination, "gentle-pi", shell, "gentle-pi");
-		installedPackage(destination, "@earendil-works/pi-coding-agent", pi, "Pi");
+		installedPackage(destination, PI_PACKAGE, pi, "Pi");
 		if (!regular(path.join(shellDirectory, "bin", "gentle-shell.mjs"))) throw new Error("Installed gentle-pi has no launcher entry");
 		replaceAtomically(marker, (temp) => writeFileSync(temp, `${id}\n`, { flag: "wx", mode: 0o600 }));
 		return { id, path: destination, installed: true };
@@ -882,11 +888,12 @@ function activateWithLauncher(layout, id, active, { module, next }) {
  * print exactly the release's gentle-pi and Pi before `current` switches; the
  * release's launcher is then written (a failure puts `current` back) and two
  * versions are kept (a pruning failure is only a warning). An already current
- * release changes nothing; any failure leaves `current` as it was and removes a
- * version this call installed. Returns { id, changed, previous?, removed?, warning? }.
+ * release changes nothing, and so does a release of the active Gentle Shell
+ * whose Pi is older than the one `gentle-shell update --latest` installed (no
+ * downgrade); any failure leaves `current` as it was and removes a version this
+ * call installed. Returns { id, changed, previous?, removed?, warning? }.
  */
 export async function upgradeBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
-	const path = pathFor(process.platform);
 	const latest = await adapters.latest();
 	const release = await adapters.distribution(latest);
 	if (release?.status !== "published") throw new Error((UNPUBLISHED[release?.status] ?? UNPUBLISHED.unavailable)(latest));
@@ -897,9 +904,40 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		out(`Gentle Shell ${shell} with Pi ${pi} is already current.`);
 		return { id, changed: false };
 	}
+	const activePi = piOfVersion(active, shell);
+	if (activePi && newerVersion(activePi, pi)) {
+		out(`Gentle Shell ${shell} is current; Pi ${activePi} (installed with 'gentle-shell update --latest') is newer than this release's verified Pi ${pi}.`);
+		return { id: active, changed: false };
+	}
+	return installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest, lockfile, active,
+		success: `Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.` });
+}
+
+/** The Pi of version id `<shell>-<pi>` for exactly this `shell`, or null. */
+function piOfVersion(id, shell) {
+	const pi = typeof id === "string" && id.startsWith(`${shell}-`) ? id.slice(shell.length + 1) : "";
+	return SEMVER.test(pi) ? pi : null;
+}
+/** Whether version `a` is newer than `b` by major, minor and patch. */
+function newerVersion(a, b) {
+	const [left, right] = [a, b].map((version) => SEMVER.exec(version).slice(1, 4).map(Number));
+	const index = left.findIndex((part, at) => part !== right[at]);
+	return index !== -1 && left[index] > right[index];
+}
+
+/** Installs `manifest` beside the active version (with the release lockfile,
+ * or `unverified` without one) and switches to it the way upgradeBundled
+ * always has: our runtime first, then the new version's own module and pinned
+ * runtime, its launcher checked for exactly `shell` and `pi`, `current`
+ * switched with that launcher, `success` printed and two versions kept (a
+ * pruning failure is only a warning). Any failure leaves `current` as it was
+ * and removes a version this call installed.
+ */
+async function installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest, lockfile, unverified = false, active, success }) {
+	const { shell, pi, id } = versionsOf(manifest);
 	const go = platform === "win32";
 	const runtime = await (adapters.ensureRuntime ?? ensureRuntime)({ layout, platform, arch, go, env });
-	const version = await installVersion({ layout, manifest, lockfile, platform, env, go: runtime.go, adapters: adapters.install ?? {} });
+	const version = await installVersion({ layout, manifest, lockfile, unverified, platform, env, go: runtime.go, adapters: adapters.install ?? {} });
 	try {
 		const loaded = await loadRelease({ layout, id, home, platform, env, adapters, active });
 		// The release's own pins, its Engram included (an older module ignores `engram`).
@@ -914,7 +952,7 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		if (version.installed && activeVersion(layout) !== id) rmSync(version.path, { recursive: true, force: true });
 		throw error;
 	}
-	out(`Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.`);
+	out(success);
 	try {
 		return { id, changed: true, previous: active, removed: (adapters.prune ?? pruneVersions)(layout, 2) };
 	} catch (error) {
@@ -922,6 +960,45 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		out(`warning: ${warning}`);
 		return { id, changed: true, previous: active, removed: [], warning };
 	}
+}
+
+/** The newest published stable Pi: our pnpm's `view` of Pi's `latest`
+ * dist-tag, with the prefix npmrc (its registry and credentials). Only an
+ * exact major.minor.patch is accepted.
+ */
+export async function publishedPi(layout, { platform = layout.platform, env = {}, run = runCommand } = {}) {
+	const result = await (run ?? runCommand)(layout.node, [layout.pnpm, "view", `${PI_PACKAGE}@latest`, "version"],
+		{ cwd: layout.root, env: pnpmEnvironment(layout, { platform, env }), timeout: 60000 });
+	if (result.status !== 0) {
+		throw Object.assign(new Error(`the latest published Pi could not be resolved (pnpm view exit ${result.status})`), { stderr: String(result.stderr ?? "").slice(-4000) });
+	}
+	const version = String(result.stdout ?? "").trim();
+	if (!STABLE.test(version)) throw new Error(`the latest published Pi version ${JSON.stringify(version)} was rejected`);
+	return version;
+}
+
+/** `gentle-shell update --latest` in a bundled install (S3): the newest
+ * published stable Pi (adapters.latestPi) installed with this Gentle Shell
+ * `shell` as version `<shell>-<pi>`, without the release's verified lockfile
+ * (installVersion `unverified`), after a warning; then verified and activated
+ * exactly like upgradeBundled (installAndActivate). An active version that
+ * already has that Pi changes nothing. Returns what upgradeBundled returns.
+ */
+export async function upgradePiLatest({ layout, home, shell, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
+	const latest = await adapters.latestPi();
+	if (!STABLE.test(String(latest))) throw new Error(`the latest published Pi version ${JSON.stringify(latest)} was rejected`);
+	const manifest = { shell, pi: latest };
+	const { pi, id } = versionsOf(manifest);
+	const active = activeVersion(layout);
+	if (active === id) {
+		out(`Pi ${pi} is already the latest published Pi.`);
+		return { id, changed: false };
+	}
+	const activePi = piOfVersion(active, shell);
+	if (!activePi) throw new Error(`the active version ${active ?? "(none)"} is not Gentle Shell ${shell}; current stays as it is`);
+	out(`warning: Pi ${pi} is newer than the Pi verified for this Gentle Shell release (${activePi}); it installs without the release's verified lockfile, and Gentle Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies it.`);
+	return installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest, unverified: true, active,
+		success: `Installed Pi ${pi} with Gentle Shell ${shell} (from ${active}). Run 'gentle-shell upgrade --rollback' to switch back.` });
 }
 
 /** Whether version `id` reports exactly `gentle-shell <shell>` and `pi <pi>` to

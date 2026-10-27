@@ -8,7 +8,7 @@ import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
 import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
 	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
-	describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
+	publishedPi, upgradePiLatest, describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
 
 // Real directories, modes, symlinks and uids need a POSIX host.
@@ -1173,6 +1173,104 @@ posixTest("upgradeBundled reports success with a warning when only pruning fails
 	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: [], warning: "older versions were not removed (EBUSY)" });
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
 	assert.match(lines.join("\n"), /Upgraded to Gentle Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
+});
+
+posixTest("upgradeBundled never downgrades a newer Pi installed with update --latest, and a newer Gentle Shell release still upgrades", async () => {
+	const { user, layout } = await activeInstall();
+	await installed(layout, [["4.1.0", "1.0.5"]]);
+	activateVersion(layout, "4.1.0-1.0.5");
+	const same = upgradeAdapters(layout, { release: { shell: "4.1.0", pi: "1.0.1" } });
+	const lines: string[] = [];
+	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: same.adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: false });
+	assert.deepEqual(lines, ["Gentle Shell 4.1.0 is current; Pi 1.0.5 (installed with 'gentle-shell update --latest') is newer than this release's verified Pi 1.0.1."]);
+	assert.deepEqual([same.calls.ensureRuntime.length, same.calls.verify.length, same.calls.loaded.length], [0, 0, 0]);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
+	const newer = upgradeAdapters(layout);
+	const upgraded = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: newer.adapters });
+	assert.equal(upgraded.id, "4.2.0-1.0.2");
+	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
+});
+
+function latestAdapters(layout: ReturnType<typeof prefixLayout>, { latestPi = "1.0.5", reported = { shell: "4.1.0", pi: latestPi } } = {}) {
+	const upgrade = upgradeAdapters(layout, { release: { shell: "4.1.0", pi: latestPi }, reported });
+	const pnpm = fakePnpm({ shell: "4.1.0", pi: latestPi });
+	const { latest: _latest, distribution: _distribution, ...rest } = upgrade.adapters;
+	return { calls: upgrade.calls, pnpm, adapters: { ...rest, install: { run: pnpm.run }, latestPi: async () => latestPi } };
+}
+
+posixTest("upgradePiLatest changes nothing when the active version already has the latest published Pi", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout, { latestPi: "1.0.1" });
+	const lines: string[] = [];
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.1", changed: false });
+	assert.deepEqual(lines, ["Pi 1.0.1 is already the latest published Pi."]);
+	assert.deepEqual([pnpm.runs.length, calls.ensureRuntime.length, calls.verify.length], [0, 0, 0]);
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("upgradePiLatest warns, installs the newest Pi without a lockfile beside the active version, verifies and switches current", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout);
+	const lines: string[] = [];
+	adapters.install.run = (command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
+		lines.push("<install>");
+		return fakePnpm({ shell: "4.1.0", pi: "1.0.5" }).run(command, args, options);
+	};
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: true, previous: "4.1.0-1.0.1", removed: ["4.0.0-1.0.0"] });
+	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
+	assert.deepEqual(lines, [
+		"warning: Pi 1.0.5 is newer than the Pi verified for this Gentle Shell release (1.0.1); it installs without the release's verified lockfile, and Gentle Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies it.",
+		"<install>",
+		"Installed Pi 1.0.5 with Gentle Shell 4.1.0 (from 4.1.0-1.0.1). Run 'gentle-shell upgrade --rollback' to switch back.",
+	]);
+	const folder = join(layout.versions, "4.1.0-1.0.5");
+	assert.equal(existsSync(join(folder, "pnpm-lock.yaml")), false);
+	for (const [name, text] of Object.entries(distributionFiles({ shell: "4.1.0", pi: "1.0.5" }))) assert.equal(readFileSync(join(folder, name), "utf8"), text, name);
+	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.1.0-1.0.5")]);
+	assert.equal(calls.verify[0].env.GENTLE_SHELL_VERIFY_VERSION, "4.1.0-1.0.5");
+	assert.equal(pnpm.runs.length, 0);
+});
+
+posixTest("upgradePiLatest installs with plain pnpm install, never the frozen lockfile", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, pnpm } = latestAdapters(layout);
+	await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters });
+	assert.equal(pnpm.runs.length, 1);
+	assert.equal(pnpm.runs[0].command, layout.node);
+	assert.equal(pnpm.runs[0].args[0], layout.pnpm);
+	assert.equal(pnpm.runs[0].args[1], "install");
+	assert.equal(pnpm.runs[0].args.includes("--frozen-lockfile"), false);
+	assert.equal(pnpm.runs[0].env.pnpm_config_store_dir, layout.store);
+});
+
+posixTest("upgradePiLatest leaves current untouched and removes the new folder when verification fails, and refuses a prerelease", async () => {
+	const { user, layout } = await activeInstall();
+	const wrong = latestAdapters(layout, { reported: { shell: "4.1.0", pi: "1.0.1" } });
+	await assert.rejects(upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters: wrong.adapters }), /reported.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+	const beta = latestAdapters(layout, { latestPi: "1.1.0-beta.1" });
+	await assert.rejects(upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters: beta.adapters }), /latest published Pi.*rejected/);
+	assert.equal(beta.pnpm.runs.length, 0);
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("publishedPi asks our pnpm for Pi's latest dist-tag with the prefix npmrc and accepts only an exact stable version", async () => {
+	const { layout } = claimed();
+	const runs: { command: string; args: string[]; env: Record<string, string> }[] = [];
+	const run = (stdout: string, status = 0) => async (command: string, args: string[], options: { env: Record<string, string> }) => {
+		runs.push({ command, args, env: options.env });
+		return { status, stdout, stderr: "" };
+	};
+	assert.equal(await publishedPi(layout, { platform: "darwin", env: {}, run: run("1.4.0\n") }), "1.4.0");
+	assert.equal(runs[0].command, layout.node);
+	assert.deepEqual(runs[0].args, [layout.pnpm, "view", "@earendil-works/pi-coding-agent@latest", "version"]);
+	assert.equal(runs[0].env.pnpm_config_npmrc_auth_file, layout.npmrc);
+	for (const stdout of ["1.4.0-rc.1\n", "", "v1.4.0\n", "1.4\n"]) await assert.rejects(publishedPi(layout, { platform: "darwin", env: {}, run: run(stdout) }), /rejected/, stdout);
+	await assert.rejects(publishedPi(layout, { platform: "darwin", env: {}, run: run("", 1) }), /exit 1/);
 });
 
 function rollbackAdapters(module: Record<string, unknown> = {}) {

@@ -1,0 +1,31 @@
+# Bundled Pi latest update
+Objective: let bundled Gentle Shell users reach the latest Pi: bump the audited pin to Pi 1.4.0 and add an explicit opt-in latest-Pi update. Branch: fix/bundled-pi-latest (worktree .worktrees/bundled-pi-latest).
+Delivery: single-pr; commit, push, merge and release authorized from main (includes unreleased main commits). Runner: `pnpm test` (node --test).
+
+## Specs
+S1. User: "bug ... se le tiene que permitir a la persona actualizar pi a la ultima version". Observed: bundled `gentle-shell update` prints "Pi ships pinned with Gentle Shell (Pi 1.2.0): a newer Pi arrives with a Gentle Shell release." then "Gentle Shell 4.4.0 with Pi 1.2.0 is already current." while npm latest Pi is 1.4.0.
+S2. User chose "Ambas": "Subir el pin a Pi 1.4.0 y sacar release": audit and adapt private Pi contracts (Vim, etc.) against Pi 1.4.0, bump the pin, release. `gentle-shell update` keeps its verified, frozen behavior.
+S3. User chose "Ambas": "Opción explícita para el último Pi": something like `gentle-shell update pi --latest` installs the newest Pi without a verified lockfile, with a warning.
+S4. User: "hagamos las dos, commit push merge y saca release" and chose "Release desde main con todo" (the release includes the unreleased main commits).
+
+S5. User: "y esto necesitamos meter tambien gracais en el paquete autocontenido estaria bien si incluyeras tambien lo necesario para que la opcion de musica funcione a la primera sin desacrgar complementos , ya que me indica esto" (screenshot warning: "/gentle:music needs gentle-stream, and neither gentle-stream nor uv is on PATH. Install uv (https://docs.astral.sh/uv/getting-started/installation/) and run /gentle:music again, or install gentle-stream with: uv tool install 'gentle-stream[samples] @ git+https://github.com/Gentleman-Programming/gentle-stream'").
+   S5 refined by user: "es que mas facil, que ya venga con gentle-shell, no un paquete externo", "que venga dentro", "si se puede porque es una extension", then: "que se ofrezca para el que quiera, y se lo instalamos asi no lo tienen que instalar manual, PERO, que utilice lo que ya tiene gentle shell de paquetes, si necesita uno nuevo se lo agrega dentro de gentle shell". Assumption: the offer applies to bundled installs (Gentle Shell-owned runtime); pnpm/npm installs keep the current hint.
+S6. User: "hay dos bugs, 1- yo dejaria solo el comando gentle:profiles y por otro lado al cambiar entre tabs de los perfiles parpadea". Chosen: "Los arreglo yo en esta release": remove /gentle:models (move its export/restore subcommands to /gentle:profiles) and fix the flicker when switching profile tabs (unreleased #2588 screen).
+
+## Tasks
+T1 | S2 | inline: audit Pi 1.3.0/1.4.0 private surfaces (delegated read-only explorer for coding-agent/tui.js), extend audited versions, bump PI_INSTALL_VERSION, docs, lockfile 1.4.0 | done | focused 587/587 pass |
+T2 | S1,S3 | delegated (context backstop at ~150k parent tokens): bundled `update --latest` opt-in path with warning, tests, help, docs; task mvrb4jp3-2-jw7v | done (verify pending: Risk item 5 installer) | writer RED/GREEN; focused 587/587 pass |
+T4 | S5 | delegated after T2 (shared scripts/bundled-install.mjs; context backstop): /gentle:music offers (consent) to install the player: pinned sha256-verified uv added to the bundled runtime like engram/go, uv-managed Python 3.13 and gentle-stream inside the prefix, from a GitHub archive URL (no git) | pending |
+T5 | S6 | delegated (parallel unit, disjoint surfaces, context backstop): remove /gentle:models, move subcommands, fix tab flicker | pending |
+T3 | S4 | inline: full suite, commit, push, PR, merge, release per gentle-pi-release | pending |
+
+## Log
+L1 (2026-10-28) User: "bug [Image#1] se le tiene que permitir a la persona actualizar pi a la ultima version"
+L2 User choice: "Ambas" (bump pin to 1.4.0 + release, and explicit latest-Pi option).
+L3 User: "hagamos las dos, commit push merge y saca release SOLO con esto please, como hotfix". publish.yml requires tag == main head; main holds unreleased commits after v4.4.0. User then chose "Release desde main con todo".
+L4 Evidence: pi-tui dist/components/editor.js, undo-stack.js, keys.js are byte-identical in 1.2.0, 1.3.0 and 1.4.0. Changed tui files 1.2.0→1.4.0: autocomplete.js, components/markdown.js, terminal-image.js, terminal.js, tui-alt-screen.js, tui.js; coding-agent ~180 files.
+L5 Design for S3: `gentle-shell update [pi|self|--self|--all] --latest` resolves newest stable Pi via bundled pnpm view, installs `<shell>-<pi>` unverified (pnpm install without --frozen-lockfile), same launcher check/activation/rollback; plain `upgrade` never downgrades a newer --latest Pi for the same Shell version; Vim gate stays exact-allowlist (unaudited Pi turns it off).
+L6 S5 added mid-turn. gentle-stream is not on PyPI (git spec, needs git for uv); plan: pinned uv artifact like engram/go (scripts/installer-downloads.mjs artifactFor), bundled PATH entry, best-effort `uv tool install` from a GitHub archive URL into the prefix so /gentle:music works first time.
+L7 User rejected install-time provisioning in favor of an opt-in offer from /gentle:music that reuses the bundled runtime and adds only uv inside Gentle Shell.
+L8 T4 pins gathered (GitHub asset digests, re-hash on download before pinning): uv 0.13.6 — darwin-arm64 uv-aarch64-apple-darwin.tar.gz 60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472 14235670; darwin-x64 uv-x86_64-apple-darwin.tar.gz 63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02 17004934; linux-x64 uv-x86_64-unknown-linux-gnu.tar.gz f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645 16799024; linux-arm64 uv-aarch64-unknown-linux-gnu.tar.gz 229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d 15794886; win32-x64 uv-x86_64-pc-windows-msvc.zip a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f 15239500; win32-arm64 uv-aarch64-pc-windows-msvc.zip c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c 15439263. gentle-stream archive pin: https://github.com/Gentleman-Programming/gentle-stream/archive/381290451544ad2ca3348a68a81b3056bdac73b7.tar.gz
+L9 decode2 (author of #2588) has no open work on the screen: last branch commit 2026-10-27 20:05, before the merge; no issue for the two bugs.

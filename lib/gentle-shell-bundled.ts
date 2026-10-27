@@ -568,6 +568,9 @@ export function withoutMissingBundledNpmCommand(settingsText: string | undefined
 export interface BundledUpdatePlan {
 	// Pi's own update was asked for: redirect it to `gentle-shell upgrade`.
 	self: boolean;
+	// `--latest` asked for the newest published Pi in place of the release's
+	// verified one (scripts/bundled-install.mjs upgradePiLatest). Only set then.
+	latest?: boolean;
 	// What Pi still runs, if anything: the extension part of `--all`, or the
 	// whole command when it never updates Pi itself.
 	piArgs?: string[];
@@ -578,7 +581,9 @@ export interface BundledUpdatePlan {
 // `update`, `--self`, or a `self`/`pi` positional, and "all" for `--all`,
 // `--self --extensions` or `self`/`pi` with `--extensions`. Only Pi's own part
 // is redirected; "all" still sends `update --extensions` (with the other
-// flags) to Pi. Packages, models, help, and forms Pi refuses (conflicting or
+// flags) to Pi. `--latest` marks Pi's own part as the newest published Pi;
+// with any form that is not Pi's own update it is unknown to Pi, so it passes
+// through. Packages, models, help, and forms Pi refuses (conflicting or
 // unknown options) reach Pi unchanged.
 export function bundledUpdatePlan(passthrough: string[]): BundledUpdatePlan {
 	const passThrough = { self: false, piArgs: passthrough };
@@ -587,8 +592,10 @@ export function bundledUpdatePlan(passthrough: string[]): BundledUpdatePlan {
 	let self = false;
 	let extensions = false;
 	let all = false;
+	let latest = false;
 	for (const token of passthrough.slice(1)) {
 		if (token === "--self") self = true;
+		else if (token === "--latest") latest = true;
 		else if (token === "--extensions") extensions = true;
 		else if (token === "--all") all = true;
 		else if (["--approve", "-a", "--no-approve", "-na", "--force"].includes(token)) flags.push(token);
@@ -600,19 +607,21 @@ export function bundledUpdatePlan(passthrough: string[]): BundledUpdatePlan {
 		if ((positional[0] !== "self" && positional[0] !== "pi") || self) return passThrough;
 		self = true;
 	}
-	if (all || (self && extensions)) return { self: true, piArgs: ["update", "--extensions", ...flags] };
+	const marked = latest ? { latest: true } : {};
+	if (all || (self && extensions)) return { self: true, ...marked, piArgs: ["update", "--extensions", ...flags] };
 	if (extensions) return passThrough;
-	return { self: true };
+	return { self: true, ...marked };
 }
 
-// What `gentle-shell update` does after the redirected upgrade (`upgradeCode`
-// is undefined when it did not run): with nothing left for Pi it exits with the
-// upgrade's code; otherwise Pi still runs, so `update --all` updates the
-// extensions even when the upgrade could not complete.
+// What `gentle-shell update` does after the redirected upgrade or the
+// `--latest` Pi update (`upgradeCode` is undefined when it did not run): with
+// nothing left for Pi it exits with that code; otherwise Pi still runs, so
+// `update --all` updates the extensions even when that step could not complete.
 export function bundledUpdateNext(plan: BundledUpdatePlan, upgradeCode: number | undefined): { exitCode: number } | { piArgs: string[]; note?: string } {
 	if (plan.piArgs === undefined) return { exitCode: upgradeCode ?? 0 };
 	if (plan.self && upgradeCode !== undefined && upgradeCode !== 0) {
-		return { piArgs: plan.piArgs, note: "gentle-shell: the Gentle Shell upgrade did not complete; updating the extensions anyway." };
+		const step = plan.latest ? "latest Pi update" : "Gentle Shell upgrade";
+		return { piArgs: plan.piArgs, note: `gentle-shell: the ${step} did not complete; updating the extensions anyway.` };
 	}
 	return { piArgs: plan.piArgs };
 }
@@ -623,6 +632,7 @@ export function bundledUpdateNotice(input: { piVersion: string; interactive: boo
 		input.interactive
 			? "Running 'gentle-shell upgrade'..."
 			: "Run 'gentle-shell upgrade' to install the latest Gentle Shell release and its Pi.",
+		"Run 'gentle-shell update --latest' to install the newest published Pi now, without the release's verified lockfile.",
 	];
 }
 

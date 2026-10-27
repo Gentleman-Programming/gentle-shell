@@ -1684,6 +1684,32 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 	}
 }
 
+// `gentle-shell update --latest` in a bundled install: the newest published
+// Pi installed with this Gentle Shell beside the active version, without the
+// release's verified lockfile (after a warning), verified, then `current`
+// switched. Returns the exit code like handleBundledUpgrade; a failure leaves
+// `current` as it was.
+async function handleBundledPiLatest(bundled) {
+	const { prefixLayout, publishedPi, upgradePiLatest } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	try {
+		await upgradePiLatest({
+			layout,
+			home: homedir(),
+			shell: ownPackageVersion(),
+			platform: process.platform,
+			arch: process.arch,
+			env: process.env,
+			adapters: { latestPi: () => publishedPi(layout, { platform: process.platform, env: process.env }) },
+			out: (line) => process.stdout.write(`${line}\n`),
+		});
+		return 0;
+	} catch (error) {
+		process.stderr.write(`gentle-shell update: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
+		return 1;
+	}
+}
+
 // The bundled npm as the `npmCommand` of a home Gentle Shell owns (the isolated
 // home, or a --home it created or provisioned; never --link or a foreign home),
 // so Pi installs packages with our npm while its tools keep the user's PATH.
@@ -1933,14 +1959,21 @@ async function main() {
 
 	// S5: in a bundled install Pi updates only with Gentle Shell, so Pi's own
 	// update becomes `gentle-shell upgrade` (run when interactive, named
-	// otherwise); package updates still reach Pi.
+	// otherwise), or with `--latest` the newest published Pi without the
+	// release's lockfile (run even when not interactive: it was asked for);
+	// package updates still reach Pi.
 	let passthrough = args.passthrough;
 	if (bundled && args.piSubcommand === "update") {
 		const plan = bundledUpdatePlan(args.passthrough);
 		if (plan.self) {
-			const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-			for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
-			const code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
+			let code;
+			if (plan.latest) {
+				code = await handleBundledPiLatest(bundled);
+			} else {
+				const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+				for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
+				code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
+			}
 			const next = bundledUpdateNext(plan, code);
 			if ("exitCode" in next) process.exit(next.exitCode);
 			if (next.note) process.stderr.write(`${next.note}\n`);

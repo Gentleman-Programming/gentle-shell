@@ -214,6 +214,7 @@ test("help text documents the bundled upgrade, its rollback and the pinned Pi up
 	assert.ok(text.includes("       gentle-shell upgrade --rollback"));
 	assert.match(text, /bundled install.*release channel only.*--rollback switches back to the previous kept version/s);
 	assert.match(text, /In a bundled install Pi ships pinned: 'update' without a package\n\s+runs 'gentle-shell upgrade'/);
+	assert.match(text, /'update --latest' installs the newest published Pi instead,\n\s+without the release's verified lockfile\./);
 });
 
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {

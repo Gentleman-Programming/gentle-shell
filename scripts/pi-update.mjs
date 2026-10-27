@@ -21,7 +21,9 @@ const SHIM_TARGET = /"((?:\$basedir[\\/]|%~?dp0%?[\\/])?[^"]*?[\\/]dist[\\/]bund
 export function managedUpdatePlan(args) {
  // The legacy extension-only alias must never trigger self-update.
  if (args.includes('--extensions-only')) return {self:false, piArgs:args};
- return bundledUpdatePlan(args);
+ // Its self update already installs the latest Pi, so --latest changes nothing here.
+ const {latest: _latest, ...plan} = bundledUpdatePlan(args);
+ return plan;
 }
 
 function pathsFor(platform) {

@@ -1639,7 +1639,7 @@ async function run() {
 				panelVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (panelVisits === 1) {
-					panel.handleInput("m"); // open the routing editor for the preselected profile
+					panel.handleInput("e"); // open the routing editor for the preselected profile
 					return;
 				}
 				if (panelVisits === 2) {
@@ -1733,7 +1733,7 @@ async function run() {
 				saveVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (saveVisits === 1) {
-					panel.handleInput("m");
+					panel.handleInput("e");
 					return;
 				}
 				if (saveVisits === 2) {
@@ -1803,7 +1803,7 @@ async function run() {
 				customVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (customVisits === 1) {
-					panel.handleInput("m");
+					panel.handleInput("e");
 					return;
 				}
 				if (customVisits === 2) {
@@ -1836,7 +1836,7 @@ async function run() {
 				invalidCustomVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (invalidCustomVisits === 1) {
-					panel.handleInput("m");
+					panel.handleInput("e");
 					return;
 				}
 				if (invalidCustomVisits === 2) {
@@ -1926,7 +1926,7 @@ async function run() {
 				maxVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (maxVisits === 1) {
-					panel.handleInput("m");
+					panel.handleInput("e");
 					return;
 				}
 				if (maxVisits === 2) {

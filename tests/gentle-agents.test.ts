@@ -3473,7 +3473,7 @@ test("session_start freezes the inherited pin: a later pin change does not move 
 	assert.equal(await session.launch(), "openai/alpha:minimal");
 	assert.equal(await session.launch(), "openai/alpha:minimal");
 	assert.deepEqual(session.driftNotices(), [
-		'notify:el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'notify:el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	], "one notice for one change, across two launches");
 	base.writeStore(DRIFT_PROFILES, "local");
 	base.writeDeclaration("local");
@@ -3502,7 +3502,7 @@ test("a session with no profile anywhere keeps today's routing even after a pin 
 	base.writePin("frontier");
 	assert.equal(await session.launch(), "openai-codex/gpt-5.6-terra:low");
 	assert.deepEqual(session.driftNotices(), [
-		'notify:el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+		'notify:el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Open /gentle:profiles and choose Use in this session to adopt one.',
 	]);
 });
 

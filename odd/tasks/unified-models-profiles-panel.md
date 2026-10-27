@@ -49,6 +49,14 @@ Two overlapping commands: `/gentle:models` edited global routing in a keyboard-o
 ## Design reset after live feedback (variant A · table-first)
 Three surfaces, two duplicate tables, and a 12-item menu made the unified panel hard to reason about. The panel is now ONE table: orchestrator first row, agents below, popovers for model/effort, profiles as a compact popover state list. `Use in session` / `Apply global` / `Save` operate on exactly what the table shows (WYSIWYG), reusing the guarded apply-global flow. ProfilesPanel, RoutingEditorPanel, and OrchestratorPickerPanel are replaced by RoutingTablePanel.
 
+## Variant A · profiles as tabs (user choice, 2026-10-27)
+Design artifact: `odd/design/models-profiles-ui-proposal.html` (variants A/B/C; user picked A on recommendation).
+- Tabs are profiles with scope glyphs (◉ session, ★ default, ⌂ repo); ←→ or click switches, with a Save and switch / Discard / Stay guard for unsaved edits.
+- Orchestrator is the first row; the Model ▾ / Effort ▾ header sets every agent (replaces the Set all agents row); effort is a one-line strip; the model list marks the current value and offers Custom model id….
+- Footer is three buttons: Use in this session (u), Make default (d), Save (s). ⋯ on the active tab (m): Rename, Duplicate, Use in this repo, Delete. + New (n): copy, from what's running now (replaces Snapshot), empty.
+- File operations moved to subcommands: /gentle:models export|restore, /gentle:profiles export <name>|import|publish <name>.
+- Fixes found in the redesign: hover used toolPendingBg (#100A0F, invisible on the #060407 Gentleman-Cute background) and now uses selectedBg; pointer actions ran on both press and click, so one click could fire two actions — they now run on click only.
+
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
 - The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.

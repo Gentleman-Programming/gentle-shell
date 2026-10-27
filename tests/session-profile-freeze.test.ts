@@ -282,14 +282,14 @@ test("drift notice: shown once per distinct change of the defaults", () => {
 	f.pinLocal("local");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 	f.pinLocal(undefined);
 	f.setActive("team");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined);
 	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "frontier", "the notice never adopts the new default");
@@ -344,14 +344,14 @@ test("drift notice covers a session frozen without a profile and a default that 
 	f.pinLocal("frontier");
 	assert.equal(
 		inheritedProfileDriftNotice(none),
-		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	const kept = options(f, "session-kept");
 	freezeSessionProfileAtStartup(kept);
 	f.pinLocal(undefined);
 	assert.equal(
 		inheritedProfileDriftNotice(kept),
-		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 });
 

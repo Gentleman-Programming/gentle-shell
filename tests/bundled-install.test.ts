@@ -1351,6 +1351,18 @@ posixTest("upgradePiLatest changes nothing when the active version already has t
 	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
 });
 
+posixTest("upgradePiLatest never downgrades when the latest published Pi is older than the active Pi", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout, { latestPi: "1.0.0" });
+	const lines: string[] = [];
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.1", changed: false });
+	assert.deepEqual(lines, ["Pi 1.0.1 is newer than the latest published Pi (1.0.0); nothing changed."]);
+	assert.deepEqual([pnpm.runs.length, calls.ensureRuntime.length, calls.verify.length], [0, 0, 0]);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
 posixTest("upgradePiLatest warns, installs the newest Pi without a lockfile beside the active version, verifies and switches current", async () => {
 	const { user, layout } = await activeInstall();
 	const { adapters, calls, pnpm } = latestAdapters(layout);
@@ -1384,6 +1396,7 @@ posixTest("upgradePiLatest installs with plain pnpm install, never the frozen lo
 	assert.equal(pnpm.runs[0].args[0], layout.pnpm);
 	assert.equal(pnpm.runs[0].args[1], "install");
 	assert.equal(pnpm.runs[0].args.includes("--frozen-lockfile"), false);
+	assert.deepEqual(pnpm.runs[0].args.slice(1), ["install", "--no-frozen-lockfile"]);
 	assert.equal(pnpm.runs[0].env.pnpm_config_store_dir, layout.store);
 });
 

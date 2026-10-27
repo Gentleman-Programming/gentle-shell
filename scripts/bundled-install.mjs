@@ -786,9 +786,10 @@ function pinnedGo(layout, go) {
  * other folder is never replaced. On Windows the pinned Go is required, so
  * gentle-pi's postinstall never builds with the user's go.exe. `unverified`
  * (`gentle-shell update --latest` only) installs without a release lockfile:
- * no pnpm-lock.yaml is written and pnpm resolves the exact versions itself
- * (`--no-frozen-lockfile`, so a CI environment cannot turn it frozen); the
- * installed versions are still checked exactly. Adapters (run, and
+ * none is written beforehand and pnpm resolves the exact versions itself
+ * (`--no-frozen-lockfile`, so a CI environment cannot turn it frozen; the
+ * pnpm-lock.yaml pnpm leaves behind is never read again); the installed
+ * versions are still checked exactly. Adapters (run, and
  * distribution for local fixture packages in place of the registry) are
  * trusted local test code only.
  */
@@ -1094,7 +1095,7 @@ export async function publishedPi(layout, { platform = layout.platform, env = {}
  * `shell` as version `<shell>-<pi>`, without the release's verified lockfile
  * (installVersion `unverified`), after a warning; then verified and activated
  * exactly like upgradeBundled (installAndActivate). An active version that
- * already has that Pi changes nothing. Returns what upgradeBundled returns.
+ * already has that Pi, or a newer one, changes nothing. Returns what upgradeBundled returns.
  */
 export async function upgradePiLatest({ layout, home, shell, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
 	const latest = await adapters.latestPi();
@@ -1108,6 +1109,11 @@ export async function upgradePiLatest({ layout, home, shell, platform = layout.p
 	}
 	const activePi = piOfVersion(active, shell);
 	if (!activePi) throw new Error(`the active version ${active ?? "(none)"} is not Gentle Shell ${shell}; current stays as it is`);
+	// A `latest` dist-tag moved back (or a release pinning a Pi newer than it) never downgrades Pi.
+	if (!newerVersion(pi, activePi)) {
+		out(`Pi ${activePi} is newer than the latest published Pi (${pi}); nothing changed.`);
+		return { id: active, changed: false };
+	}
 	out(`warning: Pi ${pi} is newer than the Pi verified for this Gentle Shell release (${activePi}); it installs without the release's verified lockfile, and Gentle Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies it.`);
 	return installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest, unverified: true, active,
 		success: `Installed Pi ${pi} with Gentle Shell ${shell} (from ${active}). Run 'gentle-shell upgrade --rollback' to switch back.` });

@@ -589,6 +589,32 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
+test("a theme switch repaints rail sections whose digest did not change", (t) => {
+	const f = fixture();
+	// Pi hands extensions a live theme proxy and announces a switch only through
+	// ui.invalidate(), which never reaches the rail inside the layout tree.
+	let code = 31;
+	const live = { fg: (_color: string, text: string) => `\x1b[${code}m${text}\x1b[39m`, bold: (text: string) => text };
+	for (const key of ["footer", "agents", "todo"]) {
+		sidebarPart(f.tui, key, { render: () => [key], invalidate() {} }, {
+			digest: () => "stable",
+			render: () => [live.fg("accent", `${key} card`)],
+			invalidate() {},
+		});
+	}
+	t.after(installSidebar(f.tui, live));
+
+	const before = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) assert.ok(before.includes(`\x1b[31m${key} card`), `${key} paints with the first theme`);
+
+	code = 32;
+	const after = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) {
+		assert.ok(after.includes(`\x1b[32m${key} card`), `${key} repaints with the new theme`);
+		assert.ok(!after.includes(`\x1b[31m${key} card`), `${key} drops the old theme`);
+	}
+});
+
 test("structural cache misses skip the whole-rail digest pass", (t) => {
 	const f = fixture();
 	let digests = 0;

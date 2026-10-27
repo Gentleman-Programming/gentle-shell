@@ -437,7 +437,7 @@ const GIT_ENV_OVERRIDES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CO
 const runGit: Git = (args, cwd) => new Promise((resolveResult) => {
 	const env = { ...process.env };
 	for (const key of GIT_ENV_OVERRIDES) delete env[key];
-	execFile("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 }, (error, stdout) => resolveResult(error ? undefined : stdout.trim()));
+	execFile("git", args, { cwd, env, encoding: "utf8", timeout: 10_000, windowsHide: true }, (error, stdout) => resolveResult(error ? undefined : stdout.trim()));
 });
 
 export type ArtifactCheck =

@@ -4,6 +4,7 @@ import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, mat
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
 import { execFile, spawnSync } from "node:child_process";
+import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -1510,26 +1511,7 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 	return `${info.size}:${info.mtimeMs}`;
 };
 
-export interface ExternalEditorHost {
-	stop(): void;
-	start(): void;
-	requestRender(force?: boolean): void;
-}
-
-export function openInExternalEditor(host: ExternalEditorHost, path: string, env: NodeJS.ProcessEnv = process.env, spawn: typeof spawnSync = spawnSync, cwd?: string): boolean {
-	const command = env.VISUAL || env.EDITOR;
-	if (!command) return false;
-	const [editor, ...editorArgs] = command.split(" ");
-	host.stop();
-	try {
-		spawn(editor, [...editorArgs, path], { cwd, stdio: "inherit", shell: process.platform === "win32" });
-	} finally {
-		host.start();
-		host.requestRender(true);
-	}
-	return true;
-}
-
+export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
 	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
@@ -1606,7 +1588,11 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
-		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		try {
+			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	} finally {
 		clearInterval(poll);
 		view?.dispose();

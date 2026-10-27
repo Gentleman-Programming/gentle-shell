@@ -385,7 +385,7 @@ async function hasNoGitMetadata(cwd: string): Promise<boolean> {
 }
 
 // Freshness (including forced self-heal) never grants automatic write permission.
-async function automaticWriteWarning(
+export async function automaticWriteWarning(
 	cwd: string,
 	targets: string[],
 	remedy = "Run /skill-registry:refresh to deliberately regenerate runtime files.",
@@ -396,6 +396,7 @@ async function automaticWriteWarning(
 			cwd,
 			env: { ...process.env, LC_ALL: "C" },
 			timeout: gitTimeoutMs,
+			windowsHide: true,
 		});
 		tracked = stdout.split("\0").filter(Boolean);
 	} catch (error) {

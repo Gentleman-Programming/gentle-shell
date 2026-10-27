@@ -43,6 +43,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 			{ command: "gentle:usage", label: "Subscription usage" },
 			{ command: "gentle:review-session-permission", label: "Review session permission" },
 			{ command: "gentle:voice", label: "Voice dictation · local Parakeet" },
+			{ command: "gentle:design", label: "Design · HTML artboards" },
 		],
 	},
 	{

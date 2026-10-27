@@ -1356,8 +1356,9 @@ test("routing editor lists grow with the terminal height instead of a fixed wind
 		.routingEditorPanel({}, models, agents, 100, undefined, 40, ["\r"])
 		.map(stripAnsi);
 	assert.equal(pickerLines.length, 40);
-	// 40 rows minus 9 rows of chrome budget.
-	assert.equal(pickerLines.filter((line) => /provider\/model-\d\d/.test(line)).length, 31);
+	// The picker card windows its options to the terminal height minus the card
+	// chrome and frame margins.
+	assert.equal(pickerLines.filter((line) => /provider\/model-\d\d/.test(line)).length, 27);
 });
 
 test("routing editor render uses the Pi-provided current theme when supplied", () => {
@@ -1375,7 +1376,7 @@ test("routing editor render uses the Pi-provided current theme when supplied", (
 	assert.match(stripAnsi(rendered), /Routing — current/);
 });
 
-test("routing editor pointer: hovering a row fills it and clicking opens the model picker", () => {
+test("routing editor pointer: hovering a row fills it and clicking opens the model picker over the table", () => {
 	const hoverTheme = {
 		fg(_color: string, text: string): string {
 			return text;
@@ -1412,12 +1413,17 @@ test("routing editor pointer: hovering a row fills it and clicking opens the mod
 		[],
 		[{ type: "click", x: 2, y: 8 }],
 	);
-	const pickedPlain = picked.map(stripAnsi).join("\n");
-	assert.match(pickedPlain, /Model · safe-agent/, "clicking an agent row must open the model picker");
-	assert.match(pickedPlain, /\[ Back \]/);
+	const pickedPlain = picked.map(stripAnsi);
+	// The picker is a centered card over the still-visible table: both surfaces
+	// render at once, and Back returns to the table instead of swapping looks.
+	assert.match(pickedPlain.join("\n"), /Model · safe-agent/, "clicking an agent row must open the model picker");
+	assert.match(pickedPlain.join("\n"), /AGENT\s+MODEL\s+EFFORT/, "the agent table stays visible behind the picker");
+	assert.match(pickedPlain.join("\n"), /\[ Back \]/);
 
-	// The picker's first option sits two chrome rows below the search box: click
-	// it to commit the model and land back on the table.
+	// Click the first catalog model inside the card: locate its rendered row.
+	const optionLine = pickedPlain.findIndex((line) => line.includes("▸ openai/gpt-5.5"));
+	assert.ok(optionLine > 0, "the picker card must list the catalog models");
+	const optionX = pickedPlain[optionLine].indexOf("▸") + 2;
 	const committed = __testing.routingEditorPanel(
 		{},
 		["openai/gpt-5.5", "openrouter/deepseek"],
@@ -1428,12 +1434,12 @@ test("routing editor pointer: hovering a row fills it and clicking opens the mod
 		[],
 		[
 			{ type: "click", x: 2, y: 8 },
-			{ type: "click", x: 2, y: 5 },
+			{ type: "click", x: optionX, y: optionLine },
 		],
 	);
 	const committedPlain = committed.map(stripAnsi).join("\n");
-	assert.match(committedPlain, /Routing — current/, "committing returns to the routing table");
 	assert.match(committedPlain, /safe-agent\s+model=openai\/gpt-5\.5/);
+	assert.doesNotMatch(committedPlain, /Model · safe-agent/, "committing returns to the routing table");
 });
 
 test("routing editor pointer: footer buttons act, the effort cell opens its picker, and the wheel scrolls", () => {

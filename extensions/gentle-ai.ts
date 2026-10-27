@@ -1834,7 +1834,7 @@ const AGENT_LIST_CHROME_ROWS = 14;
 const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
 // Rows the model list does not own: two borders, title, blank, search, blank,
 // blank, and the footer row.
-const MODEL_LIST_CHROME_ROWS = 9;
+const MODEL_LIST_CHROME_ROWS = 13;
 const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
@@ -3250,13 +3250,75 @@ class RoutingEditorPanel implements OverlayComponent {
 
 	render(width: number): string[] {
 		this.hitRegions = [];
-		const lines =
+		if (this.mode === "agents") {
+			return this.renderCard(this.renderAgentList(width), width);
+		}
+		return this.renderPickerOverTable(width);
+	}
+
+	/**
+	 * Picker modes no longer replace the whole screen — that was the standalone
+	 * panel's look and made Back feel like switching to a second UI. The agent
+	 * table stays rendered behind a centered picker card, the same visual
+	 * language as the action menu and the orchestrator picker, so Back reveals
+	 * the table that was there all along. The picker's regions are recorded in
+	 * its own card coordinates and translated into frame coordinates here.
+	 */
+	private renderPickerOverTable(width: number): string[] {
+		const discard: RoutingHitRegion[] = [];
+		const live = this.hitRegions;
+		this.hitRegions = discard;
+		const tableLines = this.renderAgentList(width);
+		this.hitRegions = live;
+		const pickerStart = this.hitRegions.length;
+		const pickerWidth = Math.min(64, Math.max(36, width - 12));
+		const pickerInner = pickerWidth - 4;
+		const pickerLines =
 			this.mode === "models"
-				? this.renderModelPicker(width)
-				: this.mode === "effort"
-					? this.renderEffortPicker(width)
-					: this.renderAgentList(width);
-		return this.renderCard(lines, width);
+				? this.renderModelPicker(pickerInner)
+				: this.renderEffortPicker(pickerInner);
+		const pickerRegions = this.hitRegions.splice(pickerStart);
+		const cardHeight = pickerLines.length + 2;
+		const rows = this.terminalRows
+			? Math.max(pickerLines.length + 4, Math.floor(this.terminalRows()))
+			: pickerLines.length + 4;
+		const top = Math.max(2, Math.floor((rows - cardHeight) / 2));
+		const left = Math.max(2, Math.floor((width - pickerWidth) / 2));
+		// Picker regions are content-relative (y counts picker body lines, x
+		// counts columns inside the card). The card's content line i renders at
+		// body row top+i+1, i.e. frame row top+i+2, and content starts at the
+		// card's left edge plus the border and space columns.
+		for (const region of pickerRegions) {
+			this.hitRegions.push({
+				...region,
+				y: region.y + top + 2,
+				x0: left + 2 + region.x0,
+				x1: left + 2 + region.x1,
+			});
+		}
+		const rule = "─".repeat(pickerWidth - 2);
+		const card: string[] = [
+			`╭${rule}╮`,
+			...pickerLines.map((line) =>
+				`│ ${this.fitStyledLine(line, pickerWidth - 4)} │`,
+			),
+			`╰${rule}╯`,
+		];
+		const bodyRows = this.terminalRows
+			? Math.floor(this.terminalRows()) - 2
+			: tableLines.length;
+		const body: string[] = [];
+		for (let row = 0; row < bodyRows; row += 1) {
+			const cardRow = row - top;
+			if (cardRow < 0 || cardRow >= card.length) {
+				body.push(tableLines[row] ?? "");
+				continue;
+			}
+			const cardLine = card[cardRow];
+			const right = " ".repeat(Math.max(0, width - left - stripAnsi(cardLine).length - 2));
+			body.push(" ".repeat(left) + cardLine + right);
+		}
+		return this.renderCard(body, width);
 	}
 
 	// In the fullscreen overlay a list owns every row its chrome leaves free;
@@ -3537,9 +3599,10 @@ class RoutingEditorPanel implements OverlayComponent {
 
 	private renderModelPicker(width: number): string[] {
 		const lines: string[] = [];
-		// Same terminal-coordinate offset as the agent table.
+		// Content-relative regions: renderPickerOverTable translates them into
+		// frame coordinates once the card's position is known.
 		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
-			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
+			this.hitRegions.push({ y: lines.length, x0, x1, action });
 		const options = this.filteredModelOptions();
 		lines.push(
 			this.renderLine(`Model · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
@@ -3677,9 +3740,9 @@ class RoutingEditorPanel implements OverlayComponent {
 
 	private renderEffortPicker(width: number): string[] {
 		const lines: string[] = [];
-		// Same terminal-coordinate offset as the agent table.
+		// Content-relative regions, translated by renderPickerOverTable.
 		const addRegion = (action: RoutingMouseAction, x0: number, x1: number) =>
-			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
+			this.hitRegions.push({ y: lines.length, x0, x1, action });
 		lines.push(
 			this.renderLine(`Effort · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
 		);

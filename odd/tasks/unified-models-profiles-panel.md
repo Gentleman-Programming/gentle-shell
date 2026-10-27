@@ -43,6 +43,9 @@ Two overlapping commands: `/gentle:models` edited global routing in a keyboard-o
 ## Live-feedback iteration 3
 - All UI copy the unified panel introduced is English: action menu items, footer hints, orchestrator picker (Save/Clear/Back), and the effective-routing diff (`Effective: identical to the profile ✓`, `Changes on apply — effective → profile (N)`).
 
+## Live-feedback iteration 4
+- The routing editor's model/effort pickers no longer replace the whole screen (the standalone panel's look — Back felt like switching to a second UI). They now render as a centered card over the still-visible agent table, matching the action menu and orchestrator picker. Picker regions are content-relative and translated into frame coordinates by renderPickerOverTable.
+
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
 - The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.

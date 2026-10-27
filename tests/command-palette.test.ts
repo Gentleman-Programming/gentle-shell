@@ -362,7 +362,6 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 	);
 	const byTitle = (title: string) => COMMAND_PALETTE_CATALOG.find((group) => group.title === title)?.items.map((item) => item.command);
 	assert.deepEqual(byTitle("Configuration"), [
-		"gentle:models",
 		"gentle:profiles",
 		"gentle:persona",
 		"gentle:review-mode",
@@ -407,7 +406,7 @@ test("retired SDD commands are absent from the palette and extension registratio
 
 test("buildCommandPaletteGroups keeps only registered commands, attaches descriptions and shortcuts, drops empty groups, preserves catalog order", () => {
 	const registered = [
-		{ name: "gentle:models", description: "Configure models" },
+		{ name: "gentle:profiles", description: "Configure models" },
 		{ name: "gentle:changes", description: "Browse changes" },
 		{ name: "gentle:status", description: "Show status" },
 		{ name: "skill-registry:refresh", description: "Refresh registry" },
@@ -419,7 +418,8 @@ test("buildCommandPaletteGroups keeps only registered commands, attaches descrip
 		["Configuration", "Session", "Diagnostics", "Skills"],
 	);
 	const configuration = groups.find((group) => group.title === "Configuration");
-	assert.deepEqual(configuration?.items.map((item) => item.command), ["gentle:models"]);
+	assert.deepEqual(configuration?.items.map((item) => item.command), ["gentle:profiles"]);
+	assert.equal(configuration?.items[0]?.label, "Models and profiles");
 	assert.equal(configuration?.items[0]?.description, "Configure models");
 	assert.equal(configuration?.items[0]?.shortcut, undefined);
 	const session = groups.find((group) => group.title === "Session");

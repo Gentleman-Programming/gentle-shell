@@ -659,8 +659,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:models             Open the models screen on this repository's profile. Subcommands: export, restore.
-/gentle:profiles           Open the same models screen. Subcommands: export <name>, import, publish <name>.
+/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
 /gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).
@@ -1008,10 +1007,10 @@ A project can still override the global default with:
 ## Model and effort assignment
 
 ```text
-/gentle:models
+/gentle:profiles
 ```
 
-`/gentle:models` and `/gentle:profiles` open the same screen: one table, with your profiles as tabs across the top.
+`/gentle:profiles` opens the models screen on the profile this repository resolves: one table, with your profiles as tabs across the top. It replaces the retired `/gentle:models`, which opened the same screen.
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────────────╮
@@ -1029,7 +1028,7 @@ A project can still override the global default with:
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-- **Tabs are profiles.** Click a tab or press `←` `→` to show another one. Symbols show where a profile is in effect: `◉` this session, `★` the default for new sessions, `⌂` this repository. Leaving a profile with unsaved changes asks first: **Save and switch**, **Discard**, or **Stay**.
+- **Tabs are profiles.** Click a tab or press `←` `→` to show another one; the screen redraws in place. Symbols show where a profile is in effect: `◉` this session, `★` the default for new sessions, `⌂` this repository. Leaving a profile with unsaved changes asks first: **Save and switch**, **Discard**, or **Stay**.
 - **The table is that profile's routing.** The orchestrator is the first row; agents follow. Click a model or press `enter` to choose from a searchable list (the current one is marked `✓`; **Custom model id…** takes any `provider/model`). Click an effort or press `e` to pick from a single row of levels: only the levels that row's model supports, as its provider's catalog declares them (every level when the row inherits its model or the model is not in the catalog). Pi lands an unsupported level on the nearest supported one at launch, and the table says where: `max → high`. Click `Model ▾` or `Effort ▾`, or move the cursor to that header, to change every agent at once; the orchestrator is never part of that.
 - **Three buttons decide where it applies.** **Use in this session** (`u`) binds what you see to this Pi session only and switches its orchestrator; nothing shared is written. **Make default** (`d`) makes it the default for new sessions through the guarded global apply (diff confirmation, pin honesty, rollback). **Save** (`s` or `ctrl+s`) writes what you see into the profile. Use and Make default save pending edits first and say so.
 - **The profile menu**, `▾` on the active tab (`m`), holds **Rename**, **Duplicate**, **Use in this repo** (the clone pin; it reads **Stop using in this repo** when it already applies), and **Delete**. **+ New** (`n`) starts a profile as a copy of the current one, from what is running now, or empty.
@@ -1063,7 +1062,7 @@ Global routing is owned by profiles: edit a profile's routing on the models scre
 
 Startup and reload materialize saved non-empty routing, but never treat a saved empty agent entry (`{}`) as permission to delete an existing `subagents.json` model profile or agent frontmatter. This also preserves previously materialized routes and routes whose agent definition is missing. To clear routing, make a profile whose entries are inherit the default (or confirm a profile replacement) on the models screen. Activation needs no ownership sidecar or lock.
 
-`/gentle:models export` writes the saved routing to `~/.pi/gentle-ai/models.export.json`, and `/gentle:models restore` restores from that file after confirmation. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
+`/gentle:profiles export-routing` writes the saved routing to `~/.pi/gentle-ai/models.export.json`, and `/gentle:profiles restore-routing` restores from that file after confirmation. They carry `-routing` because they move the global `models.json` routing, not a profile: `/gentle:profiles export <name>` and `import` move one profile through `profiles.export.json`. Export uses a versioned envelope and restore writes the normal `models.json` shape before applying routing to agents.
 
 Config shape (per agent):
 
@@ -1169,7 +1168,7 @@ omitted if no valid profile remains.
 
 For a given working directory the winner is the local pin, then the repository declaration, then the globally active profile. A session resolves these layers once, when it starts, and keeps the result. Both are toggles: using one on the profile that already holds that layer removes it (the menu then reads **Stop using in this repo**), and either one outside a Git worktree writes nothing and says so.
 
-In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The default profile does not reach those launches, which `/gentle:models` reports when it runs inside a pinned repository. **Make default** follows the same boundary: when a valid pin wins it re-pins this clone (the clone-local pin) instead of writing the global routing; a malformed pin or one naming a missing profile is ignored, and Make default applies globally as it would outside a pinned repository, so it can never move another repository's routing. A committed repository declaration is never rewritten; when one still names another profile, the clone-local pin takes precedence and the screen says so. **Use in this session** writes no pin or shared routing (only pending table edits, saved to the profile first): it binds the profile to the current session, which outranks the pin for this session's launches. The tab of the pinned profile carries `⌂`.
+In a pinned repository the pinned profile governs subagent launches: the agents it names take its model and effort, and the agents it omits return to inherit (their own definition, then the default model). The default profile does not reach those launches, which `/gentle:profiles` reports when it runs inside a pinned repository. **Make default** follows the same boundary: when a valid pin wins it re-pins this clone (the clone-local pin) instead of writing the global routing; a malformed pin or one naming a missing profile is ignored, and Make default applies globally as it would outside a pinned repository, so it can never move another repository's routing. A committed repository declaration is never rewritten; when one still names another profile, the clone-local pin takes precedence and the screen says so. **Use in this session** writes no pin or shared routing (only pending table edits, saved to the profile first): it binds the profile to the current session, which outranks the pin for this session's launches. The tab of the pinned profile carries `⌂`.
 
 To share a pin, commit the repository declaration. When `.pi/` is ignored, Git cannot re-include a nested file until its parent directories are visible. The panel therefore prints these ordered root `.gitignore` rules, which keep unrelated `.pi` content ignored while making only the declaration committable:
 
@@ -1225,8 +1224,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | -------------------------------- | ------------------------------------------------------------------- |
 | `/gentle:status`              | Shows package assets and global model config status. |
 | `/gentle:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
-| `/gentle:models`                 | Opens the models screen on this repository's profile. `export` and `restore` move the saved routing through `models.export.json`. |
-| `/gentle:profiles`               | Opens the same screen. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration. |
+| `/gentle:profiles`               | Opens the models screen on this repository's profile. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration; `export-routing` and `restore-routing` move the saved global routing through `models.export.json`. |
 | `/gentle:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Gentle commands; search and run by label. |
 | `/gentle:persona`                | Switches global persona mode, with project override support.        |
 | `/gentle:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |

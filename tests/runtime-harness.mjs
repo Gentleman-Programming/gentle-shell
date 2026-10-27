@@ -33,7 +33,7 @@ const EXPECTED_BANNER_COMMANDS = [
 const EXPECTED_COMMANDS = [
 	"gentle:install-delegation",
 	"gentle:install-review",
-	"gentle:models",
+	"gentle:profiles",
 	"gentle:persona",
 	"gentle:status",
 	"gentle:doctor",
@@ -43,6 +43,8 @@ const EXPECTED_COMMANDS = [
 
 const FORBIDDEN_COMPAT_COMMANDS = [
 	"gentle:install-assets",
+	// Retired: /gentle:profiles opens the same models screen.
+	"gentle:models",
 	"gentle-ai:models",
 	"gentleman:models",
 	"gentle-ai:persona",
@@ -1301,16 +1303,16 @@ async function run() {
 		assert.doesNotMatch(invalidGlobalSkippedAgent, /model: legacy\/provider-model/);
 		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
 		assert.match(legacyCtx.ui.notifications.at(-1).message, /skipped model config/);
+		// An unreadable models.json does not block the models screen (Make default
+		// discloses it), and closing the screen leaves the file untouched.
 		let modelPanelOpened = false;
 		legacyCtx.ui.custom = () => {
 			modelPanelOpened = true;
-			return Promise.resolve({ type: "save", config: {} });
+			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:models").handler("", legacyCtx);
-		assert.equal(modelPanelOpened, false);
+		await commands.get("gentle:profiles").handler("", legacyCtx);
+		assert.equal(modelPanelOpened, true);
 		assert.equal(await readFile(globalModelsPath, "utf8"), "{ invalid json");
-		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
-		assert.match(legacyCtx.ui.notifications.at(-1).message, /cannot open model config/);
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const emptyGlobalPreservesAgent = await readFile(
@@ -1629,7 +1631,7 @@ async function run() {
 			{ provider: "safe", id: "model" },
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
-		// /gentle:models opens the models screen on the profile this repository
+		// /gentle:profiles opens the models screen on the profile this repository
 		// resolves: one table, profiles as tabs. Its render contract: a bordered
 		// card filling the terminal, scroll indicators for long agent lists, and
 		// sanitized labels everywhere, including the model card.
@@ -1671,7 +1673,7 @@ async function run() {
 				panel.handleInput("\u001b"); // close the card
 				panel.handleInput("\u001b"); // close the screen: nothing changed, one esc is enough
 			});
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("", ctx);
 		assert.equal(panelVisits, 1, "closing an unchanged screen ends the command");
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
@@ -1715,7 +1717,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("", ctx);
 		assert.equal(saveVisits, 2, "Save reopens the screen once before it closes");
 
 		const profilesPath = join(globalConfigHome, "profiles.json");
@@ -1772,7 +1774,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("", ctx);
 		assert.equal(customVisits, 3);
 		const customSavedStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(customSavedStore.profiles.current["sdd-apply"], {
@@ -1797,7 +1799,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b"); // nothing changed: one esc closes
 			});
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("", ctx);
 		assert.equal(invalidCustomVisits, 2);
 		const rejectedCustomStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(rejectedCustomStore.profiles.current["sdd-apply"], {
@@ -1811,7 +1813,7 @@ async function run() {
 			screenOpened = true;
 			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:models").handler("export", ctx);
+		await commands.get("gentle:profiles").handler("export-routing", ctx);
 		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
 		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
 		assert.equal(exported.version, 1);
@@ -1826,7 +1828,7 @@ async function run() {
 			}, null, 2),
 		);
 		ctx.ui.confirm = async () => true;
-		await commands.get("gentle:models").handler("restore", ctx);
+		await commands.get("gentle:profiles").handler("restore-routing", ctx);
 		assert.equal(screenOpened, false, "export and restore never open the screen");
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
 		assert.deepEqual(restoredConfig["sdd-apply"], { model: "restore/provider", thinking: "high" });
@@ -1857,7 +1859,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("", ctx);
 		assert.equal(maxVisits, 2);
 		const maxStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.equal(maxStore.profiles.current["sdd-apply"].thinking, "max");

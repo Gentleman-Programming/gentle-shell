@@ -3247,6 +3247,22 @@ type RoutingTableResult = RoutingTableAction & { saveFirst?: AgentModelConfig; d
 
 type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
 
+/**
+ * What the screen needs to show another profile without closing: the store
+ * after an optional save, fresh scope state, and the footer line. `error`
+ * means the save failed and the shown profile stays, edits intact.
+ */
+type RoutingProfileSwitch =
+	| { file: AgentProfilesFile; sessionBoundName?: string; pinWinner?: string; notices: string[]; feedback: string }
+	| { error: string };
+
+/**
+ * Switches the shown profile in place. Closing the overlay and reopening it on
+ * the next tab let the terminal paint the screen beneath for a frame (and wait
+ * on the async model catalog before the new frame), which is the tab flicker.
+ */
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig) => RoutingProfileSwitch;
+
 type RoutingTableMouseAction =
 	| { kind: "tab"; name: string }
 	| { kind: "tab-menu" }
@@ -3274,7 +3290,7 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
 };
 
 /**
- * `/gentle:models` and `/gentle:profiles` — one screen, one table, profiles as
+ * `/gentle:profiles` — one screen, one table, profiles as
  * tabs. Each tab is a profile and carries where it is in effect (◉ this
  * session, ★ default for new sessions, ⌂ this repo); the table below is that
  * profile's routing, orchestrator first; three buttons decide where it applies.
@@ -3297,21 +3313,22 @@ class RoutingTablePanel implements OverlayComponent {
 	private hitRegions: RoutingHitRegion[] = [];
 	private activeTabColumn = 0;
 	private newColumn = 0;
-	private readonly draft: AgentModelConfig;
-	private readonly stored: AgentModelConfig;
+	private draft: AgentModelConfig;
+	private stored: AgentModelConfig;
 	private readonly rows: string[];
 	private readonly agents: string[];
 	private readonly catalog: string[];
 	private readonly done: (result: RoutingTableResult) => void;
 	private readonly theme: Theme | undefined;
 	private readonly terminalRows: (() => number) | undefined;
-	private readonly profileName: string;
-	private readonly file: AgentProfilesFile;
-	private readonly sessionBoundName: string | undefined;
-	private readonly pinWinner: string | undefined;
+	private profileName: string;
+	private file: AgentProfilesFile;
+	private sessionBoundName: string | undefined;
+	private pinWinner: string | undefined;
 	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
 	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
-	private readonly notices: string[];
+	private notices: string[];
+	private readonly switchProfile: RoutingProfileSwitcher | undefined;
 
 	constructor(
 		draft: AgentModelConfig,
@@ -3328,8 +3345,10 @@ class RoutingTablePanel implements OverlayComponent {
 			feedback?: string;
 			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
 			notices?: string[];
+			switchProfile?: RoutingProfileSwitcher;
 		} = {},
 	) {
+		this.switchProfile = options.switchProfile;
 		this.thinkingSupport = options.thinkingSupport ?? {};
 		this.notices = options.notices ?? [];
 		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
@@ -3478,8 +3497,34 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private finish(result: RoutingTableResult): void {
 		if (this.completed) return;
+		if (result.type === "load" && this.switchProfile) {
+			this.showProfile(result.name, result.saveFirst);
+			return;
+		}
 		this.completed = true;
 		this.done(result);
+	}
+
+	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
+	private showProfile(name: string, saveFirst?: AgentModelConfig): void {
+		const next = this.switchProfile!(name, saveFirst);
+		this.closeOverlay();
+		if ("error" in next) {
+			this.say(next.error);
+			return;
+		}
+		this.file = next.file;
+		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
+		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
+		this.draft = cloneModelConfig(this.stored);
+		this.sessionBoundName = next.sessionBoundName;
+		this.pinWinner = next.pinWinner;
+		this.notices = next.notices;
+		this.target = PROFILE_ORCHESTRATOR_KEY;
+		this.cursor = 0;
+		this.hovered = undefined;
+		this.feedback = next.feedback;
+		this.escArmed = false;
 	}
 
 	private say(message: string): void {
@@ -4433,6 +4478,7 @@ interface RoutingTablePanelRequest {
 	pinWinner?: string;
 	feedback?: string;
 	notices?: string[];
+	switchProfile?: RoutingProfileSwitcher;
 }
 
 /**
@@ -4516,6 +4562,7 @@ async function showRoutingTablePanel(
 					feedback: request.feedback,
 					thinkingSupport,
 					notices: request.notices,
+					switchProfile: request.switchProfile,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -4537,50 +4584,19 @@ async function showRoutingTablePanel(
 	);
 }
 
-const MODELS_COMMAND_USAGE = "Usage: /gentle:models [export | restore]";
-
 /**
- * `/gentle:models` opens the models screen on the profile this repository
- * resolves. `export` writes the saved global routing to models.export.json and
- * `restore` brings it back after confirmation; both are file operations, so
- * they live here instead of on the screen.
+ * Bare `/gentle:profiles` opens the models screen on the profile this
+ * repository resolves, after the routing preflight: legacy project overrides
+ * migrate and a pinned repository is named before any edit. An unreadable
+ * saved routing file does not block the screen; Make default discloses it.
  */
-async function handleModelsCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
-	const verb = args.trim();
-	if (verb === "export") {
-		try {
-			const count = await exportSavedModelConfig(ctx);
-			ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
-		} catch (error) {
-			ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-		}
-		return;
-	}
-	if (verb === "restore") {
-		await restoreModelExport(ctx);
-		return;
-	}
-	if (verb !== "") {
-		ctx.ui.notify(MODELS_COMMAND_USAGE, "warning");
-		return;
-	}
+async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	migrateLegacyProjectModelOverrides(ctx.cwd);
 	// A pinned repository resolves its subagent routing from the profile at launch,
 	// so global routing written elsewhere will not reach its subagents. Saying it
 	// before the edits, not after them, is the difference between a note and a surprise.
 	const pinNote = profilePinScopeNote(ctx.cwd);
 	if (pinNote) ctx.ui.notify(pinNote, "info");
-	const savedConfig = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
-	);
-	if (savedConfig.status === "invalid") {
-		ctx.ui.notify(
-			`el Gentleman cannot open model config because ${savedConfig.path} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
-			"warning",
-		);
-		return;
-	}
 	const read = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
 	const target = read.status === "valid"
 		? resolveCurrentProfileTarget(ctx.cwd, read)
@@ -4590,7 +4606,17 @@ async function handleModelsCommand(ctx: ExtensionContext, live: LiveSession, arg
 	await openProfilesPanelLoop(ctx, live, target?.name);
 }
 
-/** `/gentle:models restore`: replace the saved global routing with models.export.json, then apply it. */
+/** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
+async function exportRoutingCommand(ctx: ExtensionContext): Promise<void> {
+	try {
+		const count = await exportSavedModelConfig(ctx);
+		ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
+	} catch (error) {
+		ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	}
+}
+
+/** `/gentle:profiles restore-routing`: replace the saved global routing with models.export.json, then apply it. */
 async function restoreModelExport(ctx: ExtensionContext): Promise<void> {
 	const restored = await readModelExport(ctx);
 	if (!restored) {
@@ -4625,7 +4651,7 @@ async function restoreModelExport(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
-/** The profile `/gentle:models` preselects in the unified panel, and why it is that one. */
+/** The profile bare `/gentle:profiles` preselects in the unified panel, and why it is that one. */
 interface CurrentProfileTarget {
 	name: string;
 	source: "pinned" | "active";
@@ -5447,18 +5473,30 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name>]";
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing]";
 
 /**
  * `/gentle:profiles` opens the models screen. File operations live in
  * subcommands rather than on the screen: `export <name>` and `import` move a
- * profile through `profiles.export.json`, and `publish <name>` toggles the
- * committed repository declaration.
+ * profile through `profiles.export.json`, `publish <name>` toggles the
+ * committed repository declaration, and `export-routing` / `restore-routing`
+ * move the saved global routing (models.json, not a profile) through
+ * `models.export.json`. The routing verbs carry their own names so a profile
+ * can never be mistaken for them.
  */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
 	const [verb = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 	if (verb === "") {
-		await openProfilesPanelLoop(ctx, live);
+		await openModelsScreen(ctx, live);
+		return;
+	}
+	if (verb === "export-routing" || verb === "restore-routing") {
+		if (rest.length > 0) {
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+			return;
+		}
+		if (verb === "export-routing") await exportRoutingCommand(ctx);
+		else await restoreModelExport(ctx);
 		return;
 	}
 	const store = await loadProfilesStore(ctx);
@@ -5519,8 +5557,9 @@ async function loadProfilesStore(ctx: ExtensionContext): Promise<{ path: string;
 
 /**
  * The models screen loop: shows one profile's table, runs what the user chose,
- * and reopens with fresh store, binding, and pin state. `/gentle:models` passes
- * the profile this repository resolves so it is the tab on screen. Every
+ * and reopens with fresh store, binding, and pin state; a tab switch stays on
+ * the open screen instead. Bare `/gentle:profiles` passes the profile this
+ * repository resolves so it is the tab on screen. Every
  * outcome is reported on the screen's feedback line, because notifications stay
  * hidden behind the fullscreen overlay until it closes.
  */
@@ -5553,6 +5592,23 @@ async function openProfilesPanelLoop(
 			return false;
 		}
 	};
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst) => {
+		const previous = selectedName!;
+		if (saveFirst && !writeDraft(previous, saveFirst)) {
+			const error = feedback ?? `"${previous}" was not saved.`;
+			feedback = undefined;
+			return { error };
+		}
+		selectedName = name;
+		const boundName = sessionBoundName();
+		return {
+			file,
+			sessionBoundName: boundName,
+			pinWinner: pinWinner(),
+			notices: routingScreenNotices(ctx, file, name, boundName),
+			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
+		};
+	};
 	const differsFromStore = (name: string, config: AgentModelConfig) =>
 		JSON.stringify(normalizeModelConfig(config) ?? {}) !== JSON.stringify(normalizeModelConfig(file.profiles[name]) ?? {});
 	while (true) {
@@ -5574,6 +5630,7 @@ async function openProfilesPanelLoop(
 			pinWinner: pinWinner(),
 			feedback,
 			notices: routingScreenNotices(ctx, file, selectedName, boundName),
+			switchProfile,
 		});
 		draftOverride = undefined;
 		feedback = undefined;
@@ -5616,7 +5673,8 @@ async function openProfilesPanelLoop(
 				continue;
 			case "use-session": {
 				// What you see is what the session uses: edits are saved first.
-				const config = result.config ?? stored;
+				// A tab switch may have changed the shown profile since this visit opened.
+				const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
 				const saved = differsFromStore(previous, config);
 				if (saved && !writeDraft(previous, config)) {
 					draftOverride = config;
@@ -10759,7 +10817,7 @@ function createGentleAiExtensionForTesting(
 			const modelResult = await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
 				ctx.ui.notify(
-					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
+					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:profiles again.`,
 					"warning",
 				);
 				return;
@@ -11054,15 +11112,8 @@ function createGentleAiExtensionForTesting(
 		});
 	}
 
-	pi.registerCommand("gentle:models", {
-		description: "Open the models screen on this repository's profile. Subcommands: export, restore.",
-		handler: async (args, ctx) => {
-			await handleModelsCommand(ctx, pi, typeof args === "string" ? args : "");
-		},
-	});
-
 	pi.registerCommand("gentle:profiles", {
-		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>.",
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.",
 		handler: async (args, ctx) => {
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},

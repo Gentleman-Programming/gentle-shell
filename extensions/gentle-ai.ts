@@ -3494,7 +3494,7 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private pickerWidth(width: number): number {
-		return Math.min(64, Math.max(36, width - 12));
+		return Math.min(74, Math.max(44, width - 8));
 	}
 
 	private addRegion(action: RoutingTableMouseAction, y: number, x0: number, x1: number): void {
@@ -3597,9 +3597,10 @@ class RoutingTablePanel implements OverlayComponent {
 		for (const button of ["use", "apply", "save", "profiles", "cancel"] as const) {
 			const label = ROUTING_TABLE_BUTTONS[button];
 			const chunk = `[ ${label} ]  `;
-			tableRegion({ kind: "button", button }, lines.length + 1, 2 + x, 2 + x + chunk.length - 1);
+			const action: RoutingTableMouseAction = { kind: "button", button };
+			tableRegion(action, lines.length + 1, 2 + x, 2 + x + chunk.length - 1);
 			x += chunk.length;
-			footer += this.renderText(chunk, button === "cancel" ? "muted" : "accent");
+			footer += this.hoverWrap(action, this.renderText(chunk, button === "cancel" ? "muted" : "accent"));
 		}
 		lines.push(footer);
 		const dirtyDot = this.dirty ? "● unsaved · " : "";
@@ -3748,10 +3749,11 @@ class RoutingTablePanel implements OverlayComponent {
 		buttons: ReadonlyArray<"back">,
 	): void {
 		void buttons;
-		const chunk = "[ Back ]  ";
-		this.hitRegions.push({ y: lines.length, x0: 0, x1: chunk.length, action: { kind: "button", button: "back" } });
-		lines.push(this.renderText(chunk, "accent"));
 		void width;
+		const chunk = "[ Back ]  ";
+		const action: RoutingTableMouseAction = { kind: "button", button: "back" };
+		this.hitRegions.push({ y: lines.length, x0: 0, x1: chunk.length, action });
+		lines.push(this.hoverWrap(action, this.renderText(chunk, "accent")));
 	}
 
 	// -- profiles popover -----------------------------------------------------
@@ -3788,34 +3790,40 @@ class RoutingTablePanel implements OverlayComponent {
 			);
 		}
 		lines.push("");
-		let x = 0;
-		let footer = "";
-		for (const action of ["use", "apply", "snapshot", "duplicate", "rename", "delete"] as const) {
-			const chunk = `[ ${PROFILES_POPOVER_BUTTONS[action]} ]  `;
-			this.hitRegions.push({
-				y: lines.length,
-				x0: x,
-				x1: x + chunk.length,
-				action: { kind: "profiles-button", button: action },
-			});
-			x += chunk.length;
-			footer += this.renderText(chunk, "accent");
+		// Three short rows so every button stays inside even a modest card: the
+		// row actions act on the highlighted profile, the third row manages the
+		// store itself.
+		const buttonRows: Array<Array<{ action: ProfilesButtonAction; label: string }>> = [
+			[
+				{ action: "use", label: PROFILES_POPOVER_BUTTONS.use },
+				{ action: "apply", label: PROFILES_POPOVER_BUTTONS.apply },
+				{ action: "snapshot", label: PROFILES_POPOVER_BUTTONS.snapshot },
+			],
+			[
+				{ action: "duplicate", label: PROFILES_POPOVER_BUTTONS.duplicate },
+				{ action: "rename", label: PROFILES_POPOVER_BUTTONS.rename },
+				{ action: "delete", label: PROFILES_POPOVER_BUTTONS.delete },
+			],
+			[
+				{ action: "new", label: PROFILES_POPOVER_BUTTONS.new },
+				{ action: "import", label: PROFILES_POPOVER_BUTTONS.import },
+				{ action: "export", label: PROFILES_POPOVER_BUTTONS.export },
+				{ action: "pin", label: PROFILES_POPOVER_BUTTONS.pin },
+				{ action: "publish", label: PROFILES_POPOVER_BUTTONS.publish },
+			],
+		];
+		for (const row of buttonRows) {
+			let x = 0;
+			let footer = "";
+			for (const entry of row) {
+				const chunk = `[ ${entry.label} ]  `;
+				const region: RoutingTableMouseAction = { kind: "profiles-button", button: entry.action };
+				this.hitRegions.push({ y: lines.length, x0: x, x1: x + chunk.length, action: region });
+				x += chunk.length;
+				footer += this.hoverWrap(region, this.renderText(chunk, entry.action === "delete" ? "muted" : "accent"));
+			}
+			lines.push(footer);
 		}
-		lines.push(footer);
-		let x2 = 0;
-		let footer2 = "";
-		for (const action of ["new", "import", "export", "pin", "publish"] as const) {
-			const chunk = `[ ${PROFILES_POPOVER_BUTTONS[action]} ]  `;
-			this.hitRegions.push({
-				y: lines.length,
-				x0: x2,
-				x1: x2 + chunk.length,
-				action: { kind: "profiles-button", button: action },
-			});
-			x2 += chunk.length;
-			footer2 += this.renderText(chunk, "accent");
-		}
-		lines.push(footer2);
 		lines.push(
 			this.renderLine(
 				"↑↓ profile · enter load · key on the buttons · esc back — loading discards unsaved edits",
@@ -4054,6 +4062,9 @@ function renderRoutingTableForTesting(
 	);
 	panel.render(width);
 	for (const data of inputs) panel.handleInput(data);
+	// Inputs can change the mode (and with it the rendered card); the real TUI
+	// request-renders after every key, so rebuild regions before pointer events.
+	if (inputs.length > 0) panel.render(width);
 	for (const event of mouseEvents) {
 		panel.handleMouse({
 			type: event.type,
@@ -4130,10 +4141,11 @@ const ROUTING_TABLE_BUTTONS: Record<"use" | "apply" | "save" | "profiles" | "can
 	cancel: "Cancel",
 };
 
-const PROFILES_POPOVER_BUTTONS: Record<
-	"use" | "apply" | "snapshot" | "duplicate" | "rename" | "delete" | "new" | "import" | "export" | "pin" | "publish",
-	string
-> = {
+type ProfilesButtonAction =
+	| "use" | "apply" | "snapshot" | "duplicate" | "rename" | "delete"
+	| "new" | "import" | "export" | "pin" | "publish";
+
+const PROFILES_POPOVER_BUTTONS: Record<ProfilesButtonAction, string> = {
 	use: "Use in session",
 	apply: "Apply global",
 	snapshot: "Snapshot",

@@ -3168,7 +3168,7 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "u use", keep: 7 },
 	{ text: "d default", keep: 8 },
 	{ text: "n new", keep: 10 },
-	{ text: "m ⋯", keep: 9 },
+	{ text: "m menu", keep: 9 },
 	{ text: "esc close", keep: 4 },
 ];
 /** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
@@ -3827,7 +3827,7 @@ class RoutingTablePanel implements OverlayComponent {
 			put(` ${truncateToWidth(sanitizeTerminalText(name), 18, "…")} `, active ? "title" : "muted", { kind: "tab", name });
 			for (const glyph of this.scopeGlyphs(name)) put(glyph.text, glyph.tone);
 			if (active) {
-				put(" ⋯ ", "accent", { kind: "tab-menu" });
+				put(" ▾ ", "accent", { kind: "tab-menu" });
 				activeEnd = column;
 				this.activeTabColumn = activeStart;
 			}
@@ -4550,7 +4550,7 @@ function profilePinScopeNote(cwd: string): string | undefined {
 	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
 	if (!resolution) return undefined;
 	return sanitizeTerminalText(
-		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove it in /gentle:profiles (⋯ › Use in this repo), or with /gentle:profiles publish <name> for the committed declaration.`,
+		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove it in /gentle:profiles (profile menu ▾ › Use in this repo), or with /gentle:profiles publish <name> for the committed declaration.`,
 	);
 }
 
@@ -5074,7 +5074,7 @@ async function runProfilesPanelAction(
 			}
 			if (namedLayers.length > 0) {
 				ctx.ui.notify(
-					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first (⋯ › Stop using in this repo for the clone pin, /gentle:profiles publish <name> for the declaration), then delete it.`,
+					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first (profile menu ▾ › Stop using in this repo for the clone pin, /gentle:profiles publish <name> for the declaration), then delete it.`,
 					"warning",
 				);
 				return file;
@@ -5142,7 +5142,7 @@ async function runProfilesPanelAction(
 				result.source === "local"
 					? [
 						`el Gentleman pinned profile "${result.name}" for this clone in ${sanitizeTerminalText(pinPath)}.`,
-						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Choose ⋯ › Stop using in this repo to unpin.",
+						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Choose Stop using in this repo in the profile menu (▾) to unpin.",
 					].join("\n")
 					: [
 						`el Gentleman declared profile "${result.name}" for this worktree in ${sanitizeTerminalText(pinPath)}.`,

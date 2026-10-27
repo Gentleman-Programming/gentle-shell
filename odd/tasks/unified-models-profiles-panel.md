@@ -53,9 +53,11 @@ Three surfaces, two duplicate tables, and a 12-item menu made the unified panel 
 Design artifact: `odd/design/models-profiles-ui-proposal.html` (variants A/B/C; user picked A on recommendation).
 - Tabs are profiles with scope glyphs (◉ session, ★ default, ⌂ repo); ←→ or click switches, with a Save and switch / Discard / Stay guard for unsaved edits.
 - Orchestrator is the first row; the Model ▾ / Effort ▾ header sets every agent (replaces the Set all agents row); effort is a one-line strip; the model list marks the current value and offers Custom model id….
-- Footer is three buttons: Use in this session (u), Make default (d), Save (s). ⋯ on the active tab (m): Rename, Duplicate, Use in this repo, Delete. + New (n): copy, from what's running now (replaces Snapshot), empty.
+- Footer is three buttons: Use in this session (u), Make default (d), Save (s). the profile menu ▾ on the active tab (m): Rename, Duplicate, Use in this repo, Delete. + New (n): copy, from what's running now (replaces Snapshot), empty.
 - File operations moved to subcommands: /gentle:models export|restore, /gentle:profiles export <name>|import|publish <name>.
 - Fixes found in the redesign: hover used toolPendingBg (#100A0F, invisible on the #060407 Gentleman-Cute background) and now uses selectedBg; pointer actions ran on both press and click, so one click could fire two actions — they now run on click only.
+
+- Live feedback: the ⋯ glyph read as truncated text (same as …). The active tab now shows ▾ and the hint reads "m menu".
 
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).

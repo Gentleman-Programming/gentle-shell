@@ -1013,7 +1013,7 @@ A project can still override the global default with:
 
 ```text
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   current ◉★ ⋯    before-nan-202609…    nan    GPT-Max   + New               │
+│   current ◉★ ▾    before-nan-202609…    nan    GPT-Max   + New               │
 │ ─━━━━━━━━━━━━━━───────────────────────────────────────────────────────────── │
 │  current   Used in this session. Default for new sessions.                   │
 │                                                                              │
@@ -1030,9 +1030,9 @@ A project can still override the global default with:
 - **Tabs are profiles.** Click a tab or press `←` `→` to show another one. Symbols show where a profile is in effect: `◉` this session, `★` the default for new sessions, `⌂` this repository. Leaving a profile with unsaved changes asks first: **Save and switch**, **Discard**, or **Stay**.
 - **The table is that profile's routing.** The orchestrator is the first row; agents follow. Click a model or press `enter` to choose from a searchable list (the current one is marked `✓`; **Custom model id…** takes any `provider/model`). Click an effort or press `e` to pick from a single row of levels. Click `Model ▾` or `Effort ▾`, or move the cursor to that header, to change every agent at once; the orchestrator is never part of that.
 - **Three buttons decide where it applies.** **Use in this session** (`u`) binds what you see to this Pi session only and switches its orchestrator; nothing shared is written. **Make default** (`d`) makes it the default for new sessions through the guarded global apply (diff confirmation, pin honesty, rollback). **Save** (`s` or `ctrl+s`) writes what you see into the profile. Use and Make default save pending edits first and say so.
-- **`⋯` on the active tab** (`m`) holds **Rename**, **Duplicate**, **Use in this repo** (the clone pin; it reads **Stop using in this repo** when it already applies), and **Delete**. **+ New** (`n`) starts a profile as a copy of the current one, from what is running now, or empty.
+- **The profile menu**, `▾` on the active tab (`m`), holds **Rename**, **Duplicate**, **Use in this repo** (the clone pin; it reads **Stop using in this repo** when it already applies), and **Delete**. **+ New** (`n`) starts a profile as a copy of the current one, from what is running now, or empty.
 - Edited values are highlighted until saved, and the footer counts them (`● 2 unsaved`). `esc` closes; with unsaved edits the first press warns and the second closes without saving. Every action reports on the line under the footer.
-- Everything clickable highlights under the pointer, and a click runs one action. Keys: `←→` profile, `↑↓` agent, `enter` model, `e` effort, `s` save, `u` use, `d` default, `n` new, `m` the `⋯` menu, `esc` close.
+- Everything clickable highlights under the pointer, and a click runs one action. Keys: `←→` profile, `↑↓` agent, `enter` model, `e` effort, `s` save, `u` use, `d` default, `n` new, `m` the profile menu, `esc` close.
 
 The editor discovers:
 
@@ -1143,7 +1143,7 @@ Two pin layers exist, and both hold only a profile name:
 
 | Layer | Path | Written by | Git impact |
 | ----- | ---- | ---------- | ---------- |
-| Local pin | `<git-common-dir>/gentle-ai/profile-pin.json` | `⋯` › **Use in this repo** | Invisible to git; every worktree of the clone shares it. |
+| Local pin | `<git-common-dir>/gentle-ai/profile-pin.json` | Profile menu `▾` › **Use in this repo** | Invisible to git; every worktree of the clone shares it. |
 | Repository declaration | `<worktree-root>/.pi/gentle-ai/profile.json` | `/gentle:profiles publish <name>` | An ordinary repository file; commit it to share the pin with the team. |
 
 Both use the same shape, and both are a separate artifact from `profiles.json`:

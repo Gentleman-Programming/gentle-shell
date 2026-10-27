@@ -3542,7 +3542,7 @@ class RoutingEditorPanel implements OverlayComponent {
 			this.hitRegions.push({ y: lines.length + 1, x0, x1, action });
 		const options = this.filteredModelOptions();
 		lines.push(
-			this.renderLine(`Modelo · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
+			this.renderLine(`Model · ${sanitizeTerminalText(this.selectedRow)}`, width, "title"),
 		);
 		lines.push("");
 		const search = `${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`;
@@ -3889,7 +3889,7 @@ const ROUTING_BUTTON_LABELS: Record<RoutingButton, string> = {
 	restore: "Restore",
 	back: "Back",
 	cancel: "Cancel",
-	clear: "Limpiar",
+	clear: "Clear",
 };
 
 interface RoutingMouseEvent {
@@ -4059,9 +4059,9 @@ class OrchestratorPickerPanel implements OverlayComponent {
 			const line = `  ${this.renderText(`${label}  `, "muted")}${this.renderText(value, "status")}`;
 			lines.push(this.hoverWrap(action, line));
 		};
-		lines.push(this.renderLine(`Orquestador · ${this.profileName}`, width, "title"));
+		lines.push(this.renderLine(`Orchestrator · ${this.profileName}`, width, "title"));
 		lines.push("");
-		row("Modelo", this.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED, { kind: "row", row: "model" });
+		row("Model", this.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED, { kind: "row", row: "model" });
 		row("Effort", this.thinking ?? INHERIT_THINKING, { kind: "row", row: "effort" });
 		lines.push("");
 		const buttonRow = lines.length + 1;
@@ -4075,7 +4075,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 			footer += this.renderText(chunk, button === "back" ? "muted" : "accent");
 		}
 		lines.push(footer);
-		lines.push(this.renderLine("⏎/click Guardar · m modelo · f effort · l limpiar · esc volver", width, "muted"));
+		lines.push(this.renderLine("enter/click Save · m model · f effort · l clear · esc back", width, "muted"));
 		return lines;
 	}
 
@@ -4107,7 +4107,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 	}
 
 	private save(): void {
-		// Guardar commits the current state, including a removal: an entry-less
+		// Save commits the current state, including a removal: an entry-less
 		// profile never moves the orchestrator when applied or bound.
 		this.done({
 			type: "save",
@@ -4133,7 +4133,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 	private renderModelList(width: number): string[] {
 		const lines: string[] = [];
 		const options = this.filteredModels();
-		lines.push(this.renderLine(`Modelo del orquestador · ${this.profileName}`, width, "title"));
+		lines.push(this.renderLine(`Orchestrator model · ${this.profileName}`, width, "title"));
 		lines.push("");
 		lines.push(`${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`);
 		lines.push(this.renderText("─".repeat(Math.min(width, 48)), "border"));
@@ -4147,7 +4147,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 		if (options.length === 0) lines.push(this.renderLine("  No matching models", width, "muted"));
 		lines.push("");
 		this.pushButtonRow(lines, width, ["back"]);
-		lines.push(this.renderLine("j/k · type to search · ⏎ elegir · esc volver", width, "muted"));
+		lines.push(this.renderLine("j/k · type to search · enter select · esc back", width, "muted"));
 		return lines;
 	}
 
@@ -4197,7 +4197,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 
 	private renderEffortList(width: number): string[] {
 		const lines: string[] = [];
-		lines.push(this.renderLine(`Effort del orquestador · ${this.profileName}`, width, "title"));
+		lines.push(this.renderLine(`Orchestrator effort · ${this.profileName}`, width, "title"));
 		lines.push("");
 		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
 			const y = lines.length + 1;
@@ -4208,7 +4208,7 @@ class OrchestratorPickerPanel implements OverlayComponent {
 		}
 		lines.push("");
 		this.pushButtonRow(lines, width, ["back"]);
-		lines.push(this.renderLine("j/k · ⏎ elegir · esc volver", width, "muted"));
+		lines.push(this.renderLine("j/k · enter select · esc back", width, "muted"));
 		return lines;
 	}
 
@@ -4328,9 +4328,9 @@ class OrchestratorPickerPanel implements OverlayComponent {
 }
 
 const ORCHESTRATOR_BUTTONS: Record<"save" | "clear" | "back", string> = {
-	save: "Guardar",
-	clear: "Limpiar",
-	back: "Volver",
+	save: "Save",
+	clear: "Clear",
+	back: "Back",
 };
 
 interface OrchestratorMouseEvent {
@@ -4845,7 +4845,7 @@ class ProfilesPanel implements OverlayComponent {
 		if (data === "p") return this.finish({ type: "pin", source: "local", name });
 		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
 		// Enter opens the action menu — the same menu a profile click opens — so
-		// keyboard and pointer share one coherent surface. "Usar en esta sesión"
+		// keyboard and pointer share one coherent surface. "Use in this session"
 		// is the menu's first item, one Enter away.
 		if (matchesKey(data, "return")) {
 			this.openActions();
@@ -4863,18 +4863,18 @@ class ProfilesPanel implements OverlayComponent {
 			label: `${label}  ${key}`,
 		});
 		const items = [
-			item("apply", "Usar en esta sesión", "⏎"),
-			item("apply-global", "Aplicar como global", "a"),
-			item("edit-routing", "Editar routing", "e"),
-			item("orchestrator", "Elegir orquestador", "o"),
-			item("snapshot", "Snapshot del routing actual", "s"),
-			item("duplicate", "Duplicar", "d"),
-			item("rename", "Renombrar", "r"),
-			item("delete", "Eliminar", "x"),
-			item("export", "Exportar perfil", "E"),
-			item("import", "Importar perfil", "i"),
-			item("pin", "Fijar en este repositorio", "p"),
-			item("publish", "Publicar declaración del repo", "P"),
+			item("apply", "Use in this session", "enter"),
+			item("apply-global", "Apply as global default", "a"),
+			item("edit-routing", "Edit routing", "e"),
+			item("orchestrator", "Choose orchestrator", "o"),
+			item("snapshot", "Snapshot current routing", "s"),
+			item("duplicate", "Duplicate", "d"),
+			item("rename", "Rename", "r"),
+			item("delete", "Delete", "x"),
+			item("export", "Export profile", "E"),
+			item("import", "Import profile", "i"),
+			item("pin", "Pin to this repository", "p"),
+			item("publish", "Publish repository declaration", "P"),
 		];
 		this.mode = "actions";
 		this.actionsList = new NativeChoiceList<NativeChoiceItem>(
@@ -5058,13 +5058,13 @@ class ProfilesPanel implements OverlayComponent {
 		const rule = "─".repeat(Math.max(0, menuWidth - 2));
 		const card: string[] = [];
 		card.push(this.renderText(`╭${rule}╮`, "border"));
-		card.push(this.renderText("│", "border") + " " + this.renderLine(`Acciones · ${name}`, menuWidth - 4, "title") + " " + this.renderText("│", "border"));
+		card.push(this.renderText("│", "border") + " " + this.renderLine(`Actions · ${name}`, menuWidth - 4, "title") + " " + this.renderText("│", "border"));
 		card.push(this.renderText(`│${"─".repeat(Math.max(0, menuWidth - 2))}│`, "border"));
 		for (let row = 0; row < visible; row += 1) {
 			const line = menuLines[row] ?? "";
 			card.push(this.renderText("│", "border") + " " + this.fitPaneLine(line, inner) + " " + this.renderText("│", "border"));
 		}
-		card.push(this.renderText("│", "border") + " " + this.renderLine("⏎ ejecutar · esc volver", menuWidth - 4, "muted") + " " + this.renderText("│", "border"));
+		card.push(this.renderText("│", "border") + " " + this.renderLine("enter run · esc back", menuWidth - 4, "muted") + " " + this.renderText("│", "border"));
 		card.push(this.renderText(`╰${rule}╯`, "border"));
 		// Center the card inside the usual fullscreen frame.
 		const frameRule = "─".repeat(Math.max(0, width - 2));
@@ -5186,7 +5186,7 @@ class ProfilesPanel implements OverlayComponent {
 
 	private renderFooterRow(width: number): string {
 		// One quiet line: the daily keys only. Everything else lives in the m menu.
-		const hints = "↑↓ elegir · ⏎/click acciones · a global · e editar · esc cerrar";
+		const hints = "↑↓ select · enter/click actions · a global · e edit · esc close";
 		const text = this.feedback ?? hints;
 		return [
 			this.renderText("│", "border"),
@@ -5276,9 +5276,9 @@ class ProfilesPanel implements OverlayComponent {
 				|| (current?.thinking ?? undefined) !== (profile?.thinking ?? undefined);
 		});
 		if (changes.length === 0) {
-			return [this.renderLine("Efectivo: idéntico al perfil ✓", width, "muted")];
+			return [this.renderLine("Effective: identical to the profile ✓", width, "muted")];
 		}
-		const lines = [this.renderLine(`Cambios al aplicar — efectivo → perfil (${changes.length})`, width, "accent")];
+		const lines = [this.renderLine(`Changes on apply — effective → profile (${changes.length})`, width, "accent")];
 		for (const agent of changes) {
 			// One plain row: `agent  efectivo → perfil`. The pane's fit truncates an
 			// overflowing tail, so long model ids lose their end, never the arrow.
@@ -5983,7 +5983,7 @@ async function runProfilesPanelAction(
 		case "orchestrator": {
 			// The dedicated orchestrator picker edits only the profile's reserved
 			// `orchestrator` entry: no routing, no global writes, no live switches.
-			// "Limpiar" removes the key so applying or binding the profile leaves
+			// "Clear" removes the key so applying or binding the profile leaves
 			// the orchestrator untouched, exactly like an orchestrator-less profile.
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			const current = normalizeModelConfig(file.profiles[result.name]) ?? {};

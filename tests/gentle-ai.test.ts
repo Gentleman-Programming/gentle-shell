@@ -1413,7 +1413,7 @@ test("routing editor pointer: hovering a row fills it and clicking opens the mod
 		[{ type: "click", x: 2, y: 8 }],
 	);
 	const pickedPlain = picked.map(stripAnsi).join("\n");
-	assert.match(pickedPlain, /Modelo · safe-agent/, "clicking an agent row must open the model picker");
+	assert.match(pickedPlain, /Model · safe-agent/, "clicking an agent row must open the model picker");
 	assert.match(pickedPlain, /\[ Back \]/);
 
 	// The picker's first option sits two chrome rows below the search box: click
@@ -3078,7 +3078,7 @@ test("s snapshots current routing in place without applying or reopening the pro
 	});
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "z-active");
-	assert.match(fixture.panels[0] ?? "", /acciones · a global · e editar · esc cerrar/);
+	assert.match(fixture.panels[0] ?? "", /actions · a global · e edit · esc close/);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
 	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
@@ -3178,7 +3178,7 @@ test("routing editor saves the explicit orchestrator choice into the profile", a
 	fixture.onInput((panel) => {
 			if (profileVisits++ === 0) {
 				panel.handleInput("\r"); // open the action menu
-				panel.handleInput("\r"); // run "Usar en esta sesión"
+				panel.handleInput("\r"); // run "Use in this session"
 				return;
 			}
 			panel.handleInput("\x1b");
@@ -3223,7 +3223,7 @@ test("routing editor leave untouched removes a stale profile orchestrator and pr
 		assert.match(renderComponent(panel), /orchestrator\s+inherit/);
 		if (profileVisits++ === 0) {
 			panel.handleInput("\r"); // open the action menu
-			panel.handleInput("\r"); // run "Usar en esta sesión"
+			panel.handleInput("\r"); // run "Use in this session"
 			return;
 		}
 		panel.handleInput("\x1b");
@@ -3483,7 +3483,7 @@ test("the profiles command seeds and shows the routing the runtime uses when mod
 		helper: { model: "openai/beta" },
 	});
 	assert.ok(rendered);
-	assert.match(rendered, /Efectivo: idéntico al perfil ✓/, "the seeded profile matches the effective routing it came from");
+	assert.match(rendered, /Effective: identical to the profile ✓/, "the seeded profile matches the effective routing it came from");
 	assert.match(rendered, /worker\s+openai\/alpha\s+high/);
 	assert.match(rendered, /helper\s+openai\/beta/);
 	assert.doesNotMatch(rendered, /No routing entries/);
@@ -3551,7 +3551,7 @@ test("the profiles panel fills the terminal, lists routing per agent, and scroll
 	assert.match(text, /Profile routing/);
 	// The effective routing is empty here, so the diff names what applying would
 	// change instead of duplicating the profile's own table.
-	assert.match(text, /Cambios al aplicar — efectivo → perfil \(3\)/);
+	assert.match(text, /Changes on apply — effective → profile \(3\)/);
 	assert.match(text, /worker\s+inherit → openai\/alpha · high/);
 	assert.match(text, /orchestrator\s+nan\/glm5\.3 · high/);
 	assert.match(text, /worker\s+openai\/alpha\s+high/);
@@ -3647,15 +3647,15 @@ test("m opens the action menu; esc returns to the list; enter twice applies", as
 		if (visits === 1) {
 			panel.handleInput("m");
 			const menu = renderComponent(panel);
-			assert.match(menu, /Acciones · team/);
-			assert.match(menu, /Usar en esta sesión/);
-			assert.match(menu, /Elegir orquestador/);
+			assert.match(menu, /Actions · team/);
+			assert.match(menu, /Use in this session/);
+			assert.match(menu, /Choose orchestrator/);
 			// esc returns to the list without finishing…
 			panel.handleInput("\x1b");
-			assert.doesNotMatch(renderComponent(panel), /Acciones · team/);
+			assert.doesNotMatch(renderComponent(panel), /Actions · team/);
 			// …and enter opens the same menu; its first item applies the profile.
 			panel.handleInput("\r");
-			assert.match(renderComponent(panel), /Acciones · team/);
+			assert.match(renderComponent(panel), /Actions · team/);
 			panel.handleInput("\r");
 			return;
 		}
@@ -3676,9 +3676,9 @@ test("the action menu runs actions by click", async (t) => {
 		if (visits === 1) {
 			panel.handleInput("m");
 			menuRows = renderComponent(panel).split("\n");
-			const row = menuRows.findIndex((line) => line.includes("Elegir orquestador"));
+			const row = menuRows.findIndex((line) => line.includes("Choose orchestrator"));
 			assert.ok(row > 0, `menu must render its actions (rows: ${menuRows.length})`);
-			const column = menuRows[row].indexOf("Elegir");
+			const column = menuRows[row].indexOf("Choose");
 			const clicked = panel.handleMouse?.({
 				type: "click",
 				x: column,
@@ -3714,14 +3714,14 @@ test("o opens the orchestrator picker and saving writes the profile's orchestrat
 		}
 		if (visits === 2) {
 			const picker = renderComponent(panel);
-			assert.match(picker, /Orquestador · team/);
-			assert.match(picker, /\[ Guardar \]/);
+			assert.match(picker, /Orchestrator · team/);
+			assert.match(picker, /\[ Save \]/);
 			panel.handleInput("m"); // model picker
 			for (const character of "beta") panel.handleInput(character);
 			panel.handleInput("\r"); // commit openai/beta → effort picker
 			for (let step = 0; step < 10 && !renderComponent(panel).includes("▸ high"); step++) panel.handleInput("j");
 			panel.handleInput("\r"); // commit high → summary
-			panel.handleInput("\r"); // Guardar
+			panel.handleInput("\r"); // Save
 			return;
 		}
 		panel.handleInput("\x1b");
@@ -3734,7 +3734,7 @@ test("o opens the orchestrator picker and saving writes the profile's orchestrat
 	assert.deepEqual(fixture.liveSwitches, [], "the picker never switches the live session");
 });
 
-test("the orchestrator picker clears the entry with Limpiar and saves the removal", async (t) => {
+test("the orchestrator picker clears the entry with Clear and saves the removal", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" }, orchestrator: { model: "openai/beta", thinking: "high" } } }, "team");
 	let visits = 0;
@@ -3749,20 +3749,20 @@ test("the orchestrator picker clears the entry with Limpiar and saves the remova
 			assert.match(renderComponent(panel), /leave untouched/);
 			panel.handleInput("m");
 			panel.handleInput("\r"); // "leave untouched" is the first option without a query
-			panel.handleInput("\r"); // Guardar (still cleared)
+			panel.handleInput("\r"); // Save (still cleared)
 			return;
 		}
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
 	const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
-	assert.equal(Object.hasOwn(profile, "orchestrator"), false, "Limpiar removes the orchestrator key");
+	assert.equal(Object.hasOwn(profile, "orchestrator"), false, "Clear removes the orchestrator key");
 });
 
 test("the orchestrator picker render helpers: save without a model is a no-op and mouse clicks pick models", () => {
 	const results: any[] = [];
 	__testing.orchestratorPicker({ model: "openai/beta", thinking: "high" }, ["openai/alpha", "openai/beta"], 80, undefined, ["\r"], [], results);
-	assert.deepEqual(results, [{ type: "save", entry: { model: "openai/beta", thinking: "high" } }], "Guardar with a model saves the entry");
+	assert.deepEqual(results, [{ type: "save", entry: { model: "openai/beta", thinking: "high" } }], "Save with a model saves the entry");
 
 	const cleared: any[] = [];
 	__testing.orchestratorPicker(undefined, ["openai/alpha"], 80, undefined, [], [], cleared);
@@ -3780,7 +3780,7 @@ test("the orchestrator picker render helpers: save without a model is a no-op an
 			picked,
 		)
 		.map(stripAnsi);
-	assert.match(lines.join("\n"), /Effort del orquestador/, "clicking Modelo then a catalog model moves to the effort picker");
+	assert.match(lines.join("\n"), /Orchestrator effort/, "clicking Model then a catalog model moves to the effort picker");
 });
 
 test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {
@@ -3862,7 +3862,7 @@ test("the unmatched-keys list stays out of the panel while a pin wins", async (t
 
 	assert.ok(panel);
 	const text = stripAnsi(panel.render(120).join("\n"));
-	assert.match(text, /Efectivo: idéntico al perfil ✓/);
+	assert.match(text, /Effective: identical to the profile ✓/);
 	assert.doesNotMatch(text, /Unmatched keys/);
 });
 
@@ -4572,7 +4572,7 @@ test("a session-bound panel renders the binding snapshot as the current routing"
 	bindSessionProfile("session-panel", "team", { worker: { model: "openai/gamma" } });
 	fixture.onInput((panel) => {
 		const rendered = renderComponent(panel);
-		assert.match(rendered, /Cambios al aplicar — efectivo → perfil \(1\)/);
+		assert.match(rendered, /Changes on apply — effective → profile \(1\)/);
 		assert.match(rendered, /openai\/gamma/, "the effective value is the session binding's snapshot");
 		assert.match(rendered, /worker\s+openai\/gamma · inherit → openai\/beta · inherit/, "the diff runs efectivo → perfil");
 		assert.doesNotMatch(rendered, /openai\/alpha/, "the global routing stays out of a bound session's panel");

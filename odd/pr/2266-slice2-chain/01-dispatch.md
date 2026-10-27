@@ -1,13 +1,13 @@
 ## Linked Issue
 
-Refs Gentleman-Programming/gentle-shell#2266. PR URL: pending.
+Refs Gentleman-Programming/gentle-shell#2266. PR URL: https://github.com/rubenpenap/gentle-shell/pull/1.
 No repository PR template is present; approved mechanical fallback used.
 
 ## PR Type
 
 - [x] Bug fix
 
-Intended label `type:bug` exists in the authorized fork and will be applied at creation. Upstream issue #2266 is approved. Draft/no-merge.
+Verified label: `type:bug` (exactly one `type:*` label). Upstream issue #2266 is approved. Draft/no-merge.
 
 ## Summary
 
@@ -24,15 +24,15 @@ The child does not resolve policy in its worktree. This unit alone provides no f
 | Head | `feat/2266-slice2-01-dispatch` |
 | Base / starts at | `feat/2266-slice2-tracker` coordination head |
 | Ends with | Dispatch flag forwarding and stale removal |
-| Depends on | Tracker (URL pending); upstream test-fixture reconciliation completed |
-| Follow-up | 02-job-ipc (URL pending), then 03-registration |
+| Depends on | [tracker #2575](https://github.com/Gentleman-Programming/gentle-shell/pull/2575); upstream test-fixture reconciliation completed |
+| Follow-up | [fork #2](https://github.com/rubenpenap/gentle-shell/pull/2), then [fork #3](https://github.com/rubenpenap/gentle-shell/pull/3) |
 
 ```text
 main (Gentleman-Programming/gentle-shell)
-└── feat/2266-slice2-tracker
-    └── 📍 feat/2266-slice2-01-dispatch
-        └── feat/2266-slice2-02-job-ipc
-            └── feat/2266-slice2-03-registration
+└── upstream #2575 · feat/2266-slice2-tracker
+    └── 📍 fork #1 · feat/2266-slice2-01-dispatch
+        └── fork #2 · feat/2266-slice2-02-job-ipc
+            └── fork #3 · feat/2266-slice2-03-registration
 ```
 
 Out of scope: job IPC, registration, monitor, nested delegation, Slice 3 drain/hold/timers and post-settlement delivery.
@@ -61,4 +61,4 @@ Functional post-yield acceptance is future Slice 3, not this child.
 - [x] Immediate-parent destination and nonclosing fork-qualified reference documented.
 - [ ] Clean transplant and isolated candidate diff verified.
 - [ ] Current verification, native review, bench and required CI/packed install complete.
-- [ ] Target issue approval and exactly one available `type:bug` label confirmed/applied.
+- [x] Upstream issue approval and exactly one `type:bug` label verified for this child PR.

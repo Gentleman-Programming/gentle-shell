@@ -1,6 +1,6 @@
 ## Linked Issue
 
-Refs #2266. Keep open for Slice 3. PR URL: pending.
+Refs #2266. Keep open for Slice 3. PR URL: https://github.com/Gentleman-Programming/gentle-shell/pull/2575.
 No repository PR template is present; approved mechanical fallback used.
 
 ## PR Type
@@ -19,17 +19,17 @@ Issue #2266 is `status:approved`. Intended label: `type:bug` (available upstream
 
 | Position | Source unit | Candidate diff lines | PR URL |
 |---|---|---:|---|
-| Tracker | Coordination docs only | Under 400; final remote count below | pending |
-| 1 / 3 dispatch | `1bd87f203` | 46 verified | pending |
-| 2 / 3 job IPC | `73cc0e8ff` | 194 verified | pending |
-| 3 / 3 registration | `223ed83e7` | 310 verified | pending |
+| Tracker | Coordination docs only | 298 at initial publication | https://github.com/Gentleman-Programming/gentle-shell/pull/2575 |
+| 1 / 3 dispatch | `1bd87f203` | 46 verified | https://github.com/rubenpenap/gentle-shell/pull/1 |
+| 2 / 3 job IPC | `73cc0e8ff` | 194 verified | https://github.com/rubenpenap/gentle-shell/pull/2 |
+| 3 / 3 registration | `223ed83e7` | 310 verified | https://github.com/rubenpenap/gentle-shell/pull/3 |
 
 ```text
 main (Gentleman-Programming/gentle-shell)
-└── 📍 feat/2266-slice2-tracker
-    └── feat/2266-slice2-01-dispatch
-        └── feat/2266-slice2-02-job-ipc
-            └── feat/2266-slice2-03-registration
+└── 📍 upstream #2575 · feat/2266-slice2-tracker
+    └── fork #1 · feat/2266-slice2-01-dispatch
+        └── fork #2 · feat/2266-slice2-02-job-ipc
+            └── fork #3 · feat/2266-slice2-03-registration
 ```
 
 Starts at verified main `cb0c5a2e548e278bd65fc503552b10862c4efa11`.

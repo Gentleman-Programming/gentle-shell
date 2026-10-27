@@ -1,7 +1,7 @@
 # Slice 2 publication coordination — T7 / S10–S11
 
 Strategy: `feature-branch-chain`; all four PRs draft/no-merge.
-Parent owns transplant, verification, remote publication and URL insertion.
+All four branches and draft PRs published after human OAuth reauthorization; no force-push or merge. Source refs and isolated remote diffs verified.
 
 ## Boundaries
 
@@ -13,7 +13,7 @@ Parent owns transplant, verification, remote publication and URL insertion.
 - Child branches layer on tracker → 01-dispatch → 02-job-ipc → 03-registration.
 - Tracker targets `Gentleman-Programming/gentle-shell:main` from `rubenpenap:feat/2266-slice2-tracker`.
 - Children target `rubenpenap/gentle-shell`, each against its immediate parent.
-- Bodies: `odd/pr/2266-slice2-chain/`; all PR URLs pending.
+- Bodies: `odd/pr/2266-slice2-chain/`; tracker https://github.com/Gentleman-Programming/gentle-shell/pull/2575; children https://github.com/rubenpenap/gentle-shell/pull/1, https://github.com/rubenpenap/gentle-shell/pull/2, https://github.com/rubenpenap/gentle-shell/pull/3.
 
 ## Remaining gates
 
@@ -29,3 +29,5 @@ Historical only: 136/136 focused, typecheck 0; compatibility differentials match
 Old full suite: 7,385 total / 7,290 passed / 22 failed / 73 skipped; baseline environmental diagnosis recorded in original task, not current-base proof.
 Native retained-selection mismatch created no lineage/approval; do not infer a waiver.
 #2552 diagnostics remain separate; no paid LLM bench, new scenarios or measurement claims.
+
+Publication checks: all four PRs OPEN and draft; child labels exactly `type:bug`; upstream tracker label requires maintainer action. Tracker CI is running for coordination docs only; child PRs currently have no checks reported. No source CI pass inferred from tracker CI.

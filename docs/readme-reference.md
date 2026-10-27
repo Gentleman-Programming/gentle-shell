@@ -1009,7 +1009,7 @@ A project can still override the global default with:
 /gentle:models
 ```
 
-`/gentle:models` is the shortcut into the unified panel: it migrates legacy project overrides, surfaces an invalid `models.json`, seeds the profiles store on first use, and then opens the same fullscreen panel as `/gentle:profiles`, preselecting the profile this repository resolves (the pin's target, or the globally active profile). Press `m` (or click a routing row in the detail pane) to open the **routing editor** for that profile.
+`/gentle:models` is the shortcut into the unified panel: it migrates legacy project overrides, surfaces an invalid `models.json`, seeds the profiles store on first use, and then opens the same fullscreen panel as `/gentle:profiles`, preselecting the profile this repository resolves (the pin's target, or the globally active profile). Press `e` (or click a routing row in the detail pane) to open the **routing editor** for that profile, `o` for the dedicated **orchestrator picker**, or `m` for the **action menu** with every profile action.
 
 The routing editor is one fullscreen table of every discovered agent with its model and effort, plus the `orchestrator` and **Set all agents** rows. It is fully pointer-driven — hovering a row fills it, clicking a row opens the searchable model picker, clicking an `effort=` value opens the effort picker, the wheel scrolls, and the footer buttons (`Save`, `Custom`, `Inherit`, `Export`, `Restore`, `Cancel`) act on click — while the classic keyboard flow keeps working (`j`/`k`, `enter`, `e`, `i`, `c`, `x`, `r`, `ctrl+s`, `esc`).
 
@@ -1069,11 +1069,13 @@ Legacy string entries are still accepted and treated as `model`-only config.
 /gentle:profiles
 ```
 
-Profiles are named, switchable snapshots of the agent-model routing. The panel fills the terminal, shows the profile list on the left, and a detail pane comparing the selected profile's routing with the currently effective routing, one line per agent in shared columns. The detail pane is pointer-aware: hovering a **Profile routing** row fills it, and clicking one opens the routing editor for that profile (the same editor `m` opens). Keys:
+Profiles are named, switchable snapshots of the agent-model routing. The panel fills the terminal, shows the profile list on the left, and a detail pane comparing the selected profile's routing with the currently effective routing, one line per agent in shared columns. The detail pane is pointer-aware: hovering a **Profile routing** row fills it, and clicking one opens the routing editor for that profile (the same editor `e` opens). In the profile list a click selects, and clicking the already-selected profile opens the action menu. Keys:
 
 | Key     | Action                                                                 |
 | ------- | ---------------------------------------------------------------------- |
-| `m`     | Open the routing editor for the selected profile (mouse clicks on routing rows do the same). Saving the editor writes the profile in the store; nothing global is written until you apply with `a`. |
+| `m`     | Open the action menu: one centered card listing every action for the selected profile (use, apply globally, edit routing, orchestrator, snapshot, duplicate, rename, delete, export, import, pin, publish), navigable by keys or pointer. |
+| `e`     | Open the routing editor for the selected profile (mouse clicks on routing rows do the same). Saving the editor writes the profile in the store; nothing global is written until you apply with `a`. |
+| `o`     | Open the orchestrator picker: choose the model and effort the profile's reserved `orchestrator` entry carries. Saving writes the profile only; `Limpiar` removes the entry so applying or binding the profile leaves the orchestrator untouched. The routing editor's `orchestrator` row edits the same entry. |
 | `enter` | Bind the selected profile to this parent session. The panel shows it as `name (session)`; launches from this session resolve the binding ahead of pins and the global default, and a profile with an `orchestrator` entry switches the session you are in to that model right away. Nothing is written: no global routing, no pins, no materialized stores. |
 | `a`     | Set as global default (the pre-binding `enter` semantics): writes `models.json`, replaces the routing of every agent, sets the orchestrator when the profile defines one. Inside a pinned repository it stays repository-scoped instead; see **Per-repository pins** below. |
 | `c`     | Create a new, empty profile.                                           |

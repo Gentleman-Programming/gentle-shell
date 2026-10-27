@@ -122,7 +122,7 @@ import {
 	parseOrchestratorModelRef,
 } from "../lib/profiles-orchestrator.ts";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-view-layout.ts";
-import { NativeChoiceList } from "../lib/native-choice-list.ts";
+import { NativeChoiceList, type NativeChoiceItem } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
@@ -3158,7 +3158,7 @@ type RoutingMouseAction =
 	| { kind: "effort-option"; index: number }
 	| { kind: "button"; button: RoutingButton };
 
-type RoutingButton = "save" | "custom" | "inherit" | "export" | "restore" | "back" | "cancel";
+type RoutingButton = "save" | "custom" | "inherit" | "export" | "restore" | "back" | "cancel" | "clear";
 
 interface RoutingHitRegion {
 	x0: number;
@@ -3869,6 +3869,7 @@ const ROUTING_BUTTON_LABELS: Record<RoutingButton, string> = {
 	restore: "Restore",
 	back: "Back",
 	cancel: "Cancel",
+	clear: "Limpiar",
 };
 
 interface RoutingMouseEvent {
@@ -3916,6 +3917,479 @@ function renderRoutingEditorForTesting(
 		panel.render(width);
 	}
 	return panel.render(width);
+}
+
+/**
+ * The per-profile orchestrator picker: one focused card to choose the model and
+ * effort the profile's reserved `orchestrator` entry carries. Saving writes the
+ * profile in the store only — applying it to the session or settings.json stays
+ * with the panel's apply/bind flows.
+ */
+type OrchestratorPickerResult =
+	| { type: "save"; entry: AgentRoutingEntry | undefined }
+	| { type: "cancel" };
+
+class OrchestratorPickerPanel implements OverlayComponent {
+	private mode: "summary" | "model" | "effort" = "summary";
+	private modelCursor = 0;
+	private effortCursor = 0;
+	private query = "";
+	private hovered: { kind: string; id: string } | undefined;
+	private hitRegions: RoutingHitRegion[] = [];
+	private model: string | undefined;
+	private thinking: ThinkingLevel | undefined;
+	private readonly done: (result: OrchestratorPickerResult) => void;
+	private readonly theme: Theme | undefined;
+	private readonly keybindings: KeybindingsManager | undefined;
+	private readonly profileName: string;
+	private readonly modelOptions: string[];
+
+	constructor(
+		initial: AgentRoutingEntry | undefined,
+		modelOptions: string[],
+		done: (result: OrchestratorPickerResult) => void,
+		theme?: Theme,
+		profileName = "",
+		keybindings?: KeybindingsManager,
+	) {
+		this.model = initial?.model;
+		this.thinking = initial?.thinking;
+		this.modelOptions = modelOptions;
+		this.done = done;
+		this.theme = theme;
+		this.profileName = profileName;
+		this.keybindings = keybindings;
+	}
+
+	invalidate(): void {
+		this.hovered = undefined;
+	}
+
+	handleInput(data: string): void {
+		if (this.mode === "model") return this.handleModelInput(data);
+		if (this.mode === "effort") return this.handleEffortInput(data);
+		this.handleSummaryInput(data);
+	}
+
+	render(width: number): string[] {
+		this.hitRegions = [];
+		const lines =
+			this.mode === "model"
+				? this.renderModelList(width)
+				: this.mode === "effort"
+					? this.renderEffortList(width)
+					: this.renderSummary(width);
+		return this.renderCard(lines, width);
+	}
+
+	private addRegion(action: RoutingMouseAction, y: number, x0: number, x1: number): void {
+		this.hitRegions.push({ y, x0, x1, action });
+	}
+
+	private renderCard(body: string[], width: number): string[] {
+		const cardWidth = Math.min(52, Math.max(28, width - 6));
+		const inner = cardWidth - 4;
+		const rule = "─".repeat(cardWidth - 2);
+		const lines = [
+			this.renderText(`╭${rule}╮`, "border"),
+			...body.map((line) =>
+				`${this.renderText("│", "border")} ${this.fit(line, inner)} ${this.renderText("│", "border")}`,
+			),
+			this.renderText(`╰${rule}╯`, "border"),
+		];
+		return lines.map((line) => {
+			const pad = Math.max(0, width - stripAnsi(line).length);
+			return line + " ".repeat(pad);
+		});
+	}
+
+	private fit(line: string, width: number): string {
+		const visible = stripAnsi(line);
+		if (visible.length > width) return truncateToWidth(visible, Math.max(1, width), "…", true);
+		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
+	}
+
+	private renderText(text: string, tone: PanelTone): string {
+		const safe = sanitizeTerminalText(text);
+		if (!this.theme) return safe;
+		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
+	}
+
+	private renderLine(text: string, width: number, tone?: PanelTone): string {
+		const safe = truncateToWidth(sanitizeTerminalText(text), Math.max(1, width), "…", true);
+		return tone ? this.renderText(safe, tone) : safe;
+	}
+
+	private hoverWrap(action: RoutingMouseAction, line: string): string {
+		const key = JSON.stringify(action);
+		if (!this.theme || JSON.stringify(this.hovered) !== key) return line;
+		return this.theme.bg("toolPendingBg", stripAnsi(line));
+	}
+
+	private rowActionOf(action: RoutingMouseAction): { kind: string; id: string } {
+		if (action.kind === "row" || action.kind === "effort") return { kind: action.kind, id: action.row };
+		return { kind: action.kind, id: String((action as { index?: number }).index ?? (action as { button?: string }).button ?? "") };
+	}
+
+	private renderSummary(width: number): string[] {
+		const lines: string[] = [];
+		const row = (label: string, value: string, action: RoutingMouseAction) => {
+			const y = lines.length + 1;
+			this.addRegion(action, y, 2, width);
+			const line = `  ${this.renderText(`${label}  `, "muted")}${this.renderText(value, "status")}`;
+			lines.push(this.hoverWrap(action, line));
+		};
+		lines.push(this.renderLine(`Orquestador · ${this.profileName}`, width, "title"));
+		lines.push("");
+		row("Modelo", this.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED, { kind: "row", row: "model" });
+		row("Effort", this.thinking ?? INHERIT_THINKING, { kind: "row", row: "effort" });
+		lines.push("");
+		const buttonRow = lines.length + 1;
+		let x = 2;
+		let footer = "";
+		for (const button of ["save", "clear", "back"] as const) {
+			const label = ORCHESTRATOR_BUTTONS[button];
+			const chunk = `[ ${label} ]  `;
+			this.addRegion({ kind: "button", button }, buttonRow, x, x + chunk.length);
+			x += chunk.length;
+			footer += this.renderText(chunk, button === "back" ? "muted" : "accent");
+		}
+		lines.push(footer);
+		lines.push(this.renderLine("⏎/click Guardar · m modelo · f effort · l limpiar · esc volver", width, "muted"));
+		return lines;
+	}
+
+	private handleSummaryInput(data: string): void {
+		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
+			this.done({ type: "cancel" });
+			return;
+		}
+		if (matchesKey(data, "return")) return this.save();
+		if (data === "m") return this.openModelPicker();
+		if (data === "f") return this.openEffortPicker();
+		if (data === "l") {
+			this.model = undefined;
+			this.thinking = undefined;
+			return;
+		}
+	}
+
+	private openModelPicker(): void {
+		this.mode = "model";
+		this.modelCursor = 0;
+		this.query = "";
+	}
+
+	private openEffortPicker(): void {
+		if (!this.model) return;
+		this.mode = "effort";
+		this.effortCursor = 0;
+	}
+
+	private save(): void {
+		// Guardar commits the current state, including a removal: an entry-less
+		// profile never moves the orchestrator when applied or bound.
+		this.done({
+			type: "save",
+			entry: this.model === undefined
+				? undefined
+				: { model: this.model, ...(this.thinking === undefined ? {} : { thinking: this.thinking }) },
+		});
+	}
+
+	private filteredModels(): string[] {
+		// The orchestrator picker keeps its own option set: "leave untouched"
+		// (no entry) plus the real catalog models — the routing editor's
+		// Keep-current/Custom controls do not apply here.
+		const options = [
+			LEAVE_ORCHESTRATOR_UNTOUCHED,
+			...this.modelOptions.filter((option) => !(MODEL_CONTROL_OPTIONS as readonly string[]).includes(option)),
+		];
+		const query = this.query.trim().toLowerCase();
+		if (!query) return options;
+		return options.filter((option) => option.toLowerCase().includes(query));
+	}
+
+	private renderModelList(width: number): string[] {
+		const lines: string[] = [];
+		const options = this.filteredModels();
+		lines.push(this.renderLine(`Modelo del orquestador · ${this.profileName}`, width, "title"));
+		lines.push("");
+		lines.push(`${this.renderText("◎ ", "accent")}${this.renderText(this.query || "search...", "muted")}`);
+		lines.push(this.renderText("─".repeat(Math.min(width, 48)), "border"));
+		for (let i = 0; i < options.length; i++) {
+			const y = lines.length + 1;
+			const action: RoutingMouseAction = { kind: "model-option", index: i };
+			this.addRegion(action, y, 2, width);
+			const cursor = i === this.modelCursor ? this.renderText("▸ ", "accent") : "  ";
+			lines.push(this.hoverWrap(action, `${cursor}${this.renderText(options[i] ?? "", i === this.modelCursor ? "status" : "text")}`));
+		}
+		if (options.length === 0) lines.push(this.renderLine("  No matching models", width, "muted"));
+		lines.push("");
+		this.pushButtonRow(lines, width, ["back"]);
+		lines.push(this.renderLine("j/k · type to search · ⏎ elegir · esc volver", width, "muted"));
+		return lines;
+	}
+
+	private handleModelInput(data: string): void {
+		const options = this.filteredModels();
+		if (matchesKey(data, "ctrl+c")) {
+			this.done({ type: "cancel" });
+			return;
+		}
+		if (matchesKey(data, "escape")) {
+			this.mode = "summary";
+			this.query = "";
+			return;
+		}
+		if (matchesKey(data, "backspace")) {
+			this.query = this.query.slice(0, -1);
+			this.modelCursor = Math.min(this.modelCursor, Math.max(0, options.length - 1));
+			return;
+		}
+		if (matchesKey(data, "down") || data === "j") {
+			this.modelCursor = Math.min(Math.max(0, options.length - 1), this.modelCursor + 1);
+			return;
+		}
+		if (matchesKey(data, "up") || data === "k") {
+			this.modelCursor = Math.max(0, this.modelCursor - 1);
+			return;
+		}
+		if (matchesKey(data, "return")) {
+			const selected = options[this.modelCursor];
+			if (selected === undefined) return;
+			if (selected === LEAVE_ORCHESTRATOR_UNTOUCHED) {
+				this.model = undefined;
+				this.thinking = undefined;
+				this.mode = "summary";
+				this.query = "";
+				return;
+			}
+			this.model = selected;
+			this.openEffortPicker();
+			return;
+		}
+		if (data.length === 1 && data.charCodeAt(0) >= 32) {
+			this.query += data;
+			this.modelCursor = 0;
+		}
+	}
+
+	private renderEffortList(width: number): string[] {
+		const lines: string[] = [];
+		lines.push(this.renderLine(`Effort del orquestador · ${this.profileName}`, width, "title"));
+		lines.push("");
+		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
+			const y = lines.length + 1;
+			const action: RoutingMouseAction = { kind: "effort-option", index: i };
+			this.addRegion(action, y, 2, width);
+			const cursor = i === this.effortCursor ? this.renderText("▸ ", "accent") : "  ";
+			lines.push(this.hoverWrap(action, `${cursor}${this.renderText(THINKING_OPTIONS[i] ?? "", i === this.effortCursor ? "status" : "text")}`));
+		}
+		lines.push("");
+		this.pushButtonRow(lines, width, ["back"]);
+		lines.push(this.renderLine("j/k · ⏎ elegir · esc volver", width, "muted"));
+		return lines;
+	}
+
+	private handleEffortInput(data: string): void {
+		if (matchesKey(data, "ctrl+c")) {
+			this.done({ type: "cancel" });
+			return;
+		}
+		if (matchesKey(data, "escape")) {
+			this.mode = "summary";
+			return;
+		}
+		if (matchesKey(data, "down") || data === "j") {
+			this.effortCursor = Math.min(THINKING_OPTIONS.length - 1, this.effortCursor + 1);
+			return;
+		}
+		if (matchesKey(data, "up") || data === "k") {
+			this.effortCursor = Math.max(0, this.effortCursor - 1);
+			return;
+		}
+		if (!matchesKey(data, "return")) return;
+		const selected = THINKING_OPTIONS[this.effortCursor];
+		this.thinking = selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel);
+		this.mode = "summary";
+	}
+
+	private pushButtonRow(lines: string[], width: number, buttons: ReadonlyArray<"back">): void {
+		void buttons;
+		const y = lines.length + 1;
+		const chunk = "[ Back ]  ";
+		this.addRegion({ kind: "button", button: "back" }, y, 2, 2 + chunk.length);
+		lines.push(this.renderText(chunk, "accent"));
+		void width;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			if (this.mode === "model") {
+				const options = this.filteredModels();
+				const before = this.modelCursor;
+				this.modelCursor = Math.max(0, Math.min(options.length - 1, before + delta));
+				return { handled: true, render: before !== this.modelCursor };
+			}
+			if (this.mode === "effort") {
+				const before = this.effortCursor;
+				this.effortCursor = Math.max(0, Math.min(THINKING_OPTIONS.length - 1, before + delta));
+				return { handled: true, render: before !== this.effortCursor };
+			}
+			return undefined;
+		}
+		if (event.type !== "move" && event.type !== "press" && event.type !== "click") return undefined;
+		if (event.type === "move" && event.button !== "none") return undefined;
+		if (event.type === "move") {
+			const hovered = this.hitRegions.find((region) => event.y === region.y);
+			const raw = hovered?.action;
+			const key = raw ? JSON.stringify(this.rowKey(raw)) : undefined;
+			const changed = key !== (this.hovered ? JSON.stringify(this.hovered) : undefined);
+			this.hovered = raw ? this.rowKey(raw) : undefined;
+			return { handled: hovered !== undefined, render: changed };
+		}
+		const hit = this.hitRegions.find(
+			(region) => event.y === region.y && event.x >= region.x0 && event.x < region.x1,
+		);
+		if (!hit) return undefined;
+		return this.dispatchMouse(hit.action);
+	}
+
+	private rowKey(action: RoutingMouseAction): { kind: string; id: string } {
+		return this.rowActionOf(action);
+	}
+
+	private dispatchMouse(action: RoutingMouseAction): TuiMouseEventResult | undefined {
+		switch (action.kind) {
+			case "button": {
+				if (action.button === "back") {
+					if (this.mode === "summary") this.done({ type: "cancel" });
+					else this.mode = "summary";
+					return { handled: true, render: true };
+				}
+				if (action.button === "save") this.save();
+				if (action.button === "clear") {
+					this.model = undefined;
+					this.thinking = undefined;
+				}
+				return { handled: true, render: true };
+			}
+			case "row": {
+				if (action.row === "model") this.openModelPicker();
+				else if (action.row === "effort") this.openEffortPicker();
+				return { handled: true, render: true };
+			}
+			case "model-option": {
+				this.modelCursor = action.index;
+				const selected = this.filteredModels()[action.index];
+				if (selected === undefined) return { handled: true, render: true };
+				if (selected === LEAVE_ORCHESTRATOR_UNTOUCHED) {
+					this.model = undefined;
+					this.thinking = undefined;
+					this.mode = "summary";
+					this.query = "";
+					return { handled: true, render: true };
+				}
+				this.model = selected;
+				this.openEffortPicker();
+				return { handled: true, render: true };
+			}
+			case "effort-option": {
+				this.effortCursor = action.index;
+				const selected = THINKING_OPTIONS[action.index];
+				this.thinking = selected === INHERIT_THINKING ? undefined : (selected as ThinkingLevel);
+				this.mode = "summary";
+				return { handled: true, render: true };
+			}
+		}
+	}
+}
+
+const ORCHESTRATOR_BUTTONS: Record<"save" | "clear" | "back", string> = {
+	save: "Guardar",
+	clear: "Limpiar",
+	back: "Volver",
+};
+
+interface OrchestratorMouseEvent {
+	type: "move" | "click" | "press" | "wheel";
+	x: number;
+	y: number;
+	button?: string;
+	wheelDelta?: number;
+}
+
+function renderOrchestratorPickerForTesting(
+	initial: AgentRoutingEntry | undefined,
+	modelOptions: string[],
+	width: number,
+	theme?: Theme,
+	inputs: string[] = [],
+	mouseEvents: OrchestratorMouseEvent[] = [],
+	results: OrchestratorPickerResult[] = [],
+): string[] {
+	const panel = new OrchestratorPickerPanel(
+		initial,
+		modelOptions,
+		(result) => results.push(result),
+		theme,
+		"team",
+		undefined,
+	);
+	panel.render(width);
+	for (const data of inputs) panel.handleInput(data);
+	for (const event of mouseEvents) {
+		panel.handleMouse({
+			type: event.type,
+			x: event.x,
+			y: event.y,
+			button: event.button ?? (event.type === "move" ? "none" : "left"),
+			wheelDelta: event.wheelDelta,
+			screenX: event.x,
+			screenY: event.y,
+			width,
+			height: 24,
+		} as TuiMouseEvent);
+		panel.render(width);
+	}
+	return panel.render(width);
+}
+
+async function showOrchestratorPickerPanel(
+	ctx: ExtensionContext,
+	profileName: string,
+	entry: AgentRoutingEntry | undefined,
+): Promise<OrchestratorPickerResult> {
+	const modelOptions = await getPiModelOptions(ctx);
+	return ctx.ui.custom<OrchestratorPickerResult>(
+		(tui, theme, keybindings, done) => {
+			const panel = new OrchestratorPickerPanel(
+				entry,
+				modelOptions,
+				done,
+				theme,
+				profileName,
+				keybindings,
+			);
+			const container = createNativeFullscreenInteraction({
+				keyboardTarget: panel,
+				requestRender: () => tui.requestRender(),
+			});
+			container.addChild(panel);
+			return container;
+		},
+		{
+			overlay: true,
+			overlayOptions: {
+				anchor: "center",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			},
+		},
+	);
 }
 
 async function showRoutingEditorPanel(
@@ -4019,6 +4493,7 @@ type ProfilesPanelResult =
 	| { type: "apply-global"; name: string }
 	| { type: "create" }
 	| { type: "edit-routing"; name: string }
+	| { type: "orchestrator"; name: string }
 	| { type: "update"; name: string }
 	| { type: "duplicate"; name: string }
 	| { type: "rename"; name: string }
@@ -4193,6 +4668,12 @@ class ProfilesPanel implements OverlayComponent {
 	private lastDetailRows = 0;
 	private lastSelectedId: string | undefined;
 	private feedback: string | undefined;
+	// Action-menu state: `m` (or a second click on the selected profile) opens a
+	// centered menu with every profile action; direct keys stay for daily use.
+	private mode: "list" | "actions" = "list";
+	private clickedId: string | undefined;
+	private actionsList: NativeChoiceList<NativeChoiceItem> | undefined;
+	private actionsLayout: { top: number; height: number; x: number; width: number } | undefined;
 	// Detail-pane pointer state: which rendered detail lines belong to the profile
 	// routing table (clickable), and which one the pointer is on (hover fill).
 	private readonly detailHitLines = new Set<number>();
@@ -4205,6 +4686,7 @@ class ProfilesPanel implements OverlayComponent {
 	private readonly requestRender: () => void;
 	private readonly listItems: ProfileListItem[];
 	private readonly theme: Theme | undefined;
+	private readonly keybindings: KeybindingsManager | undefined;
 	private readonly rows: () => number;
 	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
 	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
@@ -4239,6 +4721,7 @@ class ProfilesPanel implements OverlayComponent {
 		this.saveSnapshot = saveSnapshot;
 		this.requestRender = requestRender;
 		this.theme = theme;
+		this.keybindings = keybindings;
 		this.rows = rows;
 		this.orchestratorSettings = orchestratorSettings;
 		this.pinStatus = pinStatus();
@@ -4258,20 +4741,35 @@ class ProfilesPanel implements OverlayComponent {
 			},
 			keybindings,
 		);
-		this.list.onSelect = (item) => this.finish({ type: "apply", name: item.id });
+		// A click selects; clicking the already-selected profile opens the action
+		// menu, so the pointer path never applies anything by accident.
+		this.list.onSelect = (item) => {
+			if (item.id === this.clickedId) {
+				this.openActions();
+				return;
+			}
+			this.clickedId = item.id;
+		};
 		this.list.onCancel = () => this.finish({ type: "close" });
 		const selected = selectedName ? items.findIndex((item) => item.id === selectedName) : -1;
 		if (selected >= 0) this.list.setSelectedIndex(selected);
+		this.clickedId = this.list.getSelectedItem()?.id;
 	}
 
 	invalidate(): void {
 		this.pointerLayout = undefined;
 		this.hoveredDetailLine = undefined;
+		this.actionsLayout = undefined;
 		this.list.invalidate();
+		this.actionsList?.invalidate();
 	}
 
 	handleInput(data: string): void {
 		if (isKeyRelease(data)) return;
+		if (this.mode === "actions") {
+			this.handleActionsInput(data);
+			return;
+		}
 		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
 			this.finish({ type: "close" });
 			return;
@@ -4299,9 +4797,14 @@ class ProfilesPanel implements OverlayComponent {
 		if (data === "c") return this.finish({ type: "create" });
 		if (data === "i") return this.finish({ type: "import" });
 		if (!name) return this.list.handleInput(data);
-		// The routing editor lives one keypress away: `m` opens the selected
-		// profile's routing table, the same surface a click on a routing row opens.
-		if (data === "m") return this.finish({ type: "edit-routing", name });
+		// One letter, one meaning: m opens the action menu, e edits routing,
+		// o edits the orchestrator, E exports. Everything else lives in the menu.
+		if (data === "m") {
+			this.openActions();
+			return;
+		}
+		if (data === "e") return this.finish({ type: "edit-routing", name });
+		if (data === "o") return this.finish({ type: "orchestrator", name });
 		if (data === "s") {
 			try {
 				this.file = this.saveSnapshot(name);
@@ -4317,13 +4820,129 @@ class ProfilesPanel implements OverlayComponent {
 		if (data === "d") return this.finish({ type: "duplicate", name });
 		if (data === "r") return this.finish({ type: "rename", name });
 		if (data === "x") return this.finish({ type: "delete", name });
-		if (data === "e") return this.finish({ type: "export", name });
+		if (data === "E") return this.finish({ type: "export", name });
 		if (data === "p") return this.finish({ type: "pin", source: "local", name });
 		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
+		// Enter applies the selected profile. It is intercepted before the list so
+		// NativeChoiceList's confirm never reaches the click-oriented onSelect,
+		// whose job is select-then-menu, not apply.
+		if (matchesKey(data, "return")) return this.finish({ type: "apply", name });
 		this.list.handleInput(data);
+		this.clickedId = this.list.getSelectedItem()?.id;
+	}
+
+	private openActions(): void {
+		const name = this.list.getSelectedItem()?.id;
+		if (!name || this.completed) return;
+		const item = (id: string, label: string, key: string): NativeChoiceItem => ({
+			id,
+			label: `${label}  ${key}`,
+		});
+		const items = [
+			item("apply", "Usar en esta sesión", "⏎"),
+			item("apply-global", "Aplicar como global", "a"),
+			item("edit-routing", "Editar routing", "e"),
+			item("orchestrator", "Elegir orquestador", "o"),
+			item("snapshot", "Snapshot del routing actual", "s"),
+			item("duplicate", "Duplicar", "d"),
+			item("rename", "Renombrar", "r"),
+			item("delete", "Eliminar", "x"),
+			item("export", "Exportar perfil", "E"),
+			item("import", "Importar perfil", "i"),
+			item("pin", "Fijar en este repositorio", "p"),
+			item("publish", "Publicar declaración del repo", "P"),
+		];
+		this.mode = "actions";
+		this.actionsList = new NativeChoiceList<NativeChoiceItem>(
+			items,
+			{
+				selectedPrefix: (text) => this.renderText(text, "accent"),
+				selectedText: (text) => this.renderText(text, "accent"),
+				description: (text) => this.renderText(text, "muted"),
+				hoverBackground: (text) => (this.theme ? this.theme.bg("toolPendingBg", text) : text),
+			},
+			this.keybindings,
+		);
+		this.actionsList.onSelect = (action) => this.runAction(action.id, name);
+		this.actionsList.onCancel = () => {
+			this.closeActions();
+			this.requestRender();
+		};
+		this.requestRender();
+	}
+
+	private closeActions(): void {
+		this.mode = "list";
+		this.actionsList = undefined;
+		this.actionsLayout = undefined;
+	}
+
+	private runAction(id: string, name: string): void {
+		switch (id) {
+			case "apply":
+				return this.finish({ type: "apply", name });
+			case "apply-global":
+				return this.finish({ type: "apply-global", name });
+			case "edit-routing":
+				return this.finish({ type: "edit-routing", name });
+			case "orchestrator":
+				return this.finish({ type: "orchestrator", name });
+			case "duplicate":
+				return this.finish({ type: "duplicate", name });
+			case "rename":
+				return this.finish({ type: "rename", name });
+			case "delete":
+				return this.finish({ type: "delete", name });
+			case "export":
+				return this.finish({ type: "export", name });
+			case "import":
+				return this.finish({ type: "import" });
+			case "pin":
+				return this.finish({ type: "pin", source: "local", name });
+			case "publish":
+				return this.finish({ type: "pin", source: "repo", name });
+			case "snapshot": {
+				try {
+					this.file = this.saveSnapshot(name);
+					this.refreshListItems();
+					this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
+				} catch (error) {
+					this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
+				}
+				this.closeActions();
+				this.requestRender();
+				return;
+			}
+		}
+	}
+
+	private handleActionsInput(data: string): void {
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		if (matchesKey(data, "escape") || matchesKey(data, "backspace")) {
+			this.closeActions();
+			this.requestRender();
+			return;
+		}
+		this.actionsList?.handleInput(data);
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.mode === "actions") {
+			const layout = this.actionsLayout;
+			if (!layout || !this.actionsList) return undefined;
+			if (event.y < layout.top || event.y >= layout.top + layout.height) return undefined;
+			if (event.x < layout.x || event.x >= layout.x + layout.width) return undefined;
+			return this.actionsList.handleMouse({
+				...event,
+				x: event.x - layout.x,
+				y: event.y - layout.top,
+				width: layout.width,
+				height: layout.height,
+			});
+		}
 		const layout = this.pointerLayout;
 		if (!layout) return undefined;
 		const inBody = event.y >= layout.listTop && event.y < layout.listTop + layout.bodyRows;
@@ -4360,6 +4979,7 @@ class ProfilesPanel implements OverlayComponent {
 	}
 
 	render(width: number): string[] {
+		if (this.mode === "actions") return this.renderActions(width);
 		const safeWidth = Math.max(1, width);
 		const listWidth = measureAgentsViewLayout(safeWidth, PROFILES_PANEL_MIN_BODY_ROWS + 3).listWidth;
 		const listLines = this.list.render(listWidth);
@@ -4389,6 +5009,53 @@ class ProfilesPanel implements OverlayComponent {
 		}
 		lines.push(this.renderFooterRow(layout.width));
 		lines.push(this.renderText(`╰${rule}╯`, "border"));
+		return lines;
+	}
+
+	/**
+	 * The action menu: one centered card with every profile action, navigable by
+	 * keys and pointer alike. The rest of the frame stays untouched so the panel
+	 * never feels like a different screen.
+	 */
+	private renderActions(width: number): string[] {
+		const rows = Math.max(PROFILES_PANEL_MIN_BODY_ROWS + 3, Math.floor(this.rows()));
+		const name = this.list.getSelectedItem()?.id ?? "";
+		const menuWidth = Math.min(46, Math.max(24, width - 8));
+		const inner = menuWidth - 4;
+		const actions = this.actionsList;
+		if (!actions) return [];
+		const menuLines = actions.render(inner);
+		const chrome = 7; // top rule, blank, title, rule, blank, hint, bottom
+		const height = Math.min(rows - 4, menuLines.length + chrome);
+		const visible = Math.max(0, height - chrome);
+		const top = Math.max(2, Math.floor((rows - height) / 2));
+		const x = Math.max(2, Math.floor((width - menuWidth) / 2));
+		this.actionsLayout = { top: top + 3, height: Math.max(1, menuLines.length), x, width: inner };
+		const rule = "─".repeat(Math.max(0, menuWidth - 2));
+		const card: string[] = [];
+		card.push(this.renderText(`╭${rule}╮`, "border"));
+		card.push(this.renderText("│", "border") + " " + this.renderLine(`Acciones · ${name}`, menuWidth - 4, "title") + " " + this.renderText("│", "border"));
+		card.push(this.renderText(`│${"─".repeat(Math.max(0, menuWidth - 2))}│`, "border"));
+		for (let row = 0; row < visible; row += 1) {
+			const line = menuLines[row] ?? "";
+			card.push(this.renderText("│", "border") + " " + this.fitPaneLine(line, inner) + " " + this.renderText("│", "border"));
+		}
+		card.push(this.renderText("│", "border") + " " + this.renderLine("⏎ ejecutar · esc volver", menuWidth - 4, "muted") + " " + this.renderText("│", "border"));
+		card.push(this.renderText(`╰${rule}╯`, "border"));
+		// Center the card inside the usual fullscreen frame.
+		const frameRule = "─".repeat(Math.max(0, width - 2));
+		const lines: string[] = [this.renderText(`╭${frameRule}╮`, "border")];
+		for (let row = 1; row < rows - 1; row += 1) {
+			const cardRow = row - top;
+			if (cardRow < 0 || cardRow >= card.length) {
+				lines.push(this.renderText("│", "border") + " " + this.fitPaneLine("", width - 4) + " " + this.renderText("│", "border"));
+				continue;
+			}
+			const left = " ".repeat(x);
+			const right = " ".repeat(Math.max(0, width - x - stripAnsi(card[cardRow]).length - 2));
+			lines.push(this.renderText("│", "border") + left + card[cardRow] + right + this.renderText("│", "border"));
+		}
+		lines.push(this.renderText(`╰${frameRule}╯`, "border"));
 		return lines;
 	}
 
@@ -4483,8 +5150,8 @@ class ProfilesPanel implements OverlayComponent {
 	}
 
 	private renderFooterRow(width: number): string {
-		const hints =
-			"enter use in this session · a set as global default · m edit routing · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · p pin · P share · click routing row edits it · esc close";
+		// One quiet line: the daily keys only. Everything else lives in the m menu.
+		const hints = "↑↓ elegir · ⏎ usar · m menú · e editar · a global · esc cerrar";
 		const text = this.feedback ?? hints;
 		return [
 			this.renderText("│", "border"),
@@ -5215,6 +5882,34 @@ async function runProfilesPanelAction(
 				return next;
 			} catch (error) {
 				ctx.ui.notify(`Profile routing not saved: ${profilesErrorMessage(error)}`, "warning");
+				return file;
+			}
+		}
+		case "orchestrator": {
+			// The dedicated orchestrator picker edits only the profile's reserved
+			// `orchestrator` entry: no routing, no global writes, no live switches.
+			// "Limpiar" removes the key so applying or binding the profile leaves
+			// the orchestrator untouched, exactly like an orchestrator-less profile.
+			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			const current = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			const picking = await showOrchestratorPickerPanel(ctx, result.name, readProfileOrchestrator(current));
+			if (picking.type === "cancel") {
+				report.status = `Orchestrator of "${result.name}" unchanged.`;
+				return file;
+			}
+			const next = cloneModelConfig(current);
+			if (picking.entry === undefined) delete next[PROFILE_ORCHESTRATOR_KEY];
+			else next[PROFILE_ORCHESTRATOR_KEY] = { ...picking.entry };
+			try {
+				const updated = updateProfile(file, result.name, next);
+				writeProfilesFileSync(path, updated);
+				report.status = picking.entry === undefined
+					? `Orchestrator entry removed from "${result.name}"; applying it no longer moves the orchestrator.`
+					: `Orchestrator of "${result.name}" saved: ${formatOrchestratorSelection(picking.entry)}. Apply with a to use it globally.`;
+				report.selectedName = result.name;
+				return updated;
+			} catch (error) {
+				ctx.ui.notify(`Orchestrator not saved: ${profilesErrorMessage(error)}`, "warning");
 				return file;
 			}
 		}
@@ -10034,6 +10729,7 @@ export const __testing = {
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
 	routingEditorPanel: renderRoutingEditorForTesting,
+	orchestratorPicker: renderOrchestratorPickerForTesting,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,

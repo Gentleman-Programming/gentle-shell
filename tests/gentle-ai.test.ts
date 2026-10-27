@@ -537,7 +537,7 @@ test("routing editor saves and clears provider review roles into the profile sto
 	fixture.onInput((panel) => {
 		visits += 1;
 		if (visits === 1) {
-			panel.handleInput("m"); // open the routing editor for the seeded "current" profile
+			panel.handleInput("e"); // open the routing editor for the seeded "current" profile
 			return;
 		}
 		if (visits === 2) {
@@ -574,7 +574,7 @@ test("routing editor saves and clears provider review roles into the profile sto
 	visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) panel.handleInput("m");
+		if (visits === 1) panel.handleInput("e");
 		else if (visits === 2) {
 			panel.handleInput("j");
 			panel.handleInput("j");
@@ -626,7 +626,7 @@ test("provider review roles skip migration and both projection paths even when d
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			const editor = renderComponent(panel);
 			for (const role of roles) assert.equal(editor.split(role).length - 1, 1);
@@ -664,7 +664,7 @@ test("export re-reads saved routing and rejects invalid project before creating 
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			writeFileSync(fixture.projectPath, "[]");
 			panel.handleInput("x"); // export models.json from the routing editor
@@ -699,7 +699,7 @@ test("models exports missing, normalized project, and global-precedence saved ro
 			let visits = 0;
 			fixture.onInput((panel) => {
 				visits += 1;
-				if (visits === 1) { panel.handleInput("m"); return; }
+				if (visits === 1) { panel.handleInput("e"); return; }
 				if (visits === 2) { panel.handleInput("x"); return; }
 				panel.handleInput("\x1b");
 			});
@@ -733,7 +733,7 @@ test("invalid global routing overrides valid project in models, status, and expo
 			let visits = 0;
 			fixture.onInput((panel) => {
 				visits += 1;
-				if (visits === 1) { panel.handleInput("m"); return; }
+				if (visits === 1) { panel.handleInput("e"); return; }
 				if (visits === 2 && atExport) {
 					writeMarkdown(fixture.globalPath, "[]");
 					panel.handleInput("x");
@@ -3078,7 +3078,7 @@ test("s snapshots current routing in place without applying or reopening the pro
 	});
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
 	assert.equal(store.active, "z-active");
-	assert.match(fixture.panels[0] ?? "", /enter use in this session · a set as global default · m edit routing · c create · s snapshot/);
+	assert.match(fixture.panels[0] ?? "", /↑↓ elegir · ⏎ usar · m menú · e editar · a global · esc cerrar/);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
 	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
@@ -3148,7 +3148,7 @@ test("routing editor saves the explicit orchestrator choice into the profile", a
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			assert.match(renderComponent(panel), /orchestrator\s+model=nan\/glm5.3, effort=max/);
 			chooseOrchestrator(panel);
@@ -3196,7 +3196,7 @@ test("routing editor leave untouched removes a stale profile orchestrator and pr
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			chooseOrchestrator(panel);
 			chooseModel(panel, "leave untouched");
@@ -3232,7 +3232,7 @@ for (const [name, key] of [["ctrl+s", "\x13"], ["cancel", "\x1b"]] as const) {
 		let visits = 0;
 		fixture.onInput((panel) => {
 			visits += 1;
-			if (visits === 1) { panel.handleInput("m"); return; }
+			if (visits === 1) { panel.handleInput("e"); return; }
 			if (visits === 2) {
 				chooseOrchestrator(panel);
 				chooseModel(panel, "beta");
@@ -3270,7 +3270,7 @@ for (const action of ["bulk inherit", "custom", "export/restore"] as const) {
 		fixture.onInput((panel) => {
 			visits += 1;
 			assert.ok(visits <= 5, "reopens must be bounded");
-			if (visits === 1) { panel.handleInput("m"); return; }
+			if (visits === 1) { panel.handleInput("e"); return; }
 			if (visits === 2) {
 				chooseOrchestrator(panel);
 				chooseModel(panel, "beta");
@@ -3330,7 +3330,7 @@ test("routing editor save preserves an active profile's absent orchestrator and 
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			assert.match(renderComponent(panel), /orchestrator\s+leave untouched/);
 			panel.handleInput("g");
@@ -3370,7 +3370,7 @@ test("routing editor targets the pinned profile and preserves its stored orchest
 		visits += 1;
 		if (visits === 1) {
 			assert.match(renderComponent(panel), /orchestrator\s+openai\/beta · high/, "the pin preselects the other profile in the detail pane");
-			panel.handleInput("m");
+			panel.handleInput("e");
 			return;
 		}
 		if (visits === 2) {
@@ -3406,7 +3406,7 @@ test("gentle:models seeds the profiles store the way /gentle:profiles does when 
 	let visits = 0;
 	fixture.onInput((panel) => {
 		visits += 1;
-		if (visits === 1) { panel.handleInput("m"); return; }
+		if (visits === 1) { panel.handleInput("e"); return; }
 		if (visits === 2) {
 			assert.match(renderComponent(panel), /orchestrator\s+leave untouched/, "the seed captures agent routing only");
 			panel.handleInput("\x1b");
@@ -3610,6 +3610,149 @@ test("profiles panel pointer: hovering and clicking a profile-routing row opens 
 	});
 	await fixture.run("gentle:profiles");
 	assert.equal(visits, 3, "profiles → routing editor → profiles");
+});
+
+test("m opens the action menu; enter runs the highlighted action; esc returns to the list", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits === 1) {
+			panel.handleInput("m");
+			const menu = renderComponent(panel);
+			assert.match(menu, /Acciones · team/);
+			assert.match(menu, /Usar en esta sesión/);
+			assert.match(menu, /Elegir orquestador/);
+			// esc returns to the list without finishing…
+			panel.handleInput("\x1b");
+			assert.doesNotMatch(renderComponent(panel), /Acciones · team/);
+			// …and enter still applies the selected profile.
+			panel.handleInput("\r");
+			return;
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(fixture.liveSwitches, [], "applying a profile without an orchestrator never switches the session");
+	assert.equal(visits, 2, "profiles → profiles (post-apply) → close");
+});
+
+test("the action menu runs actions by click", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	let visits = 0;
+	let menuRows: string[] = [];
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits === 1) {
+			panel.handleInput("m");
+			menuRows = renderComponent(panel).split("\n");
+			const row = menuRows.findIndex((line) => line.includes("Elegir orquestador"));
+			assert.ok(row > 0, `menu must render its actions (rows: ${menuRows.length})`);
+			const column = menuRows[row].indexOf("Elegir");
+			const clicked = panel.handleMouse?.({
+				type: "click",
+				x: column,
+				y: row,
+				button: "left",
+				screenX: column,
+				screenY: row,
+				width: 120,
+				height: 24,
+			});
+			assert.equal(clicked?.handled, true, "clicking a menu action must be handled");
+			return;
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 3, "profiles → orchestrator picker → profiles");
+});
+
+test("o opens the orchestrator picker and saving writes the profile's orchestrator entry", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeSettings();
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	fixture.setLiveModel("openai", "alpha", "low");
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits === 1) {
+			panel.handleInput("o");
+			return;
+		}
+		if (visits === 2) {
+			const picker = renderComponent(panel);
+			assert.match(picker, /Orquestador · team/);
+			assert.match(picker, /\[ Guardar \]/);
+			panel.handleInput("m"); // model picker
+			for (const character of "beta") panel.handleInput(character);
+			panel.handleInput("\r"); // commit openai/beta → effort picker
+			for (let step = 0; step < 10 && !renderComponent(panel).includes("▸ high"); step++) panel.handleInput("j");
+			panel.handleInput("\r"); // commit high → summary
+			panel.handleInput("\r"); // Guardar
+			return;
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
+	assert.deepEqual(profile.orchestrator, { model: "openai/beta", thinking: "high" });
+	assert.deepEqual(profile.worker, { model: "openai/alpha" });
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "the picker never writes settings.json");
+	assert.deepEqual(fixture.liveSwitches, [], "the picker never switches the live session");
+});
+
+test("the orchestrator picker clears the entry with Limpiar and saves the removal", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" }, orchestrator: { model: "openai/beta", thinking: "high" } } }, "team");
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits === 1) {
+			panel.handleInput("o");
+			return;
+		}
+		if (visits === 2) {
+			panel.handleInput("l"); // clear model + effort
+			assert.match(renderComponent(panel), /leave untouched/);
+			panel.handleInput("m");
+			panel.handleInput("\r"); // "leave untouched" is the first option without a query
+			panel.handleInput("\r"); // Guardar (still cleared)
+			return;
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
+	assert.equal(Object.hasOwn(profile, "orchestrator"), false, "Limpiar removes the orchestrator key");
+});
+
+test("the orchestrator picker render helpers: save without a model is a no-op and mouse clicks pick models", () => {
+	const results: any[] = [];
+	__testing.orchestratorPicker({ model: "openai/beta", thinking: "high" }, ["openai/alpha", "openai/beta"], 80, undefined, ["\r"], [], results);
+	assert.deepEqual(results, [{ type: "save", entry: { model: "openai/beta", thinking: "high" } }], "Guardar with a model saves the entry");
+
+	const cleared: any[] = [];
+	__testing.orchestratorPicker(undefined, ["openai/alpha"], 80, undefined, [], [], cleared);
+	assert.deepEqual(cleared, []);
+
+	const picked: any[] = [];
+	const lines = __testing
+		.orchestratorPicker(
+			undefined,
+			["openai/alpha", "openai/beta"],
+			80,
+			undefined,
+			[],
+			[{ type: "click", x: 4, y: 3 }, { type: "click", x: 4, y: 6 }],
+			picked,
+		)
+		.map(stripAnsi);
+	assert.match(lines.join("\n"), /Effort del orquestador/, "clicking Modelo then a catalog model moves to the effort picker");
 });
 
 test("a narrow detail pane keeps the unmatched-key note visible", async (t) => {

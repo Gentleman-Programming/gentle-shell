@@ -305,6 +305,8 @@ test("drift notice: an explicit binding learns its profile definition changed in
 	const notice = inheritedProfileDriftNotice(opts);
 	assert.match(notice ?? "", /the profile definition changed to "team"/);
 	assert.match(notice ?? "", /this session keeps the binding from selection/);
+	assert.match(notice ?? "", /Open \/gentle:profiles and choose Use in this session to adopt one\.$/, "the notice names the current adoption action");
+	assert.doesNotMatch(notice ?? "", /Press Enter/, "the retired Enter instruction never comes back");
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 
 	f.editProfile("team", { worker: { model: "openai/older" } });

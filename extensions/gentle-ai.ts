@@ -68,6 +68,8 @@ import {
 	normalizeRoutingEntry,
 	readSavedModelConfig as readModelRoutingAuthority,
 	readSavedModelConfigAsync as readModelRoutingAuthorityAsync,
+	readModelConfigFile,
+	readModelConfigFileAsync,
 	type AgentModelConfig,
 	type AgentRoutingEntry,
 	type ModelConfigFileResult,
@@ -2225,6 +2227,37 @@ function legacyProjectModelConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "models.json");
 }
 
+// bootstrapProfilesFile can activate a profile from a read-only
+// effective-config snapshot without ever writing the global file (e.g.
+// opening /gentle:profiles for the first time). A pinned or active profile is
+// a complete routing snapshot (see withOmittedAgentsClearedAsync): omitted
+// agents must inherit. Before the global file exists there is nothing for the
+// "use only the global file" guarantee to read, and falling back to the raw
+// legacy project file would resurrect agents the profile deliberately omits
+// (that file was never filtered by the profile's omissions). Read the
+// profile's own stored snapshot instead: it is already complete, because
+// bootstrapProfilesFile seeds it from the full effective routing that was
+// visible a moment before the profile existed. Takes the already-resolved
+// target so callers that also branch on it never resolve it twice.
+function activeProfileRoutingSnapshot(cwd: string, target: CurrentProfileTarget): ModelConfigFileResult | undefined {
+	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	if (store.status !== "valid") return undefined;
+	const config = store.file.profiles[target.name];
+	return config === undefined ? undefined : { status: "valid", config };
+}
+
+// The second path fed into the global/project merge below. With no active
+// profile it is the real legacy project file, so project-only entries merge
+// in. With a pinned or active profile and an existing global file it is the
+// *global* path again on purpose: merging the legacy project file here would
+// resurrect agent entries the profile deliberately omitted (the profile's
+// own snapshot, read by activeProfileRoutingSnapshot, is already complete).
+// Takes the already-resolved target so callers that also branch on it never
+// resolve it twice.
+function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | undefined): string {
+	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
+}
+
 function projectPersonaConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "gentle-ai", "persona.json");
 }
@@ -2263,22 +2296,34 @@ function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
 	return paths;
 }
 
+// An invalid legacy project file must never block the global config it merges
+// with: fall back to the global-only result (or empty) instead of erroring.
 function readSavedModelConfig(cwd: string): ModelConfigFileResult {
-	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = readModelRoutingAuthority(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const globalPath = modelConfigPath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+	}
+	const projectPath = secondaryMergeSourcePath(cwd, target);
+	const result = readModelRoutingAuthority(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
+	const globalResult = readModelConfigFile(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 async function readSavedModelConfigAsync(
 	cwd: string,
 ): Promise<ModelConfigFileResult> {
-	const projectPath = legacyProjectModelConfigPath(cwd);
-	const result = await readModelRoutingAuthorityAsync(modelConfigPath(cwd), projectPath);
-	return result.status === "invalid" && result.path === projectPath
-		? { status: "valid", config: {} }
-		: result;
+	const globalPath = modelConfigPath(cwd);
+	const target = resolveCurrentProfileTarget(cwd);
+	if (target !== undefined && !existsSync(globalPath)) {
+		return activeProfileRoutingSnapshot(cwd, target) ?? { status: "valid", config: {} };
+	}
+	const projectPath = secondaryMergeSourcePath(cwd, target);
+	const result = await readModelRoutingAuthorityAsync(globalPath, projectPath);
+	if (result.status !== "invalid" || result.path !== projectPath || globalPath === projectPath) return result;
+	const globalResult = await readModelConfigFileAsync(globalPath);
+	return globalResult.status === "valid" ? globalResult : { status: "valid", config: {} };
 }
 
 export function readModelConfig(cwd: string): AgentModelConfig {
@@ -3066,10 +3111,11 @@ export async function applySavedModelConfig(
 	ctx: ExtensionContext,
 	applyConfig: typeof applyModelConfigAsync = applyModelConfigAsync,
 ): Promise<{ updated: number; skipped: number; invalidPath?: string }> {
-	const result = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
-	);
+	const applyGlobalPath = modelConfigPath(ctx.cwd);
+	const applyTarget = resolveCurrentProfileTarget(ctx.cwd);
+	const result = applyTarget !== undefined && !existsSync(applyGlobalPath)
+		? activeProfileRoutingSnapshot(ctx.cwd, applyTarget) ?? { status: "valid" as const, config: {} }
+		: await readModelRoutingAuthorityAsync(applyGlobalPath, secondaryMergeSourcePath(ctx.cwd, applyTarget));
 	if (result.status === "invalid") {
 		return { updated: 0, skipped: 0, invalidPath: result.path };
 	}
@@ -9734,6 +9780,8 @@ async function executeReviewControllerOperation(
 
 /** @internal */
 export const __testing = {
+	readSavedModelConfig,
+	readSavedModelConfigAsync,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,

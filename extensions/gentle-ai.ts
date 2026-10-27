@@ -3116,7 +3116,9 @@ async function getPiThinkingSupport(ctx: ExtensionContext): Promise<Record<strin
 	if (!Array.isArray(raw)) return support;
 	for (const model of raw as Parameters<typeof getSupportedThinkingLevels>[0][]) {
 		const id = normalizeModelId(`${model?.provider}/${model?.id}`);
-		if (!id) continue;
+		// Without the reasoning flag the catalog says nothing about effort: the
+		// model stays unknown (every level offered) rather than "off only".
+		if (!id || typeof model?.reasoning !== "boolean") continue;
 		try {
 			support[id] = getSupportedThinkingLevels(model).filter((level): level is ThinkingLevel =>
 				(THINKING_LEVELS as readonly string[]).includes(level),
@@ -10013,6 +10015,7 @@ export const __testing = {
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
 	routingTablePanel: renderRoutingTableForTesting,
+	piThinkingSupport: getPiThinkingSupport,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,

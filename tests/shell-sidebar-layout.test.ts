@@ -589,6 +589,23 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
+test("the jobs rail section paints between Status and Agents", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
+	sidebarPart(f.tui, "agents", { render: () => ["agents"], invalidate() {} }, { digest: () => "agents", render: () => ["Agents card"], invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { digest: () => "todo", render: () => ["Todo card"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	const footer = text.indexOf("Status");
+	const jobs = text.indexOf("Jobs card");
+	const agents = text.indexOf("Agents card");
+	const todo = text.indexOf("Todo card");
+	for (const [name, index] of [["Status", footer], ["Jobs card", jobs], ["Agents card", agents], ["Todo card", todo]] as const) {
+		assert.ok(index >= 0, `${name} paints in the rail`);
+	}
+	assert.ok(footer < jobs && jobs < agents && agents < todo, `sections paint in order, got: ${text}`);
+});
+
 test("a theme switch repaints rail sections whose digest did not change", (t) => {
 	const f = fixture();
 	// Pi hands extensions a live theme proxy and announces a switch only through

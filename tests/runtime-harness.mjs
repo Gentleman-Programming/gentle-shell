@@ -1629,82 +1629,50 @@ async function run() {
 			{ provider: "safe", id: "model" },
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
-		// /gentle:models opens the unified profiles panel (visit 1); "m" opens the
-		// routing editor for the preselected profile (visit 2). The render and scroll
-		// contract below is the old standalone model panel's, adapted to the editor:
-		// the card, the terminal height, the scroll indicators, and label sanitizing.
+		// /gentle:models opens the models screen on the profile this repository
+		// resolves: one table, profiles as tabs. Its render contract: a bordered
+		// card filling the terminal, scroll indicators for long agent lists, and
+		// sanitized labels everywhere, including the model card.
 		let panelVisits = 0;
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
 				panelVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
-				if (panelVisits === 1) {
-					panel.handleInput("e"); // open the routing editor for the preselected profile
-					return;
-				}
-				if (panelVisits === 2) {
-					const initialLines = panel.render(120);
-					const plainInitialLines = initialLines.map(stripAnsi);
-					assert.ok(
-						plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
-						"routing editor should render inside a bordered card",
-					);
-					assert.ok(
-						initialLines.length === 24,
-						"routing editor should fill the 24-row terminal like /gentle:profiles",
-					);
-					assert.match(
-						plainInitialLines.join("\n"),
-						/Routing — current/,
-						"routing editor should title the card with the profile it edits",
-					);
-					assert.ok(
-						plainInitialLines.some((line) => /↓ \d+ more agent\(s\)/.test(line)),
-						"long routing editor agent list should render a down-scroll indicator",
-					);
-					assert.doesNotMatch(
-						initialLines.join("\n"),
-						/\u001b\]|\u0007/,
-						"routing editor must strip unsafe terminal control sequences from agent labels",
-					);
-					assert.doesNotMatch(
-						plainInitialLines.join("\n"),
-						/\]52|\[31m/,
-						"routing editor must strip user-provided terminal escapes from labels",
-					);
-					for (let i = 0; i < 20; i++) panel.handleInput("j");
-					const scrolledLines = panel.render(120);
-					const plainScrolledLines = scrolledLines.map(stripAnsi);
-					assert.ok(
-						scrolledLines.length === 24,
-						"scrolled routing editor agent list should keep filling the terminal",
-					);
-					assert.ok(
-						plainScrolledLines.some((line) => /↑ \d+ more agent\(s\)/.test(line)),
-						"long routing editor agent list should render an up-scroll indicator after navigation",
-					);
-					panel.handleInput("G");
-					const bottomLines = panel.render(120);
-					const plainBottomLines = bottomLines.map(stripAnsi);
-					assert.ok(
-						bottomLines.length === 24,
-						"bottom routing editor agent list should keep filling the terminal",
-					);
-					assert.ok(
-						plainBottomLines.some((line) => /▸\s+worker\b/.test(line)),
-						"G should land on the last agent row",
-					);
-					panel.handleInput("\u001b"); // cancel: the profiles panel reopens once more
-					return;
-				}
-				resolve({ type: "close" });
+				const initialLines = panel.render(120);
+				const plainInitialLines = initialLines.map(stripAnsi);
+				assert.ok(
+					plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
+					"the models screen should render inside a bordered card",
+				);
+				assert.equal(initialLines.length, 24, "the models screen should fill the 24-row terminal");
+				assert.match(plainInitialLines[1], /current/, "the tab line names the profile on screen");
+				assert.ok(
+					plainInitialLines.some((line) => /↓ \d+ more/.test(line)),
+					"a long agent list should render a down-scroll indicator",
+				);
+				assert.doesNotMatch(initialLines.join("\n"), /\u001b\]|\u0007/, "labels must not carry unsafe control sequences");
+				assert.doesNotMatch(plainInitialLines.join("\n"), /\]52|\[31m/, "labels must not carry user-provided escapes");
+				for (let i = 0; i < 20; i++) panel.handleInput("j");
+				const plainScrolledLines = panel.render(120).map(stripAnsi);
+				assert.equal(plainScrolledLines.length, 24, "the scrolled list keeps filling the terminal");
+				assert.ok(
+					plainScrolledLines.some((line) => /↑ \d+ more/.test(line)),
+					"navigation down should render an up-scroll indicator",
+				);
+				for (let i = 0; i < 40; i++) panel.handleInput("j");
+				assert.ok(
+					panel.render(120).map(stripAnsi).some((line) => /▸\s+worker\b/.test(line)),
+					"moving past the end lands on the last agent row",
+				);
+				panel.handleInput("\r"); // the model card lists the registry, sanitized
+				const card = panel.render(120);
+				assert.match(card.map(stripAnsi).join("\n"), /Model for worker/);
+				assert.doesNotMatch(card.join("\n"), /\u001b\]|\u0007/, "registry labels are sanitized in the model card");
+				panel.handleInput("\u001b"); // close the card
+				panel.handleInput("\u001b"); // close the screen: nothing changed, one esc is enough
 			});
 		await commands.get("gentle:models").handler("", ctx);
-		assert.equal(
-			panelVisits,
-			3,
-			"editor cancel must reopen the profiles panel exactly once before closing",
-		);
+		assert.equal(panelVisits, 1, "closing an unchanged screen ends the command");
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
 		const legacyAppliedAgent = await readFile(
@@ -1714,11 +1682,9 @@ async function run() {
 		assert.match(legacyAppliedAgent, /model: openai\/gpt-5/);
 		assert.doesNotMatch(legacyAppliedAgent, /thinking:/);
 
-		// Editor-driven save: ctrl+s in the routing editor writes the draft into the
-		// profile store only (kind gentle-pi.agent_model_profiles). Global models.json,
-		// subagents.json, and agent frontmatter stay untouched — applying routing
-		// globally remains the profiles panel's apply ("a") flow with its own
-		// confirmations, covered by the /gentle:profiles sections.
+		// Save writes the table into the profile store only (kind
+		// gentle-pi.agent_model_profiles). Global models.json, subagents.json, and
+		// agent frontmatter stay untouched — Make default is the guarded global apply.
 		const projectSubagentsBefore = await readFile(
 			join(modelsCwd, ".pi", "subagents.json"),
 			"utf8",
@@ -1727,64 +1693,49 @@ async function run() {
 			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
+		const pickEffort = (panel, steps) => {
+			panel.handleInput("e");
+			for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D"); // back to inherit
+			for (let i = 0; i < steps; i++) panel.handleInput("\u001b[C");
+			panel.handleInput("\r");
+		};
 		let saveVisits = 0;
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
 				saveVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (saveVisits === 1) {
-					panel.handleInput("e");
-					return;
-				}
-				if (saveVisits === 2) {
-					panel.handleInput("\r"); // model picker for "Set all agents"
-					for (const character of "safe") panel.handleInput(character); // type-to-search
-					panel.handleInput("\r"); // commit safe/model for every discovered agent
-					panel.handleInput("e"); // effort picker for "Set all agents"
-					for (let i = 0; i < 5; i++) panel.handleInput("j"); // high
+					panel.handleInput("j"); // the Model ▾ / Effort ▾ header row: every agent
 					panel.handleInput("\r");
-					panel.handleInput("\u0013"); // ctrl+s saves the draft into the profile store
+					for (const character of "safe") panel.handleInput(character); // type-to-search
+					panel.handleInput("\r"); // safe/model for every agent
+					pickEffort(panel, 5); // inherit off minimal low medium [high]
+					panel.handleInput("\u0013"); // ctrl+s
 					return;
 				}
-				resolve({ type: "close" });
+				panel.handleInput("\u001b");
 			});
 		await commands.get("gentle:models").handler("", ctx);
-		assert.equal(saveVisits, 3, "editor save must reopen the profiles panel once before closing");
+		assert.equal(saveVisits, 2, "Save reopens the screen once before it closes");
 
 		const profilesPath = join(globalConfigHome, "profiles.json");
 		const savedStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.equal(savedStore.kind, "gentle-pi.agent_model_profiles");
 		assert.equal(savedStore.version, 1);
-		assert.deepEqual(savedStore.profiles.current["sdd-apply"], {
-			model: "safe/model",
-			thinking: "high",
-		});
-		assert.deepEqual(savedStore.profiles.current["project-special"], {
-			model: "safe/model",
-			thinking: "high",
-		});
-
-		// The routing editor save is store-only: none of the global artifacts the old
-		// standalone panel wrote may change.
+		assert.deepEqual(savedStore.profiles.current["sdd-apply"], { model: "safe/model", thinking: "high" });
+		assert.deepEqual(savedStore.profiles.current["project-special"], { model: "safe/model", thinking: "high" });
 		assert.equal(
 			await readFile(globalModelsPath, "utf8"),
 			JSON.stringify({ "sdd-apply": "openai/gpt-5" }, null, 2),
-			"/gentle:models routing edits must stay in the profile store, not write global models.json",
+			"Save must keep routing edits in the profile store, not write global models.json",
 		);
 		assert.equal(
 			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
 			false,
-			"/gentle:models must keep routing edits in the profile store, not per project",
+			"Save must keep routing edits in the profile store, not per project",
 		);
-		const untouchedProjectSubagents = await readFile(
-			join(modelsCwd, ".pi", "subagents.json"),
-			"utf8",
-		);
-		assert.equal(untouchedProjectSubagents, projectSubagentsBefore);
-		const untouchedAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
-			"utf8",
-		);
+		assert.equal(await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"), projectSubagentsBefore);
+		const untouchedAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
 		assert.equal(untouchedAgent, agentFrontmatterBefore);
 		assert.doesNotMatch(untouchedAgent, /thinking:/);
 		assert.equal(existsSync(join(modelsCwd, ".pi", "settings.json")), false);
@@ -1793,9 +1744,13 @@ async function run() {
 		assert.notEqual(kittyE, "e");
 		assert.equal(matchesKey(kittyE, "e"), true);
 
-		// Custom model ids: the editor hands the draft back ("c"), ctx.ui.input asks
-		// for the id, the editor reopens, and ctrl+s saves the result into the
-		// profile store — no global write, no live switch.
+		// Custom model ids: Custom model id… in the model card hands the draft back,
+		// ctx.ui.input asks for the id, the screen reopens with it, and Save stores it.
+		const chooseCustom = (panel) => {
+			panel.handleInput("\r");
+			for (const character of "zzzz") panel.handleInput(character); // nothing matches: only Custom model id… is left
+			panel.handleInput("\r");
+		};
 		let customVisits = 0;
 		ctx.ui.input = async () => "custom/provider-model";
 		ctx.ui.custom = (factory) =>
@@ -1803,32 +1758,29 @@ async function run() {
 				customVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (customVisits === 1) {
-					panel.handleInput("e");
+					panel.handleInput("j"); // every agent
+					panel.handleInput(kittyE); // the effort row (a kitty "e" still matches)
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D");
+					for (let i = 0; i < 4; i++) panel.handleInput("\u001b[C"); // medium
+					panel.handleInput("\r");
+					chooseCustom(panel); // custom model for every agent, same unsaved draft
 					return;
 				}
 				if (customVisits === 2) {
-					panel.handleInput(kittyE); // effort picker for all agents (kitty "e" still matches)
-					for (let i = 0; i < 4; i++) panel.handleInput("j"); // medium
-					panel.handleInput("\r");
-					panel.handleInput("c"); // custom model from the same unsaved draft
+					panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after the custom id
 					return;
 				}
-				if (customVisits === 3) {
-					panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after custom model input
-					return;
-				}
-				resolve({ type: "close" });
+				panel.handleInput("\u001b");
 			});
 		await commands.get("gentle:models").handler("", ctx);
-		assert.equal(customVisits, 4);
+		assert.equal(customVisits, 3);
 		const customSavedStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(customSavedStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
 
-		// An invalid custom id notifies and leaves the draft — and the profile
-		// store — unchanged.
+		// An invalid custom id is refused on the screen and changes nothing.
 		let invalidCustomVisits = 0;
 		ctx.ui.input = async () => "bad\nmodel: injected";
 		ctx.ui.custom = (factory) =>
@@ -1836,54 +1788,34 @@ async function run() {
 				invalidCustomVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (invalidCustomVisits === 1) {
-					panel.handleInput("e");
+					panel.handleInput("j");
+					chooseCustom(panel);
 					return;
 				}
 				if (invalidCustomVisits === 2) {
-					panel.handleInput("c");
-					return;
+					assert.match(panel.render(120).map(stripAnsi).join(" "), /Custom model id must be one provider\/model line/);
 				}
-				if (invalidCustomVisits === 3) {
-					panel.handleInput("\u001b"); // cancel: the draft keeps its previous values
-					return;
-				}
-				resolve({ type: "close" });
+				panel.handleInput("\u001b"); // nothing changed: one esc closes
 			});
 		await commands.get("gentle:models").handler("", ctx);
-		assert.equal(invalidCustomVisits, 4);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/Custom model id must be a single-line/,
-		);
+		assert.equal(invalidCustomVisits, 2);
 		const rejectedCustomStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(rejectedCustomStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
 
-		// Export models.json from inside the edit-routing loop: the profiles panel
-		// returns edit-routing, the editor returns export, the editor reopens, and
-		// cancel reopens the profiles panel before the command closes. The export
-		// reads the saved global routing, which the profile-store-only saves above
-		// never rewrote.
-		const editorLoopVisits = (editorResults) => {
-			const results = [
-				{ type: "edit-routing", name: "current" },
-				...editorResults,
-				{ type: "cancel" },
-				{ type: "close" },
-			];
-			let index = 0;
-			return () => Promise.resolve(results[index++] ?? { type: "close" });
+		// models.json export and restore are subcommands; neither opens the screen.
+		let screenOpened = false;
+		ctx.ui.custom = () => {
+			screenOpened = true;
+			return Promise.resolve({ type: "close" });
 		};
-		ctx.ui.custom = editorLoopVisits([{ type: "export", config: {} }]);
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:models").handler("export", ctx);
 		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
 		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
 		assert.equal(exported.version, 1);
-		assert.deepEqual(exported.agents["sdd-apply"], {
-			model: "openai/gpt-5",
-		});
+		assert.deepEqual(exported.agents["sdd-apply"], { model: "openai/gpt-5" }, "export reads the saved global routing");
 
 		await writeFile(
 			join(globalConfigHome, "models.export.json"),
@@ -1893,24 +1825,11 @@ async function run() {
 				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
 			}, null, 2),
 		);
-		let restorePanelCalls = 0;
 		ctx.ui.confirm = async () => true;
-		ctx.ui.custom = () => {
-			restorePanelCalls += 1;
-			// edit-routing opens the editor, restore applies the export globally
-			// (confirm + write + materialize), the editor reopens, cancel reopens the
-			// profiles panel, and close ends the command.
-			if (restorePanelCalls === 1) return Promise.resolve({ type: "edit-routing", name: "current" });
-			if (restorePanelCalls === 2) return Promise.resolve({ type: "restore", config: {} });
-			if (restorePanelCalls === 3) return Promise.resolve({ type: "cancel" });
-			return Promise.resolve({ type: "close" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:models").handler("restore", ctx);
+		assert.equal(screenOpened, false, "export and restore never open the screen");
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.deepEqual(restoredConfig["sdd-apply"], {
-			model: "restore/provider",
-			thinking: "high",
-		});
+		assert.deepEqual(restoredConfig["sdd-apply"], { model: "restore/provider", thinking: "high" });
 		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
 		assert.match(restoredAgent, /model: restore\/provider/);
 		assert.match(restoredAgent, /thinking: high/);
@@ -1919,40 +1838,33 @@ async function run() {
 		assert.equal(afterRestoreStore.profiles.current["sdd-apply"].model, "custom/provider-model");
 
 		// issue #286: `thinking: "max"` must survive save normalization into the
-		// profile store, and the effort picker must offer `max` after `xhigh`.
+		// profile store, and the effort row must offer `max` after `xhigh`.
 		let maxVisits = 0;
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
 				maxVisits += 1;
 				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
 				if (maxVisits === 1) {
+					panel.handleInput("j"); // every agent
 					panel.handleInput("e");
-					return;
-				}
-				if (maxVisits === 2) {
-					panel.handleInput("e"); // effort picker for "Set all agents"
-					const pickerPlain = panel.render(120).map(stripAnsi).join("\n");
-					const xhighIndex = pickerPlain.indexOf("xhigh");
-					const maxIndex = pickerPlain.indexOf("max");
-					assert.ok(
-						xhighIndex >= 0 && maxIndex > xhighIndex,
-						"effort picker must offer max after xhigh",
-					);
-					for (let i = 0; i < 7; i++) panel.handleInput("j"); // max
+					const strip = panel.render(120).map(stripAnsi).join("\n");
+					const xhighIndex = strip.indexOf("xhigh");
+					assert.ok(xhighIndex >= 0 && strip.indexOf("max", xhighIndex + 5) > xhighIndex, "the effort row must offer max after xhigh");
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[C"); // to the last level: max
 					panel.handleInput("\r");
-					panel.handleInput("\u0013"); // ctrl+s saves the draft into the profile store
+					panel.handleInput("\u0013");
 					return;
 				}
-				resolve({ type: "close" });
+				panel.handleInput("\u001b");
 			});
 		await commands.get("gentle:models").handler("", ctx);
-		assert.equal(maxVisits, 3);
+		assert.equal(maxVisits, 2);
 		const maxStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.equal(maxStore.profiles.current["sdd-apply"].thinking, "max");
 		assert.equal(
 			maxStore.profiles.current["sdd-apply"].model,
 			"custom/provider-model",
-			"the effort-only save must keep the profile's saved model",
+			"an effort-only save keeps the profile's saved model",
 		);
 	} finally {
 		await rm(modelsCwd, { recursive: true, force: true });
@@ -1970,7 +1882,19 @@ async function run() {
 	}
 }
 
-run().catch((error) => {
+// A run that awaits a promise nobody settles (a mocked panel that never
+// finishes) lets the event loop drain, and Node would exit 0 with every later
+// section skipped. Treat an unfinished run as a failure instead.
+let runCompleted = false;
+process.on("exit", () => {
+	if (runCompleted || process.exitCode) return;
+	console.error("runtime harness exited before run() completed: a section awaited a promise that never settled");
+	process.exitCode = 1;
+});
+
+run().then(() => {
+	runCompleted = true;
+}).catch((error) => {
 	console.error(error);
 	process.exitCode = 1;
 }).finally(async () => {

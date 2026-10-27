@@ -59,6 +59,12 @@ Design artifact: `odd/design/models-profiles-ui-proposal.html` (variants A/B/C; 
 
 - Live feedback: the ⋯ glyph read as truncated text (same as …). The active tab now shows ▾ and the hint reads "m menu".
 
+## Test migration (variant A) and defects it surfaced
+- The background test writer (task mvqyms23-1-maaf) made no progress in 86 turns (65 changed lines, contract changed under it four times) and was cancelled; the parent migrated the tests inline.
+- Defects found and fixed while migrating: control sequences in an agent name glued the name to its model (padding measured before sanitizing); provider review roles lost their "Pi persisted default" inherit label in the effort row (gentle-pi#2271); their table cells were cut at 60 columns ("Pi default" now); letter shortcuts compared raw input, so terminals using the kitty keyboard protocol could not use e/s/u/d/n/m/j/k (now matchesKey); the use-session bind lived only in the loop (restored as a runProfilesPanelAction case shared with tests).
+- The runtime harness could pass falsely: a mocked panel that never finished let Node drain the event loop and exit 0 with later sections skipped. Earlier "runtime-harness PASS" reports after the table-first rewrite (da497a7b9) were not reliable. The harness now fails when run() has not completed at exit.
+- Tests removed with the UI they covered (contracts re-covered on the new screen): the 12-item action menu, the orchestrator picker, the detail pane (line scroll, "now" line, effective-routing table, (session) refresh after snapshot), and s snapshot (replaced by + New › From what's running now).
+
 ## Notes
 - Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
 - The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.

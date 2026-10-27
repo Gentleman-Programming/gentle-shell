@@ -3193,6 +3193,8 @@ const PANEL_TONE_COLOR: Record<PanelTone, ThemeColor> = {
 /** The pseudo row behind the Model ▾ / Effort ▾ header: it sets every agent at once. */
 const ROUTING_ALL_ROW = "__all";
 const ROUTING_CUSTOM_MODEL = "Custom model id…";
+/** The table's short form of a provider review role's inherited model and effort. */
+const ROUTING_PI_DEFAULT = "Pi default";
 /** Body lines around the agent rows: tabs, rail, description, blank, orchestrator, rule, header, blank, footer, hints, two feedback lines. */
 const ROUTING_TABLE_FIXED_ROWS = 12;
 /** Compact button labels for terminals too narrow for the full ones. */
@@ -3222,7 +3224,7 @@ const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
 type RoutingTableAction =
 	| { type: "load"; name: string }
 	| { type: "custom"; target: string; config: AgentModelConfig }
-	| { type: "use-session"; name: string; config: AgentModelConfig }
+	| { type: "use-session"; name: string; config?: AgentModelConfig }
 	| { type: "apply-global"; name: string; config: AgentModelConfig }
 	| { type: "save"; name: string; config: AgentModelConfig }
 	| { type: "create" }
@@ -3395,13 +3397,16 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private modelValue(key: string): string {
 		if (key === PROFILE_ORCHESTRATOR_KEY) return this.draft[key]?.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED;
+		// Provider review roles inherit Pi's persisted default; the table cell says
+		// so in short, the cards spell it out.
+		if (isProviderReviewRole(key)) return this.draft[key]?.model ?? ROUTING_PI_DEFAULT;
 		return this.draft[key]?.model ?? routingDefaultLabel(key, "model");
 	}
 
 	private effortValue(key: string): string {
 		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return "";
 		const thinking = this.draft[key]?.thinking;
-		if (thinking === undefined) return routingDefaultLabel(key, "effort");
+		if (thinking === undefined) return isProviderReviewRole(key) ? ROUTING_PI_DEFAULT : routingDefaultLabel(key, "effort");
 		const supported = this.supportedLevels(key);
 		const landed = supported ? clampToSupportedLevel(thinking, supported) : thinking;
 		return landed === thinking ? thinking : `${thinking} → ${landed}`;
@@ -3678,21 +3683,21 @@ class RoutingTablePanel implements OverlayComponent {
 		this.escArmed = false;
 		if (matchesKey(data, "left")) return this.switchBy(-1);
 		if (matchesKey(data, "right")) return this.switchBy(1);
-		if (matchesKey(data, "up") || data === "k") {
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.cursor = Math.max(0, this.cursor - 1);
 			return;
 		}
-		if (matchesKey(data, "down") || data === "j") {
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
 			this.cursor = Math.min(this.rows.length - 1, this.cursor + 1);
 			return;
 		}
 		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
-		if (data === "e") return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
-		if (data === "s" || matchesKey(data, "ctrl+s")) return this.pressButton("save");
-		if (data === "u") return this.pressButton("use");
-		if (data === "d") return this.pressButton("default");
-		if (data === "n") return this.openMenu("new");
-		if (data === "m") return this.openMenu("menu");
+		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
+		if (matchesKey(data, "u")) return this.pressButton("use");
+		if (matchesKey(data, "d")) return this.pressButton("default");
+		if (matchesKey(data, "n")) return this.openMenu("new");
+		if (matchesKey(data, "m")) return this.openMenu("menu");
 	}
 
 	private handleModelKey(data: string): void {
@@ -3734,11 +3739,11 @@ class RoutingTablePanel implements OverlayComponent {
 	private handleMenuKey(data: string): void {
 		const items = this.menuItems();
 		if (matchesKey(data, "escape")) return this.closeOverlay();
-		if (matchesKey(data, "up") || data === "k") {
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.menuCursor = Math.max(0, this.menuCursor - 1);
 			return;
 		}
-		if (matchesKey(data, "down") || data === "j") {
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
 			this.menuCursor = Math.min(items.length - 1, this.menuCursor + 1);
 			return;
 		}
@@ -3750,8 +3755,8 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private handleSwitchKey(data: string): void {
 		if (matchesKey(data, "escape")) return this.pressButton("switch-stay");
-		if (data === "s" || matchesKey(data, "return")) return this.pressButton("switch-save");
-		if (data === "d") return this.pressButton("switch-discard");
+		if (matchesKey(data, "s") || matchesKey(data, "return")) return this.pressButton("switch-save");
+		if (matchesKey(data, "d")) return this.pressButton("switch-discard");
 	}
 
 	// -- pointer ----------------------------------------------------------------
@@ -3933,7 +3938,13 @@ class RoutingTablePanel implements OverlayComponent {
 		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
 
-		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(agent))) + 2);
+		// Labels are measured after sanitizing: control sequences in an agent name
+		// would otherwise pad the column and then vanish, gluing name and model.
+		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(sanitizeTerminalText(agent)))) + 2);
+		const padLabel = (text: string) => {
+			const safe = truncateToWidth(sanitizeTerminalText(text), agentCol - 1, "…");
+			return safe + " ".repeat(Math.max(0, agentCol - visibleWidth(safe)));
+		};
 		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12));
 		const effortStart = 2 + agentCol + modelCol;
 		const row = (key: string, label: string, labelTone: PanelTone) => {
@@ -3942,12 +3953,12 @@ class RoutingTablePanel implements OverlayComponent {
 			const effort = this.effortValue(key);
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
-				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model.startsWith("Pi persisted") ? "dim" : "text";
-			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort.startsWith("Pi persisted") ? "dim" : "status";
-			const plain = `${focused ? "▸ " : "  "}${label.padEnd(agentCol)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}`;
+				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
+			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
-				+ this.renderText(label.padEnd(agentCol), labelTone)
+				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone);
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
@@ -4182,8 +4193,13 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private effortCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		// Provider review roles inherit Pi's persisted default, so their inherit
+		// choice says so (gentle-pi#2271).
+		const inheritLabel = this.target !== ROUTING_ALL_ROW && isProviderReviewRole(this.target)
+			? routingDefaultLabel(this.target, "effort")
+			: "inherit";
 		const chips = this.effortOptions().map((option, index) => {
-			const label = option === INHERIT_THINKING ? "inherit" : option;
+			const label = option === INHERIT_THINKING ? inheritLabel : option;
 			const text = index === this.effortCursor ? `[${label}]` : ` ${label} `;
 			return { index, text };
 		});
@@ -4872,7 +4888,7 @@ function profileSnapshotFrom(
 /** The store actions runProfilesPanelAction implements; the loop handles the rest itself. */
 type ProfileStoreAction = Extract<
 	RoutingTableResult,
-	{ type: "apply-global" | "create" | "duplicate" | "rename" | "delete" | "export-profile" | "import-profile" | "pin" }
+	{ type: "use-session" | "apply-global" | "create" | "duplicate" | "rename" | "delete" | "export-profile" | "import-profile" | "pin" }
 >;
 
 /** Runs one finished panel action against the store and the live session, returning the file the reopened panel should show. */
@@ -4885,6 +4901,31 @@ async function runProfilesPanelAction(
 	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
+		case "use-session": {
+			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			// Use in this session binds a complete routing snapshot to this parent
+			// session and switches only its live orchestrator. No shared defaults,
+			// materialized stores, agent frontmatter, pins, or declarations are written.
+			const sessionId = ctx.sessionManager?.getSessionId?.();
+			if (typeof sessionId !== "string" || sessionId.length === 0) {
+				report.status = `This Pi session has no id to bind "${result.name}" to. Use Make default instead.`;
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Use Make default instead.`,
+					"warning",
+				);
+				return file;
+			}
+			const snapshot = normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {};
+			bindSessionProfile(sessionId, result.name, snapshot);
+			const orchestrator = readProfileOrchestrator(snapshot);
+			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
+			report.status = `This session now uses "${result.name}". Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
+			ctx.ui.notify(
+				`el Gentleman bound profile "${result.name}" to this session — its tab shows ◉. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
+				"info",
+			);
+			return file;
+		}
 		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			// A pinned repository resolves its subagent routing from the profile at launch,
@@ -5292,6 +5333,7 @@ async function runProfilesPanelAction(
 			// failure here has nothing to roll back.
 			const status = readProfilePinStatus(ctx.cwd);
 			if (!status) {
+				report.status = "This session is not inside a Git worktree, so nothing was pinned.";
 				ctx.ui.notify(
 					"el Gentleman cannot pin a profile because this session is not inside a Git worktree. Pinning is per repository; apply the profile globally instead.",
 					"warning",
@@ -5306,6 +5348,7 @@ async function runProfilesPanelAction(
 				if (currentlyPinned) clearProfilePinSync(pinPath);
 				else writeProfilePinSync(pinPath, result.name);
 			} catch (error) {
+				report.status = `The pin could not be updated: ${profilesErrorMessage(error)}`;
 				ctx.ui.notify(
 					`el Gentleman could not update profile pin ${sanitizeTerminalText(pinPath)}: ${profilesErrorMessage(error)}`,
 					"warning",
@@ -5573,21 +5616,15 @@ async function openProfilesPanelLoop(
 				continue;
 			case "use-session": {
 				// What you see is what the session uses: edits are saved first.
-				const saved = differsFromStore(previous, result.config);
-				if (saved && !writeDraft(previous, result.config)) {
-					draftOverride = result.config;
+				const config = result.config ?? stored;
+				const saved = differsFromStore(previous, config);
+				if (saved && !writeDraft(previous, config)) {
+					draftOverride = config;
 					continue;
 				}
-				const sessionId = ctx.sessionManager?.getSessionId?.();
-				if (typeof sessionId !== "string" || sessionId.length === 0) {
-					feedback = "This Pi session has no id to bind to. Use Make default instead.";
-					continue;
-				}
-				const snapshot = normalizeModelConfig(result.config) ?? {};
-				bindSessionProfile(sessionId, previous, snapshot);
-				const orchestrator = readProfileOrchestrator(snapshot);
-				const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-				feedback = `${saved ? `Saved "${previous}". ` : ""}This session now uses "${previous}". Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
+				const report: ProfilesPanelReport = {};
+				file = await runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report);
+				feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
 				continue;
 			}
 			case "apply-global": {
@@ -5639,9 +5676,9 @@ async function openProfilesPanelLoop(
 				if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
 					feedback = `Deleted "${previous}".`;
 				} else if (result.type === "pin") {
-					feedback = pinWinner() === previous
+					feedback = report.status ?? (pinWinner() === previous
 						? `"${previous}" is used in this repo.`
-						: `"${previous}" is no longer pinned to this repo.`;
+						: `"${previous}" is no longer pinned to this repo.`);
 				} else {
 					feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
 				}

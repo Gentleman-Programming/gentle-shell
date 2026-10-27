@@ -7,7 +7,7 @@ No repository PR template is present; approved mechanical fallback used.
 
 - [x] Bug fix
 
-Intended label `type:bug`; availability/application unverified. Draft/no-merge.
+Intended label `type:bug` exists in the authorized fork and will be applied at creation. Upstream issue #2266 is approved. Draft/no-merge.
 
 ## Summary
 
@@ -19,13 +19,13 @@ Dispatch plus IPC alone provides no full child background support.
 
 | Field | Value |
 |---|---|
-| Position / source unit | 2 / 3; `88736250b6c6ba3ad519572319bf87799ba0aed5` |
-| Candidate diff lines | 198 historical; confirm after transplant |
+| Position / source unit | 2 / 3; `73cc0e8ff08ef7a2915b323fa80d6ee43487d115` |
+| Candidate diff lines | 194 verified against immediate parent |
 | Target repository | `rubenpenap/gentle-shell` |
 | Head | `feat/2266-slice2-02-job-ipc` |
 | Base / starts at | `feat/2266-slice2-01-dispatch` |
 | Ends with | Validated job evidence and notification-style ACK handling |
-| Depends on | 01-dispatch (URL pending); clean merge-tree preflight |
+| Depends on | 01-dispatch (URL pending); upstream harness options preserved during reconciliation |
 | Follow-up | 03-registration (URL pending); tracker URL pending |
 
 ```text
@@ -48,7 +48,8 @@ No automatic child-model delivery or size exception claimed.
 
 ## Test Plan
 
-Current-base focused/typecheck pending after transplant; upstream runner/extension/tests changed.
+Current-base child 02 runner/messaging: **127/127 passed**. Upstream cleanup/exit-on-stdin-end fixture options and the query hook are preserved. Aggregate child 03 parent/independent focused checks: **140/140**, typecheck **0 diagnostics**; child 02 itself does not register job tools.
+Current-base full `pnpm test` exited **1 before any tests** with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` during an automatic dependency-install attempt. No retry/reinstall/CI override. Fresh current-base historical off-path differential remains unverified.
 Historical only: unit messaging+runner 123/123; final aggregate 136/136, typecheck 0; legacy notification/query differential matched.
 Old full suite: 7,385 total / 7,290 passed / 22 failed / 73 skipped; baseline environmental diagnosis is not current-base proof.
 Original native retained-selection mismatch created no lineage/approval; current candidate unreviewed.

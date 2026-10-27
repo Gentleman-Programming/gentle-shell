@@ -7,7 +7,7 @@ No repository PR template is present; approved mechanical fallback used.
 
 - [x] Bug fix
 
-Intended label `type:bug`; availability/application unverified. Draft/no-merge.
+Intended label `type:bug` exists in the authorized fork and will be applied at creation. Upstream issue #2266 is approved. Draft/no-merge.
 
 ## Summary
 
@@ -18,13 +18,13 @@ The child does not resolve policy in its worktree. This unit alone provides no f
 
 | Field | Value |
 |---|---|
-| Position / source unit | 1 / 3; `671362918e1597188377c4163a6ae59388cf93b7` |
-| Candidate diff lines | 42 historical; confirm after transplant |
+| Position / source unit | 1 / 3; `1bd87f203fb03c91af687d494b06f120bc0fa930` |
+| Candidate diff lines | 46 verified against immediate parent |
 | Target repository | `rubenpenap/gentle-shell` |
 | Head | `feat/2266-slice2-01-dispatch` |
 | Base / starts at | `feat/2266-slice2-tracker` coordination head |
 | Ends with | Dispatch flag forwarding and stale removal |
-| Depends on | Tracker (URL pending); clean merge-tree preflight |
+| Depends on | Tracker (URL pending); upstream test-fixture reconciliation completed |
 | Follow-up | 02-job-ipc (URL pending), then 03-registration |
 
 ```text
@@ -47,7 +47,8 @@ No automatic child-model delivery or size exception claimed.
 
 ## Test Plan
 
-Transplant/current-base focused tests and typecheck pending; upstream runner/extension/tests changed.
+Current-base child 01 runner: **119/119 passed**. Upstream Windows TMP/TEMP fixtures and isolated policy config are preserved. Aggregate child 03 parent/independent focused checks: **140/140**, typecheck **0 diagnostics**; that aggregate is not a claim all tools exist in child 01.
+Current-base full `pnpm test` exited **1 before any tests** with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` during an automatic dependency-install attempt. No retry/reinstall/CI override. Fresh current-base historical off-path differential remains unverified.
 Old-base aggregate only: 136/136 focused, typecheck 0, compatibility differentials matched.
 Old full suite: 7,385 total / 7,290 passed / 22 failed / 73 skipped; diagnosed baseline environments, not new-base evidence.
 Native review pending/unavailable: original retained-selection mismatch produced no lineage/approval; new candidate unreviewed.

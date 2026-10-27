@@ -7,7 +7,7 @@ No repository PR template is present; approved mechanical fallback used.
 
 - [x] Bug fix
 
-Intended label `type:bug`; availability/application unverified. Draft/no-merge.
+Intended label `type:bug` exists in the authorized fork and will be applied at creation. Upstream issue #2266 is approved. Draft/no-merge.
 
 ## Summary
 
@@ -19,8 +19,8 @@ Review gates/cleanup first, then help/docs. Child early return and user-owned po
 
 | Field | Value |
 |---|---|
-| Position / source unit | 3 / 3; `d5fbd6b4155a8755ed3c39aa8f5d2e5966d093a9` |
-| Candidate diff lines | 310 historical; confirm after transplant |
+| Position / source unit | 3 / 3; `223ed83e7fc7c9bb81b99a9cef87deb75fd54f55` |
+| Candidate diff lines | 310 verified against immediate parent |
 | Target repository | `rubenpenap/gentle-shell` |
 | Head | `feat/2266-slice2-03-registration` |
 | Base / starts at | `feat/2266-slice2-02-job-ipc` |
@@ -46,12 +46,13 @@ No size exception requested or approved.
 |---|---|
 | `lib/child-background-jobs.ts`, `extensions/gentle-agents.ts` | Child-private setup, ownership and lifecycle cleanup |
 | `lib/agents-runner.ts`, `lib/background-jobs-tools.ts` | Scratch-failure capability removal and child-only help |
-| `tests/child-background-jobs.test.ts`, `tests/agents-runner.test.ts` | Gates, completion and cleanup |
+| `tests/child-background-jobs.test.ts` | Gates, completion and cleanup; existing runner tests remain inherited from earlier units |
 | `docs/delegated-verification.md`, `docs/readme-reference.md` | Capability and delivery limits |
 
 ## Test Plan
 
-Current-base focused/typecheck pending after transplant; upstream runner/extension/tests changed. CI/packed install pending.
+Current-base child 03 parent and independent focused checks: **140/140 passed**, typecheck **0 diagnostics**. Exact parent topology and isolated diff verified; independent public probes preserved exit 7, both markers, one completion, private scratch, ownership, shared ACK sequence and abort-once cleanup.
+Current-base full `pnpm test` exited **1 before any tests** with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` during an automatic dependency-install attempt. No retry/reinstall/CI override. Fresh current-base historical off-path differential remains unverified. CI/packed install pending.
 Old-base only: final 136/136, typecheck 0; public-API differentials matched without observable regression.
 Historical live-child probes preserved exit 7, distinct stdout/stderr and one completion; not post-settlement proof.
 Old full suite: 7,385 total / 7,290 passed / 22 failed / 73 skipped; explained baseline environments, not current-base evidence.

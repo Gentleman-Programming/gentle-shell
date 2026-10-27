@@ -7,22 +7,22 @@ No repository PR template is present; approved mechanical fallback used.
 
 - [x] Bug fix
 
-Intended label: `type:bug`; availability/application for publication unverified.
+Issue #2266 is `status:approved`. Intended label: `type:bug` (available upstream); a maintainer must apply it because this contributor has READ permission upstream.
 
 ## Summary
 
 - Coordination-only tracker until reviewed children integrate; no source tools are in this initial head.
 - All four PRs remain draft/no-merge. Source chain, review, bench and Slice 3 coordination must resolve before tracker merge.
-- Parent owns publication; this body is preparation, not evidence of remote creation.
+- Publication is authorized through the contributor fork; no merge is authorized. Source PRs target immediate parent branches in that fork.
 
 ## Chain Context
 
 | Position | Source unit | Candidate diff lines | PR URL |
 |---|---|---:|---|
-| Tracker | Coordination docs only | Pending final diff count | pending |
-| 1 / 3 dispatch | `671362918` | 42 historical | pending |
-| 2 / 3 job IPC | `88736250b` | 198 historical | pending |
-| 3 / 3 registration | `d5fbd6b41` | 310 historical | pending |
+| Tracker | Coordination docs only | Under 400; final remote count below | pending |
+| 1 / 3 dispatch | `1bd87f203` | 46 verified | pending |
+| 2 / 3 job IPC | `73cc0e8ff` | 194 verified | pending |
+| 3 / 3 registration | `223ed83e7` | 310 verified | pending |
 
 ```text
 main (Gentleman-Programming/gentle-shell)
@@ -35,7 +35,7 @@ main (Gentleman-Programming/gentle-shell)
 Starts at verified main `cb0c5a2e548e278bd65fc503552b10862c4efa11`.
 Target: `Gentleman-Programming/gentle-shell`, base `main`, head `rubenpenap:feat/2266-slice2-tracker`.
 Ends with coordination now; eventual source integration requires separate gate resolution.
-Depends on clean transplant/preflight and all child reviews; follow-up: children 1–3 then Slice 3 coordination.
+Source transplant and bounded test-fixture reconciliation are complete; depends on all child reviews. Follow-up: children 1–3 then Slice 3 coordination.
 Out of scope: drain/hold/timers, post-settlement completion, automatic child-model delivery and #2552 fixes.
 No size exception is requested or approved; source counts exclude coordination docs and need current-base confirmation.
 
@@ -47,7 +47,8 @@ No size exception is requested or approved; source counts exclude coordination d
 
 ## Test Plan
 
-Current-base focused/typecheck: **pending** after transplant; CI/packed install: pending.
+Current upstream-base aggregate (child 03): parent and independent focused checks **140/140 passed**, typecheck **0 diagnostics**. Child 01 runner **119/119**; child 02 runner/messaging **127/127**. Parent topology and isolated **46/194/310**-line diffs verified.
+Current-base `pnpm test` exited **1 before executing tests**: `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` during an automatic dependency-install attempt. No reinstall, retry, CI override or substitute full-suite run. A fresh current-base off-path historical differential remains unverified. CI/packed install: pending.
 Historical old-base only: focused 136/136, typecheck 0, differentials without observable regression.
 Old full suite: 7,385 total, 7,290 passed, 22 failed, 73 skipped; baseline environmental failures diagnosed, not a current-base pass.
 Native review unavailable on original retained-selection mismatch; no lineage/approval. New candidates unreviewed.

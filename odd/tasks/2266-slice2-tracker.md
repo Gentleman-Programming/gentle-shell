@@ -7,9 +7,9 @@ Parent owns transplant, verification, remote publication and URL insertion.
 
 - Verified upstream main: `cb0c5a2e548e278bd65fc503552b10862c4efa11` (parent evidence).
 - Workspace branch: `feat/2266-slice2-tracker`; initially coordination docs only.
-- Source units: `671362918` (42), `88736250b` (198), `d5fbd6b41` (310 changed lines).
-- Transplant only after clean non-mutating merge-tree preflight; stop on conflict.
-- Preserve source tests/docs; candidate counts must be rechecked after transplant.
+- Rebased source heads: `1bd87f203` (46), `73cc0e8ff` (194), `223ed83e7` (310 changed lines), total 550.
+- Preflight conflicts were diagnosed without an index/merge state; test-only overlaps reconciled while preserving both upstream and slice behavior.
+- Source tests/docs and exact parent topology retained; individual child diffs verified.
 - Child branches layer on tracker → 01-dispatch → 02-job-ipc → 03-registration.
 - Tracker targets `Gentleman-Programming/gentle-shell:main` from `rubenpenap:feat/2266-slice2-tracker`.
 - Children target `rubenpenap/gentle-shell`, each against its immediate parent.
@@ -17,8 +17,9 @@ Parent owns transplant, verification, remote publication and URL insertion.
 
 ## Remaining gates
 
-- [ ] Parent transplants source and verifies clean child-only diffs.
-- [ ] Fresh focused tests/typecheck on current upstream (runner/extension/tests changed).
+- [x] Parent transplanted source and verified clean child-only diffs and topology.
+- [x] Current-base child 01 runner 119/119; child 02 messaging/runner 127/127; child 03 parent and independent focused 140/140, typecheck 0.
+- [ ] Current-base full suite: `pnpm test` exited 1 before tests, `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`; no reinstall/retry/CI override. Fresh off-path historical differential remains unverified.
 - [ ] Native review with valid candidate lineage; current candidates unreviewed.
 - [ ] Offline core-corpus before/after/compare, preserving both run exits.
 - [ ] Packed-install verification and target-policy required CI.

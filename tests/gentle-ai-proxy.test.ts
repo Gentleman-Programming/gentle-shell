@@ -384,3 +384,51 @@ test("a proxy reached over TLS is spoken to over TLS, not in the clear", { timeo
 	assert.equal(proxy.firstBytes()[0], 0x16, "the first byte to the proxy is a TLS handshake");
 	assert.equal(proxy.firstBytes()[1], 0x03, "the first byte to the proxy is a TLS handshake");
 });
+
+test("the proxy handshake does not receive the origin client credentials", { timeout: 15_000 }, async (t) => {
+	// The client credentials are the identity of the origin. A proxy that asks
+	// for a client certificate must not be handed them, or the proxy learns
+	// who the origin is and can present that identity onwards.
+	let peerCommonName: string | null = null;
+	const proxy = createTlsServer({ cert: PROXY_CERT, key: PROXY_KEY, requestCert: true, rejectUnauthorized: false }, (socket) => {
+		const peer = socket.getPeerCertificate();
+		peerCommonName = peer && peer.subject && typeof peer.subject.CN === "string" ? peer.subject.CN : null;
+		socket.on("error", () => {});
+		socket.on("data", () => socket.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"));
+	});
+	await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+	t.after(() => new Promise<void>((resolve) => proxy.close(() => resolve())));
+	const proxyPort = (proxy.address() as { port: number }).port;
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-credentials-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	await assert.rejects(
+		() => downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `https://127.0.0.1:${proxyPort}` }, maxAttempts: 1, headerTimeoutMs: 1500, ca: [PROXY_CERT], cert: PROXY_CERT, key: PROXY_KEY }),
+		/proxy refused the tunnel with status 407/,
+	);
+	assert.equal(peerCommonName, null, "the proxy received no client certificate");
+});
+
+test("a redirect resolves the proxy for its destination", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-redirect-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const seen: Array<{ url: URL; options: Record<string, unknown> }> = [];
+	const request = (url: URL, options: unknown, callback: (response: PassThrough & { statusCode?: number; headers: Record<string, string> }) => void) => {
+		seen.push({ url, options: options as Record<string, unknown> });
+		const response = Object.assign(new PassThrough(), seen.length === 1
+			? { statusCode: 302, headers: { location: "https://direct.example.invalid/asset.tar.gz" } }
+			: { statusCode: 200, headers: {} });
+		queueMicrotask(() => { callback(response); response.end(); });
+		return pendingRequest();
+	};
+	await downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 1, {
+		request,
+		env: { HTTPS_PROXY: "http://proxy.invalid:3128", NO_PROXY: "direct.example.invalid" },
+		maxAttempts: 1,
+	});
+	// The first hop goes through the proxy.
+	assert.ok(seen[0].options.agent, "the first request carries the tunnel");
+	// The destination is exempt, so it must not carry the tunnel. Reusing the
+	// first agent would send an exempt destination through the proxy.
+	assert.equal(seen[1].url.hostname, "direct.example.invalid");
+	assert.equal(seen[1].options.agent, undefined, "an exempt destination carries no tunnel");
+});

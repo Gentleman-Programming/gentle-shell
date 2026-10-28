@@ -138,8 +138,8 @@ export function hostTlsOptions(name) {
 }
 
 /**
- * The trust options carried over to a handshake, so a caller that trusts a
- * private certificate authority reaches a proxy that presents one.
+ * The trust options for a handshake, so a caller that trusts a private
+ * certificate authority reaches a peer that presents one.
  */
 export function proxyTrustOptions(options) {
 	return {
@@ -148,6 +148,22 @@ export function proxyTrustOptions(options) {
 		...(options.cert === undefined ? {} : { cert: options.cert }),
 		...(options.key === undefined ? {} : { key: options.key }),
 		...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
+	};
+}
+
+/**
+ * The trust options for the proxy handshake.
+ *
+ * The client credentials belong to the origin, so they stay on the origin
+ * handshake: a proxy that asks for a client certificate would otherwise
+ * receive the identity of the origin. The certificate authority and the
+ * verification setting are shared, because the proxy is a peer of the
+ * client just like the origin is.
+ */
+export function proxyHandshakeTrustOptions(trust) {
+	return {
+		...(trust.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: trust.rejectUnauthorized }),
+		...(trust.ca === undefined ? {} : { ca: trust.ca }),
 	};
 }
 
@@ -220,7 +236,7 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000, trust = 
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
 			if (proxy.protocol === "https:") {
-				channel = tls.connect({ socket: raw, ...proxyTlsOptions(proxy), ...proxyTrustOptions(options) });
+				channel = tls.connect({ socket: raw, ...proxyTlsOptions(proxy), ...proxyHandshakeTrustOptions(trust) });
 				watch(channel);
 			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];
@@ -257,6 +273,8 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000, trust = 
 				// against "localhost" instead of the origin.
 				...hostTlsOptions(options.servername || host),
 				ALPNProtocols: options.ALPNProtocols ?? ["http/1.1"],
+				// The origin handshake is the one that carries the client
+				// credentials, because they are the identity of the origin.
 				...proxyTrustOptions(options),
 				...trust,
 			}));

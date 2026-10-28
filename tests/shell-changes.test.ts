@@ -9,12 +9,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	CHANGE_STATUS,
 	ChangesTracker,
+	FILE_WORK_CONCURRENCY,
 	WorktreeChangesTracker,
-	RootBranchLabels,
 	UNKNOWN_BRANCH,
 	foreignRootBranch,
 	parseWorktrees,
 	changesSummary,
+	changesDigest,
 	emptyChanges,
 	parseNumstat,
 	parsePorcelain,
@@ -101,6 +102,36 @@ test("changesModel sorts files by path and totals the counts", () => {
 	assert.equal(model.deleted, 2);
 });
 
+// The footer Status memo reads the changes digest on every keystroke, so the
+// model stores it once per build and reading it never walks the file list.
+// The digest hashes every per-file tuple the renderer consumes (path, status,
+// counts, diffRevision, countsUnavailable); a 64-bit collision could only
+// skip one refresh until the next change moves it again -- never render a
+// wrong picture.
+test("the changes digest is stored on the model and stays equal while nothing moves", () => {
+	const files = [file("lib/a.ts", 4, 2), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED)];
+	const model = changesModel([...files]);
+	assert.equal(Object.hasOwn(model, "digest"), true, "the digest is a stored field, not recomputed per read");
+	assert.equal(model.digest, changesDigest(model), "the stored digest matches an independently computed one");
+	assert.equal(changesModel([...files]).digest, model.digest, "an unchanged model rebuilds to the same digest");
+	assert.equal(emptyChanges().digest, emptyChanges().digest, "the empty model carries a stable digest");
+});
+
+test("the changes digest moves with every per-file detail the renderer consumes", () => {
+	const base = changesModel([file("lib/a.ts", 4, 2)]).digest;
+	const digestFor = (files: ChangedFile[]) => changesModel(files).digest!;
+	assert.notEqual(digestFor([file("lib/a.ts", 4, 2, CHANGE_STATUS.RENAMED)]), base, "a status change moves the digest even at equal counts");
+	assert.notEqual(digestFor([file("lib/a.ts", 5, 2)]), base, "an added-count change moves the digest");
+	assert.notEqual(digestFor([file("lib/a.ts", 4, 3)]), base, "a deleted-count change moves the digest");
+	assert.notEqual(digestFor([file("lib/b.ts", 4, 2)]), base, "a path change moves the digest");
+	const revised = file("lib/a.ts", 4, 2);
+	revised.diffRevision = "abc123";
+	assert.notEqual(digestFor([revised]), base, "a diffRevision change moves the digest");
+	const partial = file("lib/a.ts", 4, 2);
+	partial.countsUnavailable = "timeout";
+	assert.notEqual(digestFor([partial]), base, "countsUnavailable moves the digest");
+});
+
 test("changesSummary and the widget describe the session at a glance", () => {
 	const model = changesModel([file("extensions/gentle-shell.ts", 31, 0, CHANGE_STATUS.ADDED), file("lib/shell-bar.ts", 9, 7), file("tests/x.test.ts", 2, 0)]);
 	assert.equal(changesSummary(model), "3 files · +42 −7");
@@ -112,14 +143,6 @@ test("changesSummary and the widget describe the session at a glance", () => {
 	assert.equal(visibleWidth(line), 120, "the command sits on the right edge");
 });
 
-test("changesSummary and the widget surface the capture limit", () => {
-	const model = changesModel([file("a.ts", 1, 0)]);
-	model.notice = "Session change capture limit reached; additional changes are not displayed.";
-	assert.equal(changesSummary(model), "1 file · +1 −0 · capture limit reached");
-	assert.match(renderChangesWidget(model, plainTheme, 200)[0], /capture limit reached/);
-	assert.doesNotMatch(changesSummary(changesModel([file("a.ts", 1, 0)])), /capture limit reached/);
-});
-
 test("renderChangesWidget colors counts by direction and yields nothing when clean", () => {
 	const model = changesModel([file("a.ts", 1, 2)]);
 	const [line] = renderChangesWidget(model, taggedTheme, 400);
@@ -127,6 +150,14 @@ test("renderChangesWidget colors counts by direction and yields nothing when cle
 	assert.match(line, /<success>\+1<\/success> <error>−2<\/error>/);
 	assert.match(line, /<dim>\/gentle:changes<\/dim>$/);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+});
+
+// The unborn state (no commits yet) is silence in the idle bar: the widget
+// renders only tracked files, and /gentle:changes explains the state on demand.
+test("renderChangesWidget stays silent when nothing is tracked", () => {
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), taggedTheme, 400), []);
+	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 12), []);
 });
 
 test("renderChangesWidget drops the file list before truncating on narrow terminals", () => {
@@ -138,6 +169,67 @@ test("renderChangesWidget drops the file list before truncating on narrow termin
 	const [tiny] = renderChangesWidget(model, plainTheme, 20);
 	assert.ok(visibleWidth(tiny) <= 20);
 	assert.match(tiny, /^✎ 2 files/);
+});
+
+// Repeated frames hit the widget from two surfaces (the sidebar part and the
+// below-input header row), but its paint depends only on what the model digest
+// already covers plus the width and the theme. A counting theme is the seam: a
+// cache hit paints nothing, so theme.fg stays silent instead of walking files.
+function countingTheme() {
+	let calls = 0;
+	return {
+		get fgCalls() {
+			return calls;
+		},
+		fg(_color: string, text: string) {
+			calls += 1;
+			return text;
+		},
+	};
+}
+
+test("renderChangesWidget memoizes a frame per digest, width and theme so an unchanged model repaints nothing", () => {
+	const model = changesModel([file("lib/a.ts", 4, 2), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED)]);
+	const theme = countingTheme();
+	const first = renderChangesWidget(model, theme, 120);
+	assert.ok(theme.fgCalls > 0, "the first render paints");
+	const afterFirst = theme.fgCalls;
+	const second = renderChangesWidget(model, theme, 120);
+	assert.deepEqual(second, first, "an unchanged model, width and theme return the same rows");
+	assert.equal(theme.fgCalls, afterFirst, "a memo hit repaints nothing: no per-file iteration");
+});
+
+test("renderChangesWidget re-renders when the digest moves", () => {
+	const theme = countingTheme();
+	const before = changesModel([file("lib/a.ts", 4, 2)]);
+	renderChangesWidget(before, theme, 120);
+	const afterFirst = theme.fgCalls;
+	const moved = changesModel([file("lib/a.ts", 5, 2)]);
+	assert.notEqual(moved.digest, before.digest, "a count change moves the digest");
+	const lines = renderChangesWidget(moved, theme, 120);
+	assert.ok(theme.fgCalls > afterFirst, "a digest change re-renders");
+	assert.match(lines.join("\n"), /\+5/, "the re-render shows the new totals");
+});
+
+test("renderChangesWidget re-renders when the width or the theme changes", () => {
+	const model = changesModel([file("lib/a.ts", 4, 2)]);
+	const theme = countingTheme();
+	const wide = renderChangesWidget(model, theme, 400);
+	const afterWide = theme.fgCalls;
+	renderChangesWidget(model, theme, 40);
+	assert.ok(theme.fgCalls > afterWide, "a width change re-renders");
+	const otherTheme = countingTheme();
+	assert.deepEqual(renderChangesWidget(model, otherTheme, 400), wide, "a new theme object repaints the same wide frame");
+	assert.ok(otherTheme.fgCalls > 0, "the new theme did the painting");
+});
+
+test("renderChangesWidget never caches a digest-less model", () => {
+	const model = { files: [file("lib/a.ts", 4, 2)], added: 4, deleted: 2 };
+	const theme = countingTheme();
+	renderChangesWidget(model, theme, 120);
+	const afterFirst = theme.fgCalls;
+	renderChangesWidget(model, theme, 120);
+	assert.ok(theme.fgCalls > afterFirst, "a hand-built model without a digest re-renders every call");
 });
 
 function fakeGit(numstats: string[], porcelains: string[], code = 0) {
@@ -165,6 +257,24 @@ test("ChangesTracker reads the working tree on start and again on refresh", asyn
 	assert.equal(calls.length, 4);
 	assert.deepEqual(calls[0], ["diff", "--numstat", "HEAD"]);
 	assert.deepEqual(calls[1], ["status", "--porcelain=v1", "--untracked-files=all", "-z"]);
+});
+
+test("ChangesTracker skips untracked dependency backups but preserves tracked edits and legitimate new files", async () => {
+	const backup = "node_modules.backup-20261007-192802/pkg/index.js";
+	const nestedBackup = "packages/app/node_modules.backup-local/pkg/index.js";
+	const tracked = "node_modules.backup-local/tracked.ts";
+	const legitimate = ["src/new.ts", "node_modules.backup-notes.md", "node_modules.backup-/new.ts"];
+	const { git } = fakeGit(
+		[`4\t2\t${tracked}\n`],
+		[[`?? ${backup}`, `?? ${nestedBackup}`, ` M ${tracked}`, ...legitimate.map((path) => `?? ${path}`)].join("\0") + "\0"],
+	);
+	const counted: string[] = [];
+	const tracker = new ChangesTracker(git, async (path) => { counted.push(path); return 3; });
+	await tracker.start();
+	assert.deepEqual(counted.sort(), [...legitimate].sort());
+	assert.deepEqual(tracker.model, changesModel([
+		file(tracked, 4, 2), ...legitimate.map((path) => file(path, 3, 0, CHANGE_STATUS.UNTRACKED)),
+	]));
 });
 
 test("ChangesTracker stays quiet outside a git repository", async () => {
@@ -210,6 +320,7 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	assert.equal(tracker.model.files.length, 2, "identical filenames in different roots remain distinct");
 	assert.equal(new Set(tracker.model.files.map((file) => file.path)).size, 2);
 	assert.ok(!calls.includes("/pruned") && !calls.includes("/bare"));
+	assert.deepEqual(tracker.failedRoots, ["/gone"], "a registered root Git cannot read is a failure, not a clean root");
 	roots += "worktree /new\0branch refs/heads/new\0\0";
 	registered.push("/new");
 	await tracker.refresh();
@@ -219,6 +330,29 @@ test("registered roots hide clean and missing worktrees while metadata never adm
 	await tracker.refresh();
 	assert.deepEqual(tracker.worktrees, []);
 	assert.deepEqual(tracker.model, emptyChanges());
+});
+
+test("a root whose Git status fails or rejects is kept apart from clean roots", async () => {
+	let broken = true;
+	const tracker = new WorktreeChangesTracker(async () => ({ stdout: "", code: 0 }), (root) => async (args) => {
+		if (broken && root === "/rejects") throw new Error("git timed out");
+		if (broken && root === "/fails" && args[0] === "status") return { stdout: "", code: 128 };
+		return { stdout: args[0] === "status" && root === "/dirty" ? "?? a.ts\0" : "", code: 0 };
+	}, undefined, () => ["/dirty", "/clean", "/fails", "/rejects"]);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/dirty"]);
+	assert.deepEqual([...tracker.failedRoots].sort(), ["/fails", "/rejects"], "a failed scan is not a clean root");
+	assert.equal(tracker.scannedRootCount, 4);
+	broken = false;
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRoots, [], "a later successful scan clears the failure");
+});
+
+test("no registered root is neither a failure nor a scan", async () => {
+	const tracker = new WorktreeChangesTracker(async () => { throw new Error("no Git expected"); }, () => async () => { throw new Error("no Git expected"); });
+	await tracker.start();
+	assert.deepEqual(tracker.failedRoots, []);
+	assert.equal(tracker.scannedRootCount, 0);
 });
 
 test("only registered worktrees are scanned, with whole preexisting and untracked contents", async () => {
@@ -244,7 +378,7 @@ test("worktree refresh shares one scan so polling faster than discovery cannot p
 		scans++;
 		if (scans === 2) await new Promise<void>((resolve) => { release = resolve; });
 		return { stdout: "", code: 0 };
-	}, () => async () => ({ stdout: "", code: 0 }));
+	}, () => async () => ({ stdout: "", code: 0 }), undefined, () => ["/root"]); // A root to scan; none means no Git at all.
 	await tracker.start();
 	const first = tracker.refresh();
 	const overlapping = tracker.refresh();
@@ -302,7 +436,6 @@ test("foreignRootBranch still reports a genuine detached HEAD as undefined, not 
 test("a root missing from worktree list resolves its own branch instead of defaulting to detached", async (t) => {
 	const scenarios: Array<{ name: string; symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number }; expected: string | undefined }> = [
 		{ name: "a normal branch on a foreign clone", symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: "feature" },
-		{ name: "an unborn branch (no commits yet)", symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 }, expected: "no commits yet" },
 		{ name: "a genuinely detached HEAD", symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 }, expected: undefined },
 	];
 	for (const scenario of scenarios) {
@@ -324,7 +457,55 @@ test("a root missing from worktree list resolves its own branch instead of defau
 			assert.deepEqual(tracker.worktrees.map((tree) => [tree.root, tree.branch]), [["/foreign", scenario.expected]]);
 			assert.ok(calls.some((args) => args[0] === "symbolic-ref"), "a root absent from worktree list must be asked directly");
 		});
+		// An unborn foreign root is a holder before it is a branch question: with
+		// no commits there is no baseline to diff against, so it is skipped --
+		// neither dirty nor failed -- before any branch lookup happens.
+		await t.test("an unborn foreign root is skipped as a holder before the branch ask", async () => {
+			const calls: string[][] = [];
+			const tracker = new WorktreeChangesTracker(
+				async () => ({ stdout: "", code: 0 }),
+				() => async (args) => {
+					calls.push(args);
+					if (args[0] === "rev-parse") return { stdout: "", code: 1 };
+					return { stdout: "", code: 0 };
+				},
+				undefined,
+				() => ["/foreign"],
+			);
+			await tracker.start();
+			assert.deepEqual(tracker.worktrees, []);
+			assert.deepEqual(tracker.unbornRoots, ["/foreign"]);
+			assert.deepEqual(tracker.failedRoots, []);
+			assert.ok(!calls.some((args) => args[0] === "symbolic-ref"), "a skipped holder is never asked for a branch");
+		});
 	}
+});
+
+// A worktree-holder repository (no commits, only linked worktrees inside) has
+// no baseline: `git diff HEAD` is meaningless and every file reports
+// untracked, so scanning it floods Changes with thousands of phantom files.
+// It is skipped as neither dirty nor failed, and its first commit starts
+// tracking it on the next scan.
+test("a root with no commits is skipped as a holder, neither dirty nor failed, and recovers on its first commit", async () => {
+	let holderHasCommits = false;
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /real\0branch refs/heads/main\0\0", code: 0 }),
+		(root) => async (args) => {
+			if (args[0] === "rev-parse") return { stdout: "", code: root === "/holder" && !holderHasCommits ? 1 : 0 };
+			return { stdout: args[0] === "status" && (root === "/real" || (root === "/holder" && holderHasCommits)) ? "?? a.ts\0" : "", code: 0 };
+		},
+		undefined,
+		() => ["/holder", "/real"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/real"], "an unborn root is skipped, not scanned");
+	assert.deepEqual(tracker.unbornRoots, ["/holder"]);
+	assert.deepEqual(tracker.failedRoots, [], "no commits is not a Git failure");
+	assert.equal(tracker.scannedRootCount, 2);
+	holderHasCommits = true;
+	await tracker.refresh();
+	assert.deepEqual(tracker.worktrees.map((tree) => tree.root), ["/holder", "/real"], "the first commit starts tracking");
+	assert.deepEqual(tracker.unbornRoots, []);
 });
 
 // The direct per-root ask (for a root missing from worktree list) can fail on
@@ -479,57 +660,40 @@ test("ChangesTracker counts the lines of untracked files, which git numstat leav
 	assert.deepEqual(counted, ["notes.md", "empty.md"]);
 });
 
-// The session-evidence tracker behind /gentle:changes knows roots, never
-// branches. The overlay decorates its trees with each root's own HEAD state,
-// resolved once per root and reported back so the view can repaint; until git
-// answers the tree shows no branch (the view's "detached" fallback), and a
-// genuinely detached HEAD stays that way.
-test("RootBranchLabels decorates session trees with each root's branch once git answers", async () => {
-	const calls = new Map<string, string[][]>();
-	const answers: Record<string, { symbolic: { stdout: string; code: number }; verify: { stdout: string; code: number } }> = {
-		"/repo": { symbolic: { stdout: "feature\n", code: 0 }, verify: { stdout: "deadbeef\n", code: 0 } },
-		"/fresh": { symbolic: { stdout: "main\n", code: 0 }, verify: { stdout: "", code: 1 } },
-		"/pinned": { symbolic: { stdout: "", code: 1 }, verify: { stdout: "deadbeef\n", code: 0 } },
+test("ChangesTracker counts lines and reads revisions for every file with bounded concurrency", async () => {
+	const paths = Array.from({ length: 30 }, (_, index) => `file-${String(index).padStart(2, "0")}.ts`);
+	const porcelain = [" M tracked.ts\0", ...paths.map((path) => `?? ${path}\0`)].join("");
+	const git = async (args: string[]) => ({ stdout: args[0] === "status" ? porcelain : "4\t1\ttracked.ts\n", code: 0 });
+	const pending = new Map<string, number>();
+	const counted: string[] = [];
+	let maxFiles = 0;
+	let overlapped = false;
+	// Every per-file call stays pending for a moment, so concurrent work overlaps.
+	const work = async <T>(path: string, result: () => T): Promise<T> => {
+		pending.set(path, (pending.get(path) ?? 0) + 1);
+		if (pending.get(path)! > 1) overlapped = true;
+		maxFiles = Math.max(maxFiles, pending.size);
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		const left = pending.get(path)! - 1;
+		if (left === 0) pending.delete(path); else pending.set(path, left);
+		return result();
 	};
-	let changed = 0;
-	const labels = new RootBranchLabels((root) => async (args) => {
-		calls.set(root, [...(calls.get(root) ?? []), args]);
-		await new Promise((resolve) => setImmediate(resolve));
-		return args[0] === "symbolic-ref" ? answers[root]!.symbolic : answers[root]!.verify;
-	}, () => changed++);
-	const trees = Object.keys(answers).map((root) => ({ root, model: changesModel([]) }));
-	const first = labels.decorate(trees);
-	assert.deepEqual(first.map((tree) => tree.branch), [undefined, undefined, undefined], "nothing is labelled before git answers");
-	await labels.settled();
-	assert.equal(changed, 3, "each resolved root asks the view to repaint once");
-	const second = labels.decorate(trees);
-	assert.deepEqual(second.map((tree) => tree.branch), ["feature", "no commits yet", undefined]);
-	labels.decorate(trees);
-	await labels.settled();
-	assert.deepEqual([...calls.values()].map((list) => list.length), [2, 2, 1], "one resolution per root, never per decorate call");
-	assert.equal(changed, 3);
-});
-
-// A root that could not even be asked (removed, git unavailable, the runner
-// itself rejecting) must read UNKNOWN_BRANCH -- never the same undefined a
-// genuine detached HEAD produces, and never silently stay unlabelled forever.
-test("RootBranchLabels labels a root UNKNOWN_BRANCH when it could not be asked, distinct from a real detached HEAD", async () => {
-	let changed = 0;
-	const labels = new RootBranchLabels((root) => async () => {
-		await new Promise((resolve) => setImmediate(resolve));
-		if (root === "/gone") throw new Error("root removed");
-		return { stdout: "", code: 1 };
-	}, () => changed++);
-	const trees = [
-		{ root: "/gone", model: changesModel([]) },
-		{ root: "/detached", model: changesModel([]) },
-	];
-	labels.decorate(trees);
-	await labels.settled();
-	assert.deepEqual(
-		labels.decorate(trees).map((tree) => tree.branch),
-		[UNKNOWN_BRANCH, undefined],
-		"a failed ask reads UNKNOWN_BRANCH; a real detached HEAD still reads undefined (the view's detached fallback)",
-	);
-	assert.equal(changed, 2, "a failed ask still resolves and asks the view to repaint, instead of hanging forever");
+	const tracker = new ChangesTracker(git, (path) => work(path, () => {
+		counted.push(path);
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return 2;
+	}), (path) => work(path, () => {
+		if (path === "file-07.ts") throw new Error("unreadable");
+		return `rev:${path}`;
+	}));
+	await tracker.start();
+	const files = new Map(tracker.model.files.map((entry) => [entry.path, entry]));
+	assert.equal(maxFiles, FILE_WORK_CONCURRENCY, "files run concurrently up to the limit, never past it");
+	assert.equal(FILE_WORK_CONCURRENCY, 8);
+	assert.ok(overlapped, "a file's line count and revision lookup run together");
+	assert.deepEqual([...counted].sort(), paths, "every untracked file is counted once; tracked files keep numstat counts");
+	assert.equal(files.size, 31);
+	assert.deepEqual(files.get("tracked.ts"), { ...file("tracked.ts", 4, 1), diffRevision: "rev:tracked.ts" });
+	assert.deepEqual(files.get("file-07.ts"), file("file-07.ts", 0, 0, CHANGE_STATUS.UNTRACKED), "a failing lookup keeps its fallback");
+	for (const path of paths.filter((path) => path !== "file-07.ts")) assert.deepEqual(files.get(path), { ...file(path, 2, 0, CHANGE_STATUS.UNTRACKED), diffRevision: `rev:${path}` });
 });

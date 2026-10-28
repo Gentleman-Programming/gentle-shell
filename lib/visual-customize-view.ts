@@ -29,14 +29,45 @@ function dropLastGrapheme(text: string): string {
 	return segments.length ? text.slice(0, segments[segments.length - 1]!.index) : text;
 }
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
+/** Category-aware footer; the audio card advertises audio keys, never the visual profiles pane. */
+function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string): string {
+	if (navOnly) return "↑/↓ categories · → open · Esc close";
+	if (category === "Notifications") return keyhint ?? "Tab panes · Enter change · p test · Esc close";
+	return previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close";
+}
+
+/** A row is interactive only while its `visible()` check passes; a throwing check fails closed. */
+function rowVisible(row: CustomizeRow): boolean {
+	if (!row.visible) return true;
+	try { return row.visible() !== false; } catch { return false; }
+}
+
+export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;
 	label: string | (() => string);
 	/** Read-only representation of the highlighted choice, never an application. */
 	preview?: () => { title: string; sample: string };
-	action(): void | Promise<void>;
+	/** When present and it returns false the row is hidden from its category; an exception fails closed. */
+	visible?: () => boolean;
+	/** Audio-footer hint for this row; omitted rows use the category default (never advertising `f WAV`). */
+	keyhint?: string;
+	/** Runs on Enter/Space. May await the inline bridge for a row-scoped edit or consent. */
+	action(inline: CustomizeInline): void | Promise<void>;
+	/** Row-scoped shortcuts, checked before panel shortcuts. Return `true` for a synchronous
+	 *  consumption, or a Promise for an asynchronous task (e.g. the inline WAV field) the view
+	 *  must keep busy until it settles so overlapping keys/actions cannot write stale state. */
+	key?(data: string, inline: CustomizeInline): boolean | Promise<unknown>;
+}
+/** Minimal in-card bridge so a row never opens a nested native dialog. */
+export interface CustomizeInline {
+	/** Opens an inline field on the highlighted row; resolves on submit or undefined when cancelled. */
+	input(request: { prompt: string; value: string }): Promise<string | undefined>;
+	/** Opens an inline confirmation; resolves true only after an explicit, fully visible yes. */
+	confirm(message: string): Promise<boolean>;
+	/** Set once the owning card is disposed; a row must never persist after this. */
+	disposed: boolean;
 }
 export interface ProfileActions {
 	list(): VisualProfile[];
@@ -75,6 +106,98 @@ export class VisualCustomizeView {
 	private confirmation?: { action: "replace" | "apply" | "delete" | "reset"; name?: string; fingerprint?: string };
 	private confirmationVisible = false;
 	private profileBusy = false;
+	private inlineInput?: { prompt: string; value: string; resolve: (value: string | undefined) => void; visible: boolean };
+	private inlineConfirm?: { message: string; resolve: (value: boolean) => void; visible: boolean };
+	private readonly inline: CustomizeInline = {
+		input: request => this.openInlineInput(request),
+		confirm: message => this.openInlineConfirm(message),
+		disposed: false,
+	};
+	/** Header and diagnostic context for the active pane; Notifications is explicitly audio. */
+	title(): string { return (this.categories[this.categoryIndex] ?? "Settings") === "Notifications" ? "Audio notifications" : "Customization"; }
+	/** Ends the interaction and resolves any pending inline field/consent as cancelled. */
+	dispose(): void { this.closed = true; this.inline.disposed = true; this.cancelInline(); }
+	private cancelInline(): void {
+		const input = this.inlineInput;
+		if (input) { this.inlineInput = undefined; input.resolve(undefined); }
+		const confirm = this.inlineConfirm;
+		if (confirm) { this.inlineConfirm = undefined; confirm.resolve(false); }
+	}
+	private openInlineInput(request: { prompt: string; value: string }): Promise<string | undefined> {
+		if (this.closed) return Promise.resolve(undefined);
+		return new Promise(resolve => { this.inlineInput = { prompt: request.prompt, value: request.value, resolve, visible: false }; });
+	}
+	private openInlineConfirm(message: string): Promise<boolean> {
+		if (this.closed) return Promise.resolve(false);
+		return new Promise(resolve => { this.inlineConfirm = { message, resolve, visible: false }; });
+	}
+	/** Runs one exclusive row task, keeping `busy` set until it settles so no stale write can win. */
+	private withBusy(run: () => void | Promise<unknown>): void {
+		if (this.busy) return;
+		this.busy = true;
+		try {
+			void Promise.resolve(run()).catch((error: unknown) => {
+				this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+			}).finally(() => { this.busy = false; if (!this.closed) this.options.requestRender(); });
+		} catch (error) {
+			this.busy = false;
+			this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+		}
+	}
+	/** Wraps an inline prompt into at most `capacity` fully visible lines. */
+	private wrapInline(text: string, inner: number, capacity: number): string[] | undefined {
+		if (capacity < 1 || inner < 1) return undefined;
+		const lines: string[] = [];
+		let remaining = text;
+		while (remaining.length) {
+			if (lines.length >= capacity) return undefined;
+			if (visibleWidth(remaining) <= inner) { lines.push(remaining); return lines; }
+			let chunk = "";
+			for (const { segment } of graphemes.segment(remaining)) {
+				if (visibleWidth(chunk + segment) > inner) break;
+				chunk += segment;
+			}
+			if (!chunk) return undefined;
+			lines.push(chunk);
+			remaining = remaining.slice(chunk.length);
+		}
+		return lines.length ? lines : undefined;
+	}
+	/** Recomputes the inline area from the live terminal height, never from stale render state. */
+	private previewCapacity(): { inner: number; lines: number; navOnly: boolean } | undefined {
+		const width = this.mainWidth;
+		if (width === undefined || width <= 0) return undefined;
+		const available = this.options.rowsAvailable?.() ?? 24;
+		const height = Number.isFinite(available) ? Math.max(0, Math.min(24, Math.floor(available))) : 0;
+		if (width < CARD_PADDING + 1 || height < 4) return undefined;
+		const navOnly = width < 60 && this.pane === "categories" && this.categories.length > 1;
+		return { inner: width - CARD_PADDING, lines: height >= 11 ? 3 : height >= 8 ? 1 : 0, navOnly };
+	}
+	private handleInlineInput(data: string): void {
+		const field = this.inlineInput!;
+		if (matchesKey(data, Key.escape)) { this.inlineInput = undefined; field.resolve(undefined); }
+		else if (data.startsWith("\x1b[200~")) {
+			const pasted = pastedText(data);
+			if (pasted !== undefined) field.value = appendInput(field.value, pasted);
+		} else if (matchesKey(data, Key.enter) || data.endsWith("\r") && safeText(data.slice(0, -1))) {
+			if (!matchesKey(data, Key.enter)) field.value = appendInput(field.value, data.slice(0, -1));
+			// Guard against a resize that hides the field before this Enter: an unseen value never submits.
+			const area = this.previewCapacity();
+			field.visible = area !== undefined && !area.navOnly && area.lines > 0 && visibleWidth(`${field.prompt}: ${field.value}▏`) <= area.inner;
+			if (field.visible) { this.inlineInput = undefined; field.resolve(field.value); }
+		} else if (matchesKey(data, Key.backspace) || data === "\x7f") field.value = dropLastGrapheme(field.value);
+		else { const text = decodeKittyPrintable(data) ?? data; if (safeText(text)) field.value = appendInput(field.value, text); }
+		this.options.requestRender();
+	}
+	private handleInlineConfirm(data: string): void {
+		const confirm = this.inlineConfirm!;
+		const area = this.previewCapacity();
+		confirm.visible = area !== undefined && !area.navOnly && area.lines > 0
+			&& this.wrapInline(`${confirm.message} y yes · any other key cancel`, area.inner, area.lines) !== undefined;
+		this.inlineConfirm = undefined;
+		confirm.resolve(matchesKey(data, "y") && confirm.visible);
+		this.options.requestRender();
+	}
 	openProfiles(): void { this.profileOpen = true; this.error = undefined; this.options.requestRender(); }
 	private profileAction(action: () => void | Promise<void>): void {
 		if (this.profileBusy) return;
@@ -176,18 +299,41 @@ export class VisualCustomizeView {
 	}
 
 	private categoryRows(): CustomizeRow[] {
-		return this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex]);
+		return this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex] && rowVisible(row));
 	}
 
 	handleInput(data: string): void {
 		if (this.closed || isKeyRelease(data)) return;
+		if (this.inlineInput) { this.handleInlineInput(data); return; }
+		if (this.inlineConfirm) { this.handleInlineConfirm(data); return; }
 		if (this.profileOpen && this.options.profiles) { this.handleProfiles(data); return; }
-		if (matchesKey(data, Key.escape)) { this.closed = true; this.options.onClose(); return; }
-		if (this.options.profiles && matchesKey(data, "p")) { this.openProfiles(); return; }
+		if (matchesKey(data, Key.escape)) { this.dispose(); this.options.onClose(); return; }
 		const rows = this.categoryRows();
 		const length = this.pane === "categories" ? this.categories.length : rows.length;
+		if (length) {
+			this.selected = Math.min(this.controls.get(this.categories[this.categoryIndex]!) ?? 0, Math.max(0, rows.length - 1));
+			// Row shortcuts outrank panel shortcuts (Notifications `p` previews instead of opening profiles).
+			if (this.pane === "controls" && !this.busy) {
+				let consumed = false;
+				try {
+					const keyed = rows[this.selected]?.key?.(data, this.inline);
+					if (keyed !== undefined && keyed !== false) {
+						consumed = true;
+						// An async key (local WAV field + validation) owns the card until it settles.
+						if (typeof (keyed as Promise<unknown>).then === "function") this.withBusy(() => keyed as Promise<unknown>);
+					}
+				} catch (error) {
+					consumed = true;
+					this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+				}
+				if (consumed) { this.options.requestRender(); return; }
+			}
+		}
+		// Notifications rows own `p` for a per-event preview. When no event row is
+		// selected the panel must consume it instead of opening visual profiles.
+		if (matchesKey(data, "p") && this.pane === "controls" && (this.categories[this.categoryIndex] ?? "Settings") === "Notifications") { this.options.requestRender(); return; }
+		if (this.options.profiles && matchesKey(data, "p")) { this.openProfiles(); return; }
 		if (!length) return;
-		this.selected = Math.min(this.controls.get(this.categories[this.categoryIndex]!) ?? 0, Math.max(0, rows.length - 1));
 		if (matchesKey(data, Key.left) || matchesKey(data, Key.tab) && this.pane === "controls") this.pane = "categories";
 		else if (matchesKey(data, Key.right) || matchesKey(data, Key.tab) && this.pane === "categories") this.pane = "controls";
 		else if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
@@ -200,15 +346,7 @@ export class VisualCustomizeView {
 		else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && !this.busy &&
 			this.mainWidth !== undefined && this.mainWidth >= CARD_PADDING + 3 &&
 			(this.options.rowsAvailable?.() ?? 24) >= 4 && rows[this.selected]) {
-			this.busy = true;
-			try {
-				void Promise.resolve(rows[this.selected]?.action()).catch((error: unknown) => {
-					this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
-				}).finally(() => { this.busy = false; if (!this.closed) this.options.requestRender(); });
-			} catch (error) {
-				this.busy = false;
-				this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
-			}
+			this.withBusy(() => rows[this.selected]!.action(this.inline));
 		}
 		this.options.requestRender();
 	}
@@ -225,7 +363,7 @@ export class VisualCustomizeView {
 		if (!height) return [];
 		// A card needs two border rows. At extreme dimensions keep the old
 		// read-only heading rather than letting invisible controls be activated.
-		if (width < CARD_PADDING + 1 || height < 4) return Array.from({ length: Math.min(height, 2) }, (_, i) => truncateToWidth(i ? "Enlarge terminal" : "Visual customization", width, ""));
+		if (width < CARD_PADDING + 1 || height < 4) return Array.from({ length: Math.min(height, 2) }, (_, i) => truncateToWidth(i ? "Enlarge terminal" : this.title(), width, ""));
 		const inner = width - CARD_PADDING;
 		const category = this.categories[this.categoryIndex] ?? "Settings";
 		const rows = this.categoryRows();
@@ -250,7 +388,7 @@ export class VisualCustomizeView {
 		};
 		const join = (left: string, right: string) => leftWidth ? `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(stripAnsi(left))))} ${paint("│", 1, "border")} ${right}` : right;
 		const heading = navOnly ? "Categories · choose a category →" : `${category} · ${rows.length ? `${this.selected + 1}/${rows.length}` : "empty"}`;
-		const lines: string[] = [paint("Visual customization", inner, "accent")];
+		const lines: string[] = [paint(this.title(), inner, "accent")];
 		// Commands uses a header, grouped section labels, whitespace and a footer.
 		if (showHeading) lines.push(join(leftWidth ? paint("CATEGORIES", leftWidth, "accent") : "", paint(heading, rightWidth, "accent")));
 		if (showTopGap) lines.push("");
@@ -262,7 +400,19 @@ export class VisualCustomizeView {
 			const right = item ? renderPaletteSelection(item, rightWidth, start + i === position, navOnly || this.pane === "controls" ? this.options.theme : { fg: this.options.theme.fg.bind(this.options.theme) }) : rows.length ? "" : paint("No settings available", rightWidth, "muted");
 			lines.push(join(left, right));
 		}
-		if (previewLines === 3) {
+		if (this.inlineConfirm) {
+			const shows = !navOnly && previewLines > 0 ? this.wrapInline(`${this.inlineConfirm.message} y yes · any other key cancel`, inner, previewLines) : undefined;
+			this.inlineConfirm.visible = shows !== undefined;
+			if (shows) for (const line of shows) lines.push(paint(line, inner, "warning"));
+			else if (previewLines > 0) lines.push(paint("Confirmation needs more space · enlarge terminal", inner, "warning"));
+		} else if (this.inlineInput) {
+			const field = `${this.inlineInput.prompt}: ${this.inlineInput.value}▏`;
+			this.inlineInput.visible = !navOnly && previewLines > 0 && visibleWidth(field) <= inner;
+			if (previewLines > 0) {
+				lines.push(paint(field, inner, "accent"));
+				if (previewLines === 3) lines.push(paint(this.inlineInput.visible ? "Enter confirm · Esc cancel" : "Value too wide · enlarge terminal · Esc cancel", inner, "muted"));
+			}
+		} else if (previewLines === 3) {
 			let preview: ReturnType<NonNullable<CustomizeRow["preview"]>> | undefined;
 			try { if (!navOnly) preview = rows[this.selected]?.preview?.(); } catch { /* Never substitute the active theme for an unreadable source. */ }
 			lines.push("");
@@ -270,9 +420,10 @@ export class VisualCustomizeView {
 			lines.push(paint(navOnly ? "" : preview?.sample ?? "No read-only sample for this choice", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(navOnly ? "↑/↓ categories · → open · Esc close" : previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close", inner, "muted"));
+		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint), inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
-		lines[0] = paint("Visual customization" + " ".repeat(Math.max(1, inner - visibleWidth("Visual customization") - 3)) + "esc", inner, "accent");
+		const title = this.title();
+		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");
 		return renderPaletteCard(lines.slice(0, height - 2), width, this.options.theme);
 	}
 	private detailSize(width: number): { height: number; inner: number; capacity: number } {

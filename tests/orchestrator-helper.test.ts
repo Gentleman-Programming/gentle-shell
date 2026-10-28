@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model, Api, Context, ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
-import { OrchestratorHelper } from "../lib/orchestrator-helper.ts";
+import { preflightHelper, OrchestratorHelper } from "../lib/orchestrator-helper.ts";
 import type { MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 
 const model: Model<Api> = { id: "local", provider: "fixture", api: "fixture", name: "Local",
@@ -30,6 +30,119 @@ function fixture(deadlineMs = 1000) {
 	const run = (patch = {}) => engine.run({ receipt: receipt(), question: "What is recorded?", model, isCurrent: () => true, ...patch });
 	return { engine, calls, run };
 }
+
+function classifiedReceipt(): MetadataReceipt {
+	const r = receipt(), s = r.snapshot!;
+	s.catalog = { tasks: [{ id: "Task-A", label: "Active", status: "running", cwd: "/launch" }],
+		registered: [], omittedTasks: 1, omittedRegistered: 0, cursor: "PRIVATE_CURSOR" };
+	s.tasks = [{ id: "historical", label: "Old", status: "running", workspace: "/old" }];
+	s.state = { schema: 2, sessionId: "owner", recordedAt: 5, cwd: "/recorded", source: "owner-curated",
+		ownerReply: false, authority: "none", state: { objective: "Recorded objective", work: {
+			area: "Auténtica", topic: "Login", tags: ["approved", "granted"], refs: [
+				{ kind: "issue", repository: "github.com/Owner/Repo", id: "12" },
+				{ kind: "pr", repository: "github.com/Owner/Repo", id: "12" },
+				{ kind: "task", repository: "github.com/Owner/Repo", id: "Task-é" }],
+			tasks: { "Task-A": { tags: ["Child"], refs: [{ kind: "task", repository: "github.com/Other/Repo", id: "Exact-ID" }] },
+				"task-a": { area: "Wrong case" }, historical: { area: "History" }, ghost: { area: "Ghost" }, outside: { area: "Outside page" } },
+		} } };
+	return r;
+}
+
+test("published root and exact current-page task work reach the detached helper payload", async () => {
+	const f = fixture(), r = classifiedReceipt(), original = structuredClone(r.snapshot!.state!.state!);
+	const rawWork = r.snapshot!.state!.state!.work!;
+	for (const object of [rawWork, rawWork.tasks, rawWork.tasks!["Task-A"], ...rawWork.refs!]) {
+		for (const key of ["toJSON", "privateHistory", "cursor", "humanApproved"])
+			Object.defineProperty(object, key, { get() { throw Error("PRIVATE_GETTER"); } });
+	}
+	const pending = f.run({ receipt: r });
+	assert.equal(f.calls.length, 1);
+	const payload = JSON.parse(f.calls[0].context.messages[0].content as string);
+	const captured = payload.source.snapshot.state.state;
+	assert.equal(captured.work?.area, "Auténtica");
+	assert.equal(captured.objective, original.objective);
+	assert.deepEqual(captured.work.refs, original.work!.refs);
+	assert.deepEqual(captured.work.tags, ["approved", "granted"]);
+	assert.deepEqual(captured.work.tasks, { "Task-A": original.work!.tasks!["Task-A"] });
+	assert.equal(captured.work.tasks["Task-A"].area, undefined, "root classification is not inherited");
+	assert.ok(payload.source.omissions.includes("unmatched-task-annotations:4"));
+	assert.doesNotMatch(JSON.stringify(payload), /Wrong case|History|Ghost|Outside page|PRIVATE_CURSOR/);
+	r.snapshot!.state!.state!.work!.refs![0].id = "99";
+	r.snapshot!.state!.state!.work!.tasks!["Task-A"].tags![0] = "Mutated";
+	assert.equal(captured.work.refs[0].id, "12");
+	assert.deepEqual(captured.work.tasks["Task-A"].tags, ["Child"]);
+	f.calls[0].resolve(message());
+	assert.equal((await pending).authority, "none");
+});
+
+test("class-only records omit unmatched-only work and never join historical or child session IDs", () => {
+	for (const catalog of [null, { tasks: [], registered: [], omittedTasks: 8, omittedRegistered: 0 }]) {
+		const r = classifiedReceipt();
+		r.snapshot!.catalog = catalog;
+		r.snapshot!.state!.state = { work: { tasks: { historical: { area: "Old" }, childSID: { area: "Child" } } } };
+		const prepared = preflightHelper(r, "Question", model);
+		assert.equal(prepared.code, undefined);
+		const payload = JSON.parse(prepared.content!);
+		assert.deepEqual(payload.source.snapshot.state.state, {}, "no fake empty work classification");
+		assert.ok(payload.source.omissions.includes("unmatched-task-annotations:2"));
+	}
+	const root = classifiedReceipt();
+	root.snapshot!.catalog = null;
+	root.snapshot!.state!.state = { work: { refs: [{ kind: "task", repository: "github.com/Owner/Repo", id: "Exact root" }] } };
+	assert.deepEqual(JSON.parse(preflightHelper(root, "Question", model).content!).source.snapshot.state.state,
+		root.snapshot!.state!.state, "root-only classification needs no task catalog");
+	const r = classifiedReceipt();
+	r.snapshot!.state!.state = { work: { tasks: { "Task-A": { refs: [{ kind: "pr", repository: "github.com/Owner/Repo", id: "12" }] } } } };
+	const payload = JSON.parse(preflightHelper(r, "Question", model).content!);
+	assert.deepEqual(payload.source.snapshot.state.state, r.snapshot!.state!.state, "active-only classification is useful");
+	for (const state of [{ progress: "Legacy" }, null]) {
+		r.snapshot!.state!.schema = 1; r.snapshot!.state!.state = state;
+		assert.deepEqual(JSON.parse(preflightHelper(r, "Question", model).content!).source.snapshot.state.state, state);
+	}
+});
+
+test("malformed work and foreign owners fail preflight without any stream or private serialization", async () => {
+	const f = fixture();
+	const malformed = [null, {}, [], { topic: "No area" }, { area: "bad\u0000" }, { tags: ["duplicate", "duplicate"] },
+		{ refs: [{ kind: "issue", repository: "github.com/Owner/Repo", id: "012" }] }, { tasks: { ghost: {} } }];
+	for (const work of malformed) {
+		const r = classifiedReceipt();
+		r.snapshot!.state!.state!.work = work as any;
+		assert.equal(preflightHelper(r, "Question", model).code, "invalid-source");
+		assert.equal((await f.run({ receipt: r })).code, "invalid-source");
+	}
+	for (const field of ["sessionId", "schema", "source", "ownerReply", "authority"] as const) {
+		const r = classifiedReceipt();
+		Object.assign(r.snapshot!.state!, { [field]: field === "schema" ? 1 : field === "ownerReply" ? true : "foreign" });
+		assert.equal(preflightHelper(r, "Question", model).code, "invalid-source");
+	}
+	for (const nested of ["root", "task", "ref"] as const) {
+		for (const key of ["toJSON", "privateHistory", "cursor", "humanApproved", "endpoint"]) {
+			const r = classifiedReceipt(), work = r.snapshot!.state!.state!.work!;
+			const target = nested === "root" ? work : nested === "task" ? work.tasks!["Task-A"] : work.refs![0];
+			let accessed = false;
+			Object.defineProperty(target, key, { enumerable: true, get() { accessed = true; throw Error("PRIVATE"); } });
+			assert.equal(preflightHelper(r, "Question", model).code, "invalid-source");
+			assert.equal(accessed, false, "unknown nested fields are rejected, never read or serialized");
+		}
+	}
+	assert.equal(f.calls.length, 0);
+});
+
+test("structured work consumes the same UTF-8 input budget without truncation", async () => {
+	const f = fixture(), r = classifiedReceipt();
+	const prepared = preflightHelper(r, "Question", model);
+	const plain = receipt(); plain.snapshot!.state = { ...r.snapshot!.state!, schema: 1, state: { objective: "Recorded objective" } };
+	plain.snapshot!.catalog = r.snapshot!.catalog; plain.snapshot!.tasks = r.snapshot!.tasks;
+	const overhead = Buffer.byteLength(prepared.content!) - Buffer.byteLength(preflightHelper(plain, "Question", model).content!);
+	assert.ok(overhead > 0);
+	const pending = f.run({ receipt: plain, question: "Question" });
+	const call = f.calls[0]; call.resolve(message()); await pending;
+	const bytes = Buffer.byteLength(call.context.systemPrompt!) + Buffer.byteLength(call.context.messages[0].content as string);
+	r.snapshot!.label += "x".repeat(16384 - bytes);
+	assert.equal((await f.run({ receipt: r, question: "Question" })).code, "input-too-large");
+	assert.equal(f.calls.length, 1);
+});
 
 test("one in-flight lease prevents repeated/concurrent billable streams", async () => {
 	const f = fixture();

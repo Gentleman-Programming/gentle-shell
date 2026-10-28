@@ -65,6 +65,15 @@ function sameFile(left, right) {
 	return left && right && left.dev === right.dev && left.ino === right.ino;
 }
 
+// A path's lstat against the fstat of the handle just opened on it. On recent
+// Windows, lstat by path reports dev 0 (no volume serial) while fstat reports
+// the volume's (#1258, #2109): there the file index alone identifies it, and a
+// known dev must still match. POSIX keeps the full device and inode check.
+export function sameOpenedFile(pathStat, handleStat, platform = process.platform) {
+	if (platform !== "win32" || !pathStat || !handleStat || (pathStat.dev !== 0 && handleStat.dev !== 0)) return Boolean(sameFile(pathStat, handleStat));
+	return pathStat.ino === handleStat.ino;
+}
+
 function assertDirectories(paths) {
 	for (const path of paths) {
 		const stat = inspect(path);
@@ -80,7 +89,7 @@ function readSettings(path) {
 	if (!before.isFile() || before.isSymbolicLink()) throw new Error("settings.json must be a regular, non-symlink file");
 	const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 	try {
-		if (!sameFile(before, fstatSync(fd))) throw new Error("settings.json changed while opening");
+		if (!sameOpenedFile(before, fstatSync(fd))) throw new Error("settings.json changed while opening");
 		const text = readFileSync(fd, "utf8");
 		const value = JSON.parse(text.replace(/^\uFEFF/, ""));
 		if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("settings.json must contain a JSON object");

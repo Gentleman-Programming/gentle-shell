@@ -63,8 +63,8 @@ test("event schema commits a canonical reducer transition and input", () => {
 		payload: { initial: true },
 		reduced_state_hash: stateHash,
 	} as never);
-	assert.equal((event.body as Record<string, unknown>).reducer_transition, "start");
-	assert.deepEqual((event.body as Record<string, unknown>).reducer_input, { source: "controller" });
+	assert.equal(event.body.reducer_transition, "start");
+	assert.deepEqual(event.body.reducer_input, { source: "controller" });
 	assert.throws(() => createReviewEventV1({
 		lineage_id: "lineage-a",
 		sequence: 0,

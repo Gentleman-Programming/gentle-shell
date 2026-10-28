@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -89,4 +90,24 @@ test("unreadable non-file and bounded oversized stores refuse writes without eff
 		if (!directory) assert.equal(readFileSync(file, "utf8"), " ".repeat(4097));
 		assert.deepEqual(readdirSync(home), ["herdr-task-summary.json"]);
 	}
+});
+
+for (const step of ["writeFileSync", "renameSync"] as const) test(`a failed ${step} removes the temporary file and keeps the previous store`, t => {
+	const { options, file, home } = fixture();
+	writeHerdrTaskSummarySettings({ ...DEFAULT_HERDR_TASK_SUMMARY_SETTINGS, enabled: false }, options);
+	const before = readFileSync(file, "utf8");
+	const original = fs[step];
+	const failure = Object.assign(new Error(`controlled ${step} failure`), { code: "ENOSPC" });
+	t.mock.method(fs, step, (...args: unknown[]) => {
+		// The temporary file exists when the failure happens, as with a full disk.
+		if (step === "writeFileSync") Reflect.apply(original, fs, [args[0], "", { flag: "wx", mode: 0o600 }]);
+		throw failure;
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.throws(() => writeHerdrTaskSummarySettings(DEFAULT_HERDR_TASK_SUMMARY_SETTINGS, options), failure);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+	assert.deepEqual(readdirSync(home).filter(name => name.endsWith(".tmp")), []);
+	assert.equal(readFileSync(file, "utf8"), before);
+	assert.equal(resolveHerdrTaskSummarySettings(options).settings.enabled, false);
 });

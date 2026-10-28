@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 
@@ -72,7 +72,13 @@ export function writeHerdrTaskSummarySettings(settings: HerdrTaskSummarySettings
 	const path = current.globalFile;
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(resolve(path, ".."), { recursive: true });
-	writeFileSync(temporary, `${JSON.stringify({ schema: HERDR_TASK_SUMMARY_SCHEMA, ...settings })}\n`, { flag: "wx", mode: 0o600 });
-	renameSync(temporary, path);
+	try {
+		writeFileSync(temporary, `${JSON.stringify({ schema: HERDR_TASK_SUMMARY_SCHEMA, ...settings })}\n`, { flag: "wx", mode: 0o600 });
+		renameSync(temporary, path);
+	} catch (error) {
+		// This writer owns the temporary file; never leave one behind per failed attempt.
+		rmSync(temporary, { force: true });
+		throw error;
+	}
 	return path;
 }

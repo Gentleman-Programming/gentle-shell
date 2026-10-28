@@ -1054,6 +1054,55 @@ test("the one-launch walk applies the single-path walk, per path, with its own f
 	assert.doesNotMatch(many, /Invoke-Expression|\biex\b|ScriptBlock\]::Create|EncodedCommand/);
 });
 
+test("storage metadata public adapters preserve verdicts and unexpected failures", () => {
+	const path = "D:\\metadata fixture\\tool.exe";
+	const env = { SystemRoot: "C:\\Windows" };
+	let calls = 0;
+	const single = (output: string) => verifyWindowsStorage(path, env, (_command: string, _args: string[], data: Record<string, string>) => {
+		calls++; assert.equal(data.GENTLE_WINDOWS_CHECK, path); return output;
+	});
+	if (process.platform === "win32") {
+		assert.equal(single("safe"), undefined);
+		for (const check of ["target-reparse", "parent-owner", "ancestor-acl-mask"]) {
+			assert.throws(() => single(`unsafe:${check}|${encoded(`${path}|||`)}`), (error: Error & { check?: string; detail?: { at: string } }) => error.check === check && error.detail?.at === path);
+		}
+		assert.throws(() => single("malformed"), /Windows ACL evidence rejected/);
+		assert.equal(calls, 5);
+		const failure = Object.assign(new Error("metadata read failed"), { code: "EACCES" });
+		assert.throws(() => verifyWindowsStorage(path, env, () => { throw failure; }), (error: unknown) => error === failure);
+	} else {
+		assert.throws(() => single("safe"), /Native Windows storage verification unavailable/);
+		assert.equal(calls, 0, "unsupported platforms reject before invoking the runner");
+	}
+	const paths = [path, "D:\\metadata fixture\\next.cmd"];
+	assert.deepEqual(windowsModule.verifyWindowsStorageMany(paths, env, { platform: "win32", processAdapter: (_command: string, _args: string[], data: Record<string, string>) => {
+		assert.equal(data.GENTLE_WINDOWS_CHECKS, paths.join("|")); return "unknown\nsafe";
+	} }), [{ check: "unchecked", at: path }, null]);
+});
+
+// Inspect scripts through the public process seam; never execute PowerShell.
+for (const mode of ["single", "batch"] as const) {
+	test(`storage metadata ${mode} uses throwing static attributes before ACL reads`, { skip: mode === "single" && process.platform !== "win32" ? "single-path script requires the real Windows platform" : false }, () => {
+		let script = "";
+		const processAdapter = (_command: string, args: string[], env: Record<string, string>) => {
+			script = args[4];
+			assert.equal(env[mode === "single" ? "GENTLE_WINDOWS_CHECK" : "GENTLE_WINDOWS_CHECKS"], "C:\\metadata\\node.exe");
+			return "safe";
+		};
+		if (mode === "single") verifyWindowsStorage("C:\\metadata\\node.exe", { SystemRoot: "C:\\Windows" }, processAdapter);
+		else windowsModule.verifyWindowsStorageMany(["C:\\metadata\\node.exe"], { SystemRoot: "C:\\Windows" }, { platform: "win32", processAdapter });
+		assert.ok(script.includes("$attributes = [IO.File]::GetAttributes($path);"));
+		const reparse = "if ($attributes -band [IO.FileAttributes]::ReparsePoint) { $detail = $path + '|||'; throw ($role + '-reparse') };";
+		const branch = "if ($attributes -band [IO.FileAttributes]::Directory) { $acl = [IO.Directory]::GetAccessControl($path) } else { $acl = [IO.File]::GetAccessControl($path) };";
+		assert.ok(script.includes(reparse));
+		assert.ok(script.includes(branch));
+		assert.ok(script.indexOf("GetAttributes($path)") < script.indexOf(reparse));
+		assert.ok(script.indexOf(reparse) < script.indexOf(branch));
+		assert.doesNotMatch(script, /Get-Item|\[IO\.(?:File|Directory)\]::Exists|FileInfo|DirectoryInfo|Refresh/);
+		assert.ok(script.includes(mode === "single" ? "} else { throw } }" : "} else { 'unknown' } }"));
+	});
+}
+
 // S6 decision fixtures: an in-memory folder tree and an injected walk verdict per
 // path, the same way the helper tests inject storage. `weak` maps a walked path
 // to the check its walk fails; every other walk passes.
@@ -1197,8 +1246,9 @@ test("production and fixture PowerShell never depend on autoloading Microsoft.Po
 		assert.match(source, /\[IO\.Directory\]::SetAccessControl\(/);
 	}
 	// Walks that may reach a file read it as a file, never through a directory API.
-	for (const source of [productionAclSources()[1], productionAclSources()[2]]) {
-		assert.match(source, /if \(\$item\.PSIsContainer\) \{ \$acl = \[IO\.Directory\]::GetAccessControl\(\$path\) \} else \{ \$acl = \[IO\.File\]::GetAccessControl\(\$path\) \}/);
+	assert.match(productionAclSources()[1], /if \(\$item\.PSIsContainer\) \{ \$acl = \[IO\.Directory\]::GetAccessControl\(\$path\) \} else \{ \$acl = \[IO\.File\]::GetAccessControl\(\$path\) \}/);
+	for (const source of [productionAclSources()[2], manyCheck()]) {
+		assert.match(source, /if \(\$attributes -band \[IO\.FileAttributes\]::Directory\) \{ \$acl = \[IO\.Directory\]::GetAccessControl\(\$path\) \} else \{ \$acl = \[IO\.File\]::GetAccessControl\(\$path\) \}/);
 	}
 });
 const psRecordLine = '  "$record = [Diagnostics.Process]::GetCurrentProcess(); [IO.File]::AppendAllText($env:GENTLE_FIXTURE_RECORDS,([string]$record.Id + [char]124 + [string]$record.StartTime.ToUniversalTime().Ticks + [Environment]::NewLine));" ^';
@@ -1317,9 +1367,17 @@ if (Test-Path -LiteralPath $env:GENTLE_FIXTURE_RECORDS) {
 if ($reaped) { [Console]::WriteLine('fixture guard reaped residual owned process') };
 exit 0;
 `;
+const GUARD_TIMEOUT_MS = 5000;
 function cleanNativeProcesses(root: string) {
 	const ps = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
-	const result = spawnSync(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", guardCommand], { env: nativeEnv(root), timeout: 5000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 65536 });
+	const spawnGuard = (timeoutMs: number) => spawnSync(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", guardCommand], { env: nativeEnv(root), timeout: timeoutMs, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 65536 });
+	// A hosted Windows runner can cold-start PowerShell slower than any fixed
+	// bound under load (run 40000806368: ETIMEDOUT at 5s, same commit green on
+	// rerun). The guard's job is cleanup, not a load measurement, and the guard
+	// is idempotent — it kills only verified owned processes and exits 0 — so a
+	// timeout is retried once with a wider bound before failing the fixture.
+	let result = spawnGuard(GUARD_TIMEOUT_MS);
+	if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") result = spawnGuard(GUARD_TIMEOUT_MS * 4);
 	assert.equal(result.error, undefined, "fixture guard must be bounded and available");
 	assert.equal(result.status, 0, `fixture guard must only clean verified owned processes: ${(result.stderr ?? "").slice(0, 4000)}`);
 	assert.ok(["", "fixture guard reaped residual owned process"].includes(result.stdout.trim()), "unexpected fixture guard output");

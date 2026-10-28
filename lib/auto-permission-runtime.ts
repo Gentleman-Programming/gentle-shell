@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { gentlePiConfigHome } from "./agent-home.ts";
@@ -18,7 +18,7 @@ export function updateAutoPrompt(options: AppendableSystemPromptOptions | undefi
  if (active) appendSystemPromptOnce(options, AUTO_DIRECTIVE);
 }
 
-type ModeController = {mode(ctx: ExtensionContext): Promise<string>; epoch(): number};
+type ModeController = {mode(ctx: ExtensionContext, admission?: { toolCallId: string }): Promise<string>; epoch(): number};
 type Verdict = {status: string; decision?: string; reason?: string; code?: string; usage?: unknown; usageKnown?: boolean; actualModel?: unknown; requestedModel?: unknown; diagnostic?: unknown};
 /** Project a closed metadata schema; injected classifiers cannot add payloads to diagnostics. */
 function safeDiagnostic(value: unknown): AutoPermissionDiagnostic | undefined {
@@ -96,7 +96,8 @@ function within(path: string, root: string): boolean {
 function canonical(path: string): string {
  const absolute = resolve(path);
  let ancestor = absolute;
- while (!existsSync(ancestor)) { const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
+ // A dangling symlink exists as a directory entry: let realpath fail closed.
+ while (!lstatSync(ancestor,{throwIfNoEntry:false})) { const parent = dirname(ancestor); if (parent === ancestor) break; ancestor = parent; }
  return resolve(realpathSync(ancestor), relative(ancestor, absolute));
 }
 /** True only for an existing symlink-free in-project regular file larger than the reader accepts.
@@ -368,8 +369,22 @@ export class AutoPermissionRuntime {
  private protectedMutation(event: Pick<ToolCallEvent,"toolName"|"input">, ctx: ExtensionContext): boolean {
   const args=event.input as Record<string,unknown>;
   if (!args || typeof args!=="object") return false;
+  const projectHome=resolve(ctx.cwd,".pi","gentle-ai");
   if ((event.toolName==="write" || event.toolName==="edit") && typeof args.path==="string") {
-   try { return within(canonical(resolve(ctx.cwd,args.path)),canonical(this.configHome)); } catch { return true; }
+   try {
+    const target=canonical(resolve(ctx.cwd,args.path)),home=canonical(this.configHome);
+    // Keep policy aliases and containing directories protected, including project restrictions.
+    if([resolve(this.configHome,"permission-mode.json"),resolve(this.configHome,"runtime-guardrails.json"),
+     resolve(projectHome,"runtime-guardrails.json")].some(path=>within(canonical(path),target)))return true;
+    if(!within(target,home))return false;
+    // A shared inode can alias policy without changing the canonical path.
+    if((lstatSync(target,{throwIfNoEntry:false})?.nlink ?? 0)>1)return true;
+    // Only updater-owned data returns to ordinary permission checks. Compare the
+    // resolved target to literal destinations under home: canonicalizing exemptions
+    // would let a dev-binary.json symlink exempt the authority file it points at.
+    return !["dev-binary.json","channel.json"].some(path=>target===resolve(home,path)) &&
+     !["main","tools/go"].some(path=>within(target,resolve(home,path)));
+   } catch { return true; }
   }
   if (["bash","bash_background","monitor"].includes(event.toolName) && typeof args.command==="string") {
    // Best-effort shell recognition supplements classification, not OS containment.
@@ -395,7 +410,7 @@ export class AutoPermissionRuntime {
   if(this.protectedMutation(event,ctx))return block("Permission configuration is human-controlled. Use the mode settings UI; model tools cannot change it.");
   // Revocation while identity lookup is pending must not become a fresh grant.
   const generation=this.generation, epoch=this.modes.epoch(), owner=this.owner;
-  const mode=await this.modes.mode(ctx);
+  const mode=await this.modes.mode(ctx,{toolCallId:event.toolCallId});
   if(generation!==this.generation || epoch!==this.modes.epoch() || owner!==this.owner || ctx.signal?.aborted)
    return block("Auto decision expired during mode lookup. The action was not run.");
   if(mode!=="auto") { this.memory.admitted(event,ctx,epoch);return undefined; }
@@ -452,7 +467,7 @@ export class AutoPermissionRuntime {
     if(result.status==="available" || result.code!=="provider-error" || controller.signal.aborted)break;
    }
   }finally{ctx.signal?.removeEventListener("abort",onAbort);this.active.delete(controller);}
-  const stillAuto=await this.modes.mode(ctx)==="auto";
+  const stillAuto=await this.modes.mode(ctx,{toolCallId:event.toolCallId})==="auto";
   if(!current() || controller.signal.aborted || !stillAuto)return block("Auto decision expired because the action, mode, request or session changed. The action was not run.");
   if(result.status!=="available" || !["allow","deny"].includes(result.decision ?? "")){
    // Contention and revocation are not failed safety judgements or provider outages.

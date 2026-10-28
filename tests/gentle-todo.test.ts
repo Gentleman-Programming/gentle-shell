@@ -498,6 +498,17 @@ test("the system prompt carries only a byte-stable todo block; the current list 
 	assert.equal(finishedEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "finishing the list must not change the system prompt");
 });
 
+// weak-model-economy S1: small tasks skip the todo list (bench C-econ).
+test("the todo block exempts small tasks before the tracking rules", async () => {
+	const { pi, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const event = promptEvent();
+	await fire("before_agent_start", ctx, event);
+	assert.ok(event.systemPromptOptions.appendSystemPrompt.startsWith("## Todo list\nA small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it,"));
+});
+
 /**
  * Drives the extension the way Pi's agent loop does (#2195): every model request
  * runs the context handlers over the persisted transcript, and a custom message

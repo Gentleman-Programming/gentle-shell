@@ -2,6 +2,10 @@
 
 How the Gentle Pi orchestrator decides who verifies a bounded writer's work. The always-on parent prompt renders a `Receipt-driven development: on|off|unknown` line; the verification module (`assets/orchestrator-verification.md`, Verification rule) keys the verification rule on it. Because the line sits in the cached system-prompt prefix, a session keeps the first line it rendered and re-renders it only when RDD turns off or back on (which also drops or restores the review execution contract); an `unknown` to `on` flip or a deciding-source change keeps the original text, and review tools always read the live mode. While the pinned line reads `off`, the parent request also carries a lean review loadout: `gentle_review` keeps its schema but its snippet, guidelines, and description cover only `assess`, and the `gentle_review_capture`, `gentle_review_capture_group`, and `gentle_review_scope` declarations are hidden (they stay registered and active). The loadout follows the pinned line, so it changes only at the next run after RDD turns off or back on, together with the review execution contract; `on` and `unknown` keep the full registered text. This page is package-owned; `docs/review-integration.md` mirrors the Gentle AI contract and must stay byte-identical to it.
 
+## Background capability admission
+
+An explicit agent `tools` declaration containing `bash_background` requires the background-subagents policy to resolve to `on` at dispatch, for both task and background launches. Otherwise the runner fails the task before spawn and reports the policy file, opt-in schema, and `/gentle:background-subagents enable|disable|status`. Fix the deciding policy explicitly; automation must not toggle it. Passing admission does not promise child background-tool support (future Slices 2–3); ordinary missing-tool reporting remains the backstop. See the [policy contract](readme-reference.md#capability-reference).
+
 ## Receipt-driven development on
 
 Verification is the same with RDD on, off, or unknown (verify-always-rdd-high S1). The bounded writer runs the exact commands the parent lists under `## Verification`, in the foreground, and reports each as `<command>: <observed result>`; after it returns, the parent calls `assess` and follows the risk tier below. The native review is an additional outside view of the change: it never replaces or skips the tier's verification, and the tier's verifier runs before review. A declined consent, a clone-local disable, or a refused START/STATUS therefore changes nothing about verification.
@@ -43,6 +47,8 @@ The `gentle_review` tool's `assess` operation (`extensions/gentle-ai.ts`) combin
 | native high, unknown, or assess failed | informs only: writer self-verification stands; escalate when a named high-risk item applies |
 
 The plan risk (`risk`) is high only with an escalation; otherwise a native passive stays passive and every other native tier is medium. The native tier stays visible as `nativeRisk`. The independent verifier is for concrete occasions: the plan adds it only when `escalate` names a Task Size high-risk item, never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change.
+
+With RDD off, ASSESS remains read-only even when native reports `reviewDue` or a continuation: relay those fields unchanged, but do not execute the continuation, invoke STATUS or another review lifecycle operation, or enable RDD based on assessment metadata. Continue the verification plan and applicable functional checks; the named-risk independent verifier remains required.
 
 This table applies in every RDD state; a closed native review never removes a verifier the tier requires. An unknown RDD line never lowers a tier below `off`. The parent's own spot check (re-running one reported command before delivery) stays required in every tier.
 

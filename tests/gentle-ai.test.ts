@@ -4278,6 +4278,40 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 	}
 });
 
+test("u keeps the session binding when a subagent launch requires session profile authority (#2623)", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	resetSessionProfileBindingsForTesting();
+	const manager = profileActionManager(fixture.root);
+	const notifications: Array<{ message: string; severity: string }> = [];
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+		sessionManager: manager,
+	} as unknown as ExtensionContext;
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel() {},
+		getThinkingLevel(): ThinkingLevel { return "medium"; },
+	};
+	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" }, {});
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team", "u binds the profile to the session");
+	// Every subagent launch asks for session profile authority first; the u
+	// binding must survive that check, not be dropped for missing disk state.
+	const { requireSessionProfileAuthority } = await import("../lib/session-profile-authority.ts");
+	const authority = requireSessionProfileAuthority(manager);
+	assert.equal(authority.available, true);
+	assert.equal(
+		readSessionProfileBinding(manager.getSessionId())?.name,
+		"team",
+		"the session binding was dropped by the first subagent launch",
+	);
+	assert.equal(authority.binding?.name, "team", "authority does not publish the bound profile");
+	resetSessionProfileBindingsForTesting();
+});
+
 test("a reload landing while a models screen step is in flight closes the loop without touching the stale ctx", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);

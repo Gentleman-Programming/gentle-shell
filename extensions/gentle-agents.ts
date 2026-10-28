@@ -1602,7 +1602,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		];
 		return {
 			render(width: number) {
-				return renderCard({ title: "Stale agent answer", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: ACTION_GLYPH.result }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
+				return renderCard({ title: "Stale agent answer", subtitle: `${headingText(agent)} · task ${headingText(taskId)}`, body, tone: CARD_TONE.WARNING, glyph: ACTION_GLYPH.result }, agentTheme(theme, CARD_TONE.WARNING), width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
 			},
 			invalidate() {},
 		};

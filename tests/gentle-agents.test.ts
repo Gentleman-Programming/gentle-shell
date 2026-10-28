@@ -3869,6 +3869,15 @@ test("agent card subtitles stay on one row when a task id carries line breaks", 
 	for (const row of run) assert.doesNotMatch(row, /[\n\r]/, `run row stays single-line: ${JSON.stringify(row)}`);
 });
 
+test("the stale agent answer heading stays on one row when its agent or task id carries line breaks", () => {
+	const { pi, entryRenderers } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const entry = { type: "custom", customType: "gentle-agents.stale-result", data: { taskId: "t9\nINJECTED", agent: "explore\r\nrow", label: "map lib", status: "completed", ageSeconds: 120 } };
+	const rows = entryRenderers.get("gentle-agents.stale-result")!(entry, { expanded: false }, plainTheme).render(80);
+	for (const row of rows) assert.doesNotMatch(row, /[\n\r]/, `stale row stays single-line: ${JSON.stringify(row)}`);
+	assert.match(stripAnsi(rows[0]!), /↩ Stale agent answer · explore row · task t9 INJECTED/, "the heading keeps both values with the breaks folded");
+});
+
 test("an agent tool result takes the error tone from the host error flag", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);

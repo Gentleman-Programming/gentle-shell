@@ -659,7 +659,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.
+/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
 /gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).

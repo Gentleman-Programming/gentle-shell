@@ -4420,7 +4420,7 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	};
 	return {
 		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
-		run: (args: string) => commands.get("gentle:profiles")!.handler(args, ctx),
+		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
 		last: () => notifications.at(-1) ?? { message: "", severity: "" },
 	};
 }
@@ -4442,6 +4442,44 @@ test("/gentle:profiles clear removes the session binding and records an explicit
 	assert.match(h.last().message, /live orchestrator is unchanged/);
 	assert.deepEqual(h.liveCalls, [], "clear never touches the live model or thinking");
 	h.assertSharedUntouched();
+});
+
+test("/gentle:profiles clear skipped by a session replacement while queued never touches the stale ctx", async (t) => {
+	const h = profilesCommandHarness(t);
+	let stale = false;
+	const staleNotifications: string[] = [];
+	const staleCtx = {
+		cwd: h.ctx.cwd,
+		hasUI: true,
+		get ui() { if (stale) throw new Error("stale ctx"); return { notify(message: string) { staleNotifications.push(message); } }; },
+		get sessionManager() { if (stale) throw new Error("stale ctx"); return h.manager; },
+	} as unknown as ExtensionCommandContext;
+	let release!: () => void;
+	const holder = runCurrentSessionProfileSelection(h.manager, () => new Promise<void>((resolve) => { release = resolve; }));
+	const clear = h.run("clear", staleCtx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const file = h.manager.getSessionFile();
+	h.manager.getSessionFile = () => `${file}.replaced`;
+	stale = true;
+	release();
+	await holder;
+	await clear;
+	assert.deepEqual(staleNotifications, [], "no notice is sent through the stale ctx");
+	assert.equal(h.family().length, 0, "nothing is written");
+});
+
+test("/gentle:profiles clear with extra arguments shows the usage warning and writes nothing", async (t) => {
+	const h = profilesCommandHarness(t);
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	const recordsBefore = h.family().length;
+	await h.run("clear extra");
+	assert.equal(h.last().severity, "warning");
+	assert.match(h.last().message, /^Usage: \/gentle:profiles \[.*clear\]/);
+	assert.equal(h.family().length, recordsBefore, "no clear record is appended");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.name, "team");
+	await h.run("  clear  ");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined, "surrounding whitespace still clears");
 });
 
 test("/gentle:profiles clear on a never-bound session writes nothing and says so", async (t) => {

@@ -5520,7 +5520,8 @@ const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import 
 
 /**
  * `/gentle:profiles` opens the models screen. File operations live in
- * subcommands rather than on the screen: `export <name>` and `import` move a
+ * subcommands rather than on the screen: `clear` ends this session's profile
+ * selection, `export <name>` and `import` move a
  * profile through `profiles.export.json`, `publish <name>` toggles the
  * committed repository declaration, and `export-routing` / `restore-routing`
  * move the saved global routing (models.json, not a profile) through
@@ -5533,13 +5534,14 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, a
 		await openModelsScreen(ctx, live);
 		return;
 	}
-	if (verb === "export-routing" || verb === "restore-routing") {
+	if (verb === "export-routing" || verb === "restore-routing" || verb === "clear") {
 		if (rest.length > 0) {
 			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
 			return;
 		}
 		if (verb === "export-routing") await exportRoutingCommand(ctx);
-		else await restoreModelExport(ctx);
+		else if (verb === "restore-routing") await restoreModelExport(ctx);
+		else await handleProfilesClear(ctx);
 		return;
 	}
 	const store = await loadProfilesStore(ctx);
@@ -5860,7 +5862,9 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 		);
 		return true;
 	});
-	if (selected === undefined)
+	// A selection skipped by a reload or session replacement leaves a stale ctx;
+	// only a still-active command reports the missing attachment.
+	if (selected === undefined && isCommandContextActive(ctx))
 		ctx.ui.notify("el Gentleman cannot clear the session profile: the current session attachment is unavailable. Nothing was changed.", "warning");
 }
 
@@ -11285,7 +11289,6 @@ function createGentleAiExtensionForTesting(
 	pi.registerCommand("gentle:profiles", {
 		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.",
 		handler: async (args, ctx) => {
-			if (typeof args === "string" && args.trim() === "clear") return handleProfilesClear(ctx);
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},
 	});

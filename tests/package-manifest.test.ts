@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
 import { resolveProjectPiSdkVersion } from "../scripts/test-packed-runner.mjs";
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
@@ -630,7 +631,7 @@ test("packaged agents use YAML list syntax for tool allowlists", () => {
 		assert.doesNotMatch(
 			frontmatter,
 			/^tools:\s*[^\n,]+(?:,\s*[^\n,]+)+$/m,
-			`${file} must not use comma-separated inline tools; pi-subagents expects a YAML list`,
+			`${file} must not use comma-separated inline tools; the agent runtime expects a YAML list`,
 		);
 		assert.match(
 			frontmatter,
@@ -665,6 +666,46 @@ test("packaged agents declare only tool names a Pi child session can resolve", (
 			);
 		}
 	}
+});
+
+// The tool-allowlist marker that denies everything else. An allowlist already
+// denies unlisted tools, so the runtime tolerates this entry by design: it is
+// not a tool name and Pi drops it from --tools.
+const DENY_ALL_TOOLS_MARKER = '"*": false';
+
+// gentle-shell#62: the declared YAML list once collapsed into one malformed
+// token on its way to the child, which then started without its filesystem
+// tools. This walks the real path every packaged agent takes at runtime:
+// install into an agent home, then discover and parse with the agent runtime,
+// and compares what the runtime yields against what the file declares.
+test("packaged agents reach the agent runtime with their declared tool allowlists", () => {
+	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
+	const agentFiles = readdirSync(agentsDir).flatMap((entry) =>
+		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
+	);
+	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+
+	withIsolatedAssetHome((agentHome) => {
+		installPackageAssets(agentHome, false);
+		const empty = mkdtempSync(join(tmpdir(), "gentle-agent-roots-"));
+		try {
+			const { agents, errors } = discoverAgents({ cwd: empty, home: empty, agentHome });
+			assert.deepEqual(errors, [], "every packaged agent must parse through the agent runtime");
+			for (const file of agentFiles) {
+				const { name, tools: declared } = readAgentDefinition(file);
+				const agent = agents.find((candidate) => candidate.name === name);
+				assert.ok(agent, `${file} must be discovered by the agent runtime after installation`);
+				assert.deepEqual(
+					agent.tools.filter((tool) => tool !== DENY_ALL_TOOLS_MARKER),
+					declared,
+					`${file} must reach the runtime with exactly its declared tool allowlist`,
+				);
+				assert.ok(agent.tools.includes("read"), `${file} must keep read so the child can inspect files`);
+			}
+		} finally {
+			rmSync(empty, { recursive: true, force: true });
+		}
+	});
 });
 
 function withIsolatedAssetHome(run: (agentHome: string) => void): void {

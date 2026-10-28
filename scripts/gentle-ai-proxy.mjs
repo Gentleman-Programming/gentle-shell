@@ -140,6 +140,12 @@ export function hostTlsOptions(name) {
 /**
  * The trust options for a handshake, so a caller that trusts a private
  * certificate authority reaches a peer that presents one.
+ *
+ * An explicit `ca` replaces Node's default certificate authority list
+ * rather than adding to it, so a caller that sets it has to include the
+ * authorities of both peers it expects to reach. The proxy and the origin
+ * are separate peers, so a private authority for one of them and a public
+ * certificate for the other need both authorities in the list.
  */
 export function proxyTrustOptions(options) {
 	return {
@@ -159,6 +165,10 @@ export function proxyTrustOptions(options) {
  * receive the identity of the origin. The certificate authority and the
  * verification setting are shared, because the proxy is a peer of the
  * client just like the origin is.
+ *
+ * The certificate authority is the same list the origin handshake uses, so
+ * it has to trust both peers, and an explicit list replaces Node's default
+ * authorities rather than adding to them.
  */
 export function proxyHandshakeTrustOptions(trust) {
 	return {

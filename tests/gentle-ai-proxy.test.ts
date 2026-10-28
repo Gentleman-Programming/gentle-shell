@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { downloadGentleAiAsset } from "../scripts/gentle-ai-installer.mjs";
-import { resolveProxyForTarget } from "../scripts/gentle-ai-proxy.mjs";
+import { proxyTlsOptions, resolveProxyForTarget } from "../scripts/gentle-ai-proxy.mjs";
 
 const TARGET = "https://release-assets.example.invalid/asset.tar.gz";
 
@@ -179,9 +179,10 @@ for (const [name, response, protocol] of [
 	});
 }
 
-test("an HTTPS proxy on an IP address does not send an IP as the server name", { timeout: 15_000 }, async (t) => {
+test("an HTTPS proxy on an IP address is checked against the address and not sent as a server name", { timeout: 15_000 }, async (t) => {
 	// An IP address cannot be a server name, and a modern Node refuses the
-	// handshake outright when it is given one. The tunnel has to leave it out.
+	// handshake outright when it is given one. The address goes in as the host
+	// instead, which is the name the certificate is checked against.
 	const proxy = await startProxyStub(407);
 	t.after(() => proxy.close());
 	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-ip-host-"));
@@ -201,6 +202,12 @@ test("an HTTPS proxy on an IP address does not send an IP as the server name", {
 		process.off("uncaughtException", onUncaught);
 	}
 	assert.deepEqual(failures, [], "no exception escaped the tunnel");
+	// The address is the name the certificate is verified against, and no
+	// server name is sent with it.
+	assert.deepEqual(proxyTlsOptions(new URL("https://127.0.0.1:3128")), { host: "127.0.0.1" });
+	assert.deepEqual(proxyTlsOptions(new URL("https://[::1]:3128")), { host: "::1" });
+	// A hostname keeps its server name, so the proxy is still reached by name.
+	assert.deepEqual(proxyTlsOptions(new URL("https://proxy.invalid:3128")), { servername: "proxy.invalid" });
 });
 
 test("the release download carries a tunnel only when the environment names a proxy", async (t) => {

@@ -112,6 +112,20 @@ function tunnelAuthority(host, port) {
 }
 
 /**
+ * The TLS options for the connection to an https proxy.
+ *
+ * An IP address cannot be a server name, and a modern Node refuses the
+ * handshake outright when it is given one. The address goes in as the host
+ * instead, which is the name the certificate is then checked against, and no
+ * server name is sent. A hostname keeps its server name, so the proxy is
+ * still reached by name.
+ */
+export function proxyTlsOptions(proxy) {
+	const name = proxyHost(proxy);
+	return net.isIP(name) ? { host: name } : { servername: name };
+}
+
+/**
  * An https.Agent whose sockets are CONNECT tunnels to `proxy`. The origin host
  * is still verified by TLS over the tunnel, so the proxy cannot read the
  * request and cannot impersonate the release host without the origin's own
@@ -180,12 +194,7 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
 			if (proxy.protocol === "https:") {
-				// An IP address cannot be a server name, and a modern Node
-				// refuses the handshake outright when it is one. The identity
-				// check still runs without it, because Node falls back to the
-				// host of the socket the tunnel is built on.
-				const proxyName = proxyHost(proxy);
-				channel = tls.connect({ socket: raw, ...(net.isIP(proxyName) ? {} : { servername: proxyName }) });
+				channel = tls.connect({ socket: raw, ...proxyTlsOptions(proxy) });
 				watch(channel);
 			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];

@@ -119,10 +119,19 @@ test("an IPv6 proxy address reaches the proxy instead of failing to resolve", { 
 		socket.on("error", () => {});
 		socket.on("data", () => socket.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"));
 	});
+	// A host without IPv6 has no loopback address to bind, so there is
+	// nothing to assert there. Every other error is a real failure.
+	let bound = false;
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
-		server.listen({ host: "::1", port: 0 }, resolve);
+		server.listen({ host: "::1", port: 0 }, () => { bound = true; resolve(); });
+	}).catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "EADDRNOTAVAIL") throw error;
 	});
+	if (!bound) {
+		t.skip("IPv6 loopback is unavailable on this host");
+		return;
+	}
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	const address = server.address();
 	const port = typeof address === "object" && address !== null ? address.port : 0;
@@ -169,6 +178,30 @@ for (const [name, response, protocol] of [
 		}
 	});
 }
+
+test("an HTTPS proxy on an IP address does not send an IP as the server name", { timeout: 15_000 }, async (t) => {
+	// An IP address cannot be a server name, and a modern Node refuses the
+	// handshake outright when it is given one. The tunnel has to leave it out.
+	const proxy = await startProxyStub(407);
+	t.after(() => proxy.close());
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-ip-host-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	// The stub speaks plain TCP, so the TLS handshake against it fails. What
+	// matters here is that the failure arrives as a rejected download and not
+	// as an exception that escapes the tunnel and takes the install down.
+	const failures: unknown[] = [];
+	const onUncaught = (error: unknown) => { failures.push(error); };
+	process.on("uncaughtException", onUncaught);
+	try {
+		await assert.rejects(
+			() => downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `https://127.0.0.1:${proxy.port}` }, maxAttempts: 1, headerTimeoutMs: 1500 }),
+			(error: NodeJS.ErrnoException) => error.code !== "ERR_INVALID_ARG_VALUE",
+		);
+	} finally {
+		process.off("uncaughtException", onUncaught);
+	}
+	assert.deepEqual(failures, [], "no exception escaped the tunnel");
+});
 
 test("the release download carries a tunnel only when the environment names a proxy", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-wiring-"));

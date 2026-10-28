@@ -180,7 +180,12 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
 			if (proxy.protocol === "https:") {
-				channel = tls.connect({ socket: raw, servername: proxyHost(proxy) });
+				// An IP address cannot be a server name, and a modern Node
+				// refuses the handshake outright when it is one. The identity
+				// check still runs without it, because Node falls back to the
+				// host of the socket the tunnel is built on.
+				const proxyName = proxyHost(proxy);
+				channel = tls.connect({ socket: raw, ...(net.isIP(proxyName) ? {} : { servername: proxyName }) });
 				watch(channel);
 			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];

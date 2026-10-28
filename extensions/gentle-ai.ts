@@ -13,7 +13,7 @@ import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProf
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
-import { collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
+import { canonicalizeTarget, collectStringPaths, evaluatePathFence, resolveOutsidePaths, PathTargetGrants, PATH_FENCE_TOOL_NAMES } from "../lib/path-consent-fence.ts";
 import { registeredRootsForSession, resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -2196,6 +2196,7 @@ async function confirmOutsideBoundaryTargets(
 	events: ExtensionAPI["events"],
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	grants: PathTargetGrants,
+	configHome: string,
 ): Promise<ToolCallEventResult | undefined> {
 	// A missing manager (a non-session caller) or a non-Git cwd keeps the fence
 	// silent. A manager whose session id is not assigned yet is different: the
@@ -2207,6 +2208,15 @@ async function confirmOutsideBoundaryTargets(
 	const identity = resolveSessionWorktree(ctx.cwd, ctx.cwd);
 	if (!identity) return undefined;
 	const roots = [identity.root, ...(sessionKey ? registeredRootsForSession(manager, sessionKey).filter((root) => resolveSessionWorktree(root, ctx.cwd)?.commonDir === identity.commonDir) : [])];
+	// The Gentle config home is governed by its own permission policy (protected
+	// authority files, updater-owned companion files under the current mode's
+	// ordinary checks), so the fence does not ask for consent there. A home that
+	// cannot be resolved stays fenced.
+	try {
+		roots.push(canonicalizeTarget(configHome, ctx.cwd));
+	} catch {
+		// Fail closed: keep the config home behind the fence.
+	}
 	const decision = evaluatePathFence(toolName, input, ctx.cwd, roots, sessionKey ?? "", sessionKey ? grants : new PathTargetGrants(), canConfirm(ctx));
 	if (decision.kind === "pass") return undefined;
 	if (decision.kind === "headless-block") return { block: true, reason: decision.reason };
@@ -11138,7 +11148,7 @@ function createGentleAiExtensionForTesting(
 		const deliveredTestDenied = evaluateDeliveredTestTool(event.toolName, event.input, ctx.cwd);
 		if (deliveredTestDenied) return deliveredTestDenied;
 		if (PATH_FENCE_TOOL_NAMES.has(event.toolName)) {
-			const outsideDenied = await confirmOutsideBoundaryTargets(event.toolName, event.input, ctx, pi.events, herdrLifecycle, pathTargetGrants);
+			const outsideDenied = await confirmOutsideBoundaryTargets(event.toolName, event.input, ctx, pi.events, herdrLifecycle, pathTargetGrants, gentlePiConfigHome(permissionEnvironment));
 			if (outsideDenied) return outsideDenied;
 		}
 		if (event.toolName === "subagent_run") {

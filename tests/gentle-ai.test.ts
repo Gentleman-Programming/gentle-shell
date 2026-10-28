@@ -4356,7 +4356,7 @@ function fenceFixture(t: import("node:test").TestContext) {
 	return { repo, sibling };
 }
 
-function pathFenceHook() {
+function pathFenceHook(processEnv?: NodeJS.ProcessEnv) {
 	type Handler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<ToolCallEventResult | undefined>;
 	const handlers = new Map<string, Handler>();
 	const states: string[] = [];
@@ -4367,9 +4367,39 @@ function pathFenceHook() {
 		} },
 		registerCommand() {}, registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, ...(processEnv === undefined ? {} : { processEnv }) })(pi);
 	return { toolCall: handlers.get("tool_call")!, states };
 }
+
+test("path fence leaves the Gentle config home to its own permission policy", async (t) => {
+	const f = fenceFixture(t);
+	const configHome = join(dirname(f.repo), "config-home");
+	mkdirSync(configHome, { recursive: true });
+	const { toolCall, states } = pathFenceHook({ ...process.env, GENTLE_PI_CONFIG_HOME: configHome });
+	const previews: string[] = [];
+	const ctx = {
+		cwd: f.repo, hasUI: true,
+		ui: { confirm: async (_title: string, preview: string) => { previews.push(preview); return false; } },
+		sessionManager: { getSessionId: () => "config-home-fence", getEntries: () => [] },
+	} as unknown as ExtensionContext;
+	for (const toolName of ["read", "write", "edit"]) {
+		assert.equal(await toolCall({ toolName, input: { path: join(configHome, "dev-binary.json"), content: "{}" } }, ctx), undefined, `${toolName} of an updater-owned file is not fenced`);
+	}
+	assert.equal(await toolCall({ toolName: "ls", input: { path: configHome } }, { ...ctx, hasUI: false }), undefined, "the config home itself is not fenced, even headless");
+	assert.deepEqual(previews, [], "no consent prompt for the config home");
+	assert.equal((await toolCall({ toolName: "write", input: { path: join(configHome, "permission-mode.json"), content: "yolo" } }, ctx))?.block, true, "protected authority files stay blocked by their own policy");
+	assert.deepEqual(previews, [], "the protected-file block is not a consent prompt");
+	const lookalike = join(dirname(f.repo), "config-home-other", "notes.txt");
+	mkdirSync(dirname(lookalike), { recursive: true });
+	assert.deepEqual(await toolCall({ toolName: "write", input: { path: lookalike, content: "x" } }, ctx), {
+		block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed.",
+	}, "a sibling sharing the config home's name prefix is still fenced");
+	assert.deepEqual(await toolCall({ toolName: "write", input: { path: join(f.sibling, "notes.txt"), content: "x" } }, ctx), {
+		block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed.",
+	}, "every other outside target still needs consent");
+	assert.deepEqual(previews, [lookalike, join(f.sibling, "notes.txt")]);
+	assert.deepEqual(states, ["waiting", "denied", "waiting", "denied"]);
+});
 
 const changedPathReason = "Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.";
 

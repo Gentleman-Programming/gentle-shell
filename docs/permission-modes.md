@@ -127,6 +127,8 @@ Live mode selection is bound to the SessionManager, session ID and canonical Git
 
 In Git-backed sessions, `read`, `write`, `edit`, `grep`, `find`, and `ls` require per-target, per-session consent outside the session worktree and registered same-clone worktrees. Headless sessions block ungranted outside targets. Paths using `@/absolute/path` or `file:///absolute/path` are checked against the same destination as Pi's built-in tools, not treated as project-relative names.
 
+The Gentle config home (`GENTLE_PI_CONFIG_HOME`, by default `~/.pi/gentle-ai`) is not fenced: its own policy already governs it. Authority files such as the permission mode and runtime guardrails stay blocked for model tools, and updater-owned companion files go through the current mode's ordinary checks. A config home that cannot be resolved stays fenced.
+
 If a symlink or requested target changes while the confirmation dialog is open, the call is blocked without storing a grant or reporting an approved permission event:
 
 > Gentle AI safety policy blocked the path access because its target changed during confirmation. Retry the tool call to request fresh consent.

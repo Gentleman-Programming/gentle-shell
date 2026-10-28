@@ -3828,6 +3828,72 @@ test("running subagent_result polls hide only their tool chrome, not the model r
 	assert.match(renderers.get("gentle-agents.result")!(sent[0].message, { expanded: true }, plainTheme).render(80).join("\n"), /Agent answer.*All done\./s, "background completion card remains visible");
 });
 
+// Agent tool cards: the status result continues the call's card with the task
+// state, its counts, label and last step; results without task details keep
+// the plain text preview.
+test("subagent_status continues its card with the task state, counts, label and last step", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("start", { agent: "explore", task: "Long job", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const statusTool = tools.get("subagent_status")!;
+	assert.match(stripAnsi(statusTool.renderCall({ task_id: id }, plainTheme).render(80).join("\n")), new RegExp(`◎ Agent status · explore · task ${id}`), "the call names the action and resolves the agent from the store");
+	const result = await statusTool.execute("status", { task_id: id }, undefined, undefined, ctx);
+	assert.match(result.content[0].text, new RegExp(`^${id} · explore · `), "the model-facing text is the unchanged describeTask line");
+	const collapsed = stripAnsi(statusTool.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).join("\n"));
+	assert.match(collapsed, /(RUNNING|QUEUED) · background · \d+ turns · \d+ tool calls/, "the state leads the body");
+	assert.match(collapsed, /map lib modules/, "the task label follows the state");
+	assert.match(collapsed, /last: /, "the last step stays visible collapsed");
+	assert.doesNotMatch(collapsed, /cwd /, "the workspace waits for expansion");
+	assert.match(stripAnsi(statusTool.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: true }, plainTheme).render(80).join("\n")), /cwd /, "expanded shows the workspace");
+	const fallback = stripAnsi(statusTool.renderResult({ content: [{ type: "text", text: "Error: no task nope" }], details: { error: "unknown task" } } as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).join("\n"));
+	assert.match(fallback, /Error: no task nope/, "a result without task details previews its text");
+	assert.doesNotMatch(fallback, /RUNNING|QUEUED|COMPLETED/, "no invented state");
+	await fire("session_shutdown", ctx);
+});
+
+test("agent card subtitles stay on one row when a task id carries line breaks", () => {
+	const { pi, tools } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const rows = tools.get("subagent_status")!.renderCall({ task_id: "t1\nINJECTED\r\nrow" }, plainTheme).render(80);
+	for (const row of rows) assert.doesNotMatch(row, /[\n\r]/, `row stays single-line: ${JSON.stringify(row)}`);
+	assert.match(stripAnsi(rows.join("")), /task t1 INJECTED/, "the id is kept, with the break folded into a space");
+	const run = tools.get("subagent_run")!.renderCall({ agent: "explore\nINJECTED" }, plainTheme).render(80);
+	for (const row of run) assert.doesNotMatch(row, /[\n\r]/, `run row stays single-line: ${JSON.stringify(row)}`);
+});
+
+test("an agent tool result takes the error tone from the host error flag", () => {
+	const { pi, tools } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	const result = { content: [{ type: "text", text: "Subagent dispatch requires a named agent." }], details: {} };
+	const render = (isError: boolean) => (tools.get("subagent_run")!.renderResult as (r: unknown, o: unknown, t: unknown, c: unknown) => { render(width: number): string[] })(result, { expanded: false }, taggedTheme, { isError, state: {} }).render(80).join("\n");
+	assert.match(render(true), /<error>/, "a host error paints the result frame in the error role");
+	assert.doesNotMatch(render(false), /<error>/, "an ordinary result keeps the agent chrome");
+});
+
+test("the iris float tint stays on agent info cards and leaves success cards on the theme background", async () => {
+	const { pi, tools, renderers } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const irisTint = "\x1b[48;2;26;21;38m";
+	const themeBg = "\x1b[48;5;236m";
+	const bgTheme = { fg: (_color: string, text: string) => text, bg: (_role: string, text: string) => `${themeBg}${text}\x1b[49m` };
+	setCardStyle(CARD_STYLE.FLOAT);
+	try {
+		const running = tools.get("subagent_status")!.renderCall({ task_id: "t1" }, bgTheme).render(80).join("\n");
+		assert.ok(running.includes(irisTint), "an info agent card wears the iris tint");
+		const answer = renderers.get("gentle-agents.result")!({ customType: "gentle-agents.result", content: "Subagent explore (task t1, \"x\") finished.\n\nAll done.", details: { gentleAgents: { taskId: "t1", agent: "explore", status: "completed" } } }, { expanded: false }, bgTheme).render(80).join("\n");
+		assert.ok(!answer.includes(irisTint), "a completed answer card keeps the theme's success background");
+		assert.ok(answer.includes(themeBg), "the theme background paints the success card");
+	} finally {
+		setCardStyle(CARD_STYLE.NEON);
+	}
+});
+
 test("the Agents card moves to the fullscreen rail like Todos and its header toggles collapse on left click", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();

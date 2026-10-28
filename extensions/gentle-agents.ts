@@ -482,13 +482,22 @@ const IRIS_FG = "\x1b[38;2;185;167;242m";
 const IRIS_DEEP_FG = "\x1b[38;2;143;122;217m";
 const IRIS_TINT_BG = "\x1b[48;2;26;21;38m";
 
-function agentTheme(theme: CardTheme): CardTheme {
+// The float tint follows the card tone: info cards (live agent work) wear the
+// iris tint; success, warning and error cards keep the theme's background.
+function agentTheme(theme: CardTheme, tone: CardTone): CardTheme {
+	const tint = tone === CARD_TONE.INFO;
 	return {
 		fg: (color, text) => color === "accent" ? `${IRIS_FG}${text}\x1b[39m`
 			: color === "border" ? `${IRIS_DEEP_FG}${text}\x1b[39m`
 			: theme.fg(color, text),
-		...(theme.bg ? { bg: (color, text) => color === "toolSuccessBg" ? `${IRIS_TINT_BG}${text}\x1b[49m` : theme.bg!(color, text) } : {}),
+		...(theme.bg ? { bg: (color, text) => tint && color === "toolSuccessBg" ? `${IRIS_TINT_BG}${text}\x1b[49m` : theme.bg!(color, text) } : {}),
 	};
+}
+
+// Card headings are one row: fold any line break a caller passes in before
+// the usual control-character escaping.
+function headingText(value: string): string {
+	return sanitizeTerminalText(value.replace(/[\r\n]+/g, " "));
 }
 
 // Structured task facts carried on the tool result; anything missing or of the
@@ -1564,13 +1573,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const hint = expandHint(options.expanded);
 		// The same answer card as the tool result: iris chrome, the state pill
 		// on top, the answer below ("answer" keeps its name through the flow).
-		const t = agentTheme(theme);
+		const t = agentTheme(theme, tone);
 		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
 		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
+		const subtitle = typeof details?.agent === "string" ? headingText(details.agent) : undefined;
 		return {
 			render(width: number) {
-				return renderCard({ title: "Agent answer", subtitle: details?.agent, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
+				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
 			},
 			invalidate() {},
 		};
@@ -2153,10 +2163,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// The agent chip: the call shows who it works with. Status-style calls
 		// only carry a task id, so the store resolves the agent's name.
 		const subject = (params: { agent?: string; task_id?: string }): { agent?: string; taskRef?: string } => {
-			const agent = typeof params.agent === "string" && params.agent.trim() ? sanitizeTerminalText(params.agent)
-				: typeof params.task_id === "string" ? sanitizeTerminalText(store.get(params.task_id)?.agent ?? "") || undefined
+			const agent = typeof params.agent === "string" && params.agent.trim() ? headingText(params.agent)
+				: typeof params.task_id === "string" ? headingText(store.get(params.task_id)?.agent ?? "") || undefined
 				: undefined;
-			const taskRef = typeof params.task_id === "string" ? `task ${sanitizeTerminalText(params.task_id)}` : undefined;
+			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
 			return { agent, taskRef };
 		};
 		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean } | undefined) => context ?? {};
@@ -2177,12 +2187,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				if (name === "result") return { render: () => [], invalidate() {} };
 				const { agent, taskRef } = subject(args as { agent?: string; task_id?: string });
 				const subtitle = agent && taskRef ? `${agent} · ${taskRef}` : agent ?? taskRef;
-				const iris = agentTheme(theme);
 				return {
 					render(width: number) {
 						if (width <= 0) return [];
 						const row = agentToolContext(context);
 						const tone = row.isError ? CARD_TONE.ERROR : CARD_TONE.INFO;
+						const iris = agentTheme(theme, tone);
 						return floatRows(tone, iris, width, (inner) => ({
 							head: [cardTop({ title: heading, subtitle, body: [], tone, glyph }, iris, inner, expandHint(!!row.expanded))],
 							...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: cardBottom(tone, iris, inner) } : {}),
@@ -2197,7 +2207,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return { render: () => [], invalidate() {} };
 				}
 				if (!options.isPartial) markCardResult(agentToolContext(context).state);
-				const failed = (result.details as { error?: unknown } | undefined)?.error !== undefined;
+				// A host error (a throw before any details exist) counts like a
+				// details error, so the result keeps the tone the call already shows.
+				const failed = (result.details as { error?: unknown } | undefined)?.error !== undefined || !!agentToolContext(context).isError;
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 				// Status answers a real orchestration decision, so its task facts
@@ -2205,10 +2217,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// result carries them. Anything without structured details (older
 				// sessions, error results) falls back to the text preview.
 				const facts = name === "status" || name === "result" ? statusCardFacts(result.details) : undefined;
-				const iris = agentTheme(theme);
+				if (facts) tone = STATUS_CARD_TONE[facts.status ?? ""] ?? tone;
+				const iris = agentTheme(theme, tone);
 				let rows: string[];
 				if (facts) {
-					tone = STATUS_CARD_TONE[facts.status ?? ""] ?? tone;
 					if (name === "status") {
 						rows = statusCardRows(facts, iris, options.expanded);
 					} else {
@@ -2232,7 +2244,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						if (width <= 0) return [];
 						return floatRows(tone, iris, width, (inner) => ({
 							...(ownHeading ? {
-								head: [cardTop({ title: heading, subtitle: task?.agent ? sanitizeTerminalText(task.agent) : task?.taskId ? `task ${sanitizeTerminalText(task.taskId)}` : undefined, body: [], tone, glyph }, iris, inner, expandHint(options.expanded))],
+								head: [cardTop({ title: heading, subtitle: task?.agent ? headingText(task.agent) : task?.taskId ? `task ${headingText(task.taskId)}` : undefined, body: [], tone, glyph }, iris, inner, expandHint(options.expanded))],
 							} : { afterHeading: true }),
 							body: cardBodyRows(rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
 							bottom: cardBottom(tone, iris, inner),

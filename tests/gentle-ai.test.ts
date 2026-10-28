@@ -4278,6 +4278,46 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 	}
 });
 
+test("a reload landing while a models screen step is in flight closes the loop without touching the stale ctx", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	const storeBefore = readFileSync(storePath, "utf8");
+	let stale = false;
+	let staleReads = 0;
+	let screens = 0;
+	const notifications: string[] = [];
+	const ui = {
+		notify(message: string) { notifications.push(message); },
+		// The runner invalidates the ctx while this step is still pending.
+		custom: async () => {
+			screens += 1;
+			await Promise.resolve();
+			stale = true;
+			return { type: "create-live" };
+		},
+		input: async () => "snapshot",
+	};
+	const guard = <T>(value: T): T => {
+		if (stale) {
+			staleReads += 1;
+			throw new Error("stale ctx");
+		}
+		return value;
+	};
+	const ctx = {
+		get cwd() { return guard(fixture.root); },
+		hasUI: true,
+		get ui() { return guard(ui); },
+		get sessionManager() { return guard(profileActionManager(fixture.root)); },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.openProfilesPanelLoop(ctx, live, "team");
+	assert.equal(screens, 1, "the screen is not reopened on a stale ctx");
+	assert.equal(staleReads, 1, "only the liveness probe touches the stale ctx");
+	assert.deepEqual(notifications, []);
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "no profile is created from a stale ctx");
+});
+
 test("Enter skipped by a session replacement while queued never touches the stale ctx", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);

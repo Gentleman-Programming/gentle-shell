@@ -10256,6 +10256,7 @@ export const __testing = {
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
 	runProfilesPanelAction,
+	openProfilesPanelLoop,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,

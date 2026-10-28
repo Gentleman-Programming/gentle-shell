@@ -109,13 +109,20 @@ async function fixture(t: test.TestContext, memory = false, flushed = true) {
     ).then((panel) => {
      if (selection === undefined) panel.handleInput?.("\x1b");
      else {
-      // The list keeps store order; arrows move it (j/k scroll the detail).
+      // Profiles are tabs in store order: left/right move one tab (a move may
+      // reopen the screen), and u uses the shown profile in this session.
       const names = Object.keys(profiles);
-      for (let i = 0; i < names.length; i++) panel.handleInput?.("\x1b[A");
-      for (let i = 0; i < names.indexOf(selection); i++)
-       panel.handleInput?.("\x1b[B");
-      selection = undefined;
-      panel.handleInput?.("\r");
+      const shown = () => {
+       const line = (panel.render?.(120) ?? [])[3] ?? "";
+       // eslint-disable-next-line no-control-regex
+       return line.replace(/\x1b\[[0-9;]*m/g, "").replace(/^│\s*/, "").split(/\s{3}|\s*│/)[0]?.trim() ?? "";
+      };
+      for (let step = 0; step < names.length && shown() !== selection; step++)
+       panel.handleInput?.(names.indexOf(selection) < names.indexOf(shown()) ? "\x1b[D" : "\x1b[C");
+      if (shown() === selection) {
+       selection = undefined;
+       panel.handleInput?.("u");
+      }
      }
     });
    });

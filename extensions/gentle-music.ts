@@ -332,12 +332,12 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 		description: "Open gentle-stream full screen (optional mood text); b returns with the music playing, q stops it. next, pause, play, stop, status control the music without leaving Pi.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/gentle:music needs the interactive terminal.", "warning");
-				return;
-			}
 			if (platform === "win32") {
 				ctx.ui.notify(MUSIC_WINDOWS_UNSUPPORTED, "warning");
+				return;
+			}
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/gentle:music needs the interactive terminal.", "warning");
 				return;
 			}
 			const found = await findPlayer();

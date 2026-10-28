@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import gentleMusic, {
+import gentleMusicExtension, {
 	findOnPath,
 	formatMusicStatus,
 	GENTLE_STREAM_SPEC,
@@ -20,6 +20,11 @@ import gentleMusic, {
 	type BundledMusicPlayer,
 	type MusicSpawn,
 } from "../extensions/gentle-music.ts";
+
+// The music tests describe a supported (POSIX) host unless they pass `platform`,
+// so they hold on every OS the suite runs on, Windows included.
+const gentleMusic = (pi: Parameters<typeof gentleMusicExtension>[0], deps: Parameters<typeof gentleMusicExtension>[1] = {}) =>
+	gentleMusicExtension(pi, { platform: "linux", ...deps });
 
 // /gentle:music hands the terminal to gentle-stream's own TUI, the way Pi's
 // external editor does, and controls the background player with
@@ -426,6 +431,18 @@ test("on Windows /gentle:music explains it is not available yet and never offers
 		assert.deepEqual(asked, [], args);
 		assert.equal(state.installs, 0, args);
 		assert.equal(spawned.length, 0, args);
+	}
+});
+
+test("on Windows the not-available notice wins over the interactive-terminal notice", async () => {
+	for (const mode of ["rpc", "json", "print"]) {
+		const { pi, commands } = fakePi();
+		const context = fakeContext(mode);
+		const { spawn, spawned } = fakeSpawn([{ code: 0 }], context.calls);
+		gentleMusic(pi, { which: onPath({ uvx: "C:\\bin\\uvx.exe" }), spawn, platform: "win32" });
+		await commands.get(MUSIC_COMMAND_NAME)!.handler("", context.ctx);
+		assert.deepEqual(context.notices, [[MUSIC_WINDOWS_UNSUPPORTED, "warning"]], mode);
+		assert.equal(spawned.length, 0, mode);
 	}
 });
 

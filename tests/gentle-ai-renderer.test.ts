@@ -68,7 +68,7 @@ test("review call and result cards have no passive background fill", (t) => {
 	]) {
 		const call = new GentleAiCallCard();
 		call.update(options.isPartial ? "running" : "completed", "review capture", theme, "$ capture");
-		const lines = [...call.render(40), ...renderGentleAiResult({ content: [{ type: "text", text: "Result" }] }, options, theme).render(40)];
+		const lines = [...call.render(40), ...renderGentleAiResult({ content: [{ type: "text", text: "Result" }], details: {} }, options, theme).render(40)];
 		for (const [row, line] of lines.entries()) {
 			let bg = false, column = 0;
 			for (const token of line.match(/\x1b\[[\d;]*m|[^\x1b]/gu) ?? []) {
@@ -86,14 +86,14 @@ test("review call and result cards have no passive background fill", (t) => {
 });
 
 test("a partial result draws no bottom rule and a final one draws exactly one", () => {
-	const partial = renderGentleAiResult({ content: [{ type: "text", text: "half" }] }, { expanded: false, isPartial: true }, plainTheme).render(60).map(stripAnsi);
+	const partial = renderGentleAiResult({ content: [{ type: "text", text: "half" }], details: {} }, { expanded: false, isPartial: true }, plainTheme).render(60).map(stripAnsi);
 	assert.deepEqual(partial.map((line) => line.slice(0, 1)), ["│"], "only the preview row, no closing rule");
-	const final = renderGentleAiResult({ content: [{ type: "text", text: "one\ntwo" }] }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
+	const final = renderGentleAiResult({ content: [{ type: "text", text: "one\ntwo" }], details: {} }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
 	assert.equal(final.length, 3);
 	assert.match(final[0], /^│ one +│$/);
 	assert.match(final[1], /^│ two +│$/);
 	assert.match(final[2], /^╰─+╯$/);
-	const empty = renderGentleAiResult({ content: [] }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
+	const empty = renderGentleAiResult({ content: [], details: {} }, { expanded: false }, plainTheme).render(60).map(stripAnsi);
 	assert.deepEqual(empty.map((line) => line.slice(0, 1)), ["╰"]);
 });
 
@@ -101,11 +101,11 @@ test("promoting the shared state to finished invalidates after the render return
 	const state: Record<string, unknown> = {};
 	let invalidations = 0;
 	const context = { state, invalidate: () => (invalidations += 1) };
-	renderGentleAiResult({ content: [{ type: "text", text: "done" }] }, { expanded: false }, plainTheme, context as never);
+	renderGentleAiResult({ content: [{ type: "text", text: "done" }], details: {} }, { expanded: false }, plainTheme, context as never);
 	assert.equal(invalidations, 0, "no reentrant invalidate while rendering");
 	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	assert.equal(invalidations, 1);
-	renderGentleAiResult({ content: [{ type: "text", text: "done" }] }, { expanded: false }, plainTheme, context as never);
+	renderGentleAiResult({ content: [{ type: "text", text: "done" }], details: {} }, { expanded: false }, plainTheme, context as never);
 	await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	assert.equal(invalidations, 1, "an unchanged state does not invalidate again");
 });

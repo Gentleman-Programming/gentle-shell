@@ -54,11 +54,14 @@ function dispatchWriter(input: Record<string, unknown>) {
 	assert.equal(typeof toolCall, "function");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-writer-surfaces-"));
 	scratchRoots.push(cwd);
+	// S16: these tests cover the surface rule; a measured context at the backstop admits the launch so the
+	// feature-document admission (tests/writer-feature-document-admission.test.ts) does not decide here.
 	return toolCall!({ toolName: "subagent_run", input }, {
 		cwd,
 		hasUI: false,
 		ui: { confirm: async () => true },
-	} as ExtensionContext);
+		getContextUsage: () => ({ tokens: 150_000, contextWindow: 272_000, percent: 55 }),
+	} as unknown as ExtensionContext);
 }
 
 async function assertAccepted(input: Record<string, unknown>, message: string) {

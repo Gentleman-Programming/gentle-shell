@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { normalizeNpmPackResult, parseNpmPackResult } from "./npm-pack-result.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -599,6 +600,23 @@ function runWindowsStartupTimingProbe(runtimeScript, env, cwd) {
 	});
 }
 
+export function createHookedPackedConsumerManifest(installDirectory, tarball) {
+	const ownedTarball = assertOwnedRegularFile(dirname(tarball), basename(tarball));
+	const consumer = realpathSync.native(installDirectory);
+	const canonicalTarball = realpathSync.native(ownedTarball);
+	const filePath = relative(consumer, canonicalTarball);
+	if (isAbsolute(filePath)) throw new Error("packed tarball must share the consumer filesystem root");
+	const fileSpec = `file:${filePath.split(sep).join("/")}`;
+	if (realpathSync.native(resolve(consumer, fileSpec.slice(5))) !== canonicalTarball) throw new Error("script approval does not resolve to the packed tarball");
+	// npm 12 matches local dependencies by their resolved file spec, not name.
+	// Absolute installs on npm 12 retain an absolute node.resolved; the relative
+	// key alone was empirically blocked. Both keys identify this same tarball.
+	// Older npm ignores this consumer-only field. No transitive script is approved.
+	const absoluteSpec = `file:${canonicalTarball.split(sep).join("/")}`;
+	if (realpathSync.native(absoluteSpec.slice(5)) !== canonicalTarball) throw new Error("absolute script approval does not resolve to the packed tarball");
+	return { name: "gentle-pi-packed-runner-test", private: true, allowScripts: { [fileSpec]: true, [absoluteSpec]: true } };
+}
+
 async function testHookedPackedRunner() {
 	const temporary = mkdtempSync(join(tmpdir(), "gentle-pi-packed-runner-"));
 	const packDirectory = join(temporary, "pack");
@@ -615,14 +633,14 @@ async function testHookedPackedRunner() {
 		mkdirSync(piAgentHome);
 	const originalSettings = '{ "tuiMode": "regular", "theme": "packed-fixture" }\n';
 	writeFileSync(join(agentHome, "settings.json"), originalSettings);
-	const packed = JSON.parse(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], {
+	const packed = parseNpmPackResult(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], {
 		cwd: root,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "inherit"],
 }));
 	if (packed.length !== 1 || typeof packed[0]?.filename !== "string") throw new Error("npm pack did not return one tarball");
-	const tarball = join(packDirectory, packed[0].filename);
-	writeFileSync(join(installDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-packed-runner-test", private: true }), "utf8");
+	const { tarball } = assertPackResult(packed, packDirectory, newUnhookedReceipt());
+	writeFileSync(join(installDirectory, "package.json"), JSON.stringify(createHookedPackedConsumerManifest(installDirectory, tarball)), "utf8");
 	runNpm(["install", "--ignore-scripts=false", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball], {
 		cwd: installDirectory,
 		stdio: "inherit",
@@ -657,6 +675,7 @@ async function testHookedPackedRunner() {
 	assert.ok(!abandonAuthorization.includes("evidence_records_present"));
 	// Accept prerelease pins too: a stable-only pattern here was a second,
 	// silent pin that refused the first prerelease version directory.
+	if (!existsSync(join(packageRoot, ".gentle-ai"))) throw new Error("packed postinstall did not create .gentle-ai; npm may have blocked lifecycle scripts — check the consumer allowScripts exact tarball approval and installer output");
 	const versions = readdirSync(join(packageRoot, ".gentle-ai"), { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?$/.test(entry.name));
 	if (versions.length !== 1) throw new Error("packed install did not contain exactly one package-local Gentle AI version");
 	const executable = join(packageRoot, ".gentle-ai", versions[0].name, process.platform === "win32" ? "gentle-ai.exe" : "gentle-ai");
@@ -801,8 +820,7 @@ export function validateWindowsStartupTimingMachinePaths(delta, operations = { l
 
 function assertPackResult(packed, packDirectory, receipt) {
 	selectUnhookedCheck(receipt, "pack-metadata");
-	if (!Array.isArray(packed) || packed.length !== 1 || !packed[0] || typeof packed[0] !== "object") throw new Error("npm pack did not return exactly one package");
-	const entry = packed[0];
+	const [entry] = normalizeNpmPackResult(packed);
 	if (entry.name !== "gentle-pi" || typeof entry.filename !== "string" || entry.filename !== basename(entry.filename)) throw new Error("npm pack returned an unsafe package identity");
 	if (typeof entry.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) throw new Error("npm pack did not report a sha512 integrity");
 	const tarball = resolve(packDirectory, entry.filename);

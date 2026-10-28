@@ -111,6 +111,30 @@ export function activitySummary(tasks: unknown, columns = FALLBACK_COLUMNS): str
 	return `${first}\n  ${second}${overflow ? "…" : ""}`;
 }
 
+/** Herdr pane environment: HERDR_ENV=1 plus nonblank pane and socket variables. */
+export function herdrDetected(env: NodeJS.ProcessEnv): boolean {
+	return env.HERDR_ENV === "1" && !!env.HERDR_PANE_ID?.trim() && !!env.HERDR_SOCKET_PATH?.trim();
+}
+
+/** Read-only /gentle:doctor guidance; empty outside Herdr. Never touches Herdr config. */
+export function herdrSetupHint(
+	env: NodeJS.ProcessEnv,
+	session: { interactive: boolean; isSocket: (path: string) => boolean },
+): string[] {
+	if (!herdrDetected(env)) return [];
+	const inactive = env.GENTLE_PI_AGENTS_CHILD === "1" ? "Gentle Agents child session"
+		: !session.interactive ? "requires the interactive Pi TUI"
+		: !session.isSocket(env.HERDR_SOCKET_PATH!) ? "HERDR_SOCKET_PATH is not a Unix socket" : undefined;
+	return [
+		"Herdr",
+		inactive ? `warn: Herdr task-summary publishing inactive: ${inactive}` : "pass: Herdr task-summary publishing active",
+		"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
+		"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
+		"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
+		"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
+	];
+}
+
 export function metadataArgs(pane: string, summary: string | null, seq: number): string[] {
 	const rows = summary?.split("\n") ?? [];
 	const tokens = ["summary", "summary2"].flatMap((token, index) => rows[index]

@@ -25,7 +25,7 @@ type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
 type RailHit = { key: string; component: Component; startY: number; height: number; width: number };
-type SectionCacheEntry = { component: Component; digest: string | undefined; revision: number; contentWidth: number; theme: ShellBarTheme; lines: string[] };
+type SectionCacheEntry = { component: Component; digest: string | undefined; revision: number; contentWidth: number; theme: ShellBarTheme; themeSignature: string; lines: string[] };
 type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
 	revision: number;
@@ -35,6 +35,7 @@ type PreparedRail = {
 	cardStyle: CardStyle;
 	root: LayoutRoot;
 	theme: ShellBarTheme;
+	themeSignature: string;
 	parts: Array<[string, SidebarRail]>;
 	digests: Array<string | undefined>;
 	contentWidth: number;
@@ -71,6 +72,20 @@ function railDigest(rail: SidebarRail): string | undefined {
 		return rail.digest?.();
 	} catch {
 		return undefined;
+	}
+}
+
+// Pi passes extensions one live theme proxy, so identity never changes on a
+// theme switch, and the switch only calls ui.invalidate(), which does not reach
+// the rail inside the layout tree. How the current theme paints a few roles is
+// what changes, so the memo keys on that: a digest-only section (Status,
+// Agents, Todos) would otherwise keep the previous theme's colors.
+const THEME_SIGNATURE_ROLES = ["accent", "border", "borderAccent", "muted", "dim", "text", "success", "warning", "error"];
+function themeSignature(theme: ShellBarTheme): string {
+	try {
+		return THEME_SIGNATURE_ROLES.map((role) => theme.fg(role, "·")).join("") + theme.bold("·");
+	} catch {
+		return "";
 	}
 }
 
@@ -179,6 +194,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	};
 	scroll.handleMouse = (event) => {
 		if (event.type === "wheel") {
+			// A bounded section (Todo) owns its inner viewport. Only wheel
+			// events it declines should move the surrounding rail.
+			const sectionResult = dispatchPartMouse(event);
+			if (sectionResult?.handled) return sectionResult;
 			// Consume even at the boundary or over blank rail space: Pi 0.85.1
 			// can send unconsumed delta to the primary transcript despite containment.
 			scroll.scrollBy(event.wheelDelta ?? 0);
@@ -213,9 +232,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		}
 		const style = cardStyle();
 		const parts = [...state.parts.entries()];
+		// Digest closures read live session state, so they must be evaluated once
+		// per frame and stored for the next comparison (issue #1681): the sections
+		// loop below reuses this pass instead of calling each digest a second time.
 		const digests = parts.map(([, rail]) => railDigest(rail));
+		const signature = themeSignature(theme);
 		const unchanged = prepared?.revision === cache.revision &&
-			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme &&
+			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
@@ -224,6 +247,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return prepared.active;
 		}
 		try {
+			const digestByPart = new Map(parts.map(([key], index) => [key, digests[index]]));
 			// The header is a full-width sibling row, not a rail section: it reads
 			// the terminal width (minus the rail's right inset), never the
 			// 50-column rail's content width.
@@ -231,22 +255,22 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const sections = ["footer", "jobs", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
 					return { key, component, lines: [] as string[] };
 				}
-				const digest = railDigest(component);
+				const digest = digestByPart.get(key);
 				const existing = sectionCache.get(key);
-				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme &&
+				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.theme === theme && existing.themeSignature === signature &&
 					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);
 				const lines = reusable ? existing.lines : (() => {
 					const rendered = [...(component.render(contentWidth - RAIL_PADDING * 2) ?? [])];
 					while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
 					return rendered;
 				})();
-				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth, theme, lines });
+				sectionCache.set(key, { component, digest, revision: cache.revision, contentWidth, theme, themeSignature: signature, lines });
 				return { key, component, lines };
 			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
 			// The header carries the brand once it is active; the banner is the
@@ -272,7 +296,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -375,7 +399,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		stopped = true;
 		state.active = false;
 		clearInterval(timer);
-		scroll.hideTransientScrollbar();
+		scroll.setScrollbar("hidden");
 		for (const cleanup of cleanups.reverse()) cleanup();
 		tui.requestRender();
 	};

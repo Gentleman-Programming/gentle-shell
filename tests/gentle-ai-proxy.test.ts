@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -265,6 +265,62 @@ test("the tunnel applies the proxy host to the certificate check", { timeout: 15
 	// proxy address, and the CONNECT request reached the proxy.
 	assert.match(proxy.head(), /^CONNECT release-assets\.example\.invalid:443 HTTP\/1\.1\r\n/);
 	assert.equal(proxy.servername(), false, "an address is not sent as a server name");
+});
+
+test("the origin certificate is checked against the origin address", { timeout: 15_000 }, async (t) => {
+	// A request for an address leaves the server name empty. An empty server
+	// name would make the origin certificate be checked against "localhost",
+	// so the download has to fall back to the address it asked for.
+	const originSockets: Socket[] = [];
+	const origin = createTlsServer({ cert: PROXY_CERT, key: PROXY_KEY }, (socket) => {
+		originSockets.push(socket);
+		socket.on("error", () => {});
+		socket.on("data", () => {
+			socket.write("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody");
+			socket.end();
+		});
+	});
+	await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", resolve));
+	t.after(() => new Promise<void>((resolve) => {
+		for (const socket of originSockets) socket.destroy();
+		origin.close(() => resolve());
+	}));
+	const originPort = (origin.address() as { port: number }).port;
+
+	// A proxy that opens the tunnel and pipes the bytes through.
+	const proxySockets: Socket[] = [];
+	const proxy = createServer((socket) => {
+		proxySockets.push(socket);
+		socket.on("error", () => {});
+		socket.once("data", (chunk) => {
+			const match = /^CONNECT 127\.0\.0\.1:(\d+) HTTP\/1\.1/.exec(chunk.toString("latin1"));
+			if (match === null) return;
+			const upstream = connect({ host: "127.0.0.1", port: Number(match[1]) });
+			upstream.on("error", () => {});
+			socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+			upstream.pipe(socket);
+			socket.pipe(upstream);
+		});
+	});
+	await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+	t.after(() => new Promise<void>((resolve) => {
+		for (const socket of proxySockets) socket.destroy();
+		proxy.close(() => resolve());
+	}));
+	const proxyPort = (proxy.address() as { port: number }).port;
+
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-origin-identity-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const destination = join(directory, "asset");
+	// The certificate covers IP:127.0.0.1, so the download only succeeds when
+	// the origin is checked against the address and not against "localhost".
+	await downloadGentleAiAsset(`https://127.0.0.1:${originPort}/asset`, destination, 1024, 0, {
+		env: { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}` },
+		maxAttempts: 1,
+		headerTimeoutMs: 1500,
+		ca: [PROXY_CERT],
+	});
+	assert.equal(readFileSync(destination, "utf8"), "body");
 });
 
 test("the release download carries a tunnel only when the environment names a proxy", async (t) => {

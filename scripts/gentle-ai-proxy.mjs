@@ -121,7 +121,19 @@ function tunnelAuthority(host, port) {
  * is only sent for a hostname.
  */
 export function proxyTlsOptions(proxy) {
-	const name = proxyHost(proxy);
+	return hostTlsOptions(proxyHost(proxy));
+}
+
+/**
+ * The TLS options for a host reached through the tunnel.
+ *
+ * The host is always the name the certificate is checked against, because
+ * Node leaves the socket host unset and would otherwise fall back to
+ * "localhost". An IP address cannot be a server name, and a modern Node
+ * refuses the handshake outright when it is given one, so the server name
+ * is only sent for a hostname.
+ */
+export function hostTlsOptions(name) {
 	return net.isIP(name) ? { host: name } : { host: name, servername: name };
 }
 
@@ -240,7 +252,10 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000, trust = 
 			if (remainder.length > 0) channel.unshift(remainder);
 			deliver(undefined, tls.connect({
 				socket: channel,
-				servername: options.servername ?? host,
+				// A request for an address leaves the server name empty, and an
+				// empty server name would make the certificate be checked
+				// against "localhost" instead of the origin.
+				...hostTlsOptions(options.servername || host),
 				ALPNProtocols: options.ALPNProtocols ?? ["http/1.1"],
 				...proxyTrustOptions(options),
 				...trust,

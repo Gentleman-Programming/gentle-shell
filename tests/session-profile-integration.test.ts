@@ -817,7 +817,7 @@ test("helpers report no owner as undefined", async () => {
  await waitCurrentSessionProfileSelection(f.manager);
 });
 
-test("selection helpers treat an incompatible registry protocol as nothing pending", () => {
+test("selection helpers treat an incompatible registry protocol as nothing pending or selectable", () => {
  const moduleUrl = new URL(
   "../lib/session-profile-integration.ts",
   import.meta.url,
@@ -827,12 +827,22 @@ test("selection helpers treat an incompatible registry protocol as nothing pendi
   import { SessionManager } from "@earendil-works/pi-coding-agent";
   import {
    hasPendingSessionProfileSelection,
+   runCurrentSessionProfileSelection,
    waitCurrentSessionProfileSelection,
   } from ${JSON.stringify(moduleUrl)};
   globalThis[Symbol.for("gentle-pi.session-profile.lifecycle")] = { version: 2 };
   const manager = SessionManager.inMemory(${JSON.stringify(tmpdir())});
   assert.equal(hasPendingSessionProfileSelection(manager), false);
   assert.equal(await waitCurrentSessionProfileSelection(manager), undefined);
+  let ran = false;
+  assert.equal(
+   await runCurrentSessionProfileSelection(manager, async () => {
+    ran = true;
+    return "never";
+   }),
+   undefined,
+  );
+  assert.equal(ran, false);
   process.stdout.write("ok");
  `;
  const result = spawnSync(

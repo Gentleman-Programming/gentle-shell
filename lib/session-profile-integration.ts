@@ -88,7 +88,13 @@ export async function runCurrentSessionProfileSelection<T>(
   current: () => boolean,
  ) => Promise<T>,
 ): Promise<T | undefined> {
- const owner = registry().owners.get(manager);
+ let owner: Owner | undefined;
+ try {
+  owner = registry().owners.get(manager);
+ } catch {
+  // An incompatible registry has no authority to select against.
+  return undefined;
+ }
  if (!owner?.attachment) return undefined;
  const attachment = owner.attachment,
   adapter = owner.adapter;

@@ -13,7 +13,7 @@ export interface MetadataReceipt {
 	freshness: "unknown" | "recent" | "stale";
 	presenceObservedAt?: number;
 	digest?: string;
-	snapshot?: { label: string | null; workspace: string | null; tasks: Candidate["tasks"];
+	snapshot?: { label: string | null; aliases?: Candidate["aliases"]; workspace: string | null; tasks: Candidate["tasks"];
 		omittedTasks: number; scope: Candidate["scope"] | null; catalog: Candidate["catalog"] | null;
 		state: Candidate["state"] | null };
 	unknowns: string[]; omissions: string[];
@@ -39,7 +39,7 @@ export function consultPublishedMetadata(profile: string, peers: readonly Presen
 	if (!peer?.publication || peer.freshness !== "recent") return unavailableMetadata(selection.recipientSessionId, "publication-unknown-or-stale", now, peer?.freshness);
 	if (selection.cursor !== undefined && !peer.catalog) return unavailableMetadata(selection.recipientSessionId, "catalog-unknown-or-invalid-cursor", now);
 	const snapshot = {
-		label: peer.label || null, workspace: peer.workspace || null,
+		label: peer.label || null, ...(peer.aliases ? { aliases: peer.aliases } : {}), workspace: peer.workspace || null,
 		tasks: peer.tasks?.map(t => ({ id: t.id, label: t.label, status: t.status, workspace: t.workspace })) ?? [],
 		omittedTasks: peer.omitted ?? 0, scope: peer.scope ?? null, catalog: peer.catalog ?? null, state: peer.state ?? null,
 	};

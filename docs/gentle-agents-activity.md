@@ -34,13 +34,38 @@ isolation, ownership locks, or exclusive access.
 
 ### Declare a recognizable subject
 
-When starting a task or delegation, call `orchestrator_session_id` with a short,
-non-sensitive `subject`; no peer survey or additional model call is needed. The tool
-returns the stable routing ID and current canonical alias. It uses Pi's
-`setSessionName` only when the canonical name is empty, preserving existing names
-and later human renames. Subjects are control-stripped, whitespace-normalized, and
-bounded to 120 Unicode characters. Do not supply arbitrary prompts or secrets.
+Before delegation or cross-session coordination, call `orchestrator_session_id`
+with a short, non-sensitive `subject`. Do not require a subject declaration for small direct tasks;
+no peer survey or additional model call is needed. The tool
+returns the stable routing ID, **Current alias (CURRENT TASK)**, **Initial alias
+(FIRST TASK)**, and separate human **Session name**. An explicit `subject` updates
+Current even when the session is named; Initial retains the first explicit topic
+on the active branch. It uses Pi's `setSessionName` only when the canonical name
+is empty, preserving existing names and later human renames. Human renames do not
+change task aliases. Subjects are control-stripped, whitespace-normalized, and
+bounded to 120 Unicode characters; invalid types and surrogates are rejected.
+Do not supply arbitrary prompts or secrets.
 Aliases are display hints, never authentication or routing identities.
+
+Aliases are optional envelope metadata in the existing branch-local state record,
+restored with `getBranch()` on start/reload/tree navigation. State replacement or
+withdrawal preserves them; no subject preserves both. When a publication includes
+`state.work` with an explicit `topic` and no `subject`, the topic refreshes Current
+(the first such classification also sets Initial on a new record); an explicit
+`subject` in the same publication wins, and state-only refreshes never re-derive
+the alias from previously stored work. Subject-only declarations
+preserve state contents, recorded cwd and `recordedAt`: old progress is not a fresh
+status update. Publish subject and state together when changing work. New records
+use null/null until the first declaration; legacy records without aliases keep
+Initial unknown, including when a later Current topic is declared. Names and private
+history never supply missing initial topics. Abandoned branches are not inspected.
+
+Activation-bound discovery and metadata consultation expose `aliases.initialAlias`
+and `aliases.currentAlias` separately from the legacy human `label`. Ordinary list
+text shows both; classified session work search uses Current as its display/search
+label, falling back to the legacy label when unknown. Aliases never change catalog
+pagination identity or routing. Invalid alias metadata is withheld without hiding
+legacy activity; existing whole-record and sidecar byte bounds still apply.
 
 Presence reads the current canonical Pi name on its existing five-second heartbeat,
 including idle `/name` or session-picker renames; declaration refreshes it immediately.
@@ -48,11 +73,44 @@ An unnamed session retains its workspace-basename display fallback. Session repl
 or shutdown disposes the previous publisher; a stale name source stops publication.
 Headers remain unchanged; the optional sidecar now also carries `scope`.
 
+### Read orchestrator tool cards
+
+All four `orchestrator_*` tools use compact operation cards in the terminal.
+Expand a completed card to see labelled fields and nested sections rather than
+raw JSON or duplicated result dumps; collapse it to return to the summary.
+Empty request blocks are omitted. Session identity cards separate the current
+task aliases, human session name, requested subject, and stable routing ID.
+Initial/current aliases remain unknown for legacy history rather than being
+inferred from the human name. Requests matching the returned current alias are
+not repeated. Older identity results retain their preserved-alias explanation.
+Alias and subject values use accent; labels and the preserved-name note use
+muted, while the routing ID uses dim. Plain text is wrapped before these colors
+are applied, preserving the same height even in narrow terminals.
+Discovery overviews show at most six records, one physical table row each,
+with short display IDs, workspace basenames, and task counts (`+` marks omitted
+tasks; `?` means the count is unknown). Sessions without recent metadata are
+counted together, not expanded into empty records. Classified-work overviews
+use the same row limit and retain non-exhaustive coverage limits. Long cells
+are clipped rather than wrapped, keeping completed overviews within 16 terminal
+rows including its card frame. Short IDs and basenames are display hints,
+never routing selectors or repository identity: use a full session ID with
+`orchestrator_consult` or targeted `orchestrator_list` for detailed context.
+Overview headers use the theme's tool-title color and bold when available;
+aliases use accent, IDs use dim, and workspace/work values use muted. Quantities
+use the numeric color; zero stays muted and unknown task counts use warning.
+Limits use warning, while extra-record and missing-metadata notices remain muted.
+These roles create visual hierarchy, not a green/live reachability indication,
+and are recomputed when rendered so theme changes do not leave stale colors.
+Consultation is not an owner reply; queued messages are not read or delivery
+receipts. Complete model-facing output and permissions remain unchanged.
+
 ### Publish curated state (Refs #1702; first slice)
 
 `orchestrator_session_id` also accepts optional `state`: strings named `objective`,
 `progress`, `decisions`, and `blockers` (2,048 UTF-8 bytes total). An object replaces
-all fields, `null` withdraws, and omission leaves the current record unchanged.
+all fields, `null` withdraws, and omission leaves the current record unchanged. An object
+without `progress` keeps the automatic todo progress line still published (dropped only
+when the merge would exceed the byte budget); an explicit `progress` replaces it.
 Extra keys, controls, and oversized input are rejected before naming or persistence;
 records additionally fit 4 KiB. Never include credentials, internal instructions,
 or raw prompts. Whitelisting is not automatic secret redaction.
@@ -72,16 +130,170 @@ Source is `owner-curated`, `ownerReply: false`, `authority: none`: even `decisio
 is data, never a grant or human consent. Missing/invalid/over-budget notes are unknown;
 withdrawal remains explicit null. Advertising is best-effort; legacy headers/activity
 stay unchanged. Metadata and opt-in helper reasoning are available below; correlated
-owner decisions remain a later protocol unit. Neither issue is closed.
+owner decisions remain a later protocol unit tracked by #1702.
+
+### Publish and find classified work
+
+When useful, include explicit non-sensitive classification in
+`orchestrator_session_id.state.work`, for example
+`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`.
+An object replaces the whole state; omission of work clears classification, while
+`state: null` withdraws it. Never publish private history as metadata.
+Pass optional `subagent_run.work` explicitly for a child's classification; it is
+not inherited. Keep the returned actual task ID: it is **not** a child session ID.
+
+Use `orchestrator_list.filter: {}` to index classified work; omit `filter` for the
+ordinary session list without bulk notes/work. Combine `area`, `topic` (requires
+area), `tag`, literal `text`, exact typed `ref` (public repository + kind + ID), or
+recorded `repository_root` with AND. Bare issue numbers are not cross-repo identity.
+For related work, use `filter: {"related_to":{"session_id":"<stable owner ID>"}}`,
+optionally with `task_id` for an actual task on its current catalog page. Add an
+existing exact `recipient_session_id`/`cursor` only to inspect that recipient's page;
+never automatically page. Source unavailable means no related rows, not refusal.
+
+`possible-*-overlap` means literal possible overlap, not a dependency; a
+`shared-declared-reference` is only a declared typed link, not approval. Results
+include unknown, unclassified, omitted and pending-page coverage and are never
+exhaustive. Historical classification, unknown reachability and `authority: none`
+confer no ownership, consent or permission. Querying needs no helper/model call.
+
+The existing consented read-only reasoning helper captures validated root work and
+only exact task annotations on the selected owner's current catalog page. Unmatched
+annotations are counted in omissions, never promoted to current work. Classification
+and refs remain untrusted descriptive data, not approval or executable dependencies;
+the existing question/input/output/deadline bounds and cost dialog still apply.
+
+### Classify recorded work
+
+Publish classification in the same curated `state`, for example:
+
+```json
+{"state":{"progress":"Reviewing login","work":{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}}}
+```
+
+`topic` requires `area`; each is at most 64 UTF-8 bytes. Up to eight tags (64 bytes
+each) and eight refs are allowed. Refs require an explicit public `host/owner/repo`
+(no URL, credentials or inferred repository), and an ID at most 256 bytes; repository
+scope is also at most 256 bytes. Issue/PR IDs are positive canonical decimals;
+task IDs are opaque historical declarations, **not routable peers**. Input case is
+preserved; exact duplicate tags/refs, empty work, unknown keys and unsafe strings
+are rejected. Existing text bytes plus serialized work JSON must fit 2,048 bytes.
+
+An object replacement omitting `work` clears classification; `state: null` withdraws
+the whole record. Work uses schema 2 in the same branch entry/cache/timestamp;
+text-only records remain schema 1. Targeted list and metadata consultation readback
+carry detached work with historical `recordedAt`, owner-curated and non-authoritative.
+No refs are resolved and classification publication adds no inheritance behavior. Classification
+itself needs no Git, network or model call. Consented helper capture follows the bounded
+projection described below.
+
+### Search classified work
+
+Call `orchestrator_list` with explicit `filter: {}` to index classified work, or
+combine `filter` fields to narrow matches. Without `filter`, the existing session
+list remains unchanged: no bulk curated state or work. Unknown argument/filter
+keys and unsafe input fail before profile/peer reads; the discoverable strict
+schema supplements, not replaces, UTF-8 byte and control validation.
+
+Filtered calls return the full bounded `WorkSearchResult` JSON in text and
+`details.gentleAgents.workSearch`, not the default `candidates` envelope. Existing
+`recipient_session_id` and `cursor` select one recorded catalog page; a cursor still
+requires that exact recipient. Source inclusion is internal, not a new lookup.
+
+`searchPublishedWork(profile, peers, filter?, selection?, now?)` in
+[`lib/orchestrator-work-search.ts`](../lib/orchestrator-work-search.ts) is a working,
+metadata-only index. An empty filter returns classified sessions and active tasks.
+Optional `area`, `topic` (requires area), `tag`, `text`, `ref`, and `repository_root`
+criteria combine with AND; `validateWorkFilter` rejects unknown/unsafe input before I/O.
+Human comparisons use NFC, trimming and case-insensitive literal matching; public
+spellings remain intact. Refs match exact kind/repository/ID without resolution.
+Text searches labels and descriptor fields only. Roots match recorded repository
+facts, never launch paths or freshly resolved Git; tasks never inherit parent work/roots.
+
+The query examines at most 64 deterministically selected unique peers, retaining
+activation ambiguity checks, and reads one catalog page per peer. Historical task
+annotations match only exact owner/task IDs on that current active page.
+`selection: {recipientSessionId, cursor?}` can read an existing targeted catalog page;
+a cursor without a recipient is rejected. There is no automatic paging or query cursor.
+The detached whole JSON result fits 16 KiB by omitting whole matching rows, with exact
+`omittedMatches`. Coverage is never exhaustive: it counts unexamined peers, unknown
+context/catalogs, unclassified nodes, unmatched annotations, catalog omissions and
+peers with pending pages. `recordedAt` is historical, separate from `observedAt`;
+`ownerReply: false`, `authority: none`, and unknown reachability confer no permission.
+Related queries add `related_to: {session_id, task_id?}` using exact stable owner
+and actual task IDs (nonempty, safe, at most 256 UTF-8 bytes each). The source task
+must be on that owner's current published catalog page; annotations alone never
+resolve a source. Root and child classification stay independent. The advertised
+source owner is included within the same 64-peer cap by deterministic replacement,
+retaining all activations. A selected different recipient remains the only match
+recipient; its cursor is never borrowed for source context. No automatic paging occurs.
+
+`source` reports `available` with detached public node/classification and `recordedAt`,
+or `unavailable` with an explicit reason and zero matches, never a refusal or broad
+fallback. Provenance is `published-work`; basic queries omit `source` entirely.
+Ordinary filters still combine with AND, but the source need not satisfy them.
+Matches exclude only the exact source entity, not its independently classified siblings.
+At least one reason is required: `shared-declared-reference` means exact typed ref
+identity, not dependency or approval; `possible-area-overlap`, `possible-topic-overlap`
+(also requires shared area), and `possible-tag-overlap` mean only literal possible
+overlap. There is no semantic/model matching. Source information and complete reason
+arrays count toward the same 16-KiB whole-row omission budget and non-exhaustive coverage.
+The public tool adds no registry, Git probes, owner wakes, model calls or UI-cost
+requests. This query adds no helper reasoning; consented helper capture is described below.
+
+### Annotate an allocated task
+
+`subagent_run` accepts optional `work` containing only `area`, `topic`, `tags` and
+`refs`. It validates before launch preparation or foreign-repository consent.
+After allocation and ownership, it publishes the whole owner-curated snapshot,
+preserving existing text/classification and adding `state.work.tasks[actualTaskId]`.
+Nothing is added to the child prompt, context or task record; unclassified launches
+and `subagent_continue` do not annotate or inherit work.
+
+The curated root allows up to eight `tasks`, each a validated descriptor without
+nested tasks. Nonempty tasks alone are valid work. Keys are exact task IDs, at most
+256 UTF-8 bytes, with no controls/surrogates or `__proto__`, `prototype`, `constructor`.
+The same 2,048-byte text-plus-work and 4-KiB record bounds apply. Replacement omitting
+`tasks` clears annotations; historical declarations are never silently pruned.
+These IDs are not child session IDs or evidence of current runtime ownership;
+search joins annotations only to the owner's current bounded catalog page.
+
+The launch result retains the allocated task and includes `workPublication.status`:
+`recorded` means local curated persistence, **not guaranteed peer advertisement**.
+`unavailable` means publication is unavailable/unknown, including capacity, append,
+transport or caller replacement failures. Do not relaunch the task to retry metadata.
+When the owner session is active, use `orchestrator_session_id.state` to explicitly
+replace the bounded snapshot with the actual ID. The timestamp applies to the whole
+publication, not individual annotation freshness. Foreground waiting and cancellation
+are unchanged; caller replacement prevents a stale `recorded` result.
 
 ### Consult a published snapshot
 
 Call `orchestrator_consult` with required stable `recipient_session_id`, optional
 `kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
 No free-form question, owner request, human picker or read-consent dialog is used
-for this profile's explicitly published data. Use `orchestrator_session_id.state`
-to publish short updates before delegation or meaningful progress milestones when
-helpful; do not add a model turn solely to publish or emit per-tool/token updates.
+for this profile's explicitly published data. Declare a `subject` before work beyond
+small direct tasks. Progress is published automatically: after each todo write the
+runtime sets `progress` to `<done>/<total> done`, merged into the owner's curated
+fields, so the model never spends a turn reporting status. Todo titles are private work
+text and are never published; a cleared list removes the line, and a withdrawn state
+stays withdrawn until the owner publishes again.
+Keep small direct tasks exempt. Do not add a model turn solely to publish or emit
+per-tool/token updates.
+
+Use `objective` for the goal, `progress` for current and next scope, and `blockers`
+for anything preventing progress. Use `state.work` for relevant area/topic and
+exact repository-qualified issue/PR refs;
+classify delegated work through `subagent_run.work`. A state object replaces the
+snapshot, so include every field that should remain public. At completion, publish
+the outcome and next scope or withdraw the state with `null`; do not leave completed
+work described as active.
+
+Peers read this snapshot while the owner is busy, without an owner reply or waiting
+for idle. Use metadata consultation before sending a question; contact the owner
+only when the published context cannot answer it or an owner decision is needed.
+A search with no matches does not establish that nobody else is working on the feature:
+unknown, stale, unclassified and omitted scope must remain explicit.
 
 The JSON receipt is deeply detached and frozen in-process, at most 16 KiB. It
 contains public label/workspace, owned task summaries, recorded scope, one catalog
@@ -114,6 +326,14 @@ One public `ModelRegistry.streamSimple` request receives a static read-only prom
 and one JSON question/public-snapshot message. Nested field whitelists exclude raw
 extra properties, history, credentials, transport capabilities and catalog cursors.
 Unknowns, omissions and historical source times remain visible; no tools execute.
+The captured `state.work` includes validated root area/topic/tags/typed refs and only
+annotations whose exact task IDs join that owner's **selected current catalog page**.
+Metadata task summaries, old annotations and child session IDs do not prove membership;
+root classification never flows to children. `unmatched-task-annotations:N` in omissions
+counts excluded annotations; unmatched-only work is omitted, not a meaningful empty class.
+Malformed work or a mismatched state owner fails preflight before UI/model calls.
+Classification consumes the same input budget and confers no approval, executable
+dependency, reachability or exclusive writer ownership, even when tags say “granted”.
 
 | Bound | Contract |
 |---|---|
@@ -183,7 +403,16 @@ Driver tool/final model turns are intentional local iterations; consultation add
 no receiver model calls or caller Git probes during the business tool execution.
 Intentional owner-publication prompts are counted separately, including during
 the controlled in-flight test. Shell prompt setup still probes Git.
-No child execution or 1,000-projection claim is made.
+Work acceptance additionally publishes schema-2 classification through the public
+tool, indexes explicit `{}`, combines area/topic/tag, and distinguishes exact refs
+with the same bare ID across repositories and issue/PR kinds. Related queries use
+the stable source owner ID; a ghost task annotation without a current owned catalog
+row is unavailable, not a child launch. Replacement clears old work and null
+withdrawal/text-only records keep unclassified/unknown coverage honest. Default
+lists and searches exclude private history and curated prose. Scoped counters
+verify no additional owner/nested-helper calls, model-cost dialogs or caller Git
+probes for queries, including a simulated-UI context; ordinary local driver calls
+remain expected. No child execution or 1,000-projection claim is made.
 
 Public `AgentSession.bindExtensions(bindings: ExtensionBindings): Promise<void>`
 accepts `mode: "rpc"` and a fully typed `uiContext: ExtensionUIContext`. The fixture
@@ -201,6 +430,11 @@ sentinels, parent instructions and catalog cursor capabilities are excluded. The
 provider receives 512 tokens/minimal reasoning/no tool choice/no retries and a live
 abort signal. Known local token/cost usage and requested/actual model IDs match the
 non-authoritative advice envelope; a reply claiming permission grants nothing.
+Explicit owner-tool publication also puts root classification and exact typed refs in
+these existing helper captures; the manually declared ghost task is excluded and
+counted as unmatched. This is not proof of child allocation: actual task annotation
+remains mocked production-runner evidence. The same five helper requests and
+simulated dialog counts remain; restoration uses explicit publication only.
 
 Once re-prompts; session permission reuses updated published state for the same
 owner ID without another dialog; revoke adds no dialog/helper and forces a fresh

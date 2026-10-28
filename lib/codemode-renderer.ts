@@ -9,8 +9,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, imageFallback, type Component } from "@earendil-works/pi-tui";
 import {
-	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardTop, floatRows, markCardResult,
-	type CardRowContext, type CardTheme, type CardTone,
+	CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardLine, cardRunningLine, cardStyle, cardTop, floatRows, markCardResult,
+	type CardRowContext, type CardStyle, type CardTheme, type CardTone,
 } from "./shell-card.ts";
 import { sanitizeTerminalText, stripAnsi } from "./terminal-theme.ts";
 
@@ -87,6 +87,8 @@ class CodemodeCard implements Component {
 	private readonly afterBody: boolean;
 	// The call card's render context: until a result exists, the call closes the frame.
 	private readonly row?: CardRowContext;
+	// Content and expansion belong to this component; only layout and row state can change.
+	private cachedFrame?: { width: number; style: CardStyle; running: boolean; lines: string[] };
 
 	constructor(theme: CardTheme, tone: CardTone, body: (width: number) => string[], top: boolean, hint?: string, afterBody = false, row?: CardRowContext) {
 		this.theme = theme;
@@ -102,15 +104,23 @@ class CodemodeCard implements Component {
 		const target = Math.max(0, Math.floor(width));
 		if (target === 0) return [];
 		const running = this.top && this.row !== undefined && cardAwaitingResult(this.row);
-		return floatRows(this.tone, this.theme, target, (inner) => ({
+		const style = cardStyle();
+		if (this.cachedFrame?.width === target && this.cachedFrame.style === style && this.cachedFrame.running === running) {
+			return this.cachedFrame.lines;
+		}
+		const lines = floatRows(this.tone, this.theme, target, (inner) => ({
 			head: this.top ? [cardTop({ title: "Code", glyph: "λ", body: [], tone: this.tone }, this.theme, inner, this.hint)] : [],
 			body: running ? [...this.body(inner), cardRunningLine(this.tone, this.theme, inner)] : this.body(inner),
 			bottom: this.top && !running ? undefined : cardBottom(this.tone, this.theme, inner),
 			afterHeading: !this.top && !this.afterBody,
 		}));
+		this.cachedFrame = { width: target, style, running, lines };
+		return lines;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.cachedFrame = undefined;
+	}
 }
 
 /** Replace presentation only: execute, schema and every loadout/exposure field retain their references. */

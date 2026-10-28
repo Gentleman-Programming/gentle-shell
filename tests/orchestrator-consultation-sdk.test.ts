@@ -71,10 +71,15 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const roots = Array.from({ length: 10 }, (_, i) => join(root, `wt${i}`));
 		for (const cwd of roots) git(clone, "worktree", "add", "--detach", cwd, "HEAD");
 		const gitProbes = new Map<string, number>();
+		const gitProbeOrigins: Array<{ cwd: string; operation: string; origin: string[] }> = [];
 		const runGit = new Proxy(execFileSync, { apply(target, _this, [command, args, options]) {
 			assert.equal(command, "git");
 			assert.ok(String(args[args.indexOf("-C") + 1]).startsWith(root + "/"));
 			const cwd = String(args[args.indexOf("-C") + 1]);
+			gitProbeOrigins.push({ cwd, operation: String(args.at(-1)), origin: (new Error().stack ?? "").split("\n").flatMap(line => {
+				const name = line.match(/\bat (?:async )?([A-Za-z_][\w.$]*)\s*\(/)?.[1];
+				return name ? [name] : [];
+			}).slice(0, 8) });
 			gitProbes.set(cwd, (gitProbes.get(cwd) ?? 0) + 1);
 			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
 		} });
@@ -108,6 +113,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			const payloads: Array<{ system: string; content: string }> = [];
 			let helperCalls = 0;
 			let helperGate: { started: () => void; release: Promise<void> } | undefined;
+			let mainGate: { started: () => void; release: Promise<void> } | undefined;
 			const manager = sdk.SessionManager.create(cwd, join(root, `sessions-${live.length}`));
 			if (humanName) manager.appendSessionInfo(humanName);
 			const settings = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", packages: [] });
@@ -166,7 +172,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 							const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
 								content: [], stopReason: "pending", timestamp: Date.now(), usage: { input: 0, output: 0,
 									cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-							const gate = nested ? helperGate : undefined;
+							const gate = nested ? helperGate : mainGate;
 							queueMicrotask(async () => {
 								if (gate) { gate.started(); await gate.release; }
 								if (options?.signal?.aborted) {
@@ -227,11 +233,19 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 				const before = calls;
 				let failed = false;
 				let toolProbes = 0;
+				let toolProbeStart = 0;
 				const unsubscribe = session.subscribe(event => {
-					if (event.type === "tool_execution_start" && event.toolName === name) toolProbes = gitProbes.get(cwd) ?? 0;
+					if (event.type === "tool_execution_start" && event.toolName === name) {
+						toolProbes = gitProbes.get(cwd) ?? 0;
+						toolProbeStart = gitProbeOrigins.length;
+					}
 					if (event.type === "tool_execution_end" && event.toolName === name) {
 						result = event.result; failed = event.isError;
-						if (name === "orchestrator_consult") assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, "consultation adds no caller Git probes");
+						if (name === "orchestrator_consult" || name === "orchestrator_list") {
+							const added = gitProbeOrigins.slice(toolProbeStart).filter(probe => probe.cwd === cwd).slice(0, 2)
+								.map(({ operation, origin }) => ({ operation, origin }));
+							assert.equal(gitProbes.get(cwd) ?? 0, toolProbes, `metadata query adds no caller Git probes; origins=${JSON.stringify(added)}`);
+						}
 					}
 				});
 				try { await session.prompt(`Execute ${name} once, then stop.`); } finally { unsubscribe(); }
@@ -267,6 +281,12 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			}
 			return { session, manager, tool, close, provider, dialogs, payloads, theme: ctx!.ui.theme, calls: () => calls,
 				helperCalls: () => helperCalls, choose: (value: typeof choice) => { choice = value; },
+				deferMain: () => {
+					let started!: () => void, release!: () => void;
+					const entered = new Promise<void>(resolve => { started = resolve; });
+					mainGate = { started, release: new Promise<void>(resolve => { release = resolve; }) };
+					return { entered, release: () => { mainGate = undefined; release(); } };
+				},
 				deferHelper: () => {
 					let started!: () => void, release!: () => void;
 					const entered = new Promise<void>(resolve => { started = resolve; });
@@ -321,6 +341,36 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		};
 		const first = await consult();
 		assert.equal(first.status, "available");
+		// Hold A's actual SDK main lane busy. B must read the published snapshot
+		// before releasing A, without messaging or a helper/receiver model call.
+		const busy = owner.deferMain();
+		const ownerRun = owner.session.prompt("Continue the current work without requesting a tool.");
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await busy.entered;
+			assert.equal(owner.session.isStreaming, true);
+			const whileBusy = await Promise.race([
+				consult(),
+				new Promise<never>((_resolve, reject) => {
+					deadline = setTimeout(() => reject(new Error("Metadata waited for the busy owner")), 5000);
+				}),
+			]);
+			assert.equal(owner.session.isStreaming, true, "owner remains busy when metadata returns");
+			assert.equal(whileBusy.status, "available");
+			assert.deepEqual(whileBusy.snapshot?.state?.state, state);
+			assert.deepEqual(whileBusy.snapshot?.aliases, {
+				initialAlias: "Do not replace human name", currentAlias: "Do not replace human name",
+			});
+			assert.equal(whileBusy.snapshot?.state?.recordedAt, (note.data as any).recordedAt,
+				"observation does not refresh the published status timestamp");
+			assert.equal(owner.helperCalls(), 0);
+			assert.equal(caller.helperCalls(), 0);
+		} finally {
+			clearTimeout(deadline);
+			busy.release();
+			await ownerRun;
+		}
+		assert.equal(owner.session.isStreaming, false);
 		// Actual SDK JSON/no-UI context: reasoning must not add a nested model run.
 		// tool() asserts exactly the existing two local driver turns, not UI proof.
 		const ownerCalls = owner.calls();
@@ -334,6 +384,82 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		eligible.manager.appendMessage({ role: "user", content: "PRIVATE_CALLER_HISTORY_SENTINEL", timestamp: Date.now() });
 		assert.ok(eligible.manager.getEntries().some(entry => entry.type === "message"
 			&& JSON.stringify(entry.message).includes("PRIVATE_CALLER_HISTORY_SENTINEL")));
+		// Work acceptance uses only registered production tools and actual SDK contexts.
+		// Ghost annotations below are historical declarations, never child launches.
+		const issue = { kind: "issue", repository: "github.com/Owner/Repo", id: "12" };
+		const work = { area: "Auth", topic: "Login", tags: ["Review"], refs: [issue], tasks: { ghost: { area: "Auth" } } };
+		await owner.tool("orchestrator_session_id", { state: { ...state, work } });
+		const classifiedNote = owner.manager.getBranch().findLast(entry => entry.type === "custom" && entry.customType === ORCHESTRATOR_STATE_ENTRY);
+		assert.ok(classifiedNote?.type === "custom");
+		assert.equal((classifiedNote.data as any).schema, 2);
+		assert.deepEqual((classifiedNote.data as any).state.work, work);
+		const search = async (filter: ToolCall["arguments"], uiCaller = false) => {
+			const driver = uiCaller ? eligible : caller;
+			const passive = uiCaller ? caller : eligible;
+			const counts = { owner: owner.calls(), passive: passive.calls(), ownerHelper: owner.helperCalls(),
+				callerHelper: caller.helperCalls(), eligibleHelper: eligible.helperCalls(), dialogs: eligible.dialogs.length };
+			const result = await driver.tool("orchestrator_list", { filter });
+			assert.equal(owner.calls(), counts.owner, "no additional owner model calls or wake");
+			assert.equal(passive.calls(), counts.passive, "no additional peer model calls");
+			assert.equal(owner.helperCalls(), counts.ownerHelper);
+			assert.equal(caller.helperCalls(), counts.callerHelper);
+			assert.equal(eligible.helperCalls(), counts.eligibleHelper);
+			assert.equal(eligible.dialogs.length, counts.dialogs, "no model-cost UI requests");
+			const index = JSON.parse(result.content[0].text!);
+			assert.deepEqual(JSON.parse(JSON.stringify(result.details.gentleAgents.workSearch)), index);
+			assert.equal(index.schema, 1); assert.equal(index.ownerReply, false);
+			assert.equal(index.authority, "none"); assert.equal(index.reachability, "unknown");
+			assert.equal(index.coverage.exhaustive, false);
+			assert.ok(Buffer.byteLength(result.content[0].text!) <= 16384);
+			assert.doesNotMatch(result.content[0].text!, /PRIVATE_|Published milestone|"decisions"|endpoint|activation|capabilities|cursor/);
+			return index;
+		};
+		const allWork = await search({});
+		assert.deepEqual(allWork.matches.map((row: any) => row.sessionId), [sid]);
+		assert.deepEqual(allWork.matches[0].work, { area: "Auth", topic: "Login", tags: ["Review"], refs: [issue] });
+		assert.equal(allWork.matches[0].recordedAt, (classifiedNote.data as any).recordedAt);
+		assert.equal(allWork.source, undefined);
+		assert.equal(allWork.coverage.unmatchedTaskAnnotations, 1);
+		assert.ok(allWork.coverage.unknownContext >= 1);
+		assert.ok(allWork.coverage.pendingCatalogPages >= 1);
+		const defaultWorkList = await caller.tool("orchestrator_list");
+		assert.doesNotMatch(JSON.stringify(defaultWorkList), /PRIVATE_|Published milestone|"work"|"decisions"/);
+		assert.ok(defaultWorkList.details.gentleAgents.candidates.every((row: any) => row.state === undefined && row.workRecord === undefined));
+		assert.equal((await search({ area: "auth", topic: "login", tag: "review" })).matches.length, 1);
+		assert.equal((await search({ area: "auth", tag: "different" })).matches.length, 0);
+		assert.equal((await search({ text: "Published milestone" })).matches.length, 0, "prose is not indexed");
+		assert.equal((await search({ repository_root: roots[0] })).matches.length, 1);
+		assert.equal((await search({ ref: issue })).matches.length, 1);
+		await eligible.tool("orchestrator_session_id", { state: { work: { area: "Auth", topic: "Login", tags: ["Review"],
+			refs: [{ ...issue, repository: "github.com/Other/Repo" }] } } });
+		assert.deepEqual((await search({ ref: issue })).matches.map((row: any) => row.sessionId), [sid], "bare ID across repos does not collide");
+		const otherRepo = await search({ ref: { ...issue, repository: "github.com/Other/Repo" } });
+		assert.deepEqual(otherRepo.matches.map((row: any) => row.sessionId), [eligible.manager.getSessionId()]);
+		const overlap = await search({ related_to: { session_id: sid } });
+		assert.equal(overlap.source.status, "available"); assert.equal(overlap.source.node.sessionId, sid);
+		assert.deepEqual(overlap.matches[0].reasons, ["possible-area-overlap", "possible-topic-overlap", "possible-tag-overlap"]);
+		await eligible.tool("orchestrator_session_id", { state: { work: { refs: [{ ...issue, kind: "pr" }] } } });
+		assert.deepEqual((await search({ ref: issue })).matches.map((row: any) => row.sessionId), [sid], "bare ID across kinds does not collide");
+		assert.equal((await search({ related_to: { session_id: sid } })).matches.length, 0);
+		await eligible.tool("orchestrator_session_id", { state: { work: { refs: [issue] } } });
+		const declared = await search({ related_to: { session_id: sid } });
+		assert.deepEqual(declared.matches[0].reasons, ["shared-declared-reference"]);
+		const ghost = await search({ related_to: { session_id: sid, task_id: "ghost" } });
+		assert.equal(ghost.source.status, "unavailable");
+		assert.equal(ghost.source.reason, "source-task-not-on-current-page");
+		assert.deepEqual(ghost.matches, []);
+		assert.equal((await search({}, true)).matches.length, 1, "RPC UI-bound metadata adds no helper or dialog");
+		await owner.tool("orchestrator_session_id", { state: { work: { area: "Billing" } } });
+		assert.equal((await search({ area: "Auth" })).matches.length, 0, "atomic replacement removes old root work");
+		await eligible.tool("orchestrator_session_id", { state: null });
+		await owner.tool("orchestrator_session_id", { state: null });
+		const withdrawnWork = await search({});
+		assert.deepEqual(withdrawnWork.matches, []);
+		assert.ok(withdrawnWork.coverage.unclassified >= 2);
+		await owner.tool("orchestrator_session_id", { state }); // Text-only restoration preserves original helper fixture.
+		assert.deepEqual((await search({})).matches, []);
+		// Explicit public replacement, never reconstruct work from private history.
+		await owner.tool("orchestrator_session_id", { state: { ...state, work } });
 		const invoke = async (kind: "metadata" | "reasoning" | "revoke-reasoning", expectedRuns: number, expectedDialogs: number, publicationDuringRun = false) => {
 			const receiver = owner.calls(), runs = eligible.helperCalls(), dialogs = eligible.dialogs.length;
 			const result = await eligible.tool("orchestrator_consult", { recipient_session_id: sid, kind,
@@ -376,7 +502,10 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			assert.ok(payload.source.unknowns.includes("owner-decision"));
 			assert.ok(payload.source.omissions.includes("git-facts-beyond-published-prefix"));
 			assert.deepEqual(Object.keys(payload.source.snapshot).sort(), ["catalog", "label", "omittedTasks", "scope", "state", "tasks", "workspace"]);
-			assert.deepEqual(payload.source.snapshot.state.state, state);
+			assert.deepEqual(payload.source.snapshot.state.state, { ...state,
+				work: { area: "Auth", topic: "Login", tags: ["Review"], refs: [issue] } });
+			assert.ok(payload.source.omissions.includes("unmatched-task-annotations:1"));
+			assert.doesNotMatch(capture.content, /ghost/); // declaration is not a real allocation
 			assert.deepEqual(payload.source.snapshot.catalog.registered, [roots[8]], "selected public page, no cursor capability");
 			return receipt;
 		};
@@ -387,7 +516,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.equal((await invoke("reasoning", 0, 1)).code, "permission-required");
 		eligible.choose("session"); await advice(1, 1);
 		state.progress = "Updated public milestone";
-		await owner.tool("orchestrator_session_id", { state }); // Intentional publication, outside receiver-count interval.
+		await owner.tool("orchestrator_session_id", { state: { ...state, work } }); // Explicit replacement, outside receiver-count interval.
 		eligible.choose("decline");
 		const reused = await advice(1, 0);
 		assert.notEqual(reused.snapshotDigest, once.snapshotDigest);

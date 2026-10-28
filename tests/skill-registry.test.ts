@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import skillRegistry, { __testing } from "../extensions/skill-registry.ts";
+
+// Registered startup reads process.env directly; a suite launched from a
+// delegated child must still exercise the parent paths (gentle-shell#1690).
+delete process.env.GENTLE_PI_AGENTS_CHILD;
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -116,34 +120,73 @@ test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async
 	);
 });
 
-test("findSkillFiles scans one skill directory level only", async () => {
+test("findSkillFiles scans flat skills and category-nested skills without descending further", async () => {
 	const root = join(tmpdir(), `gentle-pi-shallow-${Date.now()}`);
 	const skillPath = join(root, "docs", "SKILL.md");
 	const nestedSkillPath = join(root, "fixtures", "nested", "SKILL.md");
+	const deeperSkillPath = join(root, "fixtures", "nested", "deeper", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	mkdirSync(dirname(deeperSkillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
 	writeFileSync(nestedSkillPath, "---\nname: nested\ndescription: Nested fixture.\n---\n");
+	writeFileSync(deeperSkillPath, "---\nname: deeper\ndescription: Deeper fixture.\n---\n");
 
-	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath, nestedSkillPath]);
 });
 
-test("findSkillFiles follows symlinked skill directories", async (t) => {
+test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested collisions", async () => {
+	const cwd = join(tmpdir(), `gentle-pi-precedence-${Date.now()}`);
+	const directSkillPath = join(cwd, "skills", "zeta", "SKILL.md");
+	const nestedSkillPath = join(cwd, "skills", "alpha", "duplicate", "SKILL.md");
+	mkdirSync(dirname(directSkillPath), { recursive: true });
+	mkdirSync(dirname(nestedSkillPath), { recursive: true });
+	writeFileSync(directSkillPath, "---\nname: duplicate\ndescription: Direct skill.\n---\n");
+	writeFileSync(nestedSkillPath, "---\nname: duplicate\ndescription: Nested skill.\n---\n");
+
+	await __testing.regenerateRegistry(cwd, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(directSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	assert.doesNotMatch(registry, new RegExp(nestedSkillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("findSkillFiles does not descend into excluded categories", async () => {
+	const root = join(tmpdir(), `gentle-pi-excluded-category-${Date.now()}`);
+	for (const category of ["_shared", "skill-registry", "sdd-fixtures"]) {
+		const nestedSkillPath = join(root, category, "hidden", "SKILL.md");
+		mkdirSync(dirname(nestedSkillPath), { recursive: true });
+		writeFileSync(nestedSkillPath, "---\nname: hidden\ndescription: Hidden skill.\n---\n");
+	}
+
+	assert.deepEqual(await __testing.findSkillFiles(root), []);
+});
+
+test("findSkillFiles follows direct symlinked skills but not symlinked categories", async (t) => {
 	const root = join(tmpdir(), `gentle-pi-symlink-root-${Date.now()}`);
 	const realSkillDir = join(tmpdir(), `gentle-pi-symlink-target-${Date.now()}`);
+	const categoryTarget = join(tmpdir(), `gentle-pi-symlink-category-${Date.now()}`);
 	const linkedSkillDir = join(root, "linked");
 	const skillPath = join(linkedSkillDir, "SKILL.md");
 	mkdirSync(root, { recursive: true });
 	mkdirSync(realSkillDir, { recursive: true });
+	mkdirSync(join(categoryTarget, "nested"), { recursive: true });
 	writeFileSync(join(realSkillDir, "SKILL.md"), "---\nname: linked\ndescription: Linked skill.\n---\n");
+	writeFileSync(join(categoryTarget, "nested", "SKILL.md"), "---\nname: nested\ndescription: Nested skill.\n---\n");
 	try {
 		symlinkSync(realSkillDir, linkedSkillDir, "dir");
+		symlinkSync(categoryTarget, join(root, "category"), "dir");
 	} catch (error) {
 		t.skip(`symlink creation unavailable: ${error instanceof Error ? error.message : String(error)}`);
 		return;
 	}
 
 	assert.deepEqual(await __testing.findSkillFiles(root), [skillPath]);
+});
+
+test("only missing skill-file errors allow category scanning", () => {
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOENT" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "ENOTDIR" }), true);
+	assert.equal(__testing.isMissingSkillFileError({ code: "EACCES" }), false);
 });
 
 test("skill registry watchers close on shutdown", async () => {
@@ -178,6 +221,8 @@ test("startup skip honors no skill registry controls", () => {
 		true,
 	);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], {}), false);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "1" }), true);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "0" }), false);
 });
 
 test("duplicate extension load is skipped only across different sources", () => {
@@ -396,7 +441,9 @@ function registeredRegistry(cwd: string, suppressed = false) {
 	const ctx = { cwd, hasUI: true, ui: { notify: (message: string, level?: string) => notices.push({ message, level }) } };
 	return {
 		notices,
-		start: () => events.get("session_start")!(undefined, ctx),
+		// Startup work runs after session_start returns; settle it for assertions.
+		start: async () => { await events.get("session_start")!(undefined, ctx); await __testing.startupSettled(); },
+		startOnly: () => events.get("session_start")!(undefined, ctx),
 		refresh: () => commands.get("skill-registry:refresh")!.handler("", ctx),
 		stop: () => events.get("session_shutdown")!(undefined, ctx),
 	};
@@ -445,6 +492,11 @@ test("registered watcher protects registry tracked after a cache hit", async (t)
 	while (runtime.notices.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 	assert.equal(readFileSync(fixture.registry, "utf8"), before);
 	assert.ok(runtime.notices.some(({ message, level }) => level === "warning" && message.includes("/skill-registry:refresh")));
+	// The poll re-asks the same tracked-target state every interval: the
+	// warning stays a one-shot per unchanged state instead of repeating.
+	runtime.notices.length = 0;
+	await new Promise((resolve) => setTimeout(resolve, 3000));
+	assert.deepEqual(runtime.notices, []);
 	assert.ok(!runtime.notices.some(({ message }) => message.includes("refreshed")));
 });
 
@@ -551,6 +603,31 @@ for (const control of ["environment", "--no-skills", "-ns"]) {
 	});
 }
 
+// gentle-shell#1690: delegated rpc children have hasUI=true but must not write
+// .atl/, rename the legacy registry or start a watcher in the shared cwd.
+test("registered startup in a delegated child avoids writes, legacy rename and watchers", async (t) => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
+	writeFileSync(legacy, source);
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.start();
+	assert.equal(existsSync(fixture.registry), false);
+	assert.equal(existsSync(fixture.ignore), false);
+	assert.equal(readFileSync(legacy, "utf8"), source);
+	assert.equal(existsSync(`${legacy}.disabled`), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+});
+
 test("registered suppression avoids writes and watchers but permits explicit refresh", async (t) => {
 	const fixture = registryFixture();
 	const runtime = registeredRegistry(fixture.cwd, true);
@@ -561,4 +638,80 @@ test("registered suppression avoids writes and watchers but permits explicit ref
 	assert.equal(__testing.activeWatcherCount(), 0);
 	await runtime.refresh();
 	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+});
+
+// S7 CR4: the delayed regeneration after a legacy quarantine belongs to the
+// session that scheduled it; a shutdown before it fires cancels it.
+test("registered startup skips the delayed quarantine regeneration after shutdown", async () => {
+	const fixture = registryFixture();
+	const legacy = join(fixture.cwd, ".pi", "extensions", "skill-registry.ts");
+	mkdirSync(dirname(legacy), { recursive: true });
+	writeFileSync(legacy, 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n');
+	const runtime = registeredRegistry(fixture.cwd);
+	await runtime.start();
+	assert.equal(existsSync(`${legacy}.disabled`), true, "the legacy registry was quarantined");
+	await runtime.stop();
+	rmSync(fixture.registry);
+	await new Promise((resolve) => setTimeout(resolve, 800));
+	assert.equal(existsSync(fixture.registry), false, "a shut-down session must not regenerate the registry");
+});
+
+// S4: regeneration must not hold Pi's serial session_start chain.
+test("registered startup returns before regenerating and settles to the same output", async (t) => {
+	const fixture = registryFixture();
+	const runtime = registeredRegistry(fixture.cwd);
+	t.after(() => runtime.stop());
+	await runtime.startOnly();
+	assert.equal(existsSync(fixture.registry), false, "session_start must not await regeneration");
+	await __testing.startupSettled();
+	assert.match(readFileSync(fixture.registry, "utf8"), /Initial skill/);
+	assert.equal(readFileSync(fixture.ignore, "utf8"), "*\n");
+	assert.ok(runtime.notices.some(({ message }) => message === "Skill registry refreshed (1 skills)"));
+});
+
+// S4: a Git lookup that never answers (a repository rooted at HOME) takes the
+// existing fail-closed path instead of hanging.
+test("automatic Git tracking check times out into the fail-closed path", { skip: process.platform === "win32" }, async (t) => {
+	const fixture = registryFixture();
+	const bin = mkdtempSync(join(tmpdir(), "gentle-pi-slow-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	const previousTimeout = __testing.setGitTimeoutMs(200);
+	t.after(() => {
+		process.env.PATH = previousPath;
+		__testing.setGitTimeoutMs(previousTimeout);
+		rmSync(bin, { recursive: true, force: true });
+	});
+	const started = Date.now();
+	await assert.rejects(__testing.ensureAtlIgnored(fixture.cwd), /Cannot verify Git tracking/);
+	assert.ok(Date.now() - started < 2000, "the lookup must stop at its timeout");
+	assert.equal(existsSync(fixture.ignore), false);
+});
+
+// S2: a repository rooted at HOME makes every Git call scan the whole home.
+// Startup skips the automatic Git work there; deliberate refresh still works.
+test("registered startup skips Git work and watchers when the repository is rooted at HOME", async (t) => {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-registry-git-home-")));
+	execSync("git init", { cwd: home, stdio: "ignore" });
+	const cwd = join(home, "project");
+	const skill = join(cwd, "skills", "local", "SKILL.md");
+	mkdirSync(dirname(skill), { recursive: true });
+	writeFileSync(skill, "---\nname: local\ndescription: Initial skill.\n---\n");
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	const runtime = registeredRegistry(cwd);
+	t.after(async () => {
+		await runtime.stop();
+		process.env.HOME = fixtureHome;
+		process.env.USERPROFILE = fixtureHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	await runtime.start();
+	assert.equal(existsSync(join(cwd, ".atl", ".gitignore")), false);
+	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
+	assert.equal(__testing.activeWatcherCount(), 0);
+	assert.deepEqual(runtime.notices, []);
+	await runtime.refresh();
+	assert.match(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"), /Initial skill/);
 });

@@ -406,7 +406,7 @@ test("shipped controller fails closed while static prompts defer RDD lifecycle o
 	const core = readFileSync("assets/orchestrator.md", "utf8");
 	assert.match(core, new RegExp(boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-	for (const path of ["assets/orchestrator-delegation.md", "skills/gentle-ai/SKILL.md"]) {
+	for (const path of ["assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "skills/gentle-ai/SKILL.md"]) {
 		const contract = readFileSync(path, "utf8");
 		assert.doesNotMatch(contract, /INSPECT before START|start -> finalize -> validate|next_transition|review\.capture-result/is, path);
 	}

@@ -182,7 +182,7 @@ export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOW
 		// redirect may land on a host that NO_PROXY exempts.
 		const proxy = resolveProxyForTarget(parsed, env);
 		const requestOptions = { headers: { "user-agent": "gentle-pi-installer" } };
-		if (proxy !== undefined) requestOptions.agent = createProxyTunnelAgent(proxy);
+		if (proxy !== undefined) requestOptions.agent = createProxyTunnelAgent(proxy, headerTimeoutMs);
 		return new Promise((resolve, reject) => {
 			let pending;
 			const timer = setTimeout(() => pending?.destroy(downloadTimeoutError("headers")), headerTimeoutMs);

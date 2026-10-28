@@ -33,6 +33,11 @@ function parseProxy(raw) {
 		const proxy = new URL(raw.includes("://") ? raw : `http://${raw}`);
 		if (proxy.protocol !== "http:" && proxy.protocol !== "https:") return undefined;
 		if (proxy.hostname === "") return undefined;
+		// Credentials are percent-encoded in the URL and decoded when the
+		// Proxy-Authorization header is built. Decoding them here rejects a
+		// malformed value now, instead of failing later inside the tunnel.
+		decodeURIComponent(proxy.username);
+		decodeURIComponent(proxy.password);
 		return proxy;
 	} catch {
 		return undefined;
@@ -104,73 +109,109 @@ function tunnelAuthority(host, port) {
  * request and cannot impersonate the release host without the origin's own
  * certificate chain failing the handshake.
  */
-export function createProxyTunnelAgent(proxy) {
+export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 	const agent = new https.Agent({ keepAlive: false });
 	agent.createConnection = (options, callback) => {
 		const host = options.host ?? options.hostname;
 		const port = Number(options.port ?? 443);
 		const authority = tunnelAuthority(host, port);
+		const raw = net.connect({ host: proxy.hostname, port: proxyPort(proxy) });
+		let channel = raw;
+		let head = Buffer.alloc(0);
 		let delivered = false;
+		let timer;
+		const closed = new Set();
+		// The listener identity of each socket is kept so every one of them can
+		// be detached again on completion, failure and teardown.
+		const listeners = new Map();
+		const onEnd = () => fail(Object.assign(new Error("Gentle AI download proxy closed before completing CONNECT headers"), { code: "ECONNRESET" }));
 		const deliver = (error, secure) => {
 			if (delivered) return;
 			delivered = true;
+			clearTimeout(timer);
+			raw.off("connect", onConnect);
+			for (const [socket, bound] of listeners) {
+				// TLS queues an error while handling EOF, so the error handler
+				// stays until teardown finishes and is removed with the close.
+				if (error && !closed.has(socket)) socket.once("close", () => socket.off("error", bound.error));
+				else socket.off("error", bound.error);
+				socket.off("end", bound.end);
+				socket.off("close", bound.close);
+				socket.off("data", onData);
+			}
 			callback(error, secure);
 		};
-		const raw = net.connect({ host: proxy.hostname, port: proxyPort(proxy) });
-		const fail = (error) => {
+		function fail(error) {
+			if (delivered) return;
+			channel.destroy();
 			raw.destroy();
 			deliver(error, undefined);
+		}
+		const watch = (socket) => {
+			const bound = {
+				error: fail,
+				end: onEnd,
+				close: () => {
+					closed.add(socket);
+					onEnd();
+				},
+			};
+			listeners.set(socket, bound);
+			socket.on("error", bound.error);
+			socket.on("end", bound.end);
+			socket.on("close", bound.close);
+			return bound;
 		};
-		raw.once("error", fail);
-		raw.once("connect", () => {
+		// The request cannot enforce its deadline until this agent hands it a
+		// socket. Bound TCP, proxy TLS and the CONNECT headers here instead.
+		timer = setTimeout(() => fail(Object.assign(new Error("Gentle AI download proxy CONNECT timed out"), { code: "GENTLE_AI_DOWNLOAD_TIMEOUT" })), headerTimeoutMs);
+		watch(raw);
+		raw.once("connect", onConnect);
+		function onConnect() {
 			// A proxy reached over TLS speaks the same CONNECT protocol once its
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
-			const channel = proxy.protocol === "https:" ? tls.connect({ socket: raw, servername: proxy.hostname }) : raw;
-			channel.once("error", fail);
-			openTunnel(channel);
-		});
-		function openTunnel(channel) {
+			if (proxy.protocol === "https:") {
+				channel = tls.connect({ socket: raw, servername: proxy.hostname });
+				watch(channel);
+			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];
 			if (proxy.username !== "") {
 				const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
 				lines.push(`Proxy-Authorization: Basic ${Buffer.from(credentials).toString("base64")}`);
 			}
 			channel.write(`${lines.join("\r\n")}\r\n\r\n`);
-			let head = Buffer.alloc(0);
-			const onData = (chunk) => {
-				head = Buffer.concat([head, chunk]);
-				const boundary = head.indexOf("\r\n\r\n");
-				if (boundary === -1) return;
-				channel.off("data", onData);
-				channel.off("error", fail);
-				const status = Number(head.subarray(0, head.indexOf("\r\n")).toString("latin1").split(" ")[1]);
-				if (status !== 200) {
-					raw.destroy();
-					// A proxy that is briefly overloaded answers like any other
-					// transient HTTP failure, and the downloader's own retry rule
-					// decides whether the attempt is worth repeating.
-					const error = new Error(`Gentle AI download proxy refused the tunnel with status ${status}`);
-					error.code = TRANSIENT_PROXY_STATUSES.includes(status) ? "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP" : "GENTLE_AI_DOWNLOAD_HTTP";
-					deliver(error, undefined);
-					return;
-				}
-				// Bytes the proxy sent past the header block belong to the origin
-				// stream and have to reach the TLS layer rather than be dropped.
-				const remainder = head.subarray(boundary + 4);
-				if (remainder.length > 0) channel.unshift(remainder);
-				deliver(undefined, tls.connect({
-					socket: channel,
-					servername: options.servername ?? host,
-					ALPNProtocols: options.ALPNProtocols ?? ["http/1.1"],
-					...(options.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: options.rejectUnauthorized }),
-					...(options.ca === undefined ? {} : { ca: options.ca }),
-					...(options.cert === undefined ? {} : { cert: options.cert }),
-					...(options.key === undefined ? {} : { key: options.key }),
-					...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
-				}));
-			};
 			channel.on("data", onData);
+		}
+		function onData(chunk) {
+			head = Buffer.concat([head, chunk]);
+			const boundary = head.indexOf("\r\n\r\n");
+			if (boundary === -1) return;
+			channel.off("data", onData);
+			const status = Number(head.subarray(0, head.indexOf("\r\n")).toString("latin1").split(" ")[1]);
+			if (status !== 200) {
+				// A proxy that is briefly overloaded answers like any other
+				// transient HTTP failure, and the downloader's own retry rule
+				// decides whether the attempt is worth repeating.
+				const error = new Error(`Gentle AI download proxy refused the tunnel with status ${status}`);
+				error.code = TRANSIENT_PROXY_STATUSES.includes(status) ? "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP" : "GENTLE_AI_DOWNLOAD_HTTP";
+				fail(error);
+				return;
+			}
+			// Bytes the proxy sent past the header block belong to the origin
+			// stream and have to reach the TLS layer rather than be dropped.
+			const remainder = head.subarray(boundary + 4);
+			if (remainder.length > 0) channel.unshift(remainder);
+			deliver(undefined, tls.connect({
+				socket: channel,
+				servername: options.servername ?? host,
+				ALPNProtocols: options.ALPNProtocols ?? ["http/1.1"],
+				...(options.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: options.rejectUnauthorized }),
+				...(options.ca === undefined ? {} : { ca: options.ca }),
+				...(options.cert === undefined ? {} : { cert: options.cert }),
+				...(options.key === undefined ? {} : { key: options.key }),
+				...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
+			}));
 		}
 	};
 	return agent;

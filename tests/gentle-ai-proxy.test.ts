@@ -19,19 +19,22 @@ function pendingRequest() {
 }
 
 // A proxy that answers CONNECT with the given status and records the request
-// head it received. Nothing else is spoken, so a tunnel the client opens is
-// observable without a TLS origin behind it.
-async function startProxyStub(status: number) {
+// head it received. A string sends an incomplete response before closing;
+// null leaves the connection silent. No TLS origin is needed.
+async function startProxyStub(status: number | string | null) {
 	const sockets: Socket[] = [];
+	const closed: Promise<void>[] = [];
 	let head = "";
 	let first: Buffer = Buffer.alloc(0);
 	const server = createServer((socket) => {
 		sockets.push(socket);
+		closed.push(new Promise((resolve) => socket.once("close", () => resolve())));
 		socket.on("data", (chunk) => {
 			if (first.length === 0) first = chunk;
 			if (head === "") head += chunk.toString("latin1");
 		});
-		socket.write(`HTTP/1.1 ${status} ${status === 200 ? "Connection Established" : "Proxy Authentication Required"}\r\n\r\n`);
+		if (status === null) return;
+		socket.write(typeof status === "string" ? status : `HTTP/1.1 ${status} ${status === 200 ? "Connection Established" : "Proxy Authentication Required"}\r\n\r\n`);
 		if (status !== 200) socket.end();
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -39,6 +42,8 @@ async function startProxyStub(status: number) {
 	const port = typeof address === "object" && address !== null ? address.port : 0;
 	return {
 		port,
+		connections: () => sockets.length,
+		waitForClose: () => Promise.all(closed),
 		head: () => head,
 		firstBytes: () => first,
 		close: async () => {
@@ -107,6 +112,40 @@ test("NO_PROXY keeps the listed hosts off the proxy", () => {
 	assert.notEqual(resolveProxyForTarget(TARGET, { ...proxy, NO_PROXY: "release-assets.example.invalid:8443" }), undefined);
 });
 
+test("malformed percent-encoded proxy credentials are ignored", () => {
+	for (const credentials of ["user%:pass", "user:pass%GG", "user:%C3%28", ":pass%"]) {
+		const env = { HTTPS_PROXY: `http://${credentials}@proxy.invalid:3128` };
+		assert.equal(resolveProxyForTarget(TARGET, env), undefined);
+		assert.equal(resolveProxyForTarget(TARGET, { ...env, HTTP_PROXY: "http://fallback.invalid:3128" })?.hostname, "fallback.invalid");
+	}
+});
+
+for (const [name, response, protocol] of [
+	["silent", null, "http"],
+	["early-closed", "", "http"],
+	["truncated", "HTTP/1.1 200 Connection Established\r\n", "http"],
+	["silent TLS", null, "https"],
+] as const) {
+	test(`${name} proxy rejects within the CONNECT deadline`, { timeout: 3000 }, async (t) => {
+		const proxy = await startProxyStub(response);
+		t.after(() => proxy.close());
+		const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-incomplete-"));
+		t.after(() => rm(directory, { recursive: true, force: true }));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("CONNECT did not settle within one second")), 1000); });
+		try {
+			await assert.rejects(Promise.race([
+				downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `${protocol}://localhost:${proxy.port}` }, maxAttempts: 1, headerTimeoutMs: 50 }),
+				deadline,
+			]), { code: response === null ? "GENTLE_AI_DOWNLOAD_TIMEOUT" : "ECONNRESET" });
+			await Promise.race([proxy.waitForClose(), deadline]);
+			assert.equal(proxy.connections(), 1);
+		} finally {
+			clearTimeout(timer);
+		}
+	});
+}
+
 test("the release download carries a tunnel only when the environment names a proxy", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-wiring-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
@@ -154,6 +193,7 @@ test("a proxy that is briefly overloaded is retried like any other transient fai
 		() => downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `http://127.0.0.1:${proxy.port}` }, maxAttempts: 2, retryDelayMs: 0, headerTimeoutMs: 1500 }),
 		/proxy refused the tunnel with status 503/,
 	);
+	assert.equal(proxy.connections(), 2, "a transient refusal opens a second connection");
 });
 
 test("a proxy reached over TLS is spoken to over TLS, not in the clear", { timeout: 15_000 }, async (t) => {

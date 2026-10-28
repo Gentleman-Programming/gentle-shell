@@ -4428,7 +4428,7 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 test("/gentle:profiles clear removes the session binding and records an explicit clear", async (t) => {
 	const h = profilesCommandHarness(t);
 	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
-	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "apply", name: "team" }, {});
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
 	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.name, "team");
 	h.liveCalls.length = 0;
 	await h.run("clear");
@@ -4473,7 +4473,7 @@ for (const kind of ["in-memory", "unsaved"] as const)
 test("/gentle:profiles clear on an already-cleared session writes nothing and says so", async (t) => {
 	const h = profilesCommandHarness(t);
 	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
-	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "apply", name: "team" }, {});
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
 	await h.run("clear");
 	await h.run("clear");
 	assert.equal(h.family().length, 2, "the second clear appends nothing");
@@ -4627,7 +4627,7 @@ test("file operations are subcommands: profiles restore-routing, export and impo
 
 	for (const args of ["export", "export ghost", "publish", "frobnicate", "restore", "export-routing extra"]) {
 		await fixture.run("gentle:profiles", args);
-		assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:profiles \[export <name> \| import \| publish <name> \| export-routing \| restore-routing\]/, args);
+		assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:profiles \[export <name> \| import \| publish <name> \| export-routing \| restore-routing \| clear\]/, args);
 	}
 	assert.equal(fixture.panelVisits(), 0, "no subcommand opens the screen");
 });

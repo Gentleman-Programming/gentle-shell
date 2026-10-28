@@ -21,7 +21,7 @@ import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
-import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
@@ -61,7 +61,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardRunningLine, cardTop, floatRows, markCardResult, panelHeaderRow, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
+import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, markCardResult, panelHeaderRow, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -2239,6 +2239,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// The result tool hides its call, so the result draws the heading
 				// itself; every other tool continues the call's card.
 				const ownHeading = name === "result";
+				// A collapsed status card keeps state, label and last step on one
+				// row each, so a narrow terminal clips them instead of wrapping the
+				// last step out of the three-row preview.
+				const fitRows = !options.expanded && name === "status" && facts !== undefined;
 				return {
 					render(width: number) {
 						if (width <= 0) return [];
@@ -2246,7 +2250,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 							...(ownHeading ? {
 								head: [cardTop({ title: heading, subtitle: task?.agent ? headingText(task.agent) : task?.taskId ? `task ${headingText(task.taskId)}` : undefined, body: [], tone, glyph }, iris, inner, expandHint(options.expanded))],
 							} : { afterHeading: true }),
-							body: cardBodyRows(rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
+							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
 							bottom: cardBottom(tone, iris, inner),
 						}));
 					},

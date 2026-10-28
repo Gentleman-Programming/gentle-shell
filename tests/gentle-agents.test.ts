@@ -3849,6 +3849,9 @@ test("subagent_status continues its card with the task state, counts, label and 
 	assert.match(collapsed, /map lib modules/, "the task label follows the state");
 	assert.match(collapsed, /last: /, "the last step stays visible collapsed");
 	assert.doesNotMatch(collapsed, /cwd /, "the workspace waits for expansion");
+	const narrow = statusTool.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(40).map(stripAnsi);
+	assert.match(narrow.join("\n"), /last: /, "a narrow collapsed card still shows the last step");
+	for (const row of narrow) assert.ok(visibleWidth(row) <= 40, `narrow row fits: ${JSON.stringify(row)}`);
 	assert.match(stripAnsi(statusTool.renderResult(result as Parameters<Registered["renderResult"]>[0], { expanded: true }, plainTheme).render(80).join("\n")), /cwd /, "expanded shows the workspace");
 	const fallback = stripAnsi(statusTool.renderResult({ content: [{ type: "text", text: "Error: no task nope" }], details: { error: "unknown task" } } as Parameters<Registered["renderResult"]>[0], { expanded: false }, plainTheme).render(80).join("\n"));
 	assert.match(fallback, /Error: no task nope/, "a result without task details previews its text");

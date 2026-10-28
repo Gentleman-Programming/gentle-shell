@@ -111,3 +111,18 @@ for (const step of ["writeFileSync", "renameSync"] as const) test(`a failed ${st
 	assert.equal(readFileSync(file, "utf8"), before);
 	assert.equal(resolveHerdrTaskSummarySettings(options).settings.enabled, false);
 });
+
+test("a failed cleanup never masks the original write failure", t => {
+	const { options } = fixture();
+	const original = fs.writeFileSync;
+	const failure = Object.assign(new Error("controlled write failure"), { code: "ENOSPC" });
+	t.mock.method(fs, "writeFileSync", (...args: unknown[]) => {
+		Reflect.apply(original, fs, [args[0], "", { flag: "wx", mode: 0o600 }]);
+		throw failure;
+	});
+	t.mock.method(fs, "rmSync", () => { throw Object.assign(new Error("controlled cleanup failure"), { code: "EACCES" }); });
+	syncBuiltinESMExports();
+	try {
+		assert.throws(() => writeHerdrTaskSummarySettings(DEFAULT_HERDR_TASK_SUMMARY_SETTINGS, options), failure);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});

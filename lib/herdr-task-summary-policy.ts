@@ -77,7 +77,8 @@ export function writeHerdrTaskSummarySettings(settings: HerdrTaskSummarySettings
 		renameSync(temporary, path);
 	} catch (error) {
 		// This writer owns the temporary file; never leave one behind per failed attempt.
-		rmSync(temporary, { force: true });
+		// Cleanup is best effort and never masks the original write or rename error.
+		try { rmSync(temporary, { force: true }); } catch { /* keep the original error */ }
 		throw error;
 	}
 	return path;

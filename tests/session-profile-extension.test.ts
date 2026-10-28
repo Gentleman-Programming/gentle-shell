@@ -175,6 +175,9 @@ async function fixture(t: test.TestContext, memory = false, flushed = true) {
       pi.on("session_shutdown", (e) => {
        events.push(`shutdown:${e.reason}`);
       });
+      pi.on("session_tree", () => {
+       events.push("tree");
+      });
      },
      root,
      bus,
@@ -506,6 +509,8 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
  test(`U3 pending Enter serializes before ${transition} on actual public SDK`, async (t) => {
   const f = await fixture(t);
   const leaf = f.manager.getLeafId()!;
+  // Tree navigation to the current leaf is a no-op, so move the leaf away first.
+  if (transition === "tree") f.manager.appendCustomEntry("ordinary", {});
   let release!: () => void, started!: () => void;
   const ready = new Promise<void>((resolve) => {
    started = resolve;
@@ -520,6 +525,8 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
   // RED must fail an assertion, not hang waiting for a nonexistent live call.
   await Promise.race([ready, enter]);
   assert.equal(f.authCalls(), 1, "Enter reaches the existing live control");
+  const branch = JSON.stringify(f.manager.getBranch()),
+   before = f.binding();
   let transitioned = false;
   const move = (
    transition === "fork"
@@ -532,14 +539,32 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
   ).then(() => {
    transitioned = true;
   });
-  await new Promise((resolve) => setImmediate(resolve));
-  const wasSerialized = !transitioned;
+  // Fork/tree/reload/new take several ticks unserialized; sample well after that.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+   f.events.some((e) => e.startsWith("shutdown")),
+   false,
+   "no owner shutdown while Enter awaits authentication",
+  );
+  assert.equal(f.events.includes("tree"), false, "no tree navigation yet");
+  assert.equal(transitioned, false, "transition waits for Enter to settle");
+  if (transition !== "reload") {
+   assert.equal(
+    JSON.stringify(f.manager.getBranch()),
+    branch,
+    "branch is not copied or moved while Enter is pending",
+   );
+   assert.deepEqual(f.binding(), before);
+  }
   release();
   await Promise.all([enter, move]);
+  assert.equal(transitioned, true);
   assert.equal(
-   wasSerialized,
+   transition === "tree"
+    ? f.events.includes("tree")
+    : f.events.includes(`shutdown:${transition}`),
    true,
-   "transition cannot copy/change/detach while Enter awaits authentication",
+   "transition completes once Enter settles",
   );
   assert.equal(f.authCalls(), 1);
  });

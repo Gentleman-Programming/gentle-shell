@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
  createSessionProfileIntegration,
+ hasPendingSessionProfileSelection,
  readCurrentSessionProfileOutcome,
  runCurrentSessionProfileSelection,
  waitCurrentSessionProfileSelection,
@@ -814,4 +815,32 @@ test("helpers report no owner as undefined", async () => {
  assert.equal(readCurrentSessionProfileOutcome(f.manager), undefined);
  assert.equal(await runCurrentSessionProfileSelection(f.manager, async () => "never"), undefined);
  await waitCurrentSessionProfileSelection(f.manager);
+});
+
+test("selection helpers treat an incompatible registry protocol as nothing pending", () => {
+ const moduleUrl = new URL(
+  "../lib/session-profile-integration.ts",
+  import.meta.url,
+ ).href;
+ const script = `
+  import assert from "node:assert/strict";
+  import { SessionManager } from "@earendil-works/pi-coding-agent";
+  import {
+   hasPendingSessionProfileSelection,
+   waitCurrentSessionProfileSelection,
+  } from ${JSON.stringify(moduleUrl)};
+  globalThis[Symbol.for("gentle-pi.session-profile.lifecycle")] = { version: 2 };
+  const manager = SessionManager.inMemory(${JSON.stringify(tmpdir())});
+  assert.equal(hasPendingSessionProfileSelection(manager), false);
+  assert.equal(await waitCurrentSessionProfileSelection(manager), undefined);
+  process.stdout.write("ok");
+ `;
+ const result = spawnSync(
+  process.execPath,
+  ["--experimental-strip-types", "--input-type=module", "-e", script],
+  { encoding: "utf8", cwd: process.cwd(), env: process.env },
+ );
+ assert.equal(result.stderr, "");
+ assert.equal(result.status, 0);
+ assert.equal(result.stdout, "ok");
 });

@@ -116,18 +116,28 @@ export async function runCurrentSessionProfileSelection<T>(
 }
 
 /** Await before fork-copy/tree movement and before detach/invalidation. */
-/** Whether an Enter selection is still settling, so callers wait only when needed. */
+/** Whether an Enter selection is still settling, so callers wait only when needed.
+ * A registry protocol failure means nothing of ours is pending.
+ */
 export function hasPendingSessionProfileSelection(
  manager: SessionProfileLifecycleManager,
 ): boolean {
- return registry().owners.get(manager)?.pending !== undefined;
+ try {
+  return registry().owners.get(manager)?.pending !== undefined;
+ } catch {
+  return false;
+ }
 }
 
 export async function waitCurrentSessionProfileSelection(
  manager: SessionProfileLifecycleManager,
 ): Promise<void> {
- let pending: Promise<void> | undefined;
- while ((pending = registry().owners.get(manager)?.pending)) await pending;
+ try {
+  let pending: Promise<void> | undefined;
+  while ((pending = registry().owners.get(manager)?.pending)) await pending;
+ } catch {
+  // Protocol failure: there is no owner queue of ours to drain.
+ }
 }
 
 /** The registry retains controller evidence, never old ctx/pi or append handles.

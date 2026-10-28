@@ -11,9 +11,10 @@
 // behavior is unit-testable against a fake clock.
 
 /**
- * A completion older than this at flush time is stale: the parent had many
- * turns to pull the result with subagent_result, so replaying it into the
- * model context would re-enter state the conversation may already have used.
+ * A completion older than this at flush time is stale: replaying its full
+ * report into the model context could re-enter state the conversation may
+ * already have used, so the parent gets a compact notice instead. The parent
+ * is told never to poll, so a stale completion must still announce itself.
  * Ninety seconds comfortably covers one slow orchestrator turn (model latency
  * plus a few tool calls) while staying orders of magnitude below the 50-58
  * minute followUp delays measured in issue #867.
@@ -36,6 +37,8 @@ export interface CompletionQueue<T extends { id: string }> {
 	consume(taskId: string): void;
 	/** Remove and return the still-pending completions in settle order, each with its staleness decision at `now`. Consumed entries are dropped and never returned. */
 	takeDeliverable(now: number): Array<DeliverableCompletion<T>>;
+	/** Return a taken completion whose forwarding failed to the pending queue, so a later flush retries it. A consumed id stays dropped. */
+	requeue(entry: DeliverableCompletion<T>): void;
 	/** Discard everything: pending completions and consumed/delivered bookkeeping. Used on session start and shutdown so nothing replays after a resume. */
 	dropAll(): void;
 }
@@ -62,6 +65,11 @@ export function createCompletionQueue<T extends { id: string }>(): CompletionQue
 				deliverable.push({ task: entry.task, settledAt: entry.settledAt, stale: now - entry.settledAt >= STALE_COMPLETION_MS });
 			}
 			return deliverable;
+		},
+		requeue(entry) {
+			delivered.delete(entry.task.id);
+			if (consumed.has(entry.task.id) || pending.some((pendingEntry) => pendingEntry.task.id === entry.task.id)) return;
+			pending.push({ task: entry.task, settledAt: entry.settledAt });
 		},
 		dropAll() {
 			pending = [];

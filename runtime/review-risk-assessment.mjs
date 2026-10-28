@@ -14,7 +14,7 @@
 // gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
 // reason (`path`/`detail` are optional) and adds `candidate.consumed`,
 // `review_due`, `review_due_reason`, and an opaque `next_transition`. Older
-// binaries (for example the pinned gentle-ai v3.7.0) predate those fields, so
+// binaries (for example gentle-ai v3.7.0) predate those fields, so
 // they decode as optional and stay absent rather than being defaulted.
 // A non-zero exit or a failure envelope means the candidate could not be
 // assessed; hosts treat that as `high`. Older binaries without the verb (or
@@ -140,18 +140,23 @@ const DUE_REVIEW_REASONS                             = [REVIEW_DUE_REASON.HIGH_R
 
 /**
  * Rejects a review_due/review_due_reason/consumed combination the native
- * schema can never produce. `already_reviewed` takes precedence exactly when
- * the candidate is consumed, so the two must agree in both directions. A
- * contradictory envelope is never trusted, least of all as closure evidence.
- * Envelopes without the pair (older binaries) are not checked here.
+ * schema can never produce. A consumed candidate must report
+ * `already_reviewed`, but that reason can also describe an acknowledged
+ * committed predecessor followed by a passive delta (#1954). It does not
+ * prove this exact candidate was consumed; preserve native's explicit false.
+ * Native v2 requires consumed, so missing evidence with already_reviewed is
+ * still rejected. Envelopes without the pair (older binaries) are unchecked.
  */
 function validateReviewDueConsistency(reviewDue         , reviewDueReason                 , candidate                           )       {
 	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
 		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
 	}
 	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
-	if (alreadyReviewed !== (candidate.consumed === true)) {
-		throw new TypeError("review assessment review_due_reason already_reviewed must be reported exactly when candidate.consumed is true");
+	if (candidate.consumed === true && !alreadyReviewed) {
+		throw new TypeError("review assessment candidate.consumed true requires review_due_reason already_reviewed");
+	}
+	if (alreadyReviewed && candidate.consumed === undefined) {
+		throw new TypeError("review assessment review_due_reason already_reviewed requires explicit candidate.consumed evidence");
 	}
 }
 
@@ -260,6 +265,61 @@ export const VERIFICATION_TIER = {
 }         ;
 
 
+// ---------------------------------------------------------------------------
+// Agent-raised risk (gentle-shell#1494). The agent that made the change may
+// raise its risk to high by citing one item of the high-risk list in the
+// always-on Task Size section; it can never lower a tier. That escalation is
+// the only way a plan gets an independent verifier: a native high or a failed
+// assessment informs but never adds one by itself.
+// ---------------------------------------------------------------------------
+
+export const HIGH_RISK_ITEMS = Object.freeze({
+	1: "data or irreversible effects",
+	2: "security",
+	3: "changing or removing contracts others already consume",
+	4: "concurrency",
+	5: "delivery or environment",
+	6: "no test would catch a regression",
+}         );
+
+
+
+
+
+
+
+export const AGENT_RISK_ESCALATION_REASON_MAX = 500;
+
+export function decodeAgentRiskEscalation(value         )                      {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("escalate must be an object with item and reason");
+	}
+	const record = value                           ;
+	const unexpected = Object.keys(record).find((key) => key !== "item" && key !== "reason");
+	if (unexpected !== undefined) throw new Error(`escalate does not accept ${unexpected}`);
+	const { item, reason } = record;
+	if (typeof item !== "number" || !Number.isInteger(item) || !(item in HIGH_RISK_ITEMS)) {
+		throw new Error("escalate item must be an integer from 1 to 6 naming a high-risk item");
+	}
+	if (typeof reason !== "string" || reason.trim() === "" || reason.length > AGENT_RISK_ESCALATION_REASON_MAX) {
+		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} characters`);
+	}
+	return Object.freeze({ item: item                , reason });
+}
+
+/**
+ * The risk tier the verification plan follows. The independent verifier is
+ * for concrete occasions only: the plan is high only when the agent escalated
+ * a named Task Size high-risk item. Without an escalation a native passive
+ * stays passive, and every other native tier -- medium, high, or unassessable
+ * (a failed or unavailable assessment) -- is medium: it informs, but adds no
+ * verifier by itself. The native tier stays visible to callers as `nativeRisk`.
+ */
+export function verificationRisk(nativeRisk                  , escalation                                 )                   {
+	if (escalation !== undefined) return VERIFICATION_TIER.HIGH;
+	return nativeRisk === VERIFICATION_TIER.PASSIVE ? VERIFICATION_TIER.PASSIVE : VERIFICATION_TIER.MEDIUM;
+}
+
 export const RDD_LINE = {
 	ON: "on",
 	OFF: "off",
@@ -308,6 +368,8 @@ export const NATIVE_REVIEW_OUTCOME = {
 
 
 
+
+
 /**
  * Builds the risk-gated verification plan shared by the `off`/`unknown` RDD
  * lines and by an `on` line whose native review did not close for this
@@ -315,7 +377,7 @@ export const NATIVE_REVIEW_OUTCOME = {
  * naming which branch fired, up to and including the word "and"; the
  * tier-specific clause is appended after it.
  */
-function riskGatedPlan(gatePrefix        , risk                  , writerProfile               )                   {
+function riskGatedPlan(gatePrefix        , risk                  )                   {
 	if (risk === VERIFICATION_TIER.PASSIVE) {
 		return Object.freeze({
 			writerSelfVerification: false,
@@ -325,26 +387,22 @@ function riskGatedPlan(gatePrefix        , risk                  , writerProfile
 		});
 	}
 
-	if (risk === VERIFICATION_TIER.MEDIUM) {
-		const smallModelBias = writerProfile === WRITER_PROFILE.SMALL;
+	if (risk === VERIFICATION_TIER.HIGH) {
 		return Object.freeze({
 			writerSelfVerification: true,
 			structuralReadbackOnly: false,
-			independentVerifier: smallModelBias,
-			reason: smallModelBias
-				? `${gatePrefix} the native assessment reports medium risk, but the small-model bias raises it one tier to high for verification purposes: the writer self-verifies and a separate independent verifier also runs.`
-				: `${gatePrefix} the native assessment reports medium risk with a large writer profile: the writer's self-verification stands and no separate verifier is required.`,
+			independentVerifier: true,
+			reason: `${gatePrefix} an agent escalation names a Task Size high-risk item: the writer self-verifies and a separate independent verifier runs.`,
 		});
 	}
 
-	// high or unassessable.
+	// medium, or an unassessable tier that did not go through verificationRisk:
+	// both inform only.
 	return Object.freeze({
 		writerSelfVerification: true,
 		structuralReadbackOnly: false,
-		independentVerifier: true,
-		reason: risk === VERIFICATION_TIER.UNASSESSABLE
-			? `${gatePrefix} the native risk assessment could not be produced, so the candidate is treated as high risk: the writer self-verifies and a separate independent verifier always runs.`
-			: `${gatePrefix} the native assessment reports high risk: the writer self-verifies and a separate independent verifier always runs.`,
+		independentVerifier: false,
+		reason: `${gatePrefix} no Task Size high-risk item was escalated: the writer's self-verification stands and no separate verifier runs, whatever the native tier or the model that wrote the change.`,
 	});
 }
 
@@ -364,68 +422,40 @@ function nonClosedOutcomeClause(outcome                     )         {
 }
 
 /**
- * Computes who verifies a delegated writer's change, exactly as
- * gentle-pi#662/#668 specify:
+ * Computes who verifies a delegated writer's change. Verification follows the
+ * plan risk tier whatever the RDD line and native review outcome
+ * (verify-always-rdd-high S1, superseding the gentle-pi#662/#668 on-path): the
+ * native review is an additional outside view and never replaces or skips the
+ * tier's verification. `nativeReviewOutcome` only shapes the reason text.
  *
- * - `rdd: "on"` AND the native review reached `NATIVE_REVIEW_OUTCOME.CLOSED`
- *   for this candidate: the writer self-verifies and no independent verifier
- *   runs, because the closed native review is the check -- except `passive`,
- *   which gets a structural readback by the parent instead.
- * - `rdd: "on"` with any other outcome (`declined`, `unavailable`, or the
- *   fail-closed `unknown` default for an omitted/unrecognized outcome): the
- *   `on` branch never held for this candidate, so the risk-gated path below
- *   applies exactly as `off` -- declining a review is candidate-scoped and
- *   never lowers the bar below the RDD-off path.
- * - `rdd: "off"` or `"unknown"` (both gate identically, so an unknown RDD line
- *   never lowers a tier relative to `off`; `nativeReviewOutcome` is ignored
- *   entirely on these lines):
- *   - `passive`: structural readback by the parent only; no verifier, no
- *     tests.
- *   - `medium`: the writer self-verifies; a separate independent verifier
- *     runs only when `writerProfile` is `"small"` -- the small-model bias
- *     raises the tier by one for verification purposes (medium -> high). An
- *     unknown or omitted writer profile resolves to `"small"` before it
- *     reaches this function (see `resolveWriterProfile`), so an unrecognized
- *     profile never lowers a tier below what a known small model would get.
- *   - `high` or `unassessable` (a failed or unrecognized native assessment is
- *     always treated as high): the writer self-verifies and an independent
- *     verifier always runs.
+ * `risk` is the plan risk from `verificationRisk`; `writerProfile` is never
+ * consulted, so the model or effort that wrote the change never adds a
+ * verifier.
+ *
+ * - `passive`: structural readback by the parent only; no verifier, no tests.
+ * - `medium` (also an `unassessable` tier passed directly): the writer
+ *   self-verifies; no separate verifier.
+ * - `high` (only through an agent escalation naming a Task Size high-risk
+ *   item): the writer self-verifies and an independent verifier runs.
  */
 export function verificationPlan(input                       )                   {
-	const { rddLine, risk, writerProfile } = input;
+	const { rddLine, risk } = input;
 
 	if (rddLine === RDD_LINE.ON) {
 		const outcome = input.nativeReviewOutcome ?? NATIVE_REVIEW_OUTCOME.UNKNOWN;
-		if (outcome === NATIVE_REVIEW_OUTCOME.CLOSED) {
-			if (risk === VERIFICATION_TIER.PASSIVE) {
-				return Object.freeze({
-					writerSelfVerification: false,
-					structuralReadbackOnly: true,
-					independentVerifier: false,
-					reason: "receipt-driven development is on and the native review closed for this candidate; the assessment also reports passive risk: a structural readback by the parent replaces both the writer's self-verification and any separate verifier.",
-				});
-			}
-			return Object.freeze({
-				writerSelfVerification: true,
-				structuralReadbackOnly: false,
-				independentVerifier: false,
-				reason: "receipt-driven development is on and the native review closed for this candidate: the writer's self-verification is the record and the closed native review was the independent check the writer cannot influence, so no separate verifier is required.",
-			});
-		}
-		// The on branch holds only while the native review reaches a terminal
-		// outcome for this candidate. Anything else -- declined, unavailable, or
-		// unknown -- falls back to the exact same risk-gated path as off.
+		const clause = outcome === NATIVE_REVIEW_OUTCOME.CLOSED
+			? "the native review closed for this candidate"
+			: nonClosedOutcomeClause(outcome);
 		return riskGatedPlan(
-			`receipt-driven development is on, but ${nonClosedOutcomeClause(outcome)}, so the risk-gated path applies exactly as receipt-driven development off, and`,
+			`receipt-driven development is on and ${clause}; the native review is an additional outside view that never replaces verification, so the risk-gated path applies exactly as receipt-driven development off, and`,
 			risk,
-			writerProfile,
 		);
 	}
 
 	// rddLine is "off" or "unknown" here -- both gate on the native risk
 	// assessment identically, so an unknown RDD line never lowers a tier, and
 	// neither line ever consults nativeReviewOutcome.
-	return riskGatedPlan(`receipt-driven development is ${rddLine} and`, risk, writerProfile);
+	return riskGatedPlan(`receipt-driven development is ${rddLine} and`, risk);
 }
 
 // ---------------------------------------------------------------------------
@@ -450,15 +480,16 @@ export function verificationPlan(input                       )                  
 const SMALL_MODEL_ID_TOKEN = /(?:^|[-_./:\s])mini(?:$|[-_./:\s])/i;
 
 /**
- * A writer profile counts as a "small model" for the medium-risk bias when:
+ * A writer profile counts as a "small model" (reported by ASSESS as
+ * `writerProfile`; it never changes the verification plan) when:
  * - its resolved effort is `low`, or
  * - its resolved model id carries `mini` as a whole token (see
  *   `SMALL_MODEL_ID_TOKEN`), or
  * - it carries NO signal at all -- no profile object, or a profile with
  *   neither a model id nor a resolved effort. An unknown or omitted writer
- *   profile fails closed to small rather than defaulting to large, so a
- *   caller that cannot resolve the writer's profile never gets a weaker
- *   verification plan than a known small model would (gentle-pi#662).
+ *   profile fails closed to small rather than defaulting to large. The
+ *   result is reported in the assessment only: the verification plan never
+ *   reads the writer profile, so it cannot add or remove a verifier.
  *
  * A profile that carries a model id or an effort, just not a matching one
  * (for example `{model: {id: "claude-sonnet-5"}, thinking: "high"}`), is
@@ -476,9 +507,9 @@ export function isSmallWriterProfile(profile                                    
 }
 
 /**
- * Maps a resolved writer profile to the `writerProfile` input `verificationPlan`
- * expects. An unknown or omitted profile never lowers a tier: it resolves to
- * `"small"`, exactly like `isSmallWriterProfile` (gentle-pi#662).
+ * Maps a resolved writer profile to the reported `writerProfile`. An unknown
+ * or omitted profile resolves to `"small"`, exactly like
+ * `isSmallWriterProfile` (gentle-pi#662).
  */
 export function resolveWriterProfile(profile                                    )                {
 	return isSmallWriterProfile(profile) ? WRITER_PROFILE.SMALL : WRITER_PROFILE.LARGE;

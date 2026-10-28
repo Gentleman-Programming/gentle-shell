@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { GentlePromptEditor } from "../extensions/gentle-shell.ts";
-import { SelectionEngine } from "../lib/selection-engine.ts";
+import { SelectionEngine, withReverseSpan } from "../lib/selection-engine.ts";
 import { decodePrintableKey } from "../lib/pi-tui-keys.ts";
+import { CURSOR_MARKER, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { withPromptHint } from "../lib/shell-prompt.ts";
+
+function resolveFakeCursors(rows: string[], hardware = false): string[] {
+	const host = TuiMainScreen.prototype as unknown as { resolveFakeCursors(rows: string[]): string[] };
+	return host.resolveFakeCursors.call({ showHardwareCursor: hardware }, rows);
+}
 
 // Native selection engine tests: drive a real CustomEditor through the
 // SelectionEngine the same way GentlePromptEditor wires it — engine.handleInput
@@ -22,6 +30,137 @@ function makeEditor(): CustomEditor {
 	(editor as unknown as { focused: boolean }).focused = true;
 	return editor;
 }
+
+function floatEditor(bg?: (role: string, text: string) => string): GentlePromptEditor {
+	const tui = { terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as CtorParams[0];
+	const identity = (text: string) => text;
+	const theme = { borderColor: identity, selectList: {
+		selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity,
+	} } as unknown as CtorParams[1];
+	const editor = new GentlePromptEditor(tui, theme, { matches: () => false } as unknown as CtorParams[2], {
+		fg: (_r, t) => t, bg, bold: identity, requestRender() {}, pending: () => false,
+		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
+	});
+	editor.focused = true;
+	return editor;
+}
+
+const promptBg = (_role: string, text: string) => `\x1b[44m${text}\x1b[49m`;
+const click = (x: number, y: number, width: number): TuiMouseEvent => ({
+	type: "click", button: "left", x, y, width, height: 30, screenX: x, screenY: y, shift: false, alt: false, ctrl: false,
+});
+
+test("legacy and APC cursors preserve native selection and empty hints", () => {
+	const legacy = `${CURSOR_MARKER}\x1b[7ma\x1b[0mbc`;
+	assert.equal(withReverseSpan(legacy, 0, 3), `\x1b[7m${CURSOR_MARKER}\x1b[7ma\x1b[0m\x1b[7mbc\x1b[27m`);
+	const apc = `${CURSOR_MARKER}\x1b_pi:fc\x07a\x1b_pi:/fc\x07bc`;
+	const selected = withReverseSpan(apc, 0, 3);
+	assert.ok(selected.includes(`${CURSOR_MARKER}\x1b_pi:fc\x07`));
+	for (const hardware of [false, true]) {
+		const resolved = resolveFakeCursors([selected], hardware)[0];
+		assert.ok(resolved.includes("\x1b[7mbc\x1b[27m"));
+		assert.equal(stripAnsi(resolved), "abc");
+	}
+	// Outside selection the host still suppresses only the focused fake cursor.
+	assert.equal(resolveFakeCursors([apc], true)[0], `${CURSOR_MARKER}abc`);
+	assert.ok(resolveFakeCursors([apc.replace(CURSOR_MARKER, "")], true)[0].includes("\x1b[7ma\x1b[27m"));
+	for (const cursor of ["\x1b[7m \x1b[0m", "\x1b_pi:fc\x07 \x1b_pi:/fc\x07"]) {
+		const row = `${CURSOR_MARKER}${cursor}${" ".repeat(30)}`;
+		const hinted = withPromptHint(row, "type here", (_role, text) => text);
+		assert.ok(hinted.startsWith(`${CURSOR_MARKER}${cursor}`));
+		assert.ok(hinted.includes("type here"));
+		assert.equal(visibleWidth(hinted), visibleWidth(row));
+		assert.equal(withPromptHint(row + "draft", "type here", (_role, text) => text), row + "draft");
+	}
+});
+
+test("T2 float prompt native cursor, selection, replacement and mouse share geometry", () => {
+	const previous = cardStyle();
+	setCardStyle(CARD_STYLE.FLOAT);
+	const editor = floatEditor(promptBg);
+	try {
+		editor.borderColor = (text) => `\x1b[35m${text}\x1b[39m`;
+		editor.setText("abcd");
+		editor.handleInput("\x1b[D");
+		let rows = editor.render(80);
+		assert.match(rows[0], /\x1b\[35m▎\x1b\[39m/);
+		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 6);
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b_pi:fc\x07d\x1b_pi:/fc\x07`));
+		assert.ok(resolveFakeCursors(rows)[1].includes(`${CURSOR_MARKER}\x1b[7md\x1b[27m`));
+		editor.handleInput("\x1b[1;2H");
+		rows = editor.render(80);
+		assert.equal(stripAnsi(rows[1].replaceAll(CURSOR_MARKER, "")).trim(), "▎ abcd");
+		assert.ok(rows[1].includes(`${CURSOR_MARKER}\x1b_pi:fc\x07a\x1b_pi:/fc\x07\x1b[7mbc\x1b[27md`), "native selection inversion survives the deferred software cursor reset");
+		assert.match(rows[2], /3 chars selected/);
+		assert.doesNotMatch(rows[2], /╯/);
+		assert.ok(rows[2].includes("\x1b[44m"));
+		editor.handleInput("X");
+		assert.equal(editor.getText(), "Xd");
+		editor.setText("abcd");
+		editor.render(30);
+		editor.handleMouse(click(4, 1, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 });
+		editor.handleMouse(click(10, 0, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "padding row is inert");
+		editor.handleMouse(click(10, 2, 30));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 1 }, "hint row is inert");
+		editor.borderColor = (text) => `\x1b[36m${text}\x1b[39m`;
+		assert.match(editor.render(30)[1], /\x1b\[36m▎\x1b\[39m/, "accent reads the current public mode callback");
+		assert.equal(editor.handleMouse({ ...click(3, 1, 30), type: "press" }), undefined, "native drag selection remains unhandled");
+		editor.setText("abcdefghijklmnop");
+		const wrapped = editor.render(12);
+		assert.equal(wrapped.length, 5, "native layout width=6 wraps into three content rows");
+		editor.handleMouse(click(5, 2, 12));
+		assert.deepEqual(editor.getCursor(), { line: 0, col: 8 });
+		editor.handleInput("\x1ba");
+		assert.ok(editor.render(10).slice(1, -1).every((row) => row.includes("\x1b[7m")), "selection paints every wrapped content row");
+	} finally { editor.dispose(); setCardStyle(previous); }
+});
+
+test("T2 float prompt actual native completions retain start row, height and click application", async () => {
+	const previous = cardStyle();
+	setCardStyle(CARD_STYLE.FLOAT);
+	const editor = floatEditor(promptBg);
+	editor.setAutocompleteProvider({
+		async getSuggestions() { return { prefix: "/", items: [{ value: "/alpha", label: "alpha" }, { value: "/beta", label: "beta" }] }; },
+		applyCompletion(_lines, _line, _col, item) { return { lines: [item.value], cursorLine: 0, cursorCol: item.value.length }; },
+	});
+	try {
+		editor.handleInput("/");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(editor.isShowingAutocomplete(), true);
+		const rows = editor.render(30);
+		assert.equal(rows.length, 5);
+		assert.match(stripAnsi(rows[3]), /^ ▎ → alpha/);
+		assert.match(stripAnsi(rows[4]), /^ ▎   beta/);
+		assert.ok(rows.every((row) => visibleWidth(row) === 30));
+		assert.equal(visibleWidth(rows[1].split(CURSOR_MARKER)[0]), 4);
+		assert.equal(editor.handleMouse(click(4, 4, 30))?.handled, true);
+		assert.equal(editor.getText(), "/beta");
+		assert.equal(editor.isShowingAutocomplete(), false);
+	} finally { editor.dispose(); setCardStyle(previous); }
+});
+
+test("T2 float prompt actual editor fallback and neon bytes remain exact at all widths", () => {
+	const previous = cardStyle();
+	const editor = floatEditor(promptBg);
+	const fallback = floatEditor((_role, text) => text);
+	try {
+		for (const width of [0, 1, 2, 9, 10, 30, 80]) {
+			// Pi 0.99.2 wordWrapLine recurses on a wide glyph at layoutWidth=1.
+			const text = width < 10 ? "abcd" : "雪abcd";
+			editor.setText(text); fallback.setText(text);
+			setCardStyle(CARD_STYLE.NEON);
+			const neon = editor.render(width);
+			setCardStyle(CARD_STYLE.FLOAT);
+			assert.deepEqual(fallback.render(width), neon);
+			const rows = editor.render(width);
+			if (width < 10) assert.deepEqual(rows, neon);
+			else assert.match(stripAnsi(rows[0]), /^ ▎ ✿/);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		}
+	} finally { editor.dispose(); fallback.dispose(); setCardStyle(previous); }
+});
 
 const END = "\x1b[F";
 const HOME = "\x1b[H";
@@ -57,6 +196,36 @@ test("alt+a selects all; backspace replaces the whole text", () => {
 	engine.handleInput(BACKSPACE, native);
 	assert.equal(editor.getText(), "");
 	assert.equal(cursorOf(editor).line, 0);
+});
+
+test("alt+e selects all; backspace replaces the whole text", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const native = (d: string) => editor.handleInput(d);
+	editor.setText("abc\ndef");
+	engine.handleInput("\x1be", native);
+	engine.handleInput(BACKSPACE, native);
+	assert.equal(editor.getText(), "");
+});
+
+// gentle-shell#1565: a registered extension shortcut owns its chord before
+// any selection key, matching CustomEditor's own precedence.
+test("selection chords yield to a claiming shortcut and keep selecting otherwise", () => {
+	const editor = makeEditor();
+	const engine = new SelectionEngine(editor);
+	const forwarded: string[] = [];
+	const native = (d: string) => { forwarded.push(d); editor.handleInput(d); };
+	const probed: string[] = [];
+	const shortcut = (d: string) => { probed.push(d); return d === ALT_A; };
+	editor.setText("abc");
+	engine.handleInput(ALT_A, native, shortcut);
+	assert.deepEqual(probed, [ALT_A]);
+	assert.deepEqual(forwarded, []);
+	engine.handleInput(BACKSPACE, native, shortcut);
+	assert.equal(editor.getText(), "ab", "a claimed chord must not select");
+	engine.handleInput("\x1be", native, shortcut);
+	engine.handleInput(BACKSPACE, native, shortcut);
+	assert.equal(editor.getText(), "", "an unclaimed chord still selects");
 });
 
 test("movement collapses the selection; later delete behaves natively", () => {

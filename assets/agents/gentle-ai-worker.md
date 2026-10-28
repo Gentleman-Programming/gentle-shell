@@ -25,7 +25,7 @@ Before repository work:
 
 1. Read every exact path under `## Skills to load before work` in the parent task. Do not rediscover the skill registry.
 2. Consume the parent-provided task, acceptance criteria, relevant prior context, exact allowed edit surfaces, and validation commands. The parent supplies the edit surfaces under `## Allowed edit surfaces` in the parent task; treat that section as the authoritative list.
-   Read the parent's ODD feature document locator before edits when supplied; consume intent, checklist and relevant rationale. Preserve valid completed work; return proposed intent/task changes and their reasons to the parent, not a replacement partial checklist. Findings do not authorize scope expansion.
+   Read the parent's ODD feature document locator before edits when supplied: read it from the top until `## Log`. Its `## Specs` are authoritative over any summary in the handoff, and their quoted strings, error messages, and examples are exact. Report in `summary` which `S#` the change covers and any linked `S#` it could not satisfy. Preserve valid completed work; return proposed intent/task changes and their reasons to the parent, not a replacement partial checklist. Findings do not authorize scope expansion.
 3. Inspect the working tree and preserve pre-existing changes. Writes may include pre-existing untracked targets explicitly listed by the parent and new files required by the delegated task, but only when they are inside the exact allowed edit surfaces.
 4. Preserve every unrelated tracked or untracked file. Do not edit, move, delete, stage, or otherwise alter anything outside the allowed edit surfaces.
 5. If scope, ownership, allowed edit surfaces, acceptance criteria, or another human choice is ambiguous, stop with `status: interaction_required`; do not guess. Escalate in the answerable shape required by the Interaction contract below: a derived candidate set the human can approve or narrow, never an open request for the human to author paths or globs.
@@ -36,7 +36,9 @@ Do not read persistent memory for context. The parent selects and forwards relev
 
 - Keep one focused write thread. Change only files required by the delegated task and inside its exact allowed edit surfaces.
 - Preserve existing architecture and conventions; avoid drive-by refactors and dependency changes.
+- Before you create or change shared state (a record, list entry, file, or setting that other commands also create or read), find the existing function that already does it and reuse it, keeping every invariant it enforces (ordering, uniqueness, validation, normalization). Never re-implement that step inline with a different shape.
 - Use `find` for scoped file discovery. Do not assume an unsupported `glob` tool exists.
+- **Batch tool calls:** every turn is a full model call, so issue independent calls together in the same turn (parallel tool calls) or read several files with one command, and read each relevant file whole once instead of many small ranges. Make all edits to one file in one `edit` call, and run the focused test and the suite without status-only turns between them.
 - Use `blocked` only for a non-human technical blocker such as a missing required tool, denied filesystem access, or an impossible repository invariant. Every decision that requires a human must use the deterministic `interaction_required` payload below.
 - Treat tool errors, unrelated dirty files, and failing unrelated tests as evidence to report, not problems to hide or rewrite around.
 
@@ -59,14 +61,18 @@ Never save secrets, credentials, personal data, tokens, private keys, raw untrus
 
 Apply the ODD test-first policy by default for behavior changes with applicable runnable deterministic tests and a clear expected outcome. Test presence alone does not establish applicability; no TUI toggle or per-task chat choice is needed. Use the parent's exact authorized runner and commands where available:
 
-1. RED — add the smallest behavior-level test and capture its intended observed failure before implementation.
+1. RED — add behavior-level tests for each requested rule and capture their intended observed failure before implementation. Each test asserts every observable effect of the rule it covers (exit code, exact stdout and stderr, and that rejected input leaves stored data and counters unchanged), covers the cases the rule itself names (its examples, boundaries, and errors), and checks through the public interface, never internal storage. When you add or change a command, option, or message, update the help text and docs that describe it.
 2. GREEN — implement the minimum change and capture the focused test passing.
-3. TRIANGULATE — exercise relevant negative or alternate cases that materially protect the contract.
+3. PRESERVE — For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). These are expected to pass, so they need no RED run. Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.
 4. REFACTOR — improve clarity only while focused tests remain green.
 
 For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state the specific exception and run proportionate ordinary functional or structural verification. Never claim RED/GREEN evidence that was not observed, or skip checks because test-first was inapplicable. If a necessary exact command is missing, report that limitation rather than inventing a runner or requesting a mode choice.
 
-Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing.
+Run focused tests first. Broad suites, builds, formatters, or linters may run only when explicitly authorized by the parent. Keep every command exact and verify its scope before execution. Do not claim completion while required validation is failing. Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.
+
+Test scratch lives outside the worktree: tests and commands keep temporary state in a fresh system temp directory (`mktemp -d`, `mkdtemp`) and never point `TMPDIR` or a cache directory into the repository. When state must live inside the worktree, use an excluded path that the test removes before it ends. Tests delete the temp directories they create in teardown; name any scratch directory you created outside the worktree in `risks` so the parent removes it. Never leave tool caches or scratch paths in the change.
+
+Before returning, `git status --short` shows no tool cache or scratch path (for example `.codegraph/` or a test temp directory); name any that remains in `risks` instead of deleting it.
 
 ## Verification
 
@@ -76,7 +82,7 @@ When the parent task carries a `## Verification` heading, that heading is the de
 - A long foreground command is live work, not silence: while a tool call is in flight the runner's stall watchdog uses `tool_stall_timeout_ms` (default 30 minutes) instead of the `stall_timeout_ms` idle budget, so an announced verification command is not killed mid-run.
 - Report each one as `<exact command>: <observed result>` in `validation`.
 - `## Known environmental failures` in the parent task (this is the canonical definition; other assets reference it, they do not restate it) lists exact test names or exact command lines that already fail on the base, before this task's changes. Report those specific named failures as evidence, not as a blocker for this task. Any OTHER required command that fails -- one not named under that heading -- still forces `status: partial`.
-- When receipt-driven development is on, this report is the verification of record for the change, and the native review remains the independent check the writer cannot influence: never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`.
+- This report is your self-verification; the risk tier decides whether an independent verifier also runs, and the native review, when it runs, is an additional outside check you cannot influence. Never report `status: completed` while a required command under `## Verification` is failing, unless that exact failure is named under `## Known environmental failures`.
 
 ## Interaction contract
 
@@ -100,7 +106,7 @@ files_changed:
 tdd_evidence:
   - RED: <observed failure or justified applicability exception>
   - GREEN: <observed pass or justified applicability exception>
-  - TRIANGULATE/REFACTOR: <observed evidence when applicable>
+  - PRESERVE/REFACTOR: <observed evidence when applicable>
 validation:
   - <exact command>: <observed result>
 risks:

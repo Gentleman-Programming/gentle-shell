@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { OrchestratorScopeCache, validRecordedScope } from "../lib/orchestrator-scope.ts";
+import { PresencePublisher, listPresence, readDiscovery } from "../lib/orchestrator-presence.ts";
+import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
+
+test("cachedScope serves deferred publications from the snapshot without probing", () => {
+	let probes = 0;
+	const cache = new OrchestratorScopeCache(() => { probes++; return { root: "/repo", commonDir: "/clone" }; });
+	assert.equal(cache.cachedScope(), undefined, "nothing is cached before a projection");
+	const snapshot = cache.project("/repo", [], []);
+	assert.equal(probes, 1, "the event-time projection resolves eagerly");
+	assert.equal(cache.cachedScope(), snapshot);
+	assert.equal(cache.cachedScope(), snapshot, "repeated deferred reads never probe");
+	assert.equal(probes, 1);
+	cache.clear();
+	assert.equal(cache.cachedScope(), undefined, "a cleared cache publishes no stale scope");
+	assert.equal(probes, 1);
+});
+
+test("recorded host/owned child/registered scope correlates clones, isolates ambient Git and caches lifecycle", (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "orchestrator-scope-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const repo = join(base, "repo"), sibling = join(base, "sibling"), other = join(base, "other"), plain = join(base, "plain");
+	const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe", env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))) });
+	for (const path of [repo, other, plain]) mkdirSync(path);
+	for (const path of [repo, other]) { git(path, "init"); git(path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"); }
+	git(repo, "worktree", "add", "-b", "sibling", sibling);
+	const old = process.env.GIT_DIR;
+	process.env.GIT_DIR = join(other, ".git");
+	t.after(() => { if (old === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = old; });
+	let calls = 0, now = 1;
+	const cache = new OrchestratorScopeCache((path, cwd) => { calls++; return resolveSessionWorktree(path, cwd); }, () => now++);
+	const tasks = [{ id: "child", cwd: sibling }, { id: "foreign", cwd: other }, { id: "plain", cwd: plain }];
+	const first = cache.project(repo, tasks, [repo, sibling]);
+	assert.equal(first.host.root, repo);
+	assert.equal(first.host.cloneHash, first.tasks[0].repository.cloneHash);
+	assert.notEqual(first.host.root, first.tasks[0].repository.root);
+	assert.notEqual(first.host.cloneHash, first.tasks[1].repository.cloneHash);
+	assert.equal(first.tasks[2].repository.root, null);
+	assert.equal(first.host.source, "recorded-workspace/git");
+	assert.doesNotMatch(JSON.stringify(first), /commonDir|\.git/);
+	assert.deepEqual(first.registered.map(r => r.root), [repo, sibling]);
+	const count = calls;
+	assert.deepEqual(cache.project(repo, tasks, [repo, sibling]), first);
+	assert.equal(calls, count, "token/heartbeat-equivalent projection does not probe Git");
+	const admitted = cache.project(repo, [...tasks, { id: "new", cwd: repo }], [repo, sibling]);
+	assert.ok(admitted.host.resolvedAt > first.host.resolvedAt);
+	const completed = cache.project(repo, [], [repo]);
+	assert.deepEqual(completed.tasks, []);
+	assert.equal(completed.registered.length, 1);
+	assert.equal(cache.project(other, [], []).host.root, other);
+	cache.clear();
+	assert.ok(cache.project(repo, tasks, [repo, sibling]).host.resolvedAt > admitted.host.resolvedAt);
+	const bounded = cache.project(repo, Array.from({ length: 10 }, (_, i) => ({ id: String(i), cwd: repo })), Array.from({ length: 10 }, (_, i) => join(base, String(i))));
+	assert.equal(bounded.tasks.length, 8);
+	assert.equal(bounded.omittedTasks, 2);
+	assert.equal(bounded.omittedRegistered, 2);
+	assert.equal(bounded.complete, false);
+	assert.equal(cache.project("/" + "x".repeat(600), [], []).host.root, null);
+	let probes = 0;
+	const unavailable = new OrchestratorScopeCache(() => { probes++; throw new Error("unavailable"); });
+	const many = Array.from({ length: 1000 }, (_, i) => ({ id: String(i), cwd: join(base, String(i)) }));
+	const unknown = unavailable.project(repo, many, many.map(t => t.cwd));
+	assert.equal(probes, 9, "deduplicated bounded resolution, including unknowns");
+	assert.equal(unknown.omittedRegistered, 992);
+	unavailable.project(repo, many, many.map(t => t.cwd));
+	assert.equal(probes, 9);
+	assert.equal(new OrchestratorScopeCache(() => ({ root: "/repo\nother", commonDir: "/clone" })).project(repo, [], []).host.root, null);
+});
+
+test("recency reorders preserve repository facts but retain caller order", () => {
+	const host = join(tmpdir(), "scope-host"), a = join(tmpdir(), "scope-a"), b = join(tmpdir(), "scope-b");
+	let calls = 0, now = 1;
+	const cache = new OrchestratorScopeCache(path => {
+		calls++;
+		if (path === b) throw new Error("unavailable");
+		return { root: path, commonDir: host };
+	}, () => now++);
+	const tasks = [{ id: "a", cwd: a }, { id: "b", cwd: b }];
+	const first = cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 3);
+	const reordered = cache.project(host, [...tasks].reverse(), [b, a]);
+	assert.equal(calls, 3, "pure reorders must not probe Git, including cached unknowns");
+	assert.deepEqual(reordered.tasks, [...first.tasks].reverse());
+	assert.deepEqual(reordered.registered, [...first.registered].reverse());
+	assert.deepEqual(reordered.host, first.host);
+	assert.equal(reordered.tasks[0].repository.root, null);
+	assert.equal(validRecordedScope(reordered), true);
+	assert.strictEqual(cache.project(host, [...tasks].reverse(), [b, a]), reordered);
+
+	const added = cache.project(host, [...tasks, { id: "c", cwd: host }], [a, b]);
+	assert.equal(calls, 6, "membership changes refresh even existing facts");
+	assert.ok(added.host.resolvedAt > first.host.resolvedAt);
+	cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 9, "removal refreshes facts");
+	cache.project(host, [{ id: "a", cwd: host }, tasks[1]], [a, b]);
+	assert.equal(calls, 12, "cwd changes refresh facts");
+	cache.project(host, [{ id: "a", cwd: host }, tasks[1]], [a]);
+	assert.equal(calls, 15, "registered membership changes refresh facts");
+	cache.clear();
+	cache.project(host, tasks, [a, b]);
+	assert.equal(calls, 18, "session replacement clears facts");
+});
+
+test("first-eight visibility evicts hidden facts and retains visible unknowns", () => {
+	const host = join(tmpdir(), "scope-visible-host");
+	const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i}`, cwd: join(tmpdir(), `scope-visible-task-${i}`) }));
+	const calls: string[] = [];
+	const cache = new OrchestratorScopeCache(path => {
+		calls.push(path);
+		if (path === tasks[0].cwd) throw new Error("unavailable");
+		return { root: path, commonDir: host };
+	});
+	const first = cache.project(host, tasks, []);
+	assert.deepEqual(calls, [host, ...tasks.slice(0, 8).map(t => t.cwd)]);
+	assert.equal(first.tasks[0].repository.root, null);
+	const unknown = first.tasks[0].repository;
+	const ninthVisible = [tasks[8], ...tasks.slice(0, 8)];
+	const expectedCalls = [...calls];
+	for (const [order, newlyVisible] of [[ninthVisible, tasks[8]], [tasks, tasks[7]], [ninthVisible, tasks[8]]] as const) {
+		const snapshot = cache.project(host, order, []);
+		expectedCalls.push(newlyVisible.cwd);
+		assert.deepEqual(calls, expectedCalls, "each visibility transition resolves only its evicted/newly visible path");
+		assert.deepEqual(snapshot.tasks.map(t => t.id), order.slice(0, 8).map(t => t.id));
+		assert.equal(snapshot.tasks.length, 8);
+		assert.equal(snapshot.omittedTasks, 1);
+		assert.equal(snapshot.complete, false);
+		assert.equal(validRecordedScope(snapshot), true);
+		assert.strictEqual(snapshot.tasks.find(t => t.id === "t0")!.repository, unknown, "visible unknown facts survive every reorder");
+		assert.strictEqual(cache.project(host, order, []), snapshot);
+		assert.deepEqual(calls, expectedCalls, "stable snapshots never resolve again");
+	}
+	assert.equal(calls.filter(path => path === tasks[8].cwd).length, 2, "ninth path is resolved again after eviction");
+	assert.equal(calls.filter(path => path === tasks[0].cwd).length, 1, "visible unknown is not retried");
+});
+
+test("literal recorded roots never alias Unicode separators to another real repository", (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "scope-literal-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const ascii = join(base, "repo name"), nbsp = join(base, "repo\u00a0name"), letters = join(base, "répertoire");
+	for (const path of [ascii, nbsp, letters]) {
+		mkdirSync(path);
+		execFileSync("git", ["-C", path, "init"], { stdio: "pipe", env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.toUpperCase().startsWith("GIT_"))) });
+	}
+	assert.notEqual(realpathSync(nbsp), realpathSync(ascii));
+	assert.equal(resolveSessionWorktree(nbsp, nbsp)?.root, ascii, "shared spelling resolver normalizes NBSP; keep its global semantics");
+	const cache = new OrchestratorScopeCache(resolveSessionWorktree, () => 7);
+	const unknown = cache.project(nbsp, [{ id: "child", cwd: nbsp }], [nbsp]);
+	assert.deepEqual(unknown.host, { root: null, cloneHash: null, resolvedAt: 7, source: "recorded-workspace/git" });
+	assert.deepEqual(unknown.tasks[0].repository, unknown.host);
+	assert.deepEqual(unknown.registered[0], unknown.host);
+	for (const path of [ascii, letters]) {
+		const known = cache.project(path, [], []);
+		assert.equal(known.host.root, path);
+		assert.match(known.host.cloneHash!, /^[a-f0-9]{64}$/);
+		assert.equal(known.host.source, "recorded-workspace/git");
+	}
+	const separators = ["\u00a0", ...Array.from({ length: 11 }, (_, i) => String.fromCharCode(0x2000 + i)), "\u202f", "\u205f", "\u3000"];
+	for (const separator of separators) {
+		const path = join(base, `repo${separator}name`);
+		let probes = 0;
+		const guarded = new OrchestratorScopeCache(() => { probes++; return { root: ascii, commonDir: "/clone" }; });
+		assert.equal(guarded.project(path, [], []).host.cloneHash, null);
+		assert.equal(probes, 0, "normalizing spellings must not reach the resolver");
+		const output = new OrchestratorScopeCache(() => ({ root: path, commonDir: "/clone" })).project(ascii, [], []);
+		assert.equal(output.host.root, null, "resolver output must pass the same literal-root guard");
+		const malformed = structuredClone(cache.project(ascii, [], []));
+		malformed.host.root = path;
+		assert.equal(validRecordedScope(malformed), false);
+	}
+	const publisher = PresencePublisher.start({ profile: base, sessionId: "literal", label: "Literal", activity: [] });
+	t.after(() => publisher.dispose());
+	publisher.updateDiscovery({ sessionId: "literal", endpoint: "/fixture", createdAt: 1 }, { workspace: ascii, tasks: [], scope: cache.project(ascii, [], []) });
+	const header = listPresence(base).entries[0];
+	const sidecar = join(base, "gentle-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
+	const value = JSON.parse(readFileSync(sidecar, "utf8"));
+	value.metadata.scope.host.root = nbsp;
+	writeFileSync(sidecar, JSON.stringify(value));
+	assert.equal(readDiscovery(base, header)?.scope, undefined);
+	assert.equal(readDiscovery(base, header)?.workspace, ascii);
+	assert.equal(listPresence(base).entries[0].sessionHash, header.sessionHash);
+});

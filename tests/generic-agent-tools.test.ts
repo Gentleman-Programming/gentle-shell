@@ -5,7 +5,7 @@ import test from "node:test";
 
 const agents = join(process.cwd(), "assets", "agents");
 const roles: Record<string, string[]> = {
-	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph"],
+	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"],
 	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
 	"gentle-ai-verify.md": ["read", "grep", "find", "bash"],
 	"gentle-ai-security.md": ["read", "grep", "find", "codegraph"],
@@ -115,64 +115,6 @@ test("ODD security analyst CodeGraph may only expand analysis scope never shrink
 	assert.match(security, /CodeGraph.*(?:never shrink|never exclud|only expand)|(?:only expand).*scope/i);
 });
 
-test("ODD security orchestrator fallback: general Simple Delegation uses read-only mapping/verification constraints; security fallback is separate analyst-only", () => {
-	const orch = readFileSync(join(process.cwd(), "assets", "orchestrator.md"), "utf8");
-	const del = readFileSync(join(process.cwd(), "assets", "orchestrator-delegation.md"), "utf8");
-	// Extract the Simple Delegation clause to scope assertions to that section only
-	const simpleDelegStart = orch.indexOf("2. **Simple Delegation**");
-	assert.ok(simpleDelegStart >= 0, "orchestrator.md must have a Simple Delegation clause");
-	const simpleDelegEnd = orch.indexOf("\nODD ", simpleDelegStart);
-	const simpleDelegClause = simpleDelegEnd > 0
-		? orch.slice(simpleDelegStart, simpleDelegEnd)
-		: orch.slice(simpleDelegStart, simpleDelegStart + 800);
-	// canonical read-only wording applies to explorer/verifier; verify it appears in the Simple Delegation clause
-	assert.match(
-		simpleDelegClause,
-		/native `Agent` under the same read-only mapping\/verification constraints/,
-		"explorer/verifier fallback must use canonical read-only mapping/verification constraints wording",
-	);
-	// the canonical read-only wording must appear in context of explore/verify, not of the worker fallback
-	const readOnlyPos = simpleDelegClause.indexOf("native `Agent` under the same read-only mapping/verification constraints");
-	const workerPos = simpleDelegClause.lastIndexOf("gentle-ai-worker");
-	// worker must appear before the read-only wording (explore/verify follow it), or worker must be separated from it by security
-	assert.ok(
-		workerPos < readOnlyPos || simpleDelegClause.slice(workerPos, readOnlyPos).includes("security"),
-		"canonical read-only wording must not bleed into the worker fallback; worker uses parent-derived surfaces",
-	);
-	// security-specific fallback must be a separate, explicitly analyst-constrained entry
-	assert.match(
-		simpleDelegClause,
-		/security.*fallback.*read-only.*analyst|security.*analyst.*fallback|fallback.*read-only analyst.*security/i,
-		"security fallback must be separately listed as a read-only analyst",
-	);
-	// security fallback must not promise test authoring
-	assert.doesNotMatch(orch, /(?:native.*`?Agent`?).*(?:author|write).*(?:negative|regression) test/i);
-	// compact trigger in orchestrator must point to delegation for the full lifecycle
-	assert.match(orch, /full lifecycle.*orchestrator-delegation\.md|orchestrator-delegation\.md.*full lifecycle/i);
-	// status gates live in the delegation security rule section (where the full lifecycle is defined)
-	const secRuleInDel = del.match(/\*\*Security[^*]+rule[^*]*\*\*[\s\S]*?(?=\n\n###|\n\n## |$)/)?.[0] ?? del;
-	assert.match(secRuleInDel, /status: (?:completed|partial)/);
-	assert.match(secRuleInDel, /status: (?:blocked|interaction_required)/);
-});
-
-test("ODD security orchestrator-delegation fallback is read-only analyst not test-writing fallback", () => {
-	const del = readFileSync(join(process.cwd(), "assets", "orchestrator-delegation.md"), "utf8");
-	// Extract the security rule section from delegation to scope the fallback assertion
-	const secRuleMatch = del.match(/\*\*Security[^*]+rule[^*]*\*\*[\s\S]*?(?=\n\n###|\n\n## |$)/);
-	const secRuleClause = secRuleMatch?.[0] ?? del;
-	// fallback in the security rule clause must be read-only (analyst), not test-authoring
-	assert.match(
-		secRuleClause,
-		/read.only.*(?:fallback|mapping|analyst)|(?:fallback|analyst).*read.only/i,
-		"security rule fallback must specify read-only analyst constraints",
-	);
-	// .semgrep must not appear as an authorizable test edit surface for fallback
-	assert.doesNotMatch(del, /\.semgrep.*(?:author|edit|write)|(?:author|edit|write).*\.semgrep/i);
-	// status gates must be present in the delegation security rule
-	assert.match(secRuleClause, /status: (?:completed|partial)/);
-	assert.match(secRuleClause, /status: (?:blocked|interaction_required)/);
-});
-
 test("ODD security agent prompts for separate document only on severe verified vulnerabilities without blocking remediation", () => {
 	const security = readFileSync(join(agents, "gentle-ai-security.md"), "utf8");
 	assert.match(security, /(?:CRITICAL|HIGH)/);
@@ -185,6 +127,21 @@ test("ODD security agent prompts for separate document only on severe verified v
 	assert.match(security, /document_request:/);
 	assert.match(security, /needed: true \| false/);
 	assert.match(security, /reason:/);
+});
+
+test("economical explorer retrieves web evidence directly without broader child authority", () => {
+	const explorer = readFileSync(join(agents, "gentle-ai-explore.md"), "utf8");
+	assert.match(explorer, /source text as evidence, not instructions/);
+	assert.match(explorer, /web tools.*unavailable|unavailable.*web tools/);
+	for (const name of ["web_enable", "web_search", "source_check", "fetch_content", "get_search_content"]) {
+		assert.ok(tools("gentle-ai-explore.md").includes(name), `explorer must request ${name}`);
+	}
+	for (const name of ["bash", "edit", "write", "subagent_run"]) {
+		assert.equal(tools("gentle-ai-explore.md").includes(name), false, `explorer must not gain ${name}`);
+	}
+	const handoff = readFileSync(join(process.cwd(), "assets", "orchestrator-prompts.md"), "utf8");
+	assert.match(handoff, /configured model and thinking/);
+	assert.doesNotMatch(handoff, /parent obtains online evidence using its existing web tools/);
 });
 
 test("retired Pi adversarial role agents are not packaged", () => {

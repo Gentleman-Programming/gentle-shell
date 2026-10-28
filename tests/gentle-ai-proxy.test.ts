@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { createServer as createTlsServer } from "node:tls";
 import { downloadGentleAiAsset } from "../scripts/gentle-ai-installer.mjs";
 import { proxyTlsOptions, resolveProxyForTarget } from "../scripts/gentle-ai-proxy.mjs";
 
 const TARGET = "https://release-assets.example.invalid/asset.tar.gz";
+
+// A certificate that covers DNS:proxy.test, IP:127.0.0.1 and IP:::1, so the
+// tunnel can be exercised against a real TLS proxy without a network.
+const PROXY_CERT = readFileSync(new URL("./fixtures/proxy-tls/proxy.crt", import.meta.url));
+const PROXY_KEY = readFileSync(new URL("./fixtures/proxy-tls/proxy.key", import.meta.url));
 
 function pendingRequest() {
 	const pending = new EventEmitter() as EventEmitter & { destroy(error?: Error): void; setTimeout(): void };
@@ -71,6 +78,37 @@ async function startSilentProxy() {
 	return {
 		port,
 		firstBytes: () => first,
+		close: async () => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		},
+	};
+}
+
+// A proxy that speaks TLS with the fixture certificate and answers CONNECT
+// with the given status. The handshake it observes and the CONNECT head it
+// receives are both recorded.
+async function startTlsProxyStub(status: number) {
+	const sockets: Socket[] = [];
+	let head = "";
+	let servername: string | false | undefined;
+	const server = createTlsServer({ cert: PROXY_CERT, key: PROXY_KEY }, (socket) => {
+		sockets.push(socket);
+		socket.on("error", () => {});
+		socket.on("data", (chunk) => {
+			if (head === "") head += chunk.toString("latin1");
+			socket.write(`HTTP/1.1 ${status} ${status === 200 ? "Connection Established" : "Proxy Authentication Required"}\r\n\r\n`);
+			if (status !== 200) socket.end();
+		});
+	});
+	server.on("secureConnection", (socket) => { servername = socket.servername; });
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	const port = typeof address === "object" && address !== null ? address.port : 0;
+	return {
+		port,
+		head: () => head,
+		servername: () => servername,
 		close: async () => {
 			for (const socket of sockets) socket.destroy();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -207,7 +245,26 @@ test("an HTTPS proxy on an IP address is checked against the address and not sen
 	assert.deepEqual(proxyTlsOptions(new URL("https://127.0.0.1:3128")), { host: "127.0.0.1" });
 	assert.deepEqual(proxyTlsOptions(new URL("https://[::1]:3128")), { host: "::1" });
 	// A hostname keeps its server name, so the proxy is still reached by name.
-	assert.deepEqual(proxyTlsOptions(new URL("https://proxy.invalid:3128")), { servername: "proxy.invalid" });
+	assert.deepEqual(proxyTlsOptions(new URL("https://proxy.invalid:3128")), { host: "proxy.invalid", servername: "proxy.invalid" });
+});
+
+test("the tunnel applies the proxy host to the certificate check", { timeout: 15_000 }, async (t) => {
+	// The options are only worth anything if the tunnel hands them to the
+	// handshake, so this runs against a real TLS proxy whose certificate the
+	// download has to trust.
+	const proxy = await startTlsProxyStub(407);
+	t.after(() => proxy.close());
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-tls-identity-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const ca = [PROXY_CERT];
+	await assert.rejects(
+		() => downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `https://127.0.0.1:${proxy.port}` }, maxAttempts: 1, headerTimeoutMs: 1500, ca: [PROXY_CERT] }),
+		/proxy refused the tunnel with status 407/,
+	);
+	// The handshake completed, so the certificate was verified against the
+	// proxy address, and the CONNECT request reached the proxy.
+	assert.match(proxy.head(), /^CONNECT release-assets\.example\.invalid:443 HTTP\/1\.1\r\n/);
+	assert.equal(proxy.servername(), false, "an address is not sent as a server name");
 });
 
 test("the release download carries a tunnel only when the environment names a proxy", async (t) => {

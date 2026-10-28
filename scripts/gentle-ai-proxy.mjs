@@ -114,15 +114,29 @@ function tunnelAuthority(host, port) {
 /**
  * The TLS options for the connection to an https proxy.
  *
- * An IP address cannot be a server name, and a modern Node refuses the
- * handshake outright when it is given one. The address goes in as the host
- * instead, which is the name the certificate is then checked against, and no
- * server name is sent. A hostname keeps its server name, so the proxy is
- * still reached by name.
+ * The proxy host is always the name the certificate is checked against,
+ * because Node leaves the socket host unset and would otherwise fall back
+ * to "localhost". An IP address cannot be a server name, and a modern Node
+ * refuses the handshake outright when it is given one, so the server name
+ * is only sent for a hostname.
  */
 export function proxyTlsOptions(proxy) {
 	const name = proxyHost(proxy);
-	return net.isIP(name) ? { host: name } : { servername: name };
+	return net.isIP(name) ? { host: name } : { host: name, servername: name };
+}
+
+/**
+ * The trust options carried over to a handshake, so a caller that trusts a
+ * private certificate authority reaches a proxy that presents one.
+ */
+export function proxyTrustOptions(options) {
+	return {
+		...(options.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: options.rejectUnauthorized }),
+		...(options.ca === undefined ? {} : { ca: options.ca }),
+		...(options.cert === undefined ? {} : { cert: options.cert }),
+		...(options.key === undefined ? {} : { key: options.key }),
+		...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
+	};
 }
 
 /**
@@ -131,7 +145,7 @@ export function proxyTlsOptions(proxy) {
  * request and cannot impersonate the release host without the origin's own
  * certificate chain failing the handshake.
  */
-export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
+export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000, trust = {}) {
 	const agent = new https.Agent({ keepAlive: false });
 	agent.createConnection = (options, callback) => {
 		const host = options.host ?? options.hostname;
@@ -194,7 +208,7 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
 			if (proxy.protocol === "https:") {
-				channel = tls.connect({ socket: raw, ...proxyTlsOptions(proxy) });
+				channel = tls.connect({ socket: raw, ...proxyTlsOptions(proxy), ...proxyTrustOptions(options) });
 				watch(channel);
 			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];
@@ -228,11 +242,8 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 				socket: channel,
 				servername: options.servername ?? host,
 				ALPNProtocols: options.ALPNProtocols ?? ["http/1.1"],
-				...(options.rejectUnauthorized === undefined ? {} : { rejectUnauthorized: options.rejectUnauthorized }),
-				...(options.ca === undefined ? {} : { ca: options.ca }),
-				...(options.cert === undefined ? {} : { cert: options.cert }),
-				...(options.key === undefined ? {} : { key: options.key }),
-				...(options.passphrase === undefined ? {} : { passphrase: options.passphrase }),
+				...proxyTrustOptions(options),
+				...trust,
 			}));
 		}
 	};

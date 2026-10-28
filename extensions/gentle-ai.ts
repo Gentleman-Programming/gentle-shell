@@ -115,6 +115,7 @@ import {
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
 import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2497,6 +2498,31 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return effective;
 }
 
+/**
+ * The profile this session's launches resolve (gentle-shell#1064 slice 3c): the
+ * Enter binding, then the profile frozen at startup, through the same rule the
+ * launcher reads. It resolves from the session's directory, as the freeze and
+ * the launcher do. `undefined` means the session resolves no profile, so
+ * launches keep the global routing; a pin the session did not freeze never
+ * reaches them and is not read here.
+ */
+function sessionLaunchProfile(ctx: ExtensionContext): { name: string; modelProfiles: AgentModelConfig } | undefined {
+	const resolution = resolveSessionProfile({
+		sessionId: ctx.sessionManager?.getSessionId?.(),
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		configHome: gentleAiConfigHome(),
+	});
+	const name = resolution.kind === "explicit" ? resolution.name : resolution.profile?.name;
+	const routing = sessionProfileModelProfiles(resolution);
+	return name === undefined || routing === undefined ? undefined : { name, modelProfiles: cloneModelConfig(routing) };
+}
+
+/** The routing this session's launches use: its profile, or the global effective routing. */
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext): Promise<AgentModelConfig> {
+	return sessionLaunchProfile(ctx)?.modelProfiles
+		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
+}
+
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
 	const pinned = pinnedEffectiveModelConfig(cwd);
 	if (pinned) return pinned;
@@ -4501,6 +4527,9 @@ function routingScreenNotices(
 	for (const issue of pins.stale) {
 		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
 	}
+	if (sessionBoundName !== undefined && !hasOwnProfile(file.profiles, sessionBoundName)) {
+		notices.push(`This session launches with "${sessionBoundName}", which is no longer in profiles.json; its launches keep that routing.`);
+	}
 	const roots = {
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
 		home: homedir(),
@@ -4525,9 +4554,10 @@ function routingScreenNotices(
 		if (entry.suggestion !== undefined) notices.push(`No agent is named "${entry.key}" in this profile; did you mean ${entry.suggestion}?`);
 	}
 	// Issue #2400: model_profiles keys in subagents.json that match nothing and
-	// suggest nothing. A session binding or a winning pin replaces those launches'
-	// routing, so the file's keys do not apply there.
-	if (sessionBoundName === undefined && pinnedEffectiveModelConfig(ctx.cwd) === undefined) {
+	// suggest nothing. When the session resolves a profile (its binding or the one
+	// frozen at startup), that profile replaces those launches' routing, so the
+	// file's keys do not apply there; a pin the session did not freeze does not.
+	if (sessionBoundName === undefined) {
 		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
 			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
 			.map((entry) => entry.key);
@@ -4603,7 +4633,11 @@ async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promi
 		: read.status === "missing"
 			? ({ name: "current", source: "active" } as CurrentProfileTarget)
 			: undefined;
-	await openProfilesPanelLoop(ctx, live, target?.name);
+	// The screen opens on the profile this session launches with while the store
+	// still has it (gentle-shell#1064 slice 3c).
+	const launchName = sessionLaunchProfile(ctx)?.name;
+	const opensOnLaunch = read.status === "valid" && launchName !== undefined && hasOwnProfile(read.file.profiles, launchName);
+	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name);
 }
 
 /** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
@@ -5572,7 +5606,8 @@ async function openProfilesPanelLoop(
 	if (!store) return;
 	const { path } = store;
 	let file = store.file;
-	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
+	// The profile this session launches with, bound or frozen: the tab marked ◉.
+	const sessionBoundName = () => sessionLaunchProfile(ctx)?.name;
 	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
 	let selectedName = initialSelectedName
 		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
@@ -5712,8 +5747,7 @@ async function openProfilesPanelLoop(
 				// Captures the routing this session's launches resolve and the
 				// orchestrator it actually runs, the way the old snapshot did.
 				const snapshot = profileSnapshotFrom(
-					readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-						?? await readEffectiveModelConfigAsync(ctx.cwd),
+					await readSessionLaunchModelConfigAsync(ctx),
 					liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 				);
 				try {

@@ -112,6 +112,30 @@ test("NO_PROXY keeps the listed hosts off the proxy", () => {
 	assert.notEqual(resolveProxyForTarget(TARGET, { ...proxy, NO_PROXY: "release-assets.example.invalid:8443" }), undefined);
 });
 
+test("an IPv6 proxy address reaches the proxy instead of failing to resolve", { timeout: 15_000 }, async (t) => {
+	// URL.hostname keeps the brackets of an IPv6 literal, and a socket address
+	// does not accept them, so the tunnel has to strip them before connecting.
+	const server = createServer((socket) => {
+		socket.on("error", () => {});
+		socket.on("data", () => socket.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"));
+	});
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen({ host: "::1", port: 0 }, resolve);
+	});
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	const address = server.address();
+	const port = typeof address === "object" && address !== null ? address.port : 0;
+	const directory = await mkdtemp(join(tmpdir(), "gentle-pi-proxy-ipv6-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	// The proxy answered, so the failure has to be the refusal and not a
+	// lookup that never reached the address.
+	await assert.rejects(
+		() => downloadGentleAiAsset(TARGET, join(directory, "asset"), 1024, 0, { env: { HTTPS_PROXY: `http://[::1]:${port}` }, maxAttempts: 1, headerTimeoutMs: 1500 }),
+		/proxy refused the tunnel with status 407/,
+	);
+});
+
 test("malformed percent-encoded proxy credentials are ignored", () => {
 	for (const credentials of ["user%:pass", "user:pass%GG", "user:%C3%28", ":pass%"]) {
 		const env = { HTTPS_PROXY: `http://${credentials}@proxy.invalid:3128` };

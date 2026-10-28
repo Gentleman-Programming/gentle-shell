@@ -25,6 +25,14 @@ function proxyPort(proxy) {
 	return proxy.protocol === "https:" ? 443 : 80;
 }
 
+// URL.hostname keeps the brackets of an IPv6 literal, but a socket address
+// and a TLS server name need the bare address, so the brackets come off here.
+// The bare address stays the server name because dropping it would turn off
+// the certificate identity check.
+function proxyHost(proxy) {
+	return proxy.hostname.replace(/^\[|\]$/g, "");
+}
+
 // A proxy value that is not a usable http(s) URL is ignored rather than
 // allowed to break an install that would have reached the host directly.
 function parseProxy(raw) {
@@ -115,7 +123,7 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 		const host = options.host ?? options.hostname;
 		const port = Number(options.port ?? 443);
 		const authority = tunnelAuthority(host, port);
-		const raw = net.connect({ host: proxy.hostname, port: proxyPort(proxy) });
+		const raw = net.connect({ host: proxyHost(proxy), port: proxyPort(proxy) });
 		let channel = raw;
 		let head = Buffer.alloc(0);
 		let delivered = false;
@@ -172,7 +180,7 @@ export function createProxyTunnelAgent(proxy, headerTimeoutMs = 10_000) {
 			// own handshake is done, so the tunnel is written to whichever
 			// channel is open.
 			if (proxy.protocol === "https:") {
-				channel = tls.connect({ socket: raw, servername: proxy.hostname });
+				channel = tls.connect({ socket: raw, servername: proxyHost(proxy) });
 				watch(channel);
 			}
 			const lines = [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`];

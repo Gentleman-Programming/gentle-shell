@@ -42,7 +42,9 @@ When you quit Pi after using `/gentle:music`, Gentle Shell runs `gentle-stream c
 
 ## Installation
 
-Gentle Shell looks for gentle-stream in this order:
+gentle-stream runs on macOS and Linux, including Gentle Shell inside WSL. It needs POSIX features native Windows lacks (file locks, a Unix control socket, process groups), so on native Windows `/gentle:music` only says it is not available yet: it never offers, installs, or runs the player.
+
+On macOS and Linux, Gentle Shell looks for gentle-stream in this order:
 
 1. `gentle-stream` on `PATH`.
 2. In a bundled Gentle Shell, the gentle-stream it installed inside its own folder (see below).
@@ -57,13 +59,13 @@ uv tool install 'gentle-stream[samples] @ git+https://github.com/Gentleman-Progr
 
 ### Installed by a bundled Gentle Shell
 
-A bundled Gentle Shell (the one the web installer sets up) offers to install the player for you the first time `/gentle:music` finds none:
+On macOS and Linux, a bundled Gentle Shell (the one the web installer sets up) offers to install the player for you the first time `/gentle:music` finds none:
 
 > Install the gentle-stream music player inside Gentle Shell? It downloads uv, Python 3.13 and the player (about 150 MB) into the Gentle Shell folder.
 
 Decline and you get the manual hint above; nothing is downloaded. Accept and Gentle Shell shows its progress, installs the player, and starts the music. Later runs use it directly, with no question.
 
-Everything stays inside the Gentle Shell folder (`~/.gentle-shell`, or `%LOCALAPPDATA%\gentle-shell` on Windows). Nothing is added to your `PATH`, and your own Python, uv, and uv settings are never used or changed:
+Everything stays inside the Gentle Shell folder (`~/.gentle-shell`). Nothing is added to your `PATH`, and your own Python, uv, and uv settings are never used or changed:
 
 | What | Where | Size on disk |
 | :-- | :-- | :-- |
@@ -77,6 +79,7 @@ The player is installed with its `samples` extra (pyfluidsynth). If that extra c
 
 ## Limits
 
+- Native Windows is not supported yet (see [Installation](#installation)); use WSL.
 - The player needs the interactive terminal. In RPC, JSON, and print modes, `/gentle:music` shows a notice and does nothing.
 - There is no default shortcut.
 - gentle-stream starts its own `gentle-shell` process to interpret moods; Gentle Shell does not pass its own launcher path.

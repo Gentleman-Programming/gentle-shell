@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="400" viewBox="0 0 1000 400" role="img" aria-labelledby="modes-title modes-desc">
+  <title id="modes-title">Permission modes</title>
+  <desc id="modes-desc">Three permission modes. Normal keeps the standard prompts. Auto checks eligible actions with an independent inference using the current session model; ordinary checks are tool-free, an eligible script check can inspect at most two complete files, and unavailable or stale decisions do not run the action. YOLO gives standing permission for ordinary already-scoped work while destructive actions still ask. In every mode, explicit restrictions, destructive guards, and independent consent remain, and none of the modes is a sandbox.</desc>
+  <defs>
+    <linearGradient id="modes-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="modes-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="modes-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="modes-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <linearGradient id="modes-bar" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c46b9e"/><stop offset="1" stop-color="#f095c8"/></linearGradient>
+    <pattern id="modes-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="modes-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="modes-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
+    <marker id="modes-arrow-soft" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#d7a0b8"/></marker>
+  </defs>
+  <rect width="1000" height="400" rx="24" fill="url(#modes-bg)"/>
+  <rect width="1000" height="400" rx="24" fill="url(#modes-dots)"/>
+  <rect width="1000" height="400" rx="24" fill="url(#modes-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="399" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">PERMISSION MODES</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">/gentle:mode · /gentle:yolo</text>
+    <path d="M36 96H956" stroke="#f095c8" stroke-opacity="0.35" stroke-width="1.5" marker-end="url(#modes-arrow)"/>
+    <text x="36" y="86" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="0.4" text-anchor="start">more questions</text>
+    <text x="964" y="86" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="0.4" text-anchor="end">fewer questions</text>
+    <rect x="36" y="120" width="288" height="160" rx="14" fill="url(#modes-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <g transform="translate(292 129) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></g>
+    <text x="48" y="200" fill="#fbeff5" font-size="20" font-weight="650">Normal</text>
+    <text x="48" y="222" fill="#a8939f" font-size="12.5">standard prompts</text>
+    <text x="48" y="240" fill="#a8939f" font-size="12.5">the default</text>
+    <rect x="48" y="132" width="145" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="120.4" y="145" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">/gentle:mode normal</text>
+    <rect x="356" y="120" width="288" height="160" rx="14" fill="url(#modes-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <g transform="translate(612 129) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></g>
+    <text x="368" y="200" fill="#fbeff5" font-size="20" font-weight="650">Auto</text>
+    <text x="368" y="222" fill="#a8939f" font-size="12.5">an independent check decides</text>
+    <text x="368" y="240" fill="#a8939f" font-size="12.5">unavailable or stale: does not run</text>
+    <rect x="368" y="132" width="130" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="433.2" y="145" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">/gentle:mode auto</text>
+    <rect x="686" y="130" width="268" height="140" rx="16" fill="#f095c8" opacity="0.22" filter="url(#modes-shine)"/>
+    <rect x="676" y="120" width="288" height="160" rx="14" fill="url(#modes-accent)" stroke="#f095c8" stroke-width="1.5"/>
+    <g transform="translate(932 129) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></g>
+    <text x="688" y="200" fill="#fbeff5" font-size="20" font-weight="650">YOLO</text>
+    <text x="688" y="222" fill="#a8939f" font-size="12.5">standing permission for scoped work</text>
+    <text x="688" y="240" fill="#a8939f" font-size="12.5">destructive actions still ask</text>
+    <rect x="688" y="132" width="145" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="760.4" y="145" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">/gentle:yolo enable</text>
+    <rect x="36" y="308" width="928" height="56" rx="14" fill="#f095c8" fill-opacity="0.06" stroke="#f095c8" stroke-opacity="0.22"/>
+    <g transform="translate(56 324.0) scale(1)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 19 6v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></g>
+    <text x="92" y="341.5" font-size="15.5"><tspan fill="#fbeff5" font-weight="650">In every mode</tspan><tspan fill="#a8939f" dx="10">explicit restrictions, destructive guards, and independent consent remain. Not a sandbox.</tspan></text>
+  </g>
+</svg>

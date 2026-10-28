@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs/promises";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readGitBranch } from "../extensions/startup-banner.ts";
+import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch } from "../extensions/startup-banner.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+
+// The banner reads process.env directly; a suite launched from a delegated
+// child must still exercise the parent paths (gentle-shell#1690).
+delete process.env.GENTLE_PI_AGENTS_CHILD;
 
 test("startup artwork spells Gentle Shell with aligned animation spans", () => {
 	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
@@ -71,8 +76,24 @@ test("startup branch lookup uses direct git argv and hides its Windows child", a
 	assert.deepEqual(calls, [{
 		command: "git",
 		args: ["-C", "/repo with spaces & metacharacters", "branch", "--show-current"],
-		options: { encoding: "utf8", shell: false, windowsHide: true },
+		options: { encoding: "utf8", shell: false, windowsHide: true, timeout: 3000 },
     }]);
+});
+
+// S4: a hung `git branch` (for example a repository rooted at HOME) must not
+// keep the banner waiting; a timeout reads as the ordinary failure path.
+test("startup branch lookup times out into the not-a-repo fallback", { skip: process.platform === "win32" }, async (t) => {
+	const bin = mkdtempSync(join(tmpdir(), "gp-banner-slow-git-"));
+	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		rmSync(bin, { recursive: true, force: true });
+	});
+	const started = Date.now();
+	assert.equal(await readGitBranch(bin, undefined, 200), "Not a git repo");
+	assert.ok(Date.now() - started < 2000, "the lookup must stop at its timeout");
 });
 
 test("startup banner keeps animating after invalidate and cleans up on dispose", async (t) => {
@@ -396,3 +417,97 @@ test("launcher-injected extension directories do not suppress the startup banner
 		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
 	}
 });
+
+// gentle-shell#1690: a delegated rpc child has hasUI=true; only a piped stdout
+// without rows/columns kept the banner off before the explicit child guard.
+test("delegated children never paint the startup banner", async (t) => {
+	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+	});
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-child-"));
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	let start: Function;
+	let shutdown: Function;
+	startup({ on: (name: string, fn: Function) => {
+		if (name === "session_start") start = fn;
+		if (name === "session_shutdown") shutdown = fn;
+	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	t.after(() => shutdown?.());
+	let headers = 0;
+	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: () => { headers++; } } });
+	t.mock.timers.tick(50);
+	assert.equal(headers, 0);
+});
+
+// S9: the config home each of these reads resolves, per case. The OS home is
+// a temporary folder in every case, so no case can reach the real one.
+// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
+// counts as unset (#2201; it used to name the current folder). "bundled" stands in for this package running from
+// a bundled install (testing overlay) whose prefix the launcher passed; the
+// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+type ConfigHomeCase = "unset" | "empty" | "bundled";
+function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
+	const cwd = process.cwd();
+	process.env.HOME = join(base, "home");
+	process.env.USERPROFILE = join(base, "home");
+	delete process.env.GENTLE_PI_CONFIG_HOME;
+	delete process.env.GENTLE_SHELL_PREFIX;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
+	t.after(() => {
+		process.chdir(cwd);
+		setBundledInstallForTesting(undefined);
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(base, { recursive: true, force: true });
+	});
+	const userConfig = join(base, "user-config");
+	if (kind === "unset") return { env: {}, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	if (kind === "empty") {
+		mkdirSync(join(base, "cwd"));
+		process.chdir(join(base, "cwd"));
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	}
+	const prefix = join(base, "prefix");
+	mkdirSync(prefix);
+	setBundledInstallForTesting({ root: prefix });
+	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
+}
+
+for (const kind of ["unset", "empty", "bundled"] as const) {
+	test(`the banner reads its settings from the ${kind} config home`, async (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		Object.assign(process.env, env);
+		const write = (folder: string, color: string) => {
+			mkdirSync(folder, { recursive: true });
+			writeFileSync(join(folder, "banner.json"), JSON.stringify({ showRose: false, showTextLogo: true, color }));
+		};
+		write(userConfig, "yellow");
+		write(dir, "cyan");
+		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
+	});
+}

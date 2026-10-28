@@ -63,14 +63,16 @@ test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mir
 	}
 	// gentle-pi#661: getOrchestratorPrompt()'s no-argument default renders the
 	// "unknown (native status unavailable)" RDD status line -- the longest of
-	// the three renderable forms -- so this IS the worst-case render the 8 KiB
+	// the three renderable forms -- so this IS the worst-case render the core
 	// budget below must cover, not a smaller placeholder production later
-	// exceeds.
+	// exceeds. gentle-shell#1731 T10 (user decision): budget 8,192 -> 8,400 B.
+	// Verification by named risk and the writer-rule fix: 8,400 -> 9,100 B; weak-model economy: 9,100 -> 9,250 B
+	// (the canonical budget in orchestrator-budget.test.ts).
 	assert.ok(
 		rendered.includes("Receipt-driven development: unknown (native status unavailable)"),
 		"the default render must include the worst-case RDD status line",
 	);
-	assert.ok(Buffer.byteLength(rendered, "utf8") <= 8192, "the rendered parent prompt must stay below the reduced 8 KiB budget");
+	assert.ok(Buffer.byteLength(rendered, "utf8") <= 9250, "the rendered parent prompt must stay within the 9,250 B core budget");
 });
 
 test("static prompts retain ODD and delegated-work guidance without SDD", () => {

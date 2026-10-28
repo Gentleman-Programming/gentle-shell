@@ -122,6 +122,41 @@ test("parseCodexHeaders reads the SSE rate-limit headers when a provider sends t
 	assert.equal(parseCodexHeaders({ "content-type": "text/event-stream" }, NOW), undefined);
 });
 
+test("parseCodexHeaders ignores windows without a valid duration instead of inventing 0m", () => {
+	for (const minutes of [undefined, "", " ", "0", "-1", "invalid", "300oops", "Infinity", "1e309"]) {
+		const headers: Record<string, string> = { "x-codex-primary-used-percent": "0" };
+		if (minutes !== undefined) headers["x-codex-primary-window-minutes"] = minutes;
+		assert.equal(parseCodexHeaders(headers, NOW), undefined, `minutes: ${String(minutes)}`);
+	}
+});
+
+test("parseCodexHeaders keeps genuine zero usage and only the valid provider windows", () => {
+	const usage = parseCodexHeaders({
+		"x-codex-primary-used-percent": "0",
+		"x-codex-primary-window-minutes": "0",
+		"x-codex-secondary-used-percent": "0",
+		"x-codex-secondary-window-minutes": "10080",
+	}, NOW);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["week:0"]);
+	assert.equal(renderUsageBar(usage, plainTheme), "codex week ▱▱▱▱▱▱▱▱ 0%");
+	assert.doesNotMatch(renderUsageBar(usage, plainTheme)!, /0m|5h/);
+});
+
+test("parseCodexUsage filters invalid numeric windows without inventing a five-hour quota", () => {
+	for (const seconds of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, "18000"]) {
+		const usage = parseCodexUsage({ rate_limit: {
+			primary_window: { used_percent: 0, limit_window_seconds: seconds },
+			secondary_window: { used_percent: 0, limit_window_seconds: 604_800 },
+		} }, NOW);
+		assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["week:0"], `seconds: ${String(seconds)}`);
+	}
+	for (const used of [undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+		assert.deepEqual(parseCodexUsage({ rate_limit: { primary_window: { used_percent: used, limit_window_seconds: 604_800 } } }, NOW).limits, []);
+	}
+	assert.deepEqual(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 0 } } }, NOW).limits, []);
+});
+
 test("accountIdFromToken decodes the chatgpt account claim from an OAuth JWT", () => {
 	const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-123" } })).toString("base64url");
 	assert.equal(accountIdFromToken(`header.${claims}.sig`), "acct-123");

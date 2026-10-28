@@ -37,7 +37,7 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { gentlePiConfigHome } from "../../lib/agent-home.ts";
+import { bundledGentlePiAgentHome, gentlePiConfigHome } from "../../lib/agent-home.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
@@ -1316,14 +1316,19 @@ export default function promptHistoryExtension(
 ): void {
   const env = deps.env ?? process.env;
   const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env);
-  // Per-prompt gate: re-read so a Customize toggle applies live.
-  const capturing = () => captureEnabled(env, configHome);
-  const root = deps.root ?? PI_HISTORY_ROOT;
+  // Per-prompt gate: re-read so a Customize toggle applies live. A delegated
+  // child never captures: its prompt is a delegation brief, not user history,
+  // and the parent owns the store's init and GC (gentle-shell#1690).
+  const capturing = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
+  // S9: a bundled Gentle Shell keeps the whole store in the agent home Pi runs
+  // with; everywhere else it stays under ~/.pi/agent, where existing ones live.
+  const bundledAgentDir = bundledGentlePiAgentHome(env);
+  const root = deps.root ?? (bundledAgentDir === undefined ? PI_HISTORY_ROOT : join(bundledAgentDir, "history"));
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
-  const agentDir = deps.agentDir ?? AGENT_DIR;
-  const sessionsRoot = deps.sessionsRoot ?? SESSIONS_ROOT;
+  const agentDir = deps.agentDir ?? bundledAgentDir ?? AGENT_DIR;
+  const sessionsRoot = deps.sessionsRoot ?? (bundledAgentDir === undefined ? SESSIONS_ROOT : join(bundledAgentDir, "sessions"));
   let writerState: SessionWriterState | null = null;
 
   /**

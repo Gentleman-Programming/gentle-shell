@@ -1,0 +1,54 @@
+import { realpathSync, readFileSync } from "node:fs";
+import { join, relative, isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// Resolve through the switched version, never the old launcher's captured pins.
+export async function resolveStartupRelaunch(input: {
+	root: string; home: string; platform: NodeJS.Platform; env: NodeJS.ProcessEnv; argv: string[];
+}): Promise<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> {
+	const { activeVersion, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout(input);
+	const id = activeVersion(layout);
+	if (!id) throw new Error("No active Gentle Shell after upgrade");
+	const versions = realpathSync(layout.versions);
+	const version = realpathSync(join(versions, id));
+	const inside = (root: string, file: string) => {
+		const path = relative(root, file);
+		return path !== "" && !path.startsWith("..") && !isAbsolute(path);
+	};
+	if (!inside(versions, version) || readFileSync(join(version, ".gentle-shell-version"), "utf8") !== `${id}\n`) {
+		throw new Error("Invalid active Gentle Shell version");
+	}
+	const pkg = join(version, "node_modules", "gentle-pi");
+	const modulePath = realpathSync(join(pkg, "scripts", "bundled-install.mjs"));
+	const entry = realpathSync(join(pkg, "bin", "gentle-shell.mjs"));
+	if (!inside(version, modulePath) || !inside(version, entry)) throw new Error("Active launcher escaped its version");
+	const release = await import(pathToFileURL(modulePath).href);
+	const next = release.prefixLayout(input);
+	return { command: next.node, args: [entry, ...input.argv], env: { ...input.env, GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" } };
+}
+
+// Only an explicit update selection may cross the existing upgrade boundary.
+export async function applyStartupChoice(choice: "update" | "skip" | "omit" | "cancel", effects: {
+	omit: () => void;
+	upgrade: () => Promise<number>;
+	relaunch: () => Promise<number>;
+	warn?: (message: string) => void;
+}): Promise<number | undefined> {
+	if (choice === "cancel") return 130;
+	if (choice === "omit") {
+		try { effects.omit(); }
+		catch { effects.warn?.("Could not remember the skipped release; continuing without saving."); }
+	}
+	if (choice !== "update") return undefined;
+	if (await effects.upgrade() !== 0) return undefined;
+	// A failed relaunch must not fall through to the captured old packageRoot.
+	return effects.relaunch();
+}
+
+export function omitStartupVersion(read: () => string | undefined, write: (text: string) => void, version: string): void {
+	const text = read();
+	const config = text === undefined ? {} : JSON.parse(text);
+	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid launcher config");
+	write(`${JSON.stringify({ ...config, skippedStartupRelease: version }, null, 2)}\n`);
+}

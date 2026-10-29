@@ -139,6 +139,8 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 
 To use `ctrl+p` like OpenCode, rebind Pi's `app.model.cycleForward` in `~/.pi/agent/keybindings.json` (Pi reserves that action, so an extension cannot take `ctrl+p` while it holds it) and set `GENTLE_PI_COMMANDS_KEY=ctrl+p`.
 
+While the palette is open it keeps the keyboard: an agent prompt that arrives meanwhile (a question from the orchestrator, for example) waits below it, untouched, until the palette is closed — and the prompt gets the keyboard back as soon as it is.
+
 Subscription usage shows in the bar after the cost, and `/gentle:usage` opens a panel with one row per window of every provider: the limit name, its meter, its percentage and, when that window reports one, its reset, all on one line. Codex, Claude and NaN all read the same way. In fullscreen mode, clicking the header's `usage` segment opens this same panel. The panel's own footer hints (`r refresh`, `esc close`) are clickable too, not just keyboard shortcuts, and hovering either one paints it in the shell's shared hover role while a refresh already in flight ignores a repeated click. The panel opens immediately: it draws whatever snapshots the store already holds and says `refreshing…` while the open refresh runs underneath it, repainting as answers land.
 
 ```text

@@ -5,6 +5,7 @@ import { type Static, Type } from "typebox";
 import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { setPendingAgentPrompt } from "../lib/prompt-keyboard-ownership.ts";
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 const CHOICE_TOOL_NAME = "ask_user_choice";
@@ -299,9 +300,14 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 					container.addChild(view);
 					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"), 1, 0));
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+					// Registered before Pi focuses the prompt, so an overlay that
+					// is open above it can keep the keyboard (see
+					// lib/prompt-keyboard-ownership.ts).
+					setPendingAgentPrompt(container);
 					return container;
 				});
 			} finally {
+				setPendingAgentPrompt(undefined);
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 			}
 

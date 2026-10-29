@@ -8,6 +8,20 @@ import { OrchestratorScopeCache, validRecordedScope } from "../lib/orchestrator-
 import { PresencePublisher, listPresence, readDiscovery } from "../lib/orchestrator-presence.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 
+test("cachedScope serves deferred publications from the snapshot without probing", () => {
+	let probes = 0;
+	const cache = new OrchestratorScopeCache(() => { probes++; return { root: "/repo", commonDir: "/clone" }; });
+	assert.equal(cache.cachedScope(), undefined, "nothing is cached before a projection");
+	const snapshot = cache.project("/repo", [], []);
+	assert.equal(probes, 1, "the event-time projection resolves eagerly");
+	assert.equal(cache.cachedScope(), snapshot);
+	assert.equal(cache.cachedScope(), snapshot, "repeated deferred reads never probe");
+	assert.equal(probes, 1);
+	cache.clear();
+	assert.equal(cache.cachedScope(), undefined, "a cleared cache publishes no stale scope");
+	assert.equal(probes, 1);
+});
+
 test("recorded host/owned child/registered scope correlates clones, isolates ambient Git and caches lifecycle", (t) => {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "orchestrator-scope-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));

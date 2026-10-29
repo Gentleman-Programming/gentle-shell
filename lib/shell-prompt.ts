@@ -23,10 +23,10 @@ const PETAL_TONE = {
 
 export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
 
-// Keep Pi's original loader cadence while carrying the banner's reflected-light
-// language into the compact working labels. The highlight enters before the
-// word, crosses it as a soft symmetric wave, then exits before wrapping.
-export const SHELL_PULSE_MS = 80;
+// Render-driven animation (gentle-shell#994): the petal advances inside the
+// prompt's own frames while streaming, so the only timer left is a watchdog
+// that repaints silent working phases (long tool runs with no output).
+export const SHELL_PULSE_WATCHDOG_MS = 1000;
 export const SHELL_SCANNER_STEPS = 15;
 const SCANNER_ENTRY_OFFSET = 3;
 

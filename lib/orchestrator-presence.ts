@@ -171,18 +171,25 @@ function reason(error: unknown) {
 	return code === "ENOENT" ? "missing" : code ? "io-error" : error instanceof SyntaxError ? "malformed" : (error as Error).message;
 }
 function atomicWrite(root: string, name: string, bytes: string) {
-	directory(root, true);
+	// Ancestor validation is the heartbeat's cached responsibility; the destination
+	// identity check remains per-write so a replaced or linked file is never overwritten.
 	const destination = join(root, name);
 	try { regular(fs.lstatSync(destination)); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	const temp = join(root, `.${name}.${randomUUID()}.tmp`);
 	const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+	let identity: { dev: number; ino: number };
 	try {
-		try { fs.writeFileSync(fd, bytes); } finally { fs.closeSync(fd); }
+		fs.writeFileSync(fd, bytes);
+		const stat = fs.fstatSync(fd);
+		identity = { dev: stat.dev, ino: stat.ino };
+	} finally { fs.closeSync(fd); }
+	try {
 		fs.renameSync(temp, destination);
 	} finally {
 		try { fs.unlinkSync(temp); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	}
+	return identity;
 }
 
 export interface PresencePage {
@@ -301,6 +308,11 @@ export class PresencePublisher {
 	private heartbeat?: ReturnType<typeof setInterval>;
 	private disposed = false;
 	private owned = new Map<string, { dev: number; ino: number }>();
+	/** Root paths whose ancestor chain was validated for this session identity.
+	 * Seeded by the one synchronous rootFor() in start(); refreshed asynchronously
+	 * by the heartbeat so writes never probe directories on the caller's thread. */
+	private readonly validRoots = new Set<string>();
+	private validating = false;
 	/** Timer I/O failures stop publication; consumers still apply the recent TTL. */
 	error?: string;
 
@@ -313,10 +325,10 @@ export class PresencePublisher {
 	static start(options: { profile: string; sessionId: string; label: string; labelSource?: () => string; activity: readonly ActivityInput[] }) {
 		const publisher = new PresencePublisher(options);
 		try {
-			rootFor(options.profile, true);
+			publisher.validRoots.add(rootFor(options.profile, true));
 			publisher.pending = JSON.stringify(projectActivity(options.activity));
 			publisher.flush();
-			publisher.heartbeat = setInterval(() => publisher.guarded(() => publisher.publishHeader()), 5000);
+			publisher.heartbeat = setInterval(() => publisher.pulse(), 5000);
 			publisher.heartbeat.unref();
 			return publisher;
 		} catch (error) { publisher.dispose(); throw error; }
@@ -384,12 +396,68 @@ export class PresencePublisher {
 		if (this.disposed) return;
 		try { action(); } catch (error) { this.error = reason(error); this.dispose(); }
 	}
+	private rootPath(kind: "header" | "activity" | "discovery" | "catalog") {
+		return join(resolve(this.profile), "gentle-agents", kind === "catalog" ? "catalog" : "presence");
+	}
+	/** Publishes from the warm cache synchronously, then refreshes the validated
+	 * ancestor chain asynchronously without ever overlapping itself. */
+	private pulse() {
+		this.guarded(() => this.publishHeader());
+		if (this.validating) return;
+		this.validating = true;
+		void this.revalidate().finally(() => { this.validating = false; }).catch(() => { /* revalidate never rejects */ });
+	}
+	/** Async mirror of rootFor(): same ancestor chain, modes, and ownership, so the
+	 * sync write path stays cache-only. A failed validation only cools the cache. */
+	private async revalidate() {
+		const absolute = resolve(this.profile);
+		const shared = join(absolute, "gentle-agents");
+		const chains: { root: string; create: boolean }[] = [{ root: join(shared, "presence"), create: false }];
+		if (this.catalog) chains.push({ root: join(shared, "catalog"), create: true });
+		for (const { root, create } of chains) {
+			try {
+				for (let path = absolute;; path = dirname(path)) {
+					const stat = await fs.promises.lstat(path);
+					if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe-directory");
+					if (dirname(path) === path) break;
+				}
+				if (create) {
+					try { await fs.promises.mkdir(root, { mode: 0o700 }); }
+					catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+				}
+				await this.checkedDirectory(shared, false);
+				await this.checkedDirectory(root, true);
+				this.validRoots.add(root);
+			} catch { this.validRoots.delete(root); }
+		}
+	}
+	private async checkedDirectory(path: string, privateMode: boolean) {
+		const stat = await fs.promises.lstat(path);
+		if (!stat.isDirectory() || stat.isSymbolicLink() || (process.platform !== "win32"
+			&& ((stat.mode & (privateMode ? 0o077 : 0o022)) !== 0 || stat.uid !== process.getuid?.()))) throw new Error("unsafe-directory");
+	}
 	private write(kind: "header" | "activity" | "discovery" | "catalog", bytes: string) {
-		const root = rootFor(this.profile, kind === "catalog", kind === "catalog");
+		// A cold cache validates synchronously exactly once for that path — the same
+		// rootFor() validation the old per-write path performed — then caches and
+		// writes, so the first publication after a cold start is never deferred to a
+		// heartbeat. A failed validation (vanished or unsafe tree) is the only skip
+		// path; the heartbeat's async refresh re-warms the cache once the tree returns.
+		const root = this.rootPath(kind);
+		if (!this.validRoots.has(root)) {
+			try { rootFor(this.profile, kind === "catalog", kind === "catalog"); }
+			catch { return; }
+			this.validRoots.add(root);
+		}
 		const name = kind === "catalog" ? `${this.target.sessionHash}.${this.target.incarnation}.json` : filename(this.target, kind);
-		atomicWrite(root, name, bytes);
-		const { dev, ino } = fs.lstatSync(join(root, name));
-		this.owned.set(join(root, name), { dev, ino });
+		let identity: { dev: number; ino: number };
+		try { identity = atomicWrite(root, name, bytes); }
+		catch (error) {
+			// A tree that vanished mid-flight is skipped, not fatal; other failures stay fatal.
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			this.validRoots.delete(root);
+			return;
+		}
+		this.owned.set(join(root, name), identity);
 	}
 	private writeDiscovery() {
 		if (!this.discovery) return;
@@ -402,6 +470,7 @@ export class PresencePublisher {
 		} catch { /* Metadata failure must not withdraw an existing activity peer. */ }
 	}
 	private publishHeader() {
+		if (!this.validRoots.has(this.rootPath("header"))) return;
 		const header = { ...this.header, label: label(this.labelSource?.() ?? this.displayLabel), heartbeat: Date.now() };
 		if (!validHeader(header)) throw new Error("malformed-header");
 		this.write("header", JSON.stringify(header));
@@ -410,6 +479,7 @@ export class PresencePublisher {
 	}
 	private flush() {
 		if (this.pending === this.published) return;
+		if (!this.validRoots.has(this.rootPath("activity"))) return;
 		const activity: Activity = JSON.parse(this.pending);
 		const generation = (this.header?.generation ?? 0) + 1;
 		const bytes = JSON.stringify({ schema: 1, ...this.target, generation, activity });

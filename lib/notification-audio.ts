@@ -157,6 +157,8 @@ export interface NativeAudioBackend {
 	probe(signal?: AbortSignal): Promise<{ available: boolean; formats: readonly NotificationAudioFormat[] }>;
 	getNativeFormats(): readonly NotificationAudioFormat[];
 	play(snapshot: string, signal?: AbortSignal, gate?: (() => boolean) | { permit(): boolean }): Promise<void>;
+	/** Optional owner teardown: a persistent native worker (Linux pulse) kills its child. */
+	dispose?(): void;
 }
 interface DiscoveredSystem { executable: string; formats: readonly NotificationAudioFormat[]; }
 interface Discovery { native: readonly NotificationAudioFormat[]; system?: DiscoveredSystem; }
@@ -240,6 +242,8 @@ export class NotificationPlayer {
 		}
 		return undefined;
 	}
+	/** Owner teardown: disposes the native backend, killing a persistent worker if one exists. */
+	dispose(): void { this.native.dispose?.(); }
 	async play(sound: Exclude<NotificationSound, null>, signal: AbortSignal, permit: PlaybackPermit): Promise<void> {
 		if (signal.aborted) return;
 		const discovered = await this.discover();

@@ -18,7 +18,7 @@ export function updateAutoPrompt(options: AppendableSystemPromptOptions | undefi
  if (active) appendSystemPromptOnce(options, AUTO_DIRECTIVE);
 }
 
-type ModeController = {mode(ctx: ExtensionContext): Promise<string>; epoch(): number};
+type ModeController = {mode(ctx: ExtensionContext, admission?: { toolCallId: string }): Promise<string>; epoch(): number};
 type Verdict = {status: string; decision?: string; reason?: string; code?: string; usage?: unknown; usageKnown?: boolean; actualModel?: unknown; requestedModel?: unknown; diagnostic?: unknown};
 /** Project a closed metadata schema; injected classifiers cannot add payloads to diagnostics. */
 function safeDiagnostic(value: unknown): AutoPermissionDiagnostic | undefined {
@@ -410,7 +410,7 @@ export class AutoPermissionRuntime {
   if(this.protectedMutation(event,ctx))return block("Permission configuration is human-controlled. Use the mode settings UI; model tools cannot change it.");
   // Revocation while identity lookup is pending must not become a fresh grant.
   const generation=this.generation, epoch=this.modes.epoch(), owner=this.owner;
-  const mode=await this.modes.mode(ctx);
+  const mode=await this.modes.mode(ctx,{toolCallId:event.toolCallId});
   if(generation!==this.generation || epoch!==this.modes.epoch() || owner!==this.owner || ctx.signal?.aborted)
    return block("Auto decision expired during mode lookup. The action was not run.");
   if(mode!=="auto") { this.memory.admitted(event,ctx,epoch);return undefined; }
@@ -467,7 +467,7 @@ export class AutoPermissionRuntime {
     if(result.status==="available" || result.code!=="provider-error" || controller.signal.aborted)break;
    }
   }finally{ctx.signal?.removeEventListener("abort",onAbort);this.active.delete(controller);}
-  const stillAuto=await this.modes.mode(ctx)==="auto";
+  const stillAuto=await this.modes.mode(ctx,{toolCallId:event.toolCallId})==="auto";
   if(!current() || controller.signal.aborted || !stillAuto)return block("Auto decision expired because the action, mode, request or session changed. The action was not run.");
   if(result.status!=="available" || !["allow","deny"].includes(result.decision ?? "")){
    // Contention and revocation are not failed safety judgements or provider outages.

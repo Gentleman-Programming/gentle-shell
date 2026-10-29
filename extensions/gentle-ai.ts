@@ -11171,10 +11171,12 @@ function createGentleAiExtensionForTesting(
 	});
 
 	// #2652: a primary run that declares `Risk: item N` in its final message and never attempted a verifier launch
-	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept.
+	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept. The incoming
+	// `canContinue` is false for a completed run (its last message is the assistant's); Pi re-validates the continuation
+	// after the appended reminder, so it is not a precondition here.
 	pi.on("agent_before_settle", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
-		if (event.outcome !== "completed" || !event.context.canContinue) return undefined;
+		if (event.outcome !== "completed") return undefined;
 		const reminder = verifierSettleReminders.beforeSettle(
 			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
 			finalAssistantText(event.context.contextMessages),

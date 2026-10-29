@@ -102,7 +102,7 @@ function hookedExtension(processEnv: NodeJS.ProcessEnv = {}) {
 		toolCall: (toolName: string, input: Record<string, unknown>) => emit("tool_call", { type: "tool_call", toolName, toolCallId: "c-1", input }),
 		settle: async (finalText: string, entries: unknown[] = []) => (await emit("agent_before_settle", {
 			type: "agent_before_settle", entries, continue: false, outcome: "completed",
-			context: { contextEntries: [], contextMessages: [user("Do it."), assistant(finalText)], llmMessages: [], pendingMessages: [], canContinue: true },
+			context: { contextEntries: [], contextMessages: [user("Do it."), assistant(finalText)], llmMessages: [], pendingMessages: [], canContinue: false },
 		})) as SettleResult | undefined,
 		agentEnd: () => emit("agent_end", { type: "agent_end", messages: [] }),
 		sent,
@@ -172,4 +172,59 @@ test("S6: the reference docs describe the settle reminder", () => {
 	assert.match(paragraph, /no supported `Risk: item N` declaration was recognized/);
 	assert.match(paragraph, /`agent_before_settle`[^]*one visible reminder[^]*one continuation/);
 	assert.match(paragraph, /once per user prompt/);
+});
+
+// #2652 regression: a real Pi session hands `agent_before_settle` a completed run with `canContinue: false` (the last
+// message is the assistant's). The reminder must still be appended and continue exactly once.
+test("a real Pi session appends one settle reminder and continues once after a declared high risk", async () => {
+	const sdk = await import("@earendil-works/pi-coding-agent");
+	const ai = await import("@earendil-works/pi-ai");
+	const root = mkdtempSync(join(tmpdir(), "vsr-"));
+	const profile = join(root, "profile");
+	const bindings: Record<string, string> = { PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"), GENTLE_PI_AGENT_HOME: profile, GENTLE_PI_CONFIG_HOME: join(root, "config") };
+	const previous = Object.fromEntries(Object.keys(bindings).map(key => [key, process.env[key]]));
+	Object.assign(process.env, bindings);
+	const replies = ["Implemented.\nRisk: item 6 (no regression test)"];
+	let calls = 0;
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	const model = { id: "driver", name: "driver", provider: "fx", api: "fx", baseUrl: "http://invalid.local", reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 1024, cost } as any;
+	try {
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(profile);
+		const manager = sdk.SessionManager.inMemory(root);
+		const settings = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off", packages: [] } as any);
+		const runtime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false, allowModelNetwork: false } as any);
+		const loader = new sdk.DefaultResourceLoader({
+			cwd: root, agentDir: profile, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: "fixture",
+			extensionFactories: [(pi: ExtensionAPI) => {
+				createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: bindings, resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); } } as any)(pi);
+				pi.registerProvider("fx", {
+					api: "fx", apiKey: "x", baseUrl: "http://invalid.local",
+					models: [{ id: model.id, name: model.name, reasoning: false, input: ["text"], cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens }],
+					streamSimple() {
+						const stream = ai.createAssistantMessageEventStream();
+						calls++;
+						const message = { role: "assistant", api: "fx", provider: "fx", model: "driver", content: [{ type: "text", text: replies.shift() ?? "Needs your decision: independent verification is pending." }], stopReason: "stop", timestamp: Date.now(), usage } as any;
+						queueMicrotask(() => { stream.push({ type: "start", partial: message }); stream.push({ type: "done", reason: "stop", message }); stream.end(); });
+						return stream;
+					},
+				} as any);
+			}],
+		} as any);
+		await loader.reload();
+		const { session } = await sdk.createAgentSession({ cwd: root, agentDir: profile, modelRuntime: runtime, model, thinkingLevel: "off", resourceLoader: loader, tools: [], sessionManager: manager, settingsManager: settings } as any);
+		const errors: unknown[] = [];
+		await session.bindExtensions({ mode: "json", onError: (error: any) => errors.push(error.error) } as any);
+		await session.prompt("Do the change.", { source: "interactive" } as any);
+		const reminders = manager.getEntries().filter((entry: any) => entry.type === "custom_message" && entry.customType === "gentle-pi.verifier-settle-reminder");
+		await session.abort();
+		session.dispose();
+		assert.deepEqual(errors, []);
+		assert.equal(reminders.length, 1);
+		assert.equal(calls, 2);
+	} finally {
+		for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		rmSync(root, { recursive: true, force: true });
+	}
 });

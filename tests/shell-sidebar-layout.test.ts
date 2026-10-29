@@ -49,7 +49,7 @@ test("grouped Status preserves structured fields and opaque integration text", (
 		const lines = renderShellSidebarBar({
 			cwd: "/project", branch: "main", dirty: 2, sessionName: "session",
 			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
-			costTotal: 1, subscription: false, statuses: ["opaque integration"],
+			costTotal: 1, subscription: false, usage: undefined, statuses: ["opaque integration"],
 		}, painted, 46);
 		const text = lines.join("\n");
 		let previous = -1;
@@ -365,6 +365,31 @@ test("wheel scrolls the rail and is consumed at both boundaries and blank space"
 	assert.equal(scroll.scrollTop, 0);
 });
 
+test("wheel over a bounded Todo viewport scrolls the section before the surrounding rail", (t) => {
+	const f = fixture();
+	const received: TuiMouseEvent[] = [];
+	let consumes = true;
+	sidebarPart(f.tui, "todo", {
+		render: () => ["Todo viewport", "Todo body"], invalidate() {},
+		handleMouse(event: TuiMouseEvent) {
+			received.push(event);
+			return consumes && event.type === "wheel" ? { handled: true, render: true } : undefined;
+		},
+	});
+	t.after(installSidebar(f.tui, theme));
+	const scroll = rail(f);
+	const content = scroll.render(50);
+	scroll.updateLayout(content.length + 20, content.length, () => {});
+	const y = content.findIndex((line) => line.includes("Todo body"));
+	const event: TuiMouseEvent = { type: "wheel", button: "none", wheelDelta: 2, x: 3, y, screenX: 93, screenY: y, width: 50, height: content.length, shift: false, alt: false, ctrl: false };
+	assert.equal(scroll.handleMouse(event)?.handled, true);
+	assert.equal(scroll.scrollTop, 0, "inner viewport consumes wheel without moving the rail");
+	assert.equal(received.at(-1)?.y, 1, "section coordinates are local");
+	consumes = false;
+	assert.equal(scroll.handleMouse(event)?.handled, true);
+	assert.equal(scroll.scrollTop, 2, "unbounded/collapsed sections fall back to rail scrolling");
+});
+
 test("rail dispatches a clipped, scroll-translated left click to only the matching sidebar part", (t) => {
 	const f = fixture();
 	let clicks = 0;
@@ -427,7 +452,7 @@ test("rail rejects removed or replaced parts before cached geometry is prepared 
 			return { handled: true };
 		},
 	};
-	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {} }, original);
+	const mounted = sidebarPart(f.tui, "todo", { render: () => ["Todo bottom"], invalidate() {}, dispose() {} }, original);
 	const dispose = installSidebar(f.tui, theme);
 	t.after(dispose);
 	const scroll = rail(f);
@@ -562,6 +587,73 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	invalidateSidebar(f.tui);
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
+});
+
+test("the jobs rail section paints between Status and Agents", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
+	sidebarPart(f.tui, "agents", { render: () => ["agents"], invalidate() {} }, { digest: () => "agents", render: () => ["Agents card"], invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { digest: () => "todo", render: () => ["Todo card"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	const footer = text.indexOf("Status");
+	const jobs = text.indexOf("Jobs card");
+	const agents = text.indexOf("Agents card");
+	const todo = text.indexOf("Todo card");
+	for (const [name, index] of [["Status", footer], ["Jobs card", jobs], ["Agents card", agents], ["Todo card", todo]] as const) {
+		assert.ok(index >= 0, `${name} paints in the rail`);
+	}
+	assert.ok(footer < jobs && jobs < agents && agents < todo, `sections paint in order, got: ${text}`);
+});
+
+test("a theme switch repaints rail sections whose digest did not change", (t) => {
+	const f = fixture();
+	// Pi hands extensions a live theme proxy and announces a switch only through
+	// ui.invalidate(), which never reaches the rail inside the layout tree.
+	let code = 31;
+	const live = { fg: (_color: string, text: string) => `\x1b[${code}m${text}\x1b[39m`, bold: (text: string) => text };
+	for (const key of ["footer", "agents", "todo"]) {
+		sidebarPart(f.tui, key, { render: () => [key], invalidate() {} }, {
+			digest: () => "stable",
+			render: () => [live.fg("accent", `${key} card`)],
+			invalidate() {},
+		});
+	}
+	t.after(installSidebar(f.tui, live));
+
+	const before = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) assert.ok(before.includes(`\x1b[31m${key} card`), `${key} paints with the first theme`);
+
+	code = 32;
+	const after = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) {
+		assert.ok(after.includes(`\x1b[32m${key} card`), `${key} repaints with the new theme`);
+		assert.ok(!after.includes(`\x1b[31m${key} card`), `${key} drops the old theme`);
+	}
+});
+
+test("structural cache misses skip the whole-rail digest pass", (t) => {
+	const f = fixture();
+	let digests = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		digest: () => { digests++; return "stable"; },
+		render: () => [`Todo ${digests}`],
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	// Every frame evaluates the digest exactly once: the whole-rail comparison
+	// reuses it for the section cache instead of calling each digest twice per
+	// prepare (issue #1681).
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	const prepared = digests;
+	assert.equal(prepared, 1, "preparing the rail evaluates the digest once");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 1, "a cache hit compares the digest once");
+	renderLayoutFrame(f.root, 141, 20, () => {});
+	assert.equal(digests, prepared + 2, "a structural miss re-prepares with a single digest pass");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 3, "returning to the cached structure stays on a single digest pass");
 });
 
 test("reuses final sidebar presentation until a relevant invalidation", (t) => {

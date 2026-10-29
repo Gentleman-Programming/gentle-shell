@@ -27,6 +27,7 @@ import {
 	profileExportPath,
 	profileRoleEntries,
 	profileRoutingRows,
+	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
 	readProfilesFileResult,
@@ -778,4 +779,27 @@ test("buildProfileListItems marks the session-bound profile ahead of the pinned 
 	assert.equal(both.find((item) => item.id === "work")?.label, "work (session)", "the session marker outranks the pin marker on the same profile");
 	const unbound = buildProfileListItems(file, "work");
 	assert.equal(unbound.find((item) => item.id === "personal")?.label, "personal", "no session marker without a binding");
+});
+
+// Issue #2196 (PR #2233 maintainer decision): the panel must not render a role
+// key that names no discovered agent as a valid-looking row; it flags it with a
+// did-you-mean suggestion instead of silently ignoring it at launch.
+test("unmatchedRoutingNotes flags routing rows whose key names no discovered agent", () => {
+	const rows = [
+		{ agent: "explore", model: "nan/glm5.3", thinking: "inherit" },
+		{ agent: "worker", model: "inherit", thinking: "inherit" },
+		{ agent: "gentle-ai-verify", model: "openai/alpha", thinking: "high" },
+	];
+	const notes = unmatchedRoutingNotes(rows, ["gentle-ai-explore", "gentle-ai-verify", "review-risk"]);
+	assert.equal(notes.get("explore"), "did you mean gentle-ai-explore?");
+	assert.equal(notes.get("worker"), "no matching agent");
+	assert.equal(notes.get("gentle-ai-verify"), undefined);
+	assert.equal(notes.size, 2);
+	assert.deepEqual(
+		unmatchedRoutingNotes(rows, ["gentle-ai-explore", "gentle-ai-worker", "gentle-ai-verify"]),
+		new Map([
+			["explore", "did you mean gentle-ai-explore?"],
+			["worker", "did you mean gentle-ai-worker?"],
+		]),
+	);
 });

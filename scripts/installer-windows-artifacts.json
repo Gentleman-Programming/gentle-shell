@@ -1,0 +1,15 @@
+{
+  "node": {
+    "version": "24.21.0",
+    "source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+    "maxBytes": 104857600,
+    "x64": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+      "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541"
+    },
+    "arm64": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-arm64.zip",
+      "sha256": "8779b1bde1d39f8d420e3b57aa657b39891af434d3de44a919044cec06785921"
+    }
+  }
+}

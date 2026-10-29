@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs, { existsSync, readFileSync, statSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { basename, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createSessionScratchExtension } from "../extensions/session-scratch.ts";
 import { AGENT_MODE, parseAgentsConfig, resolveAgentProfile, type AgentDefinition } from "../lib/agents-config.ts";
 import { MISSING_TOOLS_NOTE_PREFIX, TASK_STATUS, TaskStore, THREAD_ITEM, type TaskRecord } from "../lib/agents-protocol.ts";
 import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type ChildLike, type RunnerDeps, type RunnerHooks, type TaskRequest } from "../lib/agents-runner.ts";
@@ -31,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -45,7 +48,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		spawn: (command, args, launchOptions) => {
 			if (options.failStart) throw new Error("fixture spawn failed");
 			spawnOptions.push({ command, args, env: launchOptions.env, stdio: launchOptions.stdio });
-			const fake = fakeChild({ exitOnKill: options.exitOnKill, pid: options.pid });
+			const fake = fakeChild({ exitOnKill: options.exitOnKill, exitOnStdinEnd: options.exitOnStdinEnd, pid: options.pid });
 			if (options.state !== undefined) {
 				fake.child.stdin.removeAllListeners("data");
 				fake.child.stdin.on("data", (chunk) => {
@@ -70,7 +73,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		pi: { command: "pi", args: [] },
 	};
 	const store = new TaskStore();
-	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs }, deps, {
+	const runner = new AgentRunner(store, { maxConcurrency: options.maxConcurrency ?? 2, stallTimeoutMs: options.stallTimeoutMs ?? 10_000, toolStallTimeoutMs: options.toolStallTimeoutMs, cleanupTimeoutMs: options.cleanupTimeoutMs }, deps, {
 		askUser: async (taskId, ask) => {
 			asks.push({ taskId, method: ask.method });
 			return options.answer ?? { value: "yes" };
@@ -92,6 +95,87 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+for (const mode of [AGENT_MODE.TASK, AGENT_MODE.BACKGROUND]) {
+	for (const policy of [undefined, "off", "malformed"] as const) {
+		test(`background capability admission rejects ${mode} with ${policy ?? "default"} policy`, async (t) => {
+			const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+			t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+			const config = join(root, "config");
+			const file = join(config, "background-subagents.json");
+			fs.mkdirSync(config);
+			const raw = policy === "malformed" ? "{broken" : JSON.stringify({ schema: "gentle-pi.background-subagents/v1", policy });
+			if (policy) fs.writeFileSync(file, raw);
+			const h = harness({ maxConcurrency: 1 });
+			let launches = 0;
+			const env = { GENTLE_PI_CONFIG_HOME: config, ...(policy === "malformed" ? { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } : {}) };
+			const task = h.runner.run(request({ cwd: root, env, mode, agent: { ...explorer, tools: ["read", "bash_background"] }, onLaunch: () => { launches++; } }));
+			await tick();
+			assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
+			const target = policy ? file : join(root, ".pi", "gentle-ai", "background-subagents.json");
+			assert.equal(h.store.get(task.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${target} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+			assert.equal(h.children.length, 0);
+			assert.equal(h.spawnOptions.length, 0);
+			assert.equal(h.timers.length, 0);
+			assert.equal(launches, 0);
+			assert.deepEqual(h.finishes, [task.id]);
+			assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.FAILED);
+			assert.equal(existsSync(file), policy !== undefined);
+			if (policy) assert.equal(readFileSync(file, "utf8"), raw);
+			const next = h.runner.run(request({ cwd: root, env }));
+			await tick();
+			assert.equal(h.store.get(next.id)?.status, TASK_STATUS.RUNNING);
+			h.runner.cancel(next.id);
+			await tick();
+		});
+	}
+}
+
+for (const { tools, policy } of [
+	...[undefined, "off"].flatMap(policy => [["read", "unknown_tool"], []].map(tools => ({ tools, policy }))),
+	{ tools: ["read", "bash_background", "grep"], policy: "on" },
+]) {
+	test(`background capability admission preserves launch for ${tools.join(",") || "default tools"} with ${policy ?? "default off"} policy`, async (t) => {
+		const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+		const h = harness();
+		const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), ...(policy === undefined ? {} : { GENTLE_PI_BACKGROUND_SUBAGENTS: policy }), KEEP: "yes" };
+		const task = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools } }));
+		await tick();
+		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
+		assert.equal(h.store.get(task.id)?.error, null);
+		assert.equal(h.children.length, 1);
+		const expected = tools.length ? [...tools, "subagent_parent_message"].join(",") : undefined;
+		assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], expected);
+		assert.equal(h.spawnOptions[0].env.KEEP, "yes");
+		assert.deepEqual(h.spawnOptions[0].args, childArguments(request({ cwd: root, env, agent: { ...explorer, tools } })));
+		assert.equal(h.timers.filter(timer => !timer.cancelled).length, 1);
+		h.runner.cancel(task.id);
+		await tick();
+	});
+}
+
+test("background capability admission refreshes project policy when queued work dispatches", async (t) => {
+	const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const dir = join(root, ".pi", "gentle-ai");
+	fs.mkdirSync(dir, { recursive: true });
+	const file = join(dir, "background-subagents.json");
+	const h = harness({ maxConcurrency: 1 });
+	const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), GENTLE_PI_BACKGROUND_SUBAGENTS: "on" };
+	const first = h.runner.run(request({ cwd: root, env }));
+	const queued = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools: ["bash_background"] } }));
+	await tick();
+	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.QUEUED);
+	const raw = '{"schema":"gentle-pi.background-subagents/v1","policy":"off"}';
+	fs.writeFileSync(file, raw);
+	h.runner.cancel(first.id);
+	await tick();
+	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.FAILED);
+	assert.equal(h.store.get(queued.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+	assert.equal(h.children.length, 1);
+	assert.equal(readFileSync(file, "utf8"), raw);
+});
+
 const FOUR_MIN_MS = 4 * 60_000;
 
 function argumentUpdate(type: string, fields: Record<string, unknown> = {}): Record<string, unknown> {
@@ -102,6 +186,25 @@ function beginArguments(child: FakeChild, timestamp = 1000): void {
 	child.emit({ type: "message_start", message: { role: "assistant", timestamp, content: [] } });
 	child.emit(argumentUpdate("toolcall_start", { id: "call-1", toolName: "write" }));
 }
+
+test("parent source passages reach the economical explorer through the existing context handoff", async () => {
+	const h = harness();
+	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
+	const task = h.runner.run(request({
+		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		prompt: "Compare the supplied passage with local source; do not browse.",
+		context,
+		model: { provider: "offline", id: "configured-small" },
+		thinking: "low",
+	}));
+	await tick();
+	const command = h.children[0].written.find(command => command.type === "prompt");
+	assert.equal(command?.message, `Compare the supplied passage with local source; do not browse.\n\n## Context\n${context}`);
+	assert.ok(h.spawnOptions[0].args.includes("offline/configured-small:low"));
+	assert.equal(h.spawnOptions[0].env[REQUESTED_TOOLS_ENV], "read,grep,find,codegraph,subagent_parent_message");
+	h.runner.cancel(task.id);
+	await tick();
+});
 
 test("fresh argument streaming renews idle liveness without execution or provisional usage", async () => {
 	const h = harness({ stallTimeoutMs: 100, toolStallTimeoutMs: 1000 });
@@ -599,6 +702,21 @@ test("runner captures resolved model and effort, retaining omitted launch values
 	h.runner.cancel(task.id);
 });
 
+test("record creation copies the launch-layer model source next to the model (#2180)", () => {
+	const sourced = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const sourcedTask = sourced.runner.run(request({ modelSource: "binding" }));
+	assert.equal(sourced.store.get(sourcedTask.id)?.modelSource, "binding", "the record keeps the host-computed layer next to the resolved model");
+	sourced.runner.cancel(sourcedTask.id);
+
+	// The absence contract: a request without a model source (older callers,
+	// peers) records no field at all, so the card renders exactly as before.
+	const plain = harness({ state: { model: { provider: "anthropic", id: "resolved-model" } } });
+	const plainTask = plain.runner.run(request());
+	assert.equal(plain.store.get(plainTask.id)?.modelSource, undefined);
+	assert.equal("modelSource" in (plain.store.get(plainTask.id) as TaskRecord), false, "no modelSource key is recorded when the launch did not name a layer");
+	plain.runner.cancel(plainTask.id);
+});
+
 test("runner delivers each response combination once at finish, never attributing launch selection", async () => {
 	const snapshots: NonNullable<Parameters<NonNullable<RunnerHooks["onFinish"]>>[1]>[] = [];
 	const h = harness({ exitOnKill: false, state: { model: { provider: "anthropic", id: "launch" }, thinkingLevel: "max" },
@@ -886,7 +1004,8 @@ test("AgentRunner runs a task end to end: prompt, deltas into the store, complet
 	assert.equal(finished?.toolCalls, 1);
 	assert.equal(finished?.sessionPath, "/sessions/child.jsonl");
 	assert.equal(finished?.label, "Map the repo");
-	assert.ok(children[0].killed.length > 0, "the child is stopped once the answer is in");
+	assert.ok(children[0].child.stdin.writableEnded, "the child is stopped via orderly shutdown once the answer is in");
+	assert.equal(children[0].killed.length, 0, "no kill signals sent during orderly settlement");
 	assert.equal(store.thread(task.id).items.length, 2);
 	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.COMPLETED);
 });
@@ -934,6 +1053,143 @@ test("AgentRunner queues beyond max concurrency and starts the next task when on
 	assert.equal(store.get(first.id)?.status, TASK_STATUS.COMPLETED);
 	assert.equal(children.length, 2);
 	assert.equal(store.get(second.id)?.status, TASK_STATUS.RUNNING);
+});
+
+test("AgentRunner requests orderly shutdown via stdin on settlement and does not send SIGTERM immediately (#1740)", async () => {
+	const { store, runner, children } = harness({ exitOnKill: false });
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	await tick();
+	assert.equal(children[0].killed.length, 0);
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	// Orderly shutdown must have requested stdin.end()
+	assert.equal(children[0].child.stdin.writableEnded, true, "stdin must be ended on settlement to trigger Pi orderly shutdown");
+	// Must NOT send SIGTERM immediately
+	assert.deepEqual(children[0].killed, [], "SIGTERM must not be sent immediately upon settlement");
+	// Task completion and cleanup in flight should be distinguishable
+	assert.equal(store.get(task.id)?.lastStep, "cleaning up", "lastStep distinguishes in-flight cleanup");
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING, "task waits for cleanup exit");
+
+	// Child exits cleanly upon session_shutdown completion
+	children[0].exit(0);
+	await tick();
+	await tick();
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.COMPLETED);
+	assert.equal(store.get(task.id)?.lastStep, "done");
+	assert.deepEqual(children[0].killed, [], "clean shutdown completes with zero kill signals sent");
+});
+
+test("AgentRunner allows delayed cleanup and cancels escalation after clean exit (#1740)", async () => {
+	// EOF must be independent of kill behavior: this child honors signals but
+	// needs time to finish asynchronous shutdown after its input closes.
+	const { store, runner, children, timers, advance, finishes } = harness({ exitOnStdinEnd: false });
+	const task = runner.run(request());
+	await tick();
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(children[0].child.stdin.writableEnded, true);
+	advance(2_000);
+	await tick();
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING);
+	assert.equal(store.get(task.id)?.lastStep, "cleaning up");
+	assert.deepEqual(children[0].killed, []);
+	assert.deepEqual(finishes, []);
+	children[0].exit(0);
+	await tick();
+	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.COMPLETED);
+	assert.equal(store.get(task.id)?.lastStep, "done");
+	assert.deepEqual(finishes, [task.id]);
+	assert.ok(timers.filter((timer) => timer.ms === 5_000).every((timer) => timer.cancelled));
+	advance(5_000);
+	await tick();
+	assert.deepEqual(children[0].killed, []);
+	assert.deepEqual(finishes, [task.id]);
+});
+
+test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cleanupTimeoutMs (#1740)", async () => {
+	const { store, runner, children, timers } = harness({ exitOnKill: false, cleanupTimeoutMs: 3000 });
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	await tick();
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	assert.equal(children[0].child.stdin.writableEnded, true);
+	assert.deepEqual(children[0].killed, []);
+
+	// Find the cleanup timeout timer (3000 ms) and trigger it
+	const cleanupTimer = timers.find((timer) => !timer.cancelled && timer.ms === 3000);
+	assert.ok(cleanupTimer, "cleanup timeout timer must be scheduled");
+	cleanupTimer.fn();
+	await tick();
+
+	// Escalation has fired SIGTERM
+	assert.deepEqual(children[0].killed, ["SIGTERM"]);
+
+	// And termination grace timer (250 ms) is scheduled for SIGKILL
+	const killTimer = timers.find((timer) => !timer.cancelled && timer.ms === 250);
+	assert.ok(killTimer, "SIGKILL escalation timer must be scheduled");
+	killTimer.fn();
+	await tick();
+
+	assert.deepEqual(children[0].killed, ["SIGTERM", "SIGKILL"]);
+});
+
+test("orderly cleanup escalation retains the full exit confirmation deadline after SIGKILL (#1740)", async () => {
+	let groupAlive = true;
+	const { store, runner, children, timers, advance } = harness({
+		exitOnKill: false,
+		pid: 42,
+		cleanupTimeoutMs: 5_000,
+		process: {
+			platform: "linux",
+			kill: () => {
+				if (!groupAlive) throw Object.assign(new Error(), { code: "ESRCH" });
+				return true;
+			},
+		},
+	});
+	const task = runner.run(request());
+	await tick();
+	assert.equal(children.length, 1);
+	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Done" }] }] });
+	await tick();
+	children[0].emit({ type: "agent_settled" });
+	await tick();
+
+	// Advance time by the cleanup window (5000 ms)
+	const cleanupTimer = timers.find((t) => !t.cancelled && t.ms === 5_000);
+	assert.ok(cleanupTimer, "cleanup timeout timer must be scheduled");
+	advance(5_000);
+	await tick();
+
+	// Advance time by termination grace (250 ms)
+	const killTimer = timers.find((t) => !t.cancelled && t.ms === 250);
+	assert.ok(killTimer, "SIGKILL timer must be scheduled");
+	advance(250);
+	await tick();
+
+	// After SIGKILL, confirmGroupExit checks the process group. Because cleanupDeadlineAt was set
+	// at SIGKILL time, it must NOT immediately fail with capacity quarantined!
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.RUNNING, "must not prematurely quarantine after cleanup window");
+	const probeTimer = timers.find((t) => !t.cancelled && t.ms === 25);
+	assert.ok(probeTimer, "exit confirmation polling timer must be scheduled");
+
+	// If the group exits during the confirmation window:
+	groupAlive = false;
+	children[0].exit(0);
+	advance(25);
+	await tick();
+
+	assert.equal(store.get(task.id)?.status, TASK_STATUS.COMPLETED);
+	assert.equal(store.get(task.id)?.error, null);
 });
 
 test("AgentRunner classifies terminal assistant outcomes only after settlement", async () => {
@@ -1010,10 +1266,13 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	await tick();
 	const ownedIpc = launches[0]?.options.env.GENTLE_PI_AGENTS_OWNED_IPC;
 	assert.match(ownedIpc ?? "", /^\d+-[a-z0-9]+$/, "the runner creates an opaque owned-IPC marker");
+	const scratch = launches[0]?.options.env.TMPDIR;
+	assert.match(basename(scratch ?? ""), /^ga[A-Za-z0-9]{6}$/, "the child gets its own TMPDIR");
+	const scratchEnv = platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
 	assert.deepEqual(launches, [{
 		command: "pi-fixture",
 		args: ["--from-host", "--mode", "rpc", "--session-dir", "/sessions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."],
-		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" }, detached, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv }, detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 	}]);
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
@@ -1096,7 +1355,10 @@ test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4
 	const launch = spawnOptions[0];
 	const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
 	assert.match(launch?.env.GENTLE_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
-	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message" });
+	const scratch = launch?.env.TMPDIR;
+	const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
+	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
+	assert.match(basename(launch?.env.TMPDIR ?? ""), /^ga[A-Za-z0-9]{6}$/);
 	assert.deepEqual(launch?.stdio, ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"]);
 	assert.equal(launch?.stdio?.length, 5);
 	children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "channel checked" }], stopReason: "stop" }] });
@@ -1123,6 +1385,8 @@ test("AgentRunner platform matrix scopes permission fd3 transport", async () => 
 			await tick();
 			const launch = launches[0];
 			assert.ok(launch, `${platform} ${eligible ? "eligible" : "ineligible"} child launches`);
+			assert.equal(launch.windowsHide, true, `${platform} children hide console windows regardless of permission eligibility`);
+			assert.equal(launch.detached, platform !== "win32", "only non-Windows children use detached process groups");
 			assert.equal(launch.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD, eligible ? "3" : undefined, "only eligible children receive the fd3 marker");
 			assert.deepEqual(launch.stdio, eligible ? ["pipe", "pipe", "pipe", platform === "win32" ? "overlapped" : "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"]);
 			assert.equal(launch.stdio?.indexOf("ipc"), eligible ? 4 : 3, "messaging IPC follows fd3 only for eligible children");
@@ -1756,4 +2020,239 @@ test("temporary instructions transport file is cleaned up if child emits an earl
 	assert.ok(capturedPromptPath, "should have captured a transport file path");
 	assert.ok(!existsSync(capturedPromptPath), "temporary transport file must be cleaned up on early child error");
 	assert.ok(!existsSync(dirname(capturedPromptPath)), "temporary transport directory must be cleaned up on early child error");
+});
+
+// Harness roadmap T3 (R1): asking the parent to remove a child's scratch failed
+// in 3 of 6 bench cells, so each child gets its own TMPDIR that the runtime
+// removes when the child ends.
+function scratchRunner(spawnImpl: (env: NodeJS.ProcessEnv) => ChildLike) {
+	let clock = 1000;
+	const deps: RunnerDeps = {
+		spawn: (_command, _args, options) => spawnImpl((options as { env: NodeJS.ProcessEnv }).env),
+		now: () => (clock += 1),
+		schedule: (_fn, _ms) => () => {},
+		pi: { command: "pi", args: [] },
+	};
+	return new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, deps, { askUser: async () => ({ value: "yes" }) });
+}
+
+test("each child gets its own TMPDIR under the parent's temp dir, removed with its contents on exit", async () => {
+	const fake = fakeChild();
+	let childTmp = "";
+	const runner = scratchRunner((env) => { childTmp = env.TMPDIR ?? ""; return fake.child; });
+	const task = runner.run(request({ env: { ...process.env, TMPDIR: tmpdir() } }));
+	await tick();
+	assert.ok(childTmp.startsWith(tmpdir()) && childTmp !== tmpdir(), `child TMPDIR ${childTmp} is a fresh dir under ${tmpdir()}`);
+	assert.ok(statSync(childTmp).isDirectory());
+	const scratch = fs.mkdtempSync(`${childTmp}/check-`);
+	fs.writeFileSync(`${scratch}/state.json`, "{}");
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.equal(existsSync(childTmp), false, "the child's TMPDIR and everything mktemp created in it are removed");
+});
+
+test("a child TMPDIR is removed when spawn throws", async () => {
+	let childTmp = "";
+	const runner = scratchRunner((env) => { childTmp = env.TMPDIR ?? ""; throw new Error("spawn failed intentionally"); });
+	const task = runner.run(request());
+	await tick();
+	assert.equal((await runner.waitFor(task.id)).status, TASK_STATUS.FAILED);
+	assert.ok(childTmp, "the failed launch still received a child TMPDIR");
+	assert.equal(existsSync(childTmp), false);
+});
+
+test("a quarantined child keeps its TMPDIR, since a descendant may still use it", async () => {
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	let now = 1_000;
+	let childTmp = "";
+	let fake: FakeChild | undefined;
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, {
+		spawn: (_command, _args, options) => { childTmp = (options as { env: NodeJS.ProcessEnv }).env.TMPDIR ?? ""; return (fake = fakeChild({ exitOnKill: false, pid: 91 })).child; },
+		now: () => now,
+		schedule: (fn, ms) => { timers.push({ fn, ms }); return () => {}; },
+		pi: { command: "pi", args: [] },
+		process: { platform: "win32", kill: () => {} },
+	}, { askUser: async () => ({ value: "yes" }) });
+	const task = runner.run(request());
+	await tick();
+	runner.cancel(task.id);
+	timers.find((timer) => timer.ms === 250)!.fn();
+	now = 5_000;
+	timers.filter((timer) => timer.ms === 25).at(-1)!.fn();
+	await tick();
+	assert.match(store.get(task.id)?.error ?? "", /capacity quarantined/);
+	assert.equal(existsSync(childTmp), true, "an unconfirmed exit must not delete files a live descendant may hold");
+	fake!.exit(0);
+	await tick();
+	assert.equal(existsSync(childTmp), false, "the proven exit removes the quarantined child's TMPDIR");
+});
+
+// R1 review advisory: a quarantined POSIX child whose own exit arrived while a
+// descendant still held its group was never probed again, so its TMPDIR and
+// slot stayed for the rest of the session after the group ended.
+test("a quarantined child whose exit is seen before its group ends frees its TMPDIR and slot once the group is gone", async () => {
+	const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+	let now = 1_000;
+	let groupAlive = true;
+	let launches = 0;
+	const childTmps: string[] = [];
+	const store = new TaskStore();
+	let fake: FakeChild | undefined;
+	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 10_000 }, {
+		spawn: (_command, _args, options) => {
+			childTmps.push((options as { env: NodeJS.ProcessEnv }).env.TMPDIR ?? "");
+			return (fake = fakeChild({ exitOnKill: false, pid: 90 + (launches += 1) })).child;
+		},
+		now: () => now,
+		schedule: (fn, ms) => {
+			const timer = { fn, ms, cancelled: false };
+			timers.push(timer);
+			return () => { timer.cancelled = true; };
+		},
+		pi: { command: "pi", args: [] },
+		process: { platform: "linux", kill: (_pid, signal) => {
+			if (signal === 0 && !groupAlive) throw Object.assign(new Error("group probe"), { code: "ESRCH" });
+		} },
+	}, { askUser: async () => ({ value: "yes" }) });
+	const first = runner.run(request());
+	const second = runner.run(request({ prompt: "queued" }));
+	await tick();
+	const quarantined = fake!;
+	runner.cancel(first.id);
+	timers.find((timer) => timer.ms === 250)!.fn();
+	now = 5_000;
+	timers.filter((timer) => timer.ms === 25).at(-1)!.fn();
+	await tick();
+	assert.match(store.get(first.id)?.error ?? "", /capacity quarantined/);
+	quarantined.exit(0);
+	await tick();
+	assert.equal(existsSync(childTmps[0]), true, "a descendant still holds the group, so the TMPDIR stays");
+	assert.equal(store.get(second.id)?.status, TASK_STATUS.QUEUED, "the slot stays quarantined while the group lives");
+	groupAlive = false;
+	const probe = timers.filter((timer) => !timer.cancelled && timer.ms === 1_000).at(-1);
+	assert.ok(probe, "the observed exit keeps probing the remaining group");
+	probe.fn();
+	await tick();
+	assert.equal(existsSync(childTmps[0]), false, "the gone group removes the quarantined child's TMPDIR");
+	assert.equal(store.get(second.id)?.status, TASK_STATUS.RUNNING, "the freed slot starts queued work");
+	assert.equal(store.get(first.id)?.error, `process cleanup unconfirmed after 1000ms; capacity quarantined`, "the recorded outcome is unchanged");
+	runner.cancel(second.id);
+	fake!.exit(0);
+	await tick();
+});
+
+test("a relative inherited TMPDIR falls back to the system temp dir, so the child's path is absolute", async () => {
+	const fake = fakeChild();
+	let childTmp = "";
+	const runner = scratchRunner((env) => { childTmp = env.TMPDIR ?? ""; return fake.child; });
+	const task = runner.run(request({ env: { TMPDIR: "reltmp" } }));
+	await tick();
+	assert.ok(childTmp.startsWith(join(tmpdir(), "ga")), childTmp);
+	fake.exit(0);
+	await runner.waitFor(task.id);
+	assert.equal(existsSync(childTmp), false);
+});
+
+// odd/tasks/session-scratch-ledger.md S9: TMPDIR nests the session scratch and the
+// subagent's own TMPDIR, and a Unix socket path (104 bytes with the NUL on macOS)
+// under it must still fit, as Python's `pymp-XXXXXXXX/listener-XXXXXXXX` (32 bytes).
+test("S9: under a 48-byte inherited TMPDIR, a subagent TMPDIR leaves room for a 32-byte socket name", async (t) => {
+	const INHERITED_BYTES = 48;
+	const SOCKET_NAME = "/pymp-XXXXXXXX/listener-XXXXXXXX";
+	// An unresolved parent, like macOS `/var/folders/xx/<30 chars>/T`, padded to 48 bytes.
+	const parent = [tmpdir(), "/tmp"].map((root) => { try { return fs.mkdtempSync(join(root, "b")); } catch { return undefined; } })
+		.find((dir): dir is string => dir !== undefined && Buffer.byteLength(dir) + 2 <= INHERITED_BYTES);
+	if (!parent) { t.skip("no temp directory short enough to build a 48-byte path"); return; }
+	t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+	const inherited = join(parent, "x".repeat(INHERITED_BYTES - Buffer.byteLength(parent) - 1));
+	fs.mkdirSync(inherited);
+	assert.equal(Buffer.byteLength(inherited), INHERITED_BYTES);
+	const env: NodeJS.ProcessEnv = { TMPDIR: inherited, GENTLE_PI_CONFIG_HOME: join(parent, "config") };
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	createSessionScratchExtension({ env })({ on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers.set(name, handler); }, registerCommand: () => {} } as unknown as ExtensionAPI);
+	const ctx = { cwd: parent, hasUI: false, sessionManager: { getSessionId: () => "a-session-id-much-longer-than-the-scratch-name" } };
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+	t.after(() => handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, ctx));
+	assert.equal(dirname(env.TMPDIR!), inherited, "the session scratch keeps the inherited spelling");
+	const fake = fakeChild();
+	let childTmp = "";
+	const runner = scratchRunner((childEnv) => { childTmp = childEnv.TMPDIR ?? ""; return fake.child; });
+	const task = runner.run(request({ env: { TMPDIR: env.TMPDIR } }));
+	await tick();
+	assert.equal(dirname(childTmp), env.TMPDIR, "the subagent TMPDIR nests under the session scratch");
+	const socketPath = Buffer.byteLength(`${childTmp}${SOCKET_NAME}`);
+	assert.ok(socketPath <= 103, `${childTmp}${SOCKET_NAME} is ${socketPath} bytes`);
+	fake.exit(0);
+	await runner.waitFor(task.id);
+});
+
+// odd/tasks/scratch-review-advisories.md S2 (native review advisories of #2300):
+// session shutdown removed the whole scratch, including the TMPDIR of a child
+// still running or quarantined, whose descendants may still hold files there.
+test("advisories S2: session shutdown keeps a running or quarantined subagent's TMPDIR, removes the rest, and leaves the scratch to the sweep", async (t) => {
+	const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "gentle-pi-advisories-s2-")));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const base = join(root, "tmp");
+	fs.mkdirSync(base);
+	const configHome = join(root, "config");
+	const env: NodeJS.ProcessEnv = { TMPDIR: base, GENTLE_PI_CONFIG_HOME: configHome };
+	const scratchSession = (sessionId: string, options: { isProcessAlive?: (pid: number) => boolean; now?: () => number } = {}) => {
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+		createSessionScratchExtension({ env, ...options })({ on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers.set(name, handler); }, registerCommand: () => {} } as unknown as ExtensionAPI);
+		const ctx = { cwd: root, hasUI: false, sessionManager: { getSessionId: () => sessionId } };
+		return {
+			start: () => handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx),
+			shutdown: () => handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, ctx),
+		};
+	};
+	const parent = scratchSession("s-1");
+	parent.start();
+	const scratch = env.TMPDIR!;
+	assert.equal(dirname(scratch), base);
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	let now = 1_000;
+	const fakes: FakeChild[] = [];
+	const childTmps: string[] = [];
+	const store = new TaskStore();
+	const runner = new AgentRunner(store, { maxConcurrency: 2, stallTimeoutMs: 10_000 }, {
+		spawn: (_command, _args, options) => {
+			childTmps.push((options as { env: NodeJS.ProcessEnv }).env.TMPDIR ?? "");
+			const fake = fakeChild({ exitOnKill: false, pid: 80 + fakes.length });
+			fakes.push(fake);
+			return fake.child;
+		},
+		now: () => now,
+		schedule: (fn, ms) => { timers.push({ fn, ms }); return () => {}; },
+		pi: { command: "pi", args: [] },
+		process: { platform: "win32", kill: () => {} },
+	}, { askUser: async () => ({ value: "yes" }) });
+	const quarantined = runner.run(request({ env: { TMPDIR: scratch } }));
+	const running = runner.run(request({ prompt: "running", env: { TMPDIR: scratch } }));
+	await tick();
+	runner.cancel(quarantined.id);
+	timers.find((timer) => timer.ms === 250)!.fn();
+	now = 5_000;
+	timers.filter((timer) => timer.ms === 25).at(-1)!.fn();
+	await tick();
+	assert.match(store.get(quarantined.id)?.error ?? "", /capacity quarantined/);
+	assert.deepEqual(childTmps.map((dir) => dirname(dir)), [scratch, scratch]);
+	fs.writeFileSync(join(childTmps[0], "held.txt"), "x");
+	fs.writeFileSync(join(scratch, "junk.txt"), "x");
+	parent.shutdown();
+	assert.ok(existsSync(join(childTmps[0], "held.txt")), "a quarantined child's TMPDIR stays");
+	assert.ok(existsSync(childTmps[1]), "a running child's TMPDIR stays");
+	assert.equal(existsSync(join(scratch, "junk.txt")), false, "the rest of the scratch is removed");
+	assert.equal(env.TMPDIR, base, "the inherited TMPDIR is restored");
+	const ledger = JSON.parse(readFileSync(join(configHome, "scratch", "s-1.json"), "utf8")) as { scratchDir: string | null };
+	assert.equal(ledger.scratchDir, scratch, "the ledger keeps the scratch for a later sweep");
+	fakes[0].exit(0);
+	runner.cancel(running.id);
+	fakes[1].exit(0);
+	await tick();
+	assert.ok(childTmps.every((dir) => !existsSync(dir)), "each proven exit removes its TMPDIR");
+	const next = scratchSession("next", { isProcessAlive: () => false, now: () => Date.now() + 2 * 3_600_000 });
+	next.start();
+	assert.equal(existsSync(scratch), false, "the startup sweep removes the kept scratch once its owner ended");
+	next.shutdown();
 });

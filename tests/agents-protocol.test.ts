@@ -16,6 +16,58 @@ import {
 	type TaskRecord,
 } from "../lib/agents-protocol.ts";
 
+function terminalError(message: Record<string, unknown>) {
+	const [event] = normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", ...message }] });
+	assert.equal(event?.type, TASK_EVENT.AGENT_END);
+	return event as Extract<typeof event, { type: typeof TASK_EVENT.AGENT_END }>;
+}
+
+test("terminal assistant errors expose one closed category, never provider text (#2322)", () => {
+	const cases: Array<[string, Record<string, unknown>, string]> = [
+		["rate limit error type", { errorMessage: "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}" }, "rate_limit"],
+		["too many requests", { errorMessage: "Too Many Requests" }, "rate_limit"],
+		["bare 429 status", { errorMessage: "429: {}" }, "rate_limit"],
+		["quota on a 429", { errorMessage: "429 You exceeded your current quota (insufficient_quota)" }, "quota"],
+		["invalid key", { errorMessage: "401 invalid x-api-key" }, "auth"],
+		["forbidden status", { errorMessage: "Provider (403): {}" }, "auth"],
+		["prompt too long", { errorMessage: "400 prompt is too long: 210000 tokens > 200000 maximum" }, "context_length"],
+		["context window raw stop reason", { rawStopReason: "model_context_window_exceeded" }, "context_length"],
+		["timed out", { errorMessage: "Request timed out." }, "timeout"],
+		["diagnostic timeout code", { diagnostics: [{ type: "stream", timestamp: 1, error: { message: "x", code: "ETIMEDOUT" } }] }, "timeout"],
+		["fetch failed", { errorMessage: "fetch failed" }, "network"],
+		["connection reset", { errorMessage: "read ECONNRESET" }, "network"],
+		["overloaded", { errorMessage: "529 {\"type\":\"overloaded_error\"}" }, "provider_unavailable"],
+		["bad gateway status", { errorMessage: "502: <html>" }, "provider_unavailable"],
+		["invalid request", { errorMessage: "400 invalid_request_error: messages.0 is malformed" }, "invalid_request"],
+		["unmatched provider text", { errorMessage: "Provider finish_reason: content_filter" }, "unavailable"],
+		["token count is not a status", { errorMessage: "stopped after 500 tokens" }, "unavailable"],
+		["no error message", {}, "unavailable"],
+		["non-string error message", { errorMessage: { status: 429 } }, "unavailable"],
+		["raw stop reason that is not an identifier", { rawStopReason: "rate limit <script>" }, "unavailable"],
+		["signal beyond the scan bound", { errorMessage: `${"x".repeat(5000)} rate limit` }, "unavailable"],
+	];
+	for (const [name, message, category] of cases) {
+		assert.deepEqual(terminalError(message), { type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: `assistant reported an error (${category})`, errorCategory: category }, name);
+	}
+});
+
+test("terminal error categories never carry provider payload into the event or the task (#2322)", () => {
+	const secret = "sk-live-never-copy-7f3a";
+	const event = terminalError({ errorMessage: `429 rate limit for key ${secret} at https://private.example/v1`, rawStopReason: "error", diagnostics: [{ type: "stream", timestamp: 1, error: { message: secret, code: secret } }] });
+	assert.equal(event.errorCategory, "rate_limit");
+	assert.equal(JSON.stringify(event).includes("never-copy"), false);
+	assert.equal(JSON.stringify(event).includes("private.example"), false);
+	const store = new TaskStore();
+	store.add(record({ status: TASK_STATUS.RUNNING }));
+	store.apply("t1", event, 2);
+	const task = store.get("t1");
+	assert.equal(task?.error, "assistant reported an error (rate_limit)");
+	assert.equal(task?.lastStep, "assistant reported an error (rate_limit)");
+	assert.equal(task?.result, null);
+	assert.equal(JSON.stringify(task).includes("never-copy"), false);
+	assert.equal(JSON.stringify(store.thread("t1")).includes("never-copy"), false);
+});
+
 test("status observers see only live transitions, remain isolated and cannot fail mutations", () => {
 	const store = new TaskStore();
 	const changes: Array<{ status: string; sequence: number; parentSessionId: string; producerId: string; runId: string }> = [];
@@ -101,7 +153,7 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 	assert.deepEqual(normalizeRpcEvent({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: true, result: { content: [{ type: "text", text: "boom" }] } }), [{ type: TASK_EVENT.TOOL_END, callId: "c1", output: "boom", isError: true }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "turn_end" }), [{ type: TASK_EVENT.TURN_END }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done." }], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "done.", outcome: "success" }]);
-	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error" }]);
+	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "WebSocket error with untrusted provider payload" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "error", diagnostic: "assistant reported an error (network)", errorCategory: "network" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "aborted" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "aborted", diagnostic: "assistant aborted" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "stop" }] }), [{ type: TASK_EVENT.AGENT_END, text: "", outcome: "empty", diagnostic: "assistant returned no final report" }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "agent_settled" }), [{ type: TASK_EVENT.AGENT_SETTLED }]);

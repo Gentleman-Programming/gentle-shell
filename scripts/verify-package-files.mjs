@@ -142,6 +142,7 @@ export const requiredPaths = [
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
   "scripts/check-provider-contract.mjs",
+  "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",
   "scripts/install-gentle-ai.mjs",
   "scripts/install-tui-mode-setting.mjs",

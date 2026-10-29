@@ -57,10 +57,23 @@ function describeGentleAiInstallFailure(error) {
 if (process.env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL === "1") {
 	console.warn("GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1: skipped package-local Gentle AI installation; native review operations will fail with package-local-binary-missing until gentle-pi is reinstalled.");
 } else {
+	// A live progress line only on a terminal: npm logs and CI output stay
+	// unchanged. Loaded lazily and optional, so it can never break the install.
+	let progress;
+	if (process.stderr.isTTY === true) {
+		try {
+			const { createDownloadProgress } = await import("./download-progress.mjs");
+			progress = createDownloadProgress({ label: `Downloading Gentle AI v${INSTALLER_VERSION}`, write: (text) => process.stderr.write(text), width: () => process.stderr.columns || 80 });
+		} catch {
+			progress = undefined;
+		}
+	}
 	try {
-		const result = await installGentleAi();
+		const result = await installGentleAi(progress === undefined ? {} : { onProgress: (state) => progress.update(state) });
+		progress?.done();
 		console.log(`Gentle AI v${INSTALLER_VERSION} ${result.installed ? "installed" : "integrity-verified"} at ${result.binaryPath}`);
 	} catch (error) {
+		progress?.done();
 		// The whole cause chain: the failing command's own output is the diagnosis.
 		console.error(`gentle-pi could not install its package-local Gentle AI v${INSTALLER_VERSION} binary: ${describeGentleAiInstallFailure(error)}`);
 		process.exitCode = 1;

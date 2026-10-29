@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import type { AgentProfilesFile } from "./agent-profiles.ts";
 import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, type AgentModelConfig, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
@@ -349,6 +350,48 @@ export function unmatchedProfileKeys(
 	return Object.keys(modelProfiles)
 		.filter((key) => !names.has(key))
 		.map((key) => ({ key, suggestion: suggestionFor(key) }));
+}
+
+/** Removable keys exclude exact matches and likely typos in the caller's full agent list. */
+export function staleRoutingKeys(
+	config: Record<string, { model?: unknown; thinking?: unknown }>,
+	agents: ReadonlyArray<{ name: string }>,
+): string[] {
+	// Matching uses keys only; adapt the three stores without interpreting their values.
+	const profiles = Object.fromEntries(
+		Object.keys(config).map((key) => [key, { model: undefined, thinking: undefined }]),
+	);
+	return unmatchedProfileKeys(profiles, agents)
+		.filter(({ suggestion }) => suggestion === undefined)
+		.map(({ key }) => key)
+		.sort();
+}
+
+/** Preserve identity on a no-op so callers can skip unnecessary store writes. */
+export function removeRoutingKeys<T extends Record<string, unknown>>(
+	config: T,
+	keys: ReadonlyArray<string>,
+): T {
+	const present = keys.filter((key) => Object.prototype.hasOwnProperty.call(config, key));
+	if (present.length === 0) return config;
+	const updated = { ...config };
+	for (const key of present) delete updated[key];
+	return updated;
+}
+
+/** Remove selected routing keys without cloning unaffected profiles or metadata. */
+export function removeRoutingKeysFromProfilesFile(
+	file: AgentProfilesFile,
+	keys: ReadonlyArray<string>,
+): AgentProfilesFile {
+	let profiles = file.profiles;
+	for (const [name, config] of Object.entries(file.profiles)) {
+		const updated: AgentModelConfig = removeRoutingKeys(config, keys);
+		if (updated === config) continue;
+		if (profiles === file.profiles) profiles = { ...file.profiles };
+		profiles[name] = updated;
+	}
+	return profiles === file.profiles ? file : { ...file, profiles };
 }
 
 export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig): ResolvedProfile {

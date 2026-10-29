@@ -10,6 +10,7 @@ import { appendContextBackstopNotice, createContextBackstopSignal, createThrottl
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
+import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
@@ -5997,7 +5998,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS/answer-consent; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -10455,11 +10456,16 @@ function createGentleAiExtensionForTesting(
 		cancel: () => classifier?.cancel(),
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
+	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
 	pi.on("input", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
+		// #2652: a new user prompt resets the settle reminder; a steer joins the running prompt.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && event.streamingBehavior !== "steer") {
+			verifierSettleReminders.userPrompt(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey));
+		}
 		return { action: "continue" };
 	});
 
@@ -11164,6 +11170,22 @@ function createGentleAiExtensionForTesting(
 		consumeReviewMutation(pi, ctx.sessionManager, root, mutation, "nudged", targetIdentity);
 	});
 
+	// #2652: a primary run that declares `Risk: item N` in its final message and never attempted a verifier launch
+	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept.
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+		if (event.outcome !== "completed" || !event.context.canContinue) return undefined;
+		const reminder = verifierSettleReminders.beforeSettle(
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
+			finalAssistantText(event.context.contextMessages),
+		);
+		if (reminder === undefined) return undefined;
+		return {
+			entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
+			continue: true,
+		};
+	});
+
 	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
 		if (!reminderSessionActive || (reminderManager && reminderManager !== ctx.sessionManager) || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
@@ -11213,6 +11235,8 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		// #2652: count a verifier launch attempt before any admission check can reject it.
+		if (primaryToolCall) verifierSettleReminders.toolCall(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolName, event.input);
 		// One early mode read settles the session binding (and its one-time epoch
 		// bump) before the guarded region below captures its own epoch.
 		const settledMode = primaryToolCall ? await yolo.mode(ctx, { toolCallId: event.toolCallId }) : "normal";

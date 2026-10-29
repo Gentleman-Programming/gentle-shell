@@ -6,6 +6,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { gentlePiConfigHome } from "./agent-home.ts";
+import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
@@ -555,6 +557,15 @@ export class AgentRunner {
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		const tools = requestedTools(request);
+		if (request.agent.tools.includes("bash_background")) {
+			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });
+			if (policy.policy === "off") {
+				const file = policy.source === "global_file" ? policy.globalFile : policy.projectFile;
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+				return;
+			}
+		}
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;

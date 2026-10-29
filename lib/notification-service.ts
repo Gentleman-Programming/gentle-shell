@@ -15,7 +15,7 @@ export interface NotificationServiceDependencies {
 	policy?: NotificationOptions;
 	read?: () => NotificationResolution;
 	write?: (settings: NotificationSettings) => string;
-	backend?: Pick<NotificationPlayer, "play" | "availability" | "capabilities">;
+	backend?: Pick<NotificationPlayer, "play" | "availability" | "capabilities"> & { dispose?: () => void };
 	setTimeout?: SchedulerOptions["setTimeout"];
 	clearTimeout?: SchedulerOptions["clearTimeout"];
 }
@@ -175,6 +175,10 @@ export function claimNotificationOwner(retireRuntime: () => void, deps: Notifica
 	const retire = () => {
 		if (disposed) return;
 		shutdown(); disposed = true; retireRuntime();
+		// End of life for the claim also ends the audio backend: the persistent
+		// serve worker (if one was spawned) is killed here; a re-bind through
+		// attach() keeps it, and an abandoned claim self-retires idle after 60 s.
+		backend.dispose?.();
 		if (shared.ownerLease === lease) { shared.ownerLease = undefined; shared.retire = undefined; }
 	};
 	shared.retire = retire;

@@ -274,6 +274,18 @@ test("bundledUpdatePlan redirects Pi's own update and keeps the extension update
 	}
 });
 
+test("bundledUpdatePlan marks Pi's own update with --latest and keeps every other --latest form passing through", () => {
+	for (const args of [["update", "--latest"], ["update", "pi", "--latest"], ["update", "--latest", "self"], ["update", "--self", "--latest"]]) {
+		assert.deepEqual(bundledUpdatePlan(args), { self: true, latest: true }, args.join(" "));
+	}
+	assert.deepEqual(bundledUpdatePlan(["update", "--all", "--latest"]), { self: true, latest: true, piArgs: ["update", "--extensions"] });
+	assert.deepEqual(bundledUpdatePlan(["update", "--latest", "--self", "--extensions", "-a"]), { self: true, latest: true, piArgs: ["update", "--extensions", "-a"] });
+	for (const passthrough of [["update", "--extensions", "--latest"], ["update", "npm:x", "--latest"], ["update", "--models", "--latest"], ["update", "--all", "--self", "--latest"],
+		["update", "pi", "npm:x", "--latest"], ["update", "--latest", "--bogus"], ["update", "--help", "--latest"]]) {
+		assert.deepEqual(bundledUpdatePlan(passthrough), { self: false, piArgs: passthrough }, passthrough.join(" "));
+	}
+});
+
 test("bundledUpdateNext still updates extensions when the upgrade did not complete", () => {
 	assert.deepEqual(bundledUpdateNext({ self: false, piArgs: ["update", "npm:x"] }, undefined), { piArgs: ["update", "npm:x"] });
 	assert.deepEqual(bundledUpdateNext({ self: true }, 0), { exitCode: 0 });
@@ -283,6 +295,9 @@ test("bundledUpdateNext still updates extensions when the upgrade did not comple
 	const failed = bundledUpdateNext({ self: true, piArgs: ["update", "--extensions"] }, 1);
 	assert.deepEqual("piArgs" in failed ? failed.piArgs : [], ["update", "--extensions"]);
 	assert.match("note" in failed ? String(failed.note) : "", /upgrade did not complete.*extensions/);
+	const latest = bundledUpdateNext({ self: true, latest: true, piArgs: ["update", "--extensions"] }, 1);
+	assert.match("note" in latest ? String(latest.note) : "", /latest Pi update did not complete.*extensions/);
+	assert.deepEqual(bundledUpdateNext({ self: true, latest: true }, 1), { exitCode: 1 });
 });
 
 test("bundledUpdateNotice explains the pinned Pi and runs or names gentle-shell upgrade", () => {
@@ -290,6 +305,11 @@ test("bundledUpdateNotice explains the pinned Pi and runs or names gentle-shell 
 	assert.match(interactive, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
 	assert.match(interactive, /Running 'gentle-shell upgrade'/);
 	assert.match(bundledUpdateNotice({ piVersion: "1.2.0", interactive: false }).join("\n"), /Run 'gentle-shell upgrade'/);
+	for (const interactive of [true, false]) {
+		const lines = bundledUpdateNotice({ piVersion: "1.2.0", interactive });
+		assert.equal(lines[0], "Pi ships pinned with Gentle Shell (Pi 1.2.0): a newer Pi arrives with a Gentle Shell release.");
+		assert.equal(lines.at(-1), "Run 'gentle-shell update --latest' to install the newest published Pi now, without the release's verified lockfile.");
+	}
 });
 
 test("parseBundledUpgradeArgs accepts the release channel and --rollback and refuses the main channel", () => {
@@ -969,15 +989,36 @@ test("startup offer precedes Pi, not-now preserves config and omit suppresses ju
 		env: { ...prefix.env, NODE_OPTIONS: `${prefix.env.NODE_OPTIONS} --import=data:text/javascript,${encodeURIComponent(preload(latest))}` },
 		encoding: "utf8", input, timeout: 10000,
 	});
+	// A recorded lookup answers the next launch without the network, so these
+	// runs simulate later days by aging the cache back past the TTL; the live
+	// lookup then records its own answer again.
+	const ageCache = () => {
+		const parsed = JSON.parse(readFileSync(config, "utf8"));
+		const latest = typeof parsed.startupReleaseCheck?.latest === "string" ? parsed.startupReleaseCheck.latest : "999.0.0";
+		parsed.startupReleaseCheck = { checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), latest };
+		writeFileSync(config, `${JSON.stringify(parsed, null, 2)}\n`);
+	};
 	const skipped = run("999.0.0", "2\r");
 	assert.equal(skipped.status, 0, skipped.stderr);
 	assert.match(skipped.stdout, /Gentle Shell update available/);
 	assert.ok(skipped.stdout.indexOf("Gentle Shell update available") < skipped.stdout.indexOf('"cli":'));
-	assert.equal(readFileSync(config, "utf8"), '{"other":"preserved"}\n');
+	// A not-now choice still records no decision, but the live lookup it paid
+	// for lands in the config as the cache tomorrow's launch reuses.
+	const afterSkipped = JSON.parse(readFileSync(config, "utf8"));
+	assert.equal(afterSkipped.other, "preserved");
+	assert.equal(afterSkipped.skippedStartupRelease, undefined);
+	assert.equal(afterSkipped.startupReleaseCheck.latest, "999.0.0");
+	assert.ok(!Number.isNaN(Date.parse(afterSkipped.startupReleaseCheck.checkedAt)));
+	ageCache();
 	const omitted = run("999.0.0", "3\r");
 	assert.equal(omitted.status, 0, omitted.stderr);
-	assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { other: "preserved", skippedStartupRelease: "999.0.0" });
+	const afterOmit = JSON.parse(readFileSync(config, "utf8"));
+	assert.equal(afterOmit.other, "preserved");
+	assert.equal(afterOmit.skippedStartupRelease, "999.0.0");
+	assert.equal(afterOmit.startupReleaseCheck.latest, "999.0.0");
+	ageCache();
 	assert.doesNotMatch(run("999.0.0", "").stdout, /Gentle Shell update available/);
+	ageCache();
 	assert.match(run("999.0.1", "2\r").stdout, /Gentle Shell update available/);
 	const command = run("999.0.1", "", ["list"]);
 	assert.equal(command.status, 0, command.stderr);

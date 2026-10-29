@@ -1090,6 +1090,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// 9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b.
 	// No new negotiated capability identity is asserted.
 	"4.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.3.1 repeats 4.2.0: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2, and the provider contract
+	// stays at 1.4.0, with published tarball SHA-256
+	// 58450471280aeb357443d6a28c819132d8c8eb78dd25b12bac64296b2f8c27c2.
+	// The v4.3.0 tag has no release and is never pinned.
+	// No new negotiated capability identity is asserted.
+	"4.3.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {

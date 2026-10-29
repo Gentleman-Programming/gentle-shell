@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -48,7 +49,7 @@ import type {
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -121,8 +122,6 @@ import {
 	type OrchestratorSettingsReadResult,
 	parseOrchestratorModelRef,
 } from "../lib/profiles-orchestrator.ts";
-import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-view-layout.ts";
-import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
@@ -1406,7 +1405,7 @@ const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
 - When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
@@ -1415,9 +1414,9 @@ const GENTLEMAN_PERSONA_PROMPT = `Persona:
 
 const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Be direct, technical, concise, warm, and professional.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
 - Do not use slang or regional expressions.
-- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo (vos tenés, vos querés, hacé, andá, etc.) or any regional conjugations.
+- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations, regular or irregular: use tú or usted forms, never vos forms (tienes, not tenés; ajustas, not ajustás; vives, not vivís; mira, not mirá; haz, not hacé).
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
 - Push back when the user asks for code without enough context or understanding.
@@ -1816,26 +1815,12 @@ const KEEP_CURRENT = "Keep current";
 const INHERIT_MODEL = "Inherit active/default model";
 const CUSTOM_MODEL = "Custom model id";
 const INHERIT_THINKING = "Inherit effort";
-const THINKING_OPTIONS: (ThinkingLevel | typeof INHERIT_THINKING)[] = [
-	INHERIT_THINKING,
-	...THINKING_LEVELS,
-];
 
 const MODEL_CONTROL_OPTIONS = [
 	KEEP_CURRENT,
 	INHERIT_MODEL,
 	CUSTOM_MODEL,
 ] as const;
-const MODEL_PANEL_MAX_RENDER_ROWS = 20;
-// Rows the agent list does not own: two borders, title, current-profile line,
-// blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
-// Back, blank, and the two footer rows.
-const AGENT_LIST_CHROME_ROWS = 15;
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
-// Rows the model list does not own: two borders, title, blank, search, blank,
-// blank, and the footer row.
-const MODEL_LIST_CHROME_ROWS = 8;
-const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
 	let current = value;
@@ -2544,7 +2529,7 @@ async function readGlobalEffectiveModelConfigFromAsync(
  * discoverable agent it omits on inherit, not on whatever was materialized
  * before. Padding the omitted agents with clear entries makes
  * `applyModelConfig` remove their model profiles and frontmatter routing, the
- * same way `/gentle:models` clears an agent set to inherit.
+ * same way applying a profile with inherit entries clears an agent set.
  */
 async function withOmittedAgentsClearedAsync(
 	cwd: string,
@@ -3114,32 +3099,80 @@ async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
 	return [...MODEL_CONTROL_OPTIONS, ...modelIds];
 }
 
+/**
+ * The effort levels each catalog model supports, keyed by its provider/model id.
+ * Pi clamps an unsupported level at launch, so the models screen offers only
+ * these and shows where a saved level would land. Models outside the catalog
+ * are absent: their levels are unknown.
+ */
+async function getPiThinkingSupport(ctx: ExtensionContext): Promise<Record<string, ThinkingLevel[]>> {
+	const support: Record<string, ThinkingLevel[]> = {};
+	let raw: unknown;
+	try {
+		raw = await ctx.modelRegistry?.getAvailable();
+	} catch {
+		return support;
+	}
+	if (!Array.isArray(raw)) return support;
+	for (const model of raw as Parameters<typeof getSupportedThinkingLevels>[0][]) {
+		const id = normalizeModelId(`${model?.provider}/${model?.id}`);
+		// Without the reasoning flag the catalog says nothing about effort: the
+		// model stays unknown (every level offered) rather than "off only".
+		if (!id || typeof model?.reasoning !== "boolean") continue;
+		try {
+			support[id] = getSupportedThinkingLevels(model).filter((level): level is ThinkingLevel =>
+				(THINKING_LEVELS as readonly string[]).includes(level),
+			);
+		} catch {
+			// A model whose metadata cannot be read stays unknown.
+		}
+	}
+	return support;
+}
+
+/**
+ * Where Pi lands a requested level on a model, mirroring pi-ai's
+ * clampThinkingLevel: the level itself when supported, else the nearest
+ * supported level above it, else below it.
+ */
+function clampToSupportedLevel(level: ThinkingLevel, supported: readonly ThinkingLevel[]): ThinkingLevel {
+	if (supported.includes(level)) return level;
+	const start = THINKING_LEVELS.indexOf(level);
+	for (let index = start + 1; index < THINKING_LEVELS.length; index += 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	for (let index = start - 1; index >= 0; index -= 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	return supported[0] ?? "off";
+}
+
 interface OverlayComponent {
 	render(width: number): string[];
 	handleInput(data: string): void;
 	invalidate(): void;
 }
 
-type ModelPanelResult =
-	| { type: "save"; config: AgentModelConfig }
-	// `save`, then snapshot saved agent routing and the chosen orchestrator into
-	// the current profile without changing the global orchestrator defaults.
-	| { type: "save-profile"; config: AgentModelConfig }
-	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
-	| { type: "export"; config: AgentModelConfig }
-	| { type: "restore"; config: AgentModelConfig }
-	| { type: "cancel" };
+interface RoutingHitRegion {
+	x0: number;
+	x1: number;
+	y: number;
+	action: RoutingTableMouseAction;
+}
 
-const SET_ALL_AGENTS = "Set all agents";
 const LEAVE_ORCHESTRATOR_UNTOUCHED = "leave untouched";
 
 const PANEL_TONE = {
 	BORDER: "border",
 	MUTED: "muted",
+	DIM: "dim",
 	TEXT: "text",
 	TITLE: "title",
 	ACCENT: "accent",
 	STATUS: "status",
+	EDITED: "edited",
+	GOOD: "good",
+	DANGER: "danger",
 } as const;
 
 type PanelTone = (typeof PANEL_TONE)[keyof typeof PANEL_TONE];
@@ -3147,548 +3180,1402 @@ type PanelTone = (typeof PANEL_TONE)[keyof typeof PANEL_TONE];
 const PANEL_TONE_COLOR: Record<PanelTone, ThemeColor> = {
 	border: "border",
 	muted: "muted",
+	dim: "dim",
 	text: "text",
 	title: "accent",
 	accent: "accent",
 	status: "thinkingHigh",
+	edited: "warning",
+	good: "success",
+	danger: "error",
 };
 
-class SddModelPanel implements OverlayComponent {
+/** The pseudo row behind the Model ▾ / Effort ▾ header: it sets every agent at once. */
+const ROUTING_ALL_ROW = "__all";
+const ROUTING_CUSTOM_MODEL = "Custom model id…";
+/** The table's short form of a provider review role's inherited model and effort. */
+const ROUTING_PI_DEFAULT = "Pi default";
+/** Body lines around the agent rows: tabs, rail, description, blank, orchestrator, rule, header, blank, footer, hints, two feedback lines. */
+const ROUTING_TABLE_FIXED_ROWS = 12;
+/** Compact button labels for terminals too narrow for the full ones. */
+const ROUTING_TABLE_SHORT_BUTTONS: Partial<Record<RoutingTableButton, string>> = {
+	use: "Use here",
+	default: "Default",
+};
+/**
+ * The key hints in display order, each with a keep priority (lower stays
+ * longer): narrow terminals drop whole hints instead of cutting one in half.
+ */
+const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
+	{ text: "←→ profile", keep: 5 },
+	{ text: "↑↓ agent", keep: 6 },
+	{ text: "enter model", keep: 1 },
+	{ text: "e effort", keep: 2 },
+	{ text: "s save", keep: 3 },
+	{ text: "u use", keep: 7 },
+	{ text: "d default", keep: 8 },
+	{ text: "n new", keep: 10 },
+	{ text: "m menu", keep: 9 },
+	{ text: "esc close", keep: 4 },
+];
+/** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
+const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
+
+type RoutingTableAction =
+	| { type: "load"; name: string }
+	| { type: "custom"; target: string; config: AgentModelConfig }
+	| { type: "use-session"; name: string; config?: AgentModelConfig }
+	| { type: "apply-global"; name: string; config: AgentModelConfig }
+	| { type: "save"; name: string; config: AgentModelConfig }
+	| { type: "create" }
+	| { type: "create-live" }
+	| { type: "duplicate"; name: string }
+	| { type: "rename"; name: string }
+	| { type: "delete"; name: string }
+	| { type: "export-profile"; name: string }
+	| { type: "import-profile" }
+	| { type: "pin"; source: ProfilePinSource; name: string }
+	| { type: "close" };
+
+/**
+ * `saveFirst` asks the loop to write the draft into the shown profile before
+ * running the action (the "Save and switch" answer). `draft` carries unsaved
+ * edits across actions that keep the same profile on screen (rename, pin, a
+ * declined delete), so managing a profile never throws away what you typed.
+ */
+type RoutingTableResult = RoutingTableAction & { saveFirst?: AgentModelConfig; draft?: AgentModelConfig };
+
+type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
+
+/**
+ * What the screen needs to show another profile without closing: the store
+ * after an optional save, fresh scope state, and the footer line. `error`
+ * means the save failed and the shown profile stays, edits intact.
+ */
+type RoutingProfileSwitch =
+	| { file: AgentProfilesFile; sessionBoundName?: string; pinWinner?: string; notices: string[]; feedback: string }
+	| { error: string };
+
+/**
+ * Switches the shown profile in place. Closing the overlay and reopening it on
+ * the next tab let the terminal paint the screen beneath for a frame (and wait
+ * on the async model catalog before the new frame), which is the tab flicker.
+ */
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig) => RoutingProfileSwitch;
+
+type RoutingTableMouseAction =
+	| { kind: "tab"; name: string }
+	| { kind: "tab-menu" }
+	| { kind: "new" }
+	| { kind: "row"; row: string }
+	| { kind: "effort"; row: string }
+	| { kind: "model-option"; index: number }
+	| { kind: "effort-option"; index: number }
+	| { kind: "menu-item"; id: string }
+	| { kind: "button"; button: RoutingTableButton };
+
+interface RoutingMenuItem {
+	id: string;
+	label: string;
+	tone?: PanelTone;
+}
+
+const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
+	use: "Use in this session",
+	default: "Make default",
+	save: "Save",
+	"switch-save": "Save and switch",
+	"switch-discard": "Discard",
+	"switch-stay": "Stay",
+};
+
+/**
+ * `/gentle:profiles` — one screen, one table, profiles as
+ * tabs. Each tab is a profile and carries where it is in effect (◉ this
+ * session, ★ default for new sessions, ⌂ this repo); the table below is that
+ * profile's routing, orchestrator first; three buttons decide where it applies.
+ * Model and effort changes happen in small cards over the still-visible table.
+ * Keyboard and pointer reach the same actions, and each key means one thing.
+ */
+class RoutingTablePanel implements OverlayComponent {
+	private overlay: "model" | "effort" | "menu" | "new" | "switch" | undefined;
+	private target: string = PROFILE_ORCHESTRATOR_KEY;
+	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
-	private mode: "agents" | "models" | "effort" = "agents";
-	private selectedRow = SET_ALL_AGENTS;
+	private query = "";
 	private modelCursor = 0;
 	private effortCursor = 0;
-	private query = "";
-	private readonly draft: AgentModelConfig;
+	private menuCursor = 0;
+	private hovered: string | undefined;
+	private escArmed = false;
+	private feedback: string | undefined;
+	private completed = false;
+	private hitRegions: RoutingHitRegion[] = [];
+	private activeTabColumn = 0;
+	private newColumn = 0;
+	private draft: AgentModelConfig;
+	private stored: AgentModelConfig;
 	private readonly rows: string[];
 	private readonly agents: string[];
-	private readonly modelOptions: string[];
-	private readonly done: (result: ModelPanelResult) => void;
+	private readonly catalog: string[];
+	private readonly done: (result: RoutingTableResult) => void;
 	private readonly theme: Theme | undefined;
-	// The profile `u` writes to, named up front so the key never targets a surprise.
-	private readonly profileLabel: string;
-	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
 	private readonly terminalRows: (() => number) | undefined;
+	private profileName: string;
+	private file: AgentProfilesFile;
+	private sessionBoundName: string | undefined;
+	private pinWinner: string | undefined;
+	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
+	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
+	private notices: string[];
+	private readonly switchProfile: RoutingProfileSwitcher | undefined;
 
 	constructor(
-		initialConfig: AgentModelConfig,
+		draft: AgentModelConfig,
 		modelOptions: string[],
 		agents: string[],
-		done: (result: ModelPanelResult) => void,
+		done: (result: RoutingTableResult) => void,
 		theme?: Theme,
-		profileLabel = "none",
+		profileName = "current",
 		terminalRows?: () => number,
+		options: {
+			file?: AgentProfilesFile;
+			sessionBoundName?: string;
+			pinWinner?: string;
+			feedback?: string;
+			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+			notices?: string[];
+			switchProfile?: RoutingProfileSwitcher;
+		} = {},
 	) {
-		this.draft = cloneModelConfig(initialConfig);
-		this.rows = [SET_ALL_AGENTS, PROFILE_ORCHESTRATOR_KEY, ...agents];
+		this.switchProfile = options.switchProfile;
+		this.thinkingSupport = options.thinkingSupport ?? {};
+		this.notices = options.notices ?? [];
+		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
+		const names = Object.keys(this.file.profiles);
+		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
+		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
+		this.draft = cloneModelConfig(draft);
 		this.agents = [...agents];
-		this.modelOptions = modelOptions;
+		this.rows = [PROFILE_ORCHESTRATOR_KEY, ROUTING_ALL_ROW, ...agents];
+		// The control entries of the old panel (keep current, custom id) are not
+		// models; this screen offers inherit and custom as its own options.
+		this.catalog = modelOptions.filter((option) => !(MODEL_CONTROL_OPTIONS as readonly string[]).includes(option));
 		this.done = done;
 		this.theme = theme;
-		this.profileLabel = profileLabel;
 		this.terminalRows = terminalRows;
+		this.sessionBoundName = options.sessionBoundName;
+		this.pinWinner = options.pinWinner;
+		this.feedback = options.feedback;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.hovered = undefined;
+	}
 
-	handleInput(data: string): void {
-		if (this.mode === "models") {
-			this.handleModelInput(data);
-			return;
+	// -- state ----------------------------------------------------------------
+
+	private profileNames(): string[] {
+		return Object.keys(this.file.profiles).filter((name) => hasOwnProfile(this.file.profiles, name));
+	}
+
+	private changeCount(): number {
+		let count = 0;
+		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
+			if (this.isEdited(key, "model")) count += 1;
+			if (this.isEdited(key, "thinking")) count += 1;
 		}
-		if (this.mode === "effort") {
-			this.handleEffortInput(data);
-			return;
+		return count;
+	}
+
+	private isEdited(key: string, field: "model" | "thinking"): boolean {
+		return (this.draft[key]?.[field] ?? undefined) !== (this.stored[key]?.[field] ?? undefined);
+	}
+
+	private scopeGlyphs(name: string): Array<{ text: string; tone: PanelTone }> {
+		const glyphs: Array<{ text: string; tone: PanelTone }> = [];
+		if (this.sessionBoundName === name) glyphs.push({ text: "◉", tone: "good" });
+		if (this.file.active === name) glyphs.push({ text: "★", tone: "accent" });
+		if (this.pinWinner === name) glyphs.push({ text: "⌂", tone: "edited" });
+		return glyphs;
+	}
+
+	private scopeSentence(name: string): string {
+		const parts: string[] = [];
+		if (this.sessionBoundName === name) parts.push("Used in this session.");
+		if (this.file.active === name) parts.push("Default for new sessions.");
+		if (this.pinWinner === name) parts.push("Used in this repo.");
+		return parts.length > 0 ? parts.join(" ") : "Not in use. Pick a button below to use it.";
+	}
+
+	private rowLabel(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return "the orchestrator";
+		if (key === ROUTING_ALL_ROW) return "every agent";
+		return key;
+	}
+
+	private modelValue(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return this.draft[key]?.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED;
+		// Provider review roles inherit Pi's persisted default; the table cell says
+		// so in short, the cards spell it out.
+		if (isProviderReviewRole(key)) return this.draft[key]?.model ?? ROUTING_PI_DEFAULT;
+		return this.draft[key]?.model ?? routingDefaultLabel(key, "model");
+	}
+
+	private effortValue(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return "";
+		const thinking = this.draft[key]?.thinking;
+		if (thinking === undefined) return isProviderReviewRole(key) ? ROUTING_PI_DEFAULT : routingDefaultLabel(key, "effort");
+		const supported = this.supportedLevels(key);
+		const landed = supported ? clampToSupportedLevel(thinking, supported) : thinking;
+		return landed === thinking ? thinking : `${thinking} → ${landed}`;
+	}
+
+	/**
+	 * The levels the row's model supports, from the catalog. Every agent at once
+	 * offers what all their known models share. Undefined means unknown: the row
+	 * inherits its model, or the model is not in the catalog.
+	 */
+	private supportedLevels(key: string): readonly ThinkingLevel[] | undefined {
+		if (key !== ROUTING_ALL_ROW) {
+			const model = this.draft[key]?.model;
+			return model === undefined ? undefined : this.thinkingSupport[model];
 		}
-		this.handleAgentInput(data);
+		const known = this.agents
+			.map((agent) => this.draft[agent]?.model)
+			.map((model) => (model === undefined ? undefined : this.thinkingSupport[model]))
+			.filter((levels): levels is readonly ThinkingLevel[] => levels !== undefined);
+		if (known.length === 0) return undefined;
+		return THINKING_LEVELS.filter((level) => known.every((levels) => levels.includes(level)));
 	}
 
-	render(width: number): string[] {
-		const innerWidth = Math.max(1, width - 4);
-		const lines =
-			this.mode === "models"
-				? this.renderModelPicker(innerWidth)
-				: this.mode === "effort"
-					? this.renderEffortPicker(innerWidth)
-					: this.renderAgentList(innerWidth);
-		return this.renderCard(lines, width);
+	/** The effort card's choices: inherit, then the supported levels, or every level when unknown. */
+	private effortOptions(): Array<ThinkingLevel | typeof INHERIT_THINKING> {
+		const supported = this.supportedLevels(this.target);
+		return [INHERIT_THINKING, ...THINKING_LEVELS.filter((level) => !supported || supported.includes(level))];
 	}
 
-	// In the fullscreen overlay a list owns every row its chrome leaves free;
-	// without a terminal height it keeps the fixed window.
-	private visibleListRows(fixedRows: number, chromeRows: number): number {
-		if (!this.terminalRows) return fixedRows;
-		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	/** The value the picker marks as current: one agent's, or every agent's when they agree. */
+	private currentValue(key: string, field: "model" | "thinking"): string | undefined {
+		if (key === ROUTING_ALL_ROW) {
+			const values = this.agents.map((agent) => this.draft[agent]?.[field]);
+			return values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined;
+		}
+		return this.draft[key]?.[field];
 	}
 
-	private renderCard(body: string[], width: number): string[] {
-		let lines = body;
-		const innerWidth = Math.max(1, width - 4);
-		const horizontal = "─".repeat(innerWidth + 2);
-		const border = (text: string) => this.renderText(text, "border");
-		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
-		if (lines.length < bodyRows) {
-			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
+	private inheritLabel(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return LEAVE_ORCHESTRATOR_UNTOUCHED;
+		if (key !== ROUTING_ALL_ROW && isProviderReviewRole(key)) return routingDefaultLabel(key, "model");
+		return "inherit";
+	}
+
+	private modelOptions(): string[] {
+		const query = this.query.trim().toLowerCase();
+		const all = [this.inheritLabel(this.target), ...this.catalog];
+		const matches = query ? all.filter((option) => option.toLowerCase().includes(query)) : all;
+		return [...matches, ROUTING_CUSTOM_MODEL];
+	}
+
+	private menuItems(): RoutingMenuItem[] {
+		if (this.overlay === "new") {
+			return [
+				{ id: "new-copy", label: `Copy of ${this.profileName}` },
+				{ id: "new-live", label: "From what's running now" },
+				{ id: "new-empty", label: "Empty", tone: "muted" },
+			];
 		}
 		return [
-			border(`╭${horizontal}╮`),
-			...lines.map(
-				(line) =>
-					`${border("│")} ${this.fitStyledLine(line, innerWidth)} ${border("│")}`,
-			),
-			border(`╰${horizontal}╯`),
+			{ id: "rename", label: "Rename" },
+			{ id: "duplicate", label: "Duplicate" },
+			{ id: "repo", label: this.pinWinner === this.profileName ? "Stop using in this repo" : "Use in this repo" },
+			{ id: "delete", label: "Delete", tone: "danger" },
 		];
 	}
 
-	private fitStyledLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
+	// -- actions ----------------------------------------------------------------
 
-	private renderLine(text = "", width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-
-	private renderCursor(focused: boolean): string {
-		return focused ? this.renderText("▸", "accent") : " ";
-	}
-
-	private handleAgentInput(data: string): void {
-		const maxCursor = this.rows.length + 1;
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.done({ type: "cancel" });
+	private finish(result: RoutingTableResult): void {
+		if (this.completed) return;
+		if (result.type === "load" && this.switchProfile) {
+			this.showProfile(result.name, result.saveFirst);
 			return;
 		}
-		if (matchesKey(data, "ctrl+s")) {
-			this.done({ type: "save", config: this.draft });
+		this.completed = true;
+		this.done(result);
+	}
+
+	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
+	private showProfile(name: string, saveFirst?: AgentModelConfig): void {
+		const next = this.switchProfile!(name, saveFirst);
+		this.closeOverlay();
+		if ("error" in next) {
+			this.say(next.error);
 			return;
 		}
-		if (matchesKey(data, "u")) {
-			this.done({ type: "save-profile", config: this.draft });
+		this.file = next.file;
+		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
+		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
+		this.draft = cloneModelConfig(this.stored);
+		this.sessionBoundName = next.sessionBoundName;
+		this.pinWinner = next.pinWinner;
+		this.notices = next.notices;
+		this.target = PROFILE_ORCHESTRATOR_KEY;
+		this.cursor = 0;
+		this.hovered = undefined;
+		this.feedback = next.feedback;
+		this.escArmed = false;
+	}
+
+	private say(message: string): void {
+		this.feedback = message;
+		this.escArmed = false;
+	}
+
+	private closeOverlay(): void {
+		this.overlay = undefined;
+		this.pending = undefined;
+		this.query = "";
+	}
+
+	/** Leaving this profile with unsaved edits asks first; nothing is lost in silence. */
+	private leave(result: RoutingTableResult): void {
+		if (this.changeCount() === 0) {
+			this.finish(result);
 			return;
 		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.cursor = Math.min(maxCursor, this.cursor + 1);
+		this.pending = result;
+		this.overlay = "switch";
+	}
+
+	private switchTab(name: string): void {
+		if (name === this.profileName) return;
+		this.leave({ type: "load", name });
+	}
+
+	private switchBy(delta: number): void {
+		const names = this.profileNames();
+		const index = names.indexOf(this.profileName);
+		const next = names[Math.max(0, Math.min(names.length - 1, index + delta))];
+		if (next) this.switchTab(next);
+	}
+
+	private openModel(key: string): void {
+		this.target = key;
+		this.overlay = "model";
+		this.query = "";
+		const options = this.modelOptions();
+		const current = this.currentValue(key, "model") ?? (key === ROUTING_ALL_ROW ? undefined : this.inheritLabel(key));
+		this.modelCursor = Math.max(0, current === undefined ? 0 : options.indexOf(current));
+	}
+
+	private openEffort(key: string): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) {
+			this.say("Pick a model for the orchestrator first; its effort follows the model.");
 			return;
 		}
+		this.target = key;
+		this.overlay = "effort";
+		const current = this.currentValue(key, "thinking") as ThinkingLevel | undefined;
+		const supported = this.supportedLevels(key);
+		const landed = current !== undefined && supported ? clampToSupportedLevel(current, supported) : current;
+		this.effortCursor = Math.max(0, landed === undefined ? 0 : this.effortOptions().indexOf(landed));
+	}
+
+	private openMenu(kind: "menu" | "new"): void {
+		this.overlay = kind;
+		this.menuCursor = 0;
+	}
+
+	private pickModel(option: string | undefined): void {
+		if (option === undefined) return;
+		if (option === ROUTING_CUSTOM_MODEL) {
+			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft) });
+			return;
+		}
+		const model = option === this.inheritLabel(this.target) ? undefined : option;
+		for (const key of this.targetKeys()) this.setModel(key, model);
+		this.say(`${this.rowLabel(this.target)}: model ${model ?? this.inheritLabel(this.target)}. Save keeps it in ${this.profileName}.`);
+		this.closeOverlay();
+	}
+
+	private pickEffort(index: number): void {
+		const option = this.effortOptions()[index];
+		if (option === undefined) return;
+		const thinking = option === INHERIT_THINKING ? undefined : (option as ThinkingLevel);
+		for (const key of this.targetKeys()) this.setThinking(key, thinking);
+		this.say(`${this.rowLabel(this.target)}: effort ${thinking ?? "inherit"}. Save keeps it in ${this.profileName}.`);
+		this.closeOverlay();
+	}
+
+	private targetKeys(): string[] {
+		return this.target === ROUTING_ALL_ROW ? this.agents : [this.target];
+	}
+
+	private setModel(key: string, model: string | undefined): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && model === undefined) {
+			delete this.draft[key];
+			return;
+		}
+		const entry = { ...(this.draft[key] ?? {}) };
+		if (model === undefined) delete entry.model;
+		else entry.model = model;
+		this.draft[key] = entry.model || entry.thinking ? entry : {};
+	}
+
+	private setThinking(key: string, thinking: ThinkingLevel | undefined): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return;
+		const entry = { ...(this.draft[key] ?? {}) };
+		if (thinking === undefined) delete entry.thinking;
+		else entry.thinking = thinking;
+		this.draft[key] = entry.model || entry.thinking ? entry : {};
+	}
+
+	private runMenuItem(id: string): void {
+		const name = this.profileName;
+		const draft = cloneModelConfig(this.draft);
+		switch (id) {
+			case "rename":
+				this.finish({ type: "rename", name, draft });
+				return;
+			case "duplicate":
+			case "new-copy":
+				this.closeOverlay();
+				this.leave({ type: "duplicate", name });
+				return;
+			case "repo":
+				this.finish({ type: "pin", source: "local", name, draft });
+				return;
+			case "delete":
+				this.finish({ type: "delete", name, draft });
+				return;
+			case "new-live":
+				this.closeOverlay();
+				this.leave({ type: "create-live" });
+				return;
+			case "new-empty":
+				this.closeOverlay();
+				this.leave({ type: "create" });
+				return;
+		}
+	}
+
+	private pressButton(button: RoutingTableButton): void {
+		const config = cloneModelConfig(this.draft);
+		switch (button) {
+			case "use":
+				this.finish({ type: "use-session", name: this.profileName, config });
+				return;
+			case "default":
+				this.finish({ type: "apply-global", name: this.profileName, config });
+				return;
+			case "save":
+				if (this.changeCount() === 0) {
+					this.say("Nothing to save.");
+					return;
+				}
+				this.finish({ type: "save", name: this.profileName, config });
+				return;
+			case "switch-save":
+				if (this.pending) this.finish({ ...this.pending, saveFirst: config });
+				return;
+			case "switch-discard":
+				if (this.pending) this.finish(this.pending);
+				return;
+			case "switch-stay":
+				this.closeOverlay();
+				return;
+		}
+	}
+
+	// -- keyboard ----------------------------------------------------------------
+
+	handleInput(data: string): void {
+		if (isKeyRelease(data)) return;
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		switch (this.overlay) {
+			case "model":
+				this.handleModelKey(data);
+				return;
+			case "effort":
+				this.handleEffortKey(data);
+				return;
+			case "menu":
+			case "new":
+				this.handleMenuKey(data);
+				return;
+			case "switch":
+				this.handleSwitchKey(data);
+				return;
+			default:
+				this.handleTableKey(data);
+		}
+	}
+
+	private handleTableKey(data: string): void {
+		if (matchesKey(data, "escape")) {
+			if (this.changeCount() > 0 && !this.escArmed) {
+				this.feedback = "Unsaved changes. Press esc again to close without saving.";
+				this.escArmed = true;
+				return;
+			}
+			this.finish({ type: "close" });
+			return;
+		}
+		this.escArmed = false;
+		if (matchesKey(data, "left")) return this.switchBy(-1);
+		if (matchesKey(data, "right")) return this.switchBy(1);
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.cursor = Math.max(0, this.cursor - 1);
 			return;
 		}
-		if (matchesKey(data, "g")) {
-			this.cursor = 0;
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
+			this.cursor = Math.min(this.rows.length - 1, this.cursor + 1);
 			return;
 		}
-		if (data === "G") {
-			this.cursor = maxCursor;
-			return;
-		}
-		if (matchesKey(data, "i")) {
-			this.applyInherit();
-			return;
-		}
-		if (matchesKey(data, "e")) {
-			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-			if (this.selectedRow === PROFILE_ORCHESTRATOR_KEY && !this.draft[this.selectedRow]?.model) return;
-			this.mode = "effort";
-			this.effortCursor = 0;
-			return;
-		}
-		if (matchesKey(data, "x")) {
-			this.done({ type: "export", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "r")) {
-			this.done({ type: "restore", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "c")) {
-			const row = this.rows[this.cursor];
-			if (row === SET_ALL_AGENTS)
-				this.done({ type: "custom", agent: "all", config: this.draft });
-			else if (row)
-				this.done({ type: "custom", agent: row, config: this.draft });
-			return;
-		}
-		if (!matchesKey(data, "return")) return;
-		if (this.cursor === this.rows.length) {
-			this.done({ type: "save", config: this.draft });
-			return;
-		}
-		if (this.cursor === this.rows.length + 1) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-		this.mode = "models";
-		this.modelCursor = 0;
-		this.query = "";
+		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
+		if (matchesKey(data, "u")) return this.pressButton("use");
+		if (matchesKey(data, "d")) return this.pressButton("default");
+		if (matchesKey(data, "n")) return this.openMenu("new");
+		if (matchesKey(data, "m")) return this.openMenu("menu");
 	}
 
-	private handleModelInput(data: string): void {
-		const options = this.filteredModelOptions();
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
+	private handleModelKey(data: string): void {
+		const options = this.modelOptions();
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "return")) return this.pickModel(options[this.modelCursor]);
+		if (matchesKey(data, "up")) {
+			this.modelCursor = Math.max(0, this.modelCursor - 1);
 			return;
 		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			this.query = "";
+		if (matchesKey(data, "down")) {
+			this.modelCursor = Math.min(options.length - 1, this.modelCursor + 1);
 			return;
 		}
 		if (matchesKey(data, "backspace")) {
 			this.query = this.query.slice(0, -1);
-			this.modelCursor = Math.min(
-				this.modelCursor,
-				Math.max(0, this.filteredModelOptions().length - 1),
-			);
+			this.modelCursor = 0;
 			return;
 		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.modelCursor = Math.min(
-				Math.max(0, options.length - 1),
-				this.modelCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			this.modelCursor = Math.max(0, this.modelCursor - 1);
-			return;
-		}
-		if (matchesKey(data, "return")) {
-			const selected = options[this.modelCursor];
-			if (!selected) return;
-			if (selected === CUSTOM_MODEL) {
-				this.done({
-					type: "custom",
-					agent: this.selectedRow === SET_ALL_AGENTS ? "all" : this.selectedRow,
-					config: this.draft,
-				});
-				return;
-			}
-			if (selected === KEEP_CURRENT) {
-				this.mode = "agents";
-				return;
-			}
-			this.applyModelSelection(
-				selected === INHERIT_MODEL || selected === LEAVE_ORCHESTRATOR_UNTOUCHED ? undefined : selected,
-			);
-			this.mode = "agents";
-			return;
-		}
+		// Every printable key types into the search, so letters never act here.
 		if (data.length === 1 && data.charCodeAt(0) >= 32) {
 			this.query += data;
 			this.modelCursor = 0;
 		}
 	}
 
-	private applyModelSelection(model: string | undefined): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.agents) this.setModel(name, model);
-			return;
-		}
-		if (!row) return;
-		this.setModel(row, model);
-	}
-
-	private applyThinkingSelection(thinking: ThinkingLevel | undefined): void {
-		const row = this.selectedRow;
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.agents) this.setThinking(name, thinking);
-			return;
-		}
-		this.setThinking(row, thinking);
-	}
-
-	private applyInherit(): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.agents) this.clearEntry(name);
-			return;
-		}
-		if (row) this.clearEntry(row);
-	}
-
-	private setModel(name: string, model: string | undefined): void {
-		if (name === PROFILE_ORCHESTRATOR_KEY && model === undefined) {
-			delete this.draft[name];
-			return;
-		}
-		const current = this.draft[name] ?? {};
-		if (model === undefined) delete current.model;
-		else current.model = model;
-		if (!current.model && !current.thinking) this.draft[name] = {};
-		else this.draft[name] = current;
-	}
-
-	private setThinking(name: string, thinking: ThinkingLevel | undefined): void {
-		if (name === PROFILE_ORCHESTRATOR_KEY && !this.draft[name]?.model) return;
-		const current = this.draft[name] ?? {};
-		if (thinking === undefined) delete current.thinking;
-		else current.thinking = thinking;
-		if (!current.model && !current.thinking) this.draft[name] = {};
-		else this.draft[name] = current;
-	}
-
-	private clearEntry(name: string): void {
-		if (name === PROFILE_ORCHESTRATOR_KEY) delete this.draft[name];
-		else this.draft[name] = {};
-	}
-
-	private filteredModelOptions(): string[] {
-		const options = this.selectedRow === PROFILE_ORCHESTRATOR_KEY
-			? this.modelOptions.map((option) => option === INHERIT_MODEL ? LEAVE_ORCHESTRATOR_UNTOUCHED : option)
-			: this.modelOptions;
-		const query = this.query.trim().toLowerCase();
-		if (!query) return options;
-		return options.filter((option) =>
-			option.toLowerCase().includes(query),
-		);
-	}
-
-	private renderAgentList(width: number): string[] {
-		const lines: string[] = [];
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(line("Assign Models and Effort to Agents", "title"));
-		lines.push(line(`Current profile: ${this.profileLabel}`, "muted"));
-		lines.push("");
-		lines.push(line("Current assignments:", "muted"));
-		lines.push("");
-		const visibleRows = Math.min(
-			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
-			this.rows.length,
-		);
-		const listCursor = Math.min(this.cursor, this.rows.length - 1);
-		const start = Math.max(
-			0,
-			Math.min(
-				listCursor - Math.floor(visibleRows / 2),
-				Math.max(0, this.rows.length - visibleRows),
-			),
-		);
-		const end = Math.min(this.rows.length, start + visibleRows);
-		if (start > 0) lines.push(line(`  ↑ ${start} more agent(s)`, "muted"));
-		for (let i = start; i < end; i++) {
-			const row = this.rows[i] ?? SET_ALL_AGENTS;
-			const focused = i === this.cursor;
-			const label =
-				row === SET_ALL_AGENTS
-					? this.renderSetAllLabel(row)
-					: this.renderAgentLabel(row);
-			lines.push(`${this.renderCursor(focused)} ${label}`);
-		}
-		if (end < this.rows.length)
-			lines.push(line(`  ↓ ${this.rows.length - end} more agent(s)`, "muted"));
-		lines.push("");
-		lines.push(
-			`${this.renderCursor(this.cursor === this.rows.length)} ${this.renderText(
-				"Continue",
-				this.cursor === this.rows.length ? "accent" : "text",
-			)}`,
-		);
-		lines.push(
-			`${this.renderCursor(this.cursor === this.rows.length + 1)} ${this.renderText(
-				"← Back",
-				this.cursor === this.rows.length + 1 ? "accent" : "text",
-			)}`,
-		);
-		lines.push("");
-		// Two rows: editing keys, then the keys that leave the panel. One row no
-		// longer fits the minimum width once the profile key joins the save keys.
-		lines.push(
-			line(
-				`j/k scroll • enter model/save • e effort • i ${this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY ? LEAVE_ORCHESTRATOR_UNTOUCHED : isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
-				"muted",
-			),
-		);
-		lines.push(
-			line(
-				`x export • r restore • ctrl+s save agents • u save choice in "${this.profileLabel}" • esc back`,
-				"muted",
-			),
-		);
-		return lines;
-	}
-
-	private renderModelPicker(width: number): string[] {
-		const lines: string[] = [];
-		const options = this.filteredModelOptions();
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(
-			line(`Select model for ${sanitizeTerminalText(this.selectedRow)}`, "title"),
-		);
-		lines.push("");
-		lines.push(
-			`${this.renderText("◎", "accent")} ${this.renderText(this.query || "search...", "muted")}`,
-		);
-		lines.push("");
-		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
-		const start = Math.max(
-			0,
-			Math.min(
-				this.modelCursor - Math.floor(visibleRows / 2),
-				Math.max(0, options.length - visibleRows),
-			),
-		);
-		const end = Math.min(options.length, start + visibleRows);
-		for (let i = start; i < end; i++) {
-			const focused = i === this.modelCursor;
-			lines.push(
-				`${this.renderCursor(focused)} ${this.renderText(
-					options[i] === INHERIT_MODEL && isProviderReviewRole(this.selectedRow)
-						? routingDefaultLabel(this.selectedRow, "model")
-						: (options[i] ?? ""),
-					focused ? "status" : "text",
-				)}`,
-			);
-		}
-		if (options.length === 0) lines.push(line("  No matching models", "muted"));
-		lines.push("");
-		lines.push(
-			line("j/k: navigate • type: search • enter: select • esc: back", "muted"),
-		);
-		return lines;
-	}
-
-	private handleEffortInput(data: string): void {
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			return;
-		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.effortCursor = Math.min(
-				Math.max(0, THINKING_OPTIONS.length - 1),
-				this.effortCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+	private handleEffortKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "return")) return this.pickEffort(this.effortCursor);
+		if (matchesKey(data, "left") || matchesKey(data, "up")) {
 			this.effortCursor = Math.max(0, this.effortCursor - 1);
 			return;
 		}
-		if (!matchesKey(data, "return")) return;
-		const selected = THINKING_OPTIONS[this.effortCursor];
-		if (selected === INHERIT_THINKING) this.applyThinkingSelection(undefined);
-		else this.applyThinkingSelection(selected);
-		this.mode = "agents";
+		if (matchesKey(data, "right") || matchesKey(data, "down")) {
+			this.effortCursor = Math.min(this.effortOptions().length - 1, this.effortCursor + 1);
+		}
 	}
 
-	private renderEffortPicker(width: number): string[] {
-		const lines: string[] = [];
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(
-			line(`Select effort for ${sanitizeTerminalText(this.selectedRow)}`, "title"),
-		);
-		lines.push("");
-		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
-			const focused = i === this.effortCursor;
-			lines.push(
-				`${this.renderCursor(focused)} ${this.renderText(
-					THINKING_OPTIONS[i] === INHERIT_THINKING && isProviderReviewRole(this.selectedRow)
-						? routingDefaultLabel(this.selectedRow, "effort")
-						: (THINKING_OPTIONS[i] ?? ""),
-					focused ? "status" : "text",
-				)}`,
-			);
+	private handleMenuKey(data: string): void {
+		const items = this.menuItems();
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+			this.menuCursor = Math.max(0, this.menuCursor - 1);
+			return;
 		}
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
+			this.menuCursor = Math.min(items.length - 1, this.menuCursor + 1);
+			return;
+		}
+		if (matchesKey(data, "return")) {
+			const item = items[this.menuCursor];
+			if (item) this.runMenuItem(item.id);
+		}
+	}
+
+	private handleSwitchKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.pressButton("switch-stay");
+		if (matchesKey(data, "s") || matchesKey(data, "return")) return this.pressButton("switch-save");
+		if (matchesKey(data, "d")) return this.pressButton("switch-discard");
+	}
+
+	// -- pointer ----------------------------------------------------------------
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			if (this.overlay === "model") {
+				this.modelCursor = Math.max(0, Math.min(this.modelOptions().length - 1, this.modelCursor + delta));
+			} else if (this.overlay === "effort") {
+				this.effortCursor = Math.max(0, Math.min(this.effortOptions().length - 1, this.effortCursor + delta));
+			} else if (this.overlay === "menu" || this.overlay === "new") {
+				this.menuCursor = Math.max(0, Math.min(this.menuItems().length - 1, this.menuCursor + delta));
+			} else if (this.overlay === undefined) {
+				this.cursor = Math.max(0, Math.min(this.rows.length - 1, this.cursor + delta));
+			}
+			return { handled: true, render: true };
+		}
+		const exact = this.hitRegions.find(
+			(region) => region.y === event.y && event.x >= region.x0 && event.x < region.x1,
+		);
+		if (event.type === "move") {
+			if (event.button !== "none") return undefined;
+			// Whole-row targets light up anywhere on their line; buttons and tabs
+			// only under the pointer.
+			const hit = exact ?? this.hitRegions.find((region) => region.y === event.y && this.isRowAction(region.action));
+			const next = hit ? this.hoverKey(hit.action) : undefined;
+			const changed = next !== this.hovered;
+			this.hovered = next;
+			return { handled: hit !== undefined, render: changed };
+		}
+		// A click arrives as press then click: the press only claims the pointer,
+		// so one click never runs two actions.
+		if (event.type === "press") return exact ? { handled: true } : undefined;
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		if (!exact) {
+			if (this.overlay !== undefined && this.overlay !== "switch") {
+				this.closeOverlay();
+				return { handled: true, render: true };
+			}
+			return undefined;
+		}
+		this.dispatch(exact.action);
+		return { handled: true, render: true };
+	}
+
+	private isRowAction(action: RoutingTableMouseAction): boolean {
+		return action.kind === "row" || action.kind === "model-option" || action.kind === "menu-item";
+	}
+
+	private hoverKey(action: RoutingTableMouseAction): string {
+		switch (action.kind) {
+			case "row":
+			case "effort":
+				return `row:${action.row}`;
+			case "tab":
+				return `tab:${action.name}`;
+			case "model-option":
+			case "effort-option":
+				return `${action.kind}:${action.index}`;
+			case "menu-item":
+				return `menu:${action.id}`;
+			case "button":
+				return `button:${action.button}`;
+			default:
+				return action.kind;
+		}
+	}
+
+	private dispatch(action: RoutingTableMouseAction): void {
+		switch (action.kind) {
+			case "tab":
+				this.switchTab(action.name);
+				return;
+			case "tab-menu":
+				this.openMenu("menu");
+				return;
+			case "new":
+				this.openMenu("new");
+				return;
+			case "row":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.openModel(action.row);
+				return;
+			case "effort":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.openEffort(action.row);
+				return;
+			case "model-option":
+				this.pickModel(this.modelOptions()[action.index]);
+				return;
+			case "effort-option":
+				this.pickEffort(action.index);
+				return;
+			case "menu-item":
+				this.runMenuItem(action.id);
+				return;
+			case "button":
+				this.pressButton(action.button);
+				return;
+		}
+	}
+
+	// -- render ----------------------------------------------------------------
+
+	render(width: number): string[] {
+		this.hitRegions = [];
+		const inner = Math.max(20, width - 4);
+		if (this.overlay === undefined) return this.renderFrame(this.tableLines(inner), width);
+		// The table stays on screen, dimmed, under the card; its regions are
+		// dropped because the card is modal.
+		const table = this.tableLines(inner).map((line) => this.renderText(stripAnsi(line), "dim"));
+		this.hitRegions = [];
+		const card = this.cardFor(inner);
+		return this.renderFrame(this.placeCard(table, card, inner), width);
+	}
+
+	private renderFrame(body: string[], width: number): string[] {
+		const inner = Math.max(20, width - 4);
+		const rows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : body.length;
+		const padded = body.length < rows ? [...body, ...Array<string>(rows - body.length).fill("")] : body.slice(0, Math.max(rows, 1));
+		const rule = "─".repeat(inner + 2);
+		const border = (text: string) => this.renderText(text, "border");
+		return [
+			border(`╭${rule}╮`),
+			...padded.map((line) => `${border("│")} ${this.fit(line, inner)} ${border("│")}`),
+			border(`╰${rule}╯`),
+		];
+	}
+
+	private tableLines(inner: number): string[] {
+		const lines: string[] = [];
+		// Regions are recorded in frame coordinates: the top border is row 0 and
+		// content starts two columns in ("│ ").
+		const region = (action: RoutingTableMouseAction, x0: number, x1: number) =>
+			this.hitRegions.push({ y: lines.length + 1, x0: 2 + x0, x1: 2 + x1, action });
+
+		// Tabs: every profile, its scopes, the menu on the active one, and New.
+		const tabs = this.tabWindow(inner);
+		let column = 0;
+		let tabLine = "";
+		let activeStart = 0;
+		let activeEnd = 0;
+		const put = (text: string, tone: PanelTone | undefined, action?: RoutingTableMouseAction) => {
+			if (action) region(action, column, column + visibleWidth(text));
+			const styled = tone ? this.renderText(text, tone) : sanitizeTerminalText(text);
+			tabLine += action ? this.hoverWrap(this.hoverKey(action), styled, text) : styled;
+			column += visibleWidth(text);
+		};
+		put(" ", undefined);
+		if (tabs.before) put("‹ ", "dim");
+		for (const name of tabs.names) {
+			const active = name === this.profileName;
+			if (active) activeStart = column;
+			put(` ${truncateToWidth(sanitizeTerminalText(name), 18, "…")} `, active ? "title" : "muted", { kind: "tab", name });
+			for (const glyph of this.scopeGlyphs(name)) put(glyph.text, glyph.tone);
+			if (active) {
+				put(" ▾ ", "accent", { kind: "tab-menu" });
+				activeEnd = column;
+				this.activeTabColumn = activeStart;
+			}
+			put("  ", undefined);
+		}
+		if (tabs.after) put("› ", "dim");
+		this.newColumn = column;
+		put("+ New", "accent", { kind: "new" });
+		lines.push(tabLine);
+		lines.push(
+			this.renderText("─".repeat(activeStart), "border")
+				+ this.renderText("━".repeat(Math.max(0, activeEnd - activeStart)), "accent")
+				+ this.renderText("─".repeat(Math.max(0, inner - activeEnd)), "border"),
+		);
+		const title = truncateToWidth(sanitizeTerminalText(this.profileName), Math.max(8, inner - 4), "…");
+		const room = inner - 1 - visibleWidth(title) - 3;
+		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
+			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
+		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
+		const notices = this.noticeLines(inner);
+		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
-		lines.push(line("j/k: navigate • enter: select • esc: back", "muted"));
+
+		// Labels are measured after sanitizing: control sequences in an agent name
+		// would otherwise pad the column and then vanish, gluing name and model.
+		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(sanitizeTerminalText(agent)))) + 2);
+		const padLabel = (text: string) => {
+			const safe = truncateToWidth(sanitizeTerminalText(text), agentCol - 1, "…");
+			return safe + " ".repeat(Math.max(0, agentCol - visibleWidth(safe)));
+		};
+		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12));
+		const effortStart = 2 + agentCol + modelCol;
+		const row = (key: string, label: string, labelTone: PanelTone) => {
+			const focused = this.rows[this.cursor] === key;
+			const model = this.modelValue(key);
+			const effort = this.effortValue(key);
+			const modelTone: PanelTone = this.isEdited(key, "model")
+				? "edited"
+				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
+			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}`;
+			const styled =
+				this.renderText(focused ? "▸ " : "  ", "accent")
+				+ this.renderText(padLabel(label), labelTone)
+				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
+				+ this.renderText(effort, effortTone);
+			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
+			region({ kind: "row", row: key }, 0, inner);
+			lines.push(this.hoverWrap(`row:${key}`, styled, plain, inner));
+		};
+
+		row(PROFILE_ORCHESTRATOR_KEY, "Orchestrator", "title");
+		lines.push(` ${this.renderText("─".repeat(Math.max(0, effortStart + 8 - 1)), "border")}`);
+
+		// The header doubles as the "every agent" row: Model ▾ and Effort ▾.
+		const headerFocused = this.rows[this.cursor] === ROUTING_ALL_ROW;
+		const headerBase = `${headerFocused ? "▸ " : "  "}${"Agent".padEnd(agentCol)}${"Model ▾".padEnd(modelCol)}Effort ▾`;
+		const headerNote = visibleWidth(`${headerBase}   set every agent`) <= inner ? "   set every agent" : "";
+		const headerPlain = `${headerBase}${headerNote}`;
+		region({ kind: "effort", row: ROUTING_ALL_ROW }, effortStart, effortStart + "Effort ▾".length);
+		region({ kind: "row", row: ROUTING_ALL_ROW }, 0, inner);
+		lines.push(
+			this.hoverWrap(
+				`row:${ROUTING_ALL_ROW}`,
+				this.renderText(headerFocused ? "▸ " : "  ", "accent")
+					+ this.renderText("Agent".padEnd(agentCol), "muted")
+					+ this.renderText("Model ▾".padEnd(modelCol), "muted")
+					+ this.renderText("Effort ▾", "muted")
+					+ this.renderText(headerNote, "dim"),
+				headerPlain,
+				inner,
+			),
+		);
+
+		const window = this.agentWindow(notices.length);
+		if (window.start > 0) lines.push(this.renderText(`  ↑ ${window.start} more`, "dim"));
+		for (const agent of this.agents.slice(window.start, window.end)) row(agent, agent, "text");
+		if (window.end < this.agents.length) lines.push(this.renderText(`  ↓ ${this.agents.length - window.end} more`, "dim"));
+		lines.push("");
+
+		// Footer: three buttons, the unsaved count on the right.
+		const changes = this.changeCount();
+		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
+		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
+			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
+		const fullLabel = (id: RoutingTableButton) => ROUTING_TABLE_BUTTONS[id];
+		const shortLabel = (id: RoutingTableButton) => ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id];
+		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
+		let footer = "";
+		let footerColumn = 0;
+		const button = (id: RoutingTableButton, tone: PanelTone) => {
+			const text = `[ ${label(id)} ]`;
+			region({ kind: "button", button: id }, footerColumn, footerColumn + text.length);
+			footer += this.hoverWrap(`button:${id}`, this.renderText(text, tone), text);
+			footer += "  ";
+			footerColumn += text.length + 2;
+		};
+		footer += " ";
+		footerColumn += 1;
+		button("use", "accent");
+		button("default", "accent");
+		button("save", changes > 0 ? "title" : "dim");
+		const gap = Math.max(1, inner - footerColumn - status.length - 1);
+		lines.push(footer + " ".repeat(gap) + this.renderText(status, changes > 0 ? "edited" : "good"));
+		lines.push(this.renderText(this.fitHints(inner), "dim"));
+		const [first = "", second = ""] = this.wrapFeedback(inner);
+		const feedbackTone: PanelTone = this.escArmed ? "edited" : "muted";
+		lines.push(first ? this.renderText(first, feedbackTone) : "");
+		lines.push(second ? this.renderText(second, feedbackTone) : "");
 		return lines;
 	}
 
-	private renderSetAllLabel(row: string): string {
-		const models = this.agents
-			.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
-		const efforts = this.agents
-			.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
-		const firstModel = models[0] ?? "inherit";
-		const firstEffort = efforts[0] ?? "inherit";
-		const modelLabel = models.every((value) => value === firstModel)
-			? firstModel
-			: "mixed";
-		const effortLabel = efforts.every((value) => value === firstEffort)
-			? firstEffort
-			: "mixed";
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(modelLabel, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effortLabel, "status")}`;
+	/** The scope in a few characters, for terminals too narrow for the sentence. */
+	private shortScope(name: string): string {
+		const parts = this.scopeGlyphs(name).map((glyph) =>
+			glyph.text === "◉" ? "◉ session" : glyph.text === "★" ? "★ default" : "⌂ repo",
+		);
+		return parts.length > 0 ? parts.join("  ") : "not in use";
 	}
 
-	private renderAgentLabel(row: string): string {
-		if (row === PROFILE_ORCHESTRATOR_KEY && !this.draft[row]?.model) {
-			return `${this.renderText(row.padEnd(20), "text")} ${this.renderText(LEAVE_ORCHESTRATOR_UNTOUCHED, "status")}`;
+	/** As many key hints as fit, chosen by priority and shown in their usual order. */
+	private fitHints(inner: number): string {
+		const budget = inner - 1;
+		const chosen = new Set<number>();
+		let used = 0;
+		const byPriority = ROUTING_TABLE_HINTS.map((hint, index) => ({ ...hint, index })).sort((a, b) => a.keep - b.keep);
+		for (const hint of byPriority) {
+			const cost = visibleWidth(hint.text) + (chosen.size > 0 ? 2 : 0);
+			if (used + cost > budget) continue;
+			chosen.add(hint.index);
+			used += cost;
 		}
-		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
-		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effort, "status")}`;
+		return ` ${ROUTING_TABLE_HINTS.filter((_, index) => chosen.has(index)).map((hint) => hint.text).join("  ")}`;
+	}
+
+	/**
+	 * Each notice wrapped between words under a ⚠, at most four lines in all so
+	 * the table keeps its room; anything beyond is counted, never cut mid-word.
+	 */
+	private noticeLines(inner: number): string[] {
+		const width = Math.max(10, inner - 3);
+		const lines: string[] = [];
+		let shown = 0;
+		for (const notice of this.notices) {
+			const wrapped: string[] = [];
+			let current = "";
+			for (const word of sanitizeTerminalText(notice).split(/\s+/).filter(Boolean)) {
+				const next = current ? `${current} ${word}` : word;
+				if (visibleWidth(next) <= width || current === "") {
+					current = next;
+					continue;
+				}
+				wrapped.push(current);
+				current = word;
+			}
+			if (current) wrapped.push(current);
+			if (lines.length + wrapped.length > 4) break;
+			wrapped.forEach((line, index) => lines.push(`${index === 0 ? " ⚠ " : "   "}${line}`));
+			shown += 1;
+		}
+		const hidden = this.notices.length - shown;
+		if (hidden > 0) lines.push(`   ${hidden} more problem${hidden === 1 ? "" : "s"} not shown.`);
+		return lines;
+	}
+
+	/** The feedback message on up to two lines, broken between words. */
+	private wrapFeedback(inner: number): string[] {
+		if (!this.feedback) return [];
+		const width = Math.max(10, inner - 1);
+		const lines: string[] = [];
+		let current = "";
+		for (const word of sanitizeTerminalText(this.feedback).split(/\s+/).filter(Boolean)) {
+			const next = current ? `${current} ${word}` : word;
+			if (visibleWidth(next) <= width) {
+				current = next;
+				continue;
+			}
+			if (current) lines.push(current);
+			current = word;
+		}
+		if (current) lines.push(current);
+		if (lines.length > 2) {
+			lines[1] = truncateToWidth(lines.slice(1).join(" "), width, "…");
+			lines.length = 2;
+		}
+		return lines.map((line) => ` ${line}`);
+	}
+
+	/** Which tabs fit around the active one, and whether more hide on either side. */
+	private tabWindow(inner: number): { names: string[]; before: boolean; after: boolean } {
+		const names = this.profileNames();
+		const widthOf = (name: string) =>
+			Math.min(18, visibleWidth(name)) + 4 + this.scopeGlyphs(name).length + (name === this.profileName ? 3 : 0);
+		const budget = inner - 1 - "+ New".length - 4;
+		const active = Math.max(0, names.indexOf(this.profileName));
+		let start = active;
+		let end = active + 1;
+		let used = widthOf(names[active] ?? "");
+		for (let grew = true; grew;) {
+			grew = false;
+			if (end < names.length && used + widthOf(names[end]) <= budget) {
+				used += widthOf(names[end]);
+				end += 1;
+				grew = true;
+			}
+			if (start > 0 && used + widthOf(names[start - 1]) <= budget) {
+				start -= 1;
+				used += widthOf(names[start]);
+				grew = true;
+			}
+		}
+		return { names: names.slice(start, end), before: start > 0, after: end < names.length };
+	}
+
+	private agentWindow(noticeRows = 0): { start: number; end: number } {
+		const total = this.agents.length;
+		if (!this.terminalRows) return { start: 0, end: total };
+		const room = Math.max(3, Math.floor(this.terminalRows()) - 2 - ROUTING_TABLE_FIXED_ROWS - noticeRows);
+		if (total <= room) return { start: 0, end: total };
+		const visible = Math.max(1, room - 2);
+		const focus = Math.max(0, this.cursor - 2);
+		const start = Math.max(0, Math.min(focus - Math.floor(visible / 2), total - visible));
+		return { start, end: start + visible };
+	}
+
+	// -- cards -------------------------------------------------------------------
+
+	private cardFor(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		switch (this.overlay) {
+			case "model":
+				return this.modelCard(inner);
+			case "effort":
+				return this.effortCard(inner);
+			case "menu":
+				return this.menuCard(inner, this.activeTabColumn);
+			case "new":
+				return this.menuCard(inner, this.newColumn);
+			default:
+				return this.switchCard(inner);
+		}
+	}
+
+	private modelCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(56, inner - 4);
+		const content = width - 4;
+		const lines: string[] = [];
+		const region = (action: RoutingTableMouseAction) =>
+			this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action });
+		lines.push(this.renderText("Model for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
+		lines.push(this.renderText("⌕ ", "accent") + (this.query ? sanitizeTerminalText(this.query) : this.renderText("type to search", "dim")));
+		lines.push(this.renderText("─".repeat(content), "border"));
+		const options = this.modelOptions();
+		const current = this.currentValue(this.target, "model") ?? (this.target === ROUTING_ALL_ROW ? undefined : this.inheritLabel(this.target));
+		const rows = this.terminalRows ? Math.floor(this.terminalRows()) : options.length + ROUTING_MODEL_CARD_CHROME_ROWS;
+		const visible = Math.max(3, Math.min(options.length, rows - ROUTING_MODEL_CARD_CHROME_ROWS));
+		const start = Math.max(0, Math.min(this.modelCursor - Math.floor(visible / 2), options.length - visible));
+		for (let index = start; index < Math.min(options.length, start + visible); index += 1) {
+			const option = options[index] ?? "";
+			const focused = index === this.modelCursor;
+			const tone: PanelTone = focused ? "title" : option === ROUTING_CUSTOM_MODEL || option === this.inheritLabel(this.target) ? "muted" : "text";
+			const mark = option === current ? " ✓" : "";
+			const plain = `${focused ? "▸ " : "  "}${option}${mark}`;
+			region({ kind: "model-option", index });
+			lines.push(
+				this.hoverWrap(
+					`model-option:${index}`,
+					this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(option, tone) + this.renderText(mark, "good"),
+					plain,
+					content,
+				),
+			);
+		}
+		lines.push("");
+		lines.push(this.renderText("↑↓ choose · enter pick · esc back", "dim"));
+		return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	private effortCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		// Provider review roles inherit Pi's persisted default, so their inherit
+		// choice says so (gentle-pi#2271).
+		const inheritLabel = this.target !== ROUTING_ALL_ROW && isProviderReviewRole(this.target)
+			? routingDefaultLabel(this.target, "effort")
+			: "inherit";
+		const chips = this.effortOptions().map((option, index) => {
+			const label = option === INHERIT_THINKING ? inheritLabel : option;
+			const text = index === this.effortCursor ? `[${label}]` : ` ${label} `;
+			return { index, text };
+		});
+		const oneRow = chips.reduce((sum, chip) => sum + chip.text.length + 1, 0) - 1;
+		const width = Math.min(inner - 4, Math.max(44, oneRow + 4));
+		const content = width - 4;
+		// One row when it fits; otherwise the levels wrap onto a second row, so a
+		// narrow terminal never cuts a level in half.
+		const rows: Array<typeof chips> = [[]];
+		let used = 0;
+		for (const chip of chips) {
+			const cost = chip.text.length + (rows[rows.length - 1].length > 0 ? 1 : 0);
+			if (used + cost > content && rows[rows.length - 1].length > 0) {
+				rows.push([]);
+				used = 0;
+			}
+			rows[rows.length - 1].push(chip);
+			used += chip.text.length + (rows[rows.length - 1].length > 1 ? 1 : 0);
+		}
+		const lines: string[] = [];
+		lines.push(this.renderText("Effort for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
+		lines.push(this.renderText(truncateToWidth(this.effortSource(), content, "…"), "dim"));
+		for (const row of rows) {
+			let column = 0;
+			const drawn: string[] = [];
+			for (const chip of row) {
+				this.hitRegions.push({
+					y: lines.length,
+					x0: column,
+					x1: column + chip.text.length,
+					action: { kind: "effort-option", index: chip.index },
+				});
+				const focused = chip.index === this.effortCursor;
+				drawn.push(this.hoverWrap(`effort-option:${chip.index}`, this.renderText(chip.text, focused ? "title" : "status"), chip.text));
+				column += chip.text.length + 1;
+			}
+			lines.push(drawn.join(" "));
+		}
+		lines.push("");
+		lines.push(this.renderText("←→ choose · enter pick · esc back", "dim"));
+		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/** One line under the effort card's title: whose levels these are. */
+	private effortSource(): string {
+		const supported = this.supportedLevels(this.target);
+		if (this.target === ROUTING_ALL_ROW) {
+			return supported ? "Levels every agent's model supports." : "Models unknown to the catalog: every level is shown.";
+		}
+		const model = this.draft[this.target]?.model;
+		if (model === undefined) return "Inherits its model: every level is shown.";
+		return supported ? `Levels ${model} supports.` : `${model} is not in the catalog: every level is shown.`;
+	}
+
+	private menuCard(inner: number, anchor: number): { lines: string[]; width: number; top: number; left: number } {
+		const items = this.menuItems();
+		const width = Math.min(inner - 2, Math.max(28, ...items.map((item) => visibleWidth(item.label) + 8)));
+		const content = width - 4;
+		const lines: string[] = [];
+		items.forEach((item, index) => {
+			if (item.id === "delete") lines.push(this.renderText("─".repeat(content), "border"));
+			const focused = index === this.menuCursor;
+			const plain = `${focused ? "▸ " : "  "}${item.label}`;
+			this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action: { kind: "menu-item", id: item.id } });
+			lines.push(
+				this.hoverWrap(
+					`menu:${item.id}`,
+					this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(item.label, item.tone ?? (focused ? "title" : "text")),
+					plain,
+					content,
+				),
+			);
+		});
+		return { lines, width, top: 2, left: Math.max(0, Math.min(anchor, inner - width)) };
+	}
+
+	private switchCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(inner - 4, 60);
+		const changes = this.changeCount();
+		const lines: string[] = [];
+		lines.push(
+			this.renderText(sanitizeTerminalText(this.profileName), "title")
+				+ this.renderText(` has ${changes} unsaved change${changes === 1 ? "" : "s"}.`, "text"),
+		);
+		lines.push("");
+		let column = 0;
+		let buttons = "";
+		for (const id of ["switch-save", "switch-discard", "switch-stay"] as const) {
+			const text = `[ ${ROUTING_TABLE_BUTTONS[id]} ]`;
+			this.hitRegions.push({ y: lines.length, x0: column, x1: column + text.length, action: { kind: "button", button: id } });
+			buttons += this.hoverWrap(`button:${id}`, this.renderText(text, id === "switch-save" ? "title" : id === "switch-stay" ? "dim" : "accent"), text) + "  ";
+			column += text.length + 2;
+		}
+		lines.push(buttons);
+		lines.push(this.renderText("enter save and switch · d discard · esc stay", "dim"));
+		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/**
+	 * Draws a card over the dimmed table. Card regions were recorded relative to
+	 * the card content; they move into frame coordinates here: frame border and
+	 * "│ " before the body, the card's own border and "│ " before its content.
+	 */
+	private placeCard(
+		table: string[],
+		card: { lines: string[]; width: number; top: number; left: number },
+		inner: number,
+	): string[] {
+		const regions = this.hitRegions;
+		this.hitRegions = regions.map((region) => ({
+			...region,
+			y: region.y + card.top + 2,
+			x0: 2 + card.left + 2 + region.x0,
+			x1: 2 + card.left + 2 + region.x1,
+		}));
+		const content = card.width - 4;
+		const rule = "─".repeat(card.width - 2);
+		const drawn = [
+			this.renderText(`╭${rule}╮`, "accent"),
+			...card.lines.map((line) => `${this.renderText("│", "accent")} ${this.fit(line, content)} ${this.renderText("│", "accent")}`),
+			this.renderText(`╰${rule}╯`, "accent"),
+		];
+		const body = [...table];
+		const rows = Math.max(body.length, card.top + drawn.length);
+		while (body.length < rows) body.push("");
+		for (let index = 0; index < drawn.length; index += 1) {
+			const target = card.top + index;
+			const right = " ".repeat(Math.max(0, inner - card.left - card.width));
+			body[target] = " ".repeat(card.left) + drawn[index] + right;
+		}
+		return body;
+	}
+
+	// -- text helpers --------------------------------------------------------------
+
+	/**
+	 * The hover fill. It uses the theme's selection background, which reads on
+	 * every bundled theme; the pending-tool background it replaced is a shade
+	 * away from the terminal background on Gentleman-Cute and never showed.
+	 */
+	private hoverWrap(key: string, styled: string, plain: string, fillTo?: number): string {
+		if (this.hovered !== key || !this.theme) return styled;
+		const text = fillTo === undefined ? plain : plain + " ".repeat(Math.max(0, fillTo - visibleWidth(plain)));
+		return this.theme.bg("selectedBg", this.theme.fg("text", sanitizeTerminalText(text)));
+	}
+
+	private renderText(text: string, tone: PanelTone): string {
+		const safe = sanitizeTerminalText(text);
+		if (!this.theme) return safe;
+		return this.theme.fg(PANEL_TONE_COLOR[tone] ?? "text", safe);
+	}
+
+	private fit(line: string, width: number): string {
+		const plain = stripAnsi(line);
+		const visible = visibleWidth(plain);
+		if (visible > width) return truncateToWidth(plain, Math.max(1, width), "…", true);
+		return `${line}${" ".repeat(Math.max(0, width - visible))}`;
 	}
 }
 
-function renderSddModelPanelForTesting(
-	initialConfig: AgentModelConfig,
+interface RoutingTableTestEvent {
+	type: "move" | "click" | "wheel";
+	x: number;
+	y: number;
+	button?: string;
+	wheelDelta?: number;
+}
+
+function renderRoutingTableForTesting(
+	draft: AgentModelConfig,
 	modelOptions: string[],
 	agents: string[],
 	width: number,
 	theme?: Theme,
 	terminalRows?: number,
 	inputs: string[] = [],
+	mouseEvents: RoutingTableTestEvent[] = [],
+	results: RoutingTableResult[] = [],
+	options: {
+		file?: AgentProfilesFile;
+		sessionBoundName?: string;
+		pinWinner?: string;
+		profileName?: string;
+		feedback?: string;
+		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+		notices?: string[];
+	} = {},
 ): string[] {
-	const panel = new SddModelPanel(
-		initialConfig,
+	const panel = new RoutingTablePanel(
+		draft,
 		modelOptions,
 		agents,
-		() => {},
+		(result) => results.push(result),
 		theme,
-		undefined,
+		options.profileName ?? "current",
 		terminalRows === undefined ? undefined : () => terminalRows,
+		options,
 	);
-	for (const data of inputs) panel.handleInput(data);
+	panel.render(width);
+	for (const data of inputs) {
+		panel.handleInput(data);
+		panel.render(width);
+	}
+	const send = (event: RoutingTableTestEvent, type: TuiMouseEvent["type"]) =>
+		panel.handleMouse({
+			type,
+			x: event.x,
+			y: event.y,
+			button: event.button ?? (type === "move" ? "none" : "left"),
+			wheelDelta: event.wheelDelta,
+			screenX: event.x,
+			screenY: event.y,
+			width,
+			height: terminalRows ?? 40,
+		} as TuiMouseEvent);
+	for (const event of mouseEvents) {
+		// Real terminals send press then click; replay both so a test catches
+		// any action that would fire twice.
+		if (event.type === "click") send(event, "press");
+		send(event, event.type);
+		panel.render(width);
+	}
 	return panel.render(width);
 }
 
-async function showSddModelPanel(
+interface RoutingTablePanelRequest {
+	name: string;
+	config: AgentModelConfig;
+	file: AgentProfilesFile;
+	sessionBoundName?: string;
+	pinWinner?: string;
+	feedback?: string;
+	notices?: string[];
+	switchProfile?: RoutingProfileSwitcher;
+}
+
+/**
+ * What the models screen must not hide: a pin layer that does not resolve
+ * (invalid file, or a name no profile defines) silently returns the repository
+ * to the global routing, and a routing key no agent matches is silently ignored
+ * at launch (issues #2196 and #2400).
+ */
+function routingScreenNotices(
 	ctx: ExtensionContext,
-	config: AgentModelConfig,
-	profileLabel: string,
-): Promise<ModelPanelResult> {
+	file: AgentProfilesFile,
+	shownName: string,
+	sessionBoundName: string | undefined,
+): string[] {
+	const notices: string[] = [];
+	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
+	for (const issue of pins.invalid) {
+		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
+	}
+	for (const issue of pins.stale) {
+		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
+	}
+	const roots = {
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	};
+	let discovered: Array<{ name: string }> = [];
+	try {
+		discovered = discoverAgents(roots).agents;
+	} catch {
+		return notices;
+	}
+	// gentle-pi#2271: provider review roles are routed by key and never have an
+	// agent file, so they always count as matched.
+	const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
+	const profileKeys = Object.keys(normalizeModelConfig(file.profiles[shownName]) ?? {}).filter((key) => !isProfileOrchestratorKey(key));
+	const unmatched = unmatchedProfileKeys(Object.fromEntries(profileKeys.map((key) => [key, { model: undefined, thinking: undefined }])), known);
+	const ignored = unmatched.filter((entry) => entry.suggestion === undefined).map((entry) => entry.key);
+	if (ignored.length > 0) {
+		notices.push(
+			`Profile key${ignored.length === 1 ? "" : "s"} ${ignored.map((key) => `"${key}"`).join(", ")} match${ignored.length === 1 ? "es" : ""} no agent configured in gentle-shell, so ${ignored.length === 1 ? "it is" : "they are"} ignored at launch.`,
+		);
+	}
+	for (const entry of unmatched) {
+		if (entry.suggestion !== undefined) notices.push(`Profile key "${entry.key}" matches no agent configured in gentle-shell; did you mean ${entry.suggestion}?`);
+	}
+	// Issue #2400: model_profiles keys in subagents.json that match nothing and
+	// suggest nothing. A session binding or a winning pin replaces those launches'
+	// routing, so the file's keys do not apply there.
+	if (sessionBoundName === undefined && pinnedEffectiveModelConfig(ctx.cwd) === undefined) {
+		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
+			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
+			.map((entry) => entry.key);
+		if (stray.length > 0) {
+			notices.push(`subagents.json routes ${stray.map((key) => `"${key}"`).join(", ")}, which no agent matches, so ${stray.length === 1 ? "it is" : "they are"} ignored.`);
+		}
+	}
+	return notices;
+}
+
+async function showRoutingTablePanel(
+	ctx: ExtensionContext,
+	request: RoutingTablePanelRequest,
+): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
+	const thinkingSupport = await getPiThinkingSupport(ctx);
 	const agents = modelAssignmentNames(ctx.cwd);
-	return ctx.ui.custom<ModelPanelResult>(
-		(tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
-				Math.max(0, tui.terminal.rows),
-			),
+	return ctx.ui.custom<RoutingTableResult>(
+		(tui, theme, _keybindings, done) => {
+			const panel = new RoutingTablePanel(
+				request.config,
+				modelOptions,
+				agents,
+				done,
+				theme,
+				request.name,
+				() => Math.max(0, tui.terminal.rows),
+				{
+					file: request.file,
+					sessionBoundName: request.sessionBoundName,
+					pinWinner: request.pinWinner,
+					feedback: request.feedback,
+					thinkingSupport,
+					notices: request.notices,
+					switchProfile: request.switchProfile,
+				},
+			);
+			const container = createNativeFullscreenInteraction({
+				keyboardTarget: panel,
+				requestRender: () => tui.requestRender(),
+			});
+			container.addChild(panel);
+			return container;
+		},
 		{
 			overlay: true,
-			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
 				width: "100%",
@@ -3699,148 +4586,74 @@ async function showSddModelPanel(
 	);
 }
 
-async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
+/**
+ * Bare `/gentle:profiles` opens the models screen on the profile this
+ * repository resolves, after the routing preflight: legacy project overrides
+ * migrate and a pinned repository is named before any edit. An unreadable
+ * saved routing file does not block the screen; Make default discloses it.
+ */
+async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	migrateLegacyProjectModelOverrides(ctx.cwd);
 	// A pinned repository resolves its subagent routing from the profile at launch,
-	// so global routing written here will not reach its subagents. Saying it before
-	// the edits, not after them, is the difference between a note and a surprise.
+	// so global routing written elsewhere will not reach its subagents. Saying it
+	// before the edits, not after them, is the difference between a note and a surprise.
 	const pinNote = profilePinScopeNote(ctx.cwd);
 	if (pinNote) ctx.ui.notify(pinNote, "info");
-	const savedConfig = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
-	);
-	if (savedConfig.status === "invalid") {
-		ctx.ui.notify(
-			`el Gentleman cannot open model config because ${savedConfig.path} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
-			"warning",
-		);
-		return;
-	}
-	let config = savedConfig.status === "valid" ? cloneModelConfig(savedConfig.config) : {};
-	const store = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
-	const target = resolveCurrentProfileTarget(ctx.cwd, store);
-	// Existing profiles own the initial choice, including absence. Reopens keep the draft.
-	delete config[PROFILE_ORCHESTRATOR_KEY];
-	if (store.status === "valid" && target && hasOwnProfile(store.file.profiles, target.name)) {
-		const entry = store.file.profiles[target.name][PROFILE_ORCHESTRATOR_KEY];
-		if (entry) config[PROFILE_ORCHESTRATOR_KEY] = { ...entry };
-	} else {
-		config = profileSnapshotFrom(config, liveOrchestratorSnapshot(ctx, pi) ?? readOrchestratorSettings(orchestratorSettingsPath()));
-	}
-	const profileLabel = describeCurrentProfileTarget(target);
-	let result = await showSddModelPanel(ctx, config, profileLabel);
-	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
-		config = cloneModelConfig(result.config);
-		if (result.type === "export") {
-			try {
-				const count = await exportSavedModelConfig(ctx);
-				ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
-			} catch (error) {
-				ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
-			continue;
-		}
-		if (result.type === "restore") {
-			const restored = await readModelExport(ctx);
-			if (!restored) {
-				ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
-				result = await showSddModelPanel(ctx, config, profileLabel);
-				continue;
-			}
-			const approved = await ctx.ui.confirm("Restore saved model routing?", `Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`);
-			if (approved) {
-				try {
-					await writeModelConfigAsync(ctx.cwd, restored);
-				} catch (error) {
-					ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
-					result = await showSddModelPanel(ctx, config, profileLabel);
-					continue;
-				}
-				const orchestratorChoice = config[PROFILE_ORCHESTRATOR_KEY];
-				config = cloneModelConfig(restored);
-				delete config[PROFILE_ORCHESTRATOR_KEY];
-				if (orchestratorChoice) config[PROFILE_ORCHESTRATOR_KEY] = orchestratorChoice;
-				try {
-					const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
-					ctx.ui.notify([
-						"el Gentleman restored global model config.",
-						`Import: ${modelExportPath(ctx.cwd)}`,
-						`Global config: ${modelConfigPath(ctx.cwd)}`,
-						`Agents updated: ${applyResult.updated}`,
-					].join("\n"), "info");
-				} catch (error) {
-					ctx.ui.notify([
-						"el Gentleman restored global model config, but applying it to agents failed.",
-						`Global config: ${modelConfigPath(ctx.cwd)}`,
-						`Apply error: ${error instanceof Error ? error.message : String(error)}`,
-					].join("\n"), "warning");
-				}
-			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
-			continue;
-		}
-		const current =
-			result.agent === "all"
-				? "inherit"
-				: (config[result.agent]?.model ?? "inherit");
-		const custom = await ctx.ui.input(
-			`${result.agent === "all" ? "all agents" : sanitizeTerminalText(result.agent)} custom model id`,
-			current === "inherit" ? "provider/model" : sanitizeTerminalText(current),
-		);
-		if (custom === undefined) return;
-		const trimmed = custom.trim();
-		if (trimmed.length > 0) {
-			const model = normalizeModelId(trimmed);
-			if (!model) {
-				ctx.ui.notify(
-					"Custom model id must be a single-line provider/model identifier using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.",
-					"warning",
-				);
-				result = await showSddModelPanel(ctx, config, profileLabel);
-				continue;
-			}
-			if (result.agent === "all") {
-				const next: AgentModelConfig = { ...config };
-				for (const name of modelAssignmentNames(ctx.cwd)) {
-					next[name] = {
-						...(next[name] ?? {}),
-						model,
-					};
-				}
-				config = next;
-			} else {
-				config = {
-					...config,
-					[result.agent]: {
-						...(config[result.agent] ?? {}),
-						model,
-					},
-				};
-			}
-		}
-		result = await showSddModelPanel(ctx, config, profileLabel);
-	}
-	if (result.type !== "save" && result.type !== "save-profile") return;
-	// The panel's orchestrator is snapshot-only, never a global agent route.
-	const routing = cloneModelConfig(result.config);
-	delete routing[PROFILE_ORCHESTRATOR_KEY];
-	writeModelConfig(ctx.cwd, routing);
-	const applyResult = await applyModelConfigAsync(ctx.cwd, routing);
-	ctx.ui.notify(
-		[
-			"el Gentleman global model config saved.",
-			`Global config: ${modelConfigPath(ctx.cwd)}`,
-			`Agents updated: ${applyResult.updated}`,
-			...describeModelConfig(ctx.cwd, routing),
-		].join("\n"),
-		"info",
-	);
-	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, result.config[PROFILE_ORCHESTRATOR_KEY]);
+	const read = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	const target = read.status === "valid"
+		? resolveCurrentProfileTarget(ctx.cwd, read)
+		: read.status === "missing"
+			? ({ name: "current", source: "active" } as CurrentProfileTarget)
+			: undefined;
+	await openProfilesPanelLoop(ctx, live, target?.name);
 }
 
-/** The profile `u` in `/gentle:models` writes to, and why it is that one. */
+/** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
+async function exportRoutingCommand(ctx: ExtensionContext): Promise<void> {
+	try {
+		const count = await exportSavedModelConfig(ctx);
+		ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
+	} catch (error) {
+		ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	}
+}
+
+/** `/gentle:profiles restore-routing`: replace the saved global routing with models.export.json, then apply it. */
+async function restoreModelExport(ctx: ExtensionContext): Promise<void> {
+	const restored = await readModelExport(ctx);
+	if (!restored) {
+		ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
+		return;
+	}
+	const approved = await ctx.ui.confirm(
+		"Restore saved model routing?",
+		`Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`,
+	);
+	if (!approved) return;
+	try {
+		await writeModelConfigAsync(ctx.cwd, restored);
+	} catch (error) {
+		ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		return;
+	}
+	try {
+		const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
+		ctx.ui.notify([
+			"el Gentleman restored global model config.",
+			`Import: ${modelExportPath(ctx.cwd)}`,
+			`Global config: ${modelConfigPath(ctx.cwd)}`,
+			`Agents updated: ${applyResult.updated}`,
+		].join("\n"), "info");
+	} catch (error) {
+		ctx.ui.notify([
+			"el Gentleman restored global model config, but applying it to agents failed.",
+			`Global config: ${modelConfigPath(ctx.cwd)}`,
+			`Apply error: ${error instanceof Error ? error.message : String(error)}`,
+		].join("\n"), "warning");
+	}
+}
+
+/** The profile bare `/gentle:profiles` preselects in the unified panel, and why it is that one. */
 interface CurrentProfileTarget {
 	name: string;
 	source: "pinned" | "active";
@@ -3862,85 +4675,7 @@ function resolveCurrentProfileTarget(
 	return { name: store.file.active, source: "active" };
 }
 
-function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined): string {
-	if (!target) return "none";
-	return target.source === "pinned" ? `${target.name} (pinned)` : target.name;
-}
 
-/**
- * The second half of `u` captures saved global agent routing (never the pin)
- * and the explicit panel choice, including key absence. The global save has
- * already been reported, so every outcome here speaks only about the profile.
- */
-function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, orchestrator: AgentRoutingEntry | undefined): void {
-	const path = profilesFilePath(gentleAiConfigHome());
-	const read = readProfilesFileResult(path);
-	if (read.status === "invalid") {
-		ctx.ui.notify(
-			`el Gentleman saved the global routing, but cannot update a profile because ${sanitizeTerminalText(path)} is invalid JSON or not a profiles file. Fix or remove the file, then run /gentle:profiles again.`,
-			"warning",
-		);
-		return;
-	}
-	const snapshot = cloneModelConfig(readGlobalEffectiveModelConfig(ctx.cwd));
-	delete snapshot[PROFILE_ORCHESTRATOR_KEY];
-	if (orchestrator?.model) snapshot[PROFILE_ORCHESTRATOR_KEY] = { ...orchestrator };
-	if (read.status === "missing") {
-		// The same seed `/gentle:profiles` performs on its first open, so pressing
-		// `u` before ever opening that panel lands on the same "current" profile.
-		try {
-			writeProfilesFileSync(path, bootstrapProfilesFile(snapshot));
-		} catch (error) {
-			ctx.ui.notify(
-				`el Gentleman saved the global routing, but could not create ${sanitizeTerminalText(path)}: ${profilesErrorMessage(error)}`,
-				"warning",
-			);
-			return;
-		}
-		ctx.ui.notify(`el Gentleman seeded the "current" profile in ${sanitizeTerminalText(path)} from the routing just saved.`, "info");
-		return;
-	}
-	reportProfilesDrops(ctx, path, read.drops);
-	const target = resolveCurrentProfileTarget(ctx.cwd, read);
-	if (!target) {
-		ctx.ui.notify(
-			"el Gentleman saved the global routing, but no profile is current: none is active and this repository pins none. Apply or create one with /gentle:profiles, then press u here or s there.",
-			"warning",
-		);
-		return;
-	}
-	try {
-		writeProfilesFileSync(path, updateProfile(read.file, target.name, snapshot));
-	} catch (error) {
-		ctx.ui.notify(
-			`el Gentleman saved the global routing, but profile "${target.name}" was not updated: ${profilesErrorMessage(error)}`,
-			"warning",
-		);
-		return;
-	}
-	ctx.ui.notify(
-		[
-			`el Gentleman: Profile "${target.name}" updated from the routing just saved (${target.source === "pinned" ? "this repository's pinned profile" : "the active profile"}).`,
-			`Profiles store: ${sanitizeTerminalText(path)}`,
-		].join("\n"),
-		"info",
-	);
-}
-
-type ProfilesPanelResult =
-	| { type: "apply"; name: string }
-	| { type: "apply-global"; name: string }
-	| { type: "create" }
-	| { type: "update"; name: string }
-	| { type: "duplicate"; name: string }
-	| { type: "rename"; name: string }
-	| { type: "delete"; name: string }
-	| { type: "export"; name: string }
-	| { type: "pin"; source: ProfilePinSource; name: string }
-	| { type: "import" }
-	| { type: "close" };
-
-type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
 
 /**
  * What a panel action hands the reopened panel: a one-line status for the footer,
@@ -3951,10 +4686,6 @@ interface ProfilesPanelReport {
 	status?: string;
 	selectedName?: string;
 }
-
-const PROFILES_PANEL_MIN_BODY_ROWS = 6;
-
-type ProfilesPanelPointerLayout = AgentsViewLayout & { listTop: number };
 
 function hasOwnProfile(profiles: Record<string, unknown>, name: string): boolean {
 	return Object.prototype.hasOwnProperty.call(profiles, name);
@@ -3987,8 +4718,8 @@ function profilePinStateLabel(
  * Every line the panel needs to tell a pinned repository the truth: the winning
  * layer and its exact file, an explicit warning for a file that is not a pin named
  * by path (kept separate from a pin naming a profile this store no longer defines),
- * and one sentence that a winning pin outranks the global active profile and every
- * `/gentle:models` write.
+ * and one sentence that a winning pin outranks the globally active profile and every
+ * global routing write.
  */
 function profilePinDetailLines(
 	status: ProfilePinStatus | undefined,
@@ -4005,7 +4736,7 @@ function profilePinDetailLines(
 		lines.push(`              the ${issue.source} pin names "${issue.profile}", which this store does not define; ignoring it (${issue.path}).`);
 	}
 	if (evaluation.winner) {
-		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and /gentle:models writes do not apply here.");
+		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and global routing writes do not apply here.");
 	}
 	return lines;
 }
@@ -4044,15 +4775,15 @@ function followRenamedPin(
 
 /**
  * One sentence naming the profile this repository resolves, for the commands whose
- * writes a pin outranks: `/gentle:models` materializes global routing that a pinned
- * repository will not use for its subagents. The launch resolver decides, so the note
+ * writes a pin outranks: global routing applied from the unified panel does not
+ * reach a pinned repository's subagents. The launch resolver decides, so the note
  * names exactly what a launch would use.
  */
 function profilePinScopeNote(cwd: string): string | undefined {
 	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
 	if (!resolution) return undefined;
 	return sanitizeTerminalText(
-		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove the pin with /gentle:profiles (p or P).`,
+		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove it in /gentle:profiles (profile menu ▾ › Use in this repo), or with /gentle:profiles publish <name> for the committed declaration.`,
 	);
 }
 
@@ -4063,10 +4794,10 @@ function profilePinScopeNote(cwd: string): string | undefined {
  * write that already succeeded must not become an error because a probe about sharing
  * it failed.
  */
-function repoDeclarationSharing(root: string, path: string): string {
+export function repoDeclarationSharing(root: string, path: string): string {
 	const relativePath = relative(root, path).split(sep).join("/");
 	const run = (...arguments_: string[]): string =>
-		execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
+		execFileSync("git", arguments_, { cwd: root, encoding: "utf8", windowsHide: true }).trim();
 	try {
 		// Exit 0 means gitignore matches the path; the exact negation line is what makes
 		// the declaration committable again.
@@ -4086,476 +4817,6 @@ function repoDeclarationSharing(root: string, path: string): string {
 	} catch {
 		return `${relativePath} is not ignored, so it is committable as-is.`;
 	}
-}
-
-/** Keep a detail-pane scroll offset inside the bounds of its own content. */
-function clampDetailScroll(offset: number, lineCount: number, bodyRows: number): number {
-	return Math.max(0, Math.min(offset, Math.max(0, lineCount - bodyRows)));
-}
-
-// Left profile list, right detail panes. Rendering and pointer routing share
-// one measured layout; the list rows keep native keyboard, hover, press,
-// click, and wheel handling through NativeChoiceList. The frame takes the full
-// overlay, so its height follows the terminal rows the same way AgentsView does.
-class ProfilesPanel implements OverlayComponent {
-	private completed = false;
-	private pointerLayout: ProfilesPanelPointerLayout | undefined;
-	private detailScroll = 0;
-	private lastDetailLineCount = 0;
-	private lastDetailRows = 0;
-	private lastSelectedId: string | undefined;
-	private feedback: string | undefined;
-	readonly list: NativeChoiceList<ProfileListItem>;
-	private file: AgentProfilesFile;
-	private readonly currentConfig: AgentModelConfig;
-	private readonly done: (result: ProfilesPanelResult) => void;
-	private readonly saveSnapshot: ProfilesSnapshotHandler;
-	private readonly requestRender: () => void;
-	private readonly listItems: ProfileListItem[];
-	private readonly theme: Theme | undefined;
-	private readonly rows: () => number;
-	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
-	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
-	private readonly pinStatus: ProfilePinStatus | undefined;
-	private readonly sessionBoundName: string | undefined;
-	private readonly discoveredAgentNames: string[];
-	private readonly unmatchedKeys: string[];
-	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
-
-	constructor(
-		file: AgentProfilesFile,
-		currentConfig: AgentModelConfig,
-		done: (result: ProfilesPanelResult) => void,
-		keybindings: KeybindingsManager | undefined,
-		theme: Theme | undefined,
-		selectedName: string | undefined,
-		rows: () => number,
-		orchestratorSettings: OrchestratorSettingsReadResult,
-		saveSnapshot: ProfilesSnapshotHandler,
-		requestRender: () => void,
-		pinStatus: () => ProfilePinStatus | undefined,
-		sessionBound: () => string | undefined,
-		discoveredAgentNames: string[],
-		unmatchedKeys: string[],
-		liveOrchestrator?: () => AgentRoutingEntry | undefined,
-		feedback?: string,
-	) {
-		this.file = file;
-		this.feedback = feedback;
-		this.currentConfig = currentConfig;
-		this.done = done;
-		this.saveSnapshot = saveSnapshot;
-		this.requestRender = requestRender;
-		this.theme = theme;
-		this.rows = rows;
-		this.orchestratorSettings = orchestratorSettings;
-		this.pinStatus = pinStatus();
-		this.sessionBoundName = sessionBound();
-		this.discoveredAgentNames = discoveredAgentNames;
-		this.unmatchedKeys = unmatchedKeys;
-		this.liveOrchestrator = liveOrchestrator;
-		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
-		this.listItems = items;
-		this.list = new NativeChoiceList<ProfileListItem>(
-			items,
-			{
-				selectedPrefix: (text) => this.renderText(text, "accent"),
-				selectedText: (text) => this.renderText(text, "accent"),
-				description: (text) => this.renderText(text, "muted"),
-				hoverBackground: (text) => (this.theme ? this.theme.bg("toolPendingBg", text) : text),
-			},
-			keybindings,
-		);
-		this.list.onSelect = (item) => this.finish({ type: "apply", name: item.id });
-		this.list.onCancel = () => this.finish({ type: "close" });
-		const selected = selectedName ? items.findIndex((item) => item.id === selectedName) : -1;
-		if (selected >= 0) this.list.setSelectedIndex(selected);
-	}
-
-	invalidate(): void {
-		this.pointerLayout = undefined;
-		this.list.invalidate();
-	}
-
-	handleInput(data: string): void {
-		if (isKeyRelease(data)) return;
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.finish({ type: "close" });
-			return;
-		}
-		const name = this.list.getSelectedItem()?.id;
-		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) {
-			this.scrollDetail(this.pageRows());
-			return;
-		}
-		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) {
-			this.scrollDetail(-this.pageRows());
-			return;
-		}
-		// Agents-view line scroll: j/k move the routing one line at a time. The
-		// arrow keys stay with the profile list, exactly as the letters below stay
-		// profile actions.
-		if (data === "j") {
-			this.scrollDetail(1);
-			return;
-		}
-		if (data === "k") {
-			this.scrollDetail(-1);
-			return;
-		}
-		if (data === "c") return this.finish({ type: "create" });
-		if (data === "i") return this.finish({ type: "import" });
-		if (!name) return this.list.handleInput(data);
-		if (data === "s") {
-			try {
-				this.file = this.saveSnapshot(name);
-				this.refreshListItems();
-				this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
-			} catch (error) {
-				this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
-			}
-			this.requestRender();
-			return;
-		}
-		if (data === "a") return this.finish({ type: "apply-global", name });
-		if (data === "d") return this.finish({ type: "duplicate", name });
-		if (data === "r") return this.finish({ type: "rename", name });
-		if (data === "x") return this.finish({ type: "delete", name });
-		if (data === "e") return this.finish({ type: "export", name });
-		if (data === "p") return this.finish({ type: "pin", source: "local", name });
-		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
-		this.list.handleInput(data);
-	}
-
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const layout = this.pointerLayout;
-		if (!layout) return undefined;
-		const inBody = event.y >= layout.listTop && event.y < layout.listTop + layout.bodyRows;
-		if (
-			inBody &&
-			event.type === "wheel" &&
-			event.wheelDelta &&
-			layout.mode === "panes" &&
-			event.x >= layout.threadX &&
-			event.x < layout.threadX + layout.threadWidth
-		) {
-			this.scrollDetail(event.wheelDelta);
-			return { handled: true, render: true };
-		}
-		if (!inBody) return undefined;
-		if (event.x < layout.listX || event.x >= layout.listX + layout.listWidth) return undefined;
-		return this.list.handleMouse({
-			...event,
-			x: event.x - layout.listX,
-			y: event.y - layout.listTop,
-			width: layout.listWidth,
-			height: layout.bodyRows,
-		});
-	}
-
-	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		const listWidth = measureAgentsViewLayout(safeWidth, PROFILES_PANEL_MIN_BODY_ROWS + 3).listWidth;
-		const listLines = this.list.render(listWidth);
-		// The frame fills the overlay, and the overlay fills the terminal, so the
-		// body height comes from the terminal rows rather than from the content.
-		const rows = Math.max(PROFILES_PANEL_MIN_BODY_ROWS + 3, Math.floor(this.rows()));
-		const layout = measureAgentsViewLayout(safeWidth, rows);
-		if (layout.mode === "fallback" || layout.width === 0) {
-			this.pointerLayout = undefined;
-			return [];
-		}
-		const selectedId = this.list.getSelectedItem()?.id;
-		if (selectedId !== this.lastSelectedId) {
-			this.lastSelectedId = selectedId;
-			this.detailScroll = 0;
-		}
-		const detailLines = this.renderDetailLines(layout.threadWidth, layout.mode === "panes");
-		this.lastDetailLineCount = detailLines.length;
-		this.lastDetailRows = layout.bodyRows;
-		this.detailScroll = clampDetailScroll(this.detailScroll, detailLines.length, layout.bodyRows);
-		this.pointerLayout = { ...layout, listTop: 1 };
-		const rule = "─".repeat(Math.max(0, layout.width - 2));
-		const lines: string[] = [this.renderText(`╭${rule}╮`, "border")];
-		for (let row = 0; row < layout.bodyRows; row += 1) {
-			lines.push(this.renderBodyRow(row, layout, listLines, detailLines));
-		}
-		lines.push(this.renderFooterRow(layout.width));
-		lines.push(this.renderText(`╰${rule}╯`, "border"));
-		return lines;
-	}
-
-	private scrollDetail(delta: number): void {
-		this.detailScroll = clampDetailScroll(
-			this.detailScroll + Math.trunc(delta),
-			this.lastDetailLineCount,
-			this.lastDetailRows,
-		);
-	}
-
-	private refreshListItems(): void {
-		// Keep the list instance (and its pointer observer) alive while refreshing the
-		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
-			const current = this.listItems.find((candidate) => candidate.id === item.id);
-			if (current) Object.assign(current, item);
-		}
-		this.list.refreshItems();
-	}
-
-	private pageRows(): number {
-		return Math.max(1, this.lastDetailRows - 1);
-	}
-
-	private finish(result: ProfilesPanelResult): void {
-		if (this.completed) return;
-		this.completed = true;
-		this.list.setDisabled(true);
-		this.done(result);
-	}
-
-	private renderBodyRow(
-		row: number,
-		layout: AgentsViewLayout,
-		listLines: string[],
-		detailLines: string[],
-	): string {
-		if (layout.mode === "panes") {
-			return [
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-				" ",
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(detailLines[this.detailScroll + row] ?? "", layout.threadWidth),
-				this.renderText("│", "border"),
-			].join("");
-		}
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderFooterRow(width: number): string {
-		const hints =
-			"enter use in this session · a set as global default · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · p pin · P share · j/k line · ctrl+j/k page · esc close";
-		const text = this.feedback ?? hints;
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(this.renderText(text, this.feedback ? "status" : "muted"), width - 4),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderDetailLines(width: number, showDetail: boolean): string[] {
-		if (!showDetail) return [];
-		const name = this.list.getSelectedItem()?.id;
-		if (!name || !hasOwnProfile(this.file.profiles, name)) {
-			return [this.renderLine("No profile selected.", width, "muted")];
-		}
-		const config = this.file.profiles[name];
-		const profileRows = profileRoutingRows(config);
-		const currentRows = profileRoutingRows(this.currentConfig);
-		// One shared measurement across both tables, so the same agent sits in the
-		// same column whether it comes from the profile or from models.json.
-		const widths = routingColumnWidths(profileRows, currentRows);
-		return [
-			this.renderLine(name === this.file.active ? `${name} (active)` : name, width, "title"),
-			this.renderLine(
-				`orchestrator  ${formatOrchestratorSelection(readProfileOrchestrator(config))}`,
-				width,
-				"text",
-			),
-			this.renderLine(`now           ${this.effectiveOrchestratorLabel()}`, width, "muted"),
-			// A pin only redirects subagent routing, so it is reported next to the
-			// orchestrator lines it deliberately does not move. The winning layer's path,
-			// any invalid or stale layer, and the scope sentence all come from the shared
-			// precedence rule the launch resolver uses.
-			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064: the binding is stored for this session and outranks
-			// the pin in the panel list, so it is named right after the pin layers.
-			// Since #1558 launches resolve it ahead of pins and the global default,
-			// and nothing was written to make that true.
-			...(this.sessionBoundName === undefined
-				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
-			"",
-			this.renderLine("Profile routing", width, "accent"),
-			...this.indentLines(this.routingLines(profileRows, widths, width), width),
-			"",
-			this.renderLine("Current routing (effective)", width, "accent"),
-			...this.indentLines(this.routingLines(currentRows, widths, width), width),
-			...this.unmatchedKeyLines(currentRows, width),
-		];
-	}
-
-	private unmatchedKeyLines(currentRows: ProfileRoutingRow[], width: number): string[] {
-		// Issue #2400: a model_profiles key that matches no discovered agent and
-		// suggests none never becomes a routing row, so it is listed here, one key
-		// per line, with the same inline-or-↳ note rule as the routing rows. A key
-		// already shown as a current row carries its note there instead.
-		const shown = new Set(currentRows.map((row) => row.agent));
-		const keys = this.unmatchedKeys.filter((key) => !shown.has(key));
-		if (keys.length === 0) return [];
-		const note = "no matching agent";
-		return [
-			"",
-			this.renderLine("Unmatched keys (ignored)", width, "accent"),
-			...this.indentLines(keys.flatMap((key) => {
-				const inline = `${key}  ← ${note}`;
-				return visibleWidth(inline) + 2 <= width ? [inline] : [key, `  ↳ ${note}`];
-			}), width),
-		];
-	}
-
-	private effectiveOrchestratorLabel(): string {
-		// The now line answers what this session runs: the live orchestrator wins
-		// when one exists, and the settings read only stands in for sessions
-		// without a live model (and still surfaces an unreadable settings file).
-		const live = this.liveOrchestrator?.();
-		if (live !== undefined) {
-			return formatOrchestratorSelection(live);
-		}
-		const settings = this.orchestratorSettings;
-		if (settings.status === "invalid") {
-			return `unreadable (${sanitizeTerminalText(settings.reason)})`;
-		}
-		return formatOrchestratorSelection(settings.status === "valid" ? settings.entry : undefined);
-	}
-
-	private routingLines(
-		rows: ProfileRoutingRow[],
-		widths: { agent: number; model: number },
-		width: number,
-	): string[] {
-		if (rows.length === 0) {
-			return ["No routing entries — every agent inherits its default model."];
-		}
-		// Issue #2196: a key that names no discovered agent was rendered as a
-		// valid-looking row while its setting was silently ignored at launch, so
-		// each unmatched row now carries its note inline. When the row would push
-		// the note past the pane edge (indentLines adds two columns before
-		// truncating), the note moves to its own line so it is never cut off.
-		const notes = unmatchedRoutingNotes(rows, this.discoveredAgentNames);
-		return rows.flatMap((row) => {
-			const line = formatRoutingRow(row, widths);
-			const note = notes.get(row.agent);
-			if (note === undefined) return [line];
-			const inline = `${line}  ← ${note}`;
-			return visibleWidth(inline) + 2 <= width ? [inline] : [line, `  ↳ ${note}`];
-		});
-	}
-
-	private indentLines(lines: string[], width: number): string[] {
-		return lines.map((line) => this.renderLine(`  ${line}`, width, "text"));
-	}
-
-	private fitPaneLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
-
-	private renderLine(text: string, width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-}
-
-/** The full-screen profile picker: one visit per action, so every reopen reads fresh store, pin, orchestrator, and session-binding state. */
-async function showProfilesPanel(
-	ctx: ExtensionContext,
-	file: AgentProfilesFile,
-	currentConfig: AgentModelConfig,
-	selectedName: string | undefined,
-	saveSnapshot: ProfilesSnapshotHandler,
-	live: LiveSession,
-	status?: string,
-	sessionBoundName?: string,
-): Promise<ProfilesPanelResult> {
-	// Both orchestrator and pin state are snapshots for this panel visit.
-	// Actions (including p/P) reopen the panel and read fresh state.
-	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
-	// Issue #2196: the panel flags routing keys that name no discovered agent, so
-	// it needs one discovery snapshot per visit; a failed or partial discovery is
-	// not an error here, it just renders without notes.
-	const discoveryRoots = {
-		cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
-		home: homedir(),
-		agentHome: resolveGentlePiAgentHome(),
-	};
-	const discoveredAgents = discoverAgents(discoveryRoots).agents;
-	// gentle-pi#2271: review-refuter and review-validator are provider review
-	// roles the relay routes by key; they never have an agent file, so they
-	// count as matched instead of being flagged "no matching agent".
-	const discoveredAgentNames = [...new Set([...PROVIDER_REVIEW_ROLES, ...discoveredAgents.map((agent) => agent.name)])];
-	// Issue #2400: launches resolve from the subagents.json model_profiles, which
-	// the effective table only reads per discovered agent, so a key with no match
-	// and no suggestion never appeared. When a session binding or a pin wins, the
-	// table already shows that snapshot's own keys with their notes.
-	const unmatchedKeys = sessionBoundName !== undefined || pinnedEffectiveModelConfig(ctx.cwd) !== undefined
-		? []
-		: unmatchedProfileKeys(loadAgentsConfig(discoveryRoots).modelProfiles, discoveredAgents)
-			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key))
-			.map((entry) => entry.key);
-	return ctx.ui.custom<ProfilesPanelResult>(
-		(tui, theme, keybindings, done) => {
-			const panel = new ProfilesPanel(
-				file,
-				currentConfig,
-				done,
-				keybindings,
-				theme,
-				selectedName,
-				() => Math.max(0, tui.terminal.rows),
-				orchestratorSettings,
-				saveSnapshot,
-				() => tui.requestRender(),
-				() => readProfilePinStatus(ctx.cwd),
-				() => sessionBoundName,
-				discoveredAgentNames,
-				unmatchedKeys,
-				() => liveOrchestratorSnapshot(ctx, live)?.entry,
-				status,
-			);
-			const container = createNativeFullscreenInteraction({
-				keyboardTarget: panel,
-				requestRender: () => tui.requestRender(),
-				mouseObserver: panel.list.createMouseObserver(() => tui.requestRender()),
-			});
-			container.addChild(panel);
-			return container;
-		},
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			},
-		},
-	);
 }
 
 function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: ProfilesParseDrops): void {
@@ -4652,35 +4913,43 @@ function profileSnapshotFrom(
 	return snapshot;
 }
 
+/** The store actions runProfilesPanelAction implements; the loop handles the rest itself. */
+type ProfileStoreAction = Extract<
+	RoutingTableResult,
+	{ type: "use-session" | "apply-global" | "create" | "duplicate" | "rename" | "delete" | "export-profile" | "import-profile" | "pin" }
+>;
+
 /** Runs one finished panel action against the store and the live session, returning the file the reopened panel should show. */
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
 	live: LiveSession,
 	path: string,
 	file: AgentProfilesFile,
-	result: Exclude<ProfilesPanelResult, { type: "close" }>,
+	result: ProfileStoreAction,
 	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
-		case "apply": {
+		case "use-session": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Enter applies a complete routing snapshot to this parent session and
-			// switches only its live orchestrator. No shared defaults, materialized
-			// stores, agent frontmatter, pins, or declarations are written.
+			// Use in this session binds a complete routing snapshot to this parent
+			// session and switches only its live orchestrator. No shared defaults,
+			// materialized stores, agent frontmatter, pins, or declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
+				report.status = `This Pi session has no id to bind "${result.name}" to. Use Make default instead.`;
 				ctx.ui.notify(
-					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Set it as the global default with a instead.`,
+					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Use Make default instead.`,
 					"warning",
 				);
 				return file;
 			}
-			const snapshot = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			const snapshot = normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {};
 			bindSessionProfile(sessionId, result.name, snapshot);
 			const orchestrator = readProfileOrchestrator(snapshot);
 			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
+			report.status = `This session now uses "${result.name}". Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
 			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
+				`el Gentleman bound profile "${result.name}" to this session — its tab shows ◉. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
 				"info",
 			);
 			return file;
@@ -4712,7 +4981,7 @@ async function runProfilesPanelAction(
 				ctx.ui.notify(pinNote, "info");
 				return file;
 			}
-			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			const normalized = cloneModelConfig(result.config);
 			const orchestratorEntry = readProfileOrchestrator(normalized);
 			const hasAgentRoutes = Object.keys(normalized).some((name) => !isProfileOrchestratorKey(name));
 			// Every global apply confirms before anything is written: applying replaces
@@ -4988,28 +5257,6 @@ async function runProfilesPanelAction(
 				return file;
 			}
 		}
-		case "update": {
-			// A profile is a complete snapshot, so capturing the current routing also
-			// captures the orchestrator the routing is running under. A settings file
-			// that cannot be read leaves the snapshot without an orchestrator entry
-			// rather than inventing one.
-			const snapshot = profileSnapshotFrom(
-				await readEffectiveModelConfigAsync(ctx.cwd),
-				readOrchestratorSettings(orchestratorSettingsPath()),
-			);
-			try {
-				const next = updateProfile(file, result.name, snapshot);
-				writeProfilesFileSync(path, next);
-				ctx.ui.notify(
-					`el Gentleman updated profile "${result.name}" from the current routing in ${modelConfigPath(ctx.cwd)}.`,
-					"info",
-				);
-				return next;
-			} catch (error) {
-				ctx.ui.notify(`Profile not updated: ${profilesErrorMessage(error)}`, "warning");
-				return file;
-			}
-		}
 		case "duplicate": {
 			// The Pi host starts the field empty and ignores the placeholder, so the title
 			// names the suggestion and Enter on an untouched field accepts it.
@@ -5053,7 +5300,7 @@ async function runProfilesPanelAction(
 				ctx.ui.notify(
 					`el Gentleman renamed profile "${result.name}" to "${name}".` +
 						(follow.followed.length > 0 ? `\nUpdated the clone pin: ${follow.followed.map((entry) => sanitizeTerminalText(entry)).join(", ")}.` : "") +
-						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name}" to republish it.` : ""),
+						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; run /gentle:profiles publish ${name} to republish it.` : ""),
 					"info",
 				);
 				report.status = `Profile "${result.name}" renamed to "${name}".`;
@@ -5085,7 +5332,7 @@ async function runProfilesPanelAction(
 			}
 			if (namedLayers.length > 0) {
 				ctx.ui.notify(
-					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first with /gentle:profiles (p removes the clone pin, P removes the declaration), then delete it.`,
+					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first (profile menu ▾ › Stop using in this repo for the clone pin, /gentle:profiles publish <name> for the declaration), then delete it.`,
 					"warning",
 				);
 				return file;
@@ -5114,6 +5361,7 @@ async function runProfilesPanelAction(
 			// failure here has nothing to roll back.
 			const status = readProfilePinStatus(ctx.cwd);
 			if (!status) {
+				report.status = "This session is not inside a Git worktree, so nothing was pinned.";
 				ctx.ui.notify(
 					"el Gentleman cannot pin a profile because this session is not inside a Git worktree. Pinning is per repository; apply the profile globally instead.",
 					"warning",
@@ -5128,6 +5376,7 @@ async function runProfilesPanelAction(
 				if (currentlyPinned) clearProfilePinSync(pinPath);
 				else writeProfilePinSync(pinPath, result.name);
 			} catch (error) {
+				report.status = `The pin could not be updated: ${profilesErrorMessage(error)}`;
 				ctx.ui.notify(
 					`el Gentleman could not update profile pin ${sanitizeTerminalText(pinPath)}: ${profilesErrorMessage(error)}`,
 					"warning",
@@ -5153,17 +5402,17 @@ async function runProfilesPanelAction(
 				result.source === "local"
 					? [
 						`el Gentleman pinned profile "${result.name}" for this clone in ${sanitizeTerminalText(pinPath)}.`,
-						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Press p again to unpin.",
+						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Choose Stop using in this repo in the profile menu (▾) to unpin.",
 					].join("\n")
 					: [
 						`el Gentleman declared profile "${result.name}" for this worktree in ${sanitizeTerminalText(pinPath)}.`,
-						"Subagent launches resolve it at launch. Commit the file to share the routing; a local pin takes precedence over it. Press P again to remove the declaration.",
+						`Subagent launches resolve it at launch. Commit the file to share the routing; a local pin takes precedence over it. Run /gentle:profiles publish ${result.name} again to remove the declaration.`,
 					].join("\n") + sharingNote,
 				"info",
 			);
 			return file;
 		}
-		case "export": {
+		case "export-profile": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			const exportPath = profileExportPath(gentleAiConfigHome());
 			try {
@@ -5176,7 +5425,7 @@ async function runProfilesPanelAction(
 			}
 			return file;
 		}
-		case "import": {
+		case "import-profile": {
 			const importPath = profileExportPath(gentleAiConfigHome());
 			let text: string;
 			try {
@@ -5226,7 +5475,64 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing]";
+
+/**
+ * `/gentle:profiles` opens the models screen. File operations live in
+ * subcommands rather than on the screen: `export <name>` and `import` move a
+ * profile through `profiles.export.json`, `publish <name>` toggles the
+ * committed repository declaration, and `export-routing` / `restore-routing`
+ * move the saved global routing (models.json, not a profile) through
+ * `models.export.json`. The routing verbs carry their own names so a profile
+ * can never be mistaken for them.
+ */
+async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
+	const [verb = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+	if (verb === "") {
+		await openModelsScreen(ctx, live);
+		return;
+	}
+	if (verb === "export-routing" || verb === "restore-routing") {
+		if (rest.length > 0) {
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+			return;
+		}
+		if (verb === "export-routing") await exportRoutingCommand(ctx);
+		else await restoreModelExport(ctx);
+		return;
+	}
+	const store = await loadProfilesStore(ctx);
+	if (!store) return;
+	const name = rest.join(" ");
+	switch (verb) {
+		case "export":
+		case "publish": {
+			if (name === "" || !hasOwnProfile(store.file.profiles, name)) {
+				ctx.ui.notify(
+					name === "" ? PROFILES_COMMAND_USAGE : `No profile named "${sanitizeTerminalText(name)}". ${PROFILES_COMMAND_USAGE}`,
+					"warning",
+				);
+				return;
+			}
+			await runProfilesPanelAction(
+				ctx,
+				live,
+				store.path,
+				store.file,
+				verb === "export" ? { type: "export-profile", name } : { type: "pin", source: "repo", name },
+			);
+			return;
+		}
+		case "import":
+			await runProfilesPanelAction(ctx, live, store.path, store.file, { type: "import-profile" });
+			return;
+		default:
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+	}
+}
+
+/** Reads the profiles store, seeding it on first use; undefined after a reported failure. */
+async function loadProfilesStore(ctx: ExtensionContext): Promise<{ path: string; file: AgentProfilesFile } | undefined> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -5234,78 +5540,215 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			`el Gentleman cannot open agent profiles because ${path} is invalid JSON or not a profiles file. Fix or remove the file, then run /gentle:profiles again.`,
 			"warning",
 		);
-		return;
+		return undefined;
 	}
-	let file: AgentProfilesFile;
-	if (read.status === "missing") {
-		file = bootstrapProfilesFile(await readEffectiveModelConfigAsync(ctx.cwd));
+	if (read.status === "valid") {
+		reportProfilesDrops(ctx, path, read.drops);
+		return { path, file: read.file };
+	}
+	const file = bootstrapProfilesFile(await readEffectiveModelConfigAsync(ctx.cwd));
+	try {
+		writeProfilesFileSync(path, file);
+	} catch (error) {
+		ctx.ui.notify(`el Gentleman could not create ${path}: ${profilesErrorMessage(error)}`, "warning");
+		return undefined;
+	}
+	ctx.ui.notify(`el Gentleman seeded the "current" profile in ${path} from the routing currently in effect.`, "info");
+	return { path, file };
+}
+
+/**
+ * The models screen loop: shows one profile's table, runs what the user chose,
+ * and reopens with fresh store, binding, and pin state; a tab switch stays on
+ * the open screen instead. Bare `/gentle:profiles` passes the profile this
+ * repository resolves so it is the tab on screen. Every
+ * outcome is reported on the screen's feedback line, because notifications stay
+ * hidden behind the fullscreen overlay until it closes.
+ */
+async function openProfilesPanelLoop(
+	ctx: ExtensionContext,
+	live: LiveSession,
+	initialSelectedName?: string,
+): Promise<void> {
+	const store = await loadProfilesStore(ctx);
+	if (!store) return;
+	const { path } = store;
+	let file = store.file;
+	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
+	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
+	let selectedName = initialSelectedName
+		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
+		?? Object.keys(file.profiles)[0];
+	let feedback: string | undefined;
+	let draftOverride: AgentModelConfig | undefined;
+	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
 		try {
-			writeProfilesFileSync(path, file);
+			const next = hasOwnProfile(file.profiles, name)
+				? updateProfile(file, name, cloneModelConfig(config))
+				: createProfile(file, name, cloneModelConfig(config));
+			writeProfilesFileSync(path, next);
+			file = next;
+			return true;
 		} catch (error) {
-			ctx.ui.notify(
-				`el Gentleman could not create ${path}: ${profilesErrorMessage(error)}`,
-				"warning",
-			);
+			feedback = `"${name}" was not saved: ${profilesErrorMessage(error)}`;
+			return false;
+		}
+	};
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst) => {
+		const previous = selectedName!;
+		if (saveFirst && !writeDraft(previous, saveFirst)) {
+			const error = feedback ?? `"${previous}" was not saved.`;
+			feedback = undefined;
+			return { error };
+		}
+		selectedName = name;
+		const boundName = sessionBoundName();
+		return {
+			file,
+			sessionBoundName: boundName,
+			pinWinner: pinWinner(),
+			notices: routingScreenNotices(ctx, file, name, boundName),
+			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
+		};
+	};
+	const differsFromStore = (name: string, config: AgentModelConfig) =>
+		JSON.stringify(normalizeModelConfig(config) ?? {}) !== JSON.stringify(normalizeModelConfig(file.profiles[name]) ?? {});
+	while (true) {
+		if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
+			selectedName = Object.keys(file.profiles)[0];
+			draftOverride = undefined;
+		}
+		if (selectedName === undefined) {
+			ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
 			return;
 		}
-		ctx.ui.notify(`el Gentleman seeded the "current" profile in ${path} from the routing currently in effect.`, "info");
-	} else {
-		file = read.file;
-		reportProfilesDrops(ctx, path, read.drops);
-	}
-	const saveSnapshot: ProfilesSnapshotHandler = (name) => {
-		const next = updateProfile(
+		const stored = cloneModelConfig(normalizeModelConfig(file.profiles[selectedName]) ?? {});
+		const boundName = sessionBoundName();
+		const result = await showRoutingTablePanel(ctx, {
+			name: selectedName,
+			config: draftOverride ?? stored,
 			file,
-			name,
-			profileSnapshotFrom(
-				// The snapshot captures the same routing the panel shows as current,
-				// so a session binding outranks the shared layers here too.
-				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-					?? readEffectiveModelConfig(ctx.cwd),
-				// The orchestrator follows the same honesty rule: capture what the
-				// session actually runs (ctx.model plus the live thinking level)
-				// when a live model exists; settings.json defaults stand in only
-				// when it does not (LCubero's finding on #1064).
-				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
-			),
-		);
-		writeProfilesFileSync(path, next);
-		file = next;
-		return next;
-	};
-	let selectedName: string | undefined;
-	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
-	// The panel's "Current routing (effective)" table shows what this session's
-	// launches resolve right now, and a session binding outranks every shared
-	// layer, so a bound session reads its snapshot as the current routing while an
-	// unbound session keeps reading the effective config exactly as before.
-	const currentRoutingForPanel = async () =>
-		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-		?? await readEffectiveModelConfigAsync(ctx.cwd);
-	let result = await showProfilesPanel(
-		ctx,
-		file,
-		await currentRoutingForPanel(),
-		selectedName,
-		saveSnapshot,
-		live,
-		undefined,
-		sessionBoundName(),
-	);
-	while (result.type !== "close") {
-		const report: ProfilesPanelReport = {};
-		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
-		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
-		result = await showProfilesPanel(
-			ctx,
-			file,
-			await currentRoutingForPanel(),
-			selectedName,
-			saveSnapshot,
-			live,
-			report.status,
-			sessionBoundName(),
-		);
+			sessionBoundName: boundName,
+			pinWinner: pinWinner(),
+			feedback,
+			notices: routingScreenNotices(ctx, file, selectedName, boundName),
+			switchProfile,
+		});
+		draftOverride = undefined;
+		feedback = undefined;
+		const previous = selectedName;
+		if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+			draftOverride = result.saveFirst;
+			continue;
+		}
+		const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
+		switch (result.type) {
+			case "close":
+				return;
+			case "load":
+				selectedName = result.name;
+				feedback = `${savedNote}Showing "${result.name}".`;
+				continue;
+			case "custom": {
+				const label = result.target === PROFILE_ORCHESTRATOR_KEY
+					? "the orchestrator"
+					: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
+				const answer = await ctx.ui.input(`Custom model id for ${label}`, "provider/model");
+				draftOverride = cloneModelConfig(result.config);
+				if (answer === undefined || answer.trim() === "") {
+					feedback = "No custom model set.";
+					continue;
+				}
+				const model = normalizeModelId(answer.trim());
+				if (!model) {
+					feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
+					continue;
+				}
+				const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
+				for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
+				feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
+				continue;
+			}
+			case "save":
+				if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+				else draftOverride = result.config;
+				continue;
+			case "use-session": {
+				// What you see is what the session uses: edits are saved first.
+				// A tab switch may have changed the shown profile since this visit opened.
+				const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
+				const saved = differsFromStore(previous, config);
+				if (saved && !writeDraft(previous, config)) {
+					draftOverride = config;
+					continue;
+				}
+				const report: ProfilesPanelReport = {};
+				file = await runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report);
+				feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
+				continue;
+			}
+			case "apply-global": {
+				// Make default saves what you see, then runs the guarded global
+				// apply with its diff confirmation, pin honesty, and rollback.
+				const saved = differsFromStore(previous, result.config);
+				if (saved && !writeDraft(previous, result.config)) {
+					draftOverride = result.config;
+					continue;
+				}
+				file = await runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) });
+				const prefix = saved ? `Saved "${previous}". ` : "";
+				feedback = file.active === previous
+					? `${prefix}"${previous}" is the default for new sessions.`
+					: pinWinner() === previous
+						? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
+						: `${prefix}"${previous}" was not made the default.`;
+				continue;
+			}
+			case "create-live": {
+				const answer = await ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot");
+				const name = answer?.trim() ?? "";
+				if (name === "") {
+					feedback = `${savedNote}No profile created.`;
+					continue;
+				}
+				// Captures the routing this session's launches resolve and the
+				// orchestrator it actually runs, the way the old snapshot did.
+				const snapshot = profileSnapshotFrom(
+					readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
+						?? await readEffectiveModelConfigAsync(ctx.cwd),
+					liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
+				);
+				try {
+					const next = createProfile(file, name, snapshot);
+					writeProfilesFileSync(path, next);
+					file = next;
+					selectedName = name;
+					feedback = `${savedNote}Created "${name}" from what's running now.`;
+				} catch (error) {
+					feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+				}
+				continue;
+			}
+			default: {
+				const report: ProfilesPanelReport = {};
+				file = await runProfilesPanelAction(ctx, live, path, file, result, report);
+				selectedName = report.selectedName ?? selectedName;
+				if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
+					feedback = `Deleted "${previous}".`;
+				} else if (result.type === "pin") {
+					feedback = report.status ?? (pinWinner() === previous
+						? `"${previous}" is used in this repo.`
+						: `"${previous}" is no longer pinned to this repo.`);
+				} else {
+					feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
+				}
+				// Rename, pin, and a declined delete keep the profile on screen; carry
+				// unsaved edits across them instead of reloading from the store.
+				if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
+					draftOverride = result.draft;
+				}
+			}
+		}
 	}
 }
 
@@ -9766,7 +10209,8 @@ export const __testing = {
 	setReviewHostRelayRunnerForTesting,
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
-	renderSddModelPanel: renderSddModelPanelForTesting,
+	routingTablePanel: renderRoutingTableForTesting,
+	piThinkingSupport: getPiThinkingSupport,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,
@@ -10375,7 +10819,7 @@ function createGentleAiExtensionForTesting(
 			const modelResult = await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
 				ctx.ui.notify(
-					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
+					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:profiles again.`,
 					"warning",
 				);
 				return;
@@ -10670,17 +11114,10 @@ function createGentleAiExtensionForTesting(
 		});
 	}
 
-	pi.registerCommand("gentle:models", {
-		description: "Configure global agent models and choose a profile orchestrator.",
-		handler: async (_args, ctx) => {
-			await handleModelsCommand(ctx, pi);
-		},
-	});
-
 	pi.registerCommand("gentle:profiles", {
-		description: "Create, switch, and manage global agent-model profiles for el Gentleman.",
-		handler: async (_args, ctx) => {
-			await handleProfilesCommand(ctx, pi);
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.",
+		handler: async (args, ctx) => {
+			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},
 	});
 

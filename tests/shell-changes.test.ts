@@ -171,6 +171,67 @@ test("renderChangesWidget drops the file list before truncating on narrow termin
 	assert.match(tiny, /^✎ 2 files/);
 });
 
+// Repeated frames hit the widget from two surfaces (the sidebar part and the
+// below-input header row), but its paint depends only on what the model digest
+// already covers plus the width and the theme. A counting theme is the seam: a
+// cache hit paints nothing, so theme.fg stays silent instead of walking files.
+function countingTheme() {
+	let calls = 0;
+	return {
+		get fgCalls() {
+			return calls;
+		},
+		fg(_color: string, text: string) {
+			calls += 1;
+			return text;
+		},
+	};
+}
+
+test("renderChangesWidget memoizes a frame per digest, width and theme so an unchanged model repaints nothing", () => {
+	const model = changesModel([file("lib/a.ts", 4, 2), file("lib/b.ts", 10, 0, CHANGE_STATUS.ADDED)]);
+	const theme = countingTheme();
+	const first = renderChangesWidget(model, theme, 120);
+	assert.ok(theme.fgCalls > 0, "the first render paints");
+	const afterFirst = theme.fgCalls;
+	const second = renderChangesWidget(model, theme, 120);
+	assert.deepEqual(second, first, "an unchanged model, width and theme return the same rows");
+	assert.equal(theme.fgCalls, afterFirst, "a memo hit repaints nothing: no per-file iteration");
+});
+
+test("renderChangesWidget re-renders when the digest moves", () => {
+	const theme = countingTheme();
+	const before = changesModel([file("lib/a.ts", 4, 2)]);
+	renderChangesWidget(before, theme, 120);
+	const afterFirst = theme.fgCalls;
+	const moved = changesModel([file("lib/a.ts", 5, 2)]);
+	assert.notEqual(moved.digest, before.digest, "a count change moves the digest");
+	const lines = renderChangesWidget(moved, theme, 120);
+	assert.ok(theme.fgCalls > afterFirst, "a digest change re-renders");
+	assert.match(lines.join("\n"), /\+5/, "the re-render shows the new totals");
+});
+
+test("renderChangesWidget re-renders when the width or the theme changes", () => {
+	const model = changesModel([file("lib/a.ts", 4, 2)]);
+	const theme = countingTheme();
+	const wide = renderChangesWidget(model, theme, 400);
+	const afterWide = theme.fgCalls;
+	renderChangesWidget(model, theme, 40);
+	assert.ok(theme.fgCalls > afterWide, "a width change re-renders");
+	const otherTheme = countingTheme();
+	assert.deepEqual(renderChangesWidget(model, otherTheme, 400), wide, "a new theme object repaints the same wide frame");
+	assert.ok(otherTheme.fgCalls > 0, "the new theme did the painting");
+});
+
+test("renderChangesWidget never caches a digest-less model", () => {
+	const model = { files: [file("lib/a.ts", 4, 2)], added: 4, deleted: 2 };
+	const theme = countingTheme();
+	renderChangesWidget(model, theme, 120);
+	const afterFirst = theme.fgCalls;
+	renderChangesWidget(model, theme, 120);
+	assert.ok(theme.fgCalls > afterFirst, "a hand-built model without a digest re-renders every call");
+});
+
 function fakeGit(numstats: string[], porcelains: string[], code = 0) {
 	const calls: string[][] = [];
 	let round = 0;

@@ -4,7 +4,7 @@ import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { resolveRepositoryAuthorityV1, reviewGitEnvironment, setReviewRepositoryIdentityRetryHookForTesting } from "../lib/review-repository.ts";
+import { publicationProbeGitEnvironment, resolveRepositoryAuthorityV1, reviewGitEnvironment, setReviewRepositoryIdentityRetryHookForTesting } from "../lib/review-repository.ts";
 import { REVIEW_MODE, ReviewTransactionStore, createReviewState, setReviewMutationLockPlatformForTesting } from "../lib/review-transaction.ts";
 import { REVIEW_LENS, REVIEW_ROUTE } from "../lib/review-triggers.ts";
 import { qualifiedReviewLockPlatform, testSnapshot } from "./review-test-fixtures.ts";
@@ -90,6 +90,35 @@ test("review Git environment tolerates inherited config-file keys and still pins
 		assert.equal(environment.GIT_CONFIG_NOSYSTEM, "1");
 		process.env.GIT_CONFIG_COUNT = "1";
 		assert.throws(() => reviewGitEnvironment(), /REVIEW_GIT_ENV_UNSAFE/);
+	} finally {
+		for (const [key, value] of Object.entries(prior)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
+
+// gentle-shell#2552: deleting the config-file keys makes the probe fall back to
+// the host's default config paths, so inherited pins must survive while every
+// routing override is still dropped.
+test("publication probe keeps inherited config-file pins and drops routing overrides", () => {
+	const prior = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_DIR: process.env.GIT_DIR, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 };
+	try {
+		process.env.GIT_CONFIG_GLOBAL = "/pinned/global.gitconfig";
+		process.env.GIT_CONFIG_SYSTEM = "/pinned/system.gitconfig";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		process.env.GIT_DIR = "/unsafe";
+		process.env.GIT_CONFIG_COUNT = "1";
+		process.env.GIT_CONFIG_KEY_0 = "user.name";
+		process.env.GIT_CONFIG_VALUE_0 = "injected";
+		const environment = publicationProbeGitEnvironment();
+		assert.equal(environment.GIT_CONFIG_GLOBAL, "/pinned/global.gitconfig");
+		assert.equal(environment.GIT_CONFIG_SYSTEM, "/pinned/system.gitconfig");
+		assert.equal(environment.GIT_CONFIG_NOSYSTEM, "1");
+		assert.equal(environment.GIT_DIR, undefined);
+		assert.equal(environment.GIT_CONFIG_COUNT, undefined);
+		assert.equal(environment.GIT_CONFIG_KEY_0, undefined);
+		assert.equal(environment.GIT_CONFIG_VALUE_0, undefined);
 	} finally {
 		for (const [key, value] of Object.entries(prior)) {
 			if (value === undefined) delete process.env[key];

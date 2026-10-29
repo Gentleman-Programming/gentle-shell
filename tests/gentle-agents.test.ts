@@ -4119,6 +4119,43 @@ test("the Agent result card previews the answer or error when collapsed and keep
 	}
 });
 
+test("agent cards name the model and effort beside the agent, so a delegation says what answers", async () => {
+	const h = fakePi();
+	gentleAgents(h.pi, {}, deps().deps);
+	const { ctx } = fakeContext();
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha", effort: "high" } } })}\n`);
+	await h.fire("session_start", ctx);
+	const run = h.tools.get("subagent_run")!;
+	const state = {};
+	const launched = await run.execute("run", { agent: "explore", task: "route", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const taskId = (launched.details.gentleAgents as { taskId: string }).taskId;
+
+	// The status tools know the task, so the store already carries the answer.
+	const status = h.tools.get("subagent_status")!;
+	const statusHeading = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(120).join("\n"));
+	assert.match(statusHeading, /◎ Agent status · explore · task \S+ · openai\/alpha · high/, "the launch's model and effort sit beside the agent");
+
+	// A launch has no task id at call time: the result slot hands them over.
+	const launchedRows = run.renderResult(launched as Parameters<Registered["renderResult"]>[0], { expanded: false, isPartial: false }, plainTheme, { isError: false, isPartial: false, state } as never).render(120);
+	assert.ok(launchedRows.length > 0, "the result still renders");
+	const heading = stripAnsi(run.renderCall({ agent: "explore" }, plainTheme, { expanded: false, state } as never).render(120).join("\n"));
+	assert.match(heading, /→ Delegating · explore · openai\/alpha · high/, "the card names what the child runs on once the launch exists");
+
+	// One heading row: a narrow terminal sheds the profile, never the key hint.
+	const tight = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(70).join("\n"));
+	assert.match(tight, /expand/, "the affordance survives the wider heading");
+	assert.match(tight, /openai\/alpha/, "the model still fits");
+	assert.doesNotMatch(tight, /· high/, "effort is the first chip a tight row gives up");
+	const narrow = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(50).join("\n"));
+	assert.match(narrow, /expand/, "the affordance never goes");
+	assert.doesNotMatch(narrow, /openai\/alpha/, "the model is the next chip to go");
+	assert.match(narrow, /◎ Agent status · explore /, "the agent stays even when only it fits");
+
+	await h.fire("session_shutdown", ctx, { reason: "quit" });
+});
+
 test("a rejected delegation reads as a FAIL card, never as a live one", () => {
 	const { pi, tools } = fakePi();
 	gentleAgents(pi, {}, deps().deps);

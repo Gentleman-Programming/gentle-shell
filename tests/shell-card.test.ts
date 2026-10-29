@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
+	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
 	type Card, type CardStyle, type CardTone,
 } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -492,4 +492,16 @@ test("a call card awaits its result until pi finishes the row or a result render
 	}
 	assert.equal(cardRunningLine(CARD_TONE.WARNING, plainTheme, 20), `│ running…${" ".repeat(8)} │`);
 	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) assert.ok(visibleWidth(cardRunningLine(CARD_TONE.WARNING, plainTheme, width)) <= width);
+});
+
+test("headingFits says whether a composed subtitle still leaves room for the key hint", () => {
+	const card: Card = { title: "Agent status", subtitle: "explore", body: [], tone: CARD_TONE.INFO, glyph: "◎" };
+	const hint = "expand";
+	// cardTop needs title + glyph, the separator and subtitle, the frame columns and the hinted tail.
+	const needed = visibleWidth("◎ Agent status") + 3 + visibleWidth("explore") + 5 + visibleWidth(hint) + 2;
+	assert.equal(headingFits(card, hint, needed), true, "exactly enough columns still shows the hint");
+	assert.equal(headingFits(card, hint, needed - 1), false, "one column short is a no");
+	assert.equal(headingFits(card, undefined, needed - (visibleWidth(hint) + 2)), true, "without a hint exactly the head columns are enough");
+	assert.equal(headingFits(card, undefined, needed - (visibleWidth(hint) + 3)), false, "and one column less is still a no");
+	assert.equal(headingFits({ ...card, subtitle: undefined }, hint, needed - 9), true, "no subtitle frees its separator and columns");
 });

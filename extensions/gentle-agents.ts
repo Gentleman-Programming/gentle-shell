@@ -62,7 +62,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, markCardResult, panelHeaderRow, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
+import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -409,9 +409,10 @@ function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; write
 }
 
 function taskDetails(task: TaskRecord): Record<string, unknown> {
-	// Additive fields (label, turns, toolCalls, lastStep, error) feed the status
-	// card renderer; the model never sees details, so widening is display-only.
-	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd, label: task.label, turns: task.turns, toolCalls: task.toolCalls, lastStep: task.lastStep, ...(task.error ? { error: task.error } : {}) } };
+	// Additive fields (label, turns, toolCalls, lastStep, error, model, thinking)
+	// feed the status card renderer; the model never sees details, so widening is
+	// display-only.
+	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd, label: task.label, turns: task.turns, toolCalls: task.toolCalls, lastStep: task.lastStep, model: task.model, ...(task.thinking ? { thinking: task.thinking } : {}), ...(task.error ? { error: task.error } : {}) } };
 }
 
 export function describeTask(task: TaskRecord): string {
@@ -515,6 +516,8 @@ interface StatusCardFacts {
 	toolCalls?: number;
 	lastStep?: string;
 	error?: string;
+	model?: string;
+	thinking?: string;
 }
 
 function statusCardFacts(details: unknown): StatusCardFacts | undefined {
@@ -523,13 +526,42 @@ function statusCardFacts(details: unknown): StatusCardFacts | undefined {
 	const source = raw as Record<string, unknown>;
 	if (typeof source.taskId !== "string") return undefined;
 	const facts: StatusCardFacts = { taskId: source.taskId };
-	for (const key of ["agent", "status", "mode", "cwd", "label", "lastStep", "error"] as const) {
+	for (const key of ["agent", "status", "mode", "cwd", "label", "lastStep", "error", "model", "thinking"] as const) {
 		if (typeof source[key] === "string") facts[key] = source[key] as string;
 	}
 	for (const key of ["turns", "toolCalls"] as const) {
 		if (typeof source[key] === "number" && Number.isFinite(source[key])) facts[key] = source[key];
 	}
 	return facts;
+}
+
+// What the child runs on, beside the agent it runs as. The record stores the
+// launch profile's model as `formatModelRef(undefined)` = "default" when no
+// layer picked one, which is an inheritance, not a model name: say so.
+function modelChip(model: string | undefined): string | undefined {
+	const named = model ? sanitizeTerminalText(model).trim() : "";
+	if (!named) return undefined;
+	return named === "default" ? "inherit" : named;
+}
+
+// One muted identity line: who, which task, and what the child runs on.
+function subjectLine(chips: Array<string | undefined>): string | undefined {
+	const shown = chips.filter((chip): chip is string => typeof chip === "string" && chip !== "");
+	return shown.length > 0 ? shown.join(" · ") : undefined;
+}
+
+// A heading row carries identity, then the launch profile, then the key hint.
+// The row is one line, so a narrow terminal sheds the profile from the end
+// before it sheds the affordance the reader needs to open the card.
+function fitSubject(
+	card: { title: string; tone: CardTone; glyph?: string },
+	hint: string | undefined,
+	size: number,
+	chips: Array<string | undefined>,
+): string | undefined {
+	const shown = chips.filter((chip): chip is string => typeof chip === "string" && chip !== "");
+	while (shown.length > 1 && !headingFits({ ...card, subtitle: subjectLine(shown), body: [] }, hint, size)) shown.pop();
+	return subjectLine(shown);
 }
 
 // One Gentle Shell card body for a task's live or final state, built from the
@@ -1576,11 +1608,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// on top, the answer below ("answer" keeps its name through the flow).
 		const t = agentTheme(theme, tone);
 		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
+		const chips = [details?.agent, modelChip(facts?.model), facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined];
 		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
-		const subtitle = typeof details?.agent === "string" ? headingText(details.agent) : undefined;
 		return {
 			render(width: number) {
+				// Same one-line heading budget as the tool cards: the answer card's
+				// inner columns are the style's, not the terminal's.
+				const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
 				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
 			},
 			invalidate() {},
@@ -2166,16 +2201,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
 		const heading = ACTION_HEADING[name] ?? `agent ${name.replace(/_/g, " ")}`;
 		const glyph = ACTION_GLYPH[name] ?? AGENTS_GLYPH;
-		// The agent chip: the call shows who it works with. Status-style calls
-		// only carry a task id, so the store resolves the agent's name.
-		const subject = (params: { agent?: string; task_id?: string }): { agent?: string; taskRef?: string } => {
+		// The agent chip: the call shows who it works with, and what that child
+		// runs on. Status-style calls only carry a task id, so the store resolves
+		// the agent and its launch profile.
+		const subject = (params: { agent?: string; task_id?: string }, launched?: { agentModel?: string; agentEffort?: string }): { agent?: string; taskRef?: string; model?: string; effort?: string } => {
+			const task = typeof params.task_id === "string" ? store.get(params.task_id) : undefined;
 			const agent = typeof params.agent === "string" && params.agent.trim() ? headingText(params.agent)
-				: typeof params.task_id === "string" ? headingText(store.get(params.task_id)?.agent ?? "") || undefined
+				: task ? headingText(task.agent) || undefined
 				: undefined;
 			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
-			return { agent, taskRef };
+			// A launch has no task id at call time, so its profile arrives through
+			// the shared row state once the result slot knows it.
+			const model = modelChip(task?.model ?? launched?.agentModel);
+			const effort = task?.thinking ? headingText(task.thinking) : launched?.agentEffort ? headingText(launched.agentEffort) : undefined;
+			return { agent, taskRef, model, effort };
 		};
-		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean } } | undefined) => context ?? {};
+		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean; agentModel?: string; agentEffort?: string } } | undefined) => context ?? {};
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
@@ -2191,20 +2232,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// The result title belongs with the result body so a running poll
 				// can hide both without changing the tool call or its model output.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const { agent, taskRef } = subject(args as { agent?: string; task_id?: string });
-				const subtitle = agent && taskRef ? `${agent} · ${taskRef}` : agent ?? taskRef;
 				return {
 					render(width: number) {
 						if (width <= 0) return [];
 						const row = agentToolContext(context);
+						// Resolved per frame: the store gains the task and its profile after
+						// the call is first drawn, and the heading has to catch up.
+						const { agent, taskRef, model, effort } = subject(args as { agent?: string; task_id?: string }, row.state);
+						const chips = [agent, taskRef, model, effort];
 						// The heading is this slot's, so a failure the result slot learns about
 						// has to travel through the shared row state: a rejected call wears the
 						// error frame instead of reading as a delegation still in flight. The
 						// row context is a snapshot, so its own isError cannot be trusted here.
 						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 						const iris = agentTheme(theme, tone);
+						const hint = expandHint(!!row.expanded);
 						return floatRows(tone, iris, width, (inner) => ({
-							head: [cardTop({ title: heading, subtitle, body: [], tone, glyph }, iris, inner, expandHint(!!row.expanded))],
+							head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, chips), body: [], tone, glyph }, iris, inner, hint)],
 							...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: cardBottom(tone, iris, inner) } : {}),
 						}));
 					},
@@ -2222,23 +2266,36 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// and the call's snapshot needs the flag to wear it too.
 				const row = agentToolContext(context);
 				const failed = row.isError === true || (result.details as { error?: unknown } | undefined)?.error !== undefined;
-				if (row.state !== undefined) row.state.agentFailed = failed;
+				if (row.state !== undefined) {
+					row.state.agentFailed = failed;
+				}
+				// Parsed for every tool: the answer and status cards lead with the
+				// facts, and every card names the launch profile in its heading.
+				const facts = statusCardFacts(result.details);
+				if (row.state !== undefined) {
+					// The call slot draws the heading, so what the child runs on has to
+					// reach it the same way the failure does.
+					row.state.agentModel = modelChip(facts?.model);
+					row.state.agentEffort = facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined;
+				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 				// Status answers a real orchestration decision, so its task facts
 				// lead the card; the answer card gets the state pill when the
 				// result carries them. Anything without structured details (older
 				// sessions, error results) falls back to the text preview.
-				const facts = name === "status" || name === "result" ? statusCardFacts(result.details) : undefined;
-				if (facts) tone = STATUS_CARD_TONE[facts.status ?? ""] ?? tone;
+				// Only the status and answer cards lead with the facts; every card
+				// still names the launch profile in its heading.
+				const cardFacts = name === "status" || name === "result" ? facts : undefined;
+				if (cardFacts) tone = STATUS_CARD_TONE[cardFacts.status ?? ""] ?? tone;
 				const iris = agentTheme(theme, tone);
 				let rows: string[];
-				if (facts) {
+				if (cardFacts) {
 					if (name === "status") {
-						rows = statusCardRows(facts, iris, options.expanded);
+						rows = statusCardRows(cardFacts, iris, options.expanded);
 					} else {
 						// The answer card: the state pill on top, the answer below.
-						const pillRow = statusCardRows(facts, iris, options.expanded)[0] ?? "";
+						const pillRow = statusCardRows(cardFacts, iris, options.expanded)[0] ?? "";
 						const answer = options.expanded ? body.split("\n") : agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
 						rows = [pillRow, ...answer];
 					}
@@ -2253,18 +2310,27 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					rows = failed ? [statusPill(TASK_STATUS.FAILED, iris), ...preview] : preview;
 				}
 				// The result tool hides its call, so the result draws the heading
-				// itself; every other tool continues the call's card.
+				// itself; every other tool continues the call's card. Either way the
+				// heading names the agent and what it runs on.
 				const ownHeading = name === "result";
 				// A collapsed status card keeps state, label and last step on one
 				// row each, so a narrow terminal clips them instead of wrapping the
 				// last step out of the three-row preview.
 				const fitRows = !options.expanded && name === "status" && facts !== undefined;
+				const ownChips = ownHeading
+					? [
+						facts?.agent ? headingText(facts.agent) : facts ? `task ${headingText(facts.taskId)}` : undefined,
+						modelChip(facts?.model),
+						facts?.thinking ? headingText(facts.thinking) : undefined,
+					]
+					: [];
 				return {
 					render(width: number) {
 						if (width <= 0) return [];
+						const hint = expandHint(options.expanded);
 						return floatRows(tone, iris, width, (inner) => ({
 							...(ownHeading ? {
-								head: [cardTop({ title: heading, subtitle: task?.agent ? headingText(task.agent) : task?.taskId ? `task ${headingText(task.taskId)}` : undefined, body: [], tone, glyph }, iris, inner, expandHint(options.expanded))],
+								head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
 							} : { afterHeading: true }),
 							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
 							bottom: cardBottom(tone, iris, inner),

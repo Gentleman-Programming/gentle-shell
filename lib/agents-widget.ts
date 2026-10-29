@@ -1,7 +1,8 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
-import { formatTokens } from "./shell-bar.ts";
-import { CARD_TONE, cardInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
+import { formatCost, formatTokens } from "./shell-bar.ts";
+import { paintHoverable } from "./shell-hover.ts";
+import { CARD_TONE, panelExtraRows, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
@@ -17,6 +18,10 @@ export interface AgentsWidgetOptions {
 	// "… N more" line so the card never pushes the editor off the screen.
 	maxRows?: number;
 	viewKey?: string;
+	// Paint the clickable "▾ Collapse" / "▸ Expand" control in the header, the
+	// same control the Todos card carries; hovered paints its hover role.
+	collapseControl?: boolean;
+	hovered?: boolean;
 }
 
 interface StatusLook {
@@ -136,10 +141,12 @@ function startOrder(a: TaskRecord, b: TaskRecord): number {
 }
 
 // When the card overflows, questions and running work keep their rows first;
-// what stays visible is still drawn in start order.
-function visibleRows(shown: readonly TaskRecord[], maxRows: number | undefined): { listed: TaskRecord[]; hidden: number } {
+// what stays visible is still drawn in start order. Float chrome can leave
+// only one body row: spend it on the overflow count instead of exceeding the
+// budget. Neon retains its existing minimum of one task plus overflow.
+function visibleRows(shown: readonly TaskRecord[], maxRows: number | undefined, allowOverflowOnly = false): { listed: TaskRecord[]; hidden: number } {
 	if (maxRows === undefined || shown.length <= maxRows) return { listed: [...shown], hidden: 0 };
-	const kept = Math.max(1, maxRows - 1);
+	const kept = allowOverflowOnly && maxRows === 1 ? 0 : Math.max(1, maxRows - 1);
 	const listed = [...shown]
 		.sort((a, b) => SHOW_PRIORITY[a.status] - SHOW_PRIORITY[b.status] || startOrder(a, b))
 		.slice(0, kept)
@@ -185,7 +192,7 @@ function metaFields(task: TaskRecord, now: number): MetaFields {
 	return {
 		exec: executionLabel(task),
 		tokens: task.tokens > 0 ? formatTokens(task.tokens) : "",
-		cost: task.cost > 0 ? `$${task.cost.toFixed(2)}` : "",
+		cost: task.cost > 0 ? formatCost(task.cost) : "",
 		elapsed: elapsed(task, now),
 	};
 }
@@ -254,10 +261,15 @@ function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, all
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
-	if (allowMetadataRow && !cols.columnar && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
-		return [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))];
+	if (cols.task === 0) {
+		const separateMetadata = allowMetadataRow && !cols.columnar && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta;
+		const rows = separateMetadata
+			? [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))]
+			: [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
+		const activity = clip(taskText(task), cols.inner);
+		if (allowMetadataRow && activity) rows.splice(1, 0, theme.fg(TASK_ROLE, activity));
+		return rows;
 	}
-	if (cols.task === 0) return [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
 	const text = clip(taskText(task), cols.task);
 	return [`${head}${COLUMN_GAP}${theme.fg(TASK_ROLE, text)}${" ".repeat(cols.task - visibleWidth(text))}${COLUMN_GAP}${tail}`];
 }
@@ -295,18 +307,31 @@ function batchElapsed(tasks: readonly TaskRecord[], now: number): string | undef
 	return formatElapsed(end - Math.min(...starts));
 }
 
+/** The tone the card paints for these tasks, so a host can locate its header row. */
+export function agentsCardTone(tasks: readonly TaskRecord[], now: number): CardTone {
+	return tone(widgetTasks(tasks, now));
+}
+
 export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: AgentsWidgetOptions): string[] {
 	const shown = widgetTasks(tasks, now);
 	if (shown.length === 0) return [];
-	const cols = columns(shown, cardInnerWidth(width), now);
-	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, options.maxRows);
+	const cols = columns(shown, panelInnerWidth(theme, width, tone(shown)), now);
+	// The float panel spends two more rows on padding above its header and the
+	// separator below it, so it gives them back from the task budget to stay as
+	// tall as the frame.
+	const extraRows = panelExtraRows(theme, width, tone(shown));
+	const maxRows = options.maxRows === undefined ? undefined : options.maxRows - extraRows;
+	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, maxRows, extraRows > 0);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
 	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
+	const icon = options.collapsed ? "▸" : "▾";
+	const control = `${icon} ${width >= 28 ? (options.collapsed ? "Expand" : "Collapse") : ""}`.trimEnd();
+	const title = options.collapseControl ? `Agents ${paintHoverable(theme, control, options.hovered ?? false, "accent")}` : "Agents";
 	return renderCard(
-		{ title: "Agents", subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },
+		{ title, subtitle: counts(shown), body, tone: tone(shown), glyph: AGENTS_GLYPH },
 		theme,
 		width,
-		{ expanded: true, hint },
+		{ expanded: true, hint, panel: true },
 	);
 }

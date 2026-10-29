@@ -7,15 +7,21 @@ import {
 	parseAnthropicHeaders,
 	parseCodexHeaders,
 	parseNanQuota,
+	parseProviderUsage,
 	parseUsageHeaders,
 	parseCodexUsage,
+	parseUsageSource,
 	providerNote,
 	renderUsageBar,
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
+	usageScopeProviders,
+	UsageSourceRegistry,
+	USAGE_SOURCE_SCHEMA,
 	UsageStore,
 	windowLabel,
 	type ProviderUsage,
+	type UsageSource,
 	type UsageWindow,
 } from "../lib/shell-usage.ts";
 
@@ -114,6 +120,41 @@ test("parseCodexHeaders reads the SSE rate-limit headers when a provider sends t
 	assert.ok(usage);
 	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}:${w.resetAt}`), ["5h:62:1788620161000", "week:31:1789206961000"]);
 	assert.equal(parseCodexHeaders({ "content-type": "text/event-stream" }, NOW), undefined);
+});
+
+test("parseCodexHeaders ignores windows without a valid duration instead of inventing 0m", () => {
+	for (const minutes of [undefined, "", " ", "0", "-1", "invalid", "300oops", "Infinity", "1e309"]) {
+		const headers: Record<string, string> = { "x-codex-primary-used-percent": "0" };
+		if (minutes !== undefined) headers["x-codex-primary-window-minutes"] = minutes;
+		assert.equal(parseCodexHeaders(headers, NOW), undefined, `minutes: ${String(minutes)}`);
+	}
+});
+
+test("parseCodexHeaders keeps genuine zero usage and only the valid provider windows", () => {
+	const usage = parseCodexHeaders({
+		"x-codex-primary-used-percent": "0",
+		"x-codex-primary-window-minutes": "0",
+		"x-codex-secondary-used-percent": "0",
+		"x-codex-secondary-window-minutes": "10080",
+	}, NOW);
+	assert.ok(usage);
+	assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["week:0"]);
+	assert.equal(renderUsageBar(usage, plainTheme), "codex week ▱▱▱▱▱▱▱▱ 0%");
+	assert.doesNotMatch(renderUsageBar(usage, plainTheme)!, /0m|5h/);
+});
+
+test("parseCodexUsage filters invalid numeric windows without inventing a five-hour quota", () => {
+	for (const seconds of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, "18000"]) {
+		const usage = parseCodexUsage({ rate_limit: {
+			primary_window: { used_percent: 0, limit_window_seconds: seconds },
+			secondary_window: { used_percent: 0, limit_window_seconds: 604_800 },
+		} }, NOW);
+		assert.deepEqual(usage.limits[0].windows.map((w) => `${w.label}:${w.usedPercent}`), ["week:0"], `seconds: ${String(seconds)}`);
+	}
+	for (const used of [undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+		assert.deepEqual(parseCodexUsage({ rate_limit: { primary_window: { used_percent: used, limit_window_seconds: 604_800 } } }, NOW).limits, []);
+	}
+	assert.deepEqual(parseCodexUsage({ rate_limit: { primary_window: { used_percent: 0, limit_window_seconds: 0 } } }, NOW).limits, []);
 });
 
 test("accountIdFromToken decodes the chatgpt account claim from an OAuth JWT", () => {
@@ -241,6 +282,130 @@ test("nan is a supported usage provider with its own pending note", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
 	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
 	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+});
+
+// A generic hook: any extension can register a usage source for its own
+// provider at runtime, without gentle-shell knowing anything about it.
+
+test("parseUsageSource validates the registration payload and ignores anything malformed", () => {
+	const fetchFn = async () => undefined;
+	const valid = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: fetchFn });
+	assert.equal(valid?.schema, USAGE_SOURCE_SCHEMA);
+	assert.equal(valid?.provider, "acme-cloud");
+	assert.equal(valid?.fetch, fetchFn);
+	assert.equal(valid?.pendingNote, undefined);
+
+	const withNote = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "warming up", fetch: fetchFn });
+	assert.equal(withNote?.pendingNote, "warming up");
+
+	assert.equal(parseUsageSource({ schema: "gentle-pi.usage-source/v0", provider: "acme-cloud", fetch: fetchFn }), undefined, "wrong schema");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "", fetch: fetchFn }), undefined, "empty provider");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme cloud", fetch: fetchFn }), undefined, "unsafe provider id");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "nope" }), undefined, "fetch not a function");
+	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: 7, fetch: fetchFn }), undefined, "pendingNote must be a string when present");
+	assert.equal(parseUsageSource(null), undefined);
+	assert.equal(parseUsageSource(undefined), undefined);
+	assert.equal(parseUsageSource("acme-cloud"), undefined);
+	assert.equal(parseUsageSource({}), undefined);
+});
+
+test("UsageSourceRegistry replaces a provider's source on re-registration", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(registry.has("acme-cloud"), false);
+	assert.equal(registry.get("acme-cloud"), undefined);
+	assert.equal(registry.note("acme-cloud"), undefined);
+
+	const first: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined };
+	registry.register(first);
+	assert.equal(registry.has("acme-cloud"), true);
+	assert.equal(registry.get("acme-cloud"), first);
+	assert.equal(registry.note("acme-cloud"), "no usage yet · r to fetch", "default note when the source sets none");
+
+	const second: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "still warming up", fetch: async () => undefined };
+	registry.register(second);
+	assert.equal(registry.get("acme-cloud"), second, "re-registration replaces, never accumulates");
+	assert.equal(registry.note("acme-cloud"), "still warming up");
+});
+
+test("a registered provider is supported without touching the built-in note map", () => {
+	const registry = new UsageSourceRegistry();
+	assert.equal(providerNote("acme-cloud"), "no subscription usage for this provider");
+	assert.equal(providerNote("acme-cloud", registry), "no subscription usage for this provider", "an empty registry changes nothing");
+	registry.register({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined });
+	assert.equal(providerNote("acme-cloud", registry), "no usage yet · r to fetch");
+	assert.equal(providerNote("nan", registry), "no usage yet · r to fetch", "the static built-ins are unaffected");
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "acme-cloud" }, registry), ["✿ acme-cloud · no usage yet · r to fetch"]);
+});
+
+// A registered source's resolved value crosses the same trust boundary a
+// parsed HTTP payload does. parseProviderUsage validates it exactly like
+// one, and the object gentle-shell records is always freshly built, never
+// the caller's own reference.
+
+const VALID_SOURCE_USAGE = {
+	provider: "acme-cloud",
+	plan: "Acme · 42 credits",
+	fetchedAt: 100,
+	limits: [
+		{
+			name: "acme-cloud",
+			limitReached: false,
+			windows: [
+				{ label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null },
+				{ label: "day", usedPercent: 12, windowSeconds: 86_400, resetAt: 200, used: 5, budget: 40 },
+			],
+		},
+	],
+};
+
+test("parseProviderUsage accepts a matching shape and copies it defensively", () => {
+	const source = structuredClone(VALID_SOURCE_USAGE);
+	const parsed = parseProviderUsage(source, "acme-cloud");
+	assert.deepEqual(parsed, source);
+	assert.notEqual(parsed, source, "the recorded object must never be the caller's own reference");
+	assert.notEqual(parsed?.limits, source.limits);
+	assert.notEqual(parsed?.limits[0], source.limits[0]);
+	assert.notEqual(parsed?.limits[0].windows, source.limits[0].windows);
+	assert.notEqual(parsed?.limits[0].windows[0], source.limits[0].windows[0]);
+
+	// Mutating the caller's own object after the fact must never reach the copy.
+	source.limits[0].windows[0].usedPercent = 999;
+	assert.equal(parsed?.limits[0].windows[0].usedPercent, 40);
+});
+
+test("parseProviderUsage rejects a resolution for a different provider", () => {
+	assert.equal(parseProviderUsage(structuredClone(VALID_SOURCE_USAGE), "other-provider"), undefined);
+});
+
+test("parseProviderUsage rejects a missing or malformed limits array", () => {
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0 }, "acme-cloud"), undefined, "limits missing entirely");
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: "nope" }, "acme-cloud"), undefined, "limits not an array");
+	assert.equal(
+		parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [{ name: "x", limitReached: "nope", windows: [] }] }, "acme-cloud"),
+		undefined,
+		"limitReached must be a boolean",
+	);
+});
+
+test("parseProviderUsage rejects a non-numeric usedPercent inside a window", () => {
+	const usage = structuredClone(VALID_SOURCE_USAGE);
+	(usage.limits[0].windows[0] as unknown as { usedPercent: unknown }).usedPercent = "40";
+	assert.equal(parseProviderUsage(usage, "acme-cloud"), undefined);
+});
+
+test("parseProviderUsage rejects a limit whose windows is not an array", () => {
+	const usage = structuredClone(VALID_SOURCE_USAGE);
+	(usage.limits[0] as unknown as { windows: unknown }).windows = "nope";
+	assert.equal(parseProviderUsage(usage, "acme-cloud"), undefined);
+});
+
+test("parseProviderUsage rejects malformed inputs outright", () => {
+	assert.equal(parseProviderUsage(undefined, "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage(null, "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage("acme-cloud", "acme-cloud"), undefined);
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: 7, fetchedAt: 0, limits: [] }, "acme-cloud"), undefined, "plan must be a string when present");
+	assert.equal(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: Number.POSITIVE_INFINITY, limits: [] }, "acme-cloud"), undefined, "fetchedAt must be finite");
+	assert.deepEqual(parseProviderUsage({ provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [] }, "acme-cloud"), { provider: "acme-cloud", plan: undefined, fetchedAt: 0, limits: [] });
 });
 
 test("renderUsagePanel lists each NaN model allowance with its reset on the same row", () => {
@@ -442,4 +607,76 @@ test("parseUsageHeaders picks whichever provider the headers belong to", () => {
 	assert.equal(parseUsageHeaders({ "x-codex-primary-used-percent": "10", "x-codex-primary-window-minutes": "300" }, NOW)?.provider, "openai-codex");
 	assert.equal(parseUsageHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.1" }, NOW)?.provider, "anthropic");
 	assert.equal(parseUsageHeaders({ "content-type": "application/json" }, NOW), undefined);
+});
+
+// Targeted providers: the session's own provider plus every provider the
+// active profile's subagent routing names. A qualified ref ("provider/id")
+// resolves directly; a bare model id resolves only through the registry
+// callback, so an ambiguous ref is dropped instead of guessed.
+
+test("usageScopeProviders targets the main provider and every qualified routing provider", () => {
+	assert.deepEqual(
+		usageScopeProviders("openai-codex", ["nan/glm5.3", "openai-codex/gpt-5.5", undefined], undefined),
+		["openai-codex", "nan"],
+	);
+});
+
+test("usageScopeProviders resolves bare model ids only through the registry callback", () => {
+	assert.deepEqual(usageScopeProviders(undefined, ["glm5.3"], (id) => (id === "glm5.3" ? "nan" : undefined)), ["nan"]);
+	assert.deepEqual(
+		usageScopeProviders(undefined, ["glm5.3", "mystery"], () => undefined),
+		[],
+		"an id the registry cannot resolve to exactly one provider is dropped, never guessed",
+	);
+});
+
+function scopePanel(usages: ProviderUsage[], providers: string[], failed: string[] = []): string[] {
+	return renderUsagePanel(usages, plainTheme, 100, NOW, { provider: "openai-codex" }, undefined, {
+		providers,
+		failed: new Set(failed),
+	});
+}
+
+test("renderUsagePanel draws the targeted scope in scope order with no-data and failed-fetch notes", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const nan = parseNanQuota(NAN_QUOTA, NOW);
+	const lines = scopePanel([nan, codex], ["openai-codex", "nan", "acme-cloud"], ["acme-cloud"]);
+	assert.match(lines[0], /^✿ openai-codex · pro/);
+	assert.match(lines.find((line) => line.startsWith("nan")) ?? "", /^nan · /, "a targeted provider with data renders like any other");
+	assert.match(lines.find((line) => line.startsWith("acme-cloud")) ?? "", /^acme-cloud · fetch failed · r to retry$/);
+});
+
+test("renderUsagePanel keeps a headers-only targeted provider pending, never a false failure", () => {
+	const pending = (providers: string[], failed: string[] = []) =>
+		renderUsagePanel([], plainTheme, 100, NOW, undefined, undefined, { providers, failed: new Set(failed) });
+	assert.deepEqual(
+		pending(["anthropic"]),
+		["anthropic · usage arrives with the first response"],
+	);
+	assert.deepEqual(
+		pending(["openai-codex"]),
+		["openai-codex · no usage yet · r to fetch"],
+		"an unattempted fetch still says pending, not failed",
+	);
+	assert.deepEqual(
+		pending(["openai-codex"], ["openai-codex"]),
+		["openai-codex · fetch failed · r to retry"],
+	);
+});
+
+test("renderUsagePanel never presents a provider outside the current scope after a profile switch", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const nan = parseNanQuota(NAN_QUOTA, NOW);
+	const lines = scopePanel([nan, codex], ["openai-codex"]);
+	assert.ok(lines.some((line) => line.startsWith("✿ openai-codex · pro")));
+	assert.equal(lines.some((line) => line.startsWith("nan ·")), false, "the previous profile's provider is not current scope");
+});
+
+test("renderUsagePanel renders the failure note beside a retained snapshot, and only after a real failure", () => {
+	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	const afterFailure = scopePanel([codex], ["openai-codex"], ["openai-codex"]);
+	assert.match(afterFailure[0], /^✿ openai-codex · pro/, "the retained snapshot stays the provider's headline");
+	assert.match(afterFailure[1], /^ {2}codex week /, "the last good snapshot survives the failed refresh");
+	assert.ok(afterFailure.some((line) => /^ {2}fetch failed · r to retry$/.test(line)), "the failure is visible beside the retained snapshot");
+	assert.equal(scopePanel([codex], ["openai-codex"]).some((line) => line.includes("fetch failed")), false, "a provider whose latest refresh succeeded carries no failure note");
 });

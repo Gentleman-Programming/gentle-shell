@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { paintGauge } from "./shell-gauge.ts";
+import { parseModelRef } from "./agents-config.ts";
+import { paintGauge, type GaugePaint } from "./shell-gauge.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
 // provider reports. Codex sends them as SSE headers and through its usage
@@ -117,20 +118,138 @@ const ROLE = {
 } as const;
 export const USAGE_EMPTY_MESSAGE = "No subscription usage yet. Usage arrives with the next response, or press r to fetch it.";
 export const SUPPORTED_USAGE_PROVIDERS: readonly string[] = [CODEX_PROVIDER, ANTHROPIC_PROVIDER, NAN_PROVIDER];
+const DEFAULT_PENDING_NOTE = "no usage yet · r to fetch";
 const PENDING_NOTE: Record<string, string> = {
-	[CODEX_PROVIDER]: "no usage yet · r to fetch",
-	[NAN_PROVIDER]: "no usage yet · r to fetch",
+	[CODEX_PROVIDER]: DEFAULT_PENDING_NOTE,
+	[NAN_PROVIDER]: DEFAULT_PENDING_NOTE,
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
 const ACTIVE_MARK = "✿";
+// What a targeted provider with no snapshot says after a refresh actually ran
+// and answered nothing. Generic on purpose: it names no endpoint, key, or
+// account detail, exactly like the other notes here.
+export const USAGE_FETCH_FAILED_NOTE = "fetch failed · r to retry";
 
 export interface ActiveProvider {
 	provider: string;
 }
 
-export function providerNote(provider: string): string {
-	return PENDING_NOTE[provider] ?? UNSUPPORTED_NOTE;
+// A generic hook so an extension holding its own provider (its own API token,
+// its own usage endpoint) can plug a usage source into the shell without the
+// shell ever knowing that provider's name. Emitted on `pi.events` as payload
+// under `USAGE_SOURCE_EVENT`; gentle-shell validates the shape below and
+// ignores anything else, so a malformed or foreign event never reaches a
+// fetch call. Re-registration for the same provider replaces the previous
+// source, so a second `session_start` emitting the same payload is a no-op
+// in effect, not an accumulation.
+export const USAGE_SOURCE_EVENT = "gentle-pi:usage-source/v1";
+export const USAGE_SOURCE_SCHEMA = "gentle-pi.usage-source/v1";
+const USAGE_SOURCE_PROVIDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export interface UsageSource {
+	schema: typeof USAGE_SOURCE_SCHEMA;
+	provider: string;
+	pendingNote?: string;
+	fetch(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined>;
+}
+
+// Pure and defensive: the payload crosses an event bus from another
+// extension, so nothing here is trusted until every field is checked. Any
+// mismatch returns undefined rather than throwing, exactly like the other
+// payload parsers in this file.
+export function parseUsageSource(value: unknown): UsageSource | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.schema !== USAGE_SOURCE_SCHEMA) return undefined;
+	if (typeof raw.provider !== "string" || !USAGE_SOURCE_PROVIDER_PATTERN.test(raw.provider)) return undefined;
+	if (typeof raw.fetch !== "function") return undefined;
+	if (raw.pendingNote !== undefined && typeof raw.pendingNote !== "string") return undefined;
+	const source: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: raw.provider, fetch: raw.fetch as UsageSource["fetch"] };
+	if (typeof raw.pendingNote === "string") source.pendingNote = raw.pendingNote;
+	return source;
+}
+
+// One source per provider, most recent registration wins. Nothing here fetches
+// or touches the network; it only remembers who to ask.
+export class UsageSourceRegistry {
+	private readonly sources = new Map<string, UsageSource>();
+
+	register(source: UsageSource): void {
+		this.sources.set(source.provider, source);
+	}
+
+	get(provider: string): UsageSource | undefined {
+		return this.sources.get(provider);
+	}
+
+	has(provider: string): boolean {
+		return this.sources.has(provider);
+	}
+
+	note(provider: string): string | undefined {
+		const source = this.sources.get(provider);
+		return source ? (source.pendingNote ?? DEFAULT_PENDING_NOTE) : undefined;
+	}
+}
+
+export function providerNote(provider: string, registry?: UsageSourceRegistry): string {
+	return PENDING_NOTE[provider] ?? registry?.note(provider) ?? UNSUPPORTED_NOTE;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseSourceUsageWindow(value: unknown): UsageWindow | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.label !== "string") return undefined;
+	if (!isFiniteNumber(raw.usedPercent)) return undefined;
+	if (!isFiniteNumber(raw.windowSeconds)) return undefined;
+	if (raw.resetAt !== null && !isFiniteNumber(raw.resetAt)) return undefined;
+	if (raw.used !== undefined && !isFiniteNumber(raw.used)) return undefined;
+	if (raw.budget !== undefined && !isFiniteNumber(raw.budget)) return undefined;
+	const window: UsageWindow = { label: raw.label, usedPercent: raw.usedPercent, windowSeconds: raw.windowSeconds, resetAt: raw.resetAt as number | null };
+	if (raw.used !== undefined) window.used = raw.used as number;
+	if (raw.budget !== undefined) window.budget = raw.budget as number;
+	return window;
+}
+
+function parseSourceUsageLimit(value: unknown): UsageLimit | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.name !== "string") return undefined;
+	if (typeof raw.limitReached !== "boolean") return undefined;
+	if (!Array.isArray(raw.windows)) return undefined;
+	const windows: UsageWindow[] = [];
+	for (const entry of raw.windows) {
+		const window = parseSourceUsageWindow(entry);
+		if (!window) return undefined;
+		windows.push(window);
+	}
+	return { name: raw.name, limitReached: raw.limitReached, windows };
+}
+
+// A registered source's resolved value crosses the same trust boundary a
+// parsed HTTP payload does: it is foreign code's own object, so it is
+// validated field by field and never recorded by reference. Every accepted
+// shape is rebuilt from scratch, so a source mutating its own object after
+// returning it can never reach a snapshot gentle-shell already recorded.
+export function parseProviderUsage(value: unknown, expectedProvider: string): ProviderUsage | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.provider !== expectedProvider) return undefined;
+	if (raw.plan !== undefined && typeof raw.plan !== "string") return undefined;
+	if (!isFiniteNumber(raw.fetchedAt)) return undefined;
+	if (!Array.isArray(raw.limits)) return undefined;
+	const limits: UsageLimit[] = [];
+	for (const entry of raw.limits) {
+		const limit = parseSourceUsageLimit(entry);
+		if (!limit) return undefined;
+		limits.push(limit);
+	}
+	return { provider: raw.provider, plan: typeof raw.plan === "string" ? raw.plan : undefined, limits, fetchedAt: raw.fetchedAt };
 }
 
 export function windowLabel(seconds: number): string {
@@ -150,7 +269,7 @@ export function formatReset(resetAt: number | null, now: number): string {
 }
 
 function parseWindow(raw: RawWindow | null | undefined, now: number): UsageWindow | undefined {
-	if (!raw || typeof raw.used_percent !== "number" || typeof raw.limit_window_seconds !== "number") return undefined;
+	if (!raw || !isFiniteNumber(raw.used_percent) || !isFiniteNumber(raw.limit_window_seconds) || raw.limit_window_seconds <= 0) return undefined;
 	const resetAt =
 		typeof raw.reset_at === "number" ? raw.reset_at * 1000 : typeof raw.reset_after_seconds === "number" ? now + raw.reset_after_seconds * 1000 : null;
 	return { label: windowLabel(raw.limit_window_seconds), usedPercent: raw.used_percent, windowSeconds: raw.limit_window_seconds, resetAt };
@@ -175,17 +294,18 @@ export function parseCodexUsage(payload: unknown, now: number): ProviderUsage {
 	return { provider: CODEX_PROVIDER, plan: typeof raw.plan_type === "string" ? raw.plan_type : undefined, limits, fetchedAt: now };
 }
 
-function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary", now: number): UsageWindow | undefined {
+function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary"): UsageWindow | undefined {
 	const used = Number.parseFloat(headers[`${HEADER_PREFIX}${kind}-used-percent`] ?? "");
 	if (!Number.isFinite(used)) return undefined;
-	const minutes = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-window-minutes`] ?? "", 10);
+	// Missing or invalid duration is not a zero-minute quota or an assumed 5h window.
+	const seconds = Number(headers[`${HEADER_PREFIX}${kind}-window-minutes`]) * MINUTE;
+	if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
 	const resetAt = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-reset-at`] ?? "", 10);
-	const seconds = Number.isFinite(minutes) ? minutes * MINUTE : 0;
 	return { label: windowLabel(seconds), usedPercent: used, windowSeconds: seconds, resetAt: Number.isFinite(resetAt) ? resetAt * 1000 : null };
 }
 
 export function parseCodexHeaders(headers: Record<string, string>, now: number): ProviderUsage | undefined {
-	const windows = [headerWindow(headers, "primary", now), headerWindow(headers, "secondary", now)].filter((window): window is UsageWindow => window !== undefined);
+	const windows = [headerWindow(headers, "primary"), headerWindow(headers, "secondary")].filter((window): window is UsageWindow => window !== undefined);
 	if (windows.length === 0) return undefined;
 	const reached = headers[`${HEADER_PREFIX}rate-limit-reached-type`];
 	return { provider: CODEX_PROVIDER, plan: undefined, limits: [{ name: CODEX_MAIN_LIMIT, windows, limitReached: Boolean(reached) }], fetchedAt: now };
@@ -394,16 +514,16 @@ export function accountIdFromToken(token: string): string | undefined {
 	}
 }
 
-function paintMeter(percent: number, cells: number, theme: UsageTheme): string {
-	return paintGauge(percent, theme, cells);
+function paintMeter(percent: number, cells: number, theme: UsageTheme, paint?: GaugePaint): string {
+	return paintGauge(percent, theme, cells, paint);
 }
 
-export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string): string | undefined {
+export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string, paint?: GaugePaint): string | undefined {
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
 	// An unlabeled window prints as the name, the meter and the percentage.
-	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
+	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme, paint), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
 	const tail = rest.map((window) => `${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, window.label)} ${theme.fg(ROLE.PERCENT, `${Math.round(window.usedPercent)}%`)}`);
 	return [head, ...tail].join(" ");
 }
@@ -413,18 +533,66 @@ function updatedAgo(fetchedAt: number, now: number): string {
 	return minutes < 1 ? "updated just now" : `updated ${minutes}m ago`;
 }
 
+// The providers one refresh targets: the session's own provider first, then
+// every provider the active profile's subagent routing names, deduplicated in
+// first-seen order. A qualified ref ("provider/id") resolves directly; a bare
+// model id resolves through the registry callback only when that callback can
+// name exactly one provider, so an ambiguous or unknown ref never guesses one
+// and is dropped instead.
+export function usageScopeProviders(
+	mainProvider: string | undefined,
+	routingModels: ReadonlyArray<string | undefined> | undefined,
+	resolveBareModel?: (modelId: string) => string | undefined,
+): string[] {
+	const providers = new Set<string>();
+	if (mainProvider) providers.add(mainProvider);
+	for (const model of routingModels ?? []) {
+		const ref = parseModelRef(model);
+		if (!ref) continue;
+		const provider = ref.provider ?? resolveBareModel?.(ref.id);
+		if (provider) providers.add(provider);
+	}
+	return [...providers];
+}
+
+// The current routing scope the panel draws: which providers are targeted, and
+// which of them failed their latest settled refresh. A provider recorded
+// earlier but no longer targeted is simply absent — it is not current scope.
+export interface UsagePanelScope {
+	providers: readonly string[];
+	// Actual failures only: a refresh that settled without a snapshot. A
+	// provider still fetching is never in here, so an in-flight refresh cannot
+	// read as failed, and a successful refresh removes the provider again.
+	failed: ReadonlySet<string>;
+}
+
 // The active provider comes first, marked with the petal, and explains
 // itself when it has no data yet. Other providers seen this session follow.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider): string[] {
+// With a scope, the panel draws exactly the targeted providers in scope order:
+// one with no snapshot explains itself (its latest refresh failed, or its
+// pending note otherwise), one whose latest refresh failed after a good
+// snapshot keeps that snapshot and says so beside it, and a provider recorded
+// under a previous profile's routing is never presented as current scope after
+// a profile switch.
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope, paint?: GaugePaint): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
-	const others = usages.filter((usage) => usage !== activeUsage);
-	if (!active && usages.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
+	const byProvider = new Map(usages.map((usage) => [usage.provider, usage] as const));
+	const rows = scope
+		? scope.providers.map((provider) => ({ provider, usage: byProvider.get(provider) }))
+		: [...(active ? [{ provider: active.provider, usage: activeUsage }] : []), ...usages.filter((usage) => usage !== activeUsage).map((usage) => ({ provider: usage.provider, usage }))];
+	if (rows.length === 0) return [truncateToWidth(USAGE_EMPTY_MESSAGE, width, "…")];
 	const lines: string[] = [];
-	if (active && !activeUsage) {
-		lines.push(`${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ${theme.fg(ROLE.PROVIDER, active.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, providerNote(active.provider))}`);
-	}
-	for (const usage of [...(activeUsage ? [activeUsage] : []), ...others]) {
-		const mark = usage === activeUsage ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
+	for (const row of rows) {
+		const mark = active?.provider === row.provider ? `${theme.fg(ROLE.LIMIT, ACTIVE_MARK)} ` : "";
+		if (!row.usage) {
+			// A settled refresh that answered nothing is a failure; a provider
+			// whose usage arrives with responses (Anthropic) or that has not
+			// failed keeps its pending note.
+			const note = scope?.failed.has(row.provider) ? USAGE_FETCH_FAILED_NOTE : providerNote(row.provider, registry);
+			lines.push(`${mark}${theme.fg(ROLE.PROVIDER, row.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, note)}`);
+			continue;
+		}
+		const usage = row.usage;
 		const plan = usage.plan ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.PLAN, usage.plan)}` : "";
 		lines.push(`${mark}${theme.fg(ROLE.PROVIDER, usage.provider)}${plan} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, updatedAgo(usage.fetchedAt, now))}`);
 		// One row per window: the limit name, its meter, its percentage and the reset
@@ -439,8 +607,11 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
 			const reset = formatReset(row.window.resetAt, now);
 			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
-			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
+			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme, paint)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
+		// A failure after a good snapshot never hides either fact: the last good
+		// snapshot stays on its rows and the failed refresh says so beside it.
+		if (scope?.failed.has(row.provider)) lines.push(`  ${theme.fg(ROLE.RESET, USAGE_FETCH_FAILED_NOTE)}`);
 	}
 	return lines.map((line) => truncateToWidth(line, width, "…"));
 }

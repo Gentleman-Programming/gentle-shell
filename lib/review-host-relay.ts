@@ -34,13 +34,14 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
 	runInProcessReviewer,
 	type InProcessReviewerFailureCode,
 	type InProcessReviewerOutcome,
 	type InProcessReviewerRegistry,
+	type InProcessReviewerRequest,
 } from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
@@ -386,6 +387,16 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Effective Pi transport preference, forwarded without forcing a provider default. */
+	readonly reviewerTransport?: InProcessReviewerRequest["transport"];
+	/**
+	 * The caller's live pi session id, forwarded into the in-process completion
+	 * request so an OpenCode-routed reviewer model carries its
+	 * `x-opencode-session` attribution header (a side-call bypasses pi's main
+	 * agent loop, where pi adds those headers itself). Absent forwards nothing:
+	 * no invented header, no error.
+	 */
+	readonly reviewerSessionId?: string;
 	/** Names the routing config key (e.g. "review-risk") in refusal messages; defaults to a generic label when absent. */
 	readonly routingKey?: string;
 	/**
@@ -490,7 +501,8 @@ function collectGentleAiProcess(
 		const startedAt = Date.now();
 		const child = spawn(file, [...arguments_], {
 			cwd: options.cwd,
-			env: options.env,
+			// S9: a bundled install keeps Gentle AI's state inside its prefix.
+			env: gentleAiIsolationEnv(options.env),
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: false,
 			windowsHide: true,
@@ -608,6 +620,7 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
 		...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+		...(request.reviewerSessionId === undefined ? {} : { reviewerSessionId: request.reviewerSessionId }),
 		routingKey,
 	};
 }
@@ -617,8 +630,15 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// are TypeErrors — a programmer mistake, never a typed relay refusal — and
 	// are checked before the business-level reviewer selection below.
 	assertTokens("capture", request.captureArgumentTokens);
-	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
-	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	// A caller-supplied executable path is input, validated like every other
+	// input before anything else. Only the environment-dependent resolution of
+	// an unspecified executable is deferred below: the executable supply is
+	// environment state (a missing pinned binary, an invalid dev override, a
+	// transient filesystem error under load), and letting its untyped errors
+	// escape ahead of the config check turned the typed configuration refusal
+	// into an environment-dependent unknown failure (gentle-shell#2256).
+	const suppliedExecutable = request.gentleAiExecutable;
+	if (suppliedExecutable !== undefined && !isAbsolute(suppliedExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
 	// Caller-owned reviewer selection is validated before any process launches:
 	// a broken configuration is a typed refusal, never a mid-review transport
 	// failure (gentle-pi#311 P2).
@@ -627,6 +647,8 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
 	resolveReviewHostRelaySubmission(request.submission);
+	const gentleAiExecutable = suppliedExecutable ?? resolveGentleAiBinary();
+	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
 	const environment = Object.freeze({ ...(request.environment ?? process.env) }) as NodeJS.ProcessEnv;
 	const submission = request.submission === undefined ? undefined : Object.freeze({
 		operationToken: request.submission.operationToken,
@@ -728,6 +750,8 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.reviewerTransport === undefined ? {} : { transport: preparedRequest.reviewerTransport }),
+				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,
 				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),

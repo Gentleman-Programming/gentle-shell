@@ -1,9 +1,60 @@
 import { closeSync, constants, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+
+// The two directory layouts Pi's own package manager creates when it installs
+// a package into an agent home: the npm-backed `npm/node_modules/<package>`
+// (user scope `<agent dir>/npm/node_modules/gentle-pi`, project scope
+// `.pi/npm/node_modules/gentle-pi`) and the git-backed
+// `git/github.com/Gentleman-Programming/<package>` layout. A path is checked
+// for these sequences anywhere in its segments, not anchored to a specific
+// resolved agent home — unlike installTuiModeSetting's own ownership check.
+const PI_MANAGED_SEGMENT_SEQUENCES = [
+	["npm", "node_modules"],
+	["git", "github.com", "Gentleman-Programming"],
+];
+
+// Gentle Shell's default theme (themes/Gentleman-Cute.json, "name":
+// "Gentleman-Cute"): applied by withIsolatedHomeDefaults below whenever a
+// home's settings do not already declare one, never overriding a user's own
+// choice.
+export const DEFAULT_THEME_NAME = "Gentleman-Cute";
+
+// Pure merge: returns `value` with fullscreen tuiMode always applied, and —
+// only when `value` does not already declare a "theme" key — the default
+// theme above added too. No filesystem access, so it is unit-testable
+// without a tempdir; installIsolatedTuiModeSetting below is the only caller,
+// applying this to a freshly bootstrapped home's settings.
+export function withIsolatedHomeDefaults(value) {
+	const next = { ...value, tuiMode: "fullscreen" };
+	if (!("theme" in value)) next.theme = DEFAULT_THEME_NAME;
+	return next;
+}
+
+function containsSequence(segments, sequence) {
+	for (let start = 0; start + sequence.length <= segments.length; start += 1) {
+		if (sequence.every((part, offset) => segments[start + offset] === part)) return true;
+	}
+	return false;
+}
+
+/** Gates the POSTINSTALL entry point only (scripts/install-gentle-ai.mjs), not
+ * installTuiModeSetting or installIsolatedTuiModeSetting: true when
+ * `packageDir` (the directory of the gentle-pi package actually running,
+ * typically derived from that script's own import.meta.url) sits under one of
+ * the directory layouts above. A plain `npm install -g gentle-pi`, a
+ * development git checkout, an `npx` cache directory, or a pnpm store never
+ * match, so the postinstall entry skips writing the user's global Pi settings
+ * for those instead of relying solely on installTuiModeSetting's own,
+ * differently-scoped ownership check.
+ */
+export function isPiManagedInstall(packageDir) {
+	const segments = resolve(packageDir).split(sep);
+	return PI_MANAGED_SEGMENT_SEQUENCES.some((sequence) => containsSequence(segments, sequence));
+}
 
 function inspect(path) {
 	try { return lstatSync(path); }
@@ -12,6 +63,15 @@ function inspect(path) {
 
 function sameFile(left, right) {
 	return left && right && left.dev === right.dev && left.ino === right.ino;
+}
+
+// A path's lstat against the fstat of the handle just opened on it. On recent
+// Windows, lstat by path reports dev 0 (no volume serial) while fstat reports
+// the volume's (#1258, #2109): there the file index alone identifies it, and a
+// known dev must still match. POSIX keeps the full device and inode check.
+export function sameOpenedFile(pathStat, handleStat, platform = process.platform) {
+	if (platform !== "win32" || !pathStat || !handleStat || (pathStat.dev !== 0 && handleStat.dev !== 0)) return Boolean(sameFile(pathStat, handleStat));
+	return pathStat.ino === handleStat.ino;
 }
 
 function assertDirectories(paths) {
@@ -29,7 +89,7 @@ function readSettings(path) {
 	if (!before.isFile() || before.isSymbolicLink()) throw new Error("settings.json must be a regular, non-symlink file");
 	const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 	try {
-		if (!sameFile(before, fstatSync(fd))) throw new Error("settings.json changed while opening");
+		if (!sameOpenedFile(before, fstatSync(fd))) throw new Error("settings.json changed while opening");
 		const text = readFileSync(fd, "utf8");
 		const value = JSON.parse(text.replace(/^\uFEFF/, ""));
 		if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("settings.json must contain a JSON object");
@@ -106,6 +166,51 @@ export async function installTuiModeSetting(options = {}) {
 		return { changed: true, recognized: true };
 	} finally {
 		// Only clean our own artifacts while the original parent remains canonical.
+		if (realpathSync(home) === home) {
+			if (staging) unlinkSync(staging);
+			if (sameFile(lock, inspect(lockPath))) rmdirSync(lockPath);
+		}
+	}
+}
+
+/** Writes tuiMode: "fullscreen" and — when the home has no theme of its own
+ * yet — the default Gentle Shell theme (withIsolatedHomeDefaults,
+ * DEFAULT_THEME_NAME above) into a directory gentle-shell's own isolated-home
+ * bootstrap (T2) just created and owns. Unlike installTuiModeSetting, there is no
+ * "physically installed under this home's npm/node_modules" ownership check to
+ * satisfy: the caller already knows it created `dir` moments ago as gentle-shell's
+ * dedicated agent home, so the only safety property that still matters is the one
+ * every writer here needs — atomic, non-symlink, cooperative-lock-respecting.
+ */
+export async function installIsolatedTuiModeSetting(dir) {
+	const home = realpathSync(resolve(dir));
+	assertDirectories([home]);
+	const settingsPath = join(home, "settings.json");
+	const lockPath = `${settingsPath}.lock`;
+	const lock = await acquireLock(lockPath);
+	const started = Date.now();
+	let staging;
+	try {
+		assertDirectories([home]);
+		const original = readSettings(settingsPath);
+		if (original.value.tuiMode === "fullscreen") return { changed: false, recognized: true };
+		staging = join(home, `.settings-fullscreen-${randomUUID()}.tmp`);
+		const fd = openSync(staging, "wx", original.stat ? original.stat.mode & 0o777 : 0o600);
+		try {
+			if (original.stat) fchmodSync(fd, original.stat.mode & 0o777);
+			writeFileSync(fd, `${JSON.stringify(withIsolatedHomeDefaults(original.value), null, 2)}\n`, "utf8");
+			fsyncSync(fd);
+		} finally { closeSync(fd); }
+		assertDirectories([home]);
+		const latest = readSettings(settingsPath);
+		if (latest.text !== original.text || (original.stat ? !sameFile(original.stat, latest.stat) : latest.stat !== undefined)) {
+			throw new Error("settings.json changed concurrently; retry installation");
+		}
+		if (!sameFile(lock, inspect(lockPath)) || Date.now() - started >= 5000) throw new Error("Fullscreen settings lock ownership expired; retry installation");
+		renameSync(staging, settingsPath);
+		staging = undefined;
+		return { changed: true, recognized: true };
+	} finally {
 		if (realpathSync(home) === home) {
 			if (staging) unlinkSync(staging);
 			if (sameFile(lock, inspect(lockPath))) rmdirSync(lockPath);

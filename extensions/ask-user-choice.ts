@@ -1,9 +1,11 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 const CHOICE_TOOL_NAME = "ask_user_choice";
 const ASK_USER_CHOICE_BLOCKED_EVENT = "gentle-pi:ask-user-choice:blocked";
@@ -147,11 +149,11 @@ class ChoiceModeView extends Container {
 	}
 }
 
-function reconcileToolAvailability(pi: ExtensionAPI, interactiveTui: boolean): void {
+function reconcileToolAvailability(pi: ExtensionAPI, interactive: boolean): void {
 	const active = pi.getActiveTools();
 	const isActive = active.includes(CHOICE_TOOL_NAME);
-	if (interactiveTui === isActive) return;
-	const next = interactiveTui
+	if (interactive === isActive) return;
+	const next = interactive
 		? [...new Set([...active, CHOICE_TOOL_NAME])]
 		: active.filter((name) => name !== CHOICE_TOOL_NAME);
 	pi.setActiveTools(next);
@@ -159,6 +161,57 @@ function reconcileToolAvailability(pi: ExtensionAPI, interactiveTui: boolean): v
 
 function resultDetails(params: ChoiceParams): ChoiceDetails {
 	return { question: params.question, options: params.options };
+}
+
+interface ChoiceToolResult {
+	content: Array<{ type: "text"; text: string }>;
+	details: ChoiceDetails;
+}
+
+/** Same result shapes for both the TUI and the RPC-dialog fallback. */
+function choiceToolResult(params: ChoiceParams, selection: ChoiceResult | undefined): ChoiceToolResult {
+	if (selection === undefined) {
+		return {
+			content: [{ type: "text", text: "User cancelled the choice" }],
+			details: { ...resultDetails(params), cancelled: true },
+		};
+	}
+	if ("customResponse" in selection) {
+		return {
+			content: [{ type: "text", text: `User responded: ${selection.customResponse}` }],
+			details: { ...resultDetails(params), customResponse: selection.customResponse },
+		};
+	}
+	return {
+		content: [{ type: "text", text: `User selected: ${selection.index}. ${selection.label} (value: ${selection.value})` }],
+		details: { ...resultDetails(params), selection },
+	};
+}
+
+/** Label for the opt-in free-text entry appended to the RPC-dialog select options. */
+const OTHER_OPTION_LABEL = "Other…";
+
+/**
+ * Interactive-RPC-host fallback: one `ctx.ui.select` over the option labels
+ * (plus "Other…" when `allowCustomResponse`), then `ctx.ui.input` for the
+ * free-text response. Keeps the exact TUI result shapes; a cancel at either
+ * step cancels the choice, matching the TUI Escape key.
+ */
+async function askThroughDialogs(
+	ctx: Pick<ExtensionContext, "ui">,
+	params: ChoiceParams,
+): Promise<ChoiceResult | undefined> {
+	const labels = params.options.map((choiceOption) => choiceOption.label);
+	const dialogOptions = params.allowCustomResponse === true ? [...labels, OTHER_OPTION_LABEL] : labels;
+	const picked = await ctx.ui.select(params.question, dialogOptions);
+	if (picked === undefined) return undefined;
+	if (params.allowCustomResponse === true && picked === OTHER_OPTION_LABEL) {
+		const customResponse = await ctx.ui.input(params.question, "Type your response");
+		return customResponse === undefined ? undefined : { customResponse };
+	}
+	const index = params.options.findIndex((choiceOption) => choiceOption.label === picked);
+	const option = params.options[index];
+	return option === undefined ? undefined : { value: option.value, label: option.label, index: index + 1 };
 }
 
 export default function askUserChoice(pi: ExtensionAPI): void {
@@ -174,8 +227,21 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 		parameters: ChoiceParamsSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params: ChoiceParams, _signal, _onUpdate, ctx) {
+			const captureAnswer = captureChoiceAnswer(ctx, _toolCallId, params, _signal);
 			if (ctx.mode !== "tui") {
-				throw new Error("ask_user_choice is unavailable outside the interactive TUI");
+				if (!isInteractiveRpcHost(ctx.mode, process.env)) {
+					throw new Error("ask_user_choice is unavailable outside the interactive TUI");
+				}
+				let rpcSelection: ChoiceResult | undefined;
+				try {
+					pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: true });
+					rpcSelection = await askThroughDialogs(ctx, params);
+				}
+				finally {
+					pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
+				}
+				captureAnswer(rpcSelection);
+				return choiceToolResult(params, rpcSelection);
 			}
 
 			const items = params.options.map((option, index) => ({
@@ -239,22 +305,8 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 			}
 
-			if (selection === undefined) {
-				return {
-					content: [{ type: "text", text: "User cancelled the choice" }],
-					details: { ...resultDetails(params), cancelled: true },
-				};
-			}
-			if ("customResponse" in selection) {
-				return {
-					content: [{ type: "text", text: `User responded: ${selection.customResponse}` }],
-					details: { ...resultDetails(params), customResponse: selection.customResponse },
-				};
-			}
-			return {
-				content: [{ type: "text", text: `User selected: ${selection.index}. ${selection.label} (value: ${selection.value})` }],
-				details: { ...resultDetails(params), selection },
-			};
+			captureAnswer(selection);
+			return choiceToolResult(params, selection);
 		},
 		renderCall(args, theme) {
 			const options = Array.isArray(args.options) ? args.options : [];
@@ -274,12 +326,15 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 			if (details?.selection) {
 				return new Text(theme.fg("success", `✓ ${details.selection.index}. ${details.selection.label}`), 0, 0);
 			}
-			if (details?.customResponse !== undefined) return new Text(theme.fg("success", "✓ Custom response"), 0, 0);
+			if (details?.customResponse !== undefined) {
+				const text = details.customResponse.trim();
+				return new Text(theme.fg("success", text ? `✓ Custom response — ${details.customResponse}` : "✓ Custom response"), 0, 0);
+			}
 			return new Text(theme.fg("warning", "Cancelled"), 0, 0);
 		},
 	});
 
 	pi.on("before_agent_start", (_event, ctx) => {
-		reconcileToolAvailability(pi, ctx.mode === "tui");
+		reconcileToolAvailability(pi, isInteractiveMode(ctx.mode, process.env));
 	});
 }

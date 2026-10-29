@@ -6,6 +6,7 @@ import {
 	INPROCESS_REVIEWER_FAILURE,
 	INPROCESS_REVIEWER_OUTPUT_MAX_BYTES,
 	runInProcessReviewer,
+	openCodeSessionAttributionHeaders,
 	type InProcessReviewerOutcome,
 	type InProcessReviewerRegistry,
 	type InProcessReviewerRequest,
@@ -87,15 +88,20 @@ function capturingComplete(assistant: AssistantMessage) {
  */
 function signalAwaitingComplete(): typeof completeSimple {
 	return (async (_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
-		return await new Promise<AssistantMessage>((_resolve, reject) => {
-			const signal = options?.signal;
-			if (signal === undefined) return;
-			if (signal.aborted) {
-				reject(new Error("aborted"));
-				return;
-			}
-			signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-		});
+		const keepalive = setTimeout(() => {}, 60_000);
+		try {
+			return await new Promise<AssistantMessage>((_resolve, reject) => {
+				const signal = options?.signal;
+				if (signal === undefined) return;
+				if (signal.aborted) {
+					reject(new Error("aborted"));
+					return;
+				}
+				signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+			});
+		} finally {
+			clearTimeout(keepalive);
+		}
 	}) as typeof completeSimple;
 }
 
@@ -106,16 +112,21 @@ function signalAwaitingComplete(): typeof completeSimple {
  */
 function signalResolvingAbortedComplete(partialText = "partial revi"): typeof completeSimple {
 	return (async (_model, _context, options) => {
-		return await new Promise<AssistantMessage>((resolve) => {
-			const signal = options?.signal;
-			const settle = () => resolve(assistantText(partialText, { stopReason: "aborted" }));
-			if (signal === undefined) return;
-			if (signal.aborted) {
-				settle();
-				return;
-			}
-			signal.addEventListener("abort", settle, { once: true });
-		});
+		const keepalive = setTimeout(() => {}, 60_000);
+		try {
+			return await new Promise<AssistantMessage>((resolve) => {
+				const signal = options?.signal;
+				const settle = () => resolve(assistantText(partialText, { stopReason: "aborted" }));
+				if (signal === undefined) return;
+				if (signal.aborted) {
+					settle();
+					return;
+				}
+				signal.addEventListener("abort", settle, { once: true });
+			});
+		} finally {
+			clearTimeout(keepalive);
+		}
 	}) as typeof completeSimple;
 }
 
@@ -123,6 +134,24 @@ function signalResolvingAbortedComplete(partialText = "partial revi"): typeof co
 const unreachableComplete: typeof completeSimple = (async () => {
 	throw new Error("complete must not be called for this refusal");
 }) as typeof completeSimple;
+
+/**
+ * A `getProvider` fake standing in for pi's composed provider: it records
+ * every dispatch and returns a stream whose `result()` settles the
+ * completion, which is exactly the shape pi-ai's own compat layer consumes.
+ * The registry it is spread onto keeps `fakeRegistry`'s default shape, so the
+ * no-`getProvider` seam the other tests use stays untouched.
+ */
+function capturingProvider(assistant: AssistantMessage) {
+	const calls: Array<{ provider: string; model: Model<Api>; context: Context; options: SimpleStreamOptions | undefined }> = [];
+	const getProvider = (provider: string) => ({
+		streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+			calls.push({ provider, model, context, options });
+			return { result: async () => assistant };
+		},
+	});
+	return { getProvider, calls };
+}
 
 function expectRefused(outcome: InProcessReviewerOutcome): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	assert.equal(outcome.kind, "refused", outcome.kind === "text" ? `expected a refusal, got text: ${outcome.text}` : undefined);
@@ -192,7 +221,7 @@ test("refuses when the reviewer attempts a tool call", async () => {
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED);
 });
 
-test("refuses empty assistant text with stopReason evidence", async () => {
+test("refuses empty assistant text with safe completion evidence", async () => {
 	const assistant = assistantText("", { content: [], stopReason: "stop" });
 	const outcome = await runInProcessReviewer(baseRequest(), {
 		registry: fakeRegistry([fakeModel()]),
@@ -200,7 +229,60 @@ test("refuses empty assistant text with stopReason evidence", async () => {
 	});
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
-	assert.deepEqual(refused.evidence, { stopReason: "stop" });
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "openai/gpt-5", stopReason: "stop",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
+	});
+});
+
+test("empty-output diagnostics allowlist facts, not provider secrets, and complete once", async () => {
+	const model = fakeModel({ provider: "nan", id: "deepseek-v4-flash" });
+	const assistant = assistantText("", {
+		content: [{ type: "text", text: "" }, { type: "thinking", thinking: "PRIVATE THINKING", thinkingSignature: "PRIVATE SIGNATURE" }],
+		stopReason: "length", errorMessage: "PRIVATE ERROR", rawStopReason: "PRIVATE STOP",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76, unknown: "PRIVATE USAGE", cost: { secret: "PRIVATE COST" } } as never,
+	});
+	const { complete, calls } = capturingComplete(assistant);
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([model]), find: () => model }, complete,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
+		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(refused), /PRIVATE|errorMessage|rawStopReason|Signature|unknown|cost/);
+});
+
+test("empty-output evidence omits unknown or invalid counters and bounds resolved model identity", async () => {
+	for (const invalid of [undefined, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "12"]) {
+		const assistant = assistantText("", {
+			content: [], stopReason: "PRIVATE STOP" as never,
+			usage: Object.fromEntries(["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"].map((key) => [key, invalid])) as never,
+		});
+		const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([]), find: () => fakeModel({ id: "x".repeat(2_000) }) },
+			complete: async () => assistant,
+		}));
+		assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+		assert.equal(String(refused.evidence?.reviewerModel).length, 512);
+		assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+		assert.ok(!Object.hasOwn(refused.evidence!, "stopReason"));
+		assert.doesNotMatch(JSON.stringify(refused), /PRIVATE STOP/);
+	}
+});
+
+test("empty-output evidence does not invent usage or missing thinking lengths", async () => {
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: async () => assistantText("", { content: [{ type: "thinking" } as never], usage: undefined }),
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+	assert.deepEqual(refused.evidence?.content, { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0 });
 });
 
 test("refuses with PROVIDER_FAILED when the provider itself reports an aborted completion", async () => {
@@ -346,6 +428,97 @@ test("omits reasoning for a non-reasoning model even with a valid label", async 
 });
 
 // ---------------------------------------------------------------------------
+// OpenCode session attribution headers
+//
+// Pi adds OpenCode attribution headers inside the main agent loop
+// (provider-attribution.js#getSessionHeaders). This completion is an extension
+// side-call that bypasses that loop, so it must add the same headers itself:
+// provider opencode / opencode-go, or a baseUrl whose host is opencode.ai,
+// carrying the live session id — and nothing for any other provider.
+// ---------------------------------------------------------------------------
+
+const OPENCODE_ATTRIBUTION_TESTS: Array<{ readonly name: string; readonly model: Partial<Model<Api>>; readonly selection: string }> = [
+	{ name: "an opencode provider model", model: { provider: "opencode", id: "sonnet-4", baseUrl: "https://opencode.ai" }, selection: "opencode/sonnet-4" },
+	{ name: "an opencode-go provider model", model: { provider: "opencode-go", id: "gpt-5", baseUrl: "https://opencode.ai" }, selection: "opencode-go/gpt-5" },
+	{ name: "a custom provider whose baseUrl host is opencode.ai", model: { provider: "custom", id: "relay-model", baseUrl: "https://opencode.ai/v1" }, selection: "custom/relay-model" },
+];
+
+for (const { name, model, selection } of OPENCODE_ATTRIBUTION_TESTS) {
+	test(`${name} receives both attribution headers carrying the live session id`, async () => {
+		const { complete, calls } = capturingComplete(assistantText("ok"));
+		const outcome = await runInProcessReviewer(baseRequest({ selection, sessionId: "ses-live-1" }), {
+			registry: fakeRegistry([fakeModel(model)]),
+			complete,
+		});
+		expectText(outcome);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0]!.options?.headers?.["x-opencode-session"], "ses-live-1");
+		assert.equal(calls[0]!.options?.headers?.["x-opencode-client"], "pi");
+	});
+}
+
+for (const { name, model, selection } of OPENCODE_ATTRIBUTION_TESTS) {
+	test(`${name} without a session id adds no attribution header and still completes`, async () => {
+		const { complete, calls } = capturingComplete(assistantText("ok"));
+		const outcome = await runInProcessReviewer(baseRequest({ selection }), {
+			registry: fakeRegistry([fakeModel(model)]),
+			complete,
+		});
+		expectText(outcome);
+		assert.equal(calls.length, 1);
+		assert.ok(!("headers" in (calls[0]!.options ?? {})), "a missing session id must never invent a header");
+	});
+}
+
+test("a non-OpenCode model adds no attribution headers and leaves the options unchanged", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "anthropic/claude-sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "anthropic", id: "claude-sonnet-4", baseUrl: "https://api.anthropic.com" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1);
+	assert.ok(!("headers" in (calls[0]!.options ?? {})));
+});
+
+test("registry auth headers win over the attribution defaults and both survive the merge", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "opencode/sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "opencode", id: "sonnet-4" })], async () => ({
+			ok: true,
+			headers: { "x-api-key": "registry-key", "x-opencode-session": "registry-session" },
+		})),
+		complete,
+	});
+	expectText(outcome);
+	const headers = calls[0]!.options?.headers;
+	assert.equal(headers?.["x-api-key"], "registry-key", "registry auth headers must survive");
+	assert.equal(headers?.["x-opencode-session"], "registry-session", "explicit registry headers must not be clobbered by the attribution default");
+	assert.equal(headers?.["x-opencode-client"], "pi");
+});
+
+test("an unparseable baseUrl never throws: attribution follows the provider condition only", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "custom/relay-model", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "custom", id: "relay-model", baseUrl: "not-a-url" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.ok(!("headers" in (calls[0]!.options ?? {})));
+});
+
+test("openCodeSessionAttributionHeaders mirrors pi's condition exactly", () => {
+	const opencode = fakeModel({ provider: "opencode", baseUrl: "https://example.com" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(opencode, "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(fakeModel({ provider: "opencode-go" }), "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.deepEqual(openCodeSessionAttributionHeaders(fakeModel({ provider: "custom", baseUrl: "https://opencode.ai/v1" }), "ses-1"), { "x-opencode-session": "ses-1", "x-opencode-client": "pi" });
+	assert.equal(openCodeSessionAttributionHeaders(fakeModel({ provider: "custom", baseUrl: "https://api.opencode.ai" }), "ses-1"), undefined, "a subdomain host is not opencode.ai");
+	assert.equal(openCodeSessionAttributionHeaders(fakeModel(), "ses-1"), undefined);
+	assert.equal(openCodeSessionAttributionHeaders(opencode, undefined), undefined, "no session id, no header");
+	assert.equal(openCodeSessionAttributionHeaders(opencode, ""), undefined, "an empty session id is no session id");
+});
+
+// ---------------------------------------------------------------------------
 // Text concatenation ignoring thinking parts
 // ---------------------------------------------------------------------------
 
@@ -366,3 +539,184 @@ test("concatenates only text parts, ignoring thinking parts, in order", async ()
 	assert.equal(text.text, "Part A Part B");
 	assert.equal(text.reviewerModel, "openai/gpt-5");
 });
+
+// ---------------------------------------------------------------------------
+// Composed-provider routing (gentle-shell#1304)
+//
+// pi-ai's `completeSimple` resolves against pi-ai's own builtin-only
+// `apiProviderRegistry`, so an extension-registered provider is unreachable
+// through it ("No API provider registered for api: <api>"). A registry that
+// exposes `getProvider` carries pi's composed provider, which does honor
+// extensions, and must be used instead of `deps.complete`.
+// ---------------------------------------------------------------------------
+
+test("dispatches through the composed provider's streamSimple when the registry exposes getProvider", async () => {
+	const extensionModel = fakeModel({ provider: "claude-bridge", id: "claude-opus-5", api: "claude-bridge", baseUrl: "https://bridge.invalid" });
+	const { getProvider, calls } = capturingProvider(assistantText("bridged review"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "claude-bridge/claude-opus-5" }), {
+		// `unreachableComplete` is the canary: reaching pi-ai's compat path at
+		// all is the defect, so any call to it fails this test.
+		registry: { ...fakeRegistry([extensionModel]), getProvider },
+		complete: unreachableComplete,
+	});
+	const text = expectText(outcome);
+	assert.equal(text.text, "bridged review");
+	assert.equal(text.reviewerModel, "claude-bridge/claude-opus-5");
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	assert.equal(calls[0]!.provider, "claude-bridge", "the provider is resolved by the model's own provider id");
+	assert.equal(calls[0]!.model.api, "claude-bridge", "the extension api must reach the composed provider unchanged");
+});
+
+test("forwards the same context and options to the composed provider as to deps.complete", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const prompt = Buffer.from("frozen prompt bytes", "utf8");
+	const outcome = await runInProcessReviewer(baseRequest({ prompt, thinking: "high" }), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider },
+		complete: unreachableComplete,
+		now: () => 12_345,
+	});
+	expectText(outcome);
+	assert.deepEqual(calls[0]!.context, {
+		messages: [{ role: "user", content: [{ type: "text", text: "frozen prompt bytes" }], timestamp: 12_345 }],
+	});
+	assert.equal(calls[0]!.options?.apiKey, "test-key", "registry-resolved credentials still travel on options");
+	assert.equal(calls[0]!.options?.reasoning, "high");
+});
+
+test("refuses instead of falling back when getProvider returns undefined for a model find() resolved", async () => {
+	const outcome = await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([fakeModel()]), getProvider: () => undefined },
+		complete: unreachableComplete,
+	});
+	const refused = expectRefused(outcome);
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND);
+	assert.match(refused.message, /review-risk/);
+	assert.deepEqual(refused.evidence, { provider: "openai", api: "openai-responses" }, "the evidence separates this cause from a plain unresolved selection");
+});
+
+// ---------------------------------------------------------------------------
+// Env-API-key contract when the registry resolves no apiKey (gentle-shell#1304,
+// IRP-4)
+//
+// pi-ai's compat layer wraps every dispatch in `withEnvApiKey`
+// (@earendil-works/pi-ai/dist/compat.js:145-152, called at :190 and :193),
+// which injects an API key read from the ambient environment whenever
+// `options.apiKey` is absent or blank. pi's composed provider does no such
+// thing: it forwards `options` verbatim. `ModelRegistry.getApiKeyAndHeaders`
+// can legitimately resolve `{ ok: true, headers }` with no `apiKey` — a
+// header-authenticated provider, for instance — so these tests pin what this
+// module itself guarantees in that case, independently of which side settles
+// the completion.
+//
+// The delta is not a regression. pi's own auth resolvers already read the same
+// environment, through the same variable names, before this module dispatches:
+// `getApiKeyAndHeaders` -> `ModelRuntime.getAuth` -> `Models.getAuth` ->
+// `resolveProviderAuth` (dist/auth/resolve.js:51-54, the ambient branch) ->
+// the provider's `ApiKeyAuth.resolve`, which reads `ctx.env(...)`
+// (dist/auth/helpers.js:21-26) off `defaultProviderAuthContext`, whose `env`
+// is `process.env` (dist/auth/context.js:19-24). So any key `withEnvApiKey`
+// would have injected is one the registry has already returned as `apiKey`.
+// What this module must never do is invent one itself: its header promises it
+// "never reads process.env", and that promise is what these tests hold.
+// ---------------------------------------------------------------------------
+
+/** A registry auth resolution that succeeds with headers only — no `apiKey`. */
+const HEADER_ONLY_AUTH_HEADERS = { Authorization: "Bearer resolved-by-the-registry" } as const;
+const headerOnlyAuth = async () => ({ ok: true, headers: { ...HEADER_ONLY_AUTH_HEADERS } }) as const;
+
+/**
+ * Runs `body` with a synthetic value on the environment variable pi-ai's
+ * compat layer would read for the default fake model's provider
+ * (`openai` -> `OPENAI_API_KEY`, dist/env-api-keys.js:77), restoring the
+ * previous value afterwards. The value is a fixed placeholder, never a
+ * credential: the assertions only check that it does NOT appear on the
+ * forwarded options.
+ */
+async function withAmbientProviderApiKey<T>(body: () => Promise<T>): Promise<T> {
+	const name = "OPENAI_API_KEY";
+	const previous = process.env[name];
+	process.env[name] = "ambient-placeholder-the-module-must-never-read";
+	try {
+		return await body();
+	} finally {
+		if (previous === undefined) delete process.env[name];
+		else process.env[name] = previous;
+	}
+}
+
+test("forwards no apiKey to the composed provider when the registry resolves auth without one", async () => {
+	const { getProvider, calls } = capturingProvider(assistantText("ok"));
+	const outcome = await withAmbientProviderApiKey(() =>
+		runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([fakeModel()], headerOnlyAuth), getProvider },
+			complete: unreachableComplete,
+		}),
+	);
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the composed provider must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach the composed provider");
+	assert.equal("apiKey" in options!, false, "the module must not invent an apiKey the registry did not resolve, nor read one from the ambient environment");
+	assert.deepEqual(options!.headers, { ...HEADER_ONLY_AUTH_HEADERS }, "the registry's own auth headers are the credential on this path");
+});
+
+test("forwards no apiKey to deps.complete when the registry resolves auth without one", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await withAmbientProviderApiKey(() =>
+		runInProcessReviewer(baseRequest(), {
+			registry: fakeRegistry([fakeModel()], headerOnlyAuth),
+			complete,
+		}),
+	);
+	expectText(outcome);
+	assert.equal(calls.length, 1, "the fallback path must receive exactly one dispatch");
+	const options = calls[0]!.options;
+	assert.notEqual(options, undefined, "options must reach deps.complete");
+	assert.equal("apiKey" in options!, false, "the fallback path must not invent an apiKey either; compat's own withEnvApiKey is pi-ai's business, not this module's");
+	assert.deepEqual(options!.headers, { ...HEADER_ONLY_AUTH_HEADERS }, "the registry's own auth headers are the credential on this path too");
+});
+
+test("the no-apiKey options shape is identical on the composed-provider and deps.complete paths", async () => {
+	const { getProvider, calls: providerCalls } = capturingProvider(assistantText("ok"));
+	const { complete, calls: completeCalls } = capturingComplete(assistantText("ok"));
+	await withAmbientProviderApiKey(async () => {
+		expectText(
+			await runInProcessReviewer(baseRequest(), {
+				registry: { ...fakeRegistry([fakeModel()], headerOnlyAuth), getProvider },
+				complete: unreachableComplete,
+			}),
+		);
+		expectText(
+			await runInProcessReviewer(baseRequest(), {
+				registry: fakeRegistry([fakeModel()], headerOnlyAuth),
+				complete,
+			}),
+		);
+	});
+	// Option *keys* rather than values: the two runs carry different
+	// AbortSignal instances by construction, so only the shape is comparable.
+	const providerKeys = Object.keys(providerCalls[0]!.options ?? {}).sort();
+	const completeKeys = Object.keys(completeCalls[0]!.options ?? {}).sort();
+	assert.deepEqual(providerKeys, completeKeys, "routing through the composed provider must not change which credential fields this module forwards");
+	assert.equal(providerKeys.includes("apiKey"), false, "neither path may carry an apiKey the registry did not resolve");
+});
+
+for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+	for (const composed of [false, true]) {
+		test(`reviewer forwards transport ${transport ?? "absent"} through ${composed ? "composed provider" : "compat completion"} unchanged`, async () => {
+			const model = fakeModel();
+			const registry = fakeRegistry([model]);
+			const captured = capturingComplete(assistantText("review result"));
+			if (composed) registry.getProvider = () => ({
+				streamSimple: (model, context, options) => ({ result: () => captured.complete(model, context, options) }),
+			});
+			const outcome = await runInProcessReviewer(baseRequest({ transport }), { registry, complete: captured.complete });
+			assert.deepEqual(outcome, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+			assert.equal(captured.calls.length, 1);
+			assert.equal(captured.calls[0]!.options?.transport, transport);
+			assert.equal(Object.hasOwn(captured.calls[0]!.options!, "transport"), transport !== undefined);
+			assert.equal(captured.calls[0]!.options?.apiKey, "test-key");
+			assert.equal(captured.calls[0]!.options?.timeoutMs, 30_000);
+		});
+	}
+}

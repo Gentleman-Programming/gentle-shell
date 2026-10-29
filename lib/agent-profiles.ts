@@ -9,6 +9,9 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
+	unmatchedProfileKeys,
+} from "./agents-config.ts";
+import {
 	normalizeModelConfig,
 	type AgentModelConfig,
 	type AgentRoutingEntry,
@@ -365,6 +368,29 @@ export function profileRoutingRows(config: AgentModelConfig): ProfileRoutingRow[
 }
 
 /**
+ * Issue #2196 (PR #2233 maintainer decision): a routing row whose key names no
+ * discovered agent was rendered as a valid-looking row while its setting was
+ * silently ignored at launch. Each unmatched row gets one note: a did-you-mean
+ * suggestion when the packaged short name maps to a discovered agent, and a
+ * plain "no matching agent" otherwise. Matched rows get no note.
+ */
+export function unmatchedRoutingNotes(
+	rows: ProfileRoutingRow[],
+	agentNames: string[],
+): Map<string, string> {
+	const unmatched = unmatchedProfileKeys(
+		Object.fromEntries(rows.map((row) => [row.agent, { model: undefined, thinking: undefined }])),
+		agentNames.map((name) => ({ name })),
+	);
+	return new Map(
+		unmatched.map(({ key, suggestion }) => [
+			key,
+			suggestion === undefined ? "no matching agent" : `did you mean ${suggestion}?`,
+		]),
+	);
+}
+
+/**
  * Column widths shared by every routing table in one panel, so the profile's
  * routing and the effective routing align column for column instead of each
  * section sizing itself.
@@ -406,18 +432,28 @@ export interface ProfileListItem {
 	description: string;
 }
 
+/** One list item per saved profile, named with the markers that explain what a launch would use: the global `(active)` claim, plus `(pinned)` for the pin winner or `(session)` for this session's binding when either applies. */
 export function buildProfileListItems(
 	file: AgentProfilesFile,
 	pinned?: string,
+	sessionBound?: string,
 ): ProfileListItem[] {
 	return Object.entries(file.profiles).map(([name, config]) => {
 		const roles = profileRoleEntries(config).length;
 		const active = name === file.active ? `${name} (active)` : name;
+		// A pinned profile is the one this repository launches with, which is not the
+		// same thing as the globally active profile, so both are named. A session
+		// binding outranks the pin in this list (slice 1 stores it; slice 2,
+		// gentle-shell#1558, makes launches resolve it), so its marker wins on the
+		// same profile.
+		const label = name === sessionBound
+			? `${active} (session)`
+			: name === pinned
+				? `${active} (pinned)`
+				: active;
 		return {
 			id: name,
-			// A pinned profile is the one this repository launches with, which is not the
-			// same thing as the globally active profile, so both are named.
-			label: name === pinned ? `${active} (pinned)` : active,
+			label,
 			description: `${roles} ${roles === 1 ? "role" : "roles"}`,
 		};
 	});

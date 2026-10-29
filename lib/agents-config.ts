@@ -316,6 +316,41 @@ function pick<T>(candidates: Array<[T | undefined, ProfileSource]>): [T | undefi
 	return candidates.find(([value]) => value !== undefined) ?? [undefined, PROFILE_SOURCE.UNRESOLVED];
 }
 
+export interface UnmatchedProfileKey {
+	key: string;
+	suggestion: string | undefined;
+}
+
+// Issue #2196: a role key that names no discovered agent was silently ignored,
+// so the child inherited the orchestrator model with no warning anywhere. The
+// alias approach (PR #2233) was rejected because applying a bundled agent's
+// profile to a user-owned same-short-name agent is the exact silence the
+// prefix exists to prevent; reporting the unmatched key keeps resolution
+// exact-match and makes the misconfiguration visible instead.
+export function unmatchedProfileKeys(
+	modelProfiles: Record<string, ModelProfile>,
+	agents: ReadonlyArray<{ name: string }>,
+): UnmatchedProfileKey[] {
+	const names = new Set(agents.map((agent) => agent.name));
+	const lowerNames = new Set(agents.map((agent) => agent.name.toLowerCase()));
+	const suggestionFor = (key: string): string | undefined => {
+		const lowered = key.toLowerCase();
+		if (lowerNames.has(lowered)) return agents.find((agent) => agent.name.toLowerCase() === lowered)?.name;
+		const stripped = lowered.replace(/^gentle-ai-/, "");
+		for (const candidate of [lowered, stripped]) {
+			for (const name of lowerNames) {
+				if (name === candidate || name === `gentle-ai-${candidate}`) {
+					return agents.find((agent) => agent.name.toLowerCase() === name)?.name;
+				}
+			}
+		}
+		return undefined;
+	};
+	return Object.keys(modelProfiles)
+		.filter((key) => !names.has(key))
+		.map((key) => ({ key, suggestion: suggestionFor(key) }));
+}
+
 export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig): ResolvedProfile {
 	const profile = config.modelProfiles[agent.name];
 	const [model, modelSource] = pick<ModelRef>([

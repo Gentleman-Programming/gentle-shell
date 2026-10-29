@@ -3,10 +3,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { REVIEW_LENS_PARITY_PATTERNS } from "./support/review-lens-parity.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const CANONICAL = "skills/_shared/review-ledger-contract.md";
-const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md"];
+const ORCHESTRATOR = ["assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-writer.md"];
 const REVIEW_LENSES = [
 	"assets/agents/review-risk.md",
 	"assets/agents/review-resilience.md",
@@ -21,16 +22,7 @@ const GENTLE_SKILL = "skills/gentle-ai/SKILL.md";
 const README = "README.md";
 const TECHNICAL_REFERENCE = "docs/readme-reference.md";
 const CHAIN = "assets/chains/4r-review.chain.md";
-const SDD_WORKFLOW = "assets/sdd-orchestrator-workflow.md";
 const WORKER = "assets/agents/gentle-ai-worker.md";
-const CANONICAL_LIFECYCLE_SPECS = [
-	"openspec/specs/review-orchestration/spec.md",
-	"openspec/specs/review-transaction/spec.md",
-] as const;
-const HISTORICAL_LIFECYCLE_SPECS = [
-	"openspec/changes/complete-native-review-lifecycle/specs/review-orchestration/spec.md",
-	"openspec/changes/complete-native-review-lifecycle/specs/review-transaction/spec.md",
-] as const;
 
 function read(path: string): string {
 	return readFileSync(join(ROOT, path), "utf8");
@@ -84,8 +76,7 @@ const JUDGMENT_DAY_SEMANTIC_SURFACES = [
 	JD_PROMPTS,
 	...JUDGES,
 	FIX_AGENT,
-	"assets/orchestrator-delegation.md",
-	SDD_WORKFLOW,
+	"assets/orchestrator-writer.md",
 ] as const;
 
 const JUDGMENT_DAY_REJUDGMENT_PATTERNS = [
@@ -240,25 +231,14 @@ test("ordinary lens prompts contain the literal compact-v2 native result envelop
 	}
 });
 
-test("canonical ordinary review specs preserve the negotiated one-correction contract", () => {
-	for (const path of CANONICAL_LIFECYCLE_SPECS) {
-		const content = read(path);
-		assert.match(content, /one correction transaction/i, path);
-		assert.match(content, /original.*budget|budget.*original/i, path);
-		assert.match(content, /never reruns initial lenses|without rerunning initial (?:lenses|review)/i, path);
-		assert.match(content, /correction_required/, path);
-		assert.match(content, /failure escalates|failed.*escalates|MUST escalate/i, path);
-		assert.match(content, /forecast/i, path);
-		assert.doesNotMatch(content, /up to three failed targeted attempts|third failed attempt/i, path);
-	}
-});
-
-test("historical lifecycle change specs preserve their completed one-attempt design context", () => {
-	for (const path of HISTORICAL_LIFECYCLE_SPECS) {
-		const content = read(path);
-		assert.match(content, /at most one correction|one correction batch|After the one correction|GIVEN one exact ordinary correction|one validator and one final verification/i, path);
-		assert.doesNotMatch(content, /up to three failed targeted attempts/i, path);
-	}
+test("retained provider review contract preserves bounded correction without declaring approval", () => {
+	const content = read(CANONICAL);
+	assert.match(content, /one correction transaction/i);
+	assert.match(content, /original budget/i);
+	assert.match(content, /`correction_required`/);
+	assert.doesNotMatch(content, /up to three failed targeted attempts|third failed attempt/i);
+	assert.match(content, /`reviewing`, `correction_required`, `validating`, `approved`, and `escalated`/);
+	assert.match(content, /Only severe `introduced`, `behavior-activated`, or `worsened` findings with valid proof can enter `correction_ids`/);
 });
 
 test("risk lens distinguishes trusted orchestration from concrete boundary bypasses", () => {
@@ -354,16 +334,14 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 		[FIX_AGENT, read(FIX_AGENT)],
 		[JD_SKILL, read(JD_SKILL)],
 		[JD_PROMPTS, fencedBlock(JD_PROMPTS, "## Fix Agent Prompt")],
-		["assets/orchestrator-delegation.md", read("assets/orchestrator-delegation.md")],
-		[SDD_WORKFLOW, read(SDD_WORKFLOW)],
+		["assets/orchestrator-writer.md", read("assets/orchestrator-writer.md")],
 	] as const) {
 		assert.ok(content.includes(canonicalShape), `${path} must carry the canonical Judgment Day fix shape`);
 		assert.match(content, /requires no graph-v1 or native review lineage/i);
 	}
-	const routing = `${read("assets/orchestrator-delegation.md")}\n${read(SDD_WORKFLOW)}`;
+	const routing = readDelegationDetail();
 	assert.match(routing, /Judgment Day phase roles are never generic fallbacks\./);
 	assert.match(routing, /If the generic writer chain is unavailable, use the documented native generic fallback or stop\./);
-	assert.match(read(SDD_WORKFLOW), /\| default\s+\| balanced\s+\| SDD phase fallback; never a Judgment Day role\s+\|/);
 });
 
 test("orchestrator, injected skill, and technical reference defer RDD lifecycle ownership to Gentle AI", () => {
@@ -399,13 +377,12 @@ test("technical reference documents the dynamic runtime authority boundary witho
 });
 
 test("managed contracts retain no fresh lifecycle review directive", () => {
-	const managed = union([...ORCHESTRATOR, SDD_WORKFLOW, WORKER, GENTLE_SKILL, README]);
+	const managed = union([...ORCHESTRATOR, WORKER, GENTLE_SKILL, README]);
 	for (const obsolete of [
 		"A fresh review still follows delegated implementation.",
 		"run a fresh-context review lens unless",
 		"Run a fresh review before pushing a code release",
 	]) assert.ok(!managed.includes(obsolete), `managed contracts retain ${obsolete}`);
-	assert.match(read(SDD_WORKFLOW), /SDD phase validation does not start ordinary review or Judgment Day/);
 });
 
 test("static 4R chain runs each selected lens once and owns no orchestration", () => {

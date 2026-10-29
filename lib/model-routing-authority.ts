@@ -28,6 +28,11 @@ export type ModelConfigFileResult =
 export const SAFE_MODEL_ID_PATTERN = /^[A-Za-z0-9._~:@/+%-]+$/;
 const SAFE_AGENT_NAME_PATTERN = /^[A-Za-z0-9._:@/+%-]+$/;
 
+/** Shared agent-name policy; the same test normalizeModelConfig applies per key. */
+export function isSafeAgentName(name: string): boolean {
+	return SAFE_AGENT_NAME_PATTERN.test(name);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -63,7 +68,11 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 	}
 	if (!isRecord(value)) return undefined;
 	const model = normalizeModelId(value.model);
-	const thinking = isThinkingLevel(value.thinking) ? value.thinking : undefined;
+	const thinking = isThinkingLevel(value.thinking)
+		? value.thinking
+		: isThinkingLevel(value.effort)
+			? value.effort
+			: undefined;
 	if (!model && !thinking) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}
@@ -74,7 +83,7 @@ export function normalizeModelConfig(value: unknown): AgentModelConfig | undefin
 	if (!isRecord(value)) return undefined;
 	const cleaned: AgentModelConfig = {};
 	for (const [name, entryValue] of Object.entries(value)) {
-		if (!SAFE_AGENT_NAME_PATTERN.test(name)) continue;
+		if (!isSafeAgentName(name)) continue;
 		const entry = normalizeRoutingEntry(entryValue);
 		if (entry) cleaned[name] = entry;
 	}

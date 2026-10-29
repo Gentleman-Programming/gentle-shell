@@ -589,6 +589,73 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
+test("the jobs rail section paints between Status and Agents", (t) => {
+	const f = fixture();
+	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
+	sidebarPart(f.tui, "agents", { render: () => ["agents"], invalidate() {} }, { digest: () => "agents", render: () => ["Agents card"], invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { digest: () => "todo", render: () => ["Todo card"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const text = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	const footer = text.indexOf("Status");
+	const jobs = text.indexOf("Jobs card");
+	const agents = text.indexOf("Agents card");
+	const todo = text.indexOf("Todo card");
+	for (const [name, index] of [["Status", footer], ["Jobs card", jobs], ["Agents card", agents], ["Todo card", todo]] as const) {
+		assert.ok(index >= 0, `${name} paints in the rail`);
+	}
+	assert.ok(footer < jobs && jobs < agents && agents < todo, `sections paint in order, got: ${text}`);
+});
+
+test("a theme switch repaints rail sections whose digest did not change", (t) => {
+	const f = fixture();
+	// Pi hands extensions a live theme proxy and announces a switch only through
+	// ui.invalidate(), which never reaches the rail inside the layout tree.
+	let code = 31;
+	const live = { fg: (_color: string, text: string) => `\x1b[${code}m${text}\x1b[39m`, bold: (text: string) => text };
+	for (const key of ["footer", "agents", "todo"]) {
+		sidebarPart(f.tui, key, { render: () => [key], invalidate() {} }, {
+			digest: () => "stable",
+			render: () => [live.fg("accent", `${key} card`)],
+			invalidate() {},
+		});
+	}
+	t.after(installSidebar(f.tui, live));
+
+	const before = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) assert.ok(before.includes(`\x1b[31m${key} card`), `${key} paints with the first theme`);
+
+	code = 32;
+	const after = renderLayoutFrame(f.root, 140, 20, () => {}).lines.join("\n");
+	for (const key of ["footer", "agents", "todo"]) {
+		assert.ok(after.includes(`\x1b[32m${key} card`), `${key} repaints with the new theme`);
+		assert.ok(!after.includes(`\x1b[31m${key} card`), `${key} drops the old theme`);
+	}
+});
+
+test("structural cache misses skip the whole-rail digest pass", (t) => {
+	const f = fixture();
+	let digests = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["Todo"], invalidate() {} }, {
+		digest: () => { digests++; return "stable"; },
+		render: () => [`Todo ${digests}`],
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	// Every frame evaluates the digest exactly once: the whole-rail comparison
+	// reuses it for the section cache instead of calling each digest twice per
+	// prepare (issue #1681).
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	const prepared = digests;
+	assert.equal(prepared, 1, "preparing the rail evaluates the digest once");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 1, "a cache hit compares the digest once");
+	renderLayoutFrame(f.root, 141, 20, () => {});
+	assert.equal(digests, prepared + 2, "a structural miss re-prepares with a single digest pass");
+	renderLayoutFrame(f.root, 140, 20, () => {});
+	assert.equal(digests, prepared + 3, "returning to the cached structure stays on a single digest pass");
+});
+
 test("reuses final sidebar presentation until a relevant invalidation", (t) => {
 	const f = fixture();
 	sidebarPart(f.tui, "todo", { render: () => Array.from({ length: 10 }, (_, index) => `Todo ${index}`), invalidate() {} });

@@ -2,16 +2,19 @@ import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-c
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { withoutInteractiveHost } from "./rpc-host.ts";
+import { gentlePiConfigHome } from "./agent-home.ts";
+import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
+import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -69,6 +72,8 @@ export interface RunnerLimits {
 	// Longer ceiling used while an announced tool call is in flight. Optional so
 	// callers that only bound silence keep the idle budget as the tool ceiling.
 	toolStallTimeoutMs?: number;
+	// Bounded asynchronous cleanup window allowed after settlement before escalating to SIGTERM/SIGKILL.
+	cleanupTimeoutMs?: number;
 }
 
 export interface AskAnswer {
@@ -207,6 +212,8 @@ interface LiveTask {
 	childExit: number | null | undefined;
 	childExitSignal?: string | null;
 	instructionsTransportDir?: string;
+	/** The child's own TMPDIR, removed when the child ends unless its exit is unconfirmed. */
+	scratchDir?: string;
 	cleanupDeadlineAt: number | undefined;
 	quarantined: boolean;
 	nextId: number;
@@ -241,6 +248,8 @@ const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
 const GROUP_CONFIRM_DEADLINE_MS = 1_000;
+const QUARANTINE_PROBE_MS = 1_000;
+export const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 const QUERY_REJECTION_ERRORS = new Set([
 	"invalid child IPC frame",
 	"invalid child IPC correlation",
@@ -548,6 +557,15 @@ export class AgentRunner {
 		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
 		delete env.GENTLE_PI_RESEARCH_SELECTION;
 		const tools = requestedTools(request);
+		if (request.agent.tools.includes("bash_background")) {
+			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });
+			if (policy.policy === "off") {
+				const file = policy.source === "global_file" ? policy.globalFile : policy.projectFile;
+				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
+				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+				return;
+			}
+		}
 		if (tools !== undefined) env[REQUESTED_TOOLS_ENV] = tools;
 		else delete env[REQUESTED_TOOLS_ENV];
 		let instructionsTransportDir: string | undefined;
@@ -569,6 +587,22 @@ export class AgentRunner {
 				return;
 			}
 		}
+		// Harness roadmap T3: scratch the child makes with mktemp lands in its own
+		// TMPDIR, under the inherited one, so the runtime removes it at the end
+		// instead of asking the parent. Best effort: without it the child keeps
+		// the inherited TMPDIR.
+		let scratchDir: string | undefined;
+		try {
+			const inherited = request.env.TMPDIR?.trim();
+			// A relative TMPDIR would resolve against this process, not the child cwd.
+			// A short name and no real path: socket paths under TMPDIR are capped near 104 bytes.
+			scratchDir = mkdtempSync(join(inherited && isAbsolute(inherited) ? inherited : tmpdir(), SUBAGENT_SCRATCH_PREFIX));
+			// Session shutdown keeps it while it is held (extensions/session-scratch.ts).
+			holdSubagentScratch(scratchDir);
+			try { chmodSync(scratchDir, DIR_MODE); } catch { /* best effort */ }
+			env.TMPDIR = scratchDir;
+			if (this.processControl.platform === "win32") { env.TMP = scratchDir; env.TEMP = scratchDir; }
+		} catch { scratchDir = undefined; }
 		let child: ChildLike;
 		try {
 			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
@@ -580,15 +614,16 @@ export class AgentRunner {
 				stdio: hasParentPermissionChannel ? ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"] : ["pipe", "pipe", "pipe", "ipc"],
 			});
 		} catch (error) {
-			if (instructionsTransportDir) {
-				try { rmSync(instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			for (const dir of [instructionsTransportDir, scratchDir]) {
+				if (dir) try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
 			}
+			if (scratchDir) releaseSubagentScratch(scratchDir);
 			this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
 			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -885,9 +920,9 @@ export class AgentRunner {
 			if (event.type === TASK_EVENT.AGENT_SETTLED) {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
-				if (terminal?.error) this.requestStop(id, TASK_STATUS.FAILED, terminal.error);
-				else if (terminal?.result) this.requestStop(id, TASK_STATUS.COMPLETED, null);
-				else this.requestStop(id, TASK_STATUS.FAILED, "assistant settled without a final report");
+				if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
+				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
+				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}
 		}
 		if (!live.terminal && progress) this.armStall(id, live);
@@ -926,6 +961,41 @@ export class AgentRunner {
 		} catch {
 			// already gone
 		}
+	}
+
+	/**
+	 * Requests orderly child shutdown via stdin upon settlement and schedules
+	 * bounded signal escalation if the child process does not exit within cleanupTimeoutMs.
+	 */
+	private settleOrderly(id: string, status: TaskRecord["status"], error: string | null): void {
+		const live = this.live.get(id);
+		if (!live || live.terminal) return;
+		live.terminal = { status, error };
+		live.mutationStarts.clear();
+		live.inFlightTools.clear();
+		live.permissionBroker?.close();
+		this.closeIpc(live);
+		live.cancelStall();
+		const current = this.store.get(id);
+		if (current && !isFinished(current.status)) {
+			this.store.update(id, { lastStep: "cleaning up" });
+		}
+		try {
+			live.child.stdin.end();
+		} catch {
+			this.signal(live, "SIGTERM");
+		}
+		const cleanupTimeoutMs = this.limits.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
+		live.cancelGrace = this.deps.schedule(() => {
+			if (this.live.get(id) !== live) return;
+			this.signal(live, "SIGTERM");
+			live.cancelGrace = this.deps.schedule(() => {
+				if (this.live.get(id) !== live) return;
+				live.cleanupDeadlineAt = this.deps.now() + GROUP_CONFIRM_DEADLINE_MS;
+				this.signal(live, "SIGKILL");
+				this.confirmGroupExit(id, live);
+			}, TERMINATION_GRACE_MS);
+		}, cleanupTimeoutMs);
 	}
 
 	private requestStop(id: string, status: TaskRecord["status"], error: string | null, abort = false): void {
@@ -1004,7 +1074,8 @@ export class AgentRunner {
 		live.cancelGrace = this.deps.schedule(() => this.confirmGroupExit(id, live), GROUP_CONFIRM_MS);
 	}
 
-	private cleanupLive(live: LiveTask): void {
+	/** `exitProven` is true only in completeExit, after the child's exit was observed or its group is gone. */
+	private cleanupLive(live: LiveTask, exitProven = false): void {
 		live.permissionBroker?.close();
 		this.closeIpc(live);
 		live.cancelStall();
@@ -1012,6 +1083,13 @@ export class AgentRunner {
 		if (live.instructionsTransportDir) {
 			try { rmSync(live.instructionsTransportDir, { recursive: true, force: true }); } catch { /* best effort */ }
 			live.instructionsTransportDir = undefined;
+		}
+		// A quarantined child's exit is unconfirmed: a live descendant may still
+		// hold files there, so its scratch stays until the exit is proven.
+		if (live.scratchDir && (!live.quarantined || exitProven)) {
+			try { rmSync(live.scratchDir, { recursive: true, force: true }); } catch { /* best effort */ }
+			releaseSubagentScratch(live.scratchDir);
+			live.scratchDir = undefined;
 		}
 	}
 
@@ -1037,13 +1115,26 @@ export class AgentRunner {
 		const exitDesc = formatChildExit(code, signal);
 		if (this.groupExists(live)) {
 			if (!live.terminal) this.requestStop(id, TASK_STATUS.FAILED, `pi exited with ${exitDesc} before agent_settled${this.stderrSuffix(live)}`);
+			else if (live.quarantined) live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
+			return;
+		}
+		this.completeExit(id, live);
+	}
+
+	// Quarantine stopped probing, and a descendant outlives the child's observed
+	// exit: no later event reports the group's end, so keep probing until it is
+	// gone, then release the slot and scratch.
+	private awaitQuarantinedGroup(id: string, live: LiveTask): void {
+		if (this.live.get(id) !== live) return;
+		if (this.groupExists(live)) {
+			live.cancelGrace = this.deps.schedule(() => this.awaitQuarantinedGroup(id, live), QUARANTINE_PROBE_MS);
 			return;
 		}
 		this.completeExit(id, live);
 	}
 
 	private completeExit(id: string, live: LiveTask): void {
-		this.cleanupLive(live);
+		this.cleanupLive(live, true);
 		this.live.delete(id);
 		// Quarantine already notified completion, but its retained slot is now free.
 		if (live.quarantined) {

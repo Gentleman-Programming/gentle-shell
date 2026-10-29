@@ -164,6 +164,12 @@ export interface TaskStatusChange {
 export type StatusChangeListener = (change: TaskStatusChange) => void | Promise<void>;
 
 const DEFAULT_LIMITS: ThreadLimits = { maxItems: 400, maxOutputChars: 16_000 };
+/** Finished tasks keep their thread weight only for this many most-recent
+ * records per parent session, matching the agents view's visible history cap
+ * (MAX_FINISHED_PER_SESSION in agents-view.ts, pinned by tests); older
+ * terminal tasks (record, thread, run id, listeners) leave the store
+ * entirely. Running tasks are never evicted. */
+export const TERMINAL_RETENTION = 200;
 /** Child UI requests that block on an answer; everything else (notify, setStatus, setWidget) is noise here. */
 export const DIALOG_METHODS: ReadonlySet<string> = new Set(["select", "confirm", "input", "editor"]);
 /** The one child notify that reaches the task thread: requested --tools the child does not have (#1690). */
@@ -481,6 +487,9 @@ export class TaskStore {
 	private sequence = 0;
 	private readonly runIds = new Map<string, string>();
 	private readonly statusListeners = new Set<StatusChangeListener>();
+	// Insertion-ordered recency of finished tasks, oldest first (Set keeps
+	// insertion order); prune evicts from the front.
+	private readonly terminalOrder = new Set<string>();
 
 	constructor(limits: Partial<ThreadLimits> = {}) {
 		this.limits = limits;
@@ -492,6 +501,11 @@ export class TaskStore {
 		this.tasks.set(task.id, task);
 		this.threads.set(task.id, emptyThread(this.limits));
 		this.notifyStatus(task, previous);
+		if (isFinished(task.status)) {
+			this.markTerminal(task.id);
+			this.listeners.delete(task.id);
+			this.pruneTerminal();
+		}
 		this.notifySummary();
 	}
 
@@ -502,6 +516,11 @@ export class TaskStore {
 		this.tasks.set(task.id, task);
 		this.runIds.set(task.id, randomUUID());
 		this.threads.set(task.id, { ...thread, limits: { ...DEFAULT_LIMITS, ...this.limits } });
+		if (isFinished(task.status)) {
+			this.markTerminal(task.id);
+			this.listeners.delete(task.id);
+			this.pruneTerminal();
+		}
 		this.notifySummary();
 		return true;
 	}
@@ -533,7 +552,16 @@ export class TaskStore {
 		this.tasks.set(id, next);
 		this.notifyStatus(next, current.status);
 		this.notifyTask(next);
-		if (next.status !== current.status) this.notifySummary();
+		if (next.status !== current.status) {
+			// The terminal transition itself is the final notification; after it
+			// the task never changes, so its listeners stop costing anything.
+			if (isFinished(next.status)) {
+				this.listeners.delete(next.id);
+				this.markTerminal(next.id);
+			}
+			this.pruneTerminal();
+			this.notifySummary();
+		}
 		return next;
 	}
 
@@ -563,6 +591,34 @@ export class TaskStore {
 	subscribeStatusChanges(listener: StatusChangeListener): () => void {
 		this.statusListeners.add(listener);
 		return () => { this.statusListeners.delete(listener); };
+	}
+
+	private markTerminal(id: string): void {
+		if (!this.terminalOrder.has(id)) this.terminalOrder.add(id);
+	}
+
+	/** Evict the oldest finished tasks beyond TERMINAL_RETENTION per parent
+	 * session, with their threads, run ids and listeners. Running tasks are
+	 * never evicted; a task that left the terminal state is skipped as stale. */
+	private pruneTerminal(): void {
+		const finished = new Map<string, number>();
+		for (const task of this.tasks.values()) {
+			if (!isFinished(task.status)) continue;
+			finished.set(task.parentSessionId, (finished.get(task.parentSessionId) ?? 0) + 1);
+		}
+		if (finished.size === 0) return;
+		for (const id of this.terminalOrder) {
+			const task = this.tasks.get(id);
+			if (!task || !isFinished(task.status)) { this.terminalOrder.delete(id); continue; }
+			const count = finished.get(task.parentSessionId) ?? 0;
+			if (count <= TERMINAL_RETENTION) continue;
+			this.tasks.delete(id);
+			this.threads.delete(id);
+			this.listeners.delete(id);
+			this.runIds.delete(id);
+			this.terminalOrder.delete(id);
+			finished.set(task.parentSessionId, count - 1);
+		}
 	}
 
 	private notifyStatus(task: TaskRecord, previousStatus?: TaskStatus): void {

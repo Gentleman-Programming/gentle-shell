@@ -37,3 +37,29 @@ does not establish persistence. The newest profile-family entry is terminal:
 Replay neither appends nor publishes bindings and never applies a model or
 thinking level. A subsequent disk-reader slice supplies corroboration; this
 codec alone cannot establish it.
+
+## Disk corroboration
+
+`readSessionProfileDisk(source)` in `lib/session-profile-disk-reader.ts` is the
+stateless synchronous check that supplies the corroboration replay requires.
+It reads the session's public active branch and its JSONL file, selects the
+newest profile-family entry on the branch (excluding caller-supplied known
+failed append IDs), and admits it only when the record on disk is identical.
+It performs no writes, fallback policy, caching, ancestry repair or fsync, and
+a missing file is conservative: it never restores a profile found only in
+memory.
+
+The result is the decoder result plus `entryIndex` and `lineNumber`, or
+`indeterminate` with one reason: `missing-source`, `invalid-candidate-metadata`,
+`unreadable-file`, `source-changed`, `invalid-record`,
+`session-header-mismatch`, `duplicate-id`, `missing-header`,
+`selected-record-missing`, `selected-record-mismatch`, or
+`unserializable-source` (exported as `DiskProfileIndeterminateReason`).
+Reasons never carry record contents.
+
+Malformed JSON lines are skipped, matching Pi's session parser, so a file Pi
+opens never becomes permanently indeterminate here; `lineNumber` still counts
+physical lines. A malformed selected record is therefore
+`selected-record-missing`. `missing-header` means no line parsed at all (an
+empty, all-blank or all-malformed file). Pi writes no byte order mark, so a
+BOM-prefixed header line is skipped as malformed like any other.

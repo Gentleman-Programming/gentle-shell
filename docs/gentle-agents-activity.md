@@ -4,6 +4,14 @@ An interactive RPC host — a client that runs `pi --mode rpc` itself, such as t
 
 Source map: [publisher](../lib/agents-rpc-publisher.ts), [wiring](../extensions/gentle-agents.ts), [store](../lib/agents-protocol.ts).
 
+## Activity labels
+
+The scrollable TUI sidebar shows each task's existing label below its agent when
+there is no room for the inline task column. The line is clipped to the card
+width; waiting questions and errors retain their existing display priority. The
+height-capped card above the editor retains its existing layout. The RPC payload
+carries the task label for hosts to display.
+
 ## Same-profile orchestrator discovery (Refs #1701)
 
 `orchestrator_list` keeps stable raw routing session IDs and adds recorded display
@@ -49,7 +57,11 @@ Aliases are display hints, never authentication or routing identities.
 
 Aliases are optional envelope metadata in the existing branch-local state record,
 restored with `getBranch()` on start/reload/tree navigation. State replacement or
-withdrawal preserves them; no subject preserves both. Subject-only declarations
+withdrawal preserves them; no subject preserves both. When a publication includes
+`state.work` with an explicit `topic` and no `subject`, the topic refreshes Current
+(the first such classification also sets Initial on a new record); an explicit
+`subject` in the same publication wins, and state-only refreshes never re-derive
+the alias from previously stored work. Subject-only declarations
 preserve state contents, recorded cwd and `recordedAt`: old progress is not a fresh
 status update. Publish subject and state together when changing work. New records
 use null/null until the first declaration; legacy records without aliases keep
@@ -104,7 +116,9 @@ receipts. Complete model-facing output and permissions remain unchanged.
 
 `orchestrator_session_id` also accepts optional `state`: strings named `objective`,
 `progress`, `decisions`, and `blockers` (2,048 UTF-8 bytes total). An object replaces
-all fields, `null` withdraws, and omission leaves the current record unchanged.
+all fields, `null` withdraws, and omission leaves the current record unchanged. An object
+without `progress` keeps the automatic todo progress line still published (dropped only
+when the merge would exceed the byte budget); an explicit `progress` replaces it.
 Extra keys, controls, and oversized input are rejected before naming or persistence;
 records additionally fit 4 KiB. Never include credentials, internal instructions,
 or raw prompts. Whitelisting is not automatic secret redaction.
@@ -266,10 +280,14 @@ are unchanged; caller replacement prevents a stale `recorded` result.
 Call `orchestrator_consult` with required stable `recipient_session_id`, optional
 `kind: "metadata"` (default), and optional existing opaque catalog `cursor`.
 No free-form question, owner request, human picker or read-consent dialog is used
-for this profile's explicitly published data. Publish `subject` and `state` together
-before work beyond small direct tasks; update at task changes and completion. Keep
-small direct tasks exempt. Batch with setup/progress; do not add a model turn solely
-to publish or emit per-tool/token updates.
+for this profile's explicitly published data. Declare a `subject` before work beyond
+small direct tasks. Progress is published automatically: after each todo write the
+runtime sets `progress` to `<done>/<total> done`, merged into the owner's curated
+fields, so the model never spends a turn reporting status. Todo titles are private work
+text and are never published; a cleared list removes the line, and a withdrawn state
+stays withdrawn until the owner publishes again.
+Keep small direct tasks exempt. Do not add a model turn solely to publish or emit
+per-tool/token updates.
 
 Use `objective` for the goal, `progress` for current and next scope, and `blockers`
 for anything preventing progress. Use `state.work` for relevant area/topic and

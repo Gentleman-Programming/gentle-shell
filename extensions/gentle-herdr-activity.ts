@@ -1,9 +1,12 @@
 import { statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activitySummary, ActivityPublisher, createActivityColumns, herdrDetected, metadataTransport } from "../lib/herdr-activity.ts";
 import { replayTodo, type TodoState } from "../lib/shell-todo.ts";
 
 interface ActivityOptions {
+	gentlePiConfigHome?: string;
 	env?: NodeJS.ProcessEnv;
 	isSocket?: (path: string) => boolean;
 	send?: (summary: string | null, seq: number) => Promise<void>;
@@ -21,6 +24,8 @@ export function createHerdrActivityExtension(options: ActivityOptions = {}) {
 		});
 		let publisher: ActivityPublisher | undefined;
 		let stop: (() => void) | undefined;
+		let unsubscribeSettings: (() => void) | undefined;
+		let enabled = true;
 		let owner: string | undefined;
 		let tasks: TodoState["tasks"] = [];
 		let active = false;
@@ -28,7 +33,7 @@ export function createHerdrActivityExtension(options: ActivityOptions = {}) {
 		const columns = options.columns ?? createActivityColumns(env.HERDR_SOCKET_PATH!, options.now);
 		const owns = (ctx: ExtensionContext) => owner !== undefined && ctx.sessionManager.getSessionId() === owner;
 		const publish = () => {
-			if (!active || !publisher) return;
+			if (!active || !publisher || !enabled) return;
 			const now = (options.now ?? Date.now)();
 			publisher.update(activitySummary(tasks, columns()), now >= refreshAt);
 			if (now >= refreshAt) refreshAt = now + 10000;
@@ -36,12 +41,26 @@ export function createHerdrActivityExtension(options: ActivityOptions = {}) {
 		const idle = () => { active = false; publisher?.update(null); };
 		const startSession = (ctx: ExtensionContext) => {
 			idle(); stop?.(); stop = undefined;
+			unsubscribeSettings?.(); unsubscribeSettings = undefined;
 			owner = undefined;
 			if (ctx.mode !== "tui" || !ctx.hasUI || !isSocket(env.HERDR_SOCKET_PATH!)) return;
 			owner = ctx.sessionManager.getSessionId();
 			if (!owner) return;
 			publisher ??= new ActivityPublisher(options.send ?? metadataTransport(env));
 			publisher.update(null, true);
+			const preferences = resolveHerdrTaskSummarySettings({ gentlePiConfigHome: options.gentlePiConfigHome });
+			const configHome = dirname(preferences.globalFile);
+			enabled = preferences.settings.enabled;
+			unsubscribeSettings = pi.events.on(HERDR_TASK_SUMMARY_CHANGED, (data: unknown) => {
+				if (typeof data !== "object" || data === null || !("configHome" in data)
+					|| typeof data.configHome !== "string" || resolve(data.configHome) !== configHome) return;
+				const next = resolveHerdrTaskSummarySettings({ gentlePiConfigHome: configHome });
+				// Rejected store changes have no transport or state effects.
+				if (next.malformed || next.readError || next.settings.enabled === enabled) return;
+				enabled = next.settings.enabled;
+				if (!enabled) publisher?.update(null);
+				else { refreshAt = 0; publish(); }
+			});
 			tasks = replayTodo(ctx.sessionManager.getBranch()).tasks;
 			const watch = options.watch ?? ((tick: () => void) => {
 				const timer = setInterval(tick, 1000); timer.unref(); return () => clearInterval(timer);
@@ -72,6 +91,7 @@ export function createHerdrActivityExtension(options: ActivityOptions = {}) {
 		pi.on("session_shutdown", (_event, ctx) => {
 			if (!owns(ctx)) return;
 			idle(); stop?.(); stop = undefined;
+			unsubscribeSettings?.(); unsubscribeSettings = undefined;
 			publisher?.close(); publisher = undefined; owner = undefined; tasks = [];
 		});
 	};

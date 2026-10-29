@@ -252,7 +252,7 @@ export function inheritedProfileDriftNotice(options: SessionProfileOptions): str
 	if (seen.has(key)) return undefined;
 	seen.add(key);
 	notified.set(options.sessionId!, seen);
-	return `el Gentleman: the default profile changed to ${describe(current)}, this session keeps ${describe(resolution.profile)}. Press Enter on a profile in /gentle:profiles to adopt it.`;
+	return `el Gentleman: the default profile changed to ${describe(current)}, this session keeps ${describe(resolution.profile)}. Open /gentle:profiles and choose Use in this session to adopt one.`;
 }
 
 // gentle-shell#2228: an explicit binding re-copies the profile definition at
@@ -280,7 +280,7 @@ function bindingDefinitionDriftNotice(
 	if (seen.has(key)) return undefined;
 	seen.add(key);
 	notified.set(options.sessionId!, seen);
-	return `el Gentleman: the profile definition changed to "${resolution.name}" (profiles.json), this session keeps the binding from selection. Press Enter on a profile in /gentle:profiles to adopt it.`;
+	return `el Gentleman: the profile definition changed to "${resolution.name}" (profiles.json), this session keeps the binding from selection. Open /gentle:profiles and choose Use in this session to adopt one.`;
 }
 
 /** Testing-only reset of every frozen snapshot and drift memory. */

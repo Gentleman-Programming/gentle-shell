@@ -172,19 +172,36 @@ export function changesSummary(model: ChangesModel): string {
 // The idle widget exists only while files are tracked. An unborn root (no
 // commits yet) is silence here: /gentle:changes explains the state on demand,
 // where the message has room and context.
+//
+// Both surfaces that paint it (the sidebar part and the below-input header
+// row) re-render every frame, so the paint is memoized per digest, width and
+// theme identity -- one stored frame, like CodemodeCard's cachedFrame. The
+// digest already rolls up every per-file detail the paint consumes (path,
+// status, counts, diffRevision, countsUnavailable), so a digest hit skips the
+// per-file join entirely; a digest-less (hand-built) model never caches, and
+// a new theme object repaints.
+type WidgetFrame = { digest: string; width: number; theme: ChangesTheme; lines: string[] };
+let widgetFrame: WidgetFrame | undefined;
+
 export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number): string[] {
 	if (model.files.length === 0) return [];
+	if (model.digest !== undefined && widgetFrame?.digest === model.digest && widgetFrame.width === width && widgetFrame.theme === theme) return widgetFrame.lines;
 	const noun = model.files.length === 1 ? "file" : "files";
 	const dot = theme.fg("muted", "·");
 	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 	const hint = theme.fg("dim", CHANGES_COMMAND);
 	const list = model.files.map((file) => theme.fg("muted", file.path)).join(` ${dot} `);
 	const left = `${head} ${dot} ${list}`;
+	let lines: string[];
 	const gap = width - visibleWidth(left) - visibleWidth(hint);
-	if (gap >= 2) return [`${left}${" ".repeat(gap)}${hint}`];
-	const headGap = width - visibleWidth(head) - visibleWidth(hint);
-	if (headGap >= 2) return [`${head}${" ".repeat(headGap)}${hint}`];
-	return [truncateToWidth(head, width, "…")];
+	if (gap >= 2) lines = [`${left}${" ".repeat(gap)}${hint}`];
+	else {
+		const headGap = width - visibleWidth(head) - visibleWidth(hint);
+		lines = headGap >= 2 ? [`${head}${" ".repeat(headGap)}${hint}`] : [truncateToWidth(head, width, "…")];
+	}
+	if (model.digest === undefined) return lines;
+	widgetFrame = { digest: model.digest, width, theme, lines };
+	return lines;
 }
 
 export interface GitResult {

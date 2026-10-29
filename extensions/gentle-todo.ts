@@ -179,7 +179,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 				scroll.updateLayout(body.length, current.collapsed ? body.length : room, () => current.host?.requestRender());
 				const visible = scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + scroll.viewportHeight);
 				const output = [...lines.slice(0, bodyStart), ...visible, ...lines.slice(-1)];
-				if (overflow) output.push(theme.fg("muted", truncateToWidth(`↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · ctrl+shift+↑/↓`, width)));
+				if (overflow) output.push(theme.fg("muted", truncateToWidth(`↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · alt+shift+↑/↓`, width)));
 				return spacer && output.length > 0 ? [...output, ""] : output;
 			},
 			invalidate() {

@@ -101,7 +101,7 @@ import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIs
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
-import { shouldCheckStartupUpdate, findStartupUpdate } from "../runtime/gentle-shell-startup-update.mjs";
+import { findStartupUpdate, parseStartupReleaseCache, shouldCheckStartupUpdate, writeStartupReleaseCache } from "../runtime/gentle-shell-startup-update.mjs";
 import { promptStartupUpdate } from "../runtime/gentle-shell-update-panel.mjs";
 import { applyStartupChoice, omitStartupVersion, resolveStartupRelaunch } from "../runtime/gentle-shell-startup-flow.mjs";
 
@@ -1684,6 +1684,32 @@ async function handleBundledUpgrade(bundled, commandArgs) {
 	}
 }
 
+// `gentle-shell update --latest` in a bundled install: the newest published
+// Pi installed with this Gentle Shell beside the active version, without the
+// release's verified lockfile (after a warning), verified, then `current`
+// switched. Returns the exit code like handleBundledUpgrade; a failure leaves
+// `current` as it was.
+async function handleBundledPiLatest(bundled) {
+	const { prefixLayout, publishedPi, upgradePiLatest } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: bundled.root });
+	try {
+		await upgradePiLatest({
+			layout,
+			home: homedir(),
+			shell: ownPackageVersion(),
+			platform: process.platform,
+			arch: process.arch,
+			env: process.env,
+			adapters: { latestPi: () => publishedPi(layout, { platform: process.platform, env: process.env }) },
+			out: (line) => process.stdout.write(`${line}\n`),
+		});
+		return 0;
+	} catch (error) {
+		process.stderr.write(`gentle-shell update: ${error.message}${error.stderr ? `\n${error.stderr}` : ""}\n`);
+		return 1;
+	}
+}
+
 // The bundled npm as the `npmCommand` of a home Gentle Shell owns (the isolated
 // home, or a --home it created or provisioned; never --link or a foreign home),
 // so Pi installs packages with our npm while its tools keep the user's PATH.
@@ -1782,11 +1808,27 @@ async function startupUpdate(bundled, args, startupEnv) {
 	if (!shouldCheckStartupUpdate({ args, env: startupEnv, bundled: Boolean(bundled),
 		inputTTY: process.stdin.isTTY === true, outputTTY: process.stdout.isTTY === true })) return undefined;
 	const configPath = resolveConfigPath();
-	let skipped;
-	try { skipped = readRawConfig(configPath).skippedStartupRelease; } catch { /* A notice must not prevent opening. */ }
+	let skipped, cache;
+	try {
+		const raw = readRawConfig(configPath);
+		skipped = raw.skippedStartupRelease;
+		// The last recorded lookup answers today's check without the network; a
+		// stale or malformed record just means this launch looks again.
+		cache = parseStartupReleaseCache(raw.startupReleaseCheck);
+	} catch { /* A notice must not prevent opening. */ }
 	const { latestRelease } = await import("../scripts/main-channel.mjs");
-	const offer = await findStartupUpdate({ current: ownPackageVersion(), skipped,
-		lookup: (signal) => latestRelease((url, options) => fetch(url, { ...options, signal })) });
+	const offer = await findStartupUpdate({ current: ownPackageVersion(), skipped, cache,
+		lookup: (signal) => latestRelease((url, options) => fetch(url, { ...options, signal })),
+		// Only a live lookup reaches this: persisting it keeps the next launches
+		// off the network. A failed write is retried by tomorrow's stale cache.
+		cacheWrite: (latest) => {
+			try {
+				writeStartupReleaseCache(() => readJsonIfExists(configPath), (text) => {
+					mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+					writeFileAtomically(configPath, text, { mode: 0o600 });
+				}, latest);
+			} catch { /* A notice must not prevent opening. */ }
+		}, });
 	if (!offer) return undefined;
 	let choice;
 	try { choice = await promptStartupUpdate(offer, { color: process.stdout.hasColors?.() === true }); }
@@ -1823,7 +1865,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nUnknown ownership refuses without installing; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
+		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nA linked source Shell updates its local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
 		process.stdout.write(`${helpText()}\nBundled Engram memory: Shell shares the global Engram server on 127.0.0.1:7437, like other agents' hooks.\nA running server is reused only with verified /compatibility evidence; when nothing listens, Shell starts the\nbundled core's engram serve (default ~/.engram) and waits for that evidence. Otherwise ENGRAM_BIN is Shell's\nguard and memory stays off for that launch. Matching versions or updating alone do not prove compatibility.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
@@ -1917,14 +1959,21 @@ async function main() {
 
 	// S5: in a bundled install Pi updates only with Gentle Shell, so Pi's own
 	// update becomes `gentle-shell upgrade` (run when interactive, named
-	// otherwise); package updates still reach Pi.
+	// otherwise), or with `--latest` the newest published Pi without the
+	// release's lockfile (run even when not interactive: it was asked for);
+	// package updates still reach Pi.
 	let passthrough = args.passthrough;
 	if (bundled && args.piSubcommand === "update") {
 		const plan = bundledUpdatePlan(args.passthrough);
 		if (plan.self) {
-			const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-			for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
-			const code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
+			let code;
+			if (plan.latest) {
+				code = await handleBundledPiLatest(bundled);
+			} else {
+				const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+				for (const line of bundledUpdateNotice({ piVersion: versionCheck.version, interactive })) process.stdout.write(`${line}\n`);
+				code = interactive ? await handleBundledUpgrade(bundled, []) : undefined;
+			}
 			const next = bundledUpdateNext(plan, code);
 			if ("exitCode" in next) process.exit(next.exitCode);
 			if (next.note) process.stderr.write(`${next.note}\n`);

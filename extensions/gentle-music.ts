@@ -1,8 +1,10 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { runningBundledPrefix } from "../lib/gentle-shell-bundled.ts";
 
 // Gentle Music: /gentle:music hands the whole terminal to gentle-stream's own
 // TUI, the way Pi's external editor (ctrl+g) does: stop Pi's TUI, run the
@@ -12,12 +14,22 @@ import type { Component } from "@earendil-works/pi-tui";
 // `gentle-stream ctl …` with captured output and never take the terminal.
 //
 // Runtime imports stay node-only so the command loads without Pi's packages.
+//
+// A bundled Gentle Shell without any player offers to install one inside its
+// own folder (scripts/bundled-install.mjs installMusicPlayer): the pinned uv,
+// a uv-managed Python 3.13 and gentle-stream, all under the prefix. Other
+// installs keep the manual hint.
 
 export const MUSIC_COMMAND_NAME = "gentle:music";
 export const GENTLE_STREAM_SPEC = "gentle-stream[samples] @ git+https://github.com/Gentleman-Programming/gentle-stream";
 export const MUSIC_CONTROL_COMMANDS = ["next", "pause", "play", "stop", "status"] as const;
 export type MusicControlCommand = (typeof MUSIC_CONTROL_COMMANDS)[number];
 
+export const MUSIC_INSTALL_TITLE = "Install the music player?";
+export const MUSIC_INSTALL_OFFER = "Install the gentle-stream music player inside Gentle Shell? It downloads uv, Python 3.13 and the player (about 150 MB) into the Gentle Shell folder.";
+// gentle-stream needs POSIX (fcntl locks, an AF_UNIX control socket, process
+// groups), so a native Windows Pi can neither install nor run it; WSL is Linux.
+export const MUSIC_WINDOWS_UNSUPPORTED = "/gentle:music is not available on Windows yet: the gentle-stream player runs on macOS and Linux. It works when Gentle Shell runs inside WSL.";
 const UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/";
 const CTL_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
@@ -65,8 +77,19 @@ interface TerminalOwner {
 	requestRender(force?: boolean): void;
 }
 
+/** The player a bundled Gentle Shell installs inside its prefix on request. */
+export interface BundledMusicPlayer {
+	gentleStream: string;
+	installed(): boolean;
+	install(progress: (line: string) => void): Promise<{ gentleStream: string; samples: boolean }>;
+}
+
 export interface GentleMusicDeps {
 	which?: MusicWhich;
+	/** The bundled install's player, or undefined outside a bundled install. */
+	bundled?: () => Promise<BundledMusicPlayer | undefined>;
+	/** The platform Pi runs on; gentle-stream does not run on native Windows. */
+	platform?: NodeJS.Platform;
 	spawn?: MusicSpawn;
 	signals?: MusicSignals;
 	usage?: MusicUsage;
@@ -95,10 +118,11 @@ export function findOnPath(name: string, env: NodeJS.ProcessEnv = process.env, p
 	return undefined;
 }
 
-/** gentle-stream on PATH, else the published spec through uvx, else through `uv tool run`. */
-export function resolveGentleStream(which: MusicWhich): GentleStreamCommand | undefined {
+/** gentle-stream on PATH, else the one installed inside the bundled prefix, else the published spec through uvx, else through `uv tool run`. */
+export function resolveGentleStream(which: MusicWhich, bundledPlayer?: string): GentleStreamCommand | undefined {
 	const installed = which("gentle-stream");
 	if (installed) return { command: installed, prefix: [] };
+	if (bundledPlayer) return { command: bundledPlayer, prefix: [] };
 	const uvx = which("uvx");
 	if (uvx) return { command: uvx, prefix: ["--from", GENTLE_STREAM_SPEC, "gentle-stream"] };
 	const uv = which("uv");
@@ -142,6 +166,22 @@ export function formatMusicStatus(stdout: string): string | undefined {
 	if (running !== true) return "nothing is playing";
 	const parts = [name, genre].filter((part): part is string => typeof part === "string" && part.length > 0);
 	return `♪ ${[...parts, playing === true ? "playing" : "paused"].join(" · ")}`;
+}
+
+/** The running bundled install's player (GENTLE_SHELL_PREFIX, checked by runningBundledPrefix). */
+async function defaultBundled(): Promise<BundledMusicPlayer | undefined> {
+	const prefix = runningBundledPrefix(process.env);
+	if (prefix === undefined) return undefined;
+	const { installMusicPlayer, installedMusicPlayer, prefixLayout } = await import("../scripts/bundled-install.mjs");
+	const layout = prefixLayout({ platform: process.platform, env: process.env, home: homedir(), root: prefix });
+	return {
+		gentleStream: layout.gentleStream,
+		installed: () => installedMusicPlayer(layout),
+		install: async (progress) => {
+			const result = await installMusicPlayer({ layout, platform: process.platform, arch: process.arch, env: process.env, out: progress });
+			return { gentleStream: result.gentleStream, samples: result.samples };
+		},
+	};
 }
 
 const defaultSpawn: MusicSpawn = (command, args, options) => nodeSpawn(command, [...args], { stdio: options.stdio === "inherit" ? "inherit" : [...options.stdio] });
@@ -223,6 +263,37 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 	const signals = deps.signals ?? defaultSignals;
 	const usage = deps.usage ?? processUsage();
 	const shutdownTimeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
+	const bundled = deps.bundled ?? defaultBundled;
+	const platform = deps.platform ?? process.platform;
+
+	const findPlayer = async (): Promise<{ stream?: GentleStreamCommand; offer?: BundledMusicPlayer }> => {
+		let player: BundledMusicPlayer | undefined;
+		try {
+			player = await bundled();
+		} catch {
+			player = undefined;
+		}
+		const stream = resolveGentleStream(which, player?.installed() ? player.gentleStream : undefined);
+		return stream ? { stream } : { offer: player };
+	};
+
+	/** The bundled offer: undefined when declined or failed (after telling the user). */
+	const offerInstall = async (ctx: ExtensionContext, player: BundledMusicPlayer): Promise<GentleStreamCommand | undefined> => {
+		if ((await ctx.ui.confirm(MUSIC_INSTALL_TITLE, MUSIC_INSTALL_OFFER)) !== true) {
+			ctx.ui.notify(installHint(), "warning");
+			return undefined;
+		}
+		try {
+			const result = await player.install((line) => ctx.ui.notify(line, "info"));
+			ctx.ui.notify(result.samples
+				? "♪ gentle-stream installed inside Gentle Shell."
+				: "♪ gentle-stream installed inside Gentle Shell without the sample voices (they need the system FluidSynth library).", "info");
+			return { command: result.gentleStream, prefix: [] };
+		} catch (error) {
+			ctx.ui.notify(`/gentle:music could not install gentle-stream: ${errorMessage(error)}`, "error");
+			return undefined;
+		}
+	};
 
 	const openTui = async (ctx: ExtensionContext, stream: GentleStreamCommand, mood: string | undefined) => {
 		const args = [...stream.prefix, ...musicTuiArgs({ model: ctx.model, mood })];
@@ -261,15 +332,19 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 		description: "Open gentle-stream full screen (optional mood text); b returns with the music playing, q stops it. next, pause, play, stop, status control the music without leaving Pi.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
+			if (platform === "win32") {
+				ctx.ui.notify(MUSIC_WINDOWS_UNSUPPORTED, "warning");
+				return;
+			}
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/gentle:music needs the interactive terminal.", "warning");
 				return;
 			}
-			const stream = resolveGentleStream(which);
-			if (!stream) {
-				ctx.ui.notify(installHint(), "warning");
-				return;
-			}
+			const found = await findPlayer();
+			let stream = found.stream;
+			if (!stream && found.offer) stream = await offerInstall(ctx, found.offer);
+			else if (!stream) ctx.ui.notify(installHint(), "warning");
+			if (!stream) return;
 			usage.used = true;
 			const request = parseMusicArgs(args);
 			if (request.kind === "ctl") await control(ctx, stream, request.command);
@@ -281,7 +356,7 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 	// Switching or reloading sessions keeps the same process, so the music plays on.
 	pi.on("session_shutdown", async (event) => {
 		if ((event as { reason?: string }).reason !== "quit" || !usage.used) return;
-		const stream = resolveGentleStream(which);
+		const { stream } = await findPlayer();
 		if (!stream) return;
 		usage.used = false;
 		await runCaptured(spawn, stream.command, [...stream.prefix, "ctl", "stop"], shutdownTimeoutMs);

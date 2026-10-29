@@ -20,8 +20,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	{
 		title: "Configuration",
 		items: [
-			{ command: "gentle:models", label: "Assign models and effort" },
-			{ command: "gentle:profiles", label: "Agent-model profiles" },
+			{ command: "gentle:profiles", label: "Models and profiles" },
 			{ command: "gentle:persona", label: "Switch persona" },
 			{ command: "gentle:review-mode", label: "Review mode (receipt-driven development)" },
 			{ command: "gentle:background-subagents", label: "Background subagents" },

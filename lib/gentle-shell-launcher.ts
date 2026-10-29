@@ -1351,6 +1351,8 @@ export function helpText(): string {
 		"  gentle-shell update [target]     Run pi's own 'update' against the resolved home.",
 		"                                   In a bundled install Pi ships pinned: 'update' without a package",
 		"                                   runs 'gentle-shell upgrade' instead of updating Pi.",
+		"                                   'update --latest' installs the newest published Pi instead,",
+		"                                   without the release's verified lockfile.",
 		"  gentle-shell config              Run pi's own 'config' against the resolved home.",
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
 		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",

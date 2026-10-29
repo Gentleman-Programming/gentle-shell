@@ -261,10 +261,15 @@ function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, all
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
-	if (allowMetadataRow && !cols.columnar && cols.task === 0 && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta) {
-		return [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))];
+	if (cols.task === 0) {
+		const separateMetadata = allowMetadataRow && !cols.columnar && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta;
+		const rows = separateMetadata
+			? [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))]
+			: [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
+		const activity = clip(taskText(task), cols.inner);
+		if (allowMetadataRow && activity) rows.splice(1, 0, theme.fg(TASK_ROLE, activity));
+		return rows;
 	}
-	if (cols.task === 0) return [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
 	const text = clip(taskText(task), cols.task);
 	return [`${head}${COLUMN_GAP}${theme.fg(TASK_ROLE, text)}${" ".repeat(cols.task - visibleWidth(text))}${COLUMN_GAP}${tail}`];
 }

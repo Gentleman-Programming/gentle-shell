@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 	Theme,
 	ToolCallEventResult,
@@ -18,6 +19,8 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
+import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
@@ -504,6 +507,9 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 			liveThinking = thinking;
 		},
 		refuseSetModel() { setModelResult = false; },
+		// Enter persists the session profile record, so a test that presses it
+		// swaps in a real session manager it can append to and corroborate.
+		useSessionManager(manager: unknown) { (ctx as { sessionManager: unknown }).sessionManager = manager; },
 		rejectThinkingLevel() { thinkingRejects = true; },
 		confirmCalls,
 		onConfirm(handler: (title: string, message: string) => Promise<boolean>) { onConfirm = handler; },
@@ -568,7 +574,7 @@ test("models screen saves and clears provider review roles into the profile stor
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	assert.equal(visits, 2);
 	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.current, {
 		"review-refuter": { model: "openai/alpha", thinking: "off" },
@@ -596,7 +602,7 @@ test("models screen saves and clears provider review roles into the profile stor
 			panel.handleInput("\x13");
 		} else panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.current, {
 		"review-refuter": {},
 		"review-validator": {},
@@ -648,7 +654,7 @@ test("provider review roles skip migration and both projection paths even when d
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	assert.equal(visits, 1);
 	assertReservedUnchanged();
 	for (const apply of [applyModelConfig, applyModelConfigAsync]) {
@@ -662,19 +668,18 @@ test("provider review roles skip migration and both projection paths even when d
 	assert.ok(JSON.parse(readFileSync(profilePaths[0], "utf8")).model_profiles.worker);
 });
 
-test("models rejects invalid project routing with its selected source path", async (t) => {
+test("an invalid saved routing file does not block the models screen", async (t) => {
 	const fixture = routingConsumerFixture(t);
 	writeFileSync(fixture.projectPath, "[]");
-	await fixture.run("gentle:models");
-	assert.equal(fixture.notifications[0]?.severity, "warning");
-	assert.ok(fixture.notifications[0]?.message.includes(fixture.projectPath));
-	assert.equal(fixture.panelVisits(), 0);
+	fixture.onInput((panel) => panel.handleInput("\x1b"));
+	await fixture.run("gentle:profiles");
+	assert.equal(fixture.panelVisits(), 1, "Make default discloses the unreadable routing instead");
 });
 
 test("models export re-reads saved routing and rejects invalid project before creating its destination parent", async (t) => {
 	const fixture = routingConsumerFixture(t);
 	writeFileSync(fixture.projectPath, "[]");
-	await fixture.run("gentle:models", "export");
+	await fixture.run("gentle:profiles", "export-routing");
 	assert.equal(fixture.panelVisits(), 0, "export is a subcommand: no screen opens");
 	const exportWarning = fixture.notifications.find((entry) => entry.severity === "warning");
 	assert.equal(exportWarning?.severity, "warning");
@@ -699,7 +704,7 @@ test("models exports missing, normalized project, and global-precedence saved ro
 			const fixture = routingConsumerFixture(t);
 			if (source !== "missing") writeFileSync(fixture.projectPath, '{"worker":" openai/gpt-5 ","ignored":null}');
 			if (source === "global") writeMarkdown(fixture.globalPath, '{"worker":{"model":" anthropic/opus ","thinking":"high"}}');
-			await fixture.run("gentle:models", "export");
+			await fixture.run("gentle:profiles", "export-routing");
 			const agents = source === "missing" ? {} : source === "project"
 				? { worker: { model: "openai/gpt-5" } }
 				: { worker: { model: "anthropic/opus", thinking: "high" } };
@@ -724,12 +729,15 @@ test("invalid global routing overrides valid project in models, status, and expo
 			const fixture = routingConsumerFixture(t);
 			writeFileSync(fixture.projectPath, '{"worker":"openai/gpt-5"}');
 			writeMarkdown(fixture.globalPath, "[]");
-			await fixture.run("gentle:models", atExport ? "export" : "");
-			const routingWarning = fixture.notifications.find((entry) => entry.severity === "warning");
-			assert.equal(routingWarning?.severity, "warning");
-			assert.ok(routingWarning?.message.includes(fixture.globalPath));
-			assert.match(routingWarning!.message, atExport ? /export failed/ : /cannot open model config/);
-			assert.equal(fixture.panelVisits(), 0, "an invalid global config opens no screen");
+			fixture.onInput((panel) => panel.handleInput("\x1b"));
+			await fixture.run("gentle:profiles", atExport ? "export-routing" : "");
+			if (atExport) {
+				const routingWarning = fixture.notifications.find((entry) => entry.severity === "warning");
+				assert.equal(routingWarning?.severity, "warning");
+				assert.ok(routingWarning?.message.includes(fixture.globalPath));
+				assert.match(routingWarning!.message, /export failed/);
+			}
+			assert.equal(fixture.panelVisits(), atExport ? 0 : 1, "export opens no screen; the screen opens and Make default discloses the unreadable routing");
 			assert.equal(existsSync(fixture.exportPath), false);
 			await fixture.run("gentle:status");
 			const report = fixture.notifications.at(-1)!;
@@ -1297,7 +1305,7 @@ test("per-JD-agent model assignment keeps judge-a and judge-b profiles divergent
 });
 
 // ---------------------------------------------------------------------------
-// Models screen (/gentle:models, /gentle:profiles): one table, profiles as tabs.
+// Models screen (/gentle:profiles): one table, profiles as tabs.
 // ---------------------------------------------------------------------------
 
 const SCREEN_AGENTS = ["gentle-ai-explore", "gentle-ai-verify", "gentle-ai-worker"];
@@ -1537,10 +1545,10 @@ test("models screen offers only the effort levels each model supports and shows 
 test("models screen lists configuration problems under the profile name without cutting them", () => {
 	const notices = [
 		"The local pin file /home/user/project/.git/gentle-ai/profile-pin.json is not a valid pin and is ignored. Fix or remove it.",
-		'No agent matches "sdd-design" in this profile, so it is ignored at launch.',
+		'Profile key "sdd-design" matches no agent configured in gentle-shell, so it is ignored at launch.',
 	];
 	const plain = renderScreen([], [], [], { width: 80, notices }).map(stripAnsi);
-	assert.ok(plain.some((line) => line.includes('⚠ No agent matches "sdd-design"')));
+	assert.ok(plain.some((line) => line.includes('⚠ Profile key "sdd-design"')));
 	assert.ok(!plain.some((line) => line.includes("…")));
 });
 
@@ -2260,10 +2268,10 @@ function tabNames(panel: ScreenPanel): string[] {
 }
 
 /**
- * Drives the models screen to a profile, one visit per tab step (a clean tab
- * switch finishes the visit and the loop reopens on the new tab), presses `key`
- * on it, and closes the screen on every later visit. Without a name it acts on
- * the first tab, the profile the old list opened on.
+ * Drives the models screen to a profile (a clean tab switch redraws the open
+ * screen in place), presses `key` on it, and closes the screen on every later
+ * visit. Without a name it acts on the first tab, the profile the old list
+ * opened on.
  */
 function actOnProfile(
 	fixture: { onInput(action: (panel: ScreenPanel) => void): void },
@@ -2278,11 +2286,10 @@ function actOnProfile(
 		}
 		const tabs = tabNames(panel);
 		const target = name ?? tabs[0];
-		const shown = shownProfile(panel);
-		if (shown !== target) {
-			panel.handleInput(tabs.indexOf(target) < tabs.indexOf(shown) ? "\x1b[D" : "\x1b[C");
-			return;
+		for (let step = 0; step < tabs.length && shownProfile(panel) !== target; step++) {
+			panel.handleInput(tabs.indexOf(target) < tabs.indexOf(shownProfile(panel)) ? "\x1b[D" : "\x1b[C");
 		}
+		assert.equal(shownProfile(panel), target);
 		acted = true;
 		for (const data of typeof key === "string" ? [key] : key) panel.handleInput(data);
 	});
@@ -3065,7 +3072,7 @@ test("applying a populated profile with explicit confirmation applies the routin
 test("applying a profile replaces materialized routing for agents the profile omits", async (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
-	// Routing materialized earlier (a previous profile, /gentle:models, or a
+	// Routing materialized earlier (a previous profile, the models screen, or a
 	// migration) for an agent the new profile does not mention.
 	const helperPath = join(fixture.root, ".pi", "agents", "helper.md");
 	writeMarkdown(helperPath, "---\nname: helper\ndescription: Helper\nmodel: openai/beta\nthinking: high\n---\nbody\n");
@@ -3218,7 +3225,7 @@ test("models screen saves the explicit orchestrator choice into the profile", as
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	const snapshot = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
 	assert.deepEqual(snapshot.orchestrator, { model: "openai/beta", thinking: "low" });
 	assert.deepEqual(snapshot.worker, { model: "openai/alpha", thinking: "high" });
@@ -3229,6 +3236,7 @@ test("models screen saves the explicit orchestrator choice into the profile", as
 	assert.equal(fixture.notifications.some((entry) => entry.severity === "warning"), false);
 
 	// Use in this session still drives the live session.
+	fixture.useSessionManager(profileActionManager(fixture.root));
 	actOnProfile(fixture, "u");
 	await fixture.run("gentle:profiles");
 	assert.deepEqual(fixture.liveSwitches, [
@@ -3259,7 +3267,7 @@ test("models screen leave untouched removes a stale profile orchestrator and kee
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	assert.equal(Object.hasOwn(JSON.parse(readFileSync(storePath, "utf8")).profiles.team, "orchestrator"), false);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), globalBefore, "Save never writes global routing");
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
@@ -3290,7 +3298,7 @@ for (const [name, keys] of [["ctrl+s", ["\x13"]], ["esc twice", ["\x1b", "\x1b"]
 			}
 			panel.handleInput("\x1b");
 		});
-		await fixture.run("gentle:models");
+		await fixture.run("gentle:profiles");
 		assert.deepEqual(fixture.liveSwitches, []);
 		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
 		if (name === "ctrl+s") {
@@ -3322,7 +3330,7 @@ test("models screen Model ▾ and Effort ▾ set every agent to inherit and leav
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	const profile = JSON.parse(readFileSync(storePath, "utf8")).profiles.team;
 	assert.deepEqual(profile.worker, {});
 	assert.deepEqual(profile.orchestrator, { model: "openai/alpha", thinking: "high" });
@@ -3353,7 +3361,7 @@ test("models screen custom model id: a valid id lands in the draft, an invalid o
 				}
 				panel.handleInput("\x1b");
 			});
-			await fixture.run("gentle:models");
+			await fixture.run("gentle:profiles");
 			assert.match(fixture.inputPrompts[0]?.title ?? "", /Custom model id for worker/);
 			assert.equal(JSON.parse(readFileSync(storePath, "utf8")).profiles.team.worker.model, expected);
 			if (expected === "openai/beta") assert.match(fixture.panels[1] ?? "", /Custom model id must be one provider\/model line/);
@@ -3382,7 +3390,7 @@ test("models screen Save preserves an absent orchestrator and sibling profiles",
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	assert.equal(existsSync(fixture.globalPath), false, "Save never writes global routing");
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.team, { worker: { model: "openai/alpha" } });
@@ -3393,7 +3401,7 @@ test("models screen Save preserves an absent orchestrator and sibling profiles",
 	assert.equal(visits, 2);
 });
 
-test("gentle:models opens on the pinned profile and Save preserves its stored orchestrator", async (t) => {
+test("gentle:profiles opens on the pinned profile and Save preserves its stored orchestrator", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
 	writeSettings();
 	const settingsBefore = readFileSync(settingsPath, "utf8");
@@ -3416,7 +3424,7 @@ test("gentle:models opens on the pinned profile and Save preserves its stored or
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.deepEqual(store.profiles.other, {
 		worker: { model: "openai/alpha", thinking: "high" },
@@ -3429,7 +3437,7 @@ test("gentle:models opens on the pinned profile and Save preserves its stored or
 	assert.equal(visits, 2);
 });
 
-test("gentle:models seeds the profiles store the way /gentle:profiles does when it is missing", async (t) => {
+test("gentle:profiles seeds the profiles store when it is missing", async (t) => {
 	const { fixture, storePath, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
 	assert.equal(existsSync(storePath), false);
@@ -3442,7 +3450,7 @@ test("gentle:models seeds the profiles store the way /gentle:profiles does when 
 		}
 		panel.handleInput("\x1b");
 	});
-	await fixture.run("gentle:models");
+	await fixture.run("gentle:profiles");
 	const store = JSON.parse(readFileSync(storePath, "utf8"));
 	assert.equal(store.kind, PROFILES_KIND);
 	assert.deepEqual(store.profiles.current, {});
@@ -3530,7 +3538,7 @@ test("the models screen flags profile keys no agent matches and never flags prov
 	await fixture.run("gentle:profiles");
 	const flat = (rendered: string) => rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ");
 	assert.equal(rendered.split("\n").length, 24, "the frame spans the terminal height");
-	assert.match(flat(rendered), /⚠ No agent matches "sdd-design" in this profile, so it is ignored at launch\./);
+	assert.match(flat(rendered), /⚠ Profile key "sdd-design" matches no agent configured in gentle-shell, so it is ignored at launch\./);
 	assert.doesNotMatch(flat(rendered), /review-refuter"/, "provider review roles are never flagged");
 	assert.match(rendered, /Orchestrator\s+nan\/glm5\.3\s+high/);
 	assert.match(rendered, /worker\s+openai\/alpha\s+high/);
@@ -3554,7 +3562,7 @@ test("at 60 columns the unmatched-key notice wraps instead of being cut", async 
 	assert.ok(panel);
 	const narrow = stripAnsi(panel.render(60).join("\n"));
 	const flat = (rendered: string) => rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ");
-	assert.match(flat(narrow), /⚠ No agent matches "sdd-design" in this profile, so it is ignored at launch\./);
+	assert.match(flat(narrow), /⚠ Profile key "sdd-design" matches no agent configured in gentle-shell, so it is ignored at launch\./);
 	assert.ok(!narrow.split("\n").some((line) => line.includes("…")), "nothing is cut");
 });
 
@@ -3642,11 +3650,11 @@ async function runProfilesNameActionOn(
 	let acted = false;
 	fixture.onInput((panel) => {
 		if (acted) return panel.handleInput("\x1b");
-		const shown = shownProfile(panel);
-		if (name !== undefined && shown !== name) {
-			const tabs = tabNames(panel);
-			return panel.handleInput(tabs.indexOf(name) < tabs.indexOf(shown) ? "\x1b[D" : "\x1b[C");
+		const tabs = tabNames(panel);
+		for (let step = 0; name !== undefined && step < tabs.length && shownProfile(panel) !== name; step++) {
+			panel.handleInput(tabs.indexOf(name) < tabs.indexOf(shownProfile(panel)) ? "\x1b[D" : "\x1b[C");
 		}
+		if (name !== undefined) assert.equal(shownProfile(panel), name);
 		acted = true;
 		for (const key of keys) panel.handleInput(key);
 	});
@@ -4125,6 +4133,14 @@ function readValidProfilesStore(path: string) {
 	return result.file;
 }
 
+/** A real persisted session started under the profile integration, so Enter can bind and persist. */
+function profileActionManager(root: string): SessionManager {
+	const manager = SessionManager.create(root, join(root, "session-fixture"));
+	manager.appendMessage({ role: "user", content: "isolated profile action", timestamp: 1 });
+	createSessionProfileIntegration().start(manager, (type, data) => { manager.appendCustomEntry(type, data); }, { reason: "startup" });
+	return manager;
+}
+
 test("Enter switches the live orchestrator, binds the profile, and writes nothing", async (t) => {
 	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
 	writeSettings();
@@ -4135,11 +4151,12 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	};
 	resetSessionProfileBindingsForTesting();
 	const notifications: Array<{ message: string; severity: string }> = [];
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
 		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
-		sessionManager: { getSessionId: () => "session-panel" },
+		sessionManager: manager,
 		modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 	} as unknown as ExtensionContext;
 	const models: unknown[] = [];
@@ -4153,16 +4170,18 @@ test("Enter switches the live orchestrator, binds the profile, and writes nothin
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "use-session", name: "team" }, {});
 	assert.deepEqual(models, [{ provider: "openai", id: "beta" }]);
 	assert.deepEqual(thinking, ["high"]);
-	const binding = readSessionProfileBinding("session-panel");
+	const binding = readSessionProfileBinding(manager.getSessionId());
 	assert.equal(binding?.name, "team");
 	assert.equal(binding?.modelProfiles.worker?.model, "openai/alpha");
 	assert.equal(readFileSync(storePath, "utf8"), before.store, "the profiles store is untouched");
 	assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
 	assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
 	assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
+	assert.equal(manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "gentle-pi.session-profile/v1").length, 1, "only the session profile record is written");
 	const applied = notifications.at(-1)?.message ?? "";
 	assert.match(applied, /bound profile "team" to this session/);
 	assert.match(applied, /its tab shows ◉/);
+	assert.match(applied, /persisted in this session/);
 	assert.match(applied, /This session now runs on openai\/beta · high/);
 	assert.match(applied, /Subagents and reviewers use this session's routing snapshot/);
 	assert.match(applied, /global routing, pins, and materialized stores are untouched/);
@@ -4181,10 +4200,11 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 	bindSessionProfile("other-session", "old", { worker: { model: "openai/old" } });
 	const switches: string[] = [];
 	const thinking: ThinkingLevel[] = [];
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root, hasUI: true,
 		ui: { notify() {} },
-		sessionManager: { getSessionId: () => "selecting-session" },
+		sessionManager: manager,
 		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
 	} as unknown as ExtensionContext;
 	const live = {
@@ -4195,7 +4215,7 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" });
 	assert.deepEqual(switches, ["openai/alpha"]);
 	assert.deepEqual(thinking, ["high"]);
-	assert.equal(readSessionProfileBinding("selecting-session")?.name, "team");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
 	assert.equal(readSessionProfileBinding("other-session")?.modelProfiles.worker?.model, "openai/old");
 	assert.equal(readSessionProfileBinding("unbound-session"), undefined);
 	assert.equal(readFileSync(storePath, "utf8"), beforeStore);
@@ -4234,11 +4254,12 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		const notifications: string[] = [];
 		let modelCalls = 0;
 		let thinkingCalls = 0;
+		const manager = profileActionManager(fixture.root);
 		const ctx = {
 			cwd: fixture.root,
 			hasUI: true,
 			ui: { notify(message: string) { notifications.push(message); } },
-			sessionManager: { getSessionId: () => "session-panel" },
+			sessionManager: manager,
 			modelRegistry: { find: () => ({ provider: "openai", id: "beta" }) },
 		} as unknown as ExtensionContext;
 		const live = {
@@ -4249,7 +4270,7 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" }, {});
 		assert.equal(modelCalls, rejected ? 1 : 0);
 		assert.equal(thinkingCalls, 0);
-		assert.equal(readSessionProfileBinding("session-panel")?.modelProfiles.worker?.model, "openai/alpha");
+		assert.equal(readSessionProfileBinding(manager.getSessionId())?.modelProfiles.worker?.model, "openai/alpha");
 		assert.equal(readFileSync(storePath, "utf8"), storeBefore);
 		assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
 		assert.equal(existsSync(fixture.globalPath), false);
@@ -4257,6 +4278,281 @@ test("Enter preserves session-only routing when the orchestrator is absent or ca
 		if (rejected) assert.match(notifications.at(-1) ?? "", /no authentication is configured for openai; this session keeps its current model/);
 		else assert.doesNotMatch(notifications.at(-1) ?? "", /This session now runs/);
 	}
+});
+
+test("u keeps the session binding when a subagent launch requires session profile authority (#2623)", async (t) => {
+	const { fixture, storePath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	resetSessionProfileBindingsForTesting();
+	const manager = profileActionManager(fixture.root);
+	const notifications: Array<{ message: string; severity: string }> = [];
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+		sessionManager: manager,
+	} as unknown as ExtensionContext;
+	const live = {
+		setModel: async () => true,
+		setThinkingLevel() {},
+		getThinkingLevel(): ThinkingLevel { return "medium"; },
+	};
+	await __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" }, {});
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team", "u binds the profile to the session");
+	// Every subagent launch asks for session profile authority first; the u
+	// binding must survive that check, not be dropped for missing disk state.
+	const { requireSessionProfileAuthority } = await import("../lib/session-profile-authority.ts");
+	const authority = requireSessionProfileAuthority(manager);
+	assert.equal(authority.available, true);
+	assert.equal(
+		readSessionProfileBinding(manager.getSessionId())?.name,
+		"team",
+		"the session binding was dropped by the first subagent launch",
+	);
+	assert.equal(authority.binding?.name, "team", "authority does not publish the bound profile");
+	resetSessionProfileBindingsForTesting();
+});
+
+test("a reload landing while a models screen step is in flight closes the loop without touching the stale ctx", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	const storeBefore = readFileSync(storePath, "utf8");
+	let stale = false;
+	let staleReads = 0;
+	let screens = 0;
+	const notifications: string[] = [];
+	const ui = {
+		notify(message: string) { notifications.push(message); },
+		// The runner invalidates the ctx while this step is still pending.
+		custom: async () => {
+			screens += 1;
+			await Promise.resolve();
+			stale = true;
+			return { type: "create-live" };
+		},
+		input: async () => "snapshot",
+	};
+	const guard = <T>(value: T): T => {
+		if (stale) {
+			staleReads += 1;
+			throw new Error("stale ctx");
+		}
+		return value;
+	};
+	const ctx = {
+		get cwd() { return guard(fixture.root); },
+		hasUI: true,
+		get ui() { return guard(ui); },
+		get sessionManager() { return guard(profileActionManager(fixture.root)); },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.openProfilesPanelLoop(ctx, live, "team");
+	assert.equal(screens, 1, "the screen is not reopened on a stale ctx");
+	assert.equal(staleReads, 1, "only the liveness probe touches the stale ctx");
+	assert.deepEqual(notifications, []);
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "no profile is created from a stale ctx");
+});
+
+test("Enter skipped by a session replacement while queued never touches the stale ctx", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const manager = profileActionManager(fixture.root);
+	let stale = false;
+	const notifications: string[] = [];
+	const ui = { notify(message: string) { notifications.push(message); } };
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		get ui() { if (stale) throw new Error("stale ctx"); return ui; },
+		get sessionManager() { if (stale) throw new Error("stale ctx"); return manager; },
+	} as unknown as ExtensionContext;
+	let release!: () => void;
+	const holder = runCurrentSessionProfileSelection(manager, () => new Promise<void>((resolve) => { release = resolve; }));
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	const enter = __testing.runProfilesPanelAction(ctx, live, storePath, readValidProfilesStore(storePath), { type: "use-session", name: "team" }, {});
+	await new Promise((resolve) => setImmediate(resolve));
+	const file = manager.getSessionFile();
+	manager.getSessionFile = () => `${file}.replaced`;
+	stale = true;
+	release();
+	await holder;
+	await enter;
+	assert.deepEqual(notifications, [], "no notice is sent through the stale ctx");
+	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
+});
+
+/** Runs `/gentle:profiles <args>` through the registered command on a real persisted session. */
+function profilesCommandHarness(t: test.TestContext, profiles: Record<string, unknown> = { team: { orchestrator: { model: "openai/beta", thinking: "high" }, worker: { model: "openai/alpha" } } }) {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeSettings();
+	writeStore(profiles, undefined);
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	const liveCalls: string[] = [];
+	createGentleAiExtension({ nativeReviewCli: null })({
+		on() {},
+		registerTool() {},
+		registerCommand(name, command) { commands.set(name, command); },
+		setModel: async () => { liveCalls.push("model"); return true; },
+		setThinkingLevel: () => { liveCalls.push("thinking"); },
+		getThinkingLevel: () => "medium",
+	} as unknown as ExtensionAPI);
+	const notifications: Array<{ message: string; severity: string }> = [];
+	const manager = profileActionManager(fixture.root);
+	const ctx = {
+		cwd: fixture.root,
+		hasUI: true,
+		ui: { notify(message: string, severity: string) { notifications.push({ message, severity }); } },
+		sessionManager: manager,
+		modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
+	} as unknown as ExtensionCommandContext;
+	const family = () => manager.getBranch().filter((entry) => entry.type === "custom" && typeof entry.customType === "string" && entry.customType.startsWith("gentle-pi.session-profile/"));
+	const before = { store: readFileSync(storePath, "utf8"), settings: readFileSync(settingsPath, "utf8") };
+	const assertSharedUntouched = () => {
+		assert.equal(readFileSync(storePath, "utf8"), before.store, "the profiles store is untouched");
+		assert.equal(readFileSync(settingsPath, "utf8"), before.settings, "Pi settings are untouched");
+		assert.equal(existsSync(fixture.globalPath), false, "no global models.json is written");
+		assert.equal(existsSync(join(fixture.root, ".pi", "subagents.json")), false, "no materialized store is written");
+	};
+	return {
+		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
+		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
+		last: () => notifications.at(-1) ?? { message: "", severity: "" },
+	};
+}
+
+test("/gentle:profiles clear removes the session binding and records an explicit clear", async (t) => {
+	const h = profilesCommandHarness(t);
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.name, "team");
+	h.liveCalls.length = 0;
+	await h.run("clear");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined);
+	assert.equal(h.family().length, 2, "one clear record follows the bind record");
+	assert.deepEqual((h.family().at(-1) as { data?: unknown }).data, { kind: "clear" });
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /cleared session profile "team"/);
+	assert.match(h.last().message, /persisted in this session/);
+	assert.match(h.last().message, /New launches use the routing without a session profile/);
+	assert.match(h.last().message, /live orchestrator is unchanged/);
+	assert.deepEqual(h.liveCalls, [], "clear never touches the live model or thinking");
+	h.assertSharedUntouched();
+});
+
+test("/gentle:profiles clear skipped by a session replacement while queued never touches the stale ctx", async (t) => {
+	const h = profilesCommandHarness(t);
+	let stale = false;
+	const staleNotifications: string[] = [];
+	const staleCtx = {
+		cwd: h.ctx.cwd,
+		hasUI: true,
+		get ui() { if (stale) throw new Error("stale ctx"); return { notify(message: string) { staleNotifications.push(message); } }; },
+		get sessionManager() { if (stale) throw new Error("stale ctx"); return h.manager; },
+	} as unknown as ExtensionCommandContext;
+	let release!: () => void;
+	const holder = runCurrentSessionProfileSelection(h.manager, () => new Promise<void>((resolve) => { release = resolve; }));
+	const clear = h.run("clear", staleCtx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const file = h.manager.getSessionFile();
+	h.manager.getSessionFile = () => `${file}.replaced`;
+	stale = true;
+	release();
+	await holder;
+	await clear;
+	assert.deepEqual(staleNotifications, [], "no notice is sent through the stale ctx");
+	assert.equal(h.family().length, 0, "nothing is written");
+});
+
+test("/gentle:profiles clear with extra arguments shows the usage warning and writes nothing", async (t) => {
+	const h = profilesCommandHarness(t);
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	const recordsBefore = h.family().length;
+	await h.run("clear extra");
+	assert.equal(h.last().severity, "warning");
+	assert.match(h.last().message, /^Usage: \/gentle:profiles \[.*clear\]/);
+	assert.equal(h.family().length, recordsBefore, "no clear record is appended");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.name, "team");
+	await h.run("  clear  ");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined, "surrounding whitespace still clears");
+});
+
+test("/gentle:profiles clear on a never-bound session writes nothing and says so", async (t) => {
+	const h = profilesCommandHarness(t);
+	await h.run("clear");
+	assert.equal(h.family().length, 0);
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined);
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /no session profile was ever selected in this session; nothing to clear/);
+	h.assertSharedUntouched();
+});
+
+for (const kind of ["in-memory", "unsaved"] as const)
+	test(`/gentle:profiles clear on a never-bound ${kind} session writes nothing and keeps launches available`, async (t) => {
+		const h = profilesCommandHarness(t);
+		const manager = kind === "in-memory" ? SessionManager.inMemory(h.ctx.cwd) : SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "unsaved-sessions"));
+		if (kind === "in-memory") manager.appendMessage({ role: "user", content: "unsaved conversation", timestamp: 1 });
+		createSessionProfileIntegration().start(manager, (type, data) => { manager.appendCustomEntry(type, data); }, { reason: "startup" });
+		(h.ctx as unknown as { sessionManager: unknown }).sessionManager = manager;
+		await h.run("clear");
+		assert.equal(manager.getBranch().filter((entry) => entry.type === "custom").length, 0, "no clear record is written");
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, /no session profile was ever selected in this session; nothing to clear/);
+		const authority = readSessionProfileAuthority(manager);
+		assert.equal(authority.available, true, "subagent launches stay available");
+		assert.equal(authority.available && authority.binding, undefined);
+	});
+
+test("/gentle:profiles clear on an already-cleared session writes nothing and says so", async (t) => {
+	const h = profilesCommandHarness(t);
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(h.ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	await h.run("clear");
+	await h.run("clear");
+	assert.equal(h.family().length, 2, "the second clear appends nothing");
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /session profile is already cleared; nothing to clear/);
+});
+
+test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
+	const h = profilesCommandHarness(t);
+	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };
+	await h.run("clear");
+	assert.equal(h.family().length, 0);
+	assert.equal(h.last().severity, "warning");
+	assert.match(h.last().message, /cannot clear the session profile: no parent session id is available here/);
+	h.assertSharedUntouched();
+});
+
+for (const [customType, kind] of [["gentle-pi.session-profile/v1", "invalid"], ["gentle-pi.session-profile/v99", "from a newer version"]] as const)
+	test(`an unreadable session profile record (${customType}) warns with its location and clear recovers`, async (t) => {
+		const h = profilesCommandHarness(t);
+		h.manager.appendCustomEntry(customType, { invalid: true });
+		const entryIndex = h.manager.getBranch().length - 1;
+		__testing.notifySessionProfileProblem(h.ctx);
+		assert.equal(h.last().severity, "warning");
+		assert.ok(h.last().message.includes(h.manager.getSessionFile()!), "names the session file");
+		assert.match(h.last().message, new RegExp(`entry ${entryIndex}\\b`));
+		assert.match(h.last().message, new RegExp(`is ${kind}`));
+		assert.match(h.last().message, /Subagent launches are blocked/);
+		assert.match(h.last().message, /Select a profile with Enter or run \/gentle:profiles clear/);
+		await h.run("clear");
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, /cleared the unreadable session profile record/);
+		const count = h.notifications.length;
+		__testing.notifySessionProfileProblem(h.ctx);
+		assert.equal(h.notifications.length, count, "a recovered session raises no warning");
+	});
+
+test("a readable or absent session profile raises no warning", async (t) => {
+	const h = profilesCommandHarness(t);
+	__testing.notifySessionProfileProblem(h.ctx);
+	assert.equal(h.notifications.length, 0);
 });
 
 test("a keeps the legacy global apply semantics", async (t) => {
@@ -4283,16 +4579,17 @@ test("Enter with a winning pin binds the session and never touches the pin layer
 	const pinBefore = readFileSync(localPinPath, "utf8");
 	const storeBefore = readFileSync(storePath, "utf8");
 	resetSessionProfileBindingsForTesting();
+	const manager = profileActionManager(fixture.root);
 	const ctx = {
 		cwd: fixture.root,
 		hasUI: true,
 		ui: { notify() {} },
-		sessionManager: { getSessionId: () => "session-panel" },
+		sessionManager: manager,
 	} as unknown as ExtensionContext;
 	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
 	const file = readValidProfilesStore(storePath);
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "use-session", name: "team" }, {});
-	assert.equal(readSessionProfileBinding("session-panel")?.name, "team");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
 	assert.equal(readFileSync(localPinPath, "utf8"), pinBefore, "the clone pin is untouched");
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
 	assert.equal(existsSync(fixture.globalPath), false);
@@ -4337,23 +4634,25 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	resetSessionProfileBindingsForTesting();
 });
 
-test("file operations are subcommands: models restore, profiles export and import, and usage for anything else", async (t) => {
+test("file operations are subcommands: profiles restore-routing, export and import, and usage for anything else", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
 	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
 
-	// /gentle:models restore: confirm, then write models.json and materialize it.
+	// /gentle:profiles restore-routing: confirm, then write models.json and materialize it.
 	writeMarkdown(fixture.exportPath, `${JSON.stringify({ kind: "gentle-pi.agent_model_routing", version: 1, agents: { worker: { model: "openai/beta", thinking: "low" } } }, null, 2)}\n`);
 	fixture.onConfirm(async () => false);
-	await fixture.run("gentle:models", "restore");
+	await fixture.run("gentle:profiles", "restore-routing");
 	assert.equal(existsSync(fixture.globalPath), false, "a declined restore writes nothing");
 	fixture.onConfirm(async () => true);
-	await fixture.run("gentle:models", "restore");
+	await fixture.run("gentle:profiles", "restore-routing");
 	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")).worker, { model: "openai/beta", thinking: "low" });
 	assert.match(fixture.notifications.at(-1)?.message ?? "", /restored global model config/);
 	assert.match(readFileSync(join(fixture.root, ".pi", "agents", "worker.md"), "utf8"), /model: openai\/beta/);
 
-	await fixture.run("gentle:models", "reset");
-	assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:models \[export \| restore\]/);
+	// /gentle:profiles export-routing writes the saved routing, not a profile.
+	await fixture.run("gentle:profiles", "export-routing");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.exportPath, "utf8")).agents, { worker: { model: "openai/beta", thinking: "low" } });
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /exported 1 saved model routing entry/);
 
 	// /gentle:profiles export <name> then import it back over a changed store.
 	await fixture.run("gentle:profiles", "export team");
@@ -4364,9 +4663,79 @@ test("file operations are subcommands: models restore, profiles export and impor
 	await fixture.run("gentle:profiles", "import");
 	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.team, { worker: { model: "openai/alpha", thinking: "high" } }, "import replaces after confirmation");
 
-	for (const args of ["export", "export ghost", "publish", "frobnicate"]) {
+	for (const args of ["export", "export ghost", "publish", "frobnicate", "restore", "export-routing extra"]) {
 		await fixture.run("gentle:profiles", args);
-		assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:profiles \[export <name> \| import \| publish <name>\]/, args);
+		assert.match(fixture.notifications.at(-1)?.message ?? "", /Usage: \/gentle:profiles \[export <name> \| import \| publish <name> \| export-routing \| restore-routing \| clear\]/, args);
 	}
 	assert.equal(fixture.panelVisits(), 0, "no subcommand opens the screen");
+});
+
+test("gentle:models is gone: gentle:profiles is the only models and profiles command", () => {
+	const commands = new Map<string, { description?: string }>();
+	createGentleAiExtension({ nativeReviewCli: null })({
+		on() {},
+		registerTool() {},
+		registerCommand(name: string, command: { description?: string }) { commands.set(name, command); },
+	} as unknown as ExtensionAPI);
+	assert.equal(commands.has("gentle:models"), false);
+	assert.match(commands.get("gentle:profiles")?.description ?? "", /export-routing, restore-routing/);
+	for (const [name, command] of commands) {
+		assert.doesNotMatch(command.description ?? "", /gentle:models/, name);
+	}
+});
+
+test("gentle:profiles still opens the screen and keeps export <name>, import, and publish <name>", async (t) => {
+	const { fixture, storePath, repoPinPath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	fixture.onInput((panel) => {
+		assert.equal(shownProfile(panel), "team");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(fixture.panelVisits(), 1);
+	await fixture.run("gentle:profiles", "export team");
+	assert.match(fixture.notifications.at(-1)?.message ?? "", /exported profile "team"/);
+	writeStore({ team: { worker: { model: "openai/gamma" } } }, "team");
+	await fixture.run("gentle:profiles", "import");
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.team, { worker: { model: "openai/alpha" } });
+	await fixture.run("gentle:profiles", "publish team");
+	assert.equal(JSON.parse(readFileSync(repoPinPath, "utf8")).profile, "team");
+	assert.equal(fixture.panelVisits(), 1, "subcommands open no screen");
+});
+
+test("switching profile tabs redraws in place: the overlay never closes and reopens", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({
+		team: { worker: { model: "openai/alpha" } },
+		other: { worker: { model: "openai/beta", thinking: "high" } },
+	}, "team");
+	const frames: string[] = [];
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		if (visits > 1) {
+			panel.handleInput("\x1b");
+			return;
+		}
+		frames.push(stripAnsi(renderComponent(panel)));
+		panel.handleInput(RIGHT_KEY); // clean switch to "other"
+		frames.push(stripAnsi(renderComponent(panel)));
+		chooseAgent(panel, "worker");
+		chooseModel(panel, "alpha");
+		panel.handleInput("\x1b[D"); // back to "team" with an unsaved edit: asks first
+		frames.push(stripAnsi(renderComponent(panel)));
+		panel.handleInput("s"); // Save and switch
+		frames.push(stripAnsi(renderComponent(panel)));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(fixture.panelVisits(), 1, "a tab switch keeps the one overlay on screen");
+	const [first, switched, asking, saved] = frames;
+	assert.match(first ?? "", /worker\s+openai\/alpha/);
+	assert.match(switched ?? "", /worker\s+openai\/beta\s+high/, "the switched frame is already the new profile");
+	assert.match(profilesPanelFooter(switched ?? ""), /Showing "other"\./);
+	assert.match(asking ?? "", /other has 1 unsaved change\./);
+	assert.match(saved ?? "", /worker\s+openai\/alpha/);
+	assert.match(profilesPanelFooter(saved ?? ""), /Saved "other"\. Showing "team"\./);
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.other, { worker: { model: "openai/alpha", thinking: "high" } });
 });

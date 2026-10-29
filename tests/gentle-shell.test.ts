@@ -112,7 +112,7 @@ const renderers = new Map<string, MessageRenderer>();
 const FAKE_SOURCE_INFO: SourceInfo = { path: "extensions/gentle-shell.ts", source: "gentle-shell", scope: "project", origin: "top-level" };
 
 const DEFAULT_COMMANDS: SlashCommandInfo[] = [
-	{ name: "gentle:models", description: "Configure models", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:profiles", description: "Configure models", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "gentle:changes", description: "Browse changes", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "gentle:status", description: "Show Gentle AI status", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "skill-registry:refresh", description: "Regenerate the skill registry", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
@@ -2193,7 +2193,7 @@ test("vim NORMAL slash uses Pi's command and skill completion without displacing
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
 		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
 	});
-	const entries = ["gentle:vim", "gentle:models", "skill:example"];
+	const entries = ["gentle:vim", "gentle:profiles", "skill:example"];
 	const requests: string[] = [];
 	editor.setAutocompleteProvider({
 		async getSuggestions(lines: string[], line: number, col: number) {
@@ -5693,11 +5693,11 @@ test("/gentle:commands shows only curated, registered commands, grouped, by thei
 	assert.match(rendered, /Diagnostics/);
 	assert.match(rendered, /Skills/);
 	assert.doesNotMatch(rendered, /\bSDD\b/, "the SDD group has no registered commands and must not appear");
-	assert.match(rendered, /Assign models and effort/);
+	assert.match(rendered, /Models and profiles/);
 	assert.match(rendered, /Browse changes/);
 	assert.match(rendered, /Gentle AI status/);
 	assert.match(rendered, /Refresh skill registry/);
-	assert.doesNotMatch(rendered, /gentle:models|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
+	assert.doesNotMatch(rendered, /gentle:profiles|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
 	assert.doesNotMatch(rendered, /gentle:not-in-catalog/);
 	assert.doesNotMatch(rendered, /skill:foo/);
 	const changesLine = lines.find((line) => line.includes("Browse changes"));
@@ -5712,13 +5712,13 @@ test("selecting a command from the palette by its label sends the underlying com
 	const { ctx, ui, overlayReady } = fakeContext();
 	const opened = commands.get("gentle:commands")!.handler("", ctx);
 	await overlayReady;
-	// "mod" only matches the "Assign models and effort" label (it contains
-	// "mod" via "models"); nothing else in the fixture does.
+	// "mod" only matches the "Models and profiles" label (it contains "mod"
+	// via "Models"); nothing else in the fixture does.
 	for (const ch of "mod") ui.overlayView!.handleInput(ch);
-	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	assert.match(ui.overlayView!.render(100).join("\n"), /Models and profiles/);
 	ui.overlayView!.handleInput("\r");
 	await opened;
-	assert.deepEqual(sentMessages, [{ content: "/gentle:models", options: { expandPromptTemplates: true } }]);
+	assert.deepEqual(sentMessages, [{ content: "/gentle:profiles", options: { expandPromptTemplates: true } }]);
 });
 
 test("escaping the palette sends no message", async () => {
@@ -5761,7 +5761,7 @@ test("the alt+k shortcut opens the same command palette as the command", async (
 	assert.ok(shortcut, "alt+k not registered");
 	const opened = shortcut.handler(ctx);
 	await overlayReady;
-	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	assert.match(ui.overlayView!.render(100).join("\n"), /Models and profiles/);
 	ui.overlayView!.handleInput("\x1b");
 	await opened;
 });

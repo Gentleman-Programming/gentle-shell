@@ -50,8 +50,8 @@ interface Registered {
 	renderShell?: string;
 	name: string;
 	execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext): Promise<{ content: Array<{ text: string }>; details: Record<string, unknown> }>;
-	renderCall(args: unknown, theme: unknown): { render(width: number): string[] };
-	renderResult(result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> }, options: { expanded: boolean }, theme: unknown): { render(width: number): string[] };
+	renderCall(args: unknown, theme: unknown, context?: unknown): { render(width: number): string[] };
+	renderResult(result: { content: Array<{ type: string; text: string }>; details: Record<string, unknown> | undefined }, options: { expanded: boolean; isPartial?: boolean }, theme: unknown, context?: unknown): { render(width: number): string[] };
 }
 
 const plainTheme = { fg: (_color: string, text: string) => text };
@@ -4117,6 +4117,27 @@ test("the Agent result card previews the answer or error when collapsed and keep
 		assert.ok(rows.length <= 5, `width ${width} stays within the row budget`);
 		for (const row of rows) assert.ok(visibleWidth(row) <= width, `width ${width} row fits: ${JSON.stringify(row)}`);
 	}
+});
+
+test("a rejected delegation reads as a FAIL card, never as a live one", () => {
+	const { pi, tools } = fakePi();
+	gentleAgents(pi, {}, deps().deps);
+	const tool = tools.get("subagent_run")!;
+	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	// Pi reports a thrown execute() as isError with no details: no task was made
+	// and no facts reached the card, so the renderer has only the row state.
+	const rejected = { content: [{ type: "text", text: "Select an existing worktree in the same Git clone as this session." }], details: undefined };
+	const context = { isError: true, isPartial: false, expanded: false, state: {} };
+	const rows = tool.renderResult(rejected as Parameters<Registered["renderResult"]>[0], { expanded: false, isPartial: false }, taggedTheme, context as never).render(80);
+	const body = stripAnsi(rows.join("\n"));
+	assert.match(body, /FAILED/, "the failure leads the body as the state pill the docs name");
+	assert.match(body, /Select an existing worktree/, "the reason is still shown");
+	assert.doesNotMatch(body, /RUNNING/, "a rejected call never reads as still delegating");
+	// The heading belongs to the call slot, which only shares `state` with the
+	// result, so the failure has to travel there.
+	const call = tool.renderCall({ agent: "explore" }, taggedTheme, { isError: true, expanded: false, state: context.state } as never).render(80);
+	assert.match(call[0]!, /^<error>╭/, "the rejected card wears the error frame, not the live iris one");
+	assert.match(stripAnsi(call.join("\n").replace(/<\/?[a-z]+>/g, "")), /→ Delegating · explore/, "the heading stays the call's");
 });
 
 test("the Stale agent result card previews its truthful warning when collapsed", () => {

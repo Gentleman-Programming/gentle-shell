@@ -2175,7 +2175,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
 			return { agent, taskRef };
 		};
-		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean } | undefined) => context ?? {};
+		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean } } | undefined) => context ?? {};
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
@@ -2197,7 +2197,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					render(width: number) {
 						if (width <= 0) return [];
 						const row = agentToolContext(context);
-						const tone = row.isError ? CARD_TONE.ERROR : CARD_TONE.INFO;
+						// The heading is this slot's, so a failure the result slot learns about
+						// has to travel through the shared row state: a rejected call wears the
+						// error frame instead of reading as a delegation still in flight. The
+						// row context is a snapshot, so its own isError cannot be trusted here.
+						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 						const iris = agentTheme(theme, tone);
 						return floatRows(tone, iris, width, (inner) => ({
 							head: [cardTop({ title: heading, subtitle, body: [], tone, glyph }, iris, inner, expandHint(!!row.expanded))],
@@ -2214,8 +2218,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				}
 				if (!options.isPartial) markCardResult(agentToolContext(context).state);
 				// A host error (a throw before any details exist) counts like a
-				// details error, so the result keeps the tone the call already shows.
-				const failed = (result.details as { error?: unknown } | undefined)?.error !== undefined || !!agentToolContext(context).isError;
+				// details error, so the result keeps the tone the call already shows —
+				// and the call's snapshot needs the flag to wear it too.
+				const row = agentToolContext(context);
+				const failed = row.isError === true || (result.details as { error?: unknown } | undefined)?.error !== undefined;
+				if (row.state !== undefined) row.state.agentFailed = failed;
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 				// Status answers a real orchestration decision, so its task facts
@@ -2236,11 +2243,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						rows = [pillRow, ...answer];
 					}
 				} else if (options.expanded) {
-					rows = body.split("\n");
+					rows = failed ? [statusPill(TASK_STATUS.FAILED, iris), ...body.split("\n")] : body.split("\n");
 				} else {
 					// The collapsed preview leads with the meaningful content: the
 					// answer for finished tasks, the state line for anything else.
-					rows = agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+					const preview = agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+					// Without facts there is no status to name, but a failure still has
+					// to lead: the pill is the card's one scanable state channel.
+					rows = failed ? [statusPill(TASK_STATUS.FAILED, iris), ...preview] : preview;
 				}
 				// The result tool hides its call, so the result draws the heading
 				// itself; every other tool continues the call's card.

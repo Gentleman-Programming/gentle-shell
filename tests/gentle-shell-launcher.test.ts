@@ -25,6 +25,8 @@ import {
 	type LooseExtensionFsEntry,
 	missingPiMessage,
 	needsProvisioning,
+	NON_INTERACTIVE_GIT_ENV,
+	nonInteractiveGitEnv,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
@@ -1287,7 +1289,33 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		homedir: "/home/u",
 		cwd: "/work",
 	});
-	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+	assert.deepEqual(built.env, { ...NON_INTERACTIVE_GIT_ENV, PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+});
+
+// An editor git opens from Pi's bash tool has no terminal anyone can reach, so
+// `git rebase --continue` or a bare `git commit` hung the tool call forever.
+test("buildPiInvocation keeps git from opening an editor unless the user chose one for git", () => {
+	const build = (baseEnv: Record<string, string | undefined>) => buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv,
+		homedir: "/home/u",
+		cwd: "/work",
+	}).env;
+	const defaults = build({ EDITOR: "nvim", VISUAL: "nvim" });
+	assert.equal(defaults.GIT_EDITOR, "true");
+	assert.equal(defaults.GIT_SEQUENCE_EDITOR, "true");
+	assert.equal(defaults.EDITOR, "nvim");
+	assert.equal(defaults.VISUAL, "nvim");
+	const explicit = build({ GIT_EDITOR: "code --wait", GIT_SEQUENCE_EDITOR: "" });
+	assert.equal(explicit.GIT_EDITOR, "code --wait");
+	assert.equal(explicit.GIT_SEQUENCE_EDITOR, "");
+	assert.deepEqual(nonInteractiveGitEnv({ GIT_EDITOR: "vim" }), { GIT_SEQUENCE_EDITOR: "true" });
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
@@ -1361,6 +1389,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		cwd: "/work",
 	});
 	assert.deepEqual(built.env, {
+		...NON_INTERACTIVE_GIT_ENV,
 		PATH: "/usr/bin",
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
@@ -1384,7 +1413,7 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
-	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { ...NON_INTERACTIVE_GIT_ENV, PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
 });
 
 // The isolated home overrides PI_CODING_AGENT_DIR for the session, so the

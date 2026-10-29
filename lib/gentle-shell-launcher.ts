@@ -219,6 +219,16 @@ export function userPiHome(env: Record<string, string | undefined>, homedir: str
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
 }
 
+// Nobody can see or type into an editor git opens from Pi's bash tool, so
+// `git rebase --continue` or a bare `git commit` would wait on it forever.
+// `true` makes git keep the prepared message (or abort an empty one) instead.
+// A value the user already set is kept.
+export const NON_INTERACTIVE_GIT_ENV = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" } as const;
+
+export function nonInteractiveGitEnv(env: Record<string, string | undefined>): Record<string, string> {
+	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => env[key] === undefined));
+}
+
 export function isolatedDir(env: Record<string, string | undefined>, homedir: string): string {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
@@ -1081,6 +1091,7 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	args.push(...input.passthrough);
 
 	const env: Record<string, string | undefined> = {
+		...nonInteractiveGitEnv(input.baseEnv),
 		...input.baseEnv,
 		PI_CODING_AGENT_DIR: input.home.dir,
 		GENTLE_PI_AGENT_HOME: input.home.dir,

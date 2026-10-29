@@ -14,9 +14,13 @@ import {
 	parseFrontmatter,
 	parseModelRef,
 	resolveAgentProfile,
+	staleRoutingKeys,
+	removeRoutingKeys,
+	removeRoutingKeysFromProfilesFile,
 	unmatchedProfileKeys,
 	withPinnedModelProfiles,
 } from "../lib/agents-config.ts";
+import type { AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
 // Gentle Agents configuration: markdown agent definitions (the same files
@@ -281,6 +285,76 @@ test("unmatchedProfileKeys reports profile keys that match no discovered agent",
 	// profile set reports nothing.
 	assert.deepEqual(unmatchedProfileKeys({ "gentle-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
 	assert.deepEqual(unmatchedProfileKeys({}, [worker]), []);
+});
+
+test("staleRoutingKeys returns sorted unmatched keys with no suggestion", () => {
+	const config = { zebra: {}, abandoned: {} };
+	assert.deepEqual(staleRoutingKeys(config, []), ["abandoned", "zebra"]);
+	assert.deepEqual(config, { zebra: {}, abandoned: {} });
+	assert.deepEqual(staleRoutingKeys({}, []), []);
+});
+
+test("staleRoutingKeys excludes exact matches and near-miss suggestions", () => {
+	const agents = [{ name: "gentle-ai-worker" }, { name: "gentle-ai-explore" }];
+	assert.deepEqual(staleRoutingKeys({
+		"gentle-ai-worker": {}, worker: {}, WORKER: {},
+		"GENTLE-AI-WORKER": {}, explore: {}, review_risk: {},
+	}, agents), ["review_risk"]);
+});
+
+test("staleRoutingKeys protects provider review roles supplied by the caller", () => {
+	assert.deepEqual(staleRoutingKeys({
+		"review-refuter": {}, "review-validator": {}, abandoned: {},
+	}, [{ name: "review-refuter" }, { name: "review-validator" }]), ["abandoned"]);
+});
+
+test("removeRoutingKeys removes only selected own keys without cloning retained values", () => {
+	const config = { stale: { model: "old" }, keep: { model: "live" }, other: {} };
+	const result = removeRoutingKeys(config, ["stale", "missing", "stale"]);
+	assert.notEqual(result, config);
+	assert.deepEqual(result, { keep: config.keep, other: config.other });
+	assert.equal(result.keep, config.keep);
+	assert.equal(result.other, config.other);
+	assert.deepEqual(config, { stale: { model: "old" }, keep: { model: "live" }, other: {} });
+});
+
+test("removeRoutingKeys preserves identity for empty or absent selections", () => {
+	const config = { keep: {} };
+	assert.equal(removeRoutingKeys(config, []), config);
+	assert.equal(removeRoutingKeys(config, ["missing", "toString"]), config);
+});
+
+test("removeRoutingKeysFromProfilesFile changes only affected profiles and preserves metadata", () => {
+	const file: AgentProfilesFile = {
+		kind: "gentle-pi.agent_model_profiles", version: 1, active: "primary",
+		profiles: {
+			primary: { stale: { model: "old" }, keep: { model: "live" } },
+			secondary: { stale: {}, another: {} },
+			untouched: { keep: {} },
+		},
+	};
+	const result = removeRoutingKeysFromProfilesFile(file, ["stale", "missing"]);
+	assert.notEqual(result, file);
+	assert.notEqual(result.profiles, file.profiles);
+	assert.deepEqual(result, { ...file, profiles: {
+		primary: { keep: file.profiles.primary.keep },
+		secondary: { another: file.profiles.secondary.another },
+		untouched: file.profiles.untouched,
+	} });
+	assert.equal(result.profiles.untouched, file.profiles.untouched);
+	assert.equal(result.profiles.primary.keep, file.profiles.primary.keep);
+	assert.equal(result.active, file.active);
+	assert.ok(Object.hasOwn(file.profiles.primary, "stale"));
+	assert.ok(Object.hasOwn(file.profiles.secondary, "stale"));
+});
+
+test("removeRoutingKeysFromProfilesFile preserves identity when no profile changes", () => {
+	const file: AgentProfilesFile = {
+		kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { main: { keep: {} } },
+	};
+	assert.equal(removeRoutingKeysFromProfilesFile(file, []), file);
+	assert.equal(removeRoutingKeysFromProfilesFile(file, ["missing"]), file);
+	assert.equal(removeRoutingKeysFromProfilesFile({ ...file, profiles: {} }, []).active, undefined);
 });
 
 // Cortex QA adversarial follow-up (R5 pin): the did-you-mean mapping exists to

@@ -8,7 +8,7 @@ import { updateSelectedPi } from '../scripts/pi-update.mjs';
 const PI = '@earendil-works/pi-coding-agent';
 const CLI = 'dist/bundle/cli.js';
 
-async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean} = {}) {
+async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean} = {}) {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-source-')));
  t.after(() => fs.rm(temp, {recursive: true, force: true}));
  const root = join(temp, 'checkout');
@@ -34,7 +34,7 @@ async function fixture(t: any, options: {manager?: string, locks?: string[], wor
  }
  await fs.writeFile(join(root, 'unrelated.txt'), 'preserve me');
  await fs.symlink(root, link, 'junction');
- const calls: {command: string, args: string[], cwd?: string}[] = [];
+ const calls: {command: string, args: string[], cwd?: string, env?: Record<string,string>}[] = [];
  const updates: typeof calls = [];
  const output: string[] = [];
  const snapshot = async () => ({pnpmConfig:options.workspace || options.configOnly ? await fs.readFile(join(root,'pnpm-workspace.yaml'),'utf8') : null, installedRoot:await fs.realpath(peer), installedLink:(await fs.lstat(peer)).isSymbolicLink() ? await fs.readlink(peer) : null, manifest: await fs.readFile(join(root, 'package.json'), 'utf8'), link: await fs.realpath(link), peer: await fs.readFile(join(peer, 'package.json'), 'utf8'), unrelated: await fs.readFile(join(root, 'unrelated.txt'), 'utf8'), locks: await Promise.all((options.locks ?? [lock]).map(name => fs.readFile(join(root, name), 'utf8')))});
@@ -42,14 +42,14 @@ async function fixture(t: any, options: {manager?: string, locks?: string[], wor
  const input = {runtime: {kind: 'bundled', command: process.execPath, args: [join(peer, CLI)]}, packageRoot: link, cwd: temp, home: temp, env: {}, currentVersion: '1.0.0', out: (s: string) => output.push(s), adapters: {
   fs,
   which: async (name: string) => `/fake/${name}`,
-  run: async (command: string, args: string[], {cwd}: {cwd?: string} = {}) => {
-   calls.push({command, args, cwd});
+  run: async (command: string, args: string[], {cwd,env}: {cwd?: string,env?: Record<string,string>} = {}) => {
+   calls.push({command, args, cwd, ...(env ? {env} : {})});
    if (args.includes('list') && args.includes('--recursive')) return {code:0, stdout:JSON.stringify(options.multipleProjects ? [{path:root},{path:join(temp,'other-project')}] : [{path:root}])};
    if (args.includes('list')) return {code: 0, stdout: JSON.stringify([{path: join(temp, 'pnpm'), dependencies: {}}])};
    if (args.includes('ls')) return {code: 0, stdout: JSON.stringify({path: join(temp, 'global'), dependencies: {'gentle-pi': {path: link, resolved: 'file:../../checkout'}}})};
-   if (args.includes('--version')) return {code: 0, stdout: '11.1.1\n'};
+   if (args.includes('--version')) return {code: 0, stdout: `${options.managerVersion ?? '11.1.1'}\n`};
    if (args.includes('config')) return {code:0, stdout:options.workspace ? '["packages/*"]\n' : ''};
-   updates.push({command, args, cwd});
+   updates.push({command, args, cwd, ...(env ? {env} : {})});
    if (options.fail) return {code: 1, stdout: '', stderrTail: 'npm error fixture install failed'};
    if (options.unreadable) await fs.rm(join(peer, 'package.json'));
    else await fs.writeFile(join(peer, 'package.json'), JSON.stringify({name: PI, version: '1.1.0', bin: {pi: CLI}}));
@@ -70,12 +70,36 @@ for (const manager of ['pnpm', 'npm']) test(`source-linked Shell updates only it
  const f = await fixture(t, {manager});
  assert.equal(await updateSelectedPi(f.input), 0);
  const flags = manager === 'pnpm' ? ['--dir', f.root, '--lockfile-dir', f.root, '--recursive=false', '--ignore-pnpmfile'] : ['--prefix', f.root, '--workspaces=false', '--no-audit', '--no-fund'];
- assert.deepEqual(f.updates, [{command: `/fake/${manager}`, args: ['update', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags], cwd: f.root}]);
+ assert.deepEqual(f.updates, [{command: `/fake/${manager}`, args: ['update', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...(manager === 'pnpm' ? ['--pm-on-fail=ignore'] : [])], cwd: f.root, ...(manager === 'pnpm' ? {env:{COREPACK_ENABLE_PROJECT_SPEC:'0',COREPACK_ENABLE_NETWORK:'0'}} : {})}]);
  assert.deepEqual(f.output, [`${manager} updated ${PI} in ${f.root}; the selected Pi is now 1.1.0 (was 1.0.0).`]);
  assert.equal(await fs.realpath(f.link), f.root);
  assert.equal(await fs.readFile(join(f.root, 'package.json'), 'utf8'), f.manifest);
  assert.equal(await fs.readFile(join(f.root, 'unrelated.txt'), 'utf8'), 'preserve me');
  assert.ok(f.calls.filter(c => c.args.includes('list') || c.args.includes('ls') || c.args.includes('--version')).every(c => c.cwd === f.input.cwd));
+});
+
+test('newer pnpm uses its current version without downloading the older project pin', async t => {
+ const f = await fixture(t, {managerVersion:'11.5.0', configOnly:true});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ assert.equal(f.updates.length, 1);
+ assert.deepEqual(f.output, [`pnpm updated ${PI} in ${f.root}; the selected Pi is now 1.1.0 (was 1.0.0).`]);
+ const projectCalls = f.calls.filter(call => call.args.includes('config') || call.args.includes('--recursive') || call.args[0] === 'update');
+ assert.equal(projectCalls.length, 3);
+ assert.ok(projectCalls.every(call => call.args.includes('--pm-on-fail=ignore')));
+ assert.ok(f.calls.filter(call => call.args.includes('--version') || projectCalls.includes(call)).every(call => call.env?.COREPACK_ENABLE_PROJECT_SPEC === '0' && call.env?.COREPACK_ENABLE_NETWORK === '0'));
+ const after = await f.snapshot();
+ assert.equal(after.manifest, f.before.manifest);
+ assert.equal(after.pnpmConfig, f.before.pnpmConfig);
+ assert.equal(after.unrelated, f.before.unrelated);
+ assert.equal(after.link, f.before.link);
+});
+
+test('older pnpm refuses before mutation or output', async t => {
+ const f = await fixture(t, {managerVersion:'11.1.0'});
+ await assert.rejects(updateSelectedPi(f.input), /requires pnpm@11\.1\.1 or newer/);
+ assert.deepEqual(f.updates, []);
+ assert.deepEqual(f.output, []);
+ assert.deepEqual(await f.snapshot(), f.before);
 });
 
 for (const [name, options] of Object.entries({

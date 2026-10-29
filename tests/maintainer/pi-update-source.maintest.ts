@@ -15,8 +15,8 @@ const PI = '@earendil-works/pi-coding-agent';
 for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update preserves ranges, unrelated pins, Shell link and lifecycle safety`, {skip: process.platform === 'win32'}, async t => {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-real-')));
  t.after(() => fs.rm(temp, {recursive:true, force:true}));
- const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(npm_config_|git_)/i.test(key)));
- Object.assign(env, {HOME:temp, USERPROFILE:temp, XDG_CONFIG_HOME:temp, XDG_CACHE_HOME:join(temp,'cache'), npm_config_cache:join(temp,'cache'), npm_config_userconfig:join(temp,'user.npmrc'), npm_config_globalconfig:join(temp,'global.npmrc'), npm_config_update_notifier:'false', COREPACK_ENABLE_PROJECT_SPEC:'0'});
+ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(npm_config_|pnpm_config_|git_)/i.test(key)));
+ Object.assign(env, {HOME:temp, USERPROFILE:temp, XDG_CONFIG_HOME:temp, XDG_CACHE_HOME:join(temp,'cache'), npm_config_cache:join(temp,'cache'), npm_config_userconfig:join(temp,'user.npmrc'), npm_config_globalconfig:join(temp,'global.npmrc'), npm_config_update_notifier:'false', COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0', COREPACK_HOME:join(temp,'corepack'), PNPM_HOME:join(temp,'pnpm-home')});
  await fs.writeFile(env.npm_config_userconfig!, '');
  await fs.writeFile(env.npm_config_globalconfig!, '');
  const command = (await exec('which', [manager], {env})).stdout.trim();
@@ -64,11 +64,13 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  }
  const root = join(temp, 'checkout');
  await fs.mkdir(join(root, '.git'), {recursive:true});
- const manifest = JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@${version}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
+ const declaredVersion = manager === 'pnpm' ? '11.1.1' : version;
+ t.diagnostic(`${manager} runtime ${version}; project declaration ${declaredVersion}`);
+ const manifest = JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@${declaredVersion}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
  await fs.writeFile(join(root, 'package.json'), manifest);
  const policy = 'minimumReleaseAge: 4320\n';
  if (manager === 'pnpm') await fs.writeFile(join(root,'pnpm-workspace.yaml'), policy);
- const common = ['--ignore-scripts', '--global=false', ...(manager === 'pnpm' ? ['--ignore-pnpmfile'] : ['--no-audit', '--no-fund'])];
+ const common = ['--ignore-scripts', '--global=false', ...(manager === 'pnpm' ? ['--ignore-pnpmfile', '--pm-on-fail=ignore'] : ['--no-audit', '--no-fund'])];
  await exec(command, ['install', ...common, ...registryFlags], {cwd:root, env, maxBuffer:1024*1024});
  const lockPath = join(root, manager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
  const oldLock = await fs.readFile(lockPath, 'utf8');
@@ -82,13 +84,14 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  assert.equal(await updateSelectedPi({runtime:{kind:'bundled', command:process.execPath, args:[selected]}, packageRoot:link, cwd:temp, home:temp, env, currentVersion:'1.0.0', out:(s: string) => output.push(s), adapters:{
   fs,
   which:async (name: string) => name === manager || name === 'npm' ? command : null,
-  run:async (_cmd: string, args: string[], options: {cwd?: string}) => {
+  run:async (_cmd: string, args: string[], options: {cwd?: string,env?: Record<string,string>}) => {
    if (args.includes('list') && args.includes('-g')) return {code:0, stdout:JSON.stringify([{path:temp, dependencies:{}}])};
    if (args.includes('ls') && args.includes('-g')) return {code:0, stdout:JSON.stringify({path:temp, dependencies:{'gentle-pi':{path:link, resolved:'file:../../checkout'}}})};
    if (args[0] === 'update') mutations.push(args);
    // The second phase models an already-published release, not a newly
    // backdated version hidden behind install's fresh metadata-age cache.
-   const runEnv = manager === 'pnpm' && args[0] === 'update' ? {...env, XDG_CACHE_HOME:join(temp,'update-cache')} : env;
+   const selectedEnv = options.env ?? env;
+   const runEnv = manager === 'pnpm' && args[0] === 'update' ? {...selectedEnv, XDG_CACHE_HOME:join(temp,'update-cache')} : selectedEnv;
    try {const result = await exec(command, args[0] === 'update' ? [...args, ...registryFlags] : args, {cwd:options.cwd, env:runEnv, maxBuffer:1024*1024}); managerRuns.push({args, stdout:result.stdout, stderr:result.stderr}); return {code:0, stdout:result.stdout, stderrTail:result.stderr};}
    catch (error: any) {return {code:error.code, stdout:error.stdout, stderrTail:error.stderr};}
   },
@@ -99,7 +102,11 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  assert.ok(!mutations[0].includes('-g'));
  assert.equal(await fs.realpath(link), root);
  assert.equal(await fs.readFile(join(root, 'package.json'), 'utf8'), manifest);
- if (manager === 'pnpm') assert.equal(await fs.readFile(join(root,'pnpm-workspace.yaml'),'utf8'), policy);
+ if (manager === 'pnpm') {
+  assert.equal(await fs.readFile(join(root,'pnpm-workspace.yaml'),'utf8'), policy);
+  assert.ok(managerRuns.filter(run => run.args.includes('config') || run.args.includes('--recursive') || run.args[0] === 'update').every(run => run.args.includes('--pm-on-fail=ignore')));
+  assert.ok(!registryRequests.some(request => request.path === '/pnpm' || request.path.startsWith('/@pnpm/')), 'no project-pinned manager acquired');
+ }
  assert.notEqual(await fs.readFile(lockPath, 'utf8'), oldLock, JSON.stringify({output, installed:JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, managerRuns, registryRequests}));
  assert.equal(JSON.parse(await fs.readFile(join(root,'node_modules',PI,'package.json'),'utf8')).version, '1.1.0');
  assert.equal(JSON.parse(await fs.readFile(join(root,'node_modules','unrelated-fixture','package.json'),'utf8')).version, '1.0.0');

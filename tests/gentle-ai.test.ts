@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -3508,6 +3508,74 @@ test("effective routing prefers models.json over the materialized stores", (t) =
 		helper: { model: "openai/beta" },
 	});
 	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
+});
+
+for (const action of ["confirm", "deselect", "empty", "escape", "nothing"] as const) {
+	test(`models screen stale cleanup: ${action}`, async (t) => {
+		const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+		const entry = { model: "openai/alpha" };
+		const routes = { worker: entry, "review-refuter": entry, "review-validator": entry, "gentle-ai-worker": entry,
+			...(action === "nothing" ? {} : { abandoned: entry, obsolete: entry }) };
+		writeStore({ team: routes, sibling: routes }, "team");
+		const subPath = join(fixture.root, ".pi", "subagents.json");
+		writeFileSync(subPath, JSON.stringify({ model_profiles: routes, extra: true }));
+		writeFileSync(fixture.globalPath, JSON.stringify(routes));
+		const paths = [subPath, fixture.globalPath, storePath];
+		const snapshot = () => paths.map((path) => [readFileSync(path, "utf8"), statSync(path).mtimeMs]);
+		let before: ReturnType<typeof snapshot>;
+		fixture.tui.terminal.rows = 40;
+		fixture.onInput((panel) => {
+			before = snapshot();
+			panel.handleInput("x");
+			const text = stripAnsi(renderComponent(panel));
+			if (action === "nothing") {
+				assert.match(text, /Nothing to clean\./);
+				assert.doesNotMatch(text, /Clean stale routing keys/);
+			} else {
+				assert.match(text, /Clean stale routing keys/);
+				assert.match(text, /\[x\] abandoned/);
+				assert.match(text, /\[x\] obsolete/);
+				assert.doesNotMatch(text, /\[x\] (review-refuter|review-validator|gentle-ai-worker)/);
+				if (action === "deselect" || action === "empty") panel.handleInput(" ");
+				if (action === "empty") { panel.handleInput("\x1b[B"); panel.handleInput(" "); }
+				panel.handleInput(action === "escape" ? "\x1b" : "\r");
+			}
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		if (["empty", "escape", "nothing"].includes(action)) assert.deepEqual(snapshot(), before!);
+		else {
+			const expected = { ...routes };
+			if (action === "confirm") delete expected.abandoned;
+			delete expected.obsolete;
+			assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: expected, extra: true });
+			assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), expected);
+			const stored = JSON.parse(readFileSync(storePath, "utf8"));
+			assert.deepEqual(stored.profiles, { team: expected, sibling: expected });
+			assert.equal(stored.active, "team");
+		}
+	});
+}
+
+test("models screen stale cleanup only removes a key from the store that actually has it", async (t) => {
+	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+	const entry = { model: "openai/alpha" };
+	const known = { worker: entry };
+	writeStore({ team: { ...known, "stale-profile-only": entry } }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subPath, JSON.stringify({ model_profiles: { ...known, "stale-sub-only": entry } }));
+	writeFileSync(fixture.globalPath, JSON.stringify({ ...known, "stale-model-only": entry }));
+	fixture.tui.terminal.rows = 40;
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: known });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), known);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: known });
 });
 
 // Issue #2196: a profile key that names no discovered agent was silently

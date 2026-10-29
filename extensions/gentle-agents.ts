@@ -1876,7 +1876,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (retiredSddAgent(agent.name)) throw new Error("Retired SDD agents cannot be dispatched.");
 		if (![AGENT_MODE.TASK, AGENT_MODE.BACKGROUND].includes(mode)) throw new Error("Subagent mode must be task or background.");
 		if (isSingleShotMode(ctx.mode) && mode === AGENT_MODE.BACKGROUND) throw new Error(SINGLE_SHOT_BACKGROUND_ERROR);
-		const scopeDenied = rejectUnscopedBoundedWriterDispatch({ agent: agent.name, task: prompt, context });
+		const scopeDenied = rejectUnscopedBoundedWriterDispatch({ agent: agent.name, task: prompt, context, workspace_root: workspaceRoot, repository_root: repositoryRoot }, ctx.sessionManager.getCwd());
 		if (scopeDenied) throw new Error(scopeDenied.reason);
 		if (signal?.aborted) throw new Error("Subagent launch aborted before authorization.");
 		const registry = registryFor(ctx);

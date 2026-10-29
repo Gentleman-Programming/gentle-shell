@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -8,6 +8,10 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import {
+	resolveTargetRepositoryRoot,
+	tryNormalizeInRepoAbsolutePath,
+} from "../lib/bounded-writer-admission.ts";
 
 // ---------------------------------------------------------------------------
 // Bounded writer edit-surface scope guard (issue #484).
@@ -69,7 +73,7 @@ async function assertAccepted(input: Record<string, unknown>, message: string) {
 }
 
 const RESEND = "Resend the same task text unchanged except for that section; never shorten or re-summarize it.";
-const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Line ".+" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
+const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Line ".+" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path(?: \(use ".+" instead\))?; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
 
 // Every rejection is the canonical text, exactly one concrete problem, and the
 // resend instruction; nothing else (review R3-005).
@@ -424,3 +428,165 @@ test("agents outside the bounded writer set are not scope-guarded", async () => 
 		task: "Map the decoder call sites.",
 	}, "a read-only explorer needs no edit surfaces");
 });
+
+test("in-repository absolute paths are rejected with actionable suggestion and task is never mutated", async () => {
+	const repoRoot = "/workspace/my-project";
+	const originalTask = [
+		"Update the status parser.",
+		"",
+		"## Allowed edit surfaces",
+		`- \`${repoRoot}/lib/sdd-status.ts\``,
+		`- ${repoRoot}/tests/sdd-status.test.ts`,
+		"",
+		"### Validation",
+		"npm test",
+	].join("\n");
+	const input: Record<string, unknown> = {
+		agent: "gentle-ai-worker",
+		mode: "task",
+		workspace_root: repoRoot,
+		task: originalTask,
+	};
+
+	const result = await dispatchWriter(input);
+	assert.equal(result?.block, true, "in-repository absolute paths under workspace_root are rejected");
+	assert.ok(
+		result?.reason.includes('(use "lib/sdd-status.ts" instead)'),
+		`rejection reason must include exact actionable hint: ${result?.reason}`,
+	);
+	assert.equal(input.task, originalTask, "input.task remains completely unmutated");
+
+	const winRoot = "C:\\Users\\Dev\\project";
+	const winOriginalTask = [
+		"## Allowed edit surfaces",
+		`- \`${winRoot}\\src\\index.ts\``,
+		`- ${winRoot}\\tests\\index.test.ts`,
+	].join("\n");
+	const winInput: Record<string, unknown> = {
+		agent: "gentle-ai-worker",
+		mode: "task",
+		repository_root: winRoot,
+		task: winOriginalTask,
+	};
+	const winResult = await dispatchWriter(winInput);
+	assert.equal(winResult?.block, true, "in-repository Windows drive paths under repository_root are rejected");
+	assert.ok(
+		winResult?.reason.includes('(use "src/index.ts" instead)'),
+		`Windows path rejection must include exact actionable hint: ${winResult?.reason}`,
+	);
+	assert.equal(winInput.task, winOriginalTask, "winInput.task remains completely unmutated");
+
+	const outsidePosixResult = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		workspace_root: repoRoot,
+		task: ["## Allowed edit surfaces", "- `/etc/passwd`"].join("\n"),
+	});
+	assert.equal(outsidePosixResult?.block, true);
+	assert.ok(
+		!outsidePosixResult?.reason.includes("(use "),
+		`out-of-repository POSIX absolute path is rejected without false suggestion: ${outsidePosixResult?.reason}`,
+	);
+
+	const outsideWinResult = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		repository_root: winRoot,
+		task: ["## Allowed edit surfaces", `- \`C:\\outside.ts\``].join("\n"),
+	});
+	assert.equal(outsideWinResult?.block, true);
+	assert.ok(
+		!outsideWinResult?.reason.includes("(use "),
+		`out-of-repository Windows path is rejected without false suggestion: ${outsideWinResult?.reason}`,
+	);
+
+	const rootTargetResult = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		workspace_root: repoRoot,
+		task: ["## Allowed edit surfaces", `- \`${repoRoot}\``].join("\n"),
+	});
+	assert.equal(rootTargetResult?.block, true);
+	assert.ok(
+		!rootTargetResult?.reason.includes("(use "),
+		`targeting the repository root itself is rejected without false suggestion: ${rootTargetResult?.reason}`,
+	);
+
+	// Edge case coverage requested by review:
+	// 1. Sibling-prefix rejection: /workspace/my-project-sibling/file.ts must not match /workspace/my-project
+	const siblingPrefixResult = await dispatchWriter({
+		agent: "gentle-ai-worker",
+		mode: "task",
+		workspace_root: repoRoot,
+		task: ["## Allowed edit surfaces", `- \`${repoRoot}-sibling/file.ts\``].join("\n"),
+	});
+	assert.equal(siblingPrefixResult?.block, true);
+	assert.ok(
+		!siblingPrefixResult?.reason.includes("(use "),
+		`sibling-prefix directory must not be considered inside repo root: ${siblingPrefixResult?.reason}`,
+	);
+
+	// 2. Helper unit assertions: .. collapse, drive-letter mismatch, and repository_root precedence
+	assert.equal(
+		tryNormalizeInRepoAbsolutePath("/workspace/my-project/sub/../lib/app.ts", repoRoot),
+		"lib/app.ts",
+		"collapses .. segments that stay within repo root",
+	);
+	assert.equal(
+		tryNormalizeInRepoAbsolutePath("/workspace/my-project/../../outside.ts", repoRoot),
+		undefined,
+		"rejects .. segments that escape repo root",
+	);
+	assert.equal(
+		tryNormalizeInRepoAbsolutePath("D:\\Users\\Dev\\project\\src\\index.ts", winRoot),
+		undefined,
+		"rejects Windows drive-letter mismatch",
+	);
+	assert.equal(
+		resolveTargetRepositoryRoot(
+			{ repository_root: "/explicit/repo", workspace_root: "/explicit/ws" },
+			"/fallback/cwd",
+		),
+		"/explicit/repo",
+		"repository_root takes precedence over workspace_root and fallback cwd",
+	);
+	assert.equal(
+		resolveTargetRepositoryRoot({ workspace_root: "/explicit/ws" }, "/fallback/cwd"),
+		"/explicit/ws",
+		"workspace_root takes precedence over fallback cwd",
+	);
+	assert.equal(
+		resolveTargetRepositoryRoot({}, "/fallback/cwd"),
+		"/fallback/cwd",
+		"fallback cwd is used when neither repository_root nor workspace_root is supplied",
+	);
+
+	// 3. Symlink escape check with non-existent child below escaping symlink
+	const tempDir = mkdtempSync(join(tmpdir(), "writer-scope-test-"));
+	try {
+		const fakeRepo = join(tempDir, "repo");
+		const outsideDir = join(tempDir, "outside");
+		mkdirSync(fakeRepo);
+		mkdirSync(outsideDir);
+		const linkPath = join(fakeRepo, "escapelink");
+		const linkType = process.platform === "win32" ? "junction" : "dir";
+		symlinkSync(outsideDir, linkPath, linkType);
+
+		// Non-existent file below an escaping symlink
+		const escapingFilePath = join(linkPath, "nonexistent-child.ts");
+		const symlinkEscapeResult = await dispatchWriter({
+			agent: "gentle-ai-worker",
+			mode: "task",
+			workspace_root: fakeRepo,
+			task: ["## Allowed edit surfaces", `- \`${escapingFilePath}\``].join("\n"),
+		});
+		assert.equal(symlinkEscapeResult?.block, true);
+		assert.ok(
+			!symlinkEscapeResult?.reason.includes("(use "),
+			`non-existent file under escaping symlink must not receive in-repo suggestion: ${symlinkEscapeResult?.reason}`,
+		);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+});
+

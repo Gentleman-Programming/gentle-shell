@@ -10457,10 +10457,10 @@ function createGentleAiExtensionForTesting(
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
 	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
-	// Whether the current run of a session started as a primary run. A named-agent or child run never records verifier
-	// attempts (its tool calls are not primary), so its settle must not remind; `agent_end` may already have reset the
-	// subagent depth by then, so settle reads this flag instead of the depth.
-	const verifierSettlePrimaryRun = new Map<PendingReviewConsentSessionKey, boolean>();
+	// Named-agent or child runs started and not yet settled, per session. Such a run never records verifier attempts (its
+	// tool calls are not primary), so its settle must not remind. Each one pairs off with its own settle, nested runs
+	// included, independently of `agent_end`, which may or may not have paired off the subagent depth by then.
+	const verifierSettleNamedRuns = new Map<PendingReviewConsentSessionKey, number>();
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
@@ -10564,7 +10564,7 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
-		verifierSettlePrimaryRun.delete(sessionKey);
+		verifierSettleNamedRuns.delete(sessionKey);
 	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
@@ -11051,7 +11051,7 @@ function createGentleAiExtensionForTesting(
 		} else {
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
-		verifierSettlePrimaryRun.set(subagentDepthKey, isPrimarySession);
+		verifierSettleNamedRuns.set(subagentDepthKey, isPrimarySession ? 0 : (verifierSettleNamedRuns.get(subagentDepthKey) ?? 0) + 1);
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
 		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per
@@ -11182,9 +11182,13 @@ function createGentleAiExtensionForTesting(
 	// after the appended reminder, so it is not a precondition here.
 	pi.on("agent_before_settle", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
-		if (event.outcome !== "completed") return undefined;
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		if (verifierSettlePrimaryRun.get(sessionKey) === false) return undefined;
+		const namedRuns = verifierSettleNamedRuns.get(sessionKey) ?? 0;
+		if (namedRuns > 0) {
+			verifierSettleNamedRuns.set(sessionKey, namedRuns - 1);
+			return undefined;
+		}
+		if (event.outcome !== "completed") return undefined;
 		const reminder = verifierSettleReminders.beforeSettle(
 			sessionKey,
 			finalAssistantText(event.context.contextMessages),

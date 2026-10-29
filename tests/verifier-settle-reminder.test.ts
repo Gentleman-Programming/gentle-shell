@@ -247,3 +247,18 @@ test("S1: a named-agent run is never reminded at settle, and the next primary ru
 	assert.equal(result?.continue, true);
 	assert.equal(result?.entries?.[0]?.content, verifierSettleReminderText(3));
 });
+
+// A named agent nested inside a primary run settles before it. Its settle is paired off without touching the primary
+// run's classification, and without relying on `agent_end` (which, without native review, never pairs the depth off).
+test("S1: a named-agent run nested in a primary run does not suppress the primary run's reminder", async () => {
+	const session = hookedExtension();
+	await session.input();
+	await session.agentStart();
+	await session.agentStart({ agentName: "review-readability" });
+	await session.agentEnd();
+	assert.equal(await session.settle("Review done.\nRisk: item 2 (auth)"), undefined, "the nested named run is not reminded");
+	await session.agentEnd();
+	const result = await session.settle("Implemented.\nRisk: item 3 (shared parser)");
+	assert.equal(result?.continue, true, "the primary run is still reminded");
+	assert.equal(result?.entries?.[0]?.content, verifierSettleReminderText(3));
+});

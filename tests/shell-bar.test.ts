@@ -107,7 +107,7 @@ test("visual visibility hides only selected optional status segments", () => {
 	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
 });
 
-test("Status groups running job descriptions beside RDD without a compact count", () => {
+test("Status keeps RDD beside structured groups while running jobs moved to their own card", () => {
 	const data = model({ jobs: [
 		{ id: "job-2", label: "CI for PR 1860", startedAt: 2 },
 		{ id: "job-1", label: "Build runtime", startedAt: 1 },
@@ -115,12 +115,12 @@ test("Status groups running job descriptions beside RDD without a compact count"
 	for (const width of [30, 60]) {
 		const lines = renderShellSidebarBar(data, plainTheme, width);
 		const text = lines.join("\n");
-		assert.match(text, /Jobs[\s\S]*CI for PR 1860[\s\S]*Build runtime/);
+		// Running jobs live in their own sidebar card; the Status card never
+		// prints them, so the two surfaces cannot duplicate one job.
+		assert.doesNotMatch(text, /Jobs|CI for PR 1860|Build runtime/);
 		assert.match(text, /🌹 RDD/);
-		assert.doesNotMatch(text, /2 jobs/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
-	assert.doesNotMatch(renderShellSidebarBar(model({ jobs: [] }), plainTheme, 60).join("\n"), /Jobs/);
 });
 
 test("header shows only the running job count when requested and preserves it at mobile widths", () => {

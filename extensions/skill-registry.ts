@@ -103,6 +103,15 @@ function projectSkillDirs(cwd: string): string[] {
 	];
 }
 
+// gentle-shell#373: only storage-capacity/permission faults degrade the
+// registry to a typed unavailable result. Anything else (ELOOP, ENOSPC, a
+// failing device) keeps its own diagnostic through the ordinary error path.
+function isStorageUnavailableError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EACCES" || code === "EPERM" || code === "EROFS" || code === "ENOTDIR" || code === "EISDIR" || code === "EEXIST";
+}
+
 function isMissingSkillFileError(error: unknown): boolean {
 	if (typeof error !== "object" || error === null || !("code" in error)) return false;
 	return error.code === "ENOENT" || error.code === "ENOTDIR";
@@ -385,7 +394,7 @@ async function hasNoGitMetadata(cwd: string): Promise<boolean> {
 }
 
 // Freshness (including forced self-heal) never grants automatic write permission.
-async function automaticWriteWarning(
+export async function automaticWriteWarning(
 	cwd: string,
 	targets: string[],
 	remedy = "Run /skill-registry:refresh to deliberately regenerate runtime files.",
@@ -396,6 +405,7 @@ async function automaticWriteWarning(
 			cwd,
 			env: { ...process.env, LC_ALL: "C" },
 			timeout: gitTimeoutMs,
+			windowsHide: true,
 		});
 		tracked = stdout.split("\0").filter(Boolean);
 	} catch (error) {
@@ -524,9 +534,27 @@ async function regenerateRegistry(
 		return rel.startsWith("..") ? d : rel || ".";
 	});
 	const md = renderRegistry(cwd, sources, deduped);
-	await mkdir(join(cwd, ".atl"), { recursive: true });
-	await writeFile(registryPath, md);
-	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	try {
+		await mkdir(join(cwd, ".atl"), { recursive: true });
+		await writeFile(registryPath, md);
+		await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	} catch (error) {
+		if (isStorageUnavailableError(error)) {
+			// gentle-shell#373: an unwritable storage location must never
+			// report a successful regeneration. The typed result names the
+			// offending path and the safe next action; unexpected I/O keeps
+			// its own diagnostic by rethrowing.
+			const path = typeof (error as NodeJS.ErrnoException).path === "string" ? (error as NodeJS.ErrnoException).path as string : registryPath;
+			const relativePath = relative(cwd, path).split(sep).join("/") || REGISTRY_REL_PATH;
+			return {
+				regenerated: false,
+				skillCount: 0,
+				reason: "storage-unavailable",
+				warning: `Skill registry is unavailable: ${relativePath} is not writable (${(error as NodeJS.ErrnoException).code}). Restore write access, then run /skill-registry:refresh.`,
+			};
+		}
+		throw error;
+	}
 	return {
 		regenerated: true,
 		skillCount: deduped.length,
@@ -680,6 +708,7 @@ export const __testing = {
 	userSkillDirs,
 	findSkillFiles,
 	isMissingSkillFileError,
+	isStorageUnavailableError,
 	uniqueExistingDirs,
 	dedupeBySkillName,
 	scopeForPath,
@@ -795,6 +824,10 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await ensureAtlIgnored(ctx.cwd, true);
 				const result = await regenerateRegistry(ctx.cwd, true, true);
+				if (result.reason === "storage-unavailable") {
+					ctx.ui.notify(result.warning ?? "Skill registry is unavailable.", "warning");
+					return;
+				}
 				ctx.ui.notify(
 					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
 					"info",

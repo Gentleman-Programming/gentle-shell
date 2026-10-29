@@ -251,10 +251,8 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
 			],
 		}] : []),
-		...(model.jobs?.length ? [{
-			title: "Jobs",
-			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
-		}] : []),
+		// Running jobs live in their own sidebar card (extensions/gentle-shell.ts
+		// registers the "jobs" rail part); the compact bar keeps the count.
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },

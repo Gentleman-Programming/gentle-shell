@@ -1,9 +1,10 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
 import { execFile, spawnSync } from "node:child_process";
+import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -16,7 +17,7 @@ import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, Worktree
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
@@ -124,7 +125,9 @@ import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
-import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
+import { JOBS_FINISHED_TTL_MS, jobsCardTone, renderJobsCard } from "../lib/jobs-widget.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -1510,26 +1513,7 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 	return `${info.size}:${info.mtimeMs}`;
 };
 
-export interface ExternalEditorHost {
-	stop(): void;
-	start(): void;
-	requestRender(force?: boolean): void;
-}
-
-export function openInExternalEditor(host: ExternalEditorHost, path: string, env: NodeJS.ProcessEnv = process.env, spawn: typeof spawnSync = spawnSync, cwd?: string): boolean {
-	const command = env.VISUAL || env.EDITOR;
-	if (!command) return false;
-	const [editor, ...editorArgs] = command.split(" ");
-	host.stop();
-	try {
-		spawn(editor, [...editorArgs, path], { cwd, stdio: "inherit", shell: process.platform === "win32" });
-	} finally {
-		host.start();
-		host.requestRender(true);
-	}
-	return true;
-}
-
+export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
 	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
@@ -1606,7 +1590,11 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
-		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		try {
+			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	} finally {
 		clearInterval(poll);
 		view?.dispose();
@@ -2062,6 +2050,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let currentContext: ExtensionContext | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
+	let jobsCollapsed = false;
 	const redrawReview = () => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -2077,7 +2066,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
 		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
 		if (!isJobsSidebarSnapshot(event.snapshot)) return;
-		runningJobs = event.snapshot.jobs.map(({ id, label, startedAt }) => ({ id, label, startedAt }));
+		runningJobs = event.snapshot.jobs.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode }));
 		redrawReview();
 	});
 	pi.on("session_tree", () => {
@@ -2170,7 +2159,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pi, ctx, footerData,
 				usage: () => usage.get(ctx.model?.provider ?? ""),
 				profile: () => deps.activeProfile(),
-				jobs: () => runningJobs,
+				// The compact bar and header derive ⧗ N jobs from model.jobs.length,
+				// so this input is running-only: the snapshot carries the finished tail.
+				jobs: () => runningJobs?.filter((job) => job.status === undefined),
 				review: () => review,
 				tracker: () => tracker,
 				visualSettings: () => visualSettings,
@@ -2208,6 +2199,68 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
 			});
+			// The Jobs card: its own rail section, like Agents and Todos, fed by the
+			// same running-job display snapshot the Status card used to print. The
+			// rail is natively scrollable, so it lists every running job; there is
+			// no above-editor copy — regular mode keeps the compact bar count.
+			let jobsHovered = false;
+			let jobsPainted = false;
+			let jobsHeaderRow = 0;
+			const jobsRailCard: Component = {
+				render(width: number) {
+					const jobs = runningJobs ?? [];
+					if (jobs.length === 0) { jobsPainted = false; return []; }
+					const lines = renderJobsCard(jobs, theme, width, deps.now(), { collapsed: jobsCollapsed, collapseKey: jobsKey, collapseControl: true, hovered: jobsHovered });
+					jobsPainted = lines.length > 0;
+					jobsHeaderRow = jobsPainted ? panelHeaderRow(theme, width, jobsCardTone(jobs)) : 0;
+					return lines;
+				},
+				invalidate() {
+					jobsHovered = false;
+				},
+			};
+			const jobsRegion = new NativePointerRegion(jobsRailCard, {
+				onHover(event) {
+					const next = event.y === jobsHeaderRow;
+					if (next === jobsHovered) return { handled: true };
+					jobsHovered = next;
+					return { handled: true, render: true };
+				},
+				onLeave() {
+					if (!jobsHovered) return;
+					jobsHovered = false;
+					tui.requestRender();
+				},
+				onClick(event) {
+					if (event.button !== "left" || event.y !== jobsHeaderRow) return undefined;
+					jobsCollapsed = !jobsCollapsed;
+					invalidateSidebar(tui);
+					tui.requestRender();
+					return { handled: true, render: true };
+				},
+			});
+			const jobsRail: Component & { digest(): string; dispose(): void } = {
+				digest: () => JSON.stringify([jobsCollapsed, jobsHovered, runningJobs, Math.floor(deps.now() / 1000)]),
+				render: (width) => jobsRegion.render(width),
+				handleMouse: (event) => jobsRegion.handleMouse(event),
+				invalidate() {
+					jobsRegion.invalidate();
+				},
+				dispose() {
+					jobsRegion.dispose();
+				},
+			};
+			const jobsPart = sidebarPart(tui, "jobs", { render: () => [], invalidate() {}, dispose() {} }, jobsRail);
+			// Elapsed time moves while a job runs, and a finished tail must clear
+			// itself once its TTL expires with nothing running behind it; one frame
+			// a second is enough, and the digest's second bucket revalidates the
+			// cached section.
+			const jobsTimer = setInterval(() => {
+				const now = deps.now();
+				const fresh = (runningJobs ?? []).some((job) => job.status === undefined || now - (job.endedAt ?? 0) < JOBS_FINISHED_TTL_MS);
+				if (jobsPainted || fresh) tui.requestRender();
+			}, 1_000);
+			jobsTimer.unref?.();
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
@@ -2243,15 +2296,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}), { placement: "belowEditor" });
 			return { ...part,
 				render(width: number) {
-					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && runningJobs?.length) {
-						return [truncateToWidth(theme.fg("muted", shellJobsCount(runningJobs.length)), width, "…")];
+					// Running-only: a finished tail must never paint a ⧗ 0 jobs row.
+					const compactRunningJobs = runningJobs?.filter((job) => job.status === undefined);
+					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && compactRunningJobs?.length) {
+						return [truncateToWidth(theme.fg("muted", shellJobsCount(compactRunningJobs.length)), width, "…")];
 					}
 					const rows = part.render(width);
 					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2370,6 +2425,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
+		});
+	}
+	const jobsKey = jobsCollapseKey(env);
+	if (jobsKey) {
+		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Collapse or expand the jobs card",
+			handler: async () => {
+				jobsCollapsed = !jobsCollapsed;
+				if (sidebarTui) invalidateSidebar(sidebarTui);
+				renderHost?.requestRender();
+			},
 		});
 	}
 	pi.registerCommand("gentle:customize", {

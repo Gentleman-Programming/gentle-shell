@@ -10457,6 +10457,10 @@ function createGentleAiExtensionForTesting(
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
 	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
+	// Whether the current run of a session started as a primary run. A named-agent or child run never records verifier
+	// attempts (its tool calls are not primary), so its settle must not remind; `agent_end` may already have reset the
+	// subagent depth by then, so settle reads this flag instead of the depth.
+	const verifierSettlePrimaryRun = new Map<PendingReviewConsentSessionKey, boolean>();
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
@@ -10560,6 +10564,7 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
+		verifierSettlePrimaryRun.delete(sessionKey);
 	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
@@ -11046,6 +11051,7 @@ function createGentleAiExtensionForTesting(
 		} else {
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
+		verifierSettlePrimaryRun.set(subagentDepthKey, isPrimarySession);
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
 		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per
@@ -11177,8 +11183,10 @@ function createGentleAiExtensionForTesting(
 	pi.on("agent_before_settle", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
 		if (event.outcome !== "completed") return undefined;
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		if (verifierSettlePrimaryRun.get(sessionKey) === false) return undefined;
 		const reminder = verifierSettleReminders.beforeSettle(
-			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
+			sessionKey,
 			finalAssistantText(event.context.contextMessages),
 		);
 		if (reminder === undefined) return undefined;

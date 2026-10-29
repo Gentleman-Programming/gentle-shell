@@ -108,6 +108,7 @@ function hookedExtension(processEnv: NodeJS.ProcessEnv = {}) {
 			type: "agent_before_settle", entries, continue: false, outcome: "completed",
 			context: { contextEntries: [], contextMessages: [user("Do it."), assistant(finalText)], llmMessages: [], pendingMessages: [], canContinue: false },
 		})) as SettleResult | undefined,
+		agentStart: (event: Record<string, unknown> = {}) => emit("before_agent_start", { type: "before_agent_start", prompt: "Do it.", systemPrompt: "", ...event }),
 		agentEnd: () => emit("agent_end", { type: "agent_end", messages: [] }),
 		sent,
 	};
@@ -231,4 +232,18 @@ test("a real Pi session appends one settle reminder and continues once after a d
 		for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+// #2653 follow-up: an in-process named-agent run never records verifier attempts (its tool calls are not primary), so its
+// settle must never remind, whatever its final text declares. The next primary run still is reminded.
+test("S1: a named-agent run is never reminded at settle, and the next primary run still is", async () => {
+	const session = hookedExtension();
+	await session.input();
+	await session.agentStart({ agentName: "gentle-ai-worker" });
+	await session.agentEnd();
+	assert.equal(await session.settle("Worker done.\nRisk: item 3 (shared parser)"), undefined);
+	await session.agentStart();
+	const result = await session.settle("Implemented.\nRisk: item 3 (shared parser)");
+	assert.equal(result?.continue, true);
+	assert.equal(result?.entries?.[0]?.content, verifierSettleReminderText(3));
 });

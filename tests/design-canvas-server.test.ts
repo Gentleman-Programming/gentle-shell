@@ -562,9 +562,13 @@ function openEvents(port: number) {
 		req.on("error", reject);
 	});
 	req.end();
-	const waitFor = (pattern: RegExp) => new Promise<RegExpExecArray>((resolve) => {
+	// A waiter that never matches must fail loud, not hang the whole suite:
+	// an exhausted inotify limit silently stops the server's change events.
+	const waitFor = (pattern: RegExp) => new Promise<RegExpExecArray>((resolve, reject) => {
+		const timeout = setTimeout(() => reject(new Error(`events never matched ${pattern} within 5s; got: ${JSON.stringify(buffer.slice(-200))}`)), 5000);
+		const settle = (match: RegExpExecArray) => { clearTimeout(timeout); resolve(match); };
 		const match = pattern.exec(buffer);
-		if (match) resolve(match); else waiters.push({ pattern, resolve });
+		if (match) settle(match); else waiters.push({ pattern, resolve: settle });
 	});
 	return { ready, waitFor, req };
 }

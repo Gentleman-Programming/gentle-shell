@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, parse, resolve } from 'node:path';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, parse } from 'node:path';
 import { getSystemErrorName } from 'node:util';
 import { windowsProcessCheck, windowsBootstrapReason } from '../scripts/installer-windows.mjs';
 
 // Only owned inert Node children. Never invoke PowerShell, ACL/storage or setup.
-const base = resolve('odd/checks/issue-1921-windows-prerequisite-diagnostics');
-mkdirSync(base, { recursive: true });
-const root = mkdtempSync(join(base, 'inert-'));
+const root = mkdtempSync(join(tmpdir(), 'gentle-installer-diagnostics-1921-'));
 const fixture = join(root, 'child.mjs');
 writeFileSync(fixture, `import { writeSync } from 'node:fs';
 const mode = process.argv[2];

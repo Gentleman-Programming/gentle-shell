@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	SessionShutdownEvent,
 	Theme,
 	ThemeColor,
 	ToolCallEventResult,
@@ -114,7 +115,10 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
 import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
@@ -1406,7 +1410,7 @@ const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
 - When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
@@ -1415,9 +1419,9 @@ const GENTLEMAN_PERSONA_PROMPT = `Persona:
 
 const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Be direct, technical, concise, warm, and professional.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
 - Do not use slang or regional expressions.
-- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo (vos tenés, vos querés, hacé, andá, etc.) or any regional conjugations.
+- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations, regular or irregular: use tú or usted forms, never vos forms (tienes, not tenés; ajustas, not ajustás; vives, not vivís; mira, not mirá; haz, not hacé).
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
 - Push back when the user asks for code without enough context or understanding.
@@ -4548,10 +4552,12 @@ function routingScreenNotices(
 	const unmatched = unmatchedProfileKeys(Object.fromEntries(profileKeys.map((key) => [key, { model: undefined, thinking: undefined }])), known);
 	const ignored = unmatched.filter((entry) => entry.suggestion === undefined).map((entry) => entry.key);
 	if (ignored.length > 0) {
-		notices.push(`No agent matches ${ignored.map((key) => `"${key}"`).join(", ")} in this profile, so ${ignored.length === 1 ? "it is" : "they are"} ignored at launch.`);
+		notices.push(
+			`Profile key${ignored.length === 1 ? "" : "s"} ${ignored.map((key) => `"${key}"`).join(", ")} match${ignored.length === 1 ? "es" : ""} no agent configured in gentle-shell, so ${ignored.length === 1 ? "it is" : "they are"} ignored at launch.`,
+		);
 	}
 	for (const entry of unmatched) {
-		if (entry.suggestion !== undefined) notices.push(`No agent is named "${entry.key}" in this profile; did you mean ${entry.suggestion}?`);
+		if (entry.suggestion !== undefined) notices.push(`Profile key "${entry.key}" matches no agent configured in gentle-shell; did you mean ${entry.suggestion}?`);
 	}
 	// Issue #2400: model_profiles keys in subagents.json that match nothing and
 	// suggest nothing. When the session resolves a profile (its binding or the one
@@ -4963,9 +4969,10 @@ async function runProfilesPanelAction(
 	switch (result.type) {
 		case "use-session": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Use in this session binds a complete routing snapshot to this parent
-			// session and switches only its live orchestrator. No shared defaults,
-			// materialized stores, agent frontmatter, pins, or declarations are written.
+			// Enter persists a complete routing snapshot for this parent session,
+			// publishes only the returned state, then switches its live orchestrator.
+			// No shared defaults, materialized stores, agent frontmatter, pins, or
+			// declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
 				report.status = `This Pi session has no id to bind "${result.name}" to. Use Make default instead.`;
@@ -4975,15 +4982,51 @@ async function runProfilesPanelAction(
 				);
 				return file;
 			}
-			const snapshot = normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {};
-			bindSessionProfile(sessionId, result.name, snapshot);
-			const orchestrator = readProfileOrchestrator(snapshot);
-			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-			report.status = `This session now uses "${result.name}". Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
-			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — its tab shows ◉. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
-				"info",
-			);
+			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {});
+				if (!owned()) return false;
+				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
+					const kept = authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked.";
+					report.status = `"${result.name}" was not bound to this session. ${kept}`;
+					ctx.ui.notify(
+						`el Gentleman could not bind profile "${result.name}". ${kept} No live model or thinking change was applied.`,
+						"warning",
+					);
+					return false;
+				}
+				const snapshot = outcome.state.binding;
+				// The live switch applies only while this exact snapshot is still current.
+				const current = () => {
+					if (!owned()) return false;
+					const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+					return state?.status === "bound" && JSON.stringify(state.binding) === JSON.stringify(snapshot);
+				};
+				const orchestrator = readProfileOrchestrator(snapshot.modelProfiles);
+				const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, {
+					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
+					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
+					getThinkingLevel: () => live.getThinkingLevel(),
+				}, orchestrator);
+				if (current()) {
+					const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+					report.status = `This session now uses "${snapshot.name}" (${persistence}). Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
+					ctx.ui.notify(
+						`el Gentleman bound profile "${snapshot.name}" to this session — its tab shows ◉; ${persistence}. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
+						"info",
+					);
+				}
+				return true;
+			});
+			// A selection skipped by a reload or session replacement leaves a stale
+			// ctx; only a still-active command reports the missing attachment.
+			if (selected === undefined && isCommandContextActive(ctx)) {
+				report.status = `"${result.name}" was not bound: this session's attachment is unavailable.`;
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}": the current session attachment is unavailable. No profile or live model change was applied.`,
+					"warning",
+				);
+			}
 			return file;
 		}
 		case "apply-global": {
@@ -5507,11 +5550,12 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing]";
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear]";
 
 /**
  * `/gentle:profiles` opens the models screen. File operations live in
- * subcommands rather than on the screen: `export <name>` and `import` move a
+ * subcommands rather than on the screen: `clear` ends this session's profile
+ * selection, `export <name>` and `import` move a
  * profile through `profiles.export.json`, `publish <name>` toggles the
  * committed repository declaration, and `export-routing` / `restore-routing`
  * move the saved global routing (models.json, not a profile) through
@@ -5524,13 +5568,14 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, a
 		await openModelsScreen(ctx, live);
 		return;
 	}
-	if (verb === "export-routing" || verb === "restore-routing") {
+	if (verb === "export-routing" || verb === "restore-routing" || verb === "clear") {
 		if (rest.length > 0) {
 			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
 			return;
 		}
 		if (verb === "export-routing") await exportRoutingCommand(ctx);
-		else await restoreModelExport(ctx);
+		else if (verb === "restore-routing") await restoreModelExport(ctx);
+		else await handleProfilesClear(ctx);
 		return;
 	}
 	const store = await loadProfilesStore(ctx);
@@ -5646,141 +5691,240 @@ async function openProfilesPanelLoop(
 	};
 	const differsFromStore = (name: string, config: AgentModelConfig) =>
 		JSON.stringify(normalizeModelConfig(config) ?? {}) !== JSON.stringify(normalizeModelConfig(file.profiles[name]) ?? {});
-	while (true) {
-		if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
-			selectedName = Object.keys(file.profiles)[0];
-			draftOverride = undefined;
+	// Pi's runner invalidates this command ctx in a microtask when a reload or
+	// session replacement lands, possibly while a panel or input step is still in
+	// flight. Every step therefore re-checks the ctx when it settles (or throws),
+	// and a stale ctx closes the loop quietly instead of touching ctx.cwd again.
+	const stale = Symbol("stale-profiles-ctx");
+	const step = async <T>(run: () => Promise<T>): Promise<T> => {
+		let value: T;
+		try {
+			value = await run();
+		} catch (error) {
+			if (!isCommandContextActive(ctx)) throw stale;
+			throw error;
 		}
-		if (selectedName === undefined) {
-			ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
-			return;
-		}
-		const stored = cloneModelConfig(normalizeModelConfig(file.profiles[selectedName]) ?? {});
-		const boundName = sessionBoundName();
-		const result = await showRoutingTablePanel(ctx, {
-			name: selectedName,
-			config: draftOverride ?? stored,
-			file,
-			sessionBoundName: boundName,
-			pinWinner: pinWinner(),
-			feedback,
-			notices: routingScreenNotices(ctx, file, selectedName, boundName),
-			switchProfile,
-		});
-		draftOverride = undefined;
-		feedback = undefined;
-		const previous = selectedName;
-		if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
-			draftOverride = result.saveFirst;
-			continue;
-		}
-		const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
-		switch (result.type) {
-			case "close":
+		if (!isCommandContextActive(ctx)) throw stale;
+		return value;
+	};
+	try {
+		await runProfilesPanelSteps();
+	} catch (error) {
+		if (error !== stale) throw error;
+	}
+	async function runProfilesPanelSteps(): Promise<void> {
+		while (true) {
+			if (!isCommandContextActive(ctx)) return;
+			if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
+				selectedName = Object.keys(file.profiles)[0];
+				draftOverride = undefined;
+			}
+			if (selectedName === undefined) {
+				ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
 				return;
-			case "load":
-				selectedName = result.name;
-				feedback = `${savedNote}Showing "${result.name}".`;
-				continue;
-			case "custom": {
-				const label = result.target === PROFILE_ORCHESTRATOR_KEY
-					? "the orchestrator"
-					: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
-				const answer = await ctx.ui.input(`Custom model id for ${label}`, "provider/model");
-				draftOverride = cloneModelConfig(result.config);
-				if (answer === undefined || answer.trim() === "") {
-					feedback = "No custom model set.";
-					continue;
-				}
-				const model = normalizeModelId(answer.trim());
-				if (!model) {
-					feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
-					continue;
-				}
-				const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
-				for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
-				feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
+			}
+			const shown = selectedName;
+			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
+			const boundName = sessionBoundName();
+			const result = await step(() => showRoutingTablePanel(ctx, {
+				name: shown,
+				config: draftOverride ?? stored,
+				file,
+				sessionBoundName: boundName,
+				pinWinner: pinWinner(),
+				feedback,
+				notices: routingScreenNotices(ctx, file, shown, boundName),
+				switchProfile,
+			}));
+			draftOverride = undefined;
+			feedback = undefined;
+			const previous = selectedName;
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+				draftOverride = result.saveFirst;
 				continue;
 			}
-			case "save":
-				if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
-				else draftOverride = result.config;
-				continue;
-			case "use-session": {
-				// What you see is what the session uses: edits are saved first.
-				// A tab switch may have changed the shown profile since this visit opened.
-				const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
-				const saved = differsFromStore(previous, config);
-				if (saved && !writeDraft(previous, config)) {
-					draftOverride = config;
+			const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
+			switch (result.type) {
+				case "close":
+					return;
+				case "load":
+					selectedName = result.name;
+					feedback = `${savedNote}Showing "${result.name}".`;
+					continue;
+				case "custom": {
+					const label = result.target === PROFILE_ORCHESTRATOR_KEY
+						? "the orchestrator"
+						: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
+					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
+					draftOverride = cloneModelConfig(result.config);
+					if (answer === undefined || answer.trim() === "") {
+						feedback = "No custom model set.";
+						continue;
+					}
+					const model = normalizeModelId(answer.trim());
+					if (!model) {
+						feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
+						continue;
+					}
+					const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
+					for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
+					feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
 					continue;
 				}
-				const report: ProfilesPanelReport = {};
-				file = await runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report);
-				feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
-				continue;
-			}
-			case "apply-global": {
-				// Make default saves what you see, then runs the guarded global
-				// apply with its diff confirmation, pin honesty, and rollback.
-				const saved = differsFromStore(previous, result.config);
-				if (saved && !writeDraft(previous, result.config)) {
-					draftOverride = result.config;
+				case "save":
+					if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+					else draftOverride = result.config;
+					continue;
+				case "use-session": {
+					// What you see is what the session uses: edits are saved first.
+					// A tab switch may have changed the shown profile since this visit opened.
+					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
+					const saved = differsFromStore(previous, config);
+					if (saved && !writeDraft(previous, config)) {
+						draftOverride = config;
+						continue;
+					}
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
+					feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
 					continue;
 				}
-				file = await runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) });
-				const prefix = saved ? `Saved "${previous}". ` : "";
-				feedback = file.active === previous
-					? `${prefix}"${previous}" is the default for new sessions.`
-					: pinWinner() === previous
-						? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
-						: `${prefix}"${previous}" was not made the default.`;
-				continue;
-			}
-			case "create-live": {
-				const answer = await ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot");
-				const name = answer?.trim() ?? "";
-				if (name === "") {
-					feedback = `${savedNote}No profile created.`;
+				case "apply-global": {
+					// Make default saves what you see, then runs the guarded global
+					// apply with its diff confirmation, pin honesty, and rollback.
+					const saved = differsFromStore(previous, result.config);
+					if (saved && !writeDraft(previous, result.config)) {
+						draftOverride = result.config;
+						continue;
+					}
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) }));
+					const prefix = saved ? `Saved "${previous}". ` : "";
+					feedback = file.active === previous
+						? `${prefix}"${previous}" is the default for new sessions.`
+						: pinWinner() === previous
+							? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
+							: `${prefix}"${previous}" was not made the default.`;
 					continue;
 				}
-				// Captures the routing this session's launches resolve and the
-				// orchestrator it actually runs, the way the old snapshot did.
-				const snapshot = profileSnapshotFrom(
-					await readSessionLaunchModelConfigAsync(ctx),
-					liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
-				);
-				try {
-					const next = createProfile(file, name, snapshot);
-					writeProfilesFileSync(path, next);
-					file = next;
-					selectedName = name;
-					feedback = `${savedNote}Created "${name}" from what's running now.`;
-				} catch (error) {
-					feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+				case "create-live": {
+					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
+					const name = answer?.trim() ?? "";
+					if (name === "") {
+						feedback = `${savedNote}No profile created.`;
+						continue;
+					}
+					// Captures the routing this session's launches resolve and the
+					// orchestrator it actually runs, the way the old snapshot did.
+					const snapshot = profileSnapshotFrom(
+						await step(() => readSessionLaunchModelConfigAsync(ctx)),
+						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
+					);
+					try {
+						const next = createProfile(file, name, snapshot);
+						writeProfilesFileSync(path, next);
+						file = next;
+						selectedName = name;
+						feedback = `${savedNote}Created "${name}" from what's running now.`;
+					} catch (error) {
+						feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+					}
+					continue;
 				}
-				continue;
-			}
-			default: {
-				const report: ProfilesPanelReport = {};
-				file = await runProfilesPanelAction(ctx, live, path, file, result, report);
-				selectedName = report.selectedName ?? selectedName;
-				if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
-					feedback = `Deleted "${previous}".`;
-				} else if (result.type === "pin") {
-					feedback = report.status ?? (pinWinner() === previous
-						? `"${previous}" is used in this repo.`
-						: `"${previous}" is no longer pinned to this repo.`);
-				} else {
-					feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
-				}
-				// Rename, pin, and a declined delete keep the profile on screen; carry
-				// unsaved edits across them instead of reloading from the store.
-				if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
-					draftOverride = result.draft;
+				default: {
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, result, report));
+					selectedName = report.selectedName ?? selectedName;
+					if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
+						feedback = `Deleted "${previous}".`;
+					} else if (result.type === "pin") {
+						feedback = report.status ?? (pinWinner() === previous
+							? `"${previous}" is used in this repo.`
+							: `"${previous}" is no longer pinned to this repo.`);
+					} else {
+						feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
+					}
+					// Rename, pin, and a declined delete keep the profile on screen; carry
+					// unsaved edits across them instead of reloading from the store.
+					if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
+						draftOverride = result.draft;
+					}
 				}
 			}
 		}
+	}
+}
+
+/**
+ * `/gentle:profiles clear`: append an explicit clear record for this session and
+ * publish only the returned state. Never-bound and already-cleared sessions write
+ * nothing; an unreadable record is the recovery case and is cleared. The live
+ * orchestrator and every shared default stay untouched.
+ */
+async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
+	const sessionId = ctx.sessionManager?.getSessionId?.();
+	if (typeof sessionId !== "string" || sessionId.length === 0) {
+		ctx.ui.notify("el Gentleman cannot clear the session profile: no parent session id is available here.", "warning");
+		return;
+	}
+	const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+		const prior = attachment.refresh().state;
+		// An unsaved or in-memory branch reads as indeterminate; without any profile
+		// record on the branch it was never selected, so nothing is written.
+		const selectedBefore = ctx.sessionManager.getBranch().some((entry) => isSessionProfileFamilyEntry(entry));
+		if (prior.status === "absent" || (prior.status === "indeterminate" && !selectedBefore)) {
+			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
+			return true;
+		}
+		if (prior.status === "cleared") {
+			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
+			return true;
+		}
+		const outcome = attachment.clear();
+		if (!owned()) return false;
+		const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "cleared" || !authority.available) {
+			ctx.ui.notify(
+				`el Gentleman could not clear the session profile. ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."}`,
+				"warning",
+			);
+			return false;
+		}
+		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : "the unreadable session profile record";
+		ctx.ui.notify(
+			`el Gentleman cleared ${what} — ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. New launches use the routing without a session profile (pins, repository declaration, global). The live orchestrator is unchanged.`,
+			"info",
+		);
+		return true;
+	});
+	// A selection skipped by a reload or session replacement leaves a stale ctx;
+	// only a still-active command reports the missing attachment.
+	if (selected === undefined && isCommandContextActive(ctx))
+		ctx.ui.notify("el Gentleman cannot clear the session profile: the current session attachment is unavailable. Nothing was changed.", "warning");
+}
+
+/**
+ * Warn when the current session profile record cannot be read: an invalid record
+ * or one from a newer version blocks affected launches instead of falling back.
+ */
+function notifySessionProfileProblem(ctx: ExtensionContext): void {
+	const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+	if (state?.status !== "invalid" && state?.status !== "unsupported") return;
+	const file = ctx.sessionManager.getSessionFile?.() ?? "this in-memory session";
+	const where = `${sanitizeTerminalText(file)} entry ${state.entryIndex ?? "?"}${state.lineNumber === undefined ? "" : ` (line ${state.lineNumber})`}`;
+	const kind = state.status === "invalid" ? "invalid" : "from a newer version";
+	ctx.ui.notify(
+		`el Gentleman: the session profile record at ${where} is ${kind}. Subagent launches are blocked until it is replaced. Select a profile with Enter or run /gentle:profiles clear.`,
+		"warning",
+	);
+}
+
+/** Pi's runner throws on any access to a ctx made stale by reload or session replacement. */
+function isCommandContextActive(ctx: ExtensionContext): boolean {
+	try {
+		void ctx.sessionManager;
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -10213,6 +10357,8 @@ export const __testing = {
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
 	runProfilesPanelAction,
+	openProfilesPanelLoop,
+	notifySessionProfileProblem,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
@@ -10376,11 +10522,21 @@ function createGentleAiExtensionForTesting(
 
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
+	const sessionProfiles = createSessionProfileIntegration();
+	pi.on("session_before_fork", async (event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
+	});
+	pi.on("session_before_tree", async (_event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+	});
 	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
 	pi.on("session_tree", (_event, ctx) => {
 		auto.reset();
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
+		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 	});
 	// Lean RDD-off review loadout (applyRddOffReviewPrompt): every
 	// before_agent_start sets it from the pinned line before Pi prepares that
@@ -10391,6 +10547,19 @@ function createGentleAiExtensionForTesting(
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		// A pending Enter selection settles before the profile owner shuts down;
+		// without one the whole shutdown stays synchronous, so terminal cleanup
+		// (child permission transport, sidebars) is never deferred a turn.
+		if (hasPendingSessionProfileSelection(context.sessionManager)) {
+			return waitCurrentSessionProfileSelection(context.sessionManager).then(() => shutdownSession(event, context));
+		}
+		shutdownSession(event, context);
+	});
+	function shutdownSession(event: SessionShutdownEvent, context: ExtensionContext): void {
+		if (sessionProfiles.isCurrent(context.sessionManager)) {
+			clearSessionProfileBinding(context.sessionManager.getSessionId());
+			sessionProfiles.shutdown(context.sessionManager, event);
+		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
 		rddOffReviewLoadout = false;
 		auto.reset();
@@ -10414,7 +10583,7 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
-	});
+	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
 	// phase signal for the Gentle prompt's working label. Gentle Shell infers
@@ -10779,6 +10948,11 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		const profileSessionId = ctx.sessionManager?.getSessionId?.();
+		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
+		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.
@@ -11147,7 +11321,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.registerCommand("gentle:profiles", {
-		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.",
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.",
 		handler: async (args, ctx) => {
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},

@@ -27,6 +27,9 @@ export type MusicControlCommand = (typeof MUSIC_CONTROL_COMMANDS)[number];
 
 export const MUSIC_INSTALL_TITLE = "Install the music player?";
 export const MUSIC_INSTALL_OFFER = "Install the gentle-stream music player inside Gentle Shell? It downloads uv, Python 3.13 and the player (about 150 MB) into the Gentle Shell folder.";
+// gentle-stream needs POSIX (fcntl locks, an AF_UNIX control socket, process
+// groups), so a native Windows Pi can neither install nor run it; WSL is Linux.
+export const MUSIC_WINDOWS_UNSUPPORTED = "/gentle:music is not available on Windows yet: the gentle-stream player runs on macOS and Linux. It works when Gentle Shell runs inside WSL.";
 const UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/";
 const CTL_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
@@ -85,6 +88,8 @@ export interface GentleMusicDeps {
 	which?: MusicWhich;
 	/** The bundled install's player, or undefined outside a bundled install. */
 	bundled?: () => Promise<BundledMusicPlayer | undefined>;
+	/** The platform Pi runs on; gentle-stream does not run on native Windows. */
+	platform?: NodeJS.Platform;
 	spawn?: MusicSpawn;
 	signals?: MusicSignals;
 	usage?: MusicUsage;
@@ -259,6 +264,7 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 	const usage = deps.usage ?? processUsage();
 	const shutdownTimeoutMs = deps.shutdownTimeoutMs ?? SHUTDOWN_TIMEOUT_MS;
 	const bundled = deps.bundled ?? defaultBundled;
+	const platform = deps.platform ?? process.platform;
 
 	const findPlayer = async (): Promise<{ stream?: GentleStreamCommand; offer?: BundledMusicPlayer }> => {
 		let player: BundledMusicPlayer | undefined;
@@ -326,6 +332,10 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 		description: "Open gentle-stream full screen (optional mood text); b returns with the music playing, q stops it. next, pause, play, stop, status control the music without leaving Pi.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
+			if (platform === "win32") {
+				ctx.ui.notify(MUSIC_WINDOWS_UNSUPPORTED, "warning");
+				return;
+			}
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/gentle:music needs the interactive terminal.", "warning");
 				return;

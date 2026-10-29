@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import gentleMusic, {
+import gentleMusicExtension, {
 	findOnPath,
 	formatMusicStatus,
 	GENTLE_STREAM_SPEC,
 	installHint,
 	MUSIC_COMMAND_NAME,
 	MUSIC_INSTALL_OFFER,
+	MUSIC_WINDOWS_UNSUPPORTED,
 	MUSIC_INSTALL_TITLE,
 	musicTuiArgs,
 	parseMusicArgs,
@@ -19,6 +20,11 @@ import gentleMusic, {
 	type BundledMusicPlayer,
 	type MusicSpawn,
 } from "../extensions/gentle-music.ts";
+
+// The music tests describe a supported (POSIX) host unless they pass `platform`,
+// so they hold on every OS the suite runs on, Windows included.
+const gentleMusic = (pi: Parameters<typeof gentleMusicExtension>[0], deps: Parameters<typeof gentleMusicExtension>[1] = {}) =>
+	gentleMusicExtension(pi, { platform: "linux", ...deps });
 
 // /gentle:music hands the terminal to gentle-stream's own TUI, the way Pi's
 // external editor does, and controls the background player with
@@ -409,6 +415,35 @@ test("accepting the offer installs the player with progress, then starts the mus
 	assert.match(context.notices[1]![0], /installed/i);
 	assert.equal(spawned[0]!.command, "/prefix/music/bin/gentle-stream");
 	assert.deepEqual(spawned[0]!.args, ["--model", "anthropic/claude-sonnet-5-5", "--mood", "calm"]);
+});
+
+test("on Windows /gentle:music explains it is not available yet and never offers, installs or runs anything", async () => {
+	assert.equal(MUSIC_WINDOWS_UNSUPPORTED, "/gentle:music is not available on Windows yet: the gentle-stream player runs on macOS and Linux. It works when Gentle Shell runs inside WSL.");
+	for (const args of ["", "calm", "status", "stop"]) {
+		const { pi, commands } = fakePi();
+		const context = fakeContext();
+		const asked = withConfirm(context, true);
+		const { spawn, spawned } = fakeSpawn([{ code: 0 }], context.calls);
+		const { state, bundled } = fakeBundled({ installed: true });
+		gentleMusic(pi, { which: onPath({ "gentle-stream": "C:\\bin\\gentle-stream.exe", uvx: "C:\\bin\\uvx.exe" }), spawn, bundled, signals: fakeSignals().signals, platform: "win32" });
+		await commands.get(MUSIC_COMMAND_NAME)!.handler(args, context.ctx);
+		assert.deepEqual(context.notices, [[MUSIC_WINDOWS_UNSUPPORTED, "warning"]], args);
+		assert.deepEqual(asked, [], args);
+		assert.equal(state.installs, 0, args);
+		assert.equal(spawned.length, 0, args);
+	}
+});
+
+test("on Windows the not-available notice wins over the interactive-terminal notice", async () => {
+	for (const mode of ["rpc", "json", "print"]) {
+		const { pi, commands } = fakePi();
+		const context = fakeContext(mode);
+		const { spawn, spawned } = fakeSpawn([{ code: 0 }], context.calls);
+		gentleMusic(pi, { which: onPath({ uvx: "C:\\bin\\uvx.exe" }), spawn, platform: "win32" });
+		await commands.get(MUSIC_COMMAND_NAME)!.handler("", context.ctx);
+		assert.deepEqual(context.notices, [[MUSIC_WINDOWS_UNSUPPORTED, "warning"]], mode);
+		assert.equal(spawned.length, 0, mode);
+	}
 });
 
 test("an installed prefix player is used without asking; PATH gentle-stream still comes first", async () => {

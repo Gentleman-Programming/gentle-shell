@@ -659,7 +659,7 @@ Synthetic tests prove the observer's behavior, not the cause of issue #213. A ne
 ```text
 /gentle:status          Check package assets and global model config.
 /gentle:doctor          Run read-only diagnostics for assets, config, tools, guards, and Herdr setup.
-/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing.
+/gentle:profiles           Open the models screen on this repository's profile. Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.
 /gentle:persona            Switch between gentleman and neutral persona modes.
 /gentle:background-subagents  Show or set the managed background-subagents policy, with its deciding source.
 /gentle:review-mode          Show or set the receipt-driven development mode (status|enable|disable).
@@ -988,7 +988,9 @@ Delegation contract:
 | Persona     | Behavior                                                                                                      |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | `gentleman` | Senior architect, teacher, direct technical feedback, Rioplatense Spanish/voseo when the user writes Spanish. |
-| `neutral`   | Same discipline, warmer professional language, no regional expression.                                        |
+| `neutral`   | Same discipline, warmer professional language, no regional expression, no voseo in any verb form.             |
+
+Both modes reply in the language of the user's latest message and never default to Spanish, so an English message gets an English reply even after context compaction.
 
 Saved globally at:
 
@@ -1096,7 +1098,18 @@ The file operations are subcommands:
 | `/gentle:profiles import`            | Import the profile in `~/.pi/gentle-ai/profiles.export.json`, asking before it replaces one with the same name. |
 | `/gentle:profiles publish <name>`    | Publish the shared repository declaration at `<worktree-root>/.pi/gentle-ai/profile.json` so the whole team starts from that profile; run it again to remove the declaration. |
 
-The binding made by **Use in this session** writes no shared routing: not `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. When the table has unsaved edits, they are saved to the profile in `profiles.json` first, exactly as **Save** would, and the screen says so; with no pending edits nothing is written at all. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The binding lasts in the current process (including `/reload`); resuming in another process requires selecting it again. Re-selecting re-copies the profile definition from `profiles.json`; later edits to `subagents.json` or agent frontmatter never reach a bound session, in that session or through a re-selection.
+The binding made by **Use in this session** writes no shared routing: not `models.json`, Pi's global `settings.json`, agent frontmatter, `subagents.json`, or repository pins. When the table has unsaved edits, they are saved to the profile in `profiles.json` first, exactly as **Save** would, and the screen says so; with no pending edits nothing is written at all. Other open sessions keep their own bindings and live orchestrators. The session binding overrides pins and global routing as a complete snapshot, including reviewer routing; omitted roles do not fall back to another profile. The selection is appended to the session file as its own record, so start, resume, reload, fork and tree navigation restore it from the current branch without selecting it again. Re-selecting re-copies the profile definition from `profiles.json`; later edits to `subagents.json` or agent frontmatter never reach a bound session, in that session or through a re-selection.
+
+| Outcome | What happens |
+| --- | --- |
+| Persisted | The selected record is corroborated on disk before routing is published. |
+| Not yet persisted | Use in this session explicitly reports a preflush selection. It is usable now, but detach/reload does not restore it without later disk corroboration. |
+| Append failure | No success or live-model effect. Keep only returned disk-corroborated state; otherwise block affected launches. |
+| Invalid, future or unavailable authority | Do not fall through to shared routing; affected subagent launches are blocked. An explicit successful selection or fresh corroboration can restore availability. |
+
+`/gentle:profiles clear` removes this session's selection: it appends an explicit clear record, so new launches use the routing without a session profile (pins, repository declaration, global) and resume/reload keep it cleared. The live orchestrator, `profiles.json`, `models.json`, pins and Pi settings are untouched. A session that never selected a profile, or is already cleared, writes nothing and says so. Clear is also the recovery path for an invalid or newer-version record: on start, resume, reload and tree navigation such a record raises a warning with the session file and entry index, and affected launches stay blocked until Use in this session or clear replaces it.
+
+Start, resume, reload, fork and tree navigation restore only the current corroborated branch state. Restoration never applies the profile's orchestrator. Fork capture is read-only until a confirmed transition; cancellation/rejection preserves current authority. Pending Use in this session live operations settle before fork-copy, tree movement or detach.
 
 Outside a pinned repository, **Make default** writes `~/.pi/gentle-ai/models.json`, then reconciles agent frontmatter and `subagents.json` with the shared materialization rules. When a valid pin wins, it only re-pins this clone to the profile and writes none of `models.json`, materialized routing, `settings.json`, or the active marker (see **Per-repository pins**). A profile is a complete snapshot: every discoverable agent it omits returns to inherit, so routing materialized by a previous profile, by an earlier apply, or by a migration never survives a switch silently. The active profile is persisted so `/gentle:profiles` reopens with the applied profile marked.
 
@@ -1216,7 +1229,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 
 **Task card layer token.** Every agents task card shows which layer supplied the launch's model, right after the model itself (for example `nan/glm5.3 · binding`): `binding` (selected in this session), `frozen:local` / `frozen:repo` / `frozen:global` (the startup snapshot and its origin), `pin:local` / `pin:repo` (a repository pin won), `declaration` (a non-Git repository declaration won), `profile` (the globally active profile routing), `definition` (the agent's own frontmatter), or `default` (Pi's default model). This makes staleness visible: a launch through a frozen session keeps showing its frozen token even after the editable layers below it change on disk.
 
-**Current limits.** The frozen profile is kept in memory for the life of the Pi process, so `/reload` keeps it. Resuming a session in a new process (`--resume`, `--continue`, `--session`), `/new`, and `/fork` freeze again from the defaults current at that moment, and the drift notice memory starts empty, so a pending change is announced once more. Persisting the frozen profile in the session file is planned.
+**Current limits.** The frozen profile is kept in memory for the life of the Pi process, so `/reload` keeps it. This limit applies only to the startup-frozen profile: resuming a session in a new process (`--resume`, `--continue`, `--session`), `/new`, and `/fork` freeze it again from the defaults current at that moment, and the drift notice memory starts empty, so a pending change is announced once more. A profile chosen with **Use in this session** is not affected: it is restored from the current branch of the session file. Persisting the frozen profile in the session file is planned.
 
 ## Commands
 

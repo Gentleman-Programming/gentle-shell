@@ -49,7 +49,8 @@ export type SessionProfileControllerReason =
  | "detached-source"
  | "source-changed"
  | "unobservable-append"
- | "unobservable-source";
+ | "unobservable-source"
+ | "unavailable-lifecycle";
 export type SessionProfileAppendOutcome = {
  status:
   | "persisted"

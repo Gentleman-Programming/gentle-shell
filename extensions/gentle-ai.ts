@@ -9005,13 +9005,19 @@ function selectExactReviewCapture(
 	const inputTargetIdentity = exactCollectArgument(input, "target");
 	// Go's targeted-validator vector binds its capture target to the correction
 	// target from the provider-owned validation request, rather than STATUS's
-	// current candidate identity. All other captures remain bound to STATUS.
-	const expectedInputTargetIdentity = input.validationRequest?.correctionTargetIdentity ?? statusTargetIdentity;
+	// current candidate identity. All other captures are bound to STATUS: the
+	// live target, or the frozen authority target (authority_target_identity)
+	// that gentle-ai's reviewAuthorityTargetIdentity binds correction inputs to
+	// once the candidate drifts.
+	const validationTarget = input.validationRequest?.correctionTargetIdentity;
+	const expectedInputTargetIdentities = validationTarget !== undefined
+		? [validationTarget]
+		: [statusTargetIdentity, status.authorityTargetIdentity];
 	if (
 		!isCanonicalProcessString(inputLineageId) ||
 		!isCanonicalProcessString(inputTargetIdentity) ||
 		inputLineageId !== lineageId ||
-		inputTargetIdentity !== expectedInputTargetIdentity
+		!expectedInputTargetIdentities.includes(inputTargetIdentity)
 	) {
 		return captureBindingRejected("collectBinding does not carry one non-empty matching provider lineage and target token");
 	}

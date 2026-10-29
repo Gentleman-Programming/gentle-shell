@@ -21,7 +21,7 @@ import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
-import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
@@ -62,7 +62,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, panelHeaderRow, renderCard } from "../lib/shell-card.ts";
+import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, markCardResult, panelHeaderRow, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -409,7 +409,9 @@ function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; write
 }
 
 function taskDetails(task: TaskRecord): Record<string, unknown> {
-	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd } };
+	// Additive fields (label, turns, toolCalls, lastStep, error) feed the status
+	// card renderer; the model never sees details, so widening is display-only.
+	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd, label: task.label, turns: task.turns, toolCalls: task.toolCalls, lastStep: task.lastStep, ...(task.error ? { error: task.error } : {}) } };
 }
 
 export function describeTask(task: TaskRecord): string {
@@ -421,6 +423,131 @@ export function describeTask(task: TaskRecord): string {
 function finishedText(task: TaskRecord): string {
 	if (task.status === "completed") return task.result ?? "(the subagent returned no text)";
 	return `Subagent ${task.agent} ${task.status}${task.error ? `: ${task.error}` : ""}${task.result ? `\n\nLast answer:\n${task.result}` : ""}`;
+}
+
+// The status card speaks the Agents widget's visual language: the same glyph
+// per state, and a card tone the reader can scan for — info while alive,
+// success when done, error when the run ended without an answer, warning when
+// the child is blocked on the parent.
+const STATUS_CARD_TONE: Record<string, CardTone> = {
+	[TASK_STATUS.QUEUED]: CARD_TONE.INFO,
+	[TASK_STATUS.RUNNING]: CARD_TONE.INFO,
+	[TASK_STATUS.WAITING]: CARD_TONE.WARNING,
+	[TASK_STATUS.COMPLETED]: CARD_TONE.SUCCESS,
+	[TASK_STATUS.FAILED]: CARD_TONE.ERROR,
+	[TASK_STATUS.CANCELLED]: CARD_TONE.ERROR,
+	[TASK_STATUS.TIMED_OUT]: CARD_TONE.ERROR,
+};
+// The per-action identity from the design handoff (agent-tool-cards/04):
+// each agent tool carries its own glyph and reads as a verb, so the transcript
+// feels like working with agents rather than calling functions.
+const ACTION_GLYPH: Record<string, string> = {
+	run: "→",
+	status: "◎",
+	result: "↩",
+	cancel: "⨯",
+	send_message: "✉",
+	reply: "✉",
+	continue: "↻",
+	list_tasks: "☰",
+	list_agents: "☰",
+};
+const ACTION_HEADING: Record<string, string> = {
+	run: "Delegating",
+	status: "Agent status",
+	result: "Agent answer",
+	cancel: "Stopping agent",
+	send_message: "Messaging agent",
+	reply: "Replying to agent",
+	continue: "Resuming agent",
+	list_tasks: "Agent tasks",
+	list_agents: "Agent roster",
+};
+
+// The state word as a scanable pill: uppercase, colored by the state's role.
+function statusPill(status: string, theme: CardTheme): string {
+	const role = status === TASK_STATUS.COMPLETED ? "success"
+		: status === TASK_STATUS.WAITING ? "warning"
+		: (status === TASK_STATUS.FAILED || status === TASK_STATUS.CANCELLED || status === TASK_STATUS.TIMED_OUT) ? "error"
+		: "accent";
+	return theme.fg(role, status.replace("_", " ").toUpperCase());
+}
+
+// The agent identity palette from the design handoff (agent-tool-cards/04):
+// agent cards wear the iris chrome — heading, glyph, frame and running pill —
+// whatever the active accent is, so working with agents reads as its own
+// mode. The palette is emitted as truecolor ANSI exactly like pi renders
+// theme hex values; every other role stays theme-native, so body text,
+// hints and the success/error states keep the user's theme.
+const IRIS_FG = "\x1b[38;2;185;167;242m";
+const IRIS_DEEP_FG = "\x1b[38;2;143;122;217m";
+const IRIS_TINT_BG = "\x1b[48;2;26;21;38m";
+
+// The float tint follows the card tone: info cards (live agent work) wear the
+// iris tint; success, warning and error cards keep the theme's background.
+function agentTheme(theme: CardTheme, tone: CardTone): CardTheme {
+	const tint = tone === CARD_TONE.INFO;
+	return {
+		fg: (color, text) => color === "accent" ? `${IRIS_FG}${text}\x1b[39m`
+			: color === "border" ? `${IRIS_DEEP_FG}${text}\x1b[39m`
+			: theme.fg(color, text),
+		...(theme.bg ? { bg: (color, text) => tint && color === "toolSuccessBg" ? `${IRIS_TINT_BG}${text}\x1b[49m` : theme.bg!(color, text) } : {}),
+	};
+}
+
+// Card headings are one row: fold any line break a caller passes in before
+// the usual control-character escaping.
+function headingText(value: string): string {
+	return sanitizeTerminalText(value.replace(/[\r\n]+/g, " "));
+}
+
+// Structured task facts carried on the tool result; anything missing or of the
+// wrong shape falls back to the plain preview, so older details and error
+// results keep rendering.
+interface StatusCardFacts {
+	taskId?: string;
+	agent?: string;
+	status?: string;
+	mode?: string;
+	cwd?: string;
+	label?: string;
+	turns?: number;
+	toolCalls?: number;
+	lastStep?: string;
+	error?: string;
+}
+
+function statusCardFacts(details: unknown): StatusCardFacts | undefined {
+	const raw = (details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const source = raw as Record<string, unknown>;
+	if (typeof source.taskId !== "string") return undefined;
+	const facts: StatusCardFacts = { taskId: source.taskId };
+	for (const key of ["agent", "status", "mode", "cwd", "label", "lastStep", "error"] as const) {
+		if (typeof source[key] === "string") facts[key] = source[key] as string;
+	}
+	for (const key of ["turns", "toolCalls"] as const) {
+		if (typeof source[key] === "number" && Number.isFinite(source[key])) facts[key] = source[key];
+	}
+	return facts;
+}
+
+// One Gentle Shell card body for a task's live or final state, built from the
+// details the execute path already records. Pure: facts in, body rows out.
+// The state leads as a pill (RUNNING/OK/FAIL, colored by role); collapsed
+// keeps pill, task label, and last step; expanded adds workspace and error.
+function statusCardRows(facts: StatusCardFacts, theme: CardTheme, expanded: boolean): string[] {
+	const status = facts.status ?? "unknown";
+	const pill = statusPill(status, theme);
+	const head = [pill, facts.mode];
+	if (facts.turns !== undefined && facts.toolCalls !== undefined) head.push(`${facts.turns} turns · ${facts.toolCalls} tool calls`);
+	const headLine = head.filter((part) => part !== undefined).join(" · ");
+	const label = facts.label ? sanitizeTerminalText(facts.label) : undefined;
+	const cwd = facts.cwd ? `cwd ${sanitizeTerminalText(facts.cwd)}` : undefined;
+	const last = facts.lastStep ? `last: ${sanitizeTerminalText(facts.lastStep)}` : undefined;
+	const error = facts.error ? sanitizeTerminalText(facts.error) : undefined;
+	if (!expanded) return [headLine, ...(label ? [label] : []), ...(last ? [last] : [])];
+	return [headLine, ...(label ? [label] : []), ...(cwd ? [cwd] : []), ...(last ? [last] : []), ...(error ? [error] : [])];
 }
 
 // pi's keybinding hint needs a live theme; outside one (tests, headless) the
@@ -1429,7 +1556,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
 		const agent = typeof details?.agent === "string" ? details.agent : "Subagent";
-		const heading = `${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
+		const heading = `${ACTION_GLYPH.send_message} ${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
 		const body = sanitizeTerminalText(messageText(message.content));
 		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
 	});
@@ -1443,12 +1570,18 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const details = (message.details as { gentleAgents?: { agent?: string; status?: string } } | undefined)?.gentleAgents;
 		const content = message.content as string | Array<{ type: string; text?: string }>;
 		const text = typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
-		const body = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const tone = details?.status === "completed" ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
 		const hint = expandHint(options.expanded);
+		// The same answer card as the tool result: iris chrome, the state pill
+		// on top, the answer below ("answer" keeps its name through the flow).
+		const t = agentTheme(theme, tone);
+		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
+		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
+		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
+		const subtitle = typeof details?.agent === "string" ? headingText(details.agent) : undefined;
 		return {
 			render(width: number) {
-				return renderCard({ title: "Agent result", subtitle: details?.agent, body, tone, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint });
+				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
 			},
 			invalidate() {},
 		};
@@ -1470,7 +1603,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		];
 		return {
 			render(width: number) {
-				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
+				return renderCard({ title: "Stale agent answer", subtitle: `${headingText(agent)} · task ${headingText(taskId)}`, body, tone: CARD_TONE.WARNING, glyph: ACTION_GLYPH.result }, agentTheme(theme, CARD_TONE.WARNING), width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
 			},
 			invalidate() {},
 		};
@@ -2029,28 +2162,104 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
+		const heading = ACTION_HEADING[name] ?? `agent ${name.replace(/_/g, " ")}`;
+		const glyph = ACTION_GLYPH[name] ?? AGENTS_GLYPH;
+		// The agent chip: the call shows who it works with. Status-style calls
+		// only carry a task id, so the store resolves the agent's name.
+		const subject = (params: { agent?: string; task_id?: string }): { agent?: string; taskRef?: string } => {
+			const agent = typeof params.agent === "string" && params.agent.trim() ? headingText(params.agent)
+				: typeof params.task_id === "string" ? headingText(store.get(params.task_id)?.agent ?? "") || undefined
+				: undefined;
+			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
+			return { agent, taskRef };
+		};
+		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean } | undefined) => context ?? {};
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
 			label: `Agent ${name.replace(/_/g, " ")}`,
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
-			renderCall(args, theme) {
+			// The same tool-card protocol the orchestrator tools use: the call
+			// draws the card heading and closes its own frame while the result
+			// is pending; the result then continues the card (afterHeading) and
+			// closes it — one continuous card in the user's card style, never a
+			// bare title over a second frame.
+			renderCall(args, theme, context) {
 				// The result title belongs with the result body so a running poll
 				// can hide both without changing the tool call or its model output.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const params = args as { agent?: string; task_id?: string };
-				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
+				const { agent, taskRef } = subject(args as { agent?: string; task_id?: string });
+				const subtitle = agent && taskRef ? `${agent} · ${taskRef}` : agent ?? taskRef;
+				return {
+					render(width: number) {
+						if (width <= 0) return [];
+						const row = agentToolContext(context);
+						const tone = row.isError ? CARD_TONE.ERROR : CARD_TONE.INFO;
+						const iris = agentTheme(theme, tone);
+						return floatRows(tone, iris, width, (inner) => ({
+							head: [cardTop({ title: heading, subtitle, body: [], tone, glyph }, iris, inner, expandHint(!!row.expanded))],
+							...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: cardBottom(tone, iris, inner) } : {}),
+						}));
+					},
+					invalidate() {},
+				};
 			},
-			renderResult(result, options, theme) {
-				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
+			renderResult(result, options, theme, context) {
+				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string; agent?: string } } | undefined)?.gentleAgents;
 				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
 					return { render: () => [], invalidate() {} };
 				}
+				if (!options.isPartial) markCardResult(agentToolContext(context).state);
+				// A host error (a throw before any details exist) counts like a
+				// details error, so the result keeps the tone the call already shows.
+				const failed = (result.details as { error?: unknown } | undefined)?.error !== undefined || !!agentToolContext(context).isError;
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
-				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
-				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
+				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
+				// Status answers a real orchestration decision, so its task facts
+				// lead the card; the answer card gets the state pill when the
+				// result carries them. Anything without structured details (older
+				// sessions, error results) falls back to the text preview.
+				const facts = name === "status" || name === "result" ? statusCardFacts(result.details) : undefined;
+				if (facts) tone = STATUS_CARD_TONE[facts.status ?? ""] ?? tone;
+				const iris = agentTheme(theme, tone);
+				let rows: string[];
+				if (facts) {
+					if (name === "status") {
+						rows = statusCardRows(facts, iris, options.expanded);
+					} else {
+						// The answer card: the state pill on top, the answer below.
+						const pillRow = statusCardRows(facts, iris, options.expanded)[0] ?? "";
+						const answer = options.expanded ? body.split("\n") : agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+						rows = [pillRow, ...answer];
+					}
+				} else if (options.expanded) {
+					rows = body.split("\n");
+				} else {
+					// The collapsed preview leads with the meaningful content: the
+					// answer for finished tasks, the state line for anything else.
+					rows = agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+				}
+				// The result tool hides its call, so the result draws the heading
+				// itself; every other tool continues the call's card.
+				const ownHeading = name === "result";
+				// A collapsed status card keeps state, label and last step on one
+				// row each, so a narrow terminal clips them instead of wrapping the
+				// last step out of the three-row preview.
+				const fitRows = !options.expanded && name === "status" && facts !== undefined;
+				return {
+					render(width: number) {
+						if (width <= 0) return [];
+						return floatRows(tone, iris, width, (inner) => ({
+							...(ownHeading ? {
+								head: [cardTop({ title: heading, subtitle: task?.agent ? headingText(task.agent) : task?.taskId ? `task ${headingText(task.taskId)}` : undefined, body: [], tone, glyph }, iris, inner, expandHint(options.expanded))],
+							} : { afterHeading: true }),
+							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
+							bottom: cardBottom(tone, iris, inner),
+						}));
+					},
+					invalidate() {},
+				};
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -2061,7 +2270,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Publishing state.work with an explicit topic and no subject also refreshes Current from that topic; keep work.topic current when the task changes. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Publishing state.work with an explicit topic and no subject also refreshes Current from that topic; keep work.topic current when the task changes. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Work-state publication is mandatory for classified work: publish at session start and again on every task-topic change (objective plus work.topic/area) — a session whose task changed must not keep the previous publication; the catalog flags never-published peers. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
@@ -2161,7 +2370,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		...orchestratorToolRenderers("list", expandHint),
-		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
+		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list. Peers doing classified work without ever publishing state are flagged; publication at session start and on every task-topic change is mandatory.",
 		parameters: Type.Object({
 			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
 			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
@@ -2204,7 +2413,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return text(JSON.stringify(workSearch), { gentleAgents: { workSearch } });
 				}
 				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
-					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor, stateOnly: true } : { stateOnly: true });
 				const repository = (fact?: RepositoryFact) => fact?.root
 					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
 					: "repository: unknown";
@@ -2219,9 +2428,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const note = params.recipient_session_id ? `\n  owner-curated recorded state (not consent or owner reply; authority none): ${peer.state ? JSON.stringify(peer.state) : "unknown"}` : "";
 					// A legacy peer never publishes its scope: say so instead of reporting an unknown.
 					const legacy = peer.legacyLabel !== undefined;
-					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					// A peer doing classified work without ever publishing state cannot be
+					// routed or coordinated with; the catalog says so explicitly (#2633).
+					const unpublished = !legacy && peer.freshness === "recent" && !peer.state && !peer.statePublished
+						? " · work state: never published" : "";
+					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${unpublished}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
-				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
+				if (peers.length === 0) return text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.");
+				const unlisted = peers.filter(peer => peer.freshness === "recent" && peer.legacyLabel === undefined && !peer.state && !peer.statePublished);
+				const mandate = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.` : "";
+				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${mandate}`, { gentleAgents: { candidates: peers } });
 			} catch (error) {
 				// SessionPresenceError codes are a fixed enum with no record content,
 				// so surfacing the reason is safe and keeps diagnosis possible.

@@ -1326,6 +1326,55 @@ test("candidate view recursively protects nested content and worktree metadata, 
 	}
 });
 
+// macOS File Provider (iCloud-synced Desktop/Documents) asynchronously resets
+// directory modes to exactly 0700 while leaving file modes intact.
+function simulateFileProviderDirectoryReset(root: string, directories: readonly string[]): void {
+	for (const directory of directories) chmodSync(join(root, directory), 0o700);
+}
+
+test("candidate view repairs owner-only directories reset by macOS File Provider and stays verifiable", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested", "deeper"), { recursive: true });
+	writeFileSync(join(contributorRoot, "nested", "deeper", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		simulateFileProviderDirectoryReset(view.root, ["nested/deeper", "nested", "."]);
+		view.verify();
+		for (const directory of [".", "nested", "nested/deeper"]) assert.equal(lstatSync(join(view.root, directory)).mode & 0o777, 0o555, directory);
+		assert.equal(lstatSync(join(view.root, "nested", "deeper", "candidate.txt")).mode & 0o777, 0o444);
+	} finally {
+		view.cleanup();
+	}
+});
+
+test("candidate view does not repair owner-only directories carrying special mode bits", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"), { recursive: true });
+	writeFileSync(join(contributorRoot, "nested", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		chmodSync(join(view.root, "nested"), 0o1700);
+		assert.throws(() => view.verify(), /candidate view directory is unsafe or writable/);
+	} finally {
+		view.cleanup();
+	}
+});
+
+test("candidate view refuses an ignored entry injected into an owner-only directory it would repair", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"), { recursive: true });
+	writeFileSync(join(contributorRoot, ".gitignore"), "*.log\n");
+	writeFileSync(join(contributorRoot, "nested", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		simulateFileProviderDirectoryReset(view.root, ["nested"]);
+		writeFileSync(join(view.root, "nested", "injected.log"), "injected\n");
+		assert.throws(() => view.verify(), /candidate view directory contains unexpected entries/);
+	} finally {
+		view.cleanup();
+	}
+});
+
 test("candidate view registry rejects unsafe, moved, writable, stale, and unselected lens contexts before dispatch", (t) => {
 	const contributorRoot = repository(t);
 	writeFileSync(join(contributorRoot, "tracked.txt"), "candidate\n");

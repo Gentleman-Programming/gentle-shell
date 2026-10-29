@@ -12,11 +12,14 @@ S5. User: "Si" in explicit response to "¿autorizas auditar y adaptar el editor 
 
 S6. User: "No puedes hacer las pruebas tu ?" after the parent's review flagged that no real update had run. A real isolated pnpm v11 install (packed Shell + Pi 1.1.0 peer) must exercise `gentle-shell update` end to end: the adjacent peer is the Shell package's store sibling, a separate global Pi never changes what Shell runs, and the result must be read back honestly (pnpm `minimum-release-age` may keep an older release).
 
+S7. User: "Quiero que ya dejes piñada la versión 1.2, al menos, para esta nueva release, desde ahí para adelante" and "saquemos una release nueva"; also "fíjate si esto va a arreglar también dentro de esta release el problema que está teniendo la gente con Engram" (screenshot: 'Engram memory is disabled by startup policy... the existing Engram data's compatibility is unknown'). Floor Pi >=1.2.0 (launcher gate, peer range, installer pin, docs, tests); release 4.2.0 (user choice over 5.0.0) through publish.yml per the gentle-pi-release skill; report honestly what the release changes for the Engram notice.
+
 ## Tasks
 T1 | S1 | delegated: parallel independent pin/minimum unit with disjoint surfaces | done | 33033045698a0e139f395e54e3aee03e16ed8d26; normalized focused428pass, independent minimum assertionpass, lock1.2/floor1.0
 T2 | S2-S3 | delegated: parallel independent updater unit with disjoint surfaces | done | 4d98524492bbf6369df855af5f868fee03fd5a70; GREEN27pass, independent physical B1-B3pass; unowned override fixture targetedpass
 T4 | S1,S5 | delegated: independent Vim compatibility unit parallel with updater correction on disjoint surfaces | done | 33033045698a0e139f395e54e3aee03e16ed8d26; RED117fail/GREEN340pass; independent source/test auditPASS; actual legacy probes partial, not full suitepass
 T5 | S2,S3,S6 | inline (parent): real isolated pnpm run exposed refusal; owner resolution corrected, shim targets followed, neutral cwd, readback added, tests rewritten to the real layout | in_progress | RED old source 24pass/14fail, GREEN 44pass, typecheck 0; real e2e via local registry proxy passed (adjacent/shim/--all/release-age); full suite + independent verify + commit pending
+T6 | S7 | inline (parent): Pi 1.2.0 floor + release 4.2.0 | in_progress | pin edits applied, lockfile specifiers only, runtime regenerated; full suite running; release commit/tag/publish pending
 T3 | S1-S5 | inline integration, independent high-risk verification, native review when due, GitHub delivery | in_progress | code commits330330456/4d9852449; trackingc86aa0be3; PR2177 confirmed; required typecheck failed TS2769x2, scoped correction GREENpassed; independent correctioncheck passed with exit-reporting limitation; newhead CI/merge pending
 
 ## Log

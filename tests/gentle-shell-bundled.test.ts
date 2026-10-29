@@ -16,12 +16,16 @@ import {
 	bundledUpdatePlan,
 	parseBundledUpgradeArgs,
 	withBundledNpmCommand,
+	withoutBundledNpmCommand,
+	withoutMissingBundledNpmCommand,
 	resolveBundledInstall,
 	setBundledInstallForTesting,
 	type BundledFs,
+	isBundledNpmCommand,
 	type BundledPi,
 } from "../lib/gentle-shell-bundled.ts";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
+import { bundledNpmCommand, prefixLayout } from "../scripts/bundled-install.mjs";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 
@@ -39,7 +43,7 @@ function fakeFs({ real = {}, files = {}, links = {} }: { real?: Record<string, s
 	};
 }
 
-const ID = "4.1.0-1.1.0";
+const ID = "4.1.0-1.2.0";
 const POSIX_ROOT = "/home/ana/.gentle-shell";
 const POSIX_VERSION = posix.join(POSIX_ROOT, "versions", ID);
 const POSIX_PACKAGE = posix.join(POSIX_VERSION, "node_modules", ".pnpm", "gentle-pi@4.1.0", "node_modules", "gentle-pi");
@@ -106,29 +110,29 @@ const install = { root: POSIX_ROOT, id: ID, versionDir: POSIX_VERSION };
 const messageOf = (pi: BundledPi) => ("message" in pi ? pi.message : "");
 
 test("bundledPi returns only the Pi the version pins, inside the version folder", () => {
-	assert.deepEqual(bundledPi(install, { platform: "linux", fs: fakeFs({ files: piFiles("1.1.0", "1.1.0") }) }),
-		{ ok: true, version: "1.1.0", cli: posix.join(PI_PACKAGE(POSIX_VERSION), "dist", "bundle", "cli.js") });
+	assert.deepEqual(bundledPi(install, { platform: "linux", fs: fakeFs({ files: piFiles("1.2.0", "1.2.0") }) }),
+		{ ok: true, version: "1.2.0", cli: posix.join(PI_PACKAGE(POSIX_VERSION), "dist", "bundle", "cli.js") });
 	const windows = { root: "C:\\G", id: ID, versionDir: `C:\\G\\versions\\${ID}` };
-	assert.deepEqual(bundledPi(windows, { platform: "win32", fs: fakeFs({ files: piFiles("1.1.0", "1.1.0", win32, windows.versionDir) }) }),
-		{ ok: true, version: "1.1.0", cli: win32.join(PI_PACKAGE(windows.versionDir, win32), "dist", "bundle", "cli.js") });
+	assert.deepEqual(bundledPi(windows, { platform: "win32", fs: fakeFs({ files: piFiles("1.2.0", "1.2.0", win32, windows.versionDir) }) }),
+		{ ok: true, version: "1.2.0", cli: win32.join(PI_PACKAGE(windows.versionDir, win32), "dist", "bundle", "cli.js") });
 });
 
 test("bundledPi fails with the version, the pinned Pi and the way to repair it", () => {
-	const repair = /Gentle Shell 4\.1\.0-1\.1\.0 .*Pi 1\.1\.0.*gentle-shell upgrade.*installer/s;
-	const mismatch = bundledPi(install, { platform: "linux", fs: fakeFs({ files: piFiles("1.1.0", "1.0.0") }) });
+	const repair = /Gentle Shell 4\.1\.0-1\.2\.0 .*Pi 1\.2\.0.*gentle-shell upgrade.*installer/s;
+	const mismatch = bundledPi(install, { platform: "linux", fs: fakeFs({ files: piFiles("1.2.0", "1.0.0") }) });
 	assert.equal(mismatch.ok, false);
 	assert.match(messageOf(mismatch), repair);
 	assert.match(messageOf(mismatch), /found Pi 1\.0\.0/);
-	const files = piFiles("1.1.0", "1.1.0");
+	const files = piFiles("1.2.0", "1.2.0");
 	delete files[posix.join(PI_PACKAGE(POSIX_VERSION), "dist", "bundle", "cli.js")];
 	const missing = bundledPi(install, { platform: "linux", fs: fakeFs({ files }) });
 	assert.match(messageOf(missing), repair);
 	// A Pi linked from outside the version folder is not the bundled one.
-	const outside = fakeFs({ real: { [PI_PACKAGE(POSIX_VERSION)]: "/usr/lib/node_modules/@earendil-works/pi-coding-agent" }, files: piFiles("1.1.0", "1.1.0") });
+	const outside = fakeFs({ real: { [PI_PACKAGE(POSIX_VERSION)]: "/usr/lib/node_modules/@earendil-works/pi-coding-agent" }, files: piFiles("1.2.0", "1.2.0") });
 	assert.equal(bundledPi(install, { platform: "linux", fs: outside }).ok, false);
 });
 
-const ISOLATION = { prefix: "/g", engram: "/g/runtime/engram-3.4.0/engram" };
+const ISOLATION = { prefix: "/g", engram: "/g/runtime/engram-3.5.2/engram" };
 
 test("bundledChildEnv keeps the user's environment and adds only the bundled Pi, the prefix and Engram, no Pi override and no Pi update check", () => {
 	const user = { PATH: "/home/ana/.nvm/bin:/usr/bin", NODE_OPTIONS: "--max-old-space-size=4096", npm_config_registry: "https://npm.example", npm_config_prefix: "/home/ana/.npm-global",
@@ -140,7 +144,7 @@ test("bundledChildEnv keeps the user's environment and adds only the bundled Pi,
 	// folder from the prefix, and Gentle AI 4.0.0 reads that variable as a parent.
 	assert.deepEqual(env, { PATH: user.PATH, NODE_OPTIONS: user.NODE_OPTIONS, npm_config_registry: user.npm_config_registry, npm_config_prefix: user.npm_config_prefix,
 		GENTLE_PI_CONFIG_HOME: user.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_PI: "/g/node /g/cli.js", PI_SKIP_VERSION_CHECK: "1", GENTLE_SHELL_PREFIX: "/g",
-		ENGRAM_BIN: "/g/runtime/engram-3.4.0/engram" });
+		ENGRAM_BIN: "/g/runtime/engram-3.5.2/engram" });
 	// The subagent runner splits that variable on whitespace: a spaced path falls
 	// back to its own default, the running node and cli.js.
 	const spaced = bundledChildEnv({ GENTLE_PI_AGENTS_PI: "pi" }, { node: "C:\\Users\\Ana Li\\node.exe", cli: "C:\\cli.js", ...ISOLATION });
@@ -174,6 +178,83 @@ test("withBundledNpmCommand sets only npmCommand and leaves an already bundled s
 	for (const malformed of ["{", "[]", "null"]) assert.deepEqual(withBundledNpmCommand(malformed, command), { status: "malformed" });
 });
 
+// #2469: the npmCommand a bundled self-uninstall left behind names a node.exe
+// the uninstall removed, so Pi package installs fail with ENOENT until it is
+// gone; a command naming nothing inside the removed prefix stays.
+test("withoutBundledNpmCommand removes the key when an entry names the removed prefix and keeps the rest", () => {
+	const text = '{\n    "theme": "gentle",\n    "npmCommand": ["/p/runtime/node.exe", "--update-notifier=false"]\n}\n';
+	const removed = withoutBundledNpmCommand(text, (path) => path === "/p/runtime/node.exe");
+	assert.ok(removed.status === "removed", removed.status);
+	assert.deepEqual(JSON.parse(removed.text), { theme: "gentle" });
+	assert.match(removed.text, /^\{\n {4}"theme"/);
+	assert.ok(removed.text.endsWith("}\n"));
+	assert.deepEqual(withoutBundledNpmCommand(undefined, () => true), { status: "unchanged" });
+	assert.deepEqual(withoutBundledNpmCommand('{"npmCommand":"npm"}', () => true), { status: "unchanged" });
+	assert.deepEqual(withoutBundledNpmCommand('{"npmCommand":["node"]}', () => true), { status: "unchanged" });
+	assert.deepEqual(withoutBundledNpmCommand('{"npmCommand":["/other/node"]}', () => false), { status: "unchanged" });
+	assert.deepEqual(withoutBundledNpmCommand('{"theme":"gentle"}', () => true), { status: "unchanged" });
+	for (const malformed of ["{", "[]", "null"]) assert.deepEqual(withoutBundledNpmCommand(malformed, () => true), { status: "malformed" });
+});
+
+test("withoutMissingBundledNpmCommand removes only a bundled npmCommand whose executable is an absolute path that is gone", () => {
+	const text = '{\n    "theme": "gentle",\n    "npmCommand": ["/p/runtime/node-24.21.0/bin/node", "--userconfig=/p/pnpm/config/npmrc", "--globalconfig=/p/npm/npmrc", "--cache=/p/npm/cache", "--update-notifier=false"]\n}\n';
+	const removed = withoutMissingBundledNpmCommand(text, (path) => path !== "/p/runtime/node-24.21.0/bin/node");
+	assert.ok(removed.status === "removed", removed.status);
+	assert.deepEqual(JSON.parse(removed.text), { theme: "gentle" });
+	// An executable that exists, a PATH command, a non-array value, no key, no file.
+	assert.deepEqual(withoutMissingBundledNpmCommand(text, () => true), { status: "unchanged" });
+	assert.deepEqual(withoutMissingBundledNpmCommand('{"npmCommand":["npm"]}', () => false), { status: "unchanged" });
+	assert.deepEqual(withoutMissingBundledNpmCommand('{"npmCommand":"npm"}', () => false), { status: "unchanged" });
+	assert.deepEqual(withoutMissingBundledNpmCommand('{"theme":"gentle"}', () => false), { status: "unchanged" });
+	assert.deepEqual(withoutMissingBundledNpmCommand(undefined, () => false), { status: "unchanged" });
+	for (const malformed of ["{", "[]", "null"]) assert.deepEqual(withoutMissingBundledNpmCommand(malformed, () => false), { status: "malformed" });
+});
+
+// A missing program alone is not proof the command is ours: a user's
+// npmCommand on an offline drive must survive the launcher repair, so only the
+// shape a bundled install writes is ever dropped (PR #2472 review).
+test("withoutMissingBundledNpmCommand never drops a user's npmCommand, even with a missing program", () => {
+	// The posix form the launcher sees on this platform is dropped. The Windows
+	// form is covered by isBundledNpmCommand: the launcher's isAbsolute is
+	// platform-specific, so a C:\ path is only absolute on Windows.
+	const posix = "/home/ana/.gentle-shell";
+	const flags = (root: string, sep: string) => [`--userconfig=${root}${sep}pnpm${sep}config${sep}npmrc`, `--globalconfig=${root}${sep}npm${sep}npmrc`, `--cache=${root}${sep}npm${sep}cache`];
+	const bundledForm = [`${posix}/runtime/node-24.21.0/bin/node`, `${posix}/runtime/node-24.21.0/lib/node_modules/npm/bin/npm-cli.js`, ...flags(posix, "/"), `--prefix=${posix}/npm/prefix`, "--update-notifier=false"];
+	{
+		const command = bundledForm;
+		const text = JSON.stringify({ theme: "gentle", npmCommand: command });
+		const removed = withoutMissingBundledNpmCommand(text, () => false);
+		assert.ok(removed.status === "removed", `${command[0]}: ${removed.status}`);
+	}
+	// What a user writes is never ours, even with a missing program.
+	const userCommands: unknown[][] = [
+		["npm"],
+		["C:\\tools\\node.exe", "C:\\tools\\npm-cli.js"],
+		["C:\\Users\\ana\\AppData\\Local\\gentle-shell\\runtime\\node-24.21.0\\node.exe", "npm-cli.js"],
+		["/opt/runtime/node-20.0.0/bin/node", "/opt/npm-cli.js", "--update-notifier=false"],
+	];
+	for (const command of userCommands) {
+		const text = JSON.stringify({ theme: "gentle", npmCommand: command });
+		assert.deepEqual(withoutMissingBundledNpmCommand(text, () => false), { status: "unchanged" }, JSON.stringify(command));
+	}
+});
+
+test("isBundledNpmCommand recognizes only the npmCommand a bundled install writes, in every released form", () => {
+	const win = "C:\\Users\\ana\\AppData\\Local\\gentle-shell";
+	const posix = "/home/ana/.gentle-shell";
+	const flags = (root: string, sep: string) => [`--userconfig=${root}${sep}pnpm${sep}config${sep}npmrc`, `--globalconfig=${root}${sep}npm${sep}npmrc`, `--cache=${root}${sep}npm${sep}cache`];
+	// What the installer writes today on each platform, and its two released forms.
+	assert.equal(isBundledNpmCommand(bundledNpmCommand(prefixLayout({ platform: "win32", home: "C:\\Users\\ana", root: win }))), true);
+	assert.equal(isBundledNpmCommand(bundledNpmCommand(prefixLayout({ platform: "darwin", home: "/home/ana" }))), true);
+	assert.equal(isBundledNpmCommand([`${win}\\runtime\\node-24.21.0\\node.exe`, `${win}\\runtime\\node-24.21.0\\gentle-shell\\npm`, ...flags(win, "\\"), "--update-notifier=false"]), true);
+	assert.equal(isBundledNpmCommand([`${posix}/runtime/node-24.21.0/bin/node`, `${posix}/runtime/node-24.21.0/lib/node_modules/npm/bin/npm-cli.js`, ...flags(posix, "/"), `--prefix=${posix}/npm/prefix`, "--update-notifier=false"]), true);
+	// What a user writes is never ours, even with a missing program.
+	for (const command of [["npm"], ["C:\\tools\\node.exe", "C:\\tools\\npm-cli.js"], [`${win}\\runtime\\node-24.21.0\\node.exe`, "npm-cli.js"],
+		["/opt/runtime/node-20.0.0/bin/node", "/opt/npm-cli.js", "--update-notifier=false"]]) {
+		assert.equal(isBundledNpmCommand(command), false, JSON.stringify(command));
+	}
+});
+
 test("bundledUpdatePlan redirects Pi's own update and keeps the extension updates", () => {
 	assert.deepEqual(bundledUpdatePlan(["update"]), { self: true });
 	assert.deepEqual(bundledUpdatePlan(["update", "--self"]), { self: true });
@@ -193,6 +274,18 @@ test("bundledUpdatePlan redirects Pi's own update and keeps the extension update
 	}
 });
 
+test("bundledUpdatePlan marks Pi's own update with --latest and keeps every other --latest form passing through", () => {
+	for (const args of [["update", "--latest"], ["update", "pi", "--latest"], ["update", "--latest", "self"], ["update", "--self", "--latest"]]) {
+		assert.deepEqual(bundledUpdatePlan(args), { self: true, latest: true }, args.join(" "));
+	}
+	assert.deepEqual(bundledUpdatePlan(["update", "--all", "--latest"]), { self: true, latest: true, piArgs: ["update", "--extensions"] });
+	assert.deepEqual(bundledUpdatePlan(["update", "--latest", "--self", "--extensions", "-a"]), { self: true, latest: true, piArgs: ["update", "--extensions", "-a"] });
+	for (const passthrough of [["update", "--extensions", "--latest"], ["update", "npm:x", "--latest"], ["update", "--models", "--latest"], ["update", "--all", "--self", "--latest"],
+		["update", "pi", "npm:x", "--latest"], ["update", "--latest", "--bogus"], ["update", "--help", "--latest"]]) {
+		assert.deepEqual(bundledUpdatePlan(passthrough), { self: false, piArgs: passthrough }, passthrough.join(" "));
+	}
+});
+
 test("bundledUpdateNext still updates extensions when the upgrade did not complete", () => {
 	assert.deepEqual(bundledUpdateNext({ self: false, piArgs: ["update", "npm:x"] }, undefined), { piArgs: ["update", "npm:x"] });
 	assert.deepEqual(bundledUpdateNext({ self: true }, 0), { exitCode: 0 });
@@ -202,13 +295,21 @@ test("bundledUpdateNext still updates extensions when the upgrade did not comple
 	const failed = bundledUpdateNext({ self: true, piArgs: ["update", "--extensions"] }, 1);
 	assert.deepEqual("piArgs" in failed ? failed.piArgs : [], ["update", "--extensions"]);
 	assert.match("note" in failed ? String(failed.note) : "", /upgrade did not complete.*extensions/);
+	const latest = bundledUpdateNext({ self: true, latest: true, piArgs: ["update", "--extensions"] }, 1);
+	assert.match("note" in latest ? String(latest.note) : "", /latest Pi update did not complete.*extensions/);
+	assert.deepEqual(bundledUpdateNext({ self: true, latest: true }, 1), { exitCode: 1 });
 });
 
 test("bundledUpdateNotice explains the pinned Pi and runs or names gentle-shell upgrade", () => {
-	const interactive = bundledUpdateNotice({ piVersion: "1.1.0", interactive: true }).join("\n");
-	assert.match(interactive, /Pi ships pinned with Gentle Shell \(Pi 1\.1\.0\)/);
+	const interactive = bundledUpdateNotice({ piVersion: "1.2.0", interactive: true }).join("\n");
+	assert.match(interactive, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
 	assert.match(interactive, /Running 'gentle-shell upgrade'/);
-	assert.match(bundledUpdateNotice({ piVersion: "1.1.0", interactive: false }).join("\n"), /Run 'gentle-shell upgrade'/);
+	assert.match(bundledUpdateNotice({ piVersion: "1.2.0", interactive: false }).join("\n"), /Run 'gentle-shell upgrade'/);
+	for (const interactive of [true, false]) {
+		const lines = bundledUpdateNotice({ piVersion: "1.2.0", interactive });
+		assert.equal(lines[0], "Pi ships pinned with Gentle Shell (Pi 1.2.0): a newer Pi arrives with a Gentle Shell release.");
+		assert.equal(lines.at(-1), "Run 'gentle-shell update --latest' to install the newest published Pi now, without the release's verified lockfile.");
+	}
 });
 
 test("parseBundledUpgradeArgs accepts the release channel and --rollback and refuses the main channel", () => {
@@ -233,9 +334,9 @@ test("parseBundledUpgradeArgs accepts the release channel and --rollback and ref
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const posixHost = process.platform === "win32" ? "the bundled prefix fixture uses a POSIX current symlink" : false;
 const SHELL = JSON.parse(readFileSync(join(repository, "package.json"), "utf8")).version;
-const FIXTURE_ID = `${SHELL}-1.1.0`;
+const FIXTURE_ID = `${SHELL}-1.2.0`;
 const FAKE_PI = [
-	"import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs'; import {join, dirname} from 'node:path';",
+	"import {mkdirSync, readFileSync, writeFileSync} from 'node:fs'; import {join, dirname} from 'node:path';",
 	"const args = process.argv.slice(2);",
 	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram@0.4.2' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
 	" const home = process.env.PI_CODING_AGENT_DIR; const metadata = join(home, 'npm/node_modules/gentle-engram/package.json'); mkdirSync(dirname(metadata), {recursive:true});",
@@ -244,38 +345,47 @@ const FAKE_PI = [
 	" if (process.env.FIXTURE_INSTALL_CAPABILITY !== 'metadata-only') { const packages = settings.packages ?? []; const index = packages.findIndex(p => /^npm:gentle-engram(?:@|$)/.test(typeof p === 'string' ? p : p.source));",
 	" if (index < 0) packages.push(args[1]); else packages[index] = typeof packages[index] === 'string' ? args[1] : {...packages[index], source:args[1]}; settings.packages = packages; writeFileSync(path, JSON.stringify(settings)); }",
 	"}",
-	"if (args.includes('--version')) { console.log('1.1.0'); process.exit(0); }",
-	// Stands in for gentle-engram creating the store through the bundled core during the session.
-	"if (process.env.FIXTURE_CREATE_STORE && args[0] !== 'install' && args[0] !== 'list') {",
-	" const data = join(process.env.HOME, '.engram');",
-	" if (process.env.ENGRAM_BIN?.includes('engram-guard') !== true) { mkdirSync(data, {recursive:true});",
-	"  if (!existsSync(join(data, '.instance-id'))) writeFileSync(join(data, '.instance-id'), process.env.FIXTURE_CREATE_STORE + '\\n');",
-	"  const header = Buffer.alloc(4096); header.write('SQLite format 3\\0', 0, 'latin1'); header.writeUInt16BE(4096, 16); header[18] = 2; header[19] = 2;",
-	"  writeFileSync(join(data, 'engram.db'), header); writeFileSync(join(data, 'engram.db-wal'), '');",
-	" }",
-	"}",
+	"if (args.includes('--version')) { console.log('1.2.0'); process.exit(0); }",
 	"const pick = ['PATH', 'GENTLE_SHELL_PI', 'GENTLE_PI_AGENTS_PI', 'PI_SKIP_VERSION_CHECK', 'npm_config_prefix', 'npm_config_registry', 'NODE_OPTIONS', 'PI_CODING_AGENT_DIR',",
-	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK'];",
-	"const record = join(process.env.GENTLE_SHELL_PREFIX ?? '', 'config', 'engram-provenance.json');",
-	"const provenance = (() => { try { return JSON.parse(readFileSync(record, 'utf8')); } catch { return null; } })();",
-	"console.log(JSON.stringify({ cli: process.argv[1], args, provenance, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }));",
-	// Stands in for a crash, kill or power loss of the launcher before its exit handler runs.
-	"if (process.env.FIXTURE_KILL_LAUNCHER && args[0] !== 'install') process.kill(process.ppid, 'SIGKILL');",
+	"\t'GENTLE_SHELL_PREFIX', 'GENTLE_PI_CONFIG_HOME', 'ENGRAM_BIN', 'ENGRAM_URL', 'ENGRAM_SERVER_MODE', 'ENGRAM_SOCKET', 'ENGRAM_STARTUP_POLICY', 'ENGRAM_STARTUP_NOTICE', 'GENTLE_AI_HOME', 'GENTLE_AI_PI_CONFIG_DIR', 'GENTLE_AI_ENGRAM_BIN', 'GENTLE_AI_NO_SELF_UPDATE', 'GH_TOKEN', 'ENGRAM_NO_UPDATE_CHECK'];",
+	"console.log(JSON.stringify({ cli: process.argv[1], args, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }));",
 ].join("\n");
+const READY_COMPATIBILITY = { revision: 1, source: "active", status: "ready", offline_automatic_opening_authorized: false, active_reuse_authorized: true,
+	instance_id: "0123456789abcdef0123456789abcdef", runtime_id: "a".repeat(32), capability: "startup-verified-store-v1" };
+// The bundled core: `serve` logs its invocation (FIXTURE_SERVE_LOG) and, like
+// Engram 3.5.2, answers the ready /compatibility contract on a port it publishes
+// in FIXTURE_ENGRAM_PORT_FILE, where the redirected default endpoint finds it.
+// FIXTURE_SERVE=exit fails like a lost bind; race fails after starting the
+// server a concurrent launch would. Every other command only prints a line.
 const FIXTURE_CORE = [
-	"#!/bin/sh",
-	'if [ "$1" != instance-id ]; then echo engram; exit 0; fi',
-	'[ -z "$FIXTURE_PROVISION_ENV" ] || env > "$FIXTURE_PROVISION_ENV"',
-	'[ -z "$FIXTURE_INSTANCE_ID_FAIL" ] || exit 3',
-	'mkdir -p "$HOME/.engram" || exit 1',
-	'[ -f "$HOME/.engram/.instance-id" ] || printf \'%s\\n\' "${FIXTURE_INSTANCE_ID:-0123456789abcdef0123456789abcdef}" > "$HOME/.engram/.instance-id"',
-	'cat "$HOME/.engram/.instance-id"',
+	`#!${process.execPath}`,
+	"const { appendFileSync, renameSync, writeFileSync } = require('node:fs'); const { spawn } = require('node:child_process');",
+	"const args = process.argv.slice(2);",
+	"if (args[0] !== 'serve') { console.log('engram'); process.exit(0); }",
+	"const mode = process.env.FIXTURE_SERVE ?? 'ready';",
+	"const pick = ['HOME', 'GH_TOKEN', 'GITHUB_TOKEN', 'ENGRAM_NO_UPDATE_CHECK', 'ENGRAM_URL', 'ENGRAM_BIN', 'ENGRAM_HTTP_TOKEN', 'ENGRAM_STARTUP_POLICY'];",
+	"appendFileSync(process.env.FIXTURE_SERVE_LOG, JSON.stringify({ args, mode, cwd: process.cwd(), pid: process.pid, env: Object.fromEntries(pick.map((k) => [k, process.env[k]])) }) + '\\n');",
+	"if (mode === 'exit') process.exit(1);",
+	"if (mode === 'race') { spawn(process.execPath, [process.argv[1], 'serve'], { env: { ...process.env, FIXTURE_SERVE: 'late' }, detached: true, stdio: 'ignore' }).unref(); process.exit(1); }",
+	`const ready = ${JSON.stringify(JSON.stringify(READY_COMPATIBILITY))};`,
+	"setTimeout(() => require('node:http').createServer((request, response) => {",
+	" response.writeHead(request.url === '/compatibility' ? 200 : 404, { 'content-type': 'application/json' }); response.end(request.url === '/compatibility' ? ready : '{}');",
+	"}).listen(0, '127.0.0.1', function () { const file = process.env.FIXTURE_ENGRAM_PORT_FILE; writeFileSync(file + '.tmp', String(this.address().port)); renameSync(file + '.tmp', file); }),",
+	" mode === 'late' ? 300 : 0);",
+	"setTimeout(() => process.exit(0), 60000);",
 	"",
 ].join("\n");
 
-function bundledPrefix(t: TestContext, { pi = "1.1.0", core = true } = {}) {
+function bundledPrefix(t: TestContext, { pi = "1.2.0", core = true } = {}) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-shell-bundled-")));
-	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const serveLog = join(base, "engram-serve.log");
+	const serves = (): Array<{ args: string[]; mode: string; cwd: string; pid: number; env: Record<string, string | undefined> }> =>
+		existsSync(serveLog) ? readFileSync(serveLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+	// The detached servers outlive their launcher by design: stop them with the fixture.
+	t.after(() => {
+		for (const { pid } of serves()) try { process.kill(pid); } catch { /* Already exited. */ }
+		rmSync(base, { recursive: true, force: true });
+	});
 	const home = join(base, "home");
 	const root = join(home, ".gentle-shell");
 	const version = join(root, "versions", FIXTURE_ID);
@@ -295,7 +405,7 @@ function bundledPrefix(t: TestContext, { pi = "1.1.0", core = true } = {}) {
 	mkdirSync(join(piDir, "dist", "bundle"), { recursive: true });
 	writeFileSync(join(piDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: pi, bin: { pi: "dist/bundle/cli.js" } }));
 	writeFileSync(join(piDir, "dist", "bundle", "cli.js"), FAKE_PI);
-	writeFileSync(join(version, "package.json"), JSON.stringify({ dependencies: { "gentle-pi": SHELL, "@earendil-works/pi-coding-agent": "1.1.0" } }));
+	writeFileSync(join(version, "package.json"), JSON.stringify({ dependencies: { "gentle-pi": SHELL, "@earendil-works/pi-coding-agent": "1.2.0" } }));
 	writeFileSync(join(version, ".gentle-shell-version"), `${FIXTURE_ID}\n`);
 	symlinkSync(`versions/${FIXTURE_ID}`, join(root, "current"));
 	// The bundled npm the npmCommand entry loads.
@@ -338,33 +448,38 @@ function bundledPrefix(t: TestContext, { pi = "1.1.0", core = true } = {}) {
 	mkdirSync(userBin);
 	writeFileSync(join(userBin, "pi"), "#!/bin/sh\necho 9.9.9\n", { mode: 0o755 });
 	// No test contacts the actual default Engram endpoint: connections to 7437
-	// are redirected to a closed ephemeral port (refused) or to a local fixture
-	// server (FIXTURE_ENGRAM_PORT). FIXTURE_NO_PROBE makes any probe fail the test.
+	// are redirected to a local fixture server (FIXTURE_ENGRAM_PORT), to the
+	// server the bundled core's `serve` published (FIXTURE_ENGRAM_PORT_FILE), or
+	// else to a closed ephemeral port (refused). FIXTURE_NO_PROBE makes any probe fail the test.
 	const network = join(base, "network.mjs");
-	writeFileSync(network, `import net from 'node:net'; import { syncBuiltinESMExports } from 'node:module';
+	const portFile = join(base, "engram-port");
+	writeFileSync(network, `import net from 'node:net'; import { readFileSync } from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 		const original = net.createConnection;
 		const probe = net.createServer(); await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
 		const closed = probe.address().port; await new Promise((resolve) => probe.close(resolve));
 		net.createConnection = (options, ...rest) => {
 			if (Number(options?.port ?? options) !== 7437) return original(options, ...rest);
 			if (process.env.FIXTURE_NO_PROBE === '1') { process.stderr.write('unexpected Engram probe\\n'); process.exit(97); }
-			return original({ ...options, port: Number(process.env.FIXTURE_ENGRAM_PORT || closed) }, ...rest);
+			const served = () => { try { return readFileSync(process.env.FIXTURE_ENGRAM_PORT_FILE, 'utf8'); } catch { return ''; } };
+			return original({ ...options, port: Number(process.env.FIXTURE_ENGRAM_PORT || served() || closed) }, ...rest);
 		};
 		syncBuiltinESMExports();`);
 	const metadata = join(home, ".gentle-shell", "agent", "npm", "node_modules", "gentle-engram", "package.json");
 	mkdirSync(dirname(metadata), { recursive: true });
 	writeFileSync(metadata, JSON.stringify({ name: "gentle-engram", version: "0.4.2", engram: { startupPolicy: 1 } }));
 	const env = { HOME: home, PATH: `${userBin}:/usr/bin:/bin`, GENTLE_SHELL_PI: join(userBin, "pi"), GENTLE_SHELL_NO_AUTO_SETUP: "1",
-		NODE_OPTIONS: `--no-warnings --import=${network} --import=${registerHooks}`, npm_config_registry: "https://npm.example" };
+		NODE_OPTIONS: `--no-warnings --import=${network} --import=${registerHooks}`, npm_config_registry: "https://npm.example",
+		FIXTURE_SERVE_LOG: serveLog, FIXTURE_ENGRAM_PORT_FILE: portFile };
 	const entry = join(root, "current", "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
 	const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, [entry, ...args], { env: { ...env, ...extra }, encoding: "utf8", input: "" });
-	return { root, home, userBin, version, piDir, npmCli, engram, metadata, network, guard, run, env, entry: join(shell, "bin", "gentle-shell.mjs") };
+	return { root, home, userBin, version, piDir, npmCli, engram, metadata, network, guard, run, env, serves, portFile, entry: join(shell, "bin", "gentle-shell.mjs") };
 }
 
 const STORE_ID = "0123456789abcdef0123456789abcdef";
 const OTHER_STORE_ID = "fedcba9876543210fedcba9876543210";
+const DEFAULT_URL = "http://127.0.0.1:7437";
 const lastLaunch = (result: { stdout: string }) => JSON.parse(result.stdout.trim().split("\n").at(-1)!);
-const memoryOf = (result: { stdout: string }) => [lastLaunch(result).env.ENGRAM_STARTUP_POLICY, lastLaunch(result).env.ENGRAM_BIN];
+const memoryOf = (result: { stdout: string }) => [lastLaunch(result).env.ENGRAM_STARTUP_POLICY, lastLaunch(result).env.ENGRAM_BIN, lastLaunch(result).env.ENGRAM_URL];
 const provenancePath = (prefix: { root: string }) => join(prefix.root, "config", "engram-provenance.json");
 const sha256File = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 function writeHeader(path: string, userVersion: number, magic = "SQLite format 3\0") {
@@ -389,76 +504,211 @@ async function engramServer(t: TestContext, routes: Record<string, [number, unkn
 	return new Promise((resolve) => child.stdout.once("data", (chunk) => resolve(String(chunk).trim())));
 }
 
-test("a fresh launch provisions the store identity and finalizes provenance before Pi starts", { skip: posixHost }, (t) => {
+// Whether the server a launch started still answers after the launcher exited.
+async function stillServing(prefix: ReturnType<typeof bundledPrefix>): Promise<boolean> {
+	const response = await fetch(`http://127.0.0.1:${readFileSync(prefix.portFile, "utf8")}/compatibility`);
+	return response.ok && (await response.json()).status === "ready";
+}
+
+test("with nothing listening Shell starts the bundled core's shared server detached, with a clean environment, and Pi reuses it", { skip: posixHost }, async (t) => {
 	const prefix = bundledPrefix(t);
-	const provisioning = join(prefix.home, "provisioning-env");
-	const result = prefix.run([], { FIXTURE_PROVISION_ENV: provisioning, GH_TOKEN: "fixture-token", GITHUB_TOKEN: "fixture-token" });
+	const result = prefix.run([], { GH_TOKEN: "fixture-token", GITHUB_TOKEN: "fixture-token", ENGRAM_HTTP_TOKEN: "fixture-http" });
 	assert.equal(result.status, 0, result.stderr);
-	const seen = lastLaunch(result);
-	assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL], ["allow", prefix.engram, undefined]);
-	// Already finalized while Pi runs, from the identity file the core wrote.
-	const record = { schema: 1, dataDir: join(prefix.home, ".engram"), instanceId: STORE_ID, coreSha256: sha256File(prefix.engram) };
-	assert.deepEqual(seen.provenance, record);
-	assert.deepEqual(JSON.parse(readFileSync(provenancePath(prefix), "utf8")), record);
-	// Only the provisioning child skips Engram's update check and loses GitHub tokens; Pi keeps the user's environment.
-	const child = Object.fromEntries(readFileSync(provisioning, "utf8").trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
-	assert.deepEqual([child.ENGRAM_NO_UPDATE_CHECK, child.GH_TOKEN, child.GITHUB_TOKEN, child.ENGRAM_DATA_DIR, child.HOME], ["1", undefined, undefined, undefined, prefix.home]);
-	assert.deepEqual([seen.env.GH_TOKEN, seen.env.ENGRAM_NO_UPDATE_CHECK], ["fixture-token", undefined]);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.doesNotMatch(result.stderr, /memory disabled/);
+	const [serve, ...others] = prefix.serves();
+	assert.deepEqual(others, []);
+	// Engram's own defaults: no port, data directory or URL chosen for it.
+	assert.deepEqual([serve.args, serve.cwd, serve.env.HOME], [["serve"], prefix.home, prefix.home]);
+	// S8: no update check, no GitHub tokens and no inherited Engram settings; Pi keeps the user's environment.
+	assert.deepEqual([serve.env.ENGRAM_NO_UPDATE_CHECK, serve.env.GH_TOKEN, serve.env.GITHUB_TOKEN, serve.env.ENGRAM_HTTP_TOKEN, serve.env.ENGRAM_URL, serve.env.ENGRAM_BIN],
+		["1", undefined, undefined, undefined, undefined, undefined]);
+	assert.deepEqual([lastLaunch(result).env.GH_TOKEN, lastLaunch(result).env.ENGRAM_NO_UPDATE_CHECK], ["fixture-token", undefined]);
+	// Detached: it outlives the launcher and Pi, and the next launch reuses it without starting another.
+	assert.equal(await stillServing(prefix), true);
+	const second = prefix.run([]);
+	assert.equal(second.status, 0, second.stderr);
+	assert.deepEqual(memoryOf(second), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.equal(prefix.serves().length, 1);
 });
 
-test("a session that never creates a database keeps Shell's identity; a foreign store with another identity is never adopted", { skip: posixHost }, (t) => {
+test("a server that fails to start or never reports ready disables memory for that launch and Shell still starts Pi", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
-	assert.equal(prefix.run([]).status, 0);
+	const result = prefix.run([], { FIXTURE_SERVE: "exit" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /memory disabled.*could not start the shared Engram server/s);
+	assert.equal(lastLaunch(result).cli.endsWith(join("dist", "bundle", "cli.js")), true);
+	assert.equal(prefix.serves().length, 1);
+});
+
+test("concurrent starts converge: a failed bind followed by a ready /compatibility counts as started", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([], { FIXTURE_SERVE: "race" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.doesNotMatch(result.stderr, /memory disabled/);
+	assert.deepEqual(prefix.serves().map(({ mode }) => mode), ["race", "late"]);
+});
+
+test("bundled memory never requires or selects a session-owned server, with the 0.4.2 companion and an explicit mode kept", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.equal(lastLaunch(result).env.ENGRAM_SERVER_MODE, undefined);
+	assert.doesNotMatch(result.stderr, /session-owned/);
+	assert.deepEqual(JSON.parse(readFileSync(prefix.metadata, "utf8")).engram, { startupPolicy: 1 });
+});
+
+test("an explicit Engram server mode is a selection: kept, never probed or started, memory disabled", { skip: posixHost }, (t) => {
+	for (const mode of ["session-owned", "bogus"]) {
+		const prefix = bundledPrefix(t);
+		const result = prefix.run([], { ENGRAM_SERVER_MODE: mode, FIXTURE_NO_PROBE: "1" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined], mode);
+		assert.equal(lastLaunch(result).env.ENGRAM_SERVER_MODE, mode);
+		assert.deepEqual(prefix.serves(), [], mode);
+	}
+});
+
+test("a mixed local and npm companion selection is preserved and memory still uses the shared server", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const local = join(prefix.home, "legacy-companion");
+	mkdirSync(local);
+	writeFileSync(join(local, "package.json"), JSON.stringify({ name: "gentle-engram", engram: { startupPolicy: 1 } }));
+	const settings = join(prefix.home, ".gentle-shell", "agent", "settings.json");
+	const selected = JSON.stringify({ packages: [local, "npm:gentle-engram@0.4.2"] });
+	writeFileSync(settings, selected);
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.deepEqual(JSON.parse(readFileSync(settings, "utf8")).packages, JSON.parse(selected).packages);
+});
+
+test("an existing store, including one the global CLI created, starts the shared server and Shell never touches it", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
 	const data = join(prefix.home, ".engram");
-	assert.deepEqual(readdirSync(data).sort(), [".instance-id"]);
-	assert.deepEqual(memoryOf(prefix.run([])), ["allow", prefix.engram]);
-	// Another Engram client replaces the shared directory with its own store.
-	rmSync(data, { recursive: true });
 	mkdirSync(data);
 	writeFileSync(join(data, ".instance-id"), `${OTHER_STORE_ID}\n`);
-	writeHeader(join(data, "engram.db"), 1);
-	const foreign = prefix.run([]);
-	assert.deepEqual(memoryOf(foreign), ["disabled", prefix.guard]);
-	assert.equal(JSON.parse(readFileSync(provenancePath(prefix), "utf8")).instanceId, STORE_ID);
-});
-test("a later launch reuses Shell's own store, including a stale WAL header, without rewriting provenance", { skip: posixHost }, (t) => {
-	const prefix = bundledPrefix(t);
-	assert.equal(prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID }).status, 0);
-	const recorded = readFileSync(provenancePath(prefix), "utf8");
 	for (const userVersion of [0, 1]) {
-		writeHeader(join(prefix.home, ".engram", "engram.db"), userVersion);
-		const second = prefix.run([]);
-		assert.equal(second.status, 0, second.stderr);
-		const seen = lastLaunch(second);
-		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL], ["allow", prefix.engram, undefined], String(userVersion));
+		writeHeader(join(data, "engram.db"), userVersion);
+		const before = readFileSync(join(data, "engram.db"));
+		const result = prefix.run([]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL], String(userVersion));
+		assert.deepEqual(readFileSync(join(data, "engram.db")), before);
 	}
-	assert.equal(readFileSync(provenancePath(prefix), "utf8"), recorded);
+	assert.deepEqual(readdirSync(data).sort(), [".instance-id", "engram.db"]);
+	assert.equal(existsSync(provenancePath(prefix)), false);
 });
 
-test("provenance mismatches disable memory behind the guard: instance, core digest, newer or malformed header", { skip: posixHost }, (t) => {
-	const mismatches: Array<[string, (prefix: ReturnType<typeof bundledPrefix>) => void]> = [
-		["instance", (prefix) => writeFileSync(join(prefix.home, ".engram", ".instance-id"), `${OTHER_STORE_ID}\n`)],
-		["invalid identity", (prefix) => writeFileSync(join(prefix.home, ".engram", ".instance-id"), "not-an-id\n")],
-		["core digest", (prefix) => writeFileSync(prefix.engram, "#!/bin/sh\necho upgraded engram\n", { mode: 0o700 })],
-		["newer schema", (prefix) => writeHeader(join(prefix.home, ".engram", "engram.db"), 2)],
-		["malformed header", (prefix) => writeHeader(join(prefix.home, ".engram", "engram.db"), 1, "not sqlite at all")],
-		["symlinked database", (prefix) => {
-			const db = join(prefix.home, ".engram", "engram.db");
-			renameSync(db, `${db}.real`);
-			symlinkSync(`${db}.real`, db);
-		}],
-		["corrupt provenance", (prefix) => writeFileSync(provenancePath(prefix), "{")],
-	];
-	for (const [name, change] of mismatches) {
-		const prefix = bundledPrefix(t);
-		assert.equal(prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID }).status, 0, name);
-		change(prefix);
-		const result = prefix.run([]);
-		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-		const seen = lastLaunch(result);
-		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN], ["disabled", prefix.guard], name);
-		assert.match(result.stderr, /memory disabled.*could not verify.*compatibility.*Back up/s, name);
+test("a store a newer Engram migrated keeps the server stopped and memory disabled", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const data = join(prefix.home, ".engram");
+	mkdirSync(data);
+	writeHeader(join(data, "engram.db"), 2);
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /memory disabled.*newer Engram/s);
+	assert.deepEqual(prefix.serves(), []);
+});
+
+function migrationFixture(t: TestContext, outcome = "success") {
+	const prefix = bundledPrefix(t);
+	// A store an earlier Shell provisioned and recorded with the bundled core.
+	const source = join(prefix.home, ".engram");
+	mkdirSync(source);
+	writeFileSync(join(source, ".instance-id"), `${STORE_ID}\n`);
+	writeHeader(join(source, "engram.db"), 1);
+	writeFileSync(join(source, "config.json"), '{"preserved":true}\n');
+	mkdirSync(dirname(provenancePath(prefix)), { recursive: true });
+	writeFileSync(provenancePath(prefix), `${JSON.stringify({ schema: 1, dataDir: source, instanceId: STORE_ID, coreSha256: sha256File(prefix.engram) }, null, 2)}\n`);
+	const originalRecord = readFileSync(provenancePath(prefix), "utf8");
+	const sourceBytes = readFileSync(join(source, "engram.db"));
+	const invocation = join(prefix.home, "migration-invoked");
+	writeFileSync(prefix.engram, `#!${process.execPath}\nimport {cpSync,writeFileSync} from 'node:fs';\nconst args=process.argv.slice(2);\nif(args[0]==='--help'){console.log(${JSON.stringify(outcome === "unsupported" ? "Commands: compatibility" : "  migrate-copy --data-dir <absolute-source> --output-dir <new-absolute-destination> --confirm-quiescent --json")});process.exit(0);}\nwriteFileSync(${JSON.stringify(invocation)},JSON.stringify({args,token:process.env.GH_TOKEN,cloud:process.env.ENGRAM_CLOUD_TOKEN}));\nif(args[0]!=='migrate-copy') process.exit(2);\nconst source=args[args.indexOf('--data-dir')+1],output=args[args.indexOf('--output-dir')+1];\nif(${JSON.stringify(outcome)}==='failure'){process.stderr.write('migration rejected\\n');process.exit(1);}\ncpSync(source,output,{recursive:true});\nconsole.log(JSON.stringify({source_dir:source,output_dir:output,instance_id:${JSON.stringify(outcome === "wrong-identity" ? OTHER_STORE_ID : STORE_ID)},migration_completed:true}));\n`, { mode: 0o700 });
+	return { ...prefix, source, originalRecord, sourceBytes, invocation };
+}
+
+test("an explicit Engram socket remains untouched and is never probed", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([], { ENGRAM_SOCKET: "/fixture/selected.sock", FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.equal(lastLaunch(result).env.ENGRAM_SOCKET, "/fixture/selected.sock");
+	assert.deepEqual(prefix.serves(), []);
+});
+
+test("memory migrate explicitly promotes a verified copy and retains the original store", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t);
+	const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1", GH_TOKEN: "fixture-secret", ENGRAM_CLOUD_TOKEN: "fixture-cloud" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stderr, "");
+	const receipt = JSON.parse(result.stdout);
+	assert.deepEqual(Object.keys(receipt).sort(), ["backup_dir", "instance_id", "status"]);
+	assert.equal(receipt.status, "migrated");
+	assert.equal(receipt.instance_id, STORE_ID);
+	assert.deepEqual(readFileSync(join(receipt.backup_dir, "engram.db")), prefix.sourceBytes);
+	assert.equal(readFileSync(join(receipt.backup_dir, "config.json"), "utf8"), '{"preserved":true}\n');
+	assert.equal(readFileSync(join(prefix.source, "config.json"), "utf8"), '{"preserved":true}\n');
+	assert.deepEqual(JSON.parse(readFileSync(provenancePath(prefix), "utf8")), { schema: 1, dataDir: prefix.source, instanceId: STORE_ID, coreSha256: sha256File(prefix.engram) });
+	const invoked = JSON.parse(readFileSync(prefix.invocation, "utf8"));
+	assert.equal(invoked.args[0], "migrate-copy");
+	assert.equal(invoked.token, undefined);
+	assert.equal(invoked.cloud, undefined);
+	assert.equal(existsSync(join(prefix.root, "config", "engram-migration.json")), false);
+});
+
+test("memory migrate rejects missing confirmation and malformed flags without invoking Engram", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t);
+	for (const args of [["memory", "migrate"], ["memory", "migrate", "--confirm-quiescent", "--unknown"], ["memory", "migrate", "--confirm-quiescent", "--confirm-quiescent"]]) {
+		const result = prefix.run(args, { FIXTURE_NO_PROBE: "1" });
+		assert.equal(result.status, 2, result.stderr);
+		assert.equal(result.stdout, "");
+		assert.equal(result.stderr, "Usage: gentle-shell memory migrate --confirm-quiescent\nStop every Engram client before running this command.\n");
+		assert.equal(existsSync(prefix.invocation), false);
+		assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+		assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
 	}
+});
+
+test("memory migrate never sends an unknown command to an older bundled core", { skip: posixHost }, (t) => {
+	const prefix = migrationFixture(t, "unsupported");
+	const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 1, result.stderr);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /does not support migrate-copy/);
+	assert.equal(existsSync(prefix.invocation), false);
+	assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+	assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+});
+
+test("memory migrate refuses provider failure and mismatched evidence without changing provenance or source", { skip: posixHost }, (t) => {
+	for (const outcome of ["failure", "wrong-identity"]) {
+		const prefix = migrationFixture(t, outcome);
+		const result = prefix.run(["memory", "migrate", "--confirm-quiescent"], { FIXTURE_NO_PROBE: "1" });
+		assert.equal(result.status, 1, result.stderr);
+		assert.equal(result.stdout, "");
+		assert.match(result.stderr, /^gentle-shell: memory migration failed:/);
+		assert.equal(readFileSync(provenancePath(prefix), "utf8"), prefix.originalRecord);
+		assert.deepEqual(readFileSync(join(prefix.source, "engram.db")), prefix.sourceBytes);
+		assert.equal(existsSync(join(prefix.root, "config", "engram-migration.json")), false);
+	}
+});
+
+test("an interrupted memory promotion keeps the server stopped until recovery", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	mkdirSync(join(prefix.root, "config"), { recursive: true });
+	const marker = join(prefix.root, "config", "engram-migration.json");
+	writeFileSync(marker, '{"interrupted":true}\n');
+	const result = prefix.run([], { FIXTURE_NO_PROBE: "1" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /incomplete memory migration/);
+	assert.deepEqual(prefix.serves(), []);
+	assert.equal(readFileSync(marker, "utf8"), '{"interrupted":true}\n');
 });
 
 test("public help explains compatibility evidence without promising update recovery", { skip: posixHost }, (t) => {
@@ -468,40 +718,21 @@ test("public help explains compatibility evidence without promising update recov
 	assert.equal(result.stderr, "");
 	assert.match(result.stdout, /Matching versions or updating alone do not prove compatibility/);
 	assert.match(result.stdout, /\/compatibility/);
-	assert.doesNotMatch(result.stdout, /update Engram, restart/);
+	assert.match(result.stdout, /shares the global Engram server.*nothing listens.*engram serve/s);
+	assert.doesNotMatch(result.stdout, /update Engram, restart|Shell-provisioned|session-owned/);
 });
 
-test("a foreign pre-existing store stays disabled and never receives provenance", { skip: posixHost }, (t) => {
+test("a listener without the ready contract is never replaced, even reporting the bundled core version", { skip: posixHost }, async (t) => {
 	const prefix = bundledPrefix(t);
-	const data = join(prefix.home, ".engram");
-	mkdirSync(data);
-	writeFileSync(join(data, ".instance-id"), `${STORE_ID}\n`);
-	writeHeader(join(data, "engram.db"), 1);
-	const result = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID });
+	const port = await engramServer(t, { "/health": [200, { status: "ok", instance_id: STORE_ID, version: engramPinVersion }] });
+	const result = prefix.run([], { FIXTURE_ENGRAM_PORT: port });
 	assert.equal(result.status, 0, result.stderr);
-	assert.deepEqual([lastLaunch(result).env.ENGRAM_STARTUP_POLICY, lastLaunch(result).env.ENGRAM_BIN], ["disabled", prefix.guard]);
-	assert.equal(existsSync(provenancePath(prefix)), false);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /memory disabled.*could not verify/s);
+	assert.deepEqual(prefix.serves(), []);
 });
 
-test("a listening server is reused for Shell's store only with the recorded /health instance and the exact core version", { skip: posixHost }, async (t) => {
-	const cases: Array<[string, unknown, string]> = [
-		["match", { status: "ok", instance_id: STORE_ID, version: engramPinVersion }, "allow"],
-		["other instance", { status: "ok", instance_id: OTHER_STORE_ID, version: engramPinVersion }, "disabled"],
-		["other version", { status: "ok", instance_id: STORE_ID, version: "9.9.9" }, "disabled"],
-	];
-	for (const [name, health, policy] of cases) {
-		const prefix = bundledPrefix(t);
-		assert.equal(prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID }).status, 0, name);
-		const port = await engramServer(t, { "/health": [200, health] });
-		const result = prefix.run([], { FIXTURE_ENGRAM_PORT: port });
-		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-		const seen = lastLaunch(result);
-		assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL],
-			[policy, policy === "allow" ? prefix.engram : prefix.guard, undefined], name);
-	}
-});
-
-test("a verified /compatibility server is reused through an explicit URL and the guard, without provenance", { skip: posixHost }, async (t) => {
+test("a verified /compatibility server is reused unchanged through an explicit URL and the guard", { skip: posixHost }, async (t) => {
 	const ready = { revision: 1, source: "active", status: "ready", offline_automatic_opening_authorized: false, active_reuse_authorized: true,
 		instance_id: STORE_ID, runtime_id: "a".repeat(32), capability: "startup-verified-store-v1" };
 	const prefix = bundledPrefix(t);
@@ -513,11 +744,12 @@ test("a verified /compatibility server is reused through an explicit URL and the
 	assert.equal(result.status, 0, result.stderr);
 	const seen = lastLaunch(result);
 	assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_URL, seen.env.ENGRAM_BIN], ["allow", "http://127.0.0.1:7437", prefix.guard]);
-	assert.equal(existsSync(provenancePath(prefix)), false);
+	assert.deepEqual(prefix.serves(), []);
 	const unready = bundledPrefix(t);
 	mkdirSync(join(unready.home, ".engram"));
 	const notReady = await engramServer(t, { "/compatibility": [200, { ...ready, status: "unknown", active_reuse_authorized: false }] });
 	assert.equal(lastLaunch(unready.run([], { FIXTURE_ENGRAM_PORT: notReady })).env.ENGRAM_STARTUP_POLICY, "disabled");
+	assert.deepEqual(unready.serves(), []);
 });
 
 test("a foreign store behind a 3.3.2 server stays guarded and the launch names the server version to update", { skip: posixHost }, async (t) => {
@@ -534,34 +766,10 @@ test("a foreign store behind a 3.3.2 server stays guarded and the launch names t
 	assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL], ["disabled", prefix.guard, undefined]);
 	assert.match(result.stderr, /memory disabled.*reports version 3\.3\.2.*update that server to 3\.4\.0 or later/s);
 	assert.deepEqual(readFileSync(join(data, "engram.db")), before);
-	assert.equal(existsSync(provenancePath(prefix)), false);
+	assert.deepEqual(prefix.serves(), []);
 });
 
-test("a fresh launch whose launcher is killed during Pi already has finalized provenance, and the next launch allows memory", { skip: posixHost }, (t) => {
-	const prefix = bundledPrefix(t);
-	const first = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID, FIXTURE_KILL_LAUNCHER: "1" });
-	assert.equal(first.signal, "SIGKILL");
-	assert.equal(JSON.parse(readFileSync(provenancePath(prefix), "utf8")).instanceId, STORE_ID);
-	assert.deepEqual(memoryOf(prefix.run([])), ["allow", prefix.engram]);
-});
-test("a failed identity provisioning disables memory for that launch and records nothing", { skip: posixHost }, (t) => {
-	const cases: Array<[string, Record<string, string>, (prefix: ReturnType<typeof bundledPrefix>) => void]> = [
-		["instance-id failure", { FIXTURE_INSTANCE_ID_FAIL: "1" }, () => {}],
-		["invalid identity file", { FIXTURE_INSTANCE_ID: "not-an-id" }, () => {}],
-		["provenance write failure", {}, (prefix) => mkdirSync(provenancePath(prefix), { recursive: true })],
-	];
-	for (const [name, extra, prepare] of cases) {
-		const prefix = bundledPrefix(t);
-		prepare(prefix);
-		const result = prefix.run([], extra);
-		assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-		assert.deepEqual(memoryOf(result), ["disabled", prefix.guard], name);
-		assert.match(result.stderr, /could not provision/, name);
-		assert.equal(lastLaunch(result).provenance, null, name);
-	}
-});
-
-test("--version and forwarded Pi version or help flags never probe Engram, install the companion or print memory notices", { skip: posixHost }, (t) => {
+test("--version and forwarded Pi version or help flags never probe or start Engram, install the companion or print memory notices", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	writeFileSync(prefix.metadata, '{"name":"gentle-engram","version":"0.4.1"}');
 	mkdirSync(join(prefix.home, ".engram"));
@@ -575,7 +783,7 @@ test("--version and forwarded Pi version or help flags never probe Engram, insta
 		assert.equal(readFileSync(settings, "utf8"), before, args.join(" "));
 		assert.equal(JSON.parse(readFileSync(prefix.metadata, "utf8")).version, "0.4.1", args.join(" "));
 	}
-	assert.equal(existsSync(provenancePath(prefix)), false);
+	assert.equal(prefix.serves().length, 1);
 });
 
 test("-v or --help as a prompt or an option value never switches memory off", { skip: posixHost }, (t) => {
@@ -583,8 +791,8 @@ test("-v or --help as a prompt or an option value never switches memory off", { 
 		const prefix = bundledPrefix(t);
 		const result = prefix.run(args);
 		assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
-		assert.deepEqual(memoryOf(result), ["allow", prefix.engram], args.join(" "));
-		assert.equal(lastLaunch(result).provenance.instanceId, STORE_ID, args.join(" "));
+		assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL], args.join(" "));
+		assert.equal(prefix.serves().length, 1, args.join(" "));
 	}
 });
 test("a missing bundled core uses the guard, never an engram on PATH", { skip: posixHost }, (t) => {
@@ -609,20 +817,23 @@ function countingGentleAi(prefix: ReturnType<typeof bundledPrefix>) {
 	return { bin, runs: () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0) };
 }
 
-test("setup on a fresh machine publishes the bundled core; the next launch is fresh, records provenance and is reused", { skip: posixHost }, (t) => {
+test("setup on a fresh machine publishes the bundled core; the next launch starts the shared server and later launches reuse it", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t, { core: false });
 	const installer = countingGentleAi(prefix);
 	const setup = prefix.run(["setup"], { GENTLE_SHELL_GENTLE_AI_BIN: installer.bin });
 	assert.equal(setup.status, 0, setup.stderr);
 	assert.equal(installer.runs(), 1);
 	assert.equal(existsSync(prefix.engram), true);
-	const first = prefix.run([], { FIXTURE_CREATE_STORE: STORE_ID });
+	// Setup itself never starts a server.
+	assert.deepEqual(prefix.serves(), []);
+	const first = prefix.run([]);
 	assert.equal(first.status, 0, first.stderr);
-	assert.deepEqual([lastLaunch(first).env.ENGRAM_STARTUP_POLICY, lastLaunch(first).env.ENGRAM_BIN], ["allow", prefix.engram]);
-	assert.equal(JSON.parse(readFileSync(provenancePath(prefix), "utf8")).instanceId, STORE_ID);
+	assert.deepEqual(memoryOf(first), ["allow", prefix.guard, DEFAULT_URL]);
 	const second = prefix.run([]);
 	assert.equal(second.status, 0, second.stderr);
-	assert.deepEqual([lastLaunch(second).env.ENGRAM_STARTUP_POLICY, lastLaunch(second).env.ENGRAM_BIN], ["allow", prefix.engram]);
+	assert.deepEqual(memoryOf(second), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.equal(prefix.serves().length, 1);
+	assert.equal(existsSync(provenancePath(prefix)), false);
 });
 
 test("an explicit ENGRAM_URL alone keeps the verified core, or the guard without it, as ENGRAM_BIN", { skip: posixHost }, (t) => {
@@ -646,12 +857,13 @@ test("a failed companion check after setup is a warning, not a setup failure", {
 	assert.equal(setup.status, 0, setup.stderr);
 	assert.equal(installer.runs(), 1);
 	assert.match(setup.stderr, /startupPolicy/);
-	assert.deepEqual(memoryOf(prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "0" })), ["disabled", prefix.guard]);
+	// The guard, not the companion check, protects memory: the shared server is still reused.
+	assert.deepEqual(memoryOf(prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "0" })), ["allow", prefix.guard, DEFAULT_URL]);
 	assert.deepEqual(readdirSync(data), ["engram.db"]);
 	assert.equal(readFileSync(join(data, "engram.db"), "utf8"), "untouched database sentinel");
 });
 
-test("setup with a foreign existing store runs the installer like the baseline, while memory stays behind the guard", { skip: posixHost }, (t) => {
+test("setup with an existing store runs the installer like the baseline and the launch reuses the shared server behind the guard", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t, { core: false });
 	const data = join(prefix.home, ".engram");
 	mkdirSync(data);
@@ -661,13 +873,11 @@ test("setup with a foreign existing store runs the installer like the baseline, 
 	assert.equal(setup.status, 0, setup.stderr);
 	assert.equal(installer.runs(), 1);
 	assert.equal(existsSync(prefix.engram), true);
-	assert.match(setup.stderr, /memory disabled.*could not verify.*compatibility.*Back up/s);
-	assert.doesNotMatch(setup.stderr, /update Engram and restart/);
-	assert.doesNotMatch(setup.stderr, /deferred/);
+	assert.doesNotMatch(setup.stderr, /memory disabled|deferred/);
 	const guarded = prefix.run([]);
 	assert.equal(guarded.status, 0, guarded.stderr);
 	const env = lastLaunch(guarded).env;
-	assert.deepEqual([env.ENGRAM_STARTUP_POLICY, env.ENGRAM_BIN, env.ENGRAM_URL], ["disabled", prefix.guard, undefined]);
+	assert.deepEqual([env.ENGRAM_STARTUP_POLICY, env.ENGRAM_BIN, env.ENGRAM_URL], ["allow", prefix.guard, DEFAULT_URL]);
 	// Subagents receive the same environment (GENTLE_PI_AGENTS_PI runs the same Pi with it).
 	assert.equal(env.GENTLE_PI_AGENTS_PI.endsWith(join("dist", "bundle", "cli.js")), true);
 	const provider = spawnSync(env.ENGRAM_BIN, ["instance-id"], { env: { ...prefix.env, ...env }, encoding: "utf8" });
@@ -682,15 +892,14 @@ test("setup with a foreign existing store runs the installer like the baseline, 
 	assert.equal(existsSync(provenancePath(prefix)), false);
 });
 
-test("a gentle-pi version change re-provisions Shell's own store once and keeps its memory", { skip: posixHost }, (t) => {
+test("a gentle-pi version change reruns setup once and keeps memory on the shared server", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t, { core: false });
 	const installer = countingGentleAi(prefix);
 	const auto = { GENTLE_SHELL_NO_AUTO_SETUP: "", GENTLE_SHELL_GENTLE_AI_BIN: installer.bin };
-	const first = prefix.run([], { ...auto, FIXTURE_CREATE_STORE: STORE_ID });
+	const first = prefix.run([], auto);
 	assert.equal(first.status, 0, first.stderr);
 	assert.equal(installer.runs(), 1);
-	assert.deepEqual([lastLaunch(first).env.ENGRAM_STARTUP_POLICY, lastLaunch(first).env.ENGRAM_BIN], ["allow", prefix.engram]);
-	assert.equal(existsSync(provenancePath(prefix)), true);
+	assert.deepEqual(memoryOf(first), ["allow", prefix.guard, DEFAULT_URL]);
 	assert.equal(prefix.run([], auto).status, 0);
 	assert.equal(installer.runs(), 1);
 	const manifest = join(dirname(dirname(prefix.entry)), "package.json");
@@ -699,7 +908,8 @@ test("a gentle-pi version change re-provisions Shell's own store once and keeps 
 	assert.equal(changed.status, 0, changed.stderr);
 	assert.equal(installer.runs(), 2);
 	assert.doesNotMatch(changed.stderr, /automatic setup failed|deferred/);
-	assert.deepEqual([lastLaunch(changed).env.ENGRAM_STARTUP_POLICY, lastLaunch(changed).env.ENGRAM_BIN], ["allow", prefix.engram]);
+	assert.deepEqual(memoryOf(changed), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.equal(prefix.serves().length, 1);
 	assert.equal(prefix.run([], auto).status, 0);
 	assert.equal(installer.runs(), 2);
 });
@@ -720,8 +930,7 @@ test("capability readback also requires Pi to declare the selected pinned compan
 	const result = prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "metadata-only" });
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stderr, /startupPolicy/);
-	// Only the identity Shell provisions before Pi: no database is opened.
-	assert.deepEqual(readdirSync(join(prefix.home, ".engram")), [".instance-id"]);
+	assert.equal(lastLaunch(result).env.ENGRAM_BIN, prefix.guard);
 });
 
 test("pinning preserves resource filters and unrelated settings and does not reinstall next launch", { skip: posixHost }, (t) => {
@@ -737,16 +946,19 @@ test("pinning preserves resource filters and unrelated settings and does not rei
 	assert.doesNotMatch(prefix.run([]).stderr, /installing policy-capable companion/);
 });
 
-test("final startup rechecks data created during automatic setup and records no provenance for it", { skip: posixHost }, (t) => {
+test("final startup rechecks a store a newer Engram migrated during automatic setup and never starts a server on it", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const fake = join(prefix.userBin, "gentle-ai");
-	writeFileSync(fake, `#!/bin/sh\nmkdir -p "$HOME/.engram"\nprintf '${STORE_ID}\\n' > "$HOME/.engram/.instance-id"\nprintf fixture > "$HOME/.engram/engram.db"\n`, { mode: 0o755 });
+	const db = join(prefix.home, ".engram", "engram.db");
+	writeFileSync(fake, `#!${process.execPath}\nconst { mkdirSync, writeFileSync } = require('node:fs');\nmkdirSync(${JSON.stringify(dirname(db))}, { recursive: true });\n` +
+		`const header = Buffer.alloc(4096); header.write('SQLite format 3\\0', 0, 'latin1'); header.writeUInt16BE(4096, 16); header[18] = 2; header[19] = 2; header.writeUInt32BE(2, 60);\n` +
+		`writeFileSync(${JSON.stringify(db)}, header);\n`, { mode: 0o755 });
 	const result = prefix.run([], { GENTLE_SHELL_NO_AUTO_SETUP: "", GENTLE_SHELL_GENTLE_AI_BIN: fake });
 	assert.equal(result.status, 0, result.stderr);
-	const seen = lastLaunch(result);
-	assert.deepEqual([seen.env.ENGRAM_STARTUP_POLICY, seen.env.ENGRAM_BIN], ["disabled", prefix.guard]);
-	assert.equal(readFileSync(join(prefix.home, ".engram", "engram.db"), "utf8"), "fixture");
-	assert.equal(existsSync(provenancePath(prefix)), false);
+	assert.equal(existsSync(db), true);
+	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
+	assert.match(result.stderr, /memory disabled.*newer Engram/s);
+	assert.deepEqual(prefix.serves(), []);
 });
 
 test("explicit endpoints and invalid policies never trigger availability probes or override executables", { skip: posixHost }, (t) => {
@@ -760,6 +972,7 @@ test("explicit endpoints and invalid policies never trigger availability probes 
 	const policyOnly = prefix.run([], { FIXTURE_NO_PROBE: "1", ENGRAM_STARTUP_POLICY: "invalid" });
 	assert.equal(policyOnly.status, 0, policyOnly.stderr);
 	assert.equal(lastLaunch(policyOnly).env.ENGRAM_BIN, prefix.guard);
+	assert.deepEqual(prefix.serves(), []);
 });
 
 test("startup offer precedes Pi, not-now preserves config and omit suppresses just that release", { skip: posixHost }, (t) => {
@@ -776,15 +989,36 @@ test("startup offer precedes Pi, not-now preserves config and omit suppresses ju
 		env: { ...prefix.env, NODE_OPTIONS: `${prefix.env.NODE_OPTIONS} --import=data:text/javascript,${encodeURIComponent(preload(latest))}` },
 		encoding: "utf8", input, timeout: 10000,
 	});
+	// A recorded lookup answers the next launch without the network, so these
+	// runs simulate later days by aging the cache back past the TTL; the live
+	// lookup then records its own answer again.
+	const ageCache = () => {
+		const parsed = JSON.parse(readFileSync(config, "utf8"));
+		const latest = typeof parsed.startupReleaseCheck?.latest === "string" ? parsed.startupReleaseCheck.latest : "999.0.0";
+		parsed.startupReleaseCheck = { checkedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), latest };
+		writeFileSync(config, `${JSON.stringify(parsed, null, 2)}\n`);
+	};
 	const skipped = run("999.0.0", "2\r");
 	assert.equal(skipped.status, 0, skipped.stderr);
 	assert.match(skipped.stdout, /Gentle Shell update available/);
 	assert.ok(skipped.stdout.indexOf("Gentle Shell update available") < skipped.stdout.indexOf('"cli":'));
-	assert.equal(readFileSync(config, "utf8"), '{"other":"preserved"}\n');
+	// A not-now choice still records no decision, but the live lookup it paid
+	// for lands in the config as the cache tomorrow's launch reuses.
+	const afterSkipped = JSON.parse(readFileSync(config, "utf8"));
+	assert.equal(afterSkipped.other, "preserved");
+	assert.equal(afterSkipped.skippedStartupRelease, undefined);
+	assert.equal(afterSkipped.startupReleaseCheck.latest, "999.0.0");
+	assert.ok(!Number.isNaN(Date.parse(afterSkipped.startupReleaseCheck.checkedAt)));
+	ageCache();
 	const omitted = run("999.0.0", "3\r");
 	assert.equal(omitted.status, 0, omitted.stderr);
-	assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { other: "preserved", skippedStartupRelease: "999.0.0" });
+	const afterOmit = JSON.parse(readFileSync(config, "utf8"));
+	assert.equal(afterOmit.other, "preserved");
+	assert.equal(afterOmit.skippedStartupRelease, "999.0.0");
+	assert.equal(afterOmit.startupReleaseCheck.latest, "999.0.0");
+	ageCache();
 	assert.doesNotMatch(run("999.0.0", "").stdout, /Gentle Shell update available/);
+	ageCache();
 	assert.match(run("999.0.1", "2\r").stdout, /Gentle Shell update available/);
 	const command = run("999.0.1", "", ["list"]);
 	assert.equal(command.status, 0, command.stderr);
@@ -796,7 +1030,7 @@ test("the bundled launcher runs only its version's Pi, with the user's environme
 	const prefix = bundledPrefix(t);
 	const version = prefix.run(["--version"]);
 	assert.equal(version.status, 0, version.stderr);
-	assert.match(version.stdout, new RegExp(`^gentle-shell ${SHELL.replaceAll(".", "\\.")}\npi 1\\.1\\.0\n`));
+	assert.match(version.stdout, new RegExp(`^gentle-shell ${SHELL.replaceAll(".", "\\.")}\npi 1\\.2\\.0\n`));
 	const launched = prefix.run(["list"]);
 	assert.equal(launched.status, 0, launched.stderr);
 	const seen = JSON.parse(launched.stdout.trim().split("\n").at(-1) ?? "{}");
@@ -810,11 +1044,13 @@ test("the bundled launcher runs only its version's Pi, with the user's environme
 	assert.equal(seen.env.NODE_OPTIONS, prefix.env.NODE_OPTIONS);
 	assert.equal(seen.env.npm_config_registry, "https://npm.example");
 	assert.equal(seen.env.npm_config_prefix, undefined);
-	// S9: gentle-pi's config folder inside the prefix, the pinned Engram for
-	// gentle-engram, and none of Gentle AI's own variables.
+	// S9: gentle-pi's config folder inside the prefix, the shared server's URL
+	// behind the guard for gentle-engram, and none of Gentle AI's own variables.
+	// A Pi subcommand never starts the server.
 	assert.equal(seen.env.GENTLE_SHELL_PREFIX, prefix.root);
 	assert.equal(seen.env.GENTLE_PI_CONFIG_HOME, undefined);
-	assert.equal(seen.env.ENGRAM_BIN, prefix.engram);
+	assert.deepEqual([seen.env.ENGRAM_BIN, seen.env.ENGRAM_URL], [prefix.guard, DEFAULT_URL]);
+	assert.deepEqual(prefix.serves(), []);
 	for (const name of ["GENTLE_AI_HOME", "GENTLE_AI_PI_CONFIG_DIR", "GENTLE_AI_ENGRAM_BIN", "GENTLE_AI_NO_SELF_UPDATE"]) assert.equal(seen.env[name], undefined, name);
 	// Pi's own npm is ours, configured only from the prefix, through the isolated home's settings.
 	const settings = JSON.parse(readFileSync(join(prefix.home, ".gentle-shell", "agent", "settings.json"), "utf8"));
@@ -922,19 +1158,19 @@ test("the version check before activation runs that version in bundled mode, nev
 		encoding: "utf8", input: "" });
 	const good = verify({ [BUNDLED_VERIFY_ENV]: FIXTURE_ID });
 	assert.equal(good.status, 0, good.stderr);
-	assert.match(good.stdout, /\npi 1\.1\.0\n/);
+	assert.match(good.stdout, /\npi 1\.2\.0\n/);
 	// The version's own Pi is broken, and the user's Pi prints the expected version.
-	writeFileSync(join(prefix.userBin, "pi"), "#!/bin/sh\necho 1.1.0\n", { mode: 0o755 });
+	writeFileSync(join(prefix.userBin, "pi"), "#!/bin/sh\necho 1.2.0\n", { mode: 0o755 });
 	rmSync(join(prefix.piDir, "dist", "bundle", "cli.js"));
 	const broken = verify({ [BUNDLED_VERIFY_ENV]: FIXTURE_ID });
 	assert.equal(broken.status, 1);
-	assert.match(broken.stderr, /bundled Pi 1\.1\.0/);
+	assert.match(broken.stderr, /bundled Pi 1\.2\.0/);
 	// Without the verification input, the same entry is an ordinary launcher that would pass.
-	assert.match(verify({}).stdout, /\npi 1\.1\.0\n/);
+	assert.match(verify({}).stdout, /\npi 1\.2\.0\n/);
 	// Only --version honors it.
 	const list = spawnSync(process.execPath, [prefix.entry, "list"], { env: { HOME: prefix.home, PATH: `${prefix.userBin}:/usr/bin:/bin`, [BUNDLED_VERIFY_ENV]: FIXTURE_ID,
 		GENTLE_SHELL_NO_AUTO_SETUP: "1" }, encoding: "utf8", input: "" });
-	assert.equal(list.stdout, "1.1.0\n");
+	assert.equal(list.stdout, "1.2.0\n");
 });
 
 test("the bundled launcher refuses a Pi that is not the pinned one", { skip: posixHost }, (t) => {
@@ -947,7 +1183,7 @@ test("the bundled launcher refuses a Pi that is not the pinned one", { skip: pos
 test("gentle-shell update in a bundled install explains the pinned Pi instead of updating it", { skip: posixHost }, (t) => {
 	const result = bundledPrefix(t).run(["update"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.1\.0\)/);
+	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
 	assert.match(result.stdout, /Run 'gentle-shell upgrade'/);
 	assert.doesNotMatch(result.stdout, /"args"/);
 });
@@ -956,7 +1192,7 @@ test("gentle-shell update pi --extensions in a bundled install redirects Pi's pa
 	const prefix = bundledPrefix(t);
 	const result = prefix.run(["update", "pi", "--extensions"]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.1\.0\)/);
+	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
 	const seen = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
 	assert.deepEqual(seen.args, ["update", "--extensions"]);
 	assert.ok(JSON.parse(readFileSync(join(prefix.home, ".gentle-shell", "agent", "settings.json"), "utf8")).npmCommand);

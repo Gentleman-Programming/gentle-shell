@@ -25,7 +25,7 @@ export const requirements = Object.freeze({
 /** Pi version the installer installs next to gentle-pi, and the version an older
  * Pi is updated to (never below requirements.pi; the runner asserts it).
  */
-export const PI_INSTALL_VERSION = "1.0.0";
+export const PI_INSTALL_VERSION = "1.4.0";
 
 /** Runtime persisted under PNPM_HOME. Bootstrap-only Node: `pnpm runtime set
  * node <node> -g`, then `pnpm add -g npm@<npm> pnpm@<pnpm>`, or only npm when
@@ -248,9 +248,11 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
 	const needsNative = tools.gentleAi.status === "unavailable";
 	// The main channel builds Gentle AI from source on every platform.
-	// gentle-pi's postinstall may build Gentle AI from source on Windows, so a
-	// Windows release update needs Go like an installation; main always does.
-	const windowsBuild = platform === "win32" && (update !== null || (needsNative && !npmCurrent));
+	// gentle-pi's postinstall always builds Gentle AI from source on Windows, even
+	// next to an installed gentle-ai, so installing or updating the Shell needs Go,
+	// as does provisioning a missing native binary; main always does.
+	const installsShell = tools.shell.status === "unavailable";
+	const windowsBuild = platform === "win32" && (update !== null || (!npmCurrent && (installsShell || needsNative)));
 	const goStatus = windowsBuild || main ? classify(inventory.go, requirements.go) : "not-required";
 	if (goStatus === "unavailable" || goStatus === "incompatible" || goStatus === "unknown") {
 		// A missing, older or unreadable Go is left as it is: the build gets the

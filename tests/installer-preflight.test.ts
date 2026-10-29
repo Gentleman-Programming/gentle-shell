@@ -172,6 +172,22 @@ test("Windows requires compatible Go only before a missing native binary", () =>
 	assert.deepEqual(older.actions.slice(0, 2), goActions);
 });
 
+test("Windows acquires the pinned Go for a Shell install even when Gentle AI is already installed", () => {
+	// gentle-pi's postinstall always builds Gentle AI from source on Windows, so an
+	// existing compatible gentle-ai never removes the need for Go.
+	const compatible = { ...tool(requirements.gentleAi), compatible: true };
+	for (const inventory of [{ ...clean("win32"), gentleAi: compatible },
+		{ ...installed("win32"), shell: absent, setup: false, go: absent }]) {
+		const plan = planPreflight(inventory);
+		assert.deepEqual(plan.blockers, []);
+		assert.deepEqual(plan.tools.go, { status: "needs-acquire", required: requirements.go, version: goAcquisition.version });
+		assert.ok(ids(inventory).includes("install-shell"));
+		assert.deepEqual(plan.actions.filter((action: { target: string }) => action.target === "go"), goActions);
+	}
+	// A set-up Windows stack builds nothing, so it still needs no Go.
+	assert.equal(planPreflight({ ...installed("win32"), go: absent }).tools.go.status, "not-required");
+});
+
 for (const [name, version] of [["node", "22.18.0"], ["shell", "3.9.0"], ["node", "banana"], ["pi", "1.0.0-rc.1"]]) {
 	test(`${name} ${version} blocks rather than replacing an existing tool`, () => {
 		const inventory = { ...installed(), [name]: tool(version) };
@@ -253,7 +269,7 @@ test("a missing Pi is installed before an existing Gentle Shell is updated", () 
 });
 
 test("an existing compatible Pi from any installation is reused and only Gentle Shell is installed", () => {
-	for (const pi of [tool("1.2.0"), { ...tool("1.0.4"), external: true }]) {
+	for (const pi of [tool("1.2.0"), { ...tool("1.2.4"), external: true }]) {
 		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
 		assert.equal(plan.tools.pi.status, "reusable");
 		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
@@ -261,7 +277,7 @@ test("an existing compatible Pi from any installation is reused and only Gentle 
 });
 
 test("a pnpm Pi newer than the installer's pin never blocks: Gentle Shell is added or updated beside it", () => {
-	const newer = { ...tool("1.1.0") };
+	const newer = { ...tool("1.2.1") };
 	const install = planPreflight({ ...installed(), pi: newer, shell: absent, gentleAi: absent, setup: false });
 	assert.deepEqual([install.blockers, updateIds(install)], [[], ["install-shell", "setup-shell", "verify-readiness"]]);
 	const update = planPreflight({ ...installed(), pi: newer, shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked });
@@ -363,7 +379,7 @@ test("missing Windows Go is acquired before reprovisioning an existing Shell", (
 // A pinned stack this pnpm installed whose setup did not finish (setup probe: recoverable).
 const recoverable = { available: true, recoverable: true };
 function partial(change: object = {}) {
-	return { ...installed(), pi: tool("1.0.0"), shell: { ...tool(requirements.shell), global: true }, setup: recoverable, ...change };
+	return { ...installed(), pi: tool("1.2.0"), shell: { ...tool(requirements.shell), global: true }, setup: recoverable, ...change };
 }
 
 test("a recoverable stack only reruns setup, with PATH setup when the global bin is off PATH", () => {

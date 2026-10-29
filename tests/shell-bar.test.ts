@@ -107,7 +107,7 @@ test("visual visibility hides only selected optional status segments", () => {
 	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
 });
 
-test("Status groups running job descriptions beside RDD without a compact count", () => {
+test("Status keeps RDD beside structured groups while running jobs moved to their own card", () => {
 	const data = model({ jobs: [
 		{ id: "job-2", label: "CI for PR 1860", startedAt: 2 },
 		{ id: "job-1", label: "Build runtime", startedAt: 1 },
@@ -115,12 +115,12 @@ test("Status groups running job descriptions beside RDD without a compact count"
 	for (const width of [30, 60]) {
 		const lines = renderShellSidebarBar(data, plainTheme, width);
 		const text = lines.join("\n");
-		assert.match(text, /Jobs[\s\S]*CI for PR 1860[\s\S]*Build runtime/);
+		// Running jobs live in their own sidebar card; the Status card never
+		// prints them, so the two surfaces cannot duplicate one job.
+		assert.doesNotMatch(text, /Jobs|CI for PR 1860|Build runtime/);
 		assert.match(text, /🌹 RDD/);
-		assert.doesNotMatch(text, /2 jobs/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
-	assert.doesNotMatch(renderShellSidebarBar(model({ jobs: [] }), plainTheme, 60).join("\n"), /Jobs/);
 });
 
 test("header shows only the running job count when requested and preserves it at mobile widths", () => {
@@ -217,6 +217,13 @@ test("renderShellBar renders one line with the segments in order", () => {
 		line,
 		"✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub",
 	);
+});
+
+test("renderShellBar paints the context gauge with the given gauge roles", () => {
+	const [line] = renderShellBar(model(), taggedTheme, 400, undefined, { ok: "gaugeOk", empty: "gaugeEmpty" });
+	assert.match(line, /<gaugeOk>▰▰▰▰<\/gaugeOk><gaugeEmpty>▱▱▱▱<\/gaugeEmpty>/);
+	const [fallback] = renderShellBar(model(), taggedTheme, 400);
+	assert.match(fallback, /<accent>▰▰▰▰<\/accent><border>▱▱▱▱<\/border>/);
 });
 
 test("renderShellBar colors the brand, model, effort, and gauge by role", () => {
@@ -348,7 +355,7 @@ test("renderShellSidebarBar paints the Status card frame with border and the tit
 });
 
 test("sidebar unifies project, captured changes and integrations in one frame", () => {
-	const data = model({ changes: { files: 2, added: 7, deleted: 3, notice: "capture warning" }, statuses: ["MCP connected"] });
+	const data = model({ changes: { files: 2, added: 7, deleted: 3 }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);
 	const text = lines.join("\n");
 	assert.equal(lines.filter((line) => line.startsWith("╭")).length, 1);
@@ -359,7 +366,6 @@ test("sidebar unifies project, captured changes and integrations in one frame", 
 		previous = index;
 	}
 	assert.match(text, /2 files.*\+7.*−3/);
-	assert.match(text, /capture warning/);
 	assert.match(text, /\/gentle:changes/);
 	assert.match(text, /main/);
 	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
@@ -847,6 +853,19 @@ test("unified below-input float includes optional Changes and sanitized statuses
 	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", DEFAULT_VISUAL_SETTINGS, changes), undefined);
 	setCardStyle(CARD_STYLE.NEON);
 	assert.equal(renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, changes), undefined);
+});
+
+// The idle Changes row exists only when files are actually tracked; an empty
+// capture — including an unborn-only root, which the tracker never scans — is
+// silence (explained by /gentle:changes on demand), never an instruction row.
+test("the below-input float shows no Changes row without tracked files", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground(plainTheme);
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	const empty = { files: [], added: 0, deleted: 0 };
+	const chrome = renderShellBelowInputFloat(model(), theme, 140, "alt+u", presentation, empty)!;
+	assert.equal(chrome.headerRow, 2, "an empty capture is silence, not a Changes row");
+	assert.doesNotMatch(stripAnsi(chrome.rows.join("\n")), /make a commit to start tracking/);
 });
 
 test("the narrow-layout bottom-only bar stays unchanged in the float style", (t) => {

@@ -1,0 +1,1 @@
+{"subject_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000","inspection":{"status":"completed","paths":["internal/example.go"]},"findings":[],"evidence":["reviewed the complete candidate scope"]}

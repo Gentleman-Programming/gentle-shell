@@ -13,8 +13,11 @@ import {
 	staleTurns,
 	TODO_DETAILS_KEY,
 	TODO_GLYPH,
+	TODO_PROGRESS_EVENT,
 	TODO_TOOL_NAME,
 	todoCardTone,
+	TODO_CLOSED_STATE,
+	todoProgress,
 	todoPromptBlock,
 	todoStateMessage,
 	todoSummary,
@@ -26,8 +29,9 @@ import {
 // Gentle Shell card above the editor. Three things keep it current that a
 // static tool description cannot: `write` replaces the whole list in one
 // call, each run's system prompt carries a byte-stable rules block while the
-// open tasks reach the model as a request-local trailing message (so list
-// changes never invalidate the cached prompt prefix, gentle-shell#1662), and
+// open tasks reach the model as a hidden transcript message appended when the
+// list changes (so list changes never invalidate the cached prompt prefix and
+// requests stay append-only, gentle-shell#1662, #2195), and
 // a list that goes untouched while tasks stay open is marked stale for the
 // human. Long runs also receive one request-local reminder after several
 // tool-use turns, without waking the agent or changing tasks.
@@ -87,6 +91,10 @@ interface TodoSession {
 	collapsed: boolean;
 	/** A finished list stays on screen for the turn it finished in, then clears. */
 	clearOnNextTurn: boolean;
+	/** The last state snapshot sent to the transcript. */
+	lastSent: string | undefined;
+	/** A snapshot queued during the current turn; Pi appends it at turn_end. */
+	pending: string | undefined;
 	ui: ExtensionContext["ui"] | undefined;
 	host: { requestRender(): void } | undefined;
 	tui: TUI | undefined;
@@ -107,10 +115,19 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const key = sessionKey(ctx);
 		let current = sessions.get(key);
 		if (!current) {
-			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, ui: undefined, host: undefined, tui: undefined };
+			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, lastSent: undefined, pending: undefined, ui: undefined, host: undefined, tui: undefined };
 			sessions.set(key, current);
 		}
 		return current;
+	};
+
+	// While the agent streams, Pi appends this hidden message at turn_end, after
+	// the tool results and before the next model request; it never starts a turn.
+	const persistState = (current: TodoSession, state: string) => {
+		if (!pi.sendMessage) return;
+		pi.sendMessage({ customType: "gentle-todo-state", content: state, display: false }, { triggerTurn: false });
+		current.lastSent = state;
+		current.pending = state;
 	};
 
 	const toggle = (current: TodoSession) => {
@@ -265,6 +282,11 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					current.toolTurnsSinceWrite = 0;
 					current.reminded = false;
 					current.wroteThisTurn = true;
+					// A closed list persists the closing marker, so the last open
+					// snapshot in the transcript never reads as current work.
+					const state = todoStateMessage(current.state) ?? (current.lastSent === undefined ? undefined : TODO_CLOSED_STATE);
+					if (state !== undefined && state !== current.lastSent) persistState(current, state);
+					pi.events?.emit(TODO_PROGRESS_EVENT, todoProgress(current.state, ctx.sessionManager.getSessionId()));
 				}
 				if (current.tui) invalidateSidebar(current.tui);
 			}
@@ -303,6 +325,8 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.toolTurnsSinceWrite = 0;
 		current.reminded = false;
 		current.wroteThisTurn = false;
+		current.lastSent = undefined;
+		current.pending = undefined;
 		current.ui = ctx.hasUI ? ctx.ui : undefined;
 		show(current);
 	});
@@ -335,17 +359,27 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.toolTurnsSinceWrite += 1;
 		}
 		current.wroteThisTurn = false;
+		// Pi flushes the queued snapshot right after this event.
+		current.pending = undefined;
 	});
 
 	pi.on("context", (event, ctx) => {
 		const current = session(ctx);
-		// Context transforms are request-local: no transcript entry, UI
-		// notification, continuation or provider-specific wake is needed. The
-		// current list trails the transcript (gentle-shell#1662), then the
-		// one-shot reminder when it is due.
+		// gentle-shell#1662, #2195: providers cache the request prefix up to the
+		// last message (Anthropic) or send only the delta after the previous input
+		// (openai-codex), so a trailing message that the next request drops breaks
+		// both. The list is persisted when it changes; this transform only covers a
+		// transcript that lacks the current snapshot (compaction, branch navigation,
+		// sessions recorded earlier): it trails this one request and persists the
+		// snapshot once, so the following requests are append-only again.
 		const trailing: Array<{ role: "custom"; customType: string; content: string; display: false; timestamp: number }> = [];
-		const state = todoStateMessage(current.state);
-		if (state !== undefined) trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
+		const last = [...event.messages].reverse().find((message) => (message as { customType?: string }).customType === "gentle-todo-state") as { content?: unknown } | undefined;
+		const seen = typeof last?.content === "string" ? last.content : undefined;
+		const state = todoStateMessage(current.state) ?? (seen === undefined || seen === TODO_CLOSED_STATE ? undefined : TODO_CLOSED_STATE);
+		if (state !== undefined && seen !== state) {
+			trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
+			if (current.pending !== state) persistState(current, state);
+		}
 		const actionable = current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		if (!current.reminded && current.toolTurnsSinceWrite >= REMIND_AFTER_TOOL_TURNS && actionable) {
 			current.reminded = true;

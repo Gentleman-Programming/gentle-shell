@@ -1,15 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="590" viewBox="0 0 960 590" role="img" aria-labelledby="workflow-title workflow-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="330" viewBox="0 0 1000 330" role="img" aria-labelledby="workflow-title workflow-desc">
   <title id="workflow-title">el Gentleman workflow</title>
-  <desc id="workflow-desc">A human-directed sequence from intent through clarification, workflow choice, work, evidence, and a final human decision.</desc>
+  <desc id="workflow-desc">A human-directed sequence from intent through clarification, workflow choice, work, evidence, and a final human decision. You own the intent and the decision; el Gentleman carries the steps in between.</desc>
   <defs>
-    <linearGradient id="workflow-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#100c15"/><stop offset="1" stop-color="#21101f"/></linearGradient>
-    <marker id="workflow-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+    <linearGradient id="workflow-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="workflow-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="workflow-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="workflow-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <linearGradient id="workflow-bar" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c46b9e"/><stop offset="1" stop-color="#f095c8"/></linearGradient>
+    <pattern id="workflow-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="workflow-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="workflow-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
+    <marker id="workflow-arrow-soft" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#d7a0b8"/></marker>
   </defs>
-  <rect width="960" height="590" rx="20" fill="url(#workflow-bg)"/>
-  <text x="58" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">From intent to evidence.</text>
-  <text x="58" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">You stay in control.</text>
-  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2"><rect x="58" y="190" width="240" height="140" rx="16"/><rect x="350" y="190" width="240" height="140" rx="16"/><rect x="642" y="190" width="240" height="140" rx="16"/><rect x="642" y="370" width="240" height="140" rx="16"/><rect x="350" y="370" width="240" height="140" rx="16"/><rect x="58" y="370" width="240" height="140" rx="16"/></g>
-  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#workflow-arrow)"><path d="M298 260H350"/><path d="M590 260H642"/><path d="M762 330V370"/><path d="M642 440H590"/><path d="M350 440H298"/></g>
-  <g fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" text-anchor="middle"><text x="178" y="272">Intent</text><text x="470" y="272">Clarify</text><text x="762" y="272">Workflow</text><text x="762" y="452">Work</text><text x="470" y="452">Evidence</text><text x="178" y="452">Decision</text></g>
-  <path d="M58 548H902" stroke="#f095c8" stroke-opacity=".28" stroke-width="2"/>
+  <rect width="1000" height="330" rx="24" fill="url(#workflow-bg)"/>
+  <rect width="1000" height="330" rx="24" fill="url(#workflow-dots)"/>
+  <rect width="1000" height="330" rx="24" fill="url(#workflow-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="329" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">EL GENTLEMAN</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">from intent to evidence, you stay in control</text>
+    <text x="106.0" y="100" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="2" text-anchor="middle">YOU</text>
+    <path d="M36 116V110H176V116" fill="none" stroke="#f095c8" stroke-opacity="0.28"/>
+    <text x="501.0" y="100" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="2" text-anchor="middle">EL GENTLEMAN</text>
+    <path d="M194 116V110H808V116" fill="none" stroke="#f095c8" stroke-opacity="0.28"/>
+    <text x="896.0" y="100" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="2" text-anchor="middle">YOU</text>
+    <path d="M826 116V110H966V116" fill="none" stroke="#f095c8" stroke-opacity="0.28"/>
+    <rect x="46" y="150" width="120" height="92" rx="16" fill="#f095c8" opacity="0.22" filter="url(#workflow-shine)"/>
+    <rect x="36" y="140" width="140" height="112" rx="14" fill="url(#workflow-accent)" stroke="#f095c8" stroke-width="1.5"/>
+    <rect x="48" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="59.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">01</text>
+    <g transform="translate(144 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></g>
+    <text x="48" y="212" fill="#fbeff5" font-size="17" font-weight="650">Intent</text>
+    <text x="48" y="234" fill="#a8939f" font-size="12.5">say it once</text>
+    <path d="M176 196H192" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#workflow-arrow)"/>
+    <rect x="194" y="140" width="140" height="112" rx="14" fill="url(#workflow-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="206" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="217.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">02</text>
+    <g transform="translate(302 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11h-9l-4 4v-4H4z"/></g>
+    <text x="206" y="212" fill="#fbeff5" font-size="17" font-weight="650">Clarify</text>
+    <text x="206" y="234" fill="#a8939f" font-size="12.5">clear scope</text>
+    <path d="M334 196H350" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#workflow-arrow)"/>
+    <rect x="352" y="140" width="140" height="112" rx="14" fill="url(#workflow-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="364" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="375.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">03</text>
+    <g transform="translate(460 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></g>
+    <text x="364" y="212" fill="#fbeff5" font-size="17" font-weight="650">Workflow</text>
+    <text x="364" y="234" fill="#a8939f" font-size="12.5">a sensible next step</text>
+    <path d="M492 196H508" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#workflow-arrow)"/>
+    <rect x="510" y="140" width="140" height="112" rx="14" fill="url(#workflow-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="522" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="533.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">04</text>
+    <g transform="translate(618 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></g>
+    <text x="522" y="212" fill="#fbeff5" font-size="17" font-weight="650">Work</text>
+    <text x="522" y="234" fill="#a8939f" font-size="12.5">the change</text>
+    <path d="M650 196H666" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#workflow-arrow)"/>
+    <rect x="668" y="140" width="140" height="112" rx="14" fill="url(#workflow-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="680" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="691.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">05</text>
+    <g transform="translate(776 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/></g>
+    <text x="680" y="212" fill="#fbeff5" font-size="17" font-weight="650">Evidence</text>
+    <text x="680" y="234" fill="#a8939f" font-size="12.5">people can review</text>
+    <path d="M808 196H824" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#workflow-arrow)"/>
+    <rect x="836" y="150" width="120" height="92" rx="16" fill="#f095c8" opacity="0.22" filter="url(#workflow-shine)"/>
+    <rect x="826" y="140" width="140" height="112" rx="14" fill="url(#workflow-accent)" stroke="#f095c8" stroke-width="1.5"/>
+    <rect x="838" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="849.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">06</text>
+    <g transform="translate(934 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7c0 4-2.5 8-7 8-3 0-4.5-1.5-6-4l-1.5-3a1.5 1.5 0 0 1 2.6-1.5L8 15"/></g>
+    <text x="838" y="212" fill="#fbeff5" font-size="17" font-weight="650">Decision</text>
+    <text x="838" y="234" fill="#a8939f" font-size="12.5">yours</text>
+    <text x="500" y="296" fill="#8e7987" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="middle">without making every task feel like a process meeting</text>
+  </g>
 </svg>

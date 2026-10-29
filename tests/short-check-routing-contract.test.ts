@@ -36,7 +36,7 @@ for (const [name, text] of Object.entries({ registeredDescription: background.de
 test("inline still means the same parent, and the public background API stays asynchronous", () => {
 	assert.ok(core.includes("Small path: inline (parent; `bash_background` policy);"));
 	assert.ok(guide.includes("Inline means the same parent, not necessarily synchronous bash"));
-	assert.ok(core.includes("run the focused test and the suite inline, once each"));
+	assert.ok(core.includes("run the focused test and the suite inline in one command"));
 	assert.match(background.description, /return a job id at once/);
 	assert.match(background.description, /notified once, automatically/);
 	assert.match(background.description, /do not poll, sleep, or delegate a subagent to wait/);

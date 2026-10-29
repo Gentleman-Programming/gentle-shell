@@ -58,8 +58,8 @@ it lets the window close.
 
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
-Pi ≥1.0.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 4.1.1. Windows native source builds require Go ≥1.25.10 when the
+Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
+Gentle AI 4.3.1. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -489,9 +489,9 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
 [runtime persistence](#runtime-persistence) steps run next:
 
 1. `install-global`: exactly one
-   `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@<package version> --allow-build=gentle-pi`.
+   `pnpm add -g @earendil-works/pi-coding-agent@1.2.0 gentle-pi@<package version> --allow-build=gentle-pi`.
    pnpm 11 installs each argument as its own global group, so gentle-pi gets
-   its optional peer Pi beside it, possibly newer than 1.0.0
+   its optional peer Pi beside it, possibly newer than 1.2.0
    ([The Pi that Gentle Shell runs](#the-pi-that-gentle-shell-runs)). pnpm 11
    silently skips global postinstall scripts by default; the package-scoped
    approval runs only gentle-pi's postinstall, which provisions Gentle AI. No
@@ -503,8 +503,8 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
    launcher runs from that real path, as Node resolves it (gentle-pi's own
    `node_modules` first, then beside gentle-pi), must be a
    `@earendil-works/pi-coding-agent` package at a stable version at least the
-   minimum (1.0.0); a missing, unreadable, prerelease or older one fails. When
-   it is not 1.0.0, the outcome reports it as `piVersion` and the wizard says
+   minimum (1.2.0); a missing, unreadable, prerelease or older one fails. When
+   it is not 1.2.0, the outcome reports it as `piVersion` and the wizard says
    which Pi Gentle Shell runs.
 3. `verify-shell-bin`: `$PNPM_HOME/bin/gentle-shell` (`gentle-shell.cmd` on
    Windows) exists.
@@ -563,7 +563,7 @@ installation instead of blocking as an existing stack.
 Detection is the setup probe, with the same rule the runner applies
 (`recoverableStackRoot`): the global listing names Pi and gentle-pi exactly
 once each, both in the single project that owns gentle-pi, Pi at exactly
-1.0.0 and gentle-pi at exactly this package's version, gentle-pi's path
+1.2.0 and gentle-pi at exactly this package's version, gentle-pi's path
 resolves (realpath) inside PNPM_HOME, and the Pi beside gentle-pi is at least
 the minimum. Preflight also requires Pi, Shell and
 Gentle AI to be `reusable`. Anything else (another version, a second listing,
@@ -650,7 +650,7 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 
 | Found | Plan |
 | --- | --- |
-| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is, also when it is newer than 1.0.0. |
+| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is, also when it is newer than 1.2.0. |
 | A Gentle Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
 | A current Gentle Shell that npm owns, on release | Nothing to do. |
 | A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
@@ -677,7 +677,7 @@ the same code as `gentle-shell upgrade --channel <channel>`
 (`check-installed-shell`, `update-shell`), then `verify-updated-shell` requires
 the same owner and a stable version not older than before (release) or a
 `-main.<sha12>` version (main), and for pnpm a Pi beside the updated
-gentle-pi at least the minimum (its version is reported when it is not 1.0.0);
+gentle-pi at least the minimum (its version is reported when it is not 1.2.0);
 release also re-runs `verify-gentle-ai`. An
 update never runs `pnpm setup`: the existing installation already has its PATH.
 
@@ -734,7 +734,7 @@ PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@4.0.0`
 lists Pi 1.0.0 while the Pi beside gentle-pi is 1.1.0. So Gentle Shell may run a
 Pi newer than `PI_INSTALL_VERSION`, always at least the minimum: the runner
 verifies that Pi (`verify-global-list`, the setup recovery, a pnpm
-`verify-updated-shell`) and, when it is not 1.0.0, the outcome says which Pi
+`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.2.0 now; the 1.0.0/1.1.0 figures above are that older verification), the outcome says which Pi
 Gentle Shell runs. `--config.auto-install-peers=false` would leave gentle-pi
 with no Pi beside it, so the launcher would run any `pi` on PATH, and
 `--config.overrides` is ignored for global installs.
@@ -787,9 +787,13 @@ publishes main builds, so main is built on this computer
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
      `go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@<sha>`
      in a sealed Go environment (`GOPROXY=https://proxy.golang.org`,
-     `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`), requires
-     the binary's version to end in that commit's first 12 characters, keeps it
-     under `<config home>/main/gentle-ai/<sha>/` and registers it as the
+     `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`),
+     asks Go (`go list -m -json`, same environment) which module version that
+     commit is (a release tag such as `v4.2.0`, or a pseudo-version) and requires
+     its origin to be that exact commit, requires the binary to embed that module
+     version (`go version -m`) and to report it, all in the `.build` work
+     folder, and only then moves it to `<config home>/main/gentle-ai/<sha>/`
+     (a failed rebuild leaves an already registered build in place) and registers it as the
      `gentle-pi.dev-binary/v1` override, which never falls back to the pinned
      binary silently.
   2. `install-shell-main`: downloads the latest `main` commit's source tarball,
@@ -812,8 +816,28 @@ publishes main builds, so main is built on this computer
   a version it cannot check) it builds with the pinned Go under
   `<config home>/tools/go`, downloading and verifying it there with the same
   `acquireGo` as the wizard when no earlier run published it, and only when
-  Gentle AI is rebuilt. A failed download stops with `main-requires-tools`
-  before anything is built; the user's Go is never run for the build.
+  Gentle AI is rebuilt. A failed download stops the Gentle AI build with
+  `main-requires-tools` before it starts (a main Shell that moved is still
+  installed, as below); the user's Go is never run for the build.
+- When the Gentle AI step of `gentle-shell upgrade --channel main` fails (the
+  build, its verification, or getting the pinned Go) and the main Shell moved,
+  the upgrade still packs and installs that Shell, records no channel, prints
+  `Updated Gentle Shell to the latest main (<sha12>); Gentle AI was not updated.`
+  and exits 1 with the original error (code and message) followed by
+  `; Gentle Shell was updated to main <sha12> but Gentle AI was not: run
+  gentle-shell upgrade --channel main to finish`. The retry then rebuilds Gentle
+  AI with the new Shell's code, so a fix in the main-channel upgrade path reaches
+  an install whose own copy of it is broken; a cause the new Shell does not fix
+  (a Go download that keeps failing, for example) still has to be resolved first. Until then Gentle AI stays the
+  previously registered main build or the pinned binary: a rejected build is
+  never registered. When the Shell install fails as well, its error is reported
+  with `; Gentle AI was not updated either (<Gentle AI error>)`. An unexpected
+  error that has no main-channel code (a filesystem `EACCES`, for example) is
+  reported as `main-upgrade-incomplete` with its own message and the same
+  suffix, so neither the retry advice nor either error is lost. When the Shell
+  is already current, a failed Gentle AI step fails as before, with nothing
+  installed or recorded. The wizard's runner is the one bundled with the
+  downloaded installer and does not get this behavior from a newer main.
 - Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.
@@ -1029,6 +1053,13 @@ again, or add `$PNPM_HOME/bin` to PATH manually. For `acquire-go`, a detail
 starting with `Conflicting Go destination: ` selects
 `guidance.goDestinationConflict`: a folder from an earlier, interrupted run is in
 the way and is never replaced; remove that folder and run the installer again.
+For `install-version` and `install-global`, a detail with `spawn UNKNOWN` selects
+`guidance.codeIntegrityBlocked`: libuv reports a Windows code integrity refusal
+(Smart App Control, CodeIntegrity event 3077) of the `gentle-ai.exe` that
+gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
+exception, so the guidance offers WSL or turning Smart App Control off (on
+Windows 11 it cannot be turned back on without reinstalling Windows) instead of
+network and registry advice.
 `scripts/installer-runner.mjs` exports the frozen
 arrays `blockedReasons` and `failedSteps`; a test requires guidance for exactly
 those entries, and the runner tests check that every reason and step their

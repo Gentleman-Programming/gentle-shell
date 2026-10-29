@@ -6,6 +6,9 @@ export const REVIEW_REMINDER_RECEIPT = "gentle-pi.review-reminder-receipt/v1";
 export interface ReceiptSession {
 	getSessionId(): string;
 	getBranch(): readonly { type: string; customType?: string; data?: unknown }[];
+	/** Append-only identity for memoizing repeated scans; hosts without it stay uncached. */
+	getLeafId?(): string | null;
+	getEntryCount?(): number;
 }
 interface ReceiptHost { appendEntry(type: string, data: unknown): void }
 export interface MutationEvidence {
@@ -59,7 +62,14 @@ function receipts(session: ReceiptSession, root: string): Receipt[] {
 
 // The first receipt per mutation id, in branch order, plus the index of the
 // last consumed one (-1 when nothing was consumed).
-function mutationLedger(session: ReceiptSession, root: string): { mutations: Mutation[]; consumed: number } {
+type Ledger = { mutations: Mutation[]; consumed: number };
+// Entries are append-only, so an unchanged (leafId, entryCount) identity means
+// the scan result is unchanged: each (session, root) ledger is memoized until
+// the next append (which moves the leaf) invalidates it. Hosts without leaf
+// identity stay uncached, the same way sessionStats must.
+const ledgerMemo = new WeakMap<object, Map<string, Ledger>>();
+
+function scanLedger(session: ReceiptSession, root: string): Ledger {
 	const mutations: Mutation[] = [];
 	let consumed = -1;
 	for (const receipt of receipts(session, root)) {
@@ -72,6 +82,19 @@ function mutationLedger(session: ReceiptSession, root: string): { mutations: Mut
 		}
 	}
 	return { mutations, consumed };
+}
+
+function mutationLedger(session: ReceiptSession, root: string): Ledger {
+	const leafId = typeof session.getLeafId === "function" ? session.getLeafId() : null;
+	if (leafId === null) return scanLedger(session, root);
+	const key = JSON.stringify([session.getSessionId(), leafId, session.getEntryCount?.(), root] as const);
+	let byKey = ledgerMemo.get(session);
+	const cached = byKey?.get(key);
+	if (cached) return cached;
+	const ledger = scanLedger(session, root);
+	if (!byKey) ledgerMemo.set(session, (byKey = new Map()));
+	byKey.set(key, ledger);
+	return ledger;
 }
 
 export function pendingReviewMutation(session: ReceiptSession, root: string, captured?: string): string | undefined {

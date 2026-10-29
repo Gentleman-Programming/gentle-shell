@@ -14,6 +14,7 @@ import {
 	recheckReleaseFastPathRemoteHeadV1,
 	resolveConfiguredPushDestinationV1,
 	type GateTargetV1,
+	type ReleaseGateTargetV1,
 	type GhCommandRunnerV1,
 	type ReleaseFastPathEvidenceV1,
 } from "../lib/review-publication-gate.ts";
@@ -177,14 +178,14 @@ function temporaryAuthority(t: test.TestContext): GateRepository & {
 test("unbranded receipts are rejected before lifecycle gate evaluation", (t) => {
 	const { repository, finalTree, store, receipt } = temporaryAuthority(t);
 	execFileSync("git", ["read-tree", finalTree], { cwd: repository });
-	assert.throws(() => validateReviewGate({
+	assert.throws(() => Reflect.apply(validateReviewGate, undefined, [{
 		store,
 		receipt,
 		target: { kind: GATE_TARGET_KIND.INTENDED_COMMIT, intended_commit_tree: finalTree },
 		repositoryCwd: repository,
 		idempotencyKey: "unbranded-gate",
 		scopeBudget: budget(),
-	}), /branded authoritative receipt/i);
+	}]), /branded authoritative receipt/i);
 });
 
 test("authoritative receipts cannot be validated through another repository store", (t) => {
@@ -333,6 +334,7 @@ test("push gate allows normal same-name updates while preserving exact-old and c
 	const driftedUpdate = {
 		kind: GATE_TARGET_KIND.PUSH,
 		remote,
+		destination_id: target.destination_id,
 		updates: [{
 			...target.updates[1],
 			old_object: finalCommit,
@@ -347,6 +349,7 @@ test("push gate allows normal same-name updates while preserving exact-old and c
 	const createOverExisting = {
 		kind: GATE_TARGET_KIND.PUSH,
 		remote,
+		destination_id: target.destination_id,
 		updates: [{ ...target.updates[0], destination_ref: "refs/heads/final" }],
 	} as const;
 	assert.equal(
@@ -580,7 +583,7 @@ test("scope child claim and parent gate journal publish atomically across faults
 	assert.equal(store.read(receipt.body.lineage_id).child_claims?.length, 1);
 });
 
-function releaseTarget(repository: GateRepository): GateTargetV1 {
+function releaseTarget(repository: GateRepository): ReleaseGateTargetV1 {
 	return {
 		kind: GATE_TARGET_KIND.RELEASE,
 		tag_ref: "refs/tags/v1.2.3",
@@ -628,7 +631,7 @@ test("release fast path independently accepts complete successful Check Runs des
 	const repository = createGateRepository(t);
 	setRemoteMain(repository, repository.finalCommit);
 	const calls: string[][] = [];
-	const checkRuns = (checks: unknown[], totalCount = checks.length, legacyStatus = "pending"): GhCommandRunnerV1 => (args) => {
+	const checkRuns = (checks: readonly unknown[], totalCount = checks.length, legacyStatus = "pending"): GhCommandRunnerV1 => (args) => {
 		calls.push([...args]);
 		if (args[1] === `repos/{owner}/{repo}/commits/${repository.finalCommit}/check-runs?per_page=100`) {
 			return { status: 0, stdout: JSON.stringify({ total_count: totalCount, returned: checks.length, checks }) };

@@ -1,0 +1,648 @@
+:root {
+	color-scheme: dark;
+	--gd-bg: #111214;
+	--gd-stage: #1a1b1e;
+	--gd-panel: #222327;
+	--gd-border: #3a3b40;
+	--gd-text: #ececee;
+	--gd-muted: #a9abb2;
+	--gd-accent: #8ab4ff;
+	--gd-accent-text: #0b1220;
+	--gd-danger: #ff9b9b;
+	--gd-focus: #ffd479;
+	--gd-pin: #8ab4ff;
+	--gd-pin-resolved: #7d8a7f;
+	--gd-success: #9be0a8;
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	font-size: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+	margin: 0;
+	height: 100%;
+	background: var(--gd-bg);
+	color: var(--gd-text);
+	overflow: hidden;
+}
+
+body {
+	display: flex;
+	flex-direction: column;
+}
+
+.gd-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+.gd-bar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 12px;
+	padding: 8px 12px;
+	background: var(--gd-panel);
+	border-bottom: 1px solid var(--gd-border);
+	flex: none;
+}
+
+.gd-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 32ch;
+}
+
+.gd-group {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+button, select, textarea {
+	font: inherit;
+	color: var(--gd-text);
+	background: var(--gd-stage);
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+}
+
+button {
+	min-width: 32px;
+	min-height: 32px;
+	padding: 4px 10px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+button:hover { border-color: var(--gd-muted); }
+
+select {
+	min-height: 32px;
+	padding: 4px 8px;
+	max-width: 28ch;
+}
+
+button:focus-visible, select:focus-visible, textarea:focus-visible, .gd-viewport:focus-visible {
+	outline: 2px solid var(--gd-focus);
+	outline-offset: 2px;
+}
+
+#gd-zoom-level {
+	min-width: 5ch;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	color: var(--gd-muted);
+}
+
+.gd-toggle[aria-pressed="true"], .gd-primary {
+	background: var(--gd-accent);
+	border-color: var(--gd-accent);
+	color: var(--gd-accent-text);
+}
+
+.gd-feature {
+	margin: 0;
+	max-width: 28ch;
+	color: var(--gd-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gd-nav-mode {
+	margin: 0;
+	max-width: 40ch;
+	color: var(--gd-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gd-nav-mode.gd-using { color: var(--gd-accent); font-weight: 600; }
+
+.gd-status {
+	margin: 0 0 0 auto;
+	color: var(--gd-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gd-main {
+	position: relative;
+	display: flex;
+	flex: 1;
+	min-height: 0;
+}
+
+.gd-viewport {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	background: var(--gd-stage);
+	cursor: grab;
+	touch-action: none;
+}
+
+.gd-viewport.gd-panning { cursor: grabbing; }
+
+.gd-world {
+	position: absolute;
+	top: 0;
+	left: 0;
+	display: flex;
+	align-items: flex-start;
+	gap: 80px;
+	padding: 0;
+	transform-origin: 0 0;
+	will-change: transform;
+}
+
+.gd-artboard {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: none;
+}
+
+.gd-artboard-label {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+/* The handoff row above Implement this: anchored to the label's bottom right, kept at screen
+   size like the pins, and wrapped within the artboard's on-screen width. */
+.gd-board-actions {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+	max-width: calc(100% / var(--gd-inv-zoom, 1));
+	transform: scale(var(--gd-inv-zoom, 1));
+	transform-origin: right bottom;
+}
+
+.gd-implement { white-space: nowrap; }
+
+/* At 100% the label makes room for the handoff row above Implement this. */
+.gd-has-handoff .gd-artboard-label { padding-top: 30px; }
+
+.gd-implement-confirm {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 6px;
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+	background: var(--gd-panel);
+}
+
+.gd-implement [hidden] { display: none; }
+
+.gd-artboard-title {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.gd-artboard-tradeoff {
+	margin: 0;
+	color: var(--gd-muted);
+}
+
+/* Handoff row (S15): Chosen or Alternative, the handoff state, its feature document, note and Compare. */
+.gd-handoff {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	font-size: 12px;
+}
+
+.gd-handoff[hidden] { display: none; }
+
+.gd-choice, .gd-handoff-badge, .gd-handoff-feature, .gd-handoff-note {
+	padding: 1px 8px;
+	border: 1px solid var(--gd-border);
+	border-radius: 999px;
+	background: var(--gd-panel);
+	white-space: nowrap;
+}
+
+.gd-choice-chosen { background: var(--gd-accent); border-color: var(--gd-accent); color: var(--gd-accent-text); font-weight: 700; }
+.gd-choice-alternative { color: var(--gd-muted); }
+.gd-handoff-badge { font-weight: 600; }
+.gd-handoff-badge[data-status="queued"] { color: var(--gd-focus); border-color: var(--gd-focus); }
+.gd-handoff-badge[data-status="sent"], .gd-handoff-badge[data-status="in_progress"] { color: var(--gd-accent); border-color: var(--gd-accent); }
+.gd-handoff-badge[data-status="implemented"] { color: var(--gd-success); border-color: var(--gd-success); }
+.gd-handoff-feature { color: var(--gd-muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.gd-handoff-note { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; color: var(--gd-muted); font-style: italic; }
+.gd-compare-start { min-height: 24px; padding: 0 10px; font-size: 12px; }
+
+/* The chosen artboard keeps an accent frame at every zoom level. */
+.gd-chosen .gd-artboard-frame { box-shadow: 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
+
+.gd-artboard-frame {
+	display: block;
+	border: 0;
+	background: #fff;
+	box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+}
+
+.gd-commenting .gd-artboard-frame { outline: 2px dashed var(--gd-accent); outline-offset: 4px; }
+
+/* The system board never takes comments: no comment outline, and a note while Comment mode is on. */
+.gd-commenting .gd-system-board .gd-artboard-frame { outline: none; opacity: 0.6; }
+.gd-system-note { visibility: hidden; margin: 0; color: var(--gd-muted); font-style: italic; cursor: help; }
+.gd-commenting .gd-system-note { visibility: visible; }
+
+.gd-frame-box { position: relative; }
+
+/* Navigation mode: a shield over each artboard keeps the wheel, drags and clicks on the canvas.
+   Focus mode removes it from the focused artboard only. */
+.gd-shield {
+	position: absolute;
+	inset: 0;
+	cursor: pointer;
+	outline: none;
+}
+
+.gd-shield[hidden] { display: none; }
+
+.gd-shield:hover, .gd-shield:focus-visible {
+	background: rgba(138, 180, 255, 0.06);
+	box-shadow: inset 0 0 0 calc(2px * var(--gd-inv-zoom, 1)) var(--gd-accent);
+}
+
+.gd-shield:focus-visible { box-shadow: inset 0 0 0 calc(3px * var(--gd-inv-zoom, 1)) var(--gd-focus); }
+
+.gd-shield-hint {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	width: max-content;
+	margin: 12px auto 0;
+	padding: 4px 10px;
+	border: 1px solid var(--gd-border);
+	border-radius: 999px;
+	background: var(--gd-panel);
+	color: var(--gd-text);
+	white-space: nowrap;
+	pointer-events: none;
+	opacity: 0;
+	transform: scale(var(--gd-inv-zoom, 1));
+	transform-origin: center top;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.gd-shield:hover .gd-shield-hint, .gd-shield:focus-visible .gd-shield-hint { opacity: 1; }
+
+/* In comment mode the inspector draws the hover box itself. */
+.gd-commenting .gd-shield { cursor: crosshair; }
+.gd-commenting .gd-shield:hover { background: transparent; box-shadow: none; }
+.gd-commenting .gd-shield-hint { display: none; }
+
+.gd-viewport.gd-focused { cursor: default; }
+.gd-focused .gd-artboard:not(.gd-focus-board) { opacity: 0.25; }
+.gd-focused .gd-focus-board .gd-artboard-frame { box-shadow: 0 0 0 2px var(--gd-accent), 0 2px 16px rgba(0, 0, 0, 0.5); }
+
+/* Floats in the band canvas.js keeps free below the focused artboard. */
+.gd-back {
+	position: absolute;
+	bottom: 16px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 5;
+	background: var(--gd-accent);
+	border-color: var(--gd-accent);
+	color: var(--gd-accent-text);
+	font-weight: 600;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.gd-back[hidden] { display: none; }
+
+/* Pins live in the transformed world, so they follow pan and zoom; the inverse scale keeps their size. */
+.gd-pins {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.gd-pin {
+	position: absolute;
+	min-width: 26px;
+	min-height: 26px;
+	padding: 0 6px;
+	border-radius: 13px 13px 13px 2px;
+	border: 2px solid #0b1220;
+	background: var(--gd-pin);
+	color: var(--gd-accent-text);
+	font-weight: 700;
+	font-size: 12px;
+	pointer-events: auto;
+	transform: translate(-2px, -100%) scale(var(--gd-inv-zoom, 1));
+	transform-origin: 0 100%;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.gd-pin[data-status="resolved"] { background: var(--gd-pin-resolved); opacity: 0.75; }
+.gd-pin.gd-pin-active { background: var(--gd-focus); opacity: 1; }
+
+.gd-radio {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	color: var(--gd-muted);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.gd-radio input { accent-color: var(--gd-accent); margin: 0; }
+.gd-radio input:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+
+button:disabled { opacity: 0.5; cursor: default; }
+
+.gd-panel {
+	flex: none;
+	width: min(340px, 40vw);
+	overflow-y: auto;
+	padding: 12px;
+	background: var(--gd-panel);
+	border-left: 1px solid var(--gd-border);
+}
+
+.gd-panel[hidden] { display: none; }
+
+.gd-panel-title {
+	margin: 0 0 8px;
+	font-size: 15px;
+}
+
+.gd-filter { margin-bottom: 8px; }
+.gd-filter button[aria-pressed="true"] { border-color: var(--gd-accent); color: var(--gd-accent); }
+
+.gd-panel-empty { color: var(--gd-muted); margin: 8px 0; }
+
+.gd-comment-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.gd-comment-item {
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+	background: var(--gd-stage);
+}
+
+.gd-comment-item.gd-active { border-color: var(--gd-focus); }
+
+.gd-comment-show {
+	display: block;
+	white-space: normal;
+	width: 100%;
+	text-align: left;
+	border: 0;
+	background: transparent;
+	padding: 8px;
+}
+
+.gd-comment-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	color: var(--gd-muted);
+	font-size: 12px;
+}
+
+.gd-comment-number { color: var(--gd-text); font-weight: 700; }
+.gd-comment-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gd-badge { border: 1px solid var(--gd-border); border-radius: 4px; padding: 0 4px; }
+.gd-badge-detached { color: var(--gd-danger); border-color: var(--gd-danger); }
+.gd-badge-sent { color: var(--gd-success); border-color: var(--gd-success); }
+
+.gd-comment-actions {
+	display: flex;
+	justify-content: flex-end;
+	padding: 0 8px 8px;
+}
+
+.gd-empty {
+	position: absolute;
+	inset: 0;
+	margin: auto;
+	height: fit-content;
+	max-width: 48ch;
+	text-align: center;
+	color: var(--gd-muted);
+}
+
+.gd-popover {
+	position: fixed;
+	z-index: 10;
+	width: min(360px, calc(100vw - 24px));
+	padding: 12px;
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.gd-popover-title {
+	margin: 0 0 8px;
+	color: var(--gd-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gd-popover-title code { color: var(--gd-text); }
+
+.gd-popover textarea {
+	width: 100%;
+	resize: vertical;
+	padding: 8px;
+}
+
+.gd-popover.gd-dropping { border-color: var(--gd-accent); }
+
+.gd-shot {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.gd-shot-preview {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin: 0;
+}
+
+.gd-shot-preview[hidden] { display: none; }
+
+.gd-shot-preview img, .gd-comment-shot {
+	display: block;
+	max-width: 160px;
+	max-height: 96px;
+	object-fit: contain;
+	border: 1px solid var(--gd-border);
+	border-radius: 4px;
+	background: var(--gd-bg);
+}
+
+.gd-comment-shot { margin-top: 6px; }
+
+.gd-popover-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.gd-popover-message {
+	margin-right: auto;
+	color: var(--gd-muted);
+}
+
+.gd-popover-message.gd-error, .gd-status.gd-error { color: var(--gd-danger); }
+
+/* Compare (S15): the artboard and the running app side by side, over the canvas and the panel. */
+.gd-compare {
+	position: absolute;
+	inset: 0;
+	z-index: 8;
+	display: flex;
+	flex-direction: column;
+	background: var(--gd-stage);
+}
+
+.gd-compare[hidden] { display: none; }
+
+.gd-compare-bar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px 12px;
+	padding: 8px 12px;
+	background: var(--gd-panel);
+	border-bottom: 1px solid var(--gd-border);
+}
+
+.gd-compare-title {
+	margin: 0 auto 0 0;
+	font-size: 15px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gd-compare-bar .gd-radio[hidden] { display: none; }
+
+.gd-compare-open {
+	display: inline-flex;
+	align-items: center;
+	min-height: 32px;
+	padding: 4px 10px;
+	border: 1px solid var(--gd-border);
+	border-radius: 6px;
+	color: var(--gd-accent);
+}
+
+.gd-compare-open:focus-visible { outline: 2px solid var(--gd-focus); outline-offset: 2px; }
+
+.gd-compare-message {
+	margin: 0;
+	padding: 6px 12px;
+	color: var(--gd-muted);
+}
+
+.gd-compare-message.gd-error { color: var(--gd-danger); }
+
+.gd-compare-stage {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: 24px;
+}
+
+.gd-compare-sizer { overflow: hidden; }
+
+.gd-compare-panes {
+	display: flex;
+	align-items: flex-start;
+	gap: 24px;
+	width: max-content;
+	transform-origin: 0 0;
+}
+
+.gd-compare-pane {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 0;
+}
+
+.gd-compare-caption {
+	max-width: 100%;
+	color: var(--gd-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gd-compare-frame {
+	display: block;
+	border: 0;
+	background: #fff;
+	box-shadow: 0 2px 16px rgba(0, 0, 0, 0.5);
+}
+
+/* A confirmation that outlives the status line, such as a sent handoff. */
+.gd-toast {
+	position: fixed;
+	left: 50%;
+	bottom: 24px;
+	z-index: 20;
+	max-width: min(560px, calc(100vw - 32px));
+	padding: 10px 16px;
+	transform: translateX(-50%);
+	background: var(--gd-panel);
+	border: 1px solid var(--gd-accent);
+	border-radius: 8px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+	font-weight: 600;
+}
+
+.gd-toast[hidden] { display: none; }
+.gd-toast.gd-error { border-color: var(--gd-danger); color: var(--gd-danger); }
+
+@media (prefers-reduced-motion: no-preference) {
+	button { transition: border-color 120ms ease; }
+	.gd-shield-hint { transition: opacity 120ms ease; }
+	.gd-artboard { transition: opacity 160ms ease; }
+}

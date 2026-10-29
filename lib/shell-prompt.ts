@@ -23,10 +23,10 @@ const PETAL_TONE = {
 
 export type PetalTone = (typeof PETAL_TONE)[keyof typeof PETAL_TONE];
 
-// Keep Pi's original loader cadence while carrying the banner's reflected-light
-// language into the compact working labels. The highlight enters before the
-// word, crosses it as a soft symmetric wave, then exits before wrapping.
-export const SHELL_PULSE_MS = 80;
+// Render-driven animation (gentle-shell#994): the petal advances inside the
+// prompt's own frames while streaming, so the only timer left is a watchdog
+// that repaints silent working phases (long tool runs with no output).
+export const SHELL_PULSE_WATCHDOG_MS = 1000;
 export const SHELL_SCANNER_STEPS = 15;
 const SCANNER_ENTRY_OFFSET = 3;
 
@@ -74,7 +74,9 @@ export const DOUBLE_ESC_CANCEL_HINT = "esc again to cancel";
 export const IDLE_ESC_CLEAR_HINT = "esc again to clear";
 const LABEL_ROLE = "muted";
 const HINT_ROLE = "dim";
-const FAKE_CURSOR = "\x1b[7m \x1b[0m";
+// Audited legacy SGR and Pi 1.2 APC cursors. Do not resolve the latter
+// here: the host TUI owns hardware-cursor suppression after composition.
+const EMPTY_FAKE_CURSORS = ["\x1b[7m \x1b[0m", "\x1b_pi:fc\x07 \x1b_pi:/fc\x07"];
 const SCROLL_INDICATOR = /[↑↓] \d+ more/;
 const STATE_LABEL: Record<PromptState, string | undefined> = {
 	[PROMPT_STATE.IDLE]: undefined,
@@ -228,9 +230,9 @@ export function framePromptLines(lines: string[], width: number, options: Prompt
 }
 
 export function withPromptHint(line: string, hint: string, fg: PromptFrameOptions["fg"]): string {
-	const cursorAt = line.indexOf(FAKE_CURSOR);
-	if (cursorAt === -1) return line;
-	const afterCursor = cursorAt + FAKE_CURSOR.length;
+	const cursor = EMPTY_FAKE_CURSORS.find((marker) => line.includes(marker));
+	if (!cursor) return line;
+	const afterCursor = line.indexOf(cursor) + cursor.length;
 	const trailing = line.slice(afterCursor);
 	if (trailing.trim() !== "" || trailing.length < hint.length + 1) return line;
 	return `${line.slice(0, afterCursor)} ${fg(HINT_ROLE, hint)}${" ".repeat(trailing.length - hint.length - 1)}`;

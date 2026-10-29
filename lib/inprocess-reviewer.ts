@@ -20,6 +20,7 @@
 // this into the lens relay (lib/review-host-relay.ts); P3 wires the provider
 // role vectors. This file stays a pure completion, never invoked from here.
 
+import { randomUUID } from "node:crypto";
 import type { Api, AssistantMessage, Context, Model, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
@@ -82,8 +83,9 @@ export interface InProcessReviewerRequest {
 	/**
 	 * The live pi session id, threaded from the extension context. Pi's main
 	 * agent loop adds OpenCode attribution headers itself; this side-call must
-	 * carry them itself instead. Absent (or empty) means no attribution header,
-	 * never an invented one and never an error.
+	 * carry them itself instead. Absent (or empty) means no attribution header
+	 * from this field, and never an error. (The per-completion `options.sessionId`
+	 * is separate: it isolates provider conversations and is never this id.)
 	 */
 	readonly sessionId?: string;
 	/** e.g. "review-risk" — only used to name the routing config key in refusal messages. */
@@ -301,6 +303,13 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	const options: SimpleStreamOptions = {
 		signal: combinedSignal,
 		timeoutMs: request.timeoutMs,
+		// Providers that keep server-side conversation state key it on
+		// `options.sessionId` and otherwise fall back to something coarser (for
+		// example the worktree), which would merge every reviewer completion into
+		// one growing conversation. A fresh id per completion keeps each review
+		// isolated. It is deliberately not `request.sessionId`: that is the parent
+		// session's id and would merge reviewer calls into the parent's conversation.
+		sessionId: `review-${request.routingKey}-${randomUUID()}`,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),

@@ -492,6 +492,87 @@ test("inline field submits a visible value and drops invisible resizes without w
 	assert.deepEqual(submitted, ["/local/a.wav"], "an Enter that cannot see the field must not submit");
 });
 
+test("inline audio paths wrap fully at 80 columns and submit their exact value", async () => {
+	const prompt = "Local audio path (WAV/OGG/FLAC, absolute, no URLs)";
+	for (const length of [23, 24, 103, 175]) {
+		const value = `C:/${"a".repeat(length - 7)}.wav`;
+		assert.equal(value.length, length);
+		const submitted: string[] = [];
+		const view = inlineView(async inline => {
+			const result = await inline.input({ prompt, value: "" });
+			if (result !== undefined) submitted.push(result);
+		});
+		view.render(80); view.handleInput("\r"); await tick();
+		view.handleInput(`\x1b[200~${value}\x1b[201~`);
+		const frame = view.render(80);
+		const content = frame.map(line => line.slice(2, -2).trimEnd()).join("");
+		assert.ok(content.includes(`${prompt}: ${value}▏`), "every input character and cursor must be visible in order");
+		assert.ok(frame.length <= 12);
+		assert.ok(frame.every(line => visibleWidth(line) === 80));
+		assert.doesNotMatch(frame.join("\n"), /Value too wide|Needs \d+ columns/);
+		assert.deepEqual(submitted, [], "rendering must not submit");
+		view.handleInput("\r"); await tick();
+		assert.deepEqual(submitted, [value]);
+	}
+});
+
+test("inline overflow reports sufficient room, rejects Enter and remains editable", async () => {
+	const submitted: string[] = [];
+	const value = "a".repeat(222); // Path: + cursor makes 229 cells; three 76-cell lines hold 228.
+	const view = inlineView(async inline => {
+		const result = await inline.input({ prompt: "Path", value });
+		if (result !== undefined) submitted.push(result);
+	});
+	view.render(80); view.handleInput("\r"); await tick();
+	const frame = view.render(80);
+	assert.match(frame.join("\n"), /Needs 233 columns for one line · Esc cancel/);
+	assert.ok(frame.every(line => visibleWidth(line) === 80));
+	assert.ok(frame.length <= 12);
+	view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, []);
+	view.handleInput("\x7f");
+	view.render(80); view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [value.slice(0, -1)]);
+});
+
+test("wrapped inline values refuse a height shrink before Enter and submit after recovery", async () => {
+	let height = 12;
+	const submitted: string[] = [];
+	const value = "x".repeat(100);
+	const view = inlineView(async inline => {
+		const result = await inline.input({ prompt: "Path", value });
+		if (result !== undefined) submitted.push(result);
+	}, { rowsAvailable: () => height });
+	view.render(80); view.handleInput("\r"); await tick();
+	view.render(80);
+	height = 8;
+	view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [], "Enter must recheck live height, not the previous three-line render");
+	const shortFrame = view.render(80);
+	assert.ok(shortFrame.length <= 8);
+	assert.match(shortFrame.join("\n"), /Needs 111 columns for one line/);
+	height = 12;
+	view.render(80); view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [value]);
+});
+
+test("inline wrapping keeps wide graphemes intact and single-line submission unchanged", async () => {
+	for (const value of ["/local/a.wav", "界👩‍💻e\u0301".repeat(16)]) {
+		const submitted: string[] = [];
+		const view = inlineView(async inline => {
+			const result = await inline.input({ prompt: "Path", value });
+			if (result !== undefined) submitted.push(result);
+		});
+		view.render(80); view.handleInput("\r"); await tick();
+		const frame = view.render(80);
+		assert.ok(frame.every(line => visibleWidth(line) === 80));
+		const content = frame.map(line => line.slice(2, -2).trimEnd()).join("");
+		assert.ok(content.includes(`Path: ${value}▏`));
+		view.handleInput("\r"); await tick();
+		assert.deepEqual(submitted, [value]);
+	}
+});
+
 test("inline confirmation accepts only a fully visible yes and resolves false otherwise", async () => {
 	let height = 12;
 	const seen: boolean[] = [];

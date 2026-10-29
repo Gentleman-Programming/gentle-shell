@@ -32,6 +32,10 @@ test("S1: the final assistant text is the last assistant message's text", () => 
 	assert.equal(finalAssistantText(messages), "Done.\nRisk: item 2");
 	assert.equal(finalAssistantText([user("Risk: item 3")]), undefined);
 	assert.equal(finalAssistantText([{ role: "assistant", content: "Risk: item 5" }]), "Risk: item 5");
+	// Adjacent text blocks are one rendered text: a split near-miss never becomes a line-start declaration.
+	const split = finalAssistantText([{ role: "assistant", content: [{ type: "text", text: "Do not write " }, { type: "text", text: "Risk: item 3 here." }] }]);
+	assert.equal(split, "Do not write Risk: item 3 here.");
+	assert.equal(declaredHighRiskItem(split!), undefined);
 });
 
 test("S2: the reminder names the item, the launch, the approval rule, and the Needs your decision close", () => {

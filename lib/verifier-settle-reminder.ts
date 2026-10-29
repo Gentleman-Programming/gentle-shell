@@ -21,7 +21,7 @@ export function finalAssistantText(messages: readonly unknown[]): string | undef
 		return content
 			.filter((part): part is { type: "text"; text: string } => !!part && typeof part === "object" && part.type === "text" && typeof part.text === "string")
 			.map(part => part.text)
-			.join("\n");
+			.join("");
 	}
 	return undefined;
 }

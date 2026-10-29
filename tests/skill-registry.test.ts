@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -714,4 +714,71 @@ test("registered startup skips Git work and watchers when the repository is root
 	assert.deepEqual(runtime.notices, []);
 	await runtime.refresh();
 	assert.match(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"), /Initial skill/);
+});
+
+// gentle-shell#373: permission failures must degrade truthfully. The registry
+// refresh reports a typed unavailable result with the offending path and a
+// safe next action, never a successful regeneration, and unexpected I/O keeps
+// its own diagnostic.
+test("isStorageUnavailableError classifies only storage faults", () => {
+	for (const code of ["EACCES", "EPERM", "EROFS", "ENOTDIR", "EISDIR", "EEXIST"]) {
+		assert.equal(__testing.isStorageUnavailableError({ code }), true, code);
+	}
+	for (const code of ["ENOENT", "EMFILE", "ELOOP", "ENOSPC"]) {
+		assert.equal(__testing.isStorageUnavailableError({ code }), false, code);
+	}
+	assert.equal(__testing.isStorageUnavailableError(new Error("no code")), false);
+	assert.equal(__testing.isStorageUnavailableError(null), false);
+});
+
+test("regenerateRegistry reports a typed unavailable result instead of throwing on EACCES", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eacces-"));
+	t.after(() => {
+		chmodSync(join(cwd, ".atl"), 0o755);
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	mkdirSync(join(cwd, "skills", "a"), { recursive: true });
+	writeFileSync(join(cwd, "skills", "a", "SKILL.md"), "---\nname: a\ndescription: A skill.\n---\nbody");
+	const first = await __testing.regenerateRegistry(cwd, true);
+	assert.equal(first.regenerated, true, "the happy path must succeed before the fault is injected");
+
+	// A write of an existing registry file succeeds regardless of the
+	// directory mode (the file owner owns the open), so the read-only case
+	// must remove the managed files first: the fresh-install scenario where
+	// storage is read-only and the write actually fails.
+	rmSync(join(cwd, ".atl", "skill-registry.md"), { force: true });
+	rmSync(join(cwd, ".atl", ".skill-registry.cache.json"), { force: true });
+	chmodSync(join(cwd, ".atl"), 0o555);
+	const result = await __testing.regenerateRegistry(cwd, true, true);
+	assert.equal(result.regenerated, false, "a permission failure must never report success");
+	assert.equal(result.reason, "storage-unavailable");
+	assert.match(result.warning ?? "", /\.atl[/\\]skill-registry\.md/);
+	assert.match(result.warning ?? "", /not writable/);
+	assert.match(result.warning ?? "", /\/skill-registry:refresh/);
+	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
+
+	chmodSync(join(cwd, ".atl"), 0o755);
+	const recovered = await __testing.regenerateRegistry(cwd, true, true);
+	assert.equal(recovered.regenerated, true, "the registry must regenerate once storage is writable again");
+});
+
+test("regenerateRegistry degrades truthfully when .atl is a regular file", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-enotdir-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	writeFileSync(join(cwd, ".atl"), "not a directory\n");
+	const result = await __testing.regenerateRegistry(cwd, true, true);
+	assert.equal(result.regenerated, false, "a non-directory .atl must never report success");
+	assert.equal(result.reason, "storage-unavailable");
+	assert.match(result.warning ?? "", /not writable/);
+});
+
+test("regenerateRegistry preserves the diagnostic for unexpected I/O errors", async (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eloop-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	symlinkSync(join(cwd, ".atl", "self"), join(cwd, ".atl"));
+	await assert.rejects(
+		__testing.regenerateRegistry(cwd, true, true),
+		/ELOOP/,
+		"unexpected I/O must keep its own diagnostic instead of a typed unavailable result",
+	);
 });

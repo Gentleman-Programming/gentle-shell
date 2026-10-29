@@ -19,6 +19,10 @@ The independent verifier runs only when the change touches a named Task Size hig
 
 When the change touches a Task Size high-risk item, whatever the native tier, pass `"escalate": {"item": <1-6>, "reason": "<one line>"}` in the same assess input: the plan adds the independent verifier only when `escalate` names a Task Size high-risk item; the tool raises the tier to high, keeps the native one as `nativeRisk`, returns `agentEscalation`, and never lowers a tier. Until the installed gentle-ai assess accepts it, the raise binds this verification plan only, not the native review tier.
 
+## Verifier preparation failure
+
+The verifier makes one isolated preparation attempt and reports a concrete blocker and exact unrun checks when a prerequisite cannot be prepared. On that failure, stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks; leave those checks unverified. Do not keep repairing helpers. Do not automatically relaunch the verifier for the same missing prerequisite. Distinguish setup or infrastructure failure from genuine code findings: genuine findings retain their existing correction allowance. Auxiliary tooling defects remain subject to the existing correction bound; setup failure does not reset it. Keep independent verification, isolation, permission boundaries, and human consent intact.
+
 ## Verification proportionality
 
 Before introducing or retaining an auxiliary gate, name the acceptance criterion, concrete threat, or authoritative contract it protects. Without that basis it must not become a delivery blocker. Do not build a framework for a bounded capability probe: use the existing command path and retain its observed result. Auxiliary tooling defects stay within the existing correction bound; they do not justify a new verification project or reset that bound.

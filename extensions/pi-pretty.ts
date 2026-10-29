@@ -1,4 +1,13 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	createBashToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { bundledGentlePiAgentHome } from "../lib/agent-home.ts";
 import { keepNativeWorkingRow, shellEnabled } from "../lib/shell-bar.ts";
 import {
 	mergeDisabledTools,
@@ -26,6 +35,28 @@ async function loadPiPrettyExtension(): Promise<PiPrettyExtension> {
 	);
 }
 
+// S9: pi-pretty keeps its FFF database under deps.sdk.getAgentDir(), falling
+// back to $HOME/.pi/agent whatever agent home Pi runs with. In a bundled
+// Gentle Shell it gets the agent home; a deps.sdk also replaces the host tool
+// factories it would otherwise import, so the same five come along. Elsewhere,
+// and for a host that already passes its own sdk, Pi's deps stay unchanged.
+function withAgentHome(deps: unknown, env: NodeJS.ProcessEnv): unknown {
+	const agentHome = bundledGentlePiAgentHome(env);
+	const given = (deps ?? {}) as { sdk?: unknown };
+	if (agentHome === undefined || given.sdk !== undefined) return deps;
+	return {
+		...given,
+		sdk: {
+			createReadToolDefinition,
+			createBashToolDefinition,
+			createLsToolDefinition,
+			createFindToolDefinition,
+			createGrepToolDefinition,
+			getAgentDir: () => agentHome,
+		},
+	};
+}
+
 export default async function gentlePiPrettyExtension(
 	pi: unknown,
 	deps?: unknown,
@@ -42,6 +73,7 @@ export default async function gentlePiPrettyExtension(
 		);
 	}
 	const extension = bundled ?? await loadPiPrettyExtension();
+	deps = withAgentHome(deps, env);
 	if (!shellEnabled(env)) return extension(pi, deps);
 	const api = pi as ExtensionAPI;
 	// Scope interception to this bundled dependency, never to the shared host UI.

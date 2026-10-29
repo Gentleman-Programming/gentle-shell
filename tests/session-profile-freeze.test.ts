@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, beforeEach } from "node:test";
 import { createProfile, emptyProfilesFile, profilesFilePath, setActiveProfile, writeProfilesFileSync } from "../lib/agent-profiles.ts";
-import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
+import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import {
@@ -118,6 +118,19 @@ test("resolveInheritedProfile falls to the global active profile in profiles.jso
 		origin: "global",
 		modelProfiles: LOCAL,
 	});
+});
+
+test("resolveInheritedProfile asks the default worktree resolver once when no resolver is passed", (t) => {
+	const f = fixture();
+	f.setActive("local");
+	let lookups = 0;
+	setProfilePinWorktreeResolverForTesting(() => { lookups++; return f.identity; });
+	t.after(() => setProfilePinWorktreeResolverForTesting());
+	assert.equal(resolveInheritedProfile({ cwd: f.cwd, configHome: f.configHome })?.name, "local");
+	assert.equal(lookups, 1, "the no-pin path reuses one worktree lookup");
+	f.pinLocal("frontier");
+	assert.equal(resolveInheritedProfile({ cwd: f.cwd, configHome: f.configHome })?.origin, "local");
+	assert.equal(lookups, 2);
 });
 
 test("resolveInheritedProfile returns undefined when no layer has a profile", () => {
@@ -269,17 +282,42 @@ test("drift notice: shown once per distinct change of the defaults", () => {
 	f.pinLocal("local");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 	f.pinLocal(undefined);
 	f.setActive("team");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined);
 	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "frontier", "the notice never adopts the new default");
+});
+
+test("drift notice: an explicit binding learns its profile definition changed in profiles.json", () => {
+	const f = fixture({ team: { worker: { model: "openai/old" } } });
+	const opts = options(f, "session-a");
+	bindSessionProfile("session-a", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "no drift while the definition matches the binding");
+
+	f.editProfile("team", { worker: { model: "openai/new" } });
+	const notice = inheritedProfileDriftNotice(opts);
+	assert.match(notice ?? "", /the profile definition changed to "team"/);
+	assert.match(notice ?? "", /this session keeps the binding from selection/);
+	assert.match(notice ?? "", /Open \/gentle:profiles and choose Use in this session to adopt one\.$/, "the notice names the current adoption action");
+	assert.doesNotMatch(notice ?? "", /Press Enter/, "the retired Enter instruction never comes back");
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
+
+	f.editProfile("team", { worker: { model: "openai/older" } });
+	assert.match(inheritedProfileDriftNotice(opts) ?? "", /the profile definition changed to "team"/, "a different edit is a distinct change");
+	assert.equal(inheritedProfileDriftNotice(opts), undefined);
+	f.editProfile("team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "reverting to the bound content is not drift");
+
+	const childOpts = options(f, "session-b", { GENTLE_PI_AGENTS_CHILD: "1" });
+	bindSessionProfile("session-b", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(childOpts), undefined, "children never get the notice");
 });
 
 test("drift notice: an edit of the default profile's content counts as a change", () => {
@@ -308,14 +346,14 @@ test("drift notice covers a session frozen without a profile and a default that 
 	f.pinLocal("frontier");
 	assert.equal(
 		inheritedProfileDriftNotice(none),
-		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	const kept = options(f, "session-kept");
 	freezeSessionProfileAtStartup(kept);
 	f.pinLocal(undefined);
 	assert.equal(
 		inheritedProfileDriftNotice(kept),
-		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 });
 

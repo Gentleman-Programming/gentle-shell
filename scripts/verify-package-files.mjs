@@ -18,6 +18,8 @@ export const installerPaths = Object.freeze([
   "scripts/main-channel.mjs",
   "scripts/installer-windows.mjs",
   "scripts/installer-windows-artifacts.json",
+  "scripts/bundled-wizard.mjs",
+  "scripts/bundled-install.mjs",
   "scripts/bootstrap.sh",
   "scripts/bootstrap.cmd",
   "assets/install-wizard/index.html",
@@ -48,9 +50,33 @@ export const requiredPaths = [
   "assets/sounds/LICENSE.md",
   "docs/sound-notifications.md",
   "docs/sound-notifications-proposal.md",
+  "extensions/gentle-voice.ts",
+  "lib/voice-artifacts.ts",
+  "lib/voice-command.ts",
+  "lib/voice-install.ts",
+  "lib/voice-platform.ts",
+  "lib/voice-session.ts",
+  "lib/voice-ui.ts",
+  // The dictation worker is spawned by path, never imported, so nothing else
+  // would notice it missing from the packed tarball.
+  "scripts/voice-worker.cjs",
+  "docs/voice.md",
+  "extensions/gentle-design.ts",
+  "lib/gentle-design.ts",
+  // The design canvas server reads its page and scripts from assets/ by path.
+  "lib/design-canvas-server.ts",
+  "lib/design-open-browser.ts",
+  "lib/design-comments.ts",
+  "lib/design-handoffs.ts",
+  "lib/design-sources.ts",
+  "assets/design-canvas/index.html",
+  "assets/design-canvas/canvas.js",
+  "assets/design-canvas/canvas.css",
+  "assets/design-canvas/inspector.js",
   "scripts/npm-pack-result.mjs",
   "assets/orchestrator.md",
   "assets/orchestrator-delegation.md",
+  "assets/orchestrator-delegation-reference.md",
   "assets/orchestrator-tracking.md",
   "assets/orchestrator-verification.md",
   "assets/orchestrator-writer.md",
@@ -79,11 +105,17 @@ export const requiredPaths = [
   "docs/review-integration.md",
   "extensions/gentle-ai.ts",
   "extensions/resume-hint.ts",
+  "extensions/session-scratch.ts",
   "extensions/skill-registry.ts",
   "lib/child-package-injection.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
+  "lib/gentle-shell-bundled.ts",
+  "lib/gentle-shell-startup-update.ts",
+  "lib/gentle-shell-update-panel.ts",
+  "lib/gentle-shell-startup-flow.ts",
   "lib/gentle-shell-resume-hint.ts",
+  "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
@@ -92,10 +124,17 @@ export const requiredPaths = [
   "lib/review-relay-contract.ts",
   "lib/agent-assets.ts",
   "lib/telemetry-trigger.ts",
+  "lib/session-scratch.ts",
 	"runtime/child-package-injection.mjs",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-bundled.mjs",
+	"runtime/gentle-shell-startup-update.mjs",
+	"runtime/gentle-shell-update-panel.mjs",
+	"runtime/gentle-shell-startup-flow.mjs",
 	"runtime/gentle-shell-resume-hint.mjs",
+	"runtime/gentle-shell-uninstall.mjs",
+	"runtime/gentle-shell-import-pi.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/status-timing-diagnostics.mjs",
 	"runtime/review-integration-v2.mjs",
@@ -120,23 +159,25 @@ export const requiredPaths = [
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/README.md",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/manifest.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/orchestration/pi.md",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/schemas/lens.schema.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/schemas/refuter.schema.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/schemas/targeted-validator.schema.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/vectors/lens.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/vectors/refuter.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/bundle/vectors/targeted-validator.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/generated/provider-capabilities.baseline.json",
-  "contracts/review-provider-contract-mirror/v1.3.0/generated/provider-roles.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/README.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/manifest.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/orchestration/pi.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/routing/pi.md",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/lens.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/refuter.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/schemas/targeted-validator.schema.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/lens.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/refuter.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/bundle/vectors/targeted-validator.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-capabilities.baseline.json",
+  "contracts/review-provider-contract-mirror/v1.4.0/generated/provider-roles.baseline.json",
   "prompts/skill-creation.md",
   "skills/_shared/review-ledger-contract.md",
   "skills/branch-pr/SKILL.md",
   "skills/chained-pr/SKILL.md",
   "skills/cognitive-doc-design/SKILL.md",
   "skills/comment-writer/SKILL.md",
+  "skills/design/SKILL.md",
   "skills/gentle-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
   "skills/judgment-day/SKILL.md",
@@ -384,7 +425,7 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.0.0 runtime's vendored Gentle AI contract artifacts:");
+    console.error("gentle-pi packaged review-integration/v1 and review-integration/v2 contract bytes drifted from the pinned v4.3.1 runtime's vendored Gentle AI contract artifacts:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
@@ -429,7 +470,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.0.0 runtime).`);
+  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} exact byte-pinned contract artifacts for the v4.3.1 runtime).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

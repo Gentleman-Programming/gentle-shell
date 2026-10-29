@@ -8,15 +8,15 @@ import {
 	PROMPT_STATE,
 	petalGlyph,
 	petalTone,
-	SHELL_PULSE_MS,
+	SHELL_PULSE_WATCHDOG_MS,
 	SHELL_SCANNER_STEPS,
 	withPromptHint,
 	type PromptFrameOptions,
 } from "../lib/shell-prompt.ts";
 
-test("scanner reflects a symmetric light wave across working text at Pi's original cadence", () => {
+test("scanner reflects a symmetric light wave across working text at the watchdog cadence", () => {
 	const fg = (role: string, char: string) => `<${role}>${char}</${role}>`;
-	assert.equal(SHELL_PULSE_MS, 80);
+	assert.equal(SHELL_PULSE_WATCHDOG_MS, 1000);
 	assert.equal(SHELL_SCANNER_STEPS, 15);
 	for (const word of ["working…", "Thinking…"]) {
 		for (let tick = 0; tick < SHELL_SCANNER_STEPS; tick++) {

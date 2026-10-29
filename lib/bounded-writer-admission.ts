@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, parse, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:path";
+import { contextBackstopReached, type MeasuredContext } from "./context-backstop.ts";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 
 const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
@@ -79,6 +80,56 @@ export function rejectUnscopedBoundedWriterDispatch(input: unknown): { block: tr
 	return { block: true, reason: `${WRITER_EDIT_SURFACE_REJECTION} ${parsed.problem} Resend the same task text unchanged except for that section; never shorten or re-summarize it.` };
 }
 
+// Pain-point iteration S16: prompt rules alone did not stop small-task delegation (a two-feature request still
+// started two writers for ~35-line units). A generic writer launch is admitted only for a task of an existing ODD
+// feature document, or when the parent's measured context reaches the context backstop (the same threshold as the
+// runtime notice, lib/context-backstop.ts). Judgment Day fix agents and continuations keep their own protocols.
+// A line that starts with `Spec:` (optionally as a list item), names an odd/tasks document, and names a task
+// `T<n>` later on the same line: covers the canon (`, T2, S3-S4`), the delegation card (`(read until "## Log").
+// Do T2; S3.`), and comma-free forms (`.md T1 S1;`). A mention inside prose does not start the line.
+const FEATURE_DOCUMENT_TASK = /^[ \t]*(?:[-*+][ \t]+)?Spec:[ \t]*`?(odd\/tasks\/[^\s,`()]+\.md)`?[^\n]*?\bT\d+\b/gm;
+export const WRITER_FEATURE_DOCUMENT_REJECTION =
+	"Writers run only for a task of an existing ODD feature document (`Spec: odd/tasks/<feature>.md, T<n>` in the task) or when your measured context reaches the context backstop. This unit has neither: write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers.";
+
+function featureDocumentExists(root: string, relativePath: string): boolean {
+	// Resolve symlinks on both sides so a document linked from outside the root, or an odd/tasks directory linked
+	// elsewhere, never admits a writer; the document must be a regular file under <root>/odd/tasks.
+	try {
+		const realRoot = realpathSync(resolve(root));
+		const tasksDir = realpathSync(resolve(realRoot, "odd", "tasks"));
+		const target = realpathSync(resolve(realRoot, relativePath));
+		const inTasks = relative(tasksDir, target);
+		if (relative(realRoot, tasksDir).startsWith("..") || !inTasks || inTasks.startsWith("..") || isAbsolute(inTasks)) return false;
+		return statSync(target).isFile();
+	} catch {
+		return false;
+	}
+}
+
+// True when a string value has a `Spec:` task line naming an existing feature document under `root`. Shared by
+// writer and verifier admission so both accept exactly the same task lines.
+export function namesExistingFeatureDocumentTask(values: readonly unknown[], root: string): boolean {
+	for (const value of values) {
+		if (typeof value !== "string") continue;
+		for (const match of value.matchAll(FEATURE_DOCUMENT_TASK)) {
+			if (featureDocumentExists(root, match[1])) return true;
+		}
+	}
+	return false;
+}
+
+export function rejectUndocumentedWriterLaunch(
+	input: unknown,
+	options: { root: string; contextUsage: MeasuredContext | undefined; env?: Readonly<Record<string, string | undefined>> },
+): { block: true; reason: string } | undefined {
+	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+	const record = input as Record<string, unknown>;
+	if (typeof record.agent !== "string" || !isGenericBoundedWriter(record.agent)) return undefined;
+	if (namesExistingFeatureDocumentTask([record.task, record.context], options.root)) return undefined;
+	if (contextBackstopReached(options.contextUsage, options.env)) return undefined;
+	return { block: true, reason: WRITER_FEATURE_DOCUMENT_REJECTION };
+}
+
 // A continuation resumes the same delegated task, so a writer follow-up that
 // carries no section of its own inherits the surfaces its original launch was
 // admitted with. A follow-up that carries the heading is validated as written,
@@ -114,11 +165,37 @@ export function isDevelopmentSurface(path: string): boolean {
 	return /\.(?:[cm]?[jt]sx?|go|rs|py|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|vue|svelte|html|css|scss|sass|sql|sh)$/i.test(normalized) || /^(?:src|lib|tests?|app|packages)\/(?:[^\s]+\/)*\*\*?(?:\/\*)?$/.test(normalized);
 }
 
-export function safeBootstrapDirectory(path: string): string | undefined {
+// Broad folders a user opens by accident. A repository there (or in HOME, or
+// above it) makes every Git call scan the user's whole tree.
+const BROAD_HOME_FOLDER = /^(?:documents|desktop|downloads|onedrive(?: - .+)?)$/i;
+const BROAD_ONEDRIVE_FOLDER = /^(?:documents|desktop)$/i;
+
+export interface BootstrapDirectoryOptions {
+	/** Defaults to the canonical home directory. */
+	readonly home?: string;
+	/** Defaults to `process.platform`; Windows paths compare case-insensitively. */
+	readonly platform?: NodeJS.Platform;
+}
+
+/** True when `path` is HOME, an ancestor of it, or a broad folder directly under it. */
+export function isHomeOrBroadUserDirectory(path: string, options: BootstrapDirectoryOptions = {}): boolean {
+	const platform = options.platform ?? process.platform;
+	const fold = (value: string) => platform === "win32" ? value.toLowerCase() : value;
+	let home: string;
+	try { home = options.home ?? realpathSync.native(homedir()); } catch { return true; }
+	const target = fold(path), canonicalHome = fold(home);
+	const towardHome = relative(target, canonicalHome);
+	if (towardHome === "" || (!isAbsolute(towardHome) && towardHome !== ".." && !towardHome.startsWith("..\\") && !towardHome.startsWith("../"))) return true;
+	const parent = dirname(target);
+	if (parent === canonicalHome) return BROAD_HOME_FOLDER.test(basename(path));
+	return dirname(parent) === canonicalHome && /^onedrive(?: - .+)?$/i.test(basename(parent)) && BROAD_ONEDRIVE_FOLDER.test(basename(path));
+}
+
+export function safeBootstrapDirectory(path: string, options: BootstrapDirectoryOptions = {}): string | undefined {
 	try {
 		if (!isAbsolute(path)) return undefined;
 		const root = realpathSync(path);
-		if (!statSync(root).isDirectory() || root === parse(root).root || root === realpathSync(homedir())) return undefined;
+		if (!statSync(root).isDirectory() || root === parse(root).root || isHomeOrBroadUserDirectory(realpathSync.native(root), options)) return undefined;
 		if (/(^|[\\/])(?:\.ssh|\.credentials|\.aws|\.gnupg|\.config|secrets|credentials|tokens|keychains)(?:[\\/]|$)|(?:^|[\\/])\.env(?:$|[./_-])/i.test(root)) return undefined;
 		return root;
 	} catch { return undefined; }

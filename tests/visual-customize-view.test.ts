@@ -118,7 +118,7 @@ test("profile name submission never accepts a hidden field at heights 3–5, inc
 
 test("profile preview and cancel never apply; keyboard name and confirmations require deliberate input", async () => {
  const events: string[] = [];
- const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+ const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
  const view = new VisualCustomizeView({ rows: [], theme, requestRender: () => {}, onClose: () => {}, profiles: {
   list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
  } });
@@ -127,6 +127,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
  assert.match(view.render(100).join("\n"), /potato.*cyan/);
  assert.match(view.render(100).join("\n"), /hidden.*below-input.*compact/);
  assert.match(view.render(100).join("\n"), /changes:off.*rdd:off.*agents:on.*todo:off.*usageCost:on.*modelDetails:off/);
+ assert.match(view.render(120).join("\n"), /changes:off.*rdd:off.*agents:on.*todo:off.*usageCost:on.*modelDetails:off.*contextWarning:off/);
  view.handleInput("a"); view.handleInput("\x1b");
  assert.deepEqual(events, []);
  view.handleInput("p"); view.handleInput("s"); view.handleInput("New"); view.handleInput("\x7f"); view.handleInput("w\r");
@@ -146,7 +147,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
 
 test("profile confirmation stays visible at six rows for every destructive or applying action", async () => {
 	const events: string[] = [];
-	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
 	} });
@@ -164,7 +165,7 @@ test("profile confirmation stays visible at six rows for every destructive or ap
 
 test("profile confirmation captures selected name across catalog mutation and cancels vanished targets", async () => {
 	const events: string[] = [];
-	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	let catalog = [{ ...base, name: "Desk" }, { ...base, name: "Mobile" }];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => catalog, save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
@@ -189,7 +190,7 @@ test("profile confirmation captures selected name across catalog mutation and ca
 test("unrendered or clipped confirmations cannot be accepted", () => {
 	const events: string[] = [];
 	let height = 6;
-	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } } };
+	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [base], save: () => {}, apply: () => {}, delete: () => { events.push("delete"); }, reset: () => { events.push("reset"); },
 	} });
@@ -203,7 +204,7 @@ test("unrendered or clipped confirmations cannot be accepted", () => {
 
 test("profile confirmations cannot execute after an unrendered resize hides full identity and yes", () => {
 	const name = "A".repeat(64);
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	for (const [key, action] of [["a", "apply"], ["d", "delete"], ["r", "replace"], ["z", "reset"]] as const) {
 		for (const width of [100, 36]) for (const shortHeight of [1, 2]) {
 			let height = 12;
@@ -225,7 +226,7 @@ test("profile confirmations cannot execute after an unrendered resize hides full
 });
 
 test("profile confirmation refuses a changed target identity without another render", () => {
-	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } }];
+	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } }];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {}, profiles: { list: () => catalog, save: () => {}, apply: name => { effects.push(name); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p"); view.handleInput("a");
@@ -262,7 +263,7 @@ test("main controls require a visible selected row at the last rendered width an
 });
 
 test("profile confirmation refuses same-name content drift for apply, replace and delete", () => {
-	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	for (const key of ["a", "r", "d"]) {
 		let catalog = [original];
 		const effects: string[] = [];
@@ -312,7 +313,7 @@ test("category panel renders bounded wide and narrow frames with independent nav
 test("long profile confirmation displays complete identity and yes instruction before accepting", async () => {
 	const name = "A".repeat(64);
 	const events: string[] = [];
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
 	let height = 8;
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [profile], save: () => {}, apply: value => { events.push(value); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p");
@@ -489,6 +490,87 @@ test("inline field submits a visible value and drops invisible resizes without w
 	hidden.handleInput("\r");
 	await tick();
 	assert.deepEqual(submitted, ["/local/a.wav"], "an Enter that cannot see the field must not submit");
+});
+
+test("inline audio paths wrap fully at 80 columns and submit their exact value", async () => {
+	const prompt = "Local audio path (WAV/OGG/FLAC, absolute, no URLs)";
+	for (const length of [23, 24, 103, 175]) {
+		const value = `C:/${"a".repeat(length - 7)}.wav`;
+		assert.equal(value.length, length);
+		const submitted: string[] = [];
+		const view = inlineView(async inline => {
+			const result = await inline.input({ prompt, value: "" });
+			if (result !== undefined) submitted.push(result);
+		});
+		view.render(80); view.handleInput("\r"); await tick();
+		view.handleInput(`\x1b[200~${value}\x1b[201~`);
+		const frame = view.render(80);
+		const content = frame.map(line => line.slice(2, -2).trimEnd()).join("");
+		assert.ok(content.includes(`${prompt}: ${value}▏`), "every input character and cursor must be visible in order");
+		assert.ok(frame.length <= 12);
+		assert.ok(frame.every(line => visibleWidth(line) === 80));
+		assert.doesNotMatch(frame.join("\n"), /Value too wide|Needs \d+ columns/);
+		assert.deepEqual(submitted, [], "rendering must not submit");
+		view.handleInput("\r"); await tick();
+		assert.deepEqual(submitted, [value]);
+	}
+});
+
+test("inline overflow reports sufficient room, rejects Enter and remains editable", async () => {
+	const submitted: string[] = [];
+	const value = "a".repeat(222); // Path: + cursor makes 229 cells; three 76-cell lines hold 228.
+	const view = inlineView(async inline => {
+		const result = await inline.input({ prompt: "Path", value });
+		if (result !== undefined) submitted.push(result);
+	});
+	view.render(80); view.handleInput("\r"); await tick();
+	const frame = view.render(80);
+	assert.match(frame.join("\n"), /Needs 233 columns for one line · Esc cancel/);
+	assert.ok(frame.every(line => visibleWidth(line) === 80));
+	assert.ok(frame.length <= 12);
+	view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, []);
+	view.handleInput("\x7f");
+	view.render(80); view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [value.slice(0, -1)]);
+});
+
+test("wrapped inline values refuse a height shrink before Enter and submit after recovery", async () => {
+	let height = 12;
+	const submitted: string[] = [];
+	const value = "x".repeat(100);
+	const view = inlineView(async inline => {
+		const result = await inline.input({ prompt: "Path", value });
+		if (result !== undefined) submitted.push(result);
+	}, { rowsAvailable: () => height });
+	view.render(80); view.handleInput("\r"); await tick();
+	view.render(80);
+	height = 8;
+	view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [], "Enter must recheck live height, not the previous three-line render");
+	const shortFrame = view.render(80);
+	assert.ok(shortFrame.length <= 8);
+	assert.match(shortFrame.join("\n"), /Needs 111 columns for one line/);
+	height = 12;
+	view.render(80); view.handleInput("\r"); await tick();
+	assert.deepEqual(submitted, [value]);
+});
+
+test("inline wrapping keeps wide graphemes intact and single-line submission unchanged", async () => {
+	for (const value of ["/local/a.wav", "界👩‍💻e\u0301".repeat(16)]) {
+		const submitted: string[] = [];
+		const view = inlineView(async inline => {
+			const result = await inline.input({ prompt: "Path", value });
+			if (result !== undefined) submitted.push(result);
+		});
+		view.render(80); view.handleInput("\r"); await tick();
+		const frame = view.render(80);
+		assert.ok(frame.every(line => visibleWidth(line) === 80));
+		const content = frame.map(line => line.slice(2, -2).trimEnd()).join("");
+		assert.ok(content.includes(`Path: ${value}▏`));
+		view.handleInput("\r"); await tick();
+		assert.deepEqual(submitted, [value]);
+	}
 });
 
 test("inline confirmation accepts only a fully visible yes and resolves false otherwise", async () => {

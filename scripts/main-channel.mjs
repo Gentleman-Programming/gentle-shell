@@ -4,39 +4,44 @@
 // an exact commit SHA resolved at install or upgrade time:
 //   - Gentle AI: `go install <module>@<sha>` in a sealed Go environment, so the
 //     module source is verified by Go's checksum database (sum.golang.org), as
-//     the Windows release build already is. The binary must report a version
-//     naming that commit, then it is activated through the existing dev-binary
-//     override, which never falls back to the pinned binary silently.
+//     the Windows release build already is. Go must resolve the commit to a
+//     module version (a tag or a pseudo-version) whose origin is that commit,
+//     and the binary must embed that version and report it, then it is
+//     activated through the existing dev-binary override, which never falls
+//     back to the pinned binary silently.
 //   - Gentle Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
 //     test suite), then installed globally like any local tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
-import { pnpmGlobalBin } from "./installer-preflight.mjs";
+import { acquireGo as acquirePinnedGo, installedGo } from "./installer-downloads.mjs";
+import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
+export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
 export const GENTLE_AI_MAIN_PACKAGE = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
 export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 
 const SHA = /^[0-9a-f]{40}$/;
 const MINUTE = 60_000;
-const deadlines = Object.freeze({ build: 15 * MINUTE, version: 30_000, extract: 2 * MINUTE, pack: 5 * MINUTE });
+const deadlines = Object.freeze({ build: 15 * MINUTE, resolve: 2 * MINUTE, version: 30_000, extract: 2 * MINUTE, pack: 5 * MINUTE });
 const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
 
 export class MainChannelError extends Error {
-	constructor(code, message) {
-		super(`${code}: ${message}`);
+	constructor(code, message, cause) {
+		super(`${code}: ${message}`, cause === undefined ? undefined : { cause });
 		this.name = "MainChannelError";
 		this.code = code;
 	}
 }
 
-/** Same config home as the dev-binary override: GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai. */
+/** Same config home as the dev-binary override: a nonempty GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai.
+ * Install-level state, so never the standalone launcher's per-home marker (#2201). */
 export function configHome({ env, home }) {
-	return env.GENTLE_PI_CONFIG_HOME ?? join(home, ".pi", "gentle-ai");
+	return env.GENTLE_PI_CONFIG_HOME || join(home, ".pi", "gentle-ai");
 }
 export function channelStatePath(ctx) {
 	return join(configHome(ctx), "channel.json");
@@ -100,6 +105,18 @@ function succeeded(result) {
 	return result?.code === 0 && result.timedOut !== true && result.signal == null;
 }
 
+/** The failed command's bounded stderr tail as an error cause, or undefined when it printed nothing. */
+function stderrCause(result) {
+	const tail = typeof result?.stderrTail === "string" ? result.stderrTail.trim() : "";
+	return tail.length > 0 ? new Error(tail) : undefined;
+}
+
+/** On Windows, System32's bsdtar by absolute path: an MSYS tar earlier on PATH (Git for
+ * Windows' usr\bin) reads a drive-letter archive path such as `D:\...` as a remote host. */
+function tarCommand(platform) {
+	return platform === "win32" ? win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
+}
+
 function sealedGoEnvironment(goPath, buildDirectory, platform) {
 	const temporary = join(buildDirectory, "tmp");
 	const base = {
@@ -122,23 +139,57 @@ export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs
 	const executable = platform === "win32" ? "gentle-ai.exe" : "gentle-ai";
 	const directory = join(configHome(ctx), "main", "gentle-ai", commit);
 	const buildDirectory = join(configHome(ctx), "main", ".build");
+	// Verified in the work folder before it replaces anything, so a failed rebuild of
+	// an already registered commit never touches the override; the final move stays
+	// on one filesystem, and uninstall already accepts a leftover .build.
+	const staging = join(buildDirectory, commit);
 	await fs.rm(buildDirectory, { recursive: true, force: true });
 	const env = sealedGoEnvironment(goPath, buildDirectory, platform);
 	for (const path of [env.GOBIN, env.GOPATH, env.GOMODCACHE, env.GOCACHE, join(buildDirectory, "tmp")]) await fs.mkdir(path, { recursive: true });
 	try {
-		const install = await run(goPath, ["install", `${GENTLE_AI_MAIN_PACKAGE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.build });
-		if (!succeeded(install)) throw new MainChannelError("main-gentle-ai-build-failed", `go install ${GENTLE_AI_MAIN_PACKAGE}@${commit} failed`);
+		const install = await run(goPath, ["install", `${GENTLE_AI_MAIN_PACKAGE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.build, stderrTail: 4096 });
+		if (!succeeded(install)) throw new MainChannelError("main-gentle-ai-build-failed", `go install ${GENTLE_AI_MAIN_PACKAGE}@${commit} failed`, stderrCause(install));
+		await fs.mkdir(staging, { recursive: true });
+		const stagedPath = join(staging, executable);
+		await fs.copyFile(join(env.GOBIN, executable), stagedPath);
+		if (platform !== "win32") await fs.chmod(stagedPath, 0o755);
+		const reject = async (message, cause) => {
+			throw new MainChannelError("main-gentle-ai-unverified", message, cause);
+		};
+		const short = commit.slice(0, 12);
+		const goOptions = { env, cwd: buildDirectory, deadlineMs: deadlines.version, stderrTail: 4096 };
+		// Go resolves the commit through the proxy and checksum database: a tag commit is
+		// stamped with its tag, any other with a pseudo-version, so the version is not guessed.
+		// Resolving may reach the proxy, so it gets a network deadline, not the local one.
+		const listed = await run(goPath, ["list", "-m", "-json", `${GENTLE_AI_MODULE}@${commit}`], { ...goOptions, deadlineMs: deadlines.resolve });
+		if (!succeeded(listed)) return await reject(`Go could not resolve Gentle AI commit ${short}`, stderrCause(listed));
+		let resolved = null;
+		try {
+			resolved = JSON.parse(String(listed.stdout ?? ""));
+		} catch {
+			return await reject(`Go returned unreadable module information for Gentle AI commit ${short}`);
+		}
+		const resolvedVersion = typeof resolved?.Version === "string" ? resolved.Version : "";
+		const originHash = resolved?.Origin?.Hash;
+		if (resolvedVersion === "") return await reject(`Go resolved Gentle AI commit ${short} to no module version`);
+		if (originHash !== commit) {
+			return await reject(`Go resolved Gentle AI commit ${short} to ${originHash ? `commit ${originHash}` : "no commit"}, not the requested commit`);
+		}
+		const embedded = await run(goPath, ["version", "-m", stagedPath], goOptions);
+		if (!succeeded(embedded)) return await reject("the built Gentle AI's embedded module version could not be read", stderrCause(embedded));
+		const modLine = String(embedded.stdout ?? "").split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find((fields) => fields[0] === "mod" && fields[1] === GENTLE_AI_MODULE);
+		if (modLine?.[2] !== resolvedVersion) {
+			return await reject(`the built Gentle AI embeds module version ${modLine?.[2] ?? "none"}, expected ${resolvedVersion} for commit ${short}`);
+		}
+		const probe = await run(stagedPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
+		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
+		const expectedVersion = resolvedVersion.replace(/^v/, "");
+		if (!match || match[1] !== expectedVersion) {
+			return await reject(`the built Gentle AI reports version ${match ? match[1] : "none"}, expected ${expectedVersion} for commit ${short}`);
+		}
 		await fs.mkdir(directory, { recursive: true });
 		const binaryPath = join(directory, executable);
-		await fs.copyFile(join(env.GOBIN, executable), binaryPath);
-		if (platform !== "win32") await fs.chmod(binaryPath, 0o755);
-		// Go stamps the module pseudo-version, whose suffix is the commit's first 12 characters.
-		const probe = await run(binaryPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
-		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
-		if (!match || !match[1].endsWith(`-${commit.slice(0, 12)}`)) {
-			await fs.rm(directory, { recursive: true, force: true });
-			throw new MainChannelError("main-gentle-ai-unverified", `the built Gentle AI does not report commit ${commit.slice(0, 12)}`);
-		}
+		await fs.rename(stagedPath, binaryPath);
 		registerGentleAiDevBinary(binaryPath, ctx, platform);
 		return { binaryPath, version: match[1] };
 	} finally {
@@ -147,7 +198,7 @@ export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs
 }
 
 /** Packs Gentle Shell from `commit` as `<version>-main.<sha12>` without running `prepack`. */
-export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs }) {
+export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platform = process.platform }) {
 	if (!SHA.test(commit)) throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell commit is not an exact SHA");
 	const packages = join(configHome(ctx), "main", "packages");
 	const work = join(configHome(ctx), "main", ".source");
@@ -168,8 +219,9 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs }) {
 		const archive = join(work, "source.tgz");
 		await fs.writeFile(archive, bytes);
 		const source = join(work, "src");
-		if (!succeeded(await run("tar", ["-xzf", archive, "-C", source, "--strip-components=1"], { deadlineMs: deadlines.extract }))) {
-			throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell source archive could not be extracted");
+		const extract = await run(tarCommand(platform), ["-xzf", archive, "-C", source, "--strip-components=1"], { deadlineMs: deadlines.extract, stderrTail: 4096 });
+		if (!succeeded(extract)) {
+			throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell source archive could not be extracted", stderrCause(extract));
 		}
 		const manifestPath = join(source, "package.json");
 		const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
@@ -199,7 +251,7 @@ export function mainChannelAdapter({ fetch = globalThis.fetch, fs }) {
 	return {
 		resolveCommit: (repository) => resolveMainCommit(repository, { fetch }),
 		buildGentleAi: ({ commit, goPath, platform, ctx, run }) => buildMainGentleAi({ commit, ctx, platform, goPath, run, fs }),
-		packShell: ({ commit, ctx, run, pnpm }) => packMainShell({ commit, ctx, fetch, run, pnpm, fs }),
+		packShell: ({ commit, ctx, run, pnpm, platform }) => packMainShell({ commit, ctx, fetch, run, pnpm, fs, platform }),
 		writeChannel: (ctx, state) => writeChannel(ctx, state, fs),
 	};
 }
@@ -235,7 +287,8 @@ function inside(parent, child) {
 	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
-async function latestRelease(fetch) {
+/** The latest stable gentle-pi release on the npm registry. */
+export async function latestRelease(fetch) {
 	let version = null;
 	try {
 		const response = await fetch("https://registry.npmjs.org/gentle-pi/latest", { headers: { Accept: "application/json" } });
@@ -250,48 +303,89 @@ async function latestRelease(fetch) {
 }
 
 /**
- * Which package manager owns an installed gentle-pi, from real (symlink-free) paths:
- * pnpm when it lives under PNPM_HOME, npm only when it is `<npm root -g>/gentle-pi`
- * itself, otherwise null — for example an `npm link` of a source checkout, which
- * must never be reinstalled over.
+ * Which package manager owns an installed package (gentle-pi unless `name` says
+ * otherwise), from real (symlink-free) paths: pnpm when it lives under PNPM_HOME,
+ * npm only when it is `<npm root -g>/<name>` itself, otherwise null — for example
+ * an `npm link` of a source checkout, which must never be reinstalled over.
+ * Paths follow `platform` (this host by default): case-insensitive on Windows.
  */
-export function installOwner({ packageRoot, pnpmHome, npmRoot }) {
+export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi", platform = process.platform }) {
+	const path = platform === "win32" ? win32 : posix;
+	const comparable = (value) => (platform === "win32" ? value.toLowerCase() : value);
 	if (typeof packageRoot !== "string") return null;
-	if (typeof pnpmHome === "string" && inside(pnpmHome, packageRoot)) return "pnpm";
-	if (typeof npmRoot === "string" && relative(npmRoot, packageRoot) === "gentle-pi") return "npm";
+	if (typeof pnpmHome === "string") {
+		const rest = path.relative(pnpmHome, packageRoot);
+		if (rest !== "" && !rest.startsWith("..") && !path.isAbsolute(rest)) return "pnpm";
+	}
+	if (typeof npmRoot === "string" && comparable(path.relative(npmRoot, packageRoot)) === comparable(path.normalize(name))) return "npm";
 	return null;
+}
+
+/** How a package manager runs, as { command, prefix }: what the host's
+ * `invocation(name)` adapter returns when it has one (on Windows, node.exe and
+ * the manager's JS entry, or a native .exe), otherwise the command `which` finds,
+ * with no prefix. A Windows .cmd or .bat cannot run with shell:false, so it
+ * counts as missing. Null when it is missing.
+ */
+async function invocationOf(name, { which, invocation }, platform) {
+	const found = invocation ? await invocation(name) : await which(name).then((command) => (command ? { command, prefix: [] } : null));
+	if (!found || (platform === "win32" && /\.(?:cmd|bat)$/i.test(found.command))) return null;
+	return found;
 }
 
 async function npmGlobalRoot(npm, run, fs) {
 	if (!npm) return null;
-	const result = await run(npm, ["root", "-g"], { deadlineMs: deadlines.version });
+	const result = await run(npm.command, [...npm.prefix, "root", "-g"], { deadlineMs: deadlines.version });
 	const reported = succeeded(result) ? String(result.stdout ?? "").trim().split(/\r?\n/).at(-1) : "";
 	return isAbsolute(reported) ? fs.realpath(reported).catch(() => null) : null;
 }
 
-/** The package manager that owns this installation, or a typed refusal. */
-async function ownerManager({ ctx, platform, packageRoot, fs, which, run }) {
+const OWNER_ADVICE = Object.freeze({ upgrade: "update it the way you installed it", uninstall: "remove it the way you installed it" });
+
+/**
+ * The package manager that owns this installation, as { name, command, prefix },
+ * or a typed refusal whose code names the `command` that asked (`upgrade` or
+ * `uninstall`). adapters: { fs, run, which, invocation? }, as runUpgrade takes them.
+ */
+export async function ownerManager({ ctx, platform, packageRoot, adapters, command: purpose = "upgrade" }) {
+	const { fs, run } = adapters;
 	const bin = pnpmGlobalBin({ platform, env: { HOME: ctx.home, ...ctx.env } });
-	const npm = await which("npm");
+	const npm = await invocationOf("npm", adapters, platform);
 	const [pnpmHome, root, npmRoot] = await Promise.all([
 		bin ? fs.realpath(bin.pnpmHome).catch(() => null) : null,
 		fs.realpath(packageRoot).catch(() => null),
 		npmGlobalRoot(npm, run, fs),
 	]);
-	const name = installOwner({ packageRoot: root, pnpmHome, npmRoot });
+	const name = installOwner({ packageRoot: root, pnpmHome, npmRoot, platform });
 	if (!name) {
-		throw new MainChannelError("upgrade-owner-unknown", `neither pnpm nor npm owns ${root ?? packageRoot} (a linked source checkout, for example); update it the way you installed it`);
+		throw new MainChannelError(`${purpose}-owner-unknown`, `neither pnpm nor npm owns ${root ?? packageRoot} (a linked source checkout, for example); ${OWNER_ADVICE[purpose]}`);
 	}
-	const command = name === "npm" ? npm : await which("pnpm");
-	if (!command) throw new MainChannelError("upgrade-manager-missing", `${name}, which owns this Gentle Shell installation, is not on PATH`);
-	return { name, command };
+	const manager = name === "npm" ? npm : await invocationOf("pnpm", adapters, platform);
+	if (!manager) {
+		throw new MainChannelError(`${purpose}-manager-missing`, `${name}, which owns this Gentle Shell installation, is not on PATH as a command this ${purpose} can run`);
+	}
+	return { name, ...manager };
 }
 
 async function installGlobal(manager, spec, run) {
 	const argv = manager.name === "pnpm" ? ["add", "-g", spec, "--allow-build=gentle-pi"] : ["install", "-g", spec];
-	if (!succeeded(await run(manager.command, argv, { deadlineMs: INSTALL_DEADLINE }))) {
+	if (!succeeded(await run(manager.command, [...manager.prefix, ...argv], { deadlineMs: INSTALL_DEADLINE }))) {
 		throw new MainChannelError("upgrade-install-failed", `${manager.name} could not install ${spec}`);
 	}
+}
+
+const REMOVE_GLOBAL = Object.freeze({ pnpm: Object.freeze(["remove", "-g", "gentle-pi"]), npm: Object.freeze(["uninstall", "-g", "gentle-pi"]) });
+
+/** The command that removes the global gentle-pi with `name` (pnpm or npm), as a user types it. */
+export function removeGlobalCommand(name) {
+	return `${name} ${REMOVE_GLOBAL[name].join(" ")}`;
+}
+
+/** Removes the global gentle-pi with the manager ownerManager resolved (its
+ * verified invocation); true when it succeeded. Nothing else is removed.
+ */
+export async function removeGlobalShell(manager, run) {
+	return succeeded(await run(manager.command, [...manager.prefix, ...REMOVE_GLOBAL[manager.name]], { deadlineMs: INSTALL_DEADLINE }));
 }
 
 /** Removes the dev-binary override only when it points at a main build this module made. */
@@ -306,33 +400,89 @@ async function removeMainOverride(ctx, fs) {
 	}
 }
 
+/** The Go a main build runs: the user's, only when it reports a stable version
+ * that meets requirements.go; otherwise the pinned Go the installer published
+ * under the config home (`tools/go`), downloaded and verified there by
+ * `acquire` when it is not published yet. A missing, older or unchecked Go is
+ * never run for the build, and the user's Go is never changed.
+ */
+async function mainGo({ userGo, pinnedGo, acquire, run }) {
+	if (userGo) {
+		const result = await run(userGo, ["version"], { deadlineMs: deadlines.version });
+		const match = succeeded(result) && /^go version go(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))? \S+$/.exec(String(result.stdout ?? "").trim());
+		if (match && !older(`${match[1]}.${match[2]}.${match[3] ?? "0"}`, requirements.go)) return userGo;
+	}
+	if (pinnedGo) return pinnedGo;
+	try {
+		const { goPath } = await acquire();
+		return goPath;
+	} catch (error) {
+		// acquireGo wraps every failure; its cause names what went wrong (download, checksum, destination).
+		const reason = [error, error?.cause].filter((item) => item instanceof Error).map((item) => item.message).join(": ") || String(error);
+		throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, and getting the pinned ` +
+			`Go ${goAcquisition.version} failed (${reason}); nothing was built, fix the cause, then run gentle-shell upgrade again`);
+	}
+}
+
+/** A thrown value's message when it has one (an Error or not), otherwise the value as text. */
+function describe(error) {
+	return typeof error?.message === "string" ? error.message : String(error);
+}
+
+/** `error` with `detail` appended to its message, keeping its code and cause; any
+ * other error becomes `main-upgrade-incomplete` with its message and itself as cause. */
+function withDetail(error, detail) {
+	if (!(error instanceof MainChannelError)) {
+		return new MainChannelError("main-upgrade-incomplete", `${describe(error)}; ${detail}`, error);
+	}
+	const message = error.message.slice(`${error.code}: `.length);
+	return new MainChannelError(error.code, `${message}; ${detail}`, error.cause);
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
  * Gentle Shell and Gentle AI, rebuilding only what moved. Returns the exit code;
  * failures throw MainChannelError (`upgrade-usage` is a usage error).
+ * adapters: { fetch, run, fs, which, invocation?, migrate? }; npm and pnpm run as
+ * invocationOf resolves them (Windows hosts pass `invocation`). On release,
+ * `migrate({ latest, owner })` (S4) may move this installation to the bundled
+ * one first: null (no migration, or one that failed and left this package
+ * untouched) keeps the path below for this run, otherwise { code, installed }.
+ * `owner` is called only when a migration can happen.
  */
-export async function runUpgrade({ args, ctx, platform, packageRoot, currentVersion, adapters, out }) {
+export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
 	const { fetch, run, fs, which } = adapters;
 	const requested = parseUpgradeArgs(args);
 	const state = await readChannel(ctx, fs);
 	const channel = requested ?? state.channel;
 	if (channel === "release") {
 		const latest = await latestRelease(fetch);
+		const migrated = adapters.migrate ? await adapters.migrate({ latest, owner: () => ownerManager({ ctx, platform, packageRoot, adapters }) }) : null;
+		if (migrated) {
+			// The old package may stay: it follows the release channel, without a main override.
+			if (migrated.installed) {
+				await removeMainOverride(ctx, fs);
+				await writeChannel(ctx, { channel: "release" }, fs);
+			}
+			return migrated.code;
+		}
 		if (state.channel === "release" && !older(currentVersion, latest)) {
 			out(`gentle-shell ${currentVersion} is already the latest release.`);
 			return 0;
 		}
-		await installGlobal(await ownerManager({ ctx, platform, packageRoot, fs, which, run }), `gentle-pi@${latest}`, run);
+		await installGlobal(await ownerManager({ ctx, platform, packageRoot, adapters }), `gentle-pi@${latest}`, run);
 		await removeMainOverride(ctx, fs);
 		await writeChannel(ctx, { channel: "release" }, fs);
 		out(`Updated gentle-shell ${currentVersion} to ${latest} (release).`);
 		return 0;
 	}
-	const [goPath, pnpmPath] = [await which("go"), await which("pnpm")];
-	if (!goPath || !pnpmPath) {
-		throw new MainChannelError("main-requires-tools", "the main channel builds Gentle AI with Go and packs Gentle Shell with pnpm; put both on PATH");
+	const [userGo, pnpm] = [await which("go"), await invocationOf("pnpm", adapters, platform)];
+	const pinnedGo = installedGo(join(configHome(ctx), "tools", "go"), platform, arch);
+	if (!pnpm) {
+		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
+	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
 	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
 	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
 	const onMain = state.channel === "main";
@@ -343,11 +493,33 @@ export async function runUpgrade({ args, ctx, platform, packageRoot, currentVers
 		out(`gentle-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	if (!aiCurrent) await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath, run, fs });
+	// Fail forward (#2356): a Gentle AI step that fails still installs a main Shell that
+	// moved, so the retry runs the new Shell's code; the channel is recorded only when
+	// both steps succeed, so that retry rebuilds Gentle AI. Verification stays fail-closed.
+	// A flag, not the caught value: a rejection may be any value, even a falsy one.
+	let aiFailed = false;
+	let aiError;
+	if (!aiCurrent) {
+		try {
+			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+		} catch (error) {
+			if (shellCurrent) throw error;
+			aiFailed = true;
+			aiError = error;
+		}
+	}
 	if (!shellCurrent) {
-		const manager = await ownerManager({ ctx, platform, packageRoot, fs, which, run });
-		const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm: { command: pnpmPath, prefix: [] }, fs });
-		await installGlobal(manager, tgz, run);
+		try {
+			const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
+			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
+			await installGlobal(manager, tgz, run);
+		} catch (error) {
+			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
+		}
+	}
+	if (aiFailed) {
+		out(`Updated Gentle Shell to the latest main (${shellCommit.slice(0, 12)}); Gentle AI was not updated.`);
+		throw withDetail(aiError, `Gentle Shell was updated to main ${shellCommit.slice(0, 12)} but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
 	}
 	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);
 	out(`Updated to the latest main: ${summary}.`);

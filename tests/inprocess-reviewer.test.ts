@@ -221,7 +221,7 @@ test("refuses when the reviewer attempts a tool call", async () => {
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED);
 });
 
-test("refuses empty assistant text with stopReason evidence", async () => {
+test("refuses empty assistant text with safe completion evidence", async () => {
 	const assistant = assistantText("", { content: [], stopReason: "stop" });
 	const outcome = await runInProcessReviewer(baseRequest(), {
 		registry: fakeRegistry([fakeModel()]),
@@ -229,7 +229,60 @@ test("refuses empty assistant text with stopReason evidence", async () => {
 	});
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
-	assert.deepEqual(refused.evidence, { stopReason: "stop" });
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "openai/gpt-5", stopReason: "stop",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
+	});
+});
+
+test("empty-output diagnostics allowlist facts, not provider secrets, and complete once", async () => {
+	const model = fakeModel({ provider: "nan", id: "deepseek-v4-flash" });
+	const assistant = assistantText("", {
+		content: [{ type: "text", text: "" }, { type: "thinking", thinking: "PRIVATE THINKING", thinkingSignature: "PRIVATE SIGNATURE" }],
+		stopReason: "length", errorMessage: "PRIVATE ERROR", rawStopReason: "PRIVATE STOP",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76, unknown: "PRIVATE USAGE", cost: { secret: "PRIVATE COST" } } as never,
+	});
+	const { complete, calls } = capturingComplete(assistant);
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([model]), find: () => model }, complete,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
+		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(refused), /PRIVATE|errorMessage|rawStopReason|Signature|unknown|cost/);
+});
+
+test("empty-output evidence omits unknown or invalid counters and bounds resolved model identity", async () => {
+	for (const invalid of [undefined, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "12"]) {
+		const assistant = assistantText("", {
+			content: [], stopReason: "PRIVATE STOP" as never,
+			usage: Object.fromEntries(["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"].map((key) => [key, invalid])) as never,
+		});
+		const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([]), find: () => fakeModel({ id: "x".repeat(2_000) }) },
+			complete: async () => assistant,
+		}));
+		assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+		assert.equal(String(refused.evidence?.reviewerModel).length, 512);
+		assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+		assert.ok(!Object.hasOwn(refused.evidence!, "stopReason"));
+		assert.doesNotMatch(JSON.stringify(refused), /PRIVATE STOP/);
+	}
+});
+
+test("empty-output evidence does not invent usage or missing thinking lengths", async () => {
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: async () => assistantText("", { content: [{ type: "thinking" } as never], usage: undefined }),
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+	assert.deepEqual(refused.evidence?.content, { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0 });
 });
 
 test("refuses with PROVIDER_FAILED when the provider itself reports an aborted completion", async () => {
@@ -344,6 +397,100 @@ test("passes exactly one user message with the verbatim prompt, no systemPrompt,
 });
 
 // ---------------------------------------------------------------------------
+// Resolved auth context — synthetic OAuth-like endpoint and provider env
+// ---------------------------------------------------------------------------
+
+for (const dispatch of ["composed provider", "compatibility complete"] as const) {
+	function captureDispatch() {
+		const provider = capturingProvider(assistantText("ok"));
+		const compatibility = capturingComplete(assistantText("ok"));
+		return {
+			getProvider: dispatch === "composed provider" ? provider.getProvider : undefined,
+			complete: dispatch === "composed provider" ? unreachableComplete : compatibility.complete,
+			calls: dispatch === "composed provider" ? provider.calls : compatibility.calls,
+		};
+	}
+
+	test(`${dispatch} preserves the registry's exchanged key, headers, account endpoint, and env`, async () => {
+		const original = Object.freeze(fakeModel({ provider: "github-copilot", baseUrl: "https://api.individual.githubcopilot.com" }));
+		const snapshot = { ...original };
+		const baseUrl = "https://api.synthetic-account.githubcopilot.com";
+		const headers = Object.freeze({ "x-synthetic-auth": "registry-header", "x-suppress-default": null });
+		const env = Object.freeze({ RDD_SYNTHETIC_PROVIDER_REGION: "test-region" });
+		const ambientBefore = process.env.RDD_SYNTHETIC_PROVIDER_REGION;
+		const { getProvider, complete, calls } = captureDispatch();
+		const outcome = await runInProcessReviewer(baseRequest({ selection: "github-copilot/gpt-5" }), {
+			registry: {
+				...fakeRegistry([original], async (resolvedModel) => {
+					assert.equal(resolvedModel, original, "auth must resolve against the registry model");
+					return { ok: true, apiKey: "synthetic-exchanged-access-token", headers, baseUrl, env };
+				}),
+				...(getProvider === undefined ? {} : { getProvider }),
+			},
+			complete,
+		});
+		assert.equal(expectText(outcome).reviewerModel, "github-copilot/gpt-5");
+		assert.equal(calls.length, 1);
+		assert.deepEqual(calls[0]!.model, { ...snapshot, baseUrl });
+		assert.notEqual(calls[0]!.model, original, "the endpoint override needs a request-local model");
+		assert.equal(calls[0]!.options?.apiKey, "synthetic-exchanged-access-token");
+		assert.equal(calls[0]!.options?.headers, headers);
+		assert.equal(calls[0]!.options?.env, env);
+		assert.deepEqual(original, snapshot, "shared registry state must remain unchanged");
+		assert.equal(process.env.RDD_SYNTHETIC_PROVIDER_REGION, ambientBefore, "env must be forwarded, not installed globally");
+	});
+
+	test(`${dispatch} forwards env without an endpoint override`, async () => {
+		const original = Object.freeze(fakeModel());
+		const env = Object.freeze({ RDD_SYNTHETIC_PROVIDER_REGION: "env-only-region" });
+		const { getProvider, complete, calls } = captureDispatch();
+		expectText(await runInProcessReviewer(baseRequest(), {
+			registry: {
+				...fakeRegistry([original], async () => ({ ok: true, apiKey: "synthetic-key", env })),
+				...(getProvider === undefined ? {} : { getProvider }),
+			},
+			complete,
+		}));
+		assert.equal(calls[0]!.model, original);
+		assert.equal(calls[0]!.options?.env, env);
+	});
+
+	test(`${dispatch} preserves model defaults and omits unresolved env`, async () => {
+		const original = Object.freeze(fakeModel());
+		const { getProvider, complete, calls } = captureDispatch();
+		expectText(await runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([original]), ...(getProvider === undefined ? {} : { getProvider }) },
+			complete,
+		}));
+		assert.equal(calls[0]!.model, original);
+		assert.equal(calls[0]!.model.baseUrl, "https://api.openai.com");
+		assert.ok(!("env" in (calls[0]!.options ?? {})));
+	});
+
+	for (const routedToOpenCode of [true, false]) {
+		test(`${dispatch} uses the resolved endpoint for attribution when routed ${routedToOpenCode ? "to" : "away from"} OpenCode`, async () => {
+			const original = Object.freeze(fakeModel({
+				provider: "custom",
+				baseUrl: routedToOpenCode ? "https://default.invalid" : "https://opencode.ai/v1",
+			}));
+			const baseUrl = routedToOpenCode ? "https://opencode.ai/v1" : "https://account.invalid/v1";
+			const { getProvider, complete, calls } = captureDispatch();
+			expectText(await runInProcessReviewer(baseRequest({ selection: "custom/gpt-5", sessionId: "ses-synthetic" }), {
+				registry: {
+					...fakeRegistry([original], async () => ({ ok: true, apiKey: "synthetic-key", baseUrl })),
+					...(getProvider === undefined ? {} : { getProvider }),
+				},
+				complete,
+			}));
+			assert.deepEqual(calls[0]!.options?.headers, routedToOpenCode
+				? { "x-opencode-session": "ses-synthetic", "x-opencode-client": "pi" }
+				: undefined);
+			assert.equal(calls[0]!.model.baseUrl, baseUrl);
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Thinking mapping
 // ---------------------------------------------------------------------------
 
@@ -416,6 +563,34 @@ for (const { name, model, selection } of OPENCODE_ATTRIBUTION_TESTS) {
 		assert.ok(!("headers" in (calls[0]!.options ?? {})), "a missing session id must never invent a header");
 	});
 }
+
+test("each completion carries its own sessionId, never the parent session's", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const deps = { registry: fakeRegistry([fakeModel({ provider: "anthropic", id: "claude-sonnet-4" })]), complete };
+	expectText(await runInProcessReviewer(baseRequest({ selection: "anthropic/claude-sonnet-4", sessionId: "ses-live-1" }), deps));
+	expectText(await runInProcessReviewer(baseRequest({ selection: "anthropic/claude-sonnet-4", sessionId: "ses-live-1" }), deps));
+	assert.equal(calls.length, 2);
+	const [first, second] = calls.map((call) => call.options?.sessionId);
+	assert.ok(typeof first === "string" && first.length > 0);
+	assert.ok(typeof second === "string" && second.length > 0);
+	assert.notEqual(first, second);
+	assert.notEqual(first, "ses-live-1");
+	assert.notEqual(second, "ses-live-1");
+});
+
+test("an OpenCode model with a live parent keeps the parent id in the attribution header while options.sessionId stays synthetic", async () => {
+	const { complete, calls } = capturingComplete(assistantText("ok"));
+	const outcome = await runInProcessReviewer(baseRequest({ selection: "opencode/sonnet-4", sessionId: "ses-live-1" }), {
+		registry: fakeRegistry([fakeModel({ provider: "opencode", id: "sonnet-4", baseUrl: "https://opencode.ai" })]),
+		complete,
+	});
+	expectText(outcome);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.options?.headers?.["x-opencode-session"], "ses-live-1");
+	const sessionId = calls[0]!.options?.sessionId;
+	assert.ok(typeof sessionId === "string" && sessionId.length > 0);
+	assert.notEqual(sessionId, "ses-live-1");
+});
 
 test("a non-OpenCode model adds no attribution headers and leaves the options unchanged", async () => {
 	const { complete, calls } = capturingComplete(assistantText("ok"));
@@ -647,3 +822,23 @@ test("the no-apiKey options shape is identical on the composed-provider and deps
 	assert.deepEqual(providerKeys, completeKeys, "routing through the composed provider must not change which credential fields this module forwards");
 	assert.equal(providerKeys.includes("apiKey"), false, "neither path may carry an apiKey the registry did not resolve");
 });
+
+for (const transport of ["sse", "websocket", "websocket-cached", "auto", undefined] as const) {
+	for (const composed of [false, true]) {
+		test(`reviewer forwards transport ${transport ?? "absent"} through ${composed ? "composed provider" : "compat completion"} unchanged`, async () => {
+			const model = fakeModel();
+			const registry = fakeRegistry([model]);
+			const captured = capturingComplete(assistantText("review result"));
+			if (composed) registry.getProvider = () => ({
+				streamSimple: (model, context, options) => ({ result: () => captured.complete(model, context, options) }),
+			});
+			const outcome = await runInProcessReviewer(baseRequest({ transport }), { registry, complete: captured.complete });
+			assert.deepEqual(outcome, { kind: "text", text: "review result", reviewerModel: "openai/gpt-5" });
+			assert.equal(captured.calls.length, 1);
+			assert.equal(captured.calls[0]!.options?.transport, transport);
+			assert.equal(Object.hasOwn(captured.calls[0]!.options!, "transport"), transport !== undefined);
+			assert.equal(captured.calls[0]!.options?.apiKey, "test-key");
+			assert.equal(captured.calls[0]!.options?.timeoutMs, 30_000);
+		});
+	}
+}

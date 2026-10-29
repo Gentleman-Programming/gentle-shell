@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
+import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
@@ -75,6 +78,103 @@ function fakeContext(branch: unknown[] = [], hasUI = true) {
 	const widget = () => widgetComponent()?.render(70).map(stripAnsi);
 	return { ctx, widgets, widget, widgetComponent };
 }
+
+test("long Todo widgets stay bounded, scroll, resize and keep their collapse control in mobile and sidebar", async (t) => {
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const { pi, tools, fire, shortcuts } = fakePi();
+		gentleTodo(pi, {});
+		const { ctx, widgets } = fakeContext();
+		await fire("session_start", ctx);
+		const title = "long active title ".repeat(150);
+		const note = "description ".repeat(150);
+		const result = await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title, note, status: "in_progress" }, { title: "LAST TASK" }] }, undefined, undefined, ctx);
+		await fire("tool_execution_end", ctx, { toolName: "todo" });
+		const tui = { requestRender() {}, terminal: { rows: 30, columns: 40 } };
+		const theme = { ...plainTheme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		const bottom = widgets.get("gentle-todo")!(tui, theme);
+		const rail = sidebarState(tui as never).parts.get("todo")!;
+		for (const component of [bottom, rail]) {
+			const before = component.render(40).map(stripAnsi);
+			assert.ok(before.length <= 10, "card uses at most one third of terminal height");
+			const header = style === CARD_STYLE.FLOAT ? 1 : 0;
+			assert.match(before[header]!, /Todos ▾/);
+			assert.equal(component.handleMouse?.({ type: "wheel", button: "none", wheelDelta: 10000, x: 5, y: header + 2, screenX: 5, screenY: 5, width: 40, height: before.length, shift: false, alt: false, ctrl: false })?.handled, true);
+			const after = component.render(40).map(stripAnsi);
+			assert.match(after[header]!, /Todos ▾/);
+			assert.match(after.join("\n"), /LAST TASK/, "all details remain reachable by scrolling");
+			assert.notDeepEqual(after, before);
+		}
+		tui.terminal.rows = 24;
+		assert.ok(bottom.render(40).length <= 8, "height responds to resize");
+		await shortcuts.get("ctrl+shift+t")!.handler(ctx);
+		const collapsed = bottom.render(40).map(stripAnsi);
+		assert.ok(collapsed.length <= (style === CARD_STYLE.FLOAT ? 6 : 4));
+		assert.match(collapsed.join("\n"), /long active title/);
+		assert.match(collapsed.join("\n"), /…/);
+		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].title, title.trim());
+		assert.equal((result.details.gentleTodo as { tasks: { title: string; note: string }[] }).tasks[0].note, note.trim());
+		await shortcuts.get("ctrl+shift+t")!.handler(ctx);
+		await shortcuts.get("alt+shift+down")!.handler(ctx);
+		assert.notDeepEqual(bottom.render(40), collapsed, "keyboard scrolling is available without mouse");
+	}
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
+
+test("Todo shortcuts never take a key Pi binds by default, so startup reports no shortcut conflict", async () => {
+	// Pi keeps its default table in dist/core/keybindings.js, next to the package entry.
+	const { KEYBINDINGS } = await import(new URL("core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href) as
+		{ KEYBINDINGS: Record<string, { defaultKeys?: string | string[] }> };
+	assert.ok("tui.altScreen.previousPrompt" in KEYBINDINGS, "the table includes Pi's built-in prompt navigation");
+	const owners = new Map<string, string[]>();
+	for (const [id, binding] of Object.entries(KEYBINDINGS)) {
+		for (const key of ([] as string[]).concat(binding.defaultKeys ?? [])) owners.set(key, [...(owners.get(key) ?? []), id]);
+	}
+	const { pi, shortcuts } = fakePi();
+	gentleTodo(pi, {});
+	assert.deepEqual([...shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up", "ctrl+shift+t"]);
+	for (const key of shortcuts.keys()) assert.equal(owners.get(key), undefined, `${key} is a Pi default for ${owners.get(key)?.join(", ")}`);
+});
+
+test("Todo keyboard scrolling targets the visible card after a cached sidebar breakpoint round-trip", async (t) => {
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const { pi, tools, fire, shortcuts } = fakePi();
+		gentleTodo(pi, {});
+		const { ctx, widgets } = fakeContext();
+		await fire("session_start", ctx);
+		await tools.get("todo")!.execute("write", { action: "write", tasks: [{ title: Array.from({ length: 100 }, (_, i) => `TITLE${i}`).join(" "), status: "in_progress" }] }, undefined, undefined, ctx);
+		await fire("tool_execution_end", ctx, { toolName: "todo" });
+		const root = { render: () => [], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 30, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const theme = { ...plainTheme, bold: (text: string) => text, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		const bottom = widgets.get("gentle-todo")!(tui, theme);
+		const dispose = installSidebar(tui as unknown as TUI, theme);
+		try {
+			const railLines = () => {
+				const layout = root[node]() as unknown as { entries: { component: Component }[] };
+				return layout.entries[1]!.component.render(50).map(stripAnsi);
+			};
+			railLines();
+			tui.terminal.columns = 40;
+			root[node]();
+			bottom.render(40);
+			tui.terminal.columns = 160;
+			const before = railLines();
+			await shortcuts.get("alt+shift+down")!.handler(ctx);
+			const after = railLines();
+			assert.notDeepEqual(after, before, "DOWN changes the visible cached rail, not the hidden bottom widget");
+			assert.match(after.join("\n"), /↑↓ 4–/);
+			assert.match(after.join("\n"), /alt\+shift\+↑\/↓/, "scroll hint reflects alt+shift shortcuts");
+			await shortcuts.get("alt+shift+up")!.handler(ctx);
+			assert.deepEqual(railLines(), before, "UP restores the expanded viewport");
+		} finally {
+			dispose();
+		}
+	}
+	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
 
 test("todoEnabled and todoCollapseKey read their environment flags", () => {
 	assert.equal(todoEnabled({}), true);
@@ -205,11 +305,25 @@ function toolTurn(toolName = "read") {
 	return { message: { role: "assistant", content: [{ type: "toolCall", id: "call", name: toolName, arguments: {} }] }, toolResults: [] };
 }
 
-async function contextReminder(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext) {
+type ContextMessage = { role: string; content: unknown; customType?: string; display?: boolean; timestamp?: number };
+
+async function contextMessages(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext): Promise<ContextMessage[] | undefined> {
 	const messages = [{ role: "user", content: "Keep working", timestamp: 1 }];
-	const result = await fire("context", ctx, { messages }) as { messages: Array<{ role: string; content: unknown }> } | undefined;
+	const result = await fire("context", ctx, { messages }) as { messages: ContextMessage[] } | undefined;
 	assert.deepEqual(messages, [{ role: "user", content: "Keep working", timestamp: 1 }], "request-local injection must not mutate the input transcript");
-	return result;
+	if (result === undefined) return undefined;
+	assert.deepEqual(result.messages[0], { role: "user", content: "Keep working", timestamp: 1 }, "the transcript stays first; todo messages trail it");
+	return result.messages;
+}
+
+/** The request-local reminder, if the next model request carries one. */
+async function contextReminder(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext): Promise<ContextMessage | undefined> {
+	return (await contextMessages(fire, ctx))?.find((message) => message.customType === "gentle-todo-reminder");
+}
+
+/** The request-local current-list message, if the next model request carries one (#1662). */
+async function contextState(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext): Promise<ContextMessage | undefined> {
+	return (await contextMessages(fire, ctx))?.find((message) => message.customType === "gentle-todo-state");
 }
 
 async function workTurns(fire: ReturnType<typeof fakePi>["fire"], ctx: ExtensionContext, count: number) {
@@ -229,13 +343,14 @@ test("runtime reminder arrives after four tool-use turns, only once, without cha
 	await workTurns(fire, ctx, 3);
 	assert.equal(await contextReminder(fire, ctx), undefined);
 	await workTurns(fire, ctx, 1);
-	const result = await contextReminder(fire, ctx);
-	assert.ok(result, "the next model request must carry a reminder within the same run");
-	assert.equal(result.messages.length, 2);
-	assert.deepEqual(result.messages[0], { role: "user", content: "Keep working", timestamp: 1 });
-	assert.deepEqual(result.messages[1], { role: "custom", customType: "gentle-todo-reminder", content: REMINDER, display: false, timestamp: (result.messages[1] as { timestamp?: number }).timestamp });
-	const converted = convertToLlm(result.messages as Parameters<typeof convertToLlm>[0]);
-	assert.deepEqual(converted[1], { role: "user", content: [{ type: "text", text: REMINDER }], timestamp: (result.messages[1] as { timestamp?: number }).timestamp }, "Pi forwards the reminder as provider-compatible text");
+	const messages = await contextMessages(fire, ctx);
+	assert.ok(messages, "the next model request must carry a reminder within the same run");
+	assert.equal(messages.length, 3, "transcript, current list, then the reminder");
+	assert.equal(messages[1]!.customType, "gentle-todo-state");
+	const reminder = messages[2]!;
+	assert.deepEqual(reminder, { role: "custom", customType: "gentle-todo-reminder", content: REMINDER, display: false, timestamp: reminder.timestamp });
+	const converted = convertToLlm(messages as Parameters<typeof convertToLlm>[0]);
+	assert.deepEqual(converted[2], { role: "user", content: [{ type: "text", text: REMINDER }], timestamp: reminder.timestamp }, "Pi forwards the reminder as provider-compatible text");
 	await workTurns(fire, ctx, 4);
 	assert.equal(await contextReminder(fire, ctx), undefined, "no repeated nagging without a todo write");
 	const listed = await tool.execute("list", { action: "list" }, undefined, undefined, ctx);
@@ -335,31 +450,224 @@ function promptEvent(): { systemPrompt: string; systemPromptOptions: { appendSys
 	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 }
 
-test("every turn carries the open tasks in appendSystemPrompt (never a returned systemPrompt) and the card goes stale after two silent turns", async () => {
+test("the system prompt carries only a byte-stable todo block; the current list travels as a request-local message (#1662)", async () => {
 	const { pi, tools, fire } = fakePi();
 	gentleTodo(pi, {});
 	const { ctx, widget } = fakeContext();
 	await fire("session_start", ctx);
-	await fire("before_agent_start", ctx, promptEvent());
+	const emptyEvent = promptEvent();
+	assert.equal(await fire("before_agent_start", ctx, emptyEvent), undefined, "the handler must not return a replacement systemPrompt");
+	assert.match(emptyEvent.systemPromptOptions.appendSystemPrompt, /^## Todo list/);
+	assert.match(emptyEvent.systemPromptOptions.appendSystemPrompt, /mark a task in_progress before starting/);
+	assert.equal(await contextState(fire, ctx), undefined, "an empty list sends no state message");
+
 	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
-
 	const withTasksEvent = promptEvent();
-	const withTasksResult = await fire("before_agent_start", ctx, withTasksEvent);
-	assert.equal(withTasksResult, undefined, "the handler must not return a replacement systemPrompt");
-	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /^## Todo list/);
-	assert.match(withTasksEvent.systemPromptOptions.appendSystemPrompt, /1\. \[pending\] Fix the bug/);
+	await fire("before_agent_start", ctx, withTasksEvent);
+	assert.equal(withTasksEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "writing a list must not change the system prompt");
+	assert.doesNotMatch(withTasksEvent.systemPromptOptions.appendSystemPrompt, /Fix the bug/, "task content never enters the system prompt");
+	const state = await contextState(fire, ctx);
+	assert.ok(state, "open tasks arrive as a trailing request-local message");
+	assert.equal(state.role, "custom");
+	assert.equal(state.display, false);
+	assert.match(String(state.content), /1\. \[pending\] Fix the bug/);
 	assert.doesNotMatch(widget()![0], /stale/);
 
-	const staleEvent = promptEvent();
-	await fire("before_agent_start", ctx, staleEvent);
-	assert.match(staleEvent.systemPromptOptions.appendSystemPrompt, /stale: 2 turns without an update/);
-	assert.match(widget()![0], /ctrl\+shift\+t collapse/);
-	assert.match(widget()![1], /stale · 2 turns/);
+	// Silent turns: the UI card goes stale, the system prompt stays frozen (#1367).
+	for (const expected of ["stale · 2 turns", "stale · 3 turns"]) {
+		const silent = promptEvent();
+		await fire("before_agent_start", ctx, silent);
+		assert.equal(silent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt);
+		assert.match(widget()![1], new RegExp(expected));
+	}
 
+	// Status, note, title and ordering changes reach the model through the message only.
 	await tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "on it" }, undefined, undefined, ctx);
 	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	const updatedEvent = promptEvent();
+	await fire("before_agent_start", ctx, updatedEvent);
+	assert.equal(updatedEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "a status change must not change the system prompt");
+	assert.match(String((await contextState(fire, ctx))!.content), /1\. \[in_progress\] Fix the bug — on it/);
 	assert.doesNotMatch(widget()![0], /stale/);
+
+	await tools.get("todo")!.execute("c3", { action: "update", id: 1, status: "done" }, undefined, undefined, ctx);
+	await fire("tool_execution_end", ctx, { toolName: "todo" });
+	assert.equal(await contextState(fire, ctx), undefined, "a finished list sends no state message");
+	const finishedEvent = promptEvent();
+	await fire("before_agent_start", ctx, finishedEvent);
+	assert.equal(finishedEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "finishing the list must not change the system prompt");
+});
+
+// weak-model-economy S1: small tasks skip the todo list (bench C-econ).
+test("the todo block exempts small tasks before the tracking rules", async () => {
+	const { pi, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const event = promptEvent();
+	await fire("before_agent_start", ctx, event);
+	assert.ok(event.systemPromptOptions.appendSystemPrompt.startsWith("## Todo list\nA small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it,"));
+});
+
+/**
+ * Drives the extension the way Pi's agent loop does (#2195): every model request
+ * runs the context handlers over the persisted transcript, and a custom message
+ * sent with triggerTurn false while streaming is appended to the transcript at
+ * turn_end, after the tool results (agent-session `_flushPendingCustomMessages`).
+ */
+function liveSession() {
+	const base = fakePi();
+	const queued: ContextMessage[] = [];
+	const pi = {
+		...base.pi,
+		sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn?: boolean }) {
+			assert.equal(options.triggerTurn, false, "todo state must never start a turn");
+			queued.push({ role: "custom", customType: message.customType, content: message.content, display: message.display, timestamp: 0 });
+		},
+	} as unknown as ExtensionAPI;
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	const transcript: ContextMessage[] = [{ role: "user", content: "Work on it", timestamp: 1 }];
+	const requests: ContextMessage[][] = [];
+	let call = 0;
+	const request = async () => {
+		const result = await base.fire("context", ctx, { messages: [...transcript] }) as { messages: ContextMessage[] } | undefined;
+		const messages = result?.messages ?? [...transcript];
+		requests.push(messages);
+		return messages;
+	};
+	/** One model request whose assistant reply calls `todo` (when params are given) or `read`. */
+	const turn = async (todo?: Record<string, unknown>) => {
+		await request();
+		call += 1;
+		const id = `call-${call}`;
+		const name = todo ? "todo" : "read";
+		const assistant = { role: "assistant", content: [{ type: "toolCall", id, name, arguments: todo ?? {} }], timestamp: 0 };
+		transcript.push(assistant);
+		if (todo) await base.tools.get("todo")!.execute(id, todo, undefined, undefined, ctx);
+		transcript.push({ role: "toolResult", content: [{ type: "text", text: "ok" }], timestamp: 0 });
+		await base.fire("turn_end", ctx, { message: assistant, toolResults: [] });
+		transcript.push(...queued.splice(0));
+	};
+	const assertAppendOnly = (from: number) => {
+		for (let index = from + 1; index < requests.length; index++) {
+			const previous = requests[index - 1]!;
+			assert.deepEqual(requests[index]!.slice(0, previous.length), previous, `request ${index} must extend request ${index - 1} byte for byte`);
+		}
+	};
+	const visibleState = (messages: ContextMessage[]) => [...messages].reverse().find((message) => message.customType === "gentle-todo-state")?.content;
+	return { ctx, fire: base.fire, transcript, requests, request, turn, assertAppendOnly, visibleState };
+}
+
+test("a todo write in a running tool loop reaches the transcript before the next request, which stays append-only (#2195)", async () => {
+	const live = liveSession();
+	await live.fire("session_start", live.ctx);
+	await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }, { title: "Ship it" }] });
+	await live.turn();
+	await live.turn();
+	await live.turn({ action: "update", id: 1, status: "done" });
+	await live.turn();
+	await live.request();
+	assert.match(live.visibleState(live.requests.at(-1)!) as string, /1\. \[done\] Fix the bug\n2\. \[pending\] Ship it/);
+	live.assertAppendOnly(0);
+});
+
+test("closing every task does not leave a stale open list in the transcript (#2195)", async () => {
+	for (const close of [{ action: "update", id: 1, status: "done" }, { action: "update", id: 1, status: "dropped" }, { action: "clear" }]) {
+		const live = liveSession();
+		await live.fire("session_start", live.ctx);
+		await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }] });
+		await live.turn(close);
+		await live.turn();
+		const messages = await live.request();
+		assert.equal(live.visibleState(messages), "Current todo list: no open tasks.", `${JSON.stringify(close)}: the model must not see the closed task as still open`);
+		live.assertAppendOnly(0);
+	}
+});
+
+test("an open list missing from the transcript (compaction, branch switch) is persisted again once, then requests stay append-only (#2195)", async () => {
+	const live = liveSession();
+	await live.fire("session_start", live.ctx);
+	await live.turn({ action: "write", tasks: [{ title: "Fix the bug" }] });
+	// Compaction summarises the head of the conversation, including the persisted state.
+	live.transcript.splice(0, live.transcript.length, { role: "user", content: "Summary of earlier work", timestamp: 2 });
+	const healedFrom = live.requests.length;
+	await live.turn();
+	await live.turn();
+	await live.turn();
+	await live.request();
+	for (const messages of live.requests.slice(healedFrom)) assert.match(String(live.visibleState(messages)), /\[pending\] Fix the bug/);
+	assert.equal(live.transcript.filter((message) => message.customType === "gentle-todo-state").length, 1, "the missing state is persisted exactly once");
+	live.assertAppendOnly(healedFrom + 1);
+});
+
+test("consecutive context requests with an unchanged Todo list preserve prefix stability (#2195)", async () => {
+	const { pi, tools, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Fix the bug" }] }, undefined, undefined, ctx);
+
+	// Request 1: first model request
+	const userMsg = { role: "user", content: "Work on it", timestamp: 100 };
+	const req1 = await fire("context", ctx, { messages: [userMsg] }) as { messages: Array<{ role: string; customType?: string }> };
+	assert.ok(req1, "req1 must return context messages");
+	assert.ok(req1.messages.some((m) => (m as { customType?: string }).customType === "gentle-todo-state"), "req1 must include gentle-todo-state");
+
+	// Model executes a tool (read), producing assistant message and tool result
+	const assistantMsg = { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }], timestamp: 200 };
+	const toolResultMsg = { role: "toolResult", toolCallId: "read-1", content: [{ type: "text", text: "file content" }], timestamp: 300 };
+
+	// Request 2: next model request with unchanged todo list.
+	// The input messages to context include the transcript with the already-delivered state message
+	const inputReq2 = [...req1.messages, assistantMsg, toolResultMsg];
+	const req2 = await fire("context", ctx, { messages: inputReq2 }) as { messages: Array<{ role: string; customType?: string }> } | undefined;
+
+	// req2 must not append a redundant trailing gentle-todo-state that would invalidate prefix caching
+	const effectiveReq2 = req2?.messages ?? inputReq2;
+	assert.deepEqual(
+		effectiveReq2.slice(0, req1.messages.length),
+		req1.messages,
+		"req1 must be an exact prefix of req2 to preserve prompt caching",
+	);
+	// No duplicate trailing state message at the end of req2
+	const stateMessages = effectiveReq2.filter((m) => (m as { customType?: string }).customType === "gentle-todo-state");
+	assert.equal(stateMessages.length, 1, "must not append duplicate gentle-todo-state when unchanged");
+});
+
+test("todo write and update persist gentle-todo-state custom message to transcript (#2195)", async () => {
+	const sent: Array<{ message: unknown; options: unknown }> = [];
+	const base = fakePi();
+	const pi = {
+		...base.pi,
+		sendMessage(message: unknown, options: unknown) {
+			sent.push({ message, options });
+		},
+	} as unknown as ExtensionAPI;
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await base.fire("session_start", ctx);
+
+	// 1. todo write persists state
+	await base.tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "Task 1" }] }, undefined, undefined, ctx);
+	assert.equal(sent.length, 1);
+	assert.deepEqual(sent[0]!.options, { triggerTurn: false });
+	const firstMsg = sent[0]!.message as { role: string; customType: string; content: string; display: boolean };
+	assert.equal(firstMsg.customType, "gentle-todo-state");
+	assert.equal(firstMsg.display, false);
+	assert.match(firstMsg.content, /1\. \[pending\] Task 1/);
+
+	// 2. todo update persists new state
+	await base.tools.get("todo")!.execute("c2", { action: "update", id: 1, status: "in_progress", note: "doing" }, undefined, undefined, ctx);
+	assert.equal(sent.length, 2);
+	assert.deepEqual(sent[1]!.options, { triggerTurn: false });
+	const secondMsg = sent[1]!.message as { content: string };
+	assert.match(secondMsg.content, /1\. \[in_progress\] Task 1 — doing/);
+
+	// 3. todo list does NOT persist extra messages
+	await base.tools.get("todo")!.execute("c3", { action: "list" }, undefined, undefined, ctx);
+	assert.equal(sent.length, 2, "read actions must not emit state messages");
 });
 
 test("before_agent_start is idempotent: a todo block already present in appendSystemPrompt is not duplicated", async () => {
@@ -472,8 +780,26 @@ test("a list left with only dropped tasks open finishes and clears; a blocked-on
 		await fire("agent_end", ctx);
 		const event = promptEvent();
 		await fire("before_agent_start", ctx, event);
-		assert.match(event.systemPromptOptions.appendSystemPrompt, /2\. \[blocked\] Deploy — waiting for an admin/);
-		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /stale/);
+		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Deploy/);
+		assert.match(String((await contextState(fire, ctx))!.content), /2\. \[blocked\] Deploy — waiting for an admin/);
 	}
 	assert.match(widget()![2], /⊘ Deploy · waiting for an admin/);
+});
+
+// Harness roadmap T6: the todo list is the session's progress, so the runtime
+// publishes it for peers instead of asking the model to call orchestrator_session_id.
+test("a todo write emits the session's progress; list and errors emit nothing", async () => {
+	const { pi, tools } = fakePi();
+	const emitted: Array<{ name: string; data: unknown }> = [];
+	Object.assign(pi, { events: { emit: (name: string, data: unknown) => { emitted.push({ name, data }); }, on: () => () => {} } });
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	const todo = (params: unknown) => tools.get("todo")!.execute("call", params, undefined, undefined, ctx);
+	await todo({ action: "write", tasks: [{ title: "Write parser", status: "done" }, { title: "Wire CLI", status: "in_progress" }, { title: "Docs" }] });
+	assert.deepEqual(emitted, [{ name: TODO_PROGRESS_EVENT, data: { sessionId: "s1", done: 1, total: 3, current: "Wire CLI" } }]);
+	await todo({ action: "list" });
+	await todo({ action: "update", id: 99, status: "done" });
+	assert.equal(emitted.length, 1, "list and a failed update publish nothing");
+	await todo({ action: "update", id: 2, status: "done" });
+	assert.deepEqual(emitted.at(-1)?.data, { sessionId: "s1", done: 2, total: 3, current: null });
 });

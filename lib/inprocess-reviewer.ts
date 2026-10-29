@@ -20,7 +20,8 @@
 // this into the lens relay (lib/review-host-relay.ts); P3 wires the provider
 // role vectors. This file stays a pure completion, never invoked from here.
 
-import type { Api, AssistantMessage, Context, Model, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
+import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 
@@ -31,9 +32,9 @@ import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
 // the dispatch path: when present, the completion goes through the composed
 // provider it returns (which is what reaches extension-registered providers);
 // when absent, it falls back to `deps.complete`, so a test double with no
-// composition layer still satisfies the seam. The real registry's resolved
-// auth carries extra optional fields (`baseUrl`, `env`) that this narrower
-// shape simply ignores.
+// composition layer still satisfies the seam. Resolved auth includes the
+// request-local endpoint and provider environment, just as pi's normal
+// ModelRuntime.prepareRequest applies them before dispatch.
 // ---------------------------------------------------------------------------
 
 /**
@@ -48,7 +49,7 @@ export interface InProcessReviewerProvider {
 export interface InProcessReviewerRegistry {
 	find(provider: string, modelId: string): Model<Api> | undefined;
 	getApiKeyAndHeaders(model: Model<Api>): Promise<
-		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders }
+		| { readonly ok: true; readonly apiKey?: string; readonly headers?: ProviderHeaders; readonly baseUrl?: string; readonly env?: ProviderEnv }
 		| { readonly ok: false; readonly error: string }
 	>;
 	getProvider?(provider: string): InProcessReviewerProvider | undefined;
@@ -73,6 +74,8 @@ export interface InProcessReviewerRequest {
 	readonly selection: string;
 	/** Routing thinking label: off | minimal | low | medium | high | xhigh | max. Omitted is treated as "off". */
 	readonly thinking?: string;
+	/** Effective Pi transport preference; absent preserves the provider default. */
+	readonly transport?: SimpleStreamOptions["transport"];
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
@@ -80,8 +83,9 @@ export interface InProcessReviewerRequest {
 	/**
 	 * The live pi session id, threaded from the extension context. Pi's main
 	 * agent loop adds OpenCode attribution headers itself; this side-call must
-	 * carry them itself instead. Absent (or empty) means no attribution header,
-	 * never an invented one and never an error.
+	 * carry them itself instead. Absent (or empty) means no attribution header
+	 * from this field, and never an error. (The per-completion `options.sessionId`
+	 * is separate: it isolates provider conversations and is never this id.)
 	 */
 	readonly sessionId?: string;
 	/** e.g. "review-risk" — only used to name the routing config key in refusal messages. */
@@ -149,6 +153,36 @@ function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: 
 
 function isTextContent(part: { type?: unknown }): part is TextContent {
 	return part.type === "text";
+}
+
+/** Completion diagnostics are facts only; never copy provider text, errors, or payloads. */
+function emptyOutputEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
+	const evidence: Record<string, unknown> = { reviewerModel: `${model.provider}/${model.id}`.slice(0, 512) };
+	if (["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason)) {
+		evidence.stopReason = assistant.stopReason;
+	}
+	const addCounter = (target: Record<string, number>, key: string, value: unknown) => {
+		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) target[key] = value;
+	};
+	const usage: Record<string, number> = {};
+	for (const key of ["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+		addCounter(usage, key, assistant.usage?.[key]);
+	}
+	if (Object.keys(usage).length > 0) evidence.usage = usage;
+	const text = assistant.content.filter(isTextContent);
+	const thinking = assistant.content.filter((part) => part.type === "thinking");
+	const content: Record<string, number> = {};
+	addCounter(content, "blocks", assistant.content.length);
+	addCounter(content, "textBlocks", text.length);
+	addCounter(content, "thinkingBlocks", thinking.length);
+	if (text.every((part) => typeof part.text === "string")) {
+		addCounter(content, "textChars", text.reduce((sum, part) => sum + part.text.length, 0));
+	}
+	if (thinking.every((part) => typeof part.thinking === "string")) {
+		addCounter(content, "thinkingChars", thinking.reduce((sum, part) => sum + part.thinking.length, 0));
+	}
+	evidence.content = content;
+	return evidence;
 }
 
 /**
@@ -244,11 +278,16 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
+	// OAuth resolution may supply an account-specific endpoint alongside the
+	// exchanged API key. Match ModelRuntime.prepareRequest: apply that endpoint
+	// to a request-local copy, never mutate the shared registry model.
+	const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+
 	// Extension side-calls bypass pi's main agent loop, which is where OpenCode
-	// attribution headers are otherwise added, so this completion carries them
-	// itself — as a default beneath the registry's own auth headers, the same
-	// merge order pi's core uses for explicit header sources.
-	const attributionHeaders = openCodeSessionAttributionHeaders(model, request.sessionId);
+	// attribution headers are otherwise added. Use the effective request model
+	// and place attribution defaults beneath the registry's own auth headers,
+	// matching pi's core merge order for explicit header sources.
+	const attributionHeaders = openCodeSessionAttributionHeaders(requestModel, request.sessionId);
 
 	// The caller's own signal (if any) and a floor timeout race together:
 	// whichever fires first aborts the completion. The catch branch below
@@ -269,9 +308,18 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	const options: SimpleStreamOptions = {
 		signal: combinedSignal,
 		timeoutMs: request.timeoutMs,
+		// Providers that keep server-side conversation state key it on
+		// `options.sessionId` and otherwise fall back to something coarser (for
+		// example the worktree), which would merge every reviewer completion into
+		// one growing conversation. A fresh id per completion keeps each review
+		// isolated. It is deliberately not `request.sessionId`: that is the parent
+		// session's id and would merge reviewer calls into the parent's conversation.
+		sessionId: `review-${request.routingKey}-${randomUUID()}`,
 		...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
+		...(auth.env === undefined ? {} : { env: auth.env }),
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
+		...(request.transport === undefined ? {} : { transport: request.transport }),
 	};
 
 	// An abort is classified by which signal actually fired, never by the
@@ -295,7 +343,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// exactly what pi-ai's own compat layer does with the same stream.
 	let assistant: AssistantMessage;
 	try {
-		assistant = provider === undefined ? await deps.complete(model, context, options) : await provider.streamSimple(model, context, options).result();
+		assistant = provider === undefined ? await deps.complete(requestModel, context, options) : await provider.streamSimple(requestModel, context, options).result();
 	} catch (error) {
 		return abortRefusal() ?? refuse(INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, `Reviewer completion failed for ${request.routingKey}: ${sanitizeErrorExcerpt(error)}`);
 	}
@@ -326,10 +374,11 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 
 	const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
 	if (text.length === 0) {
+		const evidence = emptyOutputEvidence(model, assistant);
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
-			`Reviewer produced no text for ${request.routingKey} (stopReason: ${assistant.stopReason}).`,
-			{ stopReason: assistant.stopReason, ...(assistant.errorMessage === undefined ? {} : { errorMessage: assistant.errorMessage }) },
+			`Reviewer produced no text for ${request.routingKey} (stopReason: ${evidence.stopReason ?? "unknown"}).`,
+			evidence,
 		);
 	}
 

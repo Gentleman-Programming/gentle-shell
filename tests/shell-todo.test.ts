@@ -9,6 +9,7 @@ import {
 	staleTurns,
 	TODO_STATUS,
 	todoPromptBlock,
+	todoStateMessage,
 	todoSummary,
 	type TodoState,
 } from "../lib/shell-todo.ts";
@@ -152,19 +153,49 @@ test("replayTodo rebuilds the latest state from Gentle and rpiv tool results ali
 	assert.deepEqual(replayTodo([]), emptyTodo());
 });
 
-test("todoPromptBlock lists open work with the rules, and stays silent when there is nothing open", () => {
-	const block = todoPromptBlock(seeded(), 0);
-	assert.ok(block);
+test("todoPromptBlock is the byte-stable rules block; todoStateMessage carries the open work (#1662)", () => {
+	const block = todoPromptBlock();
 	assert.match(block, /^## Todo list/m);
 	assert.match(block, /mark a task in_progress before starting/);
-	assert.match(block, /1\. \[done\] Add quiet tool rendering/);
-	assert.match(block, /2\. \[in_progress\] Fix quiet tools conflict — fixing conflict/);
-	assert.match(block, /3\. \[pending\] Show git bash tails/);
 	assert.doesNotMatch(block, /stale/);
-	assert.match(todoPromptBlock(seeded(), 2) ?? "", /stale: 2 turns without an update/);
-	assert.equal(todoPromptBlock(emptyTodo(), 0), undefined);
+	assert.doesNotMatch(block, /Add quiet tool rendering/, "the rules block never contains task content");
+	const message = todoStateMessage(seeded());
+	assert.ok(message);
+	assert.match(message, /1\. \[done\] Add quiet tool rendering/);
+	assert.match(message, /2\. \[in_progress\] Fix quiet tools conflict — fixing conflict/);
+	assert.match(message, /3\. \[pending\] Show git bash tails/);
+	assert.doesNotMatch(message, /stale/);
+	assert.equal(todoStateMessage(emptyTodo()), undefined);
 	const allDone = applyTodo(seeded(), { action: "write", tasks: [{ title: "A", status: "done" }] }, 1).state;
-	assert.equal(todoPromptBlock(allDone, 0), undefined);
+	assert.equal(todoStateMessage(allDone), undefined);
+});
+
+test("collapsed long tasks occupy one body line, including stale state, without losing task data", (t) => {
+	const title = "界🙂 long title ".repeat(100);
+	const note = "long description ".repeat(100);
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		useCardStyle(t, style);
+		for (const status of ["in_progress", "pending", "blocked"]) {
+			const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title, note, status }] }, 1).state;
+			const snapshot = structuredClone(state);
+			for (const width of [16, 40, 70]) {
+				for (const staleTurns of [0, 4]) {
+					const rows = renderTodoCard(state, withBackground(plainTheme), width, { collapsed: true, staleTurns, scrollable: true });
+					assert.equal(rows.length, style === CARD_STYLE.FLOAT ? 5 : 3);
+					assert.ok(rows.some((row) => stripAnsi(row).includes("…")), "long text signals truncation");
+					for (const row of rows) assert.equal(visibleWidth(row), width);
+				}
+			}
+			assert.deepEqual(state, snapshot);
+		}
+	}
+});
+
+test("non-scrollable Todo caps physical wrapped rows, not task count", () => {
+	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "long title ".repeat(300), status: "in_progress", note: "long note ".repeat(300) }] }, 1).state;
+	const rows = renderTodoCard(state, plainTheme, 40, { collapsed: false, staleTurns: 4 });
+	assert.ok(rows.length <= 14);
+	assert.match(stripAnsi(rows.at(-2)!), /…/);
 });
 
 test("renderTodoCard draws the framed list with status glyphs and keeps every line at width", () => {
@@ -209,8 +240,8 @@ test("renderTodoCard keeps the configured collapse shortcut in the header while 
 
 	const staleCollapsed = renderTodoCard(seeded(), plainTheme, 70, { collapsed: true, staleTurns: 2, collapseKey: "ctrl+shift+t" }).map(stripAnsi);
 	assert.match(staleCollapsed[0], /^╭─ ❀ Todos ▸ Expand · 1 of 3 ─+ ctrl\+shift\+t expand ╮$/);
-	assert.match(staleCollapsed[1], /^│ stale · 2 turns +│$/);
-	assert.match(staleCollapsed[2], /^│ ◐ Fix quiet tools conflict · fixing conflict +│$/);
+	assert.equal(staleCollapsed.length, 3, "staleness stays in the single collapsed body row");
+	assert.match(staleCollapsed[1], /^│ stale · 2 turns · ◐ Fix quiet tools conflict · fixing conflict +│$/);
 
 	const fallback = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "Finished first", status: "done" }, { title: "First pending" }, { title: "Later pending" }] }, 1).state;
 	assert.match(renderTodoCard(fallback, plainTheme, 70, { collapsed: true, staleTurns: 0 }).map(stripAnsi)[1], /^│ ○ First pending +│$/);
@@ -418,7 +449,7 @@ test("applyTodo rejects blocked without a note and leaves the list unchanged", (
 test("dropped tasks never count as open: a list of done and dropped is finished, silent, and never stale", () => {
 	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "B", status: "dropped" }, { title: "C", status: "dropped" }] }, 1).state;
 	assert.deepEqual(todoSummary(state), { done: 1, total: 3, open: 0 });
-	assert.equal(todoPromptBlock(state, 5), undefined);
+	assert.equal(todoStateMessage(state), undefined);
 	assert.equal(staleTurns(state, 9), 0);
 });
 
@@ -426,8 +457,8 @@ test("blocked tasks stay open but alone never make the list stale; an actionable
 	const blockedOnly = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }] }, 1).state;
 	assert.deepEqual(todoSummary(blockedOnly), { done: 1, total: 2, open: 1 });
 	assert.equal(staleTurns(blockedOnly, 9), 0);
-	const block = todoPromptBlock(blockedOnly, 0) ?? "";
-	assert.match(block, /2\. \[blocked\] Deploy — waiting for an admin/);
+	assert.match(todoStateMessage(blockedOnly) ?? "", /2\. \[blocked\] Deploy — waiting for an admin/);
+	const block = todoPromptBlock();
 	assert.match(block, /A blocked task waits on something outside the list: do not work on it until its condition holds/);
 	assert.match(block, /mark the tasks it made obsolete dropped instead of leaving them pending or marking them done/);
 	const mixed = applyTodo(blockedOnly, { action: "add", title: "Write docs" }, 1).state;

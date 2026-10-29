@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
 import { resolveProjectPiSdkVersion } from "../scripts/test-packed-runner.mjs";
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
@@ -61,7 +62,7 @@ const V014_MANAGED_ASSETS = join(
 // gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
-const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph"];
+const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"];
 const RETIRED_ADVERSARIAL_AGENTS = ["review-refuter.md", "review-validator.md"];
 
 interface ManagedAssetsManifest {
@@ -133,13 +134,13 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 
 test("technical reference declares the tested Pi minimum required for agent_settled", () => {
 	const manifest = readPackageJson();
-	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.99.1");
-	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.0.0");
+	assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
+	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
 	assert.equal(manifest.engines?.node, ">=22.19.0");
 	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
-		assert.match(source, /Pi 0\.99\.1 or newer/, path);
+		assert.match(source, /Pi 1\.2\.0 or newer/, path);
 		assert.match(source, /open `>=1\.0\.0` development range/, path);
 		assert.doesNotMatch(source, /development tests pin Pi/, path);
 		// Docs name exactly the audited Vim editor releases, never a future one.
@@ -162,7 +163,7 @@ test("packed runtime uses optional Pi host peers with one open development range
 	// one exact release shared by every Pi host package.
 	const installed = new Set<string>();
 	for (const name of ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
-		assert.equal(manifest.devDependencies?.[name], ">=1.0.0", name);
+		assert.equal(manifest.devDependencies?.[name], ">=1.2.0", name);
 		const metadata = JSON.parse(readFileSync(join(PACKAGE_ROOT, "node_modules", name, "package.json"), "utf8")) as { name: string; version: string };
 		assert.equal(metadata.name, name);
 		installed.add(metadata.version);
@@ -232,7 +233,7 @@ test("package verification excludes the retired init extension while retaining O
 	assert.equal(existsSync(join(PACKAGE_ROOT, "extensions", "sdd-init.ts")), false);
 	assert.doesNotMatch(verifier, /^\s*"extensions\/sdd-init\.ts",?$/m);
 	assert.match(verifier, /existsSync\(join\(root, "extensions\/sdd-init\.ts"\)\)/);
-	for (const resource of ["extensions/gentle-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/agents/gentle-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
+	for (const resource of ["extensions/gentle-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "assets/agents/gentle-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
 		assert.ok(verifier.includes(`"${resource}"`), `${resource} must remain required`);
 	}
 });
@@ -252,6 +253,25 @@ test("package verification names the native review runtime boundary and packaged
 		/createNativeReviewCli\(\)/,
 		"the production extension must construct its native client from the packaged runtime module",
 	);
+});
+
+test("double-click installers are attached to the release only after the verified publication", () => {
+	const workflow = readFileSync(join(PACKAGE_ROOT, ".github", "workflows", "publish.yml"), "utf8");
+	const job = workflow.match(/^ {2}installers:\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\n|(?![\s\S]))/m)?.[1];
+	assert.ok(job, "publish.yml has an installers job");
+	assert.match(job, /^ {4}needs: publish$/m, "installers wait for the verified npm publication");
+	assert.match(job, /^ {4}if: github\.repository == 'Gentleman-Programming\/gentle-shell'$/m);
+	assert.match(job, /^ {6}contents: write$/m, "only this job may write the release");
+	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
+	assert.match(job, /persist-credentials: false/);
+	assert.match(job, /node scripts\/build-installer-bundles\.mjs --out "\$\{RUNNER_TEMP\}\/installers"/);
+	assert.match(job, /RELEASE_TAG: \$\{\{ needs\.publish\.outputs\.tag \}\}/, "the tag the publish job verified, not the raw input");
+	assert.match(job, /package-manager-cache: false/);
+	assert.match(workflow, /^ {4}outputs:\n {6}tag: \$\{\{ steps\.release\.outputs\.tag \}\}$/m, "publish exports its verified tag");
+	assert.match(job, /gh release upload "\$\{RELEASE_TAG\}" "\$\{RUNNER_TEMP\}"\/installers\/\* --repo "\$\{GITHUB_REPOSITORY\}" --clobber/);
+	const publish = workflow.match(/^ {2}publish:\n([\s\S]*?)(?=^ {2}installers:\n)/m)?.[1];
+	assert.ok(publish);
+	assert.doesNotMatch(publish, /contents: write/, "the npm publication job keeps read-only contents");
 });
 
 test("npm publication is bound to the exact package tag and triggering commit", () => {
@@ -412,20 +432,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.0.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v4.3.1 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.0\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "4\.3\.1"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:pZ\/XZ2Pk3U9lgXigOTY62zlxxFOHnc9CjQhLgaV\/Hfc="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:00p8dnjJrhYFq1Qikk2oY6K\/UXIty9A\/IBUUOUiX9XA="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.0\.0/);
+	assert.match(verifier, /v4\.3\.1/);
 });
 
 
@@ -611,7 +631,7 @@ test("packaged agents use YAML list syntax for tool allowlists", () => {
 		assert.doesNotMatch(
 			frontmatter,
 			/^tools:\s*[^\n,]+(?:,\s*[^\n,]+)+$/m,
-			`${file} must not use comma-separated inline tools; pi-subagents expects a YAML list`,
+			`${file} must not use comma-separated inline tools; the agent runtime expects a YAML list`,
 		);
 		assert.match(
 			frontmatter,
@@ -646,6 +666,46 @@ test("packaged agents declare only tool names a Pi child session can resolve", (
 			);
 		}
 	}
+});
+
+// The tool-allowlist marker that denies everything else. An allowlist already
+// denies unlisted tools, so the runtime tolerates this entry by design: it is
+// not a tool name and Pi drops it from --tools.
+const DENY_ALL_TOOLS_MARKER = '"*": false';
+
+// gentle-shell#62: the declared YAML list once collapsed into one malformed
+// token on its way to the child, which then started without its filesystem
+// tools. This walks the real path every packaged agent takes at runtime:
+// install into an agent home, then discover and parse with the agent runtime,
+// and compares what the runtime yields against what the file declares.
+test("packaged agents reach the agent runtime with their declared tool allowlists", () => {
+	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
+	const agentFiles = readdirSync(agentsDir).flatMap((entry) =>
+		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
+	);
+	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+
+	withIsolatedAssetHome((agentHome) => {
+		installPackageAssets(agentHome, false);
+		const empty = mkdtempSync(join(tmpdir(), "gentle-agent-roots-"));
+		try {
+			const { agents, errors } = discoverAgents({ cwd: empty, home: empty, agentHome });
+			assert.deepEqual(errors, [], "every packaged agent must parse through the agent runtime");
+			for (const file of agentFiles) {
+				const { name, tools: declared } = readAgentDefinition(file);
+				const agent = agents.find((candidate) => candidate.name === name);
+				assert.ok(agent, `${file} must be discovered by the agent runtime after installation`);
+				assert.deepEqual(
+					agent.tools.filter((tool) => tool !== DENY_ALL_TOOLS_MARKER),
+					declared,
+					`${file} must reach the runtime with exactly its declared tool allowlist`,
+				);
+				assert.ok(agent.tools.includes("read"), `${file} must keep read so the child can inspect files`);
+			}
+		} finally {
+			rmSync(empty, { recursive: true, force: true });
+		}
+	});
 });
 
 function withIsolatedAssetHome(run: (agentHome: string) => void): void {
@@ -1654,7 +1714,7 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 test("normal and forced installation copy generic agents with complete role contracts", () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "codegraph"],
+		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"],
 		"gentle-ai-verify": ["read", "grep", "find", "bash"],
 	} as const;
 
@@ -1703,27 +1763,29 @@ test("normal and forced installation copy generic agents with complete role cont
 });
 
 test("bounded implementation routing resolves the explicit canonical fallback reference", () => {
-	const routing = readFileSync(
-		join(PACKAGE_ROOT, "assets", "orchestrator-delegation.md"),
-		"utf8",
-	);
-	const reference = "For bounded writes, follow the canonical Writer rule under Mandatory Delegation Triggers.";
+	// S11 T2: the Delegation Triggers live in the delegation card and the Work Routing Ladder (with its
+	// Simple Delegation pointer back to them) in the reference, so the pointer resolves across both files.
+	const routing = ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]
+		.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8"))
+		.join("\n\n");
+	// S9 canon change (gentle-ai 87a3b2eb): the canonical heading is "Delegation Triggers" (no "Mandatory").
+	const reference = "For bounded writes, follow the canonical Writer rule under Delegation Triggers.";
 	const resolveSimpleDelegation = (source: string): string => {
 		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
 		assert.ok(simpleDelegation.split("\n").includes(reference), "Simple Delegation must name the exact canonical Writer rule");
-		const canonical = readMarkdownSection(source, "Mandatory Delegation Triggers");
+		const canonical = readMarkdownSection(source, "Delegation Triggers");
 		assertWorkerFallbackRouting(canonical, "resolved Simple Delegation");
 		return canonical;
 	};
-	const mandatoryDelegation = readMarkdownSection(routing, "Mandatory Delegation Triggers");
+	const delegationTriggers = readMarkdownSection(routing, "Delegation Triggers");
 
 	assertWorkerFallbackRouting(resolveSimpleDelegation(routing), "Simple Delegation");
-	assertWorkerFallbackRouting(mandatoryDelegation, "Mandatory Delegation Triggers");
+	assertWorkerFallbackRouting(delegationTriggers, "Delegation Triggers");
 	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, "")), /must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Mandatory Delegation Triggers", "Other Rule"))),
+	assert.throws(() => resolveSimpleDelegation(routing.replace(reference, reference.replace("Delegation Triggers", "Other Rule"))),
 		/must name the exact canonical Writer rule/);
-	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Mandatory Delegation Triggers", "#### Missing Canonical Rule")),
-		/exactly one Mandatory Delegation Triggers section/);
+	assert.throws(() => resolveSimpleDelegation(routing.replace("#### Delegation Triggers", "#### Missing Canonical Rule")),
+		/exactly one Delegation Triggers section/);
 	assert.throws(() => resolveSimpleDelegation(routing.replace("user-configured `worker`", "unspecified worker")),
 		/must prefer the package-owned worker before a user-configured worker/);
 	assert.doesNotMatch(
@@ -1739,8 +1801,10 @@ test("bounded implementation routing resolves the explicit canonical fallback re
 });
 
 test("orchestrator routes generic roles without static RDD lens routing", () => {
-	for (const file of ["orchestrator.md", "orchestrator-delegation.md"]) {
-		const routing = readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8");
+	// S11 T2: the explorer fallback binding moved from the delegation card to its reference; the card and
+	// the reference together are the lazy delegation route.
+	for (const files of [["orchestrator.md"], ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]]) {
+		const routing = files.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8")).join("\n\n");
 		assert.match(routing, /`gentle-ai-explore`/);
 		assert.match(routing, /`gentle-ai-worker`/);
 		assert.match(routing, /`gentle-ai-verify`/);
@@ -1770,9 +1834,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.0.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.5.1 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.0.0", "the release manifest must be explicitly pinned to v4.0.0");
+	assert.equal(packageJson.version, "4.5.1", "the release manifest must be explicitly pinned to v4.5.1");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

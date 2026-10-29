@@ -1,9 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { decodeReviewAssessmentV1, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
 import {
@@ -119,7 +119,8 @@ export interface NativeReviewCli {
 	// Read-only risk assessment (gentle-ai#4295, landing in parallel with
 	// gentle-pi#662). Same plain-versioned shape as reviewMode/reviewStatus:
 	// an older binary without the verb, or any other process/decode failure,
-	// rejects the returned promise -- callers fail closed to `high` risk.
+	// rejects the returned promise -- callers report the tier as `unassessable`, which informs
+	// the verification plan but never adds an independent verifier by itself.
 	assess?(request: NativeReviewAssessRequest): Promise<ReviewAssessmentV1>;
 }
 
@@ -201,10 +202,10 @@ export interface NativeReviewModeResult {
 // stream while still succeeding. That last qualifier is what keeps this list
 // honest: v2.4.0 deleted reviewConsentSkippedDefaultProvenance ("Reviews are
 // on by default; this was never explicitly chosen. ..."), which used to ride
-// with the skip notice whenever the resolved mode source was `default`. Under
-// opt-in receipt-driven development a default-source clone is refused long
-// before the consent ceremony runs, so the pinned binary can no longer emit
-// that line and it is removed here rather than left as dead tolerance. Multi-
+// with the skip notice whenever the resolved mode source was `default`. Reviews
+// are on by default again since gentle-ai v4.0.0, but the pinned binary no
+// longer has that function and cannot emit the line, so it is removed here
+// rather than left as dead tolerance. Multi-
 // line stderr is still expected in principle — these are separate Fprintln
 // calls, never one joined string — which is why membership is per line.
 export const REVIEW_CONSENT_NOTICES = Object.freeze([
@@ -279,6 +280,13 @@ export const NATIVE_REVIEW_LEGACY_ALIAS_REPAIR = {
 } as const;
 export type NativeReviewReconcileAnomalies = (typeof NATIVE_REVIEW_RECONCILE_ANOMALIES)[keyof typeof NATIVE_REVIEW_RECONCILE_ANOMALIES];
 
+export const NATIVE_REVIEW_ABANDON_REASONS = ["operator_disposition", "retired_schema"] as const;
+export type NativeReviewAbandonReason = (typeof NATIVE_REVIEW_ABANDON_REASONS)[number];
+
+export function isNativeReviewAbandonReason(value: unknown): value is NativeReviewAbandonReason {
+	return value === "operator_disposition" || value === "retired_schema";
+}
+
 export interface NativeReviewAbandonRequest {
 	cwd: string;
 	lineage: string;
@@ -287,7 +295,7 @@ export interface NativeReviewAbandonRequest {
 	capturedLensResults: readonly string[];
 	findingsPresent: boolean;
 	actor: string;
-	reason: string;
+	reason: NativeReviewAbandonReason;
 	maintainerAuthorization: string;
 	signal?: AbortSignal;
 }
@@ -1068,6 +1076,27 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// to /v4 without a review-integration/v2 change. No new negotiated
 	// capability is asserted.
 	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.1.1 repeats 4.0.0: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The provider contract moved
+	// from 1.2.0 to 1.3.0 (additive agent lens selection, gentle-ai#5348), with
+	// published tarball SHA-256
+	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
+	// No new negotiated capability identity is asserted.
+	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.2.0 repeats 4.1.1: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2. The provider contract moved
+	// from 1.3.0 to 1.4.0 (routing/pi.md, gentle-ai#5536), with published
+	// tarball SHA-256
+	// 9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b.
+	// No new negotiated capability identity is asserted.
+	"4.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// v4.3.1 repeats 4.2.0: the published binary still advertises
+	// capabilities/v2.6 under review-integration/v2, and the provider contract
+	// stays at 1.4.0, with published tarball SHA-256
+	// 58450471280aeb357443d6a28c819132d8c8eb78dd25b12bac64296b2f8c27c2.
+	// The v4.3.0 tag has no release and is never pinned.
+	// No new negotiated capability identity is asserted.
+	"4.3.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {
@@ -1109,21 +1138,98 @@ export class NativeReviewCliError extends Error {
 // makes. It declares the Pi host relay handshake on each spawn: gentle-ai
 // refuses pi admission pre-authority without it (gentle-pi#311 P4), and a
 // single injection point keeps the declaration impossible to forget on any
-// individual operation.
+// individual operation. In a bundled install it also keeps Gentle AI's state
+// inside the prefix (gentleAiIsolationEnv, S9).
 export function gentleAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	return { ...base, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+	return { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
 }
 
-export function createNodeExecFileAdapter(): ExecFileAdapter {
+export type ProcessTreeKiller = (pid: number) => void;
+
+type TreeKillSpawn = (file: string, args: readonly string[], options: { cwd: string; stdio: "ignore"; windowsHide: true }) => { on(event: "error", listener: () => void): unknown };
+
+// A bare "taskkill" resolves from the current directory before PATH on
+// Windows, so a repository shipping its own taskkill.exe would run on any
+// abort. Always use the System32 binary, from System32 itself.
+export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+	const systemRoot = env.SystemRoot || env.windir;
+	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
+}
+
+// taskkill walks the tree from a live parent, so it must run before the
+// parent dies; Node's own abort/timeout kill would orphan the git children.
+export function createWindowsProcessTreeKiller(env: NodeJS.ProcessEnv = process.env, spawnProcess: TreeKillSpawn = spawn): ProcessTreeKiller {
+	const taskkill = windowsTaskkillPath(env);
+	return (pid) => {
+		try {
+			spawnProcess(taskkill, ["/pid", String(pid), "/T", "/F"], { cwd: win32.dirname(taskkill), stdio: "ignore", windowsHide: true }).on("error", () => {});
+		} catch { /* Best effort: the call still settles through its own child. */ }
+	};
+}
+
+export const windowsProcessTreeKiller: ProcessTreeKiller = (pid) => createWindowsProcessTreeKiller()(pid);
+
+const WINDOWS_TREE_KILL_GRACE_MS = 1_000;
+
+function abortError(signal: AbortSignal): Error {
+	return Object.assign(new Error("The operation was aborted", { cause: signal.reason }), { name: "AbortError", code: "ABORT_ERR" });
+}
+
+function execFileResultFromError(error: unknown, timedOut: boolean): ExecFileResult {
+	const detail = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: string | number; signal?: NodeJS.Signals; killed?: boolean };
+	if (detail.code === "ENOENT" || detail.code === "EACCES" || detail.name === "AbortError") throw error;
+	const outputLimitExceeded = detail.code === "ENOBUFS" || detail.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+	return { stdout: detail.stdout ?? "", stderr: detail.stderr ?? "", exitCode: typeof detail.code === "number" ? detail.code : 1, signal: detail.signal ?? null, timedOut: !outputLimitExceeded && (timedOut || detail.killed === true), outputLimitExceeded };
+}
+
+// Windows: abort and timeout kill the whole process tree instead of only
+// gentle-ai, with the same observable results as the POSIX path.
+function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeKiller): Promise<ExecFileResult> {
+	const { signal } = request;
+	if (signal?.aborted) return Promise.reject(abortError(signal));
+	return new Promise((resolve, reject) => {
+		let timedOut = false, aborted = false, pipesCut = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let fallback: ReturnType<typeof setTimeout> | undefined;
+		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
+			if (timer !== undefined) clearTimeout(timer);
+			if (fallback !== undefined) clearTimeout(fallback);
+			signal?.removeEventListener("abort", onAbort);
+			if (aborted && signal) { reject(abortError(signal)); return; }
+			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: pipesCut, outputLimitExceeded: false }); return; }
+			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), timedOut)); } catch (failure) { reject(failure); }
+		});
+		// If taskkill cannot run (AppLocker, a broken PATH), still end gentle-ai
+		// itself so the deadline holds; its children may then outlive it. A
+		// surviving descendant can still hold the inherited stdout/stderr open,
+		// which would keep execFile from calling back, so cut the pipes too.
+		const killTree = () => {
+			if (child.pid === undefined) { child.kill(); return; }
+			killProcessTree(child.pid);
+			fallback = setTimeout(() => {
+				if (child.exitCode === null && child.signalCode === null) child.kill();
+				pipesCut = true;
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, WINDOWS_TREE_KILL_GRACE_MS);
+		};
+		function onAbort(): void { if (aborted || timedOut) return; aborted = true; killTree(); }
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (request.timeoutMs !== undefined && request.timeoutMs > 0) timer = setTimeout(() => { if (aborted) return; timedOut = true; killTree(); }, request.timeoutMs);
+	});
+}
+
+export function createNodeExecFileAdapter(options: { readonly platform?: NodeJS.Platform; readonly killProcessTree?: ProcessTreeKiller } = {}): ExecFileAdapter {
+	if ((options.platform ?? process.platform) === "win32") {
+		const killProcessTree = options.killProcessTree ?? windowsProcessTreeKiller;
+		return (request) => windowsExecFile(request, killProcessTree);
+	}
 	return async (request) => {
 		try {
 			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment() });
 			return { stdout: output.stdout, stderr: output.stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} catch (error) {
-			const detail = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: string | number; signal?: NodeJS.Signals; killed?: boolean };
-			if (detail.code === "ENOENT" || detail.code === "EACCES" || detail.name === "AbortError") throw error;
-			const outputLimitExceeded = detail.code === "ENOBUFS" || detail.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-			return { stdout: detail.stdout ?? "", stderr: detail.stderr ?? "", exitCode: typeof detail.code === "number" ? detail.code : 1, signal: detail.signal ?? null, timedOut: !outputLimitExceeded && detail.killed === true, outputLimitExceeded };
+			return execFileResultFromError(error, false);
 		}
 	};
 }
@@ -1267,50 +1373,6 @@ function decodeReleaseEvidence(value: unknown): void {
 	for (const field of ["release_tree", "configuration_hash", "generated_artifact_hash", "provenance_hash", "publication_boundary_hash", "evidence_freshness_hash"]) requiredString(release[field]);
 	if (release.publication_state !== "sealed" || release.evidence_freshness_state !== "current") throw new Error("invalid release evidence");
 }
-function decodeNonDecidingGateContext(value: unknown, expectedGate: string): NativeGateContext {
-	const context = exactObject(value, ["gate"]);
-	const gate = enumString(context.gate, NATIVE_GATE);
-	if (gate !== expectedGate) throw new Error("native non-deciding gate context does not match the requested gate");
-	return { lineageId: "", storeRevision: "", raw: context };
-}
-function decodeGateContext(value: unknown): NativeGateContext {
-	const context = exactObject(
-		value,
-		["gate", "lineage_id", "generation", "base_tree", "candidate_tree", "paths_digest", "fix_delta_hash", "policy_hash", "ledger_hash", "evidence_hash", "base_relationship_valid"],
-		["store_revision", "genesis_revision", "chain_identity", "bundle_digest", "external_evidence", "base_advanced_compatible", "release", "pre_pr_boundary", "denial"],
-	);
-	const gate = stringValue(context.gate);
-	if (gate !== "" && !(NATIVE_GATE as readonly string[]).includes(gate)) throw new Error("invalid gate context gate");
-	for (const field of ["lineage_id", "base_tree", "candidate_tree", "paths_digest", "fix_delta_hash", "policy_hash", "ledger_hash", "evidence_hash"]) stringValue(context[field]);
-	for (const field of ["store_revision", "genesis_revision", "chain_identity", "bundle_digest"]) if (context[field] !== undefined) stringValue(context[field]);
-	nonNegativeInteger(context.generation);
-	booleanValue(context.base_relationship_valid);
-	if (context.external_evidence !== undefined) enumString(context.external_evidence, ["invalidating", "escalating"]);
-	let sanitizedContext = context;
-	if (context.denial !== undefined) {
-		const denial = exactObject(context.denial, ["stage", "code"]);
-		const stage = sanitizeNativeDiagnosticText(requiredString(denial.stage), NATIVE_REVIEW_DENIAL_TEXT_LIMIT);
-		const code = sanitizeNativeDiagnosticText(requiredString(denial.code), NATIVE_REVIEW_DENIAL_TEXT_LIMIT);
-		if (!isCanonicalProcessString(stage) || !isCanonicalProcessString(code)) throw new Error("non-canonical denial evidence");
-		sanitizedContext = { ...context, denial: { stage, code } };
-	}
-	if (context.pre_pr_boundary !== undefined) {
-		const boundary = exactObject(context.pre_pr_boundary, ["source", "selector", "commit"], ["remote", "remote_ref", "remote_identity"]);
-		enumString(boundary.source, ["explicit", "publication-default"]); requiredString(boundary.selector); stringValue(boundary.commit);
-		for (const field of ["remote", "remote_ref", "remote_identity"]) if (boundary[field] !== undefined) requiredString(boundary[field]);
-	}
-	if (context.base_advanced_compatible !== undefined) {
-		const proof = exactObject(context.base_advanced_compatible, ["status", "compatible", "old_base_tree", "new_base_tree", "original_patch_identity", "delivered_patch_identity", "delivered_paths_digest", "base_advance_paths_digest", "paths_disjoint", "merged_result_tree", "ci_attestation_artifact_hash", "ci_attestation_issuer", "ci_status"]);
-		for (const field of ["status", "old_base_tree", "new_base_tree", "original_patch_identity", "delivered_patch_identity", "delivered_paths_digest", "base_advance_paths_digest", "merged_result_tree", "ci_attestation_artifact_hash", "ci_attestation_issuer", "ci_status"]) requiredString(proof[field]);
-		booleanValue(proof.compatible); booleanValue(proof.paths_disjoint);
-	}
-	if (context.release !== undefined) decodeReleaseEvidence(context.release);
-	return {
-		lineageId: stringValue(context.lineage_id),
-		storeRevision: context.store_revision === undefined ? "" : stringValue(context.store_revision),
-		raw: sanitizedContext,
-	};
-}
 function decodeNativeReviewRecovery(value: unknown): NativeReviewRecovery {
 	const recovery = exactObject(value, ["predecessor_lineage_id", "predecessor_revision", "disposition", "reason", "actor", "recovered_at"], ["maintainer_authorization"]);
 	return {
@@ -1401,7 +1463,7 @@ function decodeNativeReviewStatus(value: unknown): NativeReviewStatusResult {
 	const complete = booleanValue(body.complete);
 	const authoritative = booleanValue(body.authoritative);
 	if (authoritative && !complete) throw new Error("incomplete inventory cannot be authoritative");
-	if (!Array.isArray(body.entries) || !Array.isArray(body.locks)) throw new Error("invalid native status inventory");
+	if (!Array.isArray(body.entries) || !Array.isArray(body.locks) || !Array.isArray(body.diagnostics)) throw new Error("invalid native status inventory");
 	return {
 		repository: requiredString(body.repository),
 		complete,
@@ -1586,7 +1648,7 @@ class NativeReviewPlainCli {
 		if (result.outputLimitExceeded) throw nativeError(NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT, operation, mutating, "native process output exceeded limit", result, true, undefined, this.maxBufferBytes);
 		if (result.timedOut) throw nativeError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, operation, mutating, "native process timed out", result);
 		if (result.signal) throw nativeError(NATIVE_REVIEW_ERROR_CODE.SIGNAL, operation, mutating, "native process was signalled", result);
-		const maintenancePartialFailure = [NATIVE_REVIEW_OPERATION.ABANDON, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS].includes(operation) && result.exitCode !== 0;
+		const maintenancePartialFailure = new Set<NativeReviewOperation>([NATIVE_REVIEW_OPERATION.ABANDON, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS]).has(operation) && result.exitCode !== 0;
 		const toleratedNotice = stderrIsTolerated(result.stderr, toleratedStderr);
 		if (result.exitCode !== 0 && !maintenancePartialFailure) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, operation, mutating, "native process failed", result);
 		if (result.stderr.trim().length > 0 && !maintenancePartialFailure && !toleratedNotice) throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, operation, mutating, "native process wrote stderr", result);
@@ -1664,6 +1726,7 @@ class NativeReviewPlainCli {
 	}
 
 	async abandon(request: NativeReviewAbandonRequest): Promise<NativeReviewRecoveryResult> {
+		if (!isNativeReviewAbandonReason(request.reason)) throw new TypeError('Native ABANDON reason must be "operator_disposition" or "retired_schema"');
 		for (const [name, value] of [["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["snapshotIdentity", request.snapshotIdentity], ["actor", request.actor], ["reason", request.reason]] as const) {
 			if (!isCanonicalProcessString(value)) throw new TypeError(`Native ABANDON ${name} must be a non-empty, trimmed, NUL-free string`);
 		}
@@ -1906,10 +1969,11 @@ function splitNativeConsentInvocation(invocation: string): readonly string[] {
 			continue;
 		}
 		// Provider invocations are not shell commands. Keep every path backslash
-		// verbatim, including quoted UNC and drive-root paths. Outside quotes,
-		// only a backslash before whitespace joins a space-containing token.
+		// verbatim, including quoted UNC and drive-root paths. Outside quotes, a
+		// backslash escapes only whitespace or a quote, so a space-containing token
+		// and a POSIX-quoted apostrophe (`'it'\''s'`) split exactly.
 		const next = source[index + 1];
-		if (character === "\\" && quote === undefined && next !== undefined && /\s/.test(next)) {
+		if (character === "\\" && quote === undefined && next !== undefined && (/\s/.test(next) || next === "'" || next === '"')) {
 			escaping = true;
 			started = true;
 			continue;

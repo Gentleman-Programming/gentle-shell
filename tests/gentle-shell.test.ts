@@ -4,27 +4,33 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, matchesKey, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import installGentleShell, { buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
+import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
+import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
+import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+
+// Fixture sessions share ids across tests; the inherited-profile freeze is
+// process state keyed by session id (gentle-shell#1064 slice 3b-ii).
+afterEach(() => resetFrozenInheritedProfilesForTesting());
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
-import { CHANGE_STATUS } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
-import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
+import { isJobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
 import { listVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -56,7 +62,7 @@ function isolatedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	isolatedConfigHomes.push(home);
 	return { ...env, GENTLE_PI_CONFIG_HOME: home };
 }
-const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), ...deps });
+const gentleShell: typeof installGentleShell = (pi, env, deps) => installGentleShell(pi, isolatedEnv(env), { resolveWorktree, gitRunner: (cwd) => async (args) => pi.exec("git", ["-C", cwd, ...args], { timeout: 5000 }), rootExists: () => true, ...deps });
 
 const plainTheme = {
 	fg(_color: string, value: string) {
@@ -83,6 +89,7 @@ interface FakeUi {
 	overlay: unknown;
 	overlayView: { render(width: number): string[]; handleInput(data: string): void } | undefined;
 	closeOverlay: (() => void) | undefined;
+	customOptions?: unknown[];
 }
 
 interface GitScript {
@@ -105,7 +112,7 @@ const renderers = new Map<string, MessageRenderer>();
 const FAKE_SOURCE_INFO: SourceInfo = { path: "extensions/gentle-shell.ts", source: "gentle-shell", scope: "project", origin: "top-level" };
 
 const DEFAULT_COMMANDS: SlashCommandInfo[] = [
-	{ name: "gentle:models", description: "Configure models", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
+	{ name: "gentle:profiles", description: "Configure models", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "gentle:changes", description: "Browse changes", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "gentle:status", description: "Show Gentle AI status", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
 	{ name: "skill-registry:refresh", description: "Regenerate the skill registry", source: "extension", sourceInfo: FAKE_SOURCE_INFO },
@@ -155,6 +162,11 @@ function fakePi(script: GitScript[] = [{ numstat: "", porcelain: "" }], commands
 		async exec(_command: string, args: string[]) {
 			git.push(args);
 			if (args.includes("worktree")) return { stdout: "worktree /repo\0branch refs/heads/main\0\0", stderr: "", code: 0, killed: false };
+			// Roots outside the worktree list read as a detached HEAD.
+			if (args.includes("symbolic-ref")) return { stdout: "", stderr: "", code: 1, killed: false };
+			// The unborn-HEAD ask is cheap metadata, not a scan round: the script
+			// models one numstat+porcelain pair per round, exactly like real Git.
+			if (args.includes("rev-parse")) return { stdout: "", stderr: "", code: 0, killed: false };
 			const isNumstat = args.includes("diff");
 			const step = script[Math.min(isNumstat ? round : round++, script.length - 1)];
 			return { stdout: isNumstat ? step.numstat : step.porcelain, stderr: "", code: 0, killed: false };
@@ -167,8 +179,8 @@ async function fire(handlers: Map<string, Array<(event: unknown, ctx: ExtensionC
 	for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 }
 
-function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
-	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined };
+function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): string }; hasUI?: boolean; entries?: unknown[]; oauth?: boolean; pending?: boolean; idle?: boolean; editorFactory?: unknown; token?: string; select?: (title: string, options: string[]) => Promise<string | undefined> } = {}): { ctx: ExtensionContext; ui: FakeUi; overlayReady: Promise<void> } {
+	const ui: FakeUi = { footerFactory: undefined, editorFactory: options.editorFactory, widgets: new Map(), widgetSets: 0, workingVisible: undefined, notices: [], overlay: undefined, overlayView: undefined, closeOverlay: undefined, customOptions: [] };
 	let resolveOverlay: () => void;
 	const overlayReady = new Promise<void>((resolve) => { resolveOverlay = resolve; });
 	const entries = options.entries ?? [];
@@ -188,7 +200,7 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 		modelRegistry: { isUsingOAuth: () => options.oauth ?? true, getApiKeyForProvider: async () => options.token },
 		getContextUsage: () => ({ tokens: 122_400, contextWindow: 272_000, percent: 45 }),
 		ui: {
-			theme: plainTheme,
+			theme: options.theme ?? plainTheme,
 			getAllThemes: () => [{ name: "dark", path: undefined }, { name: "light", path: undefined }],
 			getTheme: (name: string) => name === "dark" || name === "light" ? { name } : undefined,
 			setTheme: (name: string) => ({ success: name === "dark" || name === "light" }),
@@ -219,8 +231,9 @@ function fakeContext(options: { hasUI?: boolean; entries?: unknown[]; oauth?: bo
 			// whatever their `done` callback is given (see ExtensionUIContext.custom
 			// in pi-coding-agent), not always null. `closeOverlay` stays a
 			// null-resolving escape hatch for tests that only need to end the wait.
-			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }) {
+			custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => { render(width: number): string[]; handleInput(data: string): void }, options?: unknown) {
 				ui.overlay = factory;
+				ui.customOptions?.push(options);
 				return new Promise<T | null>((resolve) => {
 					ui.closeOverlay = () => resolve(null);
 					// An identity bg mock hides focused rows; omit it so overlay navigation
@@ -491,7 +504,7 @@ test("review sidebar rejects foreign-session events and unsubscribes on shutdown
 	}
 });
 
-test("jobs snapshots populate Status, use one compact fallback, and reject stale sessions", async () => {
+test("jobs snapshots feed their own rail card, keep one compact fallback, and reject stale sessions", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
 	const { ctx, ui } = fakeContext();
@@ -503,33 +516,54 @@ test("jobs snapshots populate Status, use one compact fallback, and reject stale
 	const component = factory(tui, plainTheme, data);
 	const state = sidebarState(tui as unknown as TUI);
 	const rail = state.parts.get("footer")!;
+	const jobs = state.parts.get("jobs")!;
 	const header = state.parts.get("header")!;
 	const publish = (sessionId: string, jobs: unknown) => pi.events.emit("gentle-ai:jobs-sidebar", { sessionId, snapshot: { jobs } });
 	try {
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
-		assert.match(rail.render(46).join("\n"), /Jobs[\s\S]*CI for PR 1860/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Jobs|CI for PR 1860/, "the Status card never prints jobs; the jobs card owns them");
 		assert.match(rail.render(46).join("\n"), /MCP: 3 servers/);
-		assert.doesNotMatch(rail.render(46).join("\n"), /1 job/, "Jobs replaces the generic integration counter");
+		assert.match(jobs.render(46).join("\n"), /Jobs[\s\S]*CI for PR 1860/);
+		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }, { id: "job-0", label: "Build runtime", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);
+		assert.match(jobs.render(60).join("\n"), /1 running · 1 finished/, "finished tails ride the same snapshot");
+		assert.match(jobs.render(60).join("\n"), /✓\s+Build runtime/);
+		// The compact count is running-only: a finished tail still paints the
+		// card, but the header's ⧗ N jobs derives from running entries alone.
+		publish("shell-session", [{ id: "job-2", label: "Fresh tail", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);
+		tui.terminal.columns = 80;
+		assert.match(jobs.render(46).join("\n"), /Fresh tail/, "the finished tail still paints the card");
+		assert.doesNotMatch(header.render(80).join("\n"), /⧗ 1 job/, "the compact count is running-only");
+		tui.terminal.columns = 160;
+		publish("shell-session", [{ id: "job-0", label: "Stale tail", startedAt: 1, status: "exited", endedAt: 5, exitCode: 0 }]);
+		assert.doesNotMatch(jobs.render(46).join("\n"), /Stale tail/, "a finished job past the TTL paints nothing");
+		assert.doesNotMatch(rail.render(46).join("\n"), /1 job/, "the jobs counter never joins the integration statuses while display data exists");
 		state.active = true;
 		state.ownsHost = () => true;
-		assert.doesNotMatch(header.render(160).join("\n"), /1 job/, "the visible Status card owns jobs details");
+		assert.doesNotMatch(header.render(160).join("\n"), /1 job/, "the visible rail owns job details");
 		state.active = false;
 		tui.terminal.columns = 80;
-		assert.match(header.render(80).join("\n"), /1 job/, "mobile topbar preserves the count");
-		const before = rail.digest?.();
+		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
+		assert.match(header.render(80).join("\n"), /1 job/, "mobile topbar preserves the count of a running job");
+		const before = jobs.render(46).join("\n");
 		publish("foreign", []);
 		publish("shell-session", [{ label: "invalid" }]);
-		assert.equal(rail.digest?.(), before);
+		assert.equal(jobs.render(46).join("\n"), before);
 		publish("shell-session", []);
-		assert.doesNotMatch(rail.render(46).join("\n"), /Jobs|CI for PR/);
+		assert.doesNotMatch(jobs.render(46).join("\n"), /Jobs|CI for PR/);
 		assert.doesNotMatch(header.render(80).join("\n"), /1 job/);
 		publish("shell-session", [{ id: "job-2", label: "Build runtime", startedAt: 2 }]);
 		await fire(handlers, "session_start", ctx);
-		assert.doesNotMatch(rail.render(46).join("\n"), /Build runtime/);
+		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /Build runtime/);
 		await fire(handlers, "session_shutdown", ctx);
 		publish("shell-session", [{ id: "job-3", label: "late", startedAt: 3 }]);
-		assert.doesNotMatch(rail.render(46).join("\n"), /late/);
+		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /late/);
 	} finally { component.dispose(); }
+});
+
+test("the jobs snapshot validator admits the finished-tail statuses", () => {
+	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-1", label: "Spawn failed", startedAt: 1, status: "failed", endedAt: 60_000, exitCode: null }] }));
+	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-2", label: "Stopped", startedAt: 1, status: "stopped", endedAt: 2 }] }));
+	assert.equal(isJobsSidebarSnapshot({ jobs: [{ id: "job-3", label: "Bad", startedAt: 1, status: "exploded" }] }), false);
 });
 
 test("hidden Status leaves only a jobs count in regular bottom and fullscreen header chrome", async (t) => {
@@ -547,6 +581,9 @@ test("hidden Status leaves only a jobs count in regular bottom and fullscreen he
 		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] } });
 		assert.equal(component.render(80).join("\n"), "⧗ 1 job");
 		assert.doesNotMatch(component.render(80).join("\n"), /CI for PR|gpt-5/);
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }] } });
+		assert.doesNotMatch(component.render(80).join("\n"), /⧗/, "a finished-only tail never paints a ⧗ 0 jobs row");
+		pi.events.emit("gentle-ai:jobs-sidebar", { sessionId: "shell-session", snapshot: { jobs: [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }] } });
 		tui.mode = "fullscreen";
 		const header = sidebarState(tui as unknown as TUI).parts.get("header")!;
 		assert.match(header.render(160).join("\n"), /⧗ 1 job/);
@@ -748,7 +785,9 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	t.mock.method(globalThis, "clearInterval", (handle: { timer: (typeof intervals)[number] }) => { handle.timer.stopped = true; });
 	const { pi, handlers } = fakePi();
 	let resolutions = 0;
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	// follow mode keeps the live p → P → G resolution, so a pin edit reaches the
+	// open session through the poll (gentle-shell#1064 slice 3b-ii).
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", GENTLE_PI_PROFILE_FOLLOW: "1" }, {
 		resolveWorktree: () => { resolutions++; return { root: repo, commonDir }; },
 	});
 	const first = fakeContext();
@@ -1797,6 +1836,8 @@ function reverseColumns(row: string): number[] {
 	let inverse = false;
 	let column = 0;
 	const selected: number[] = [];
+	const host = TuiMainScreen.prototype as unknown as { resolveFakeCursors(rows: string[]): string[] };
+	row = host.resolveFakeCursors.call({ showHardwareCursor: false }, [row])[0]!;
 	const tokens = row.match(/\x1b\[[0-9;]*m|\x1b_pi:c\x07|[^\x1b]/g) ?? [];
 	assert.equal(tokens.join(""), row);
 	for (const token of tokens) {
@@ -2012,8 +2053,7 @@ test("GentlePromptEditor autocomplete respects narrow frame widths", () => {
 test("registered prompt stays transparent while idle, working, and queued", () => {
 	const { pi, handlers, tools } = fakePi();
 	gentleShell(pi, {});
-	const { ctx, ui } = fakeContext();
-	ctx.ui.theme = { ...plainTheme, getBgAnsi: () => "\x1b[44m" } as typeof ctx.ui.theme;
+	const { ctx, ui } = fakeContext({ theme: { ...plainTheme, getBgAnsi: () => "\x1b[44m" } });
 	const editor = installedPrompt(ctx, ui, handlers);
 	try {
 		for (const state of ["idle", "working", "queued"]) {
@@ -2036,7 +2076,7 @@ test("gentleShell shows working while the agent runs and queued when messages wa
 	const editor = installedPrompt(ctx, ui, handlers);
 
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ ✿ working… ─+╮$/);
+	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] working… ─+╮$/);
 	pending.value = true;
 	assert.match(stripAnsi(editor.render(60)[0]), /^╭─ [✿❀❁✾] queued ─+╮$/);
 	for (const handler of handlers.get("agent_end") ?? []) handler({}, ctx);
@@ -2074,8 +2114,8 @@ test("visual customization and Vim register once and remain independently discov
 	assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "on");
 });
 
-test("actual Pi 1.0.0 enables a live prompt and enters NORMAL without a compatibility fallback", async () => {
- assert.equal(INSTALLED_PI, "1.0.0", "the shell audit must run against actual installed Pi 1.0.0");
+test(`actual Pi ${INSTALLED_PI} enables a live prompt and enters NORMAL without a compatibility fallback`, async () => {
+ assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `actual installed Pi ${INSTALLED_PI} must be audited`);
  const configHome = mkdtempSync(join(tmpdir(), "gentle-vim-shell-"));
  const { pi, handlers, commands } = fakePi();
  gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
@@ -2153,7 +2193,7 @@ test("vim NORMAL slash uses Pi's command and skill completion without displacing
 		fg: (_color, text) => text, bold: (text) => text, requestRender() {}, pending: () => false,
 		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
 	});
-	const entries = ["gentle:vim", "gentle:models", "skill:example"];
+	const entries = ["gentle:vim", "gentle:profiles", "skill:example"];
 	const requests: string[] = [];
 	editor.setAutocompleteProvider({
 		async getSuggestions(lines: string[], line: number, col: number) {
@@ -2809,7 +2849,7 @@ test("vim selector exposes enable, disable and status; status and cancellation d
  } finally { editor.dispose(); }
 });
 
-test("animations command reports without writing and switches the live pulse", async (t) => {
+test("animations command reports without writing and switches the live watchdog", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	const delays: number[] = [];
 	let active = 0;
@@ -2827,9 +2867,9 @@ test("animations command reports without writing and switches the live pulse", a
 	assert.match(ui.notices.at(-1)!, /animations: quality/);
 	assert.equal(existsSync(join(configHome, "animations.json")), false);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 80]);
+	assert.deepEqual(delays, [2000, 1000]);
 	await command.handler("performance", ctx);
-	assert.deepEqual(delays, [2000, 80, 1000]);
+	assert.deepEqual(delays, [2000, 1000, 1000]);
 	assert.equal(active, 2);
 	await command.handler("potato", ctx);
 	assert.equal(active, 1);
@@ -2838,7 +2878,7 @@ test("animations command reports without writing and switches the live pulse", a
 	await command.handler("invalid", ctx);
 	assert.equal(JSON.parse(readFileSync(join(configHome, "animations.json"), "utf8")).policy, "potato");
 	await command.handler("quality", ctx);
-	assert.deepEqual(delays, [2000, 80, 1000, 80]);
+	assert.deepEqual(delays, [2000, 1000, 1000, 1000]);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
 	editor.dispose();
@@ -2927,7 +2967,7 @@ test("animations with no argument opens a selectable menu and applies the chosen
 	assert.equal(existsSync(join(dismissHome, "animations.json")), false);
 });
 
-test("prompt uses the compact banner cadence and releases its unref timer at settlement", async (t) => {
+test("prompt installs the silence watchdog unref'd and releases it at settlement", async (t) => {
 	const configHome = scopedDoubleEscCancelConfigHome(t);
 	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
 	const delays: number[] = [];
@@ -2945,13 +2985,116 @@ test("prompt uses the compact banner cadence and releases its unref timer at set
 	const editor = installedPrompt(ctx, ui, handlers);
 	assert.equal(active, 1);
 	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
-	assert.deepEqual(delays, [2000, 80]);
+	assert.deepEqual(delays, [2000, 1000]);
 	assert.equal(unrefs, 2);
 	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
 	assert.equal(active, 1);
 	editor.dispose();
 	await fire(handlers, "session_shutdown", ctx);
 	assert.equal(active, 0);
+});
+
+// gentle-shell#994: the working animation is render-driven. Frames the host
+// already paints while streaming advance the petal for free; a low-cadence
+// watchdog repaints only silent phases (long tool runs with no output).
+interface RecordedInterval { tick: () => void; delay: number; stopped: boolean }
+
+function recordIntervals(t: TestContext): RecordedInterval[] {
+	const intervals: RecordedInterval[] = [];
+	t.mock.method(globalThis, "setInterval", (tick: () => void, delay: number) => {
+		const timer: RecordedInterval = { tick, delay, stopped: false };
+		intervals.push(timer);
+		return { unref() {}, timer };
+	});
+	t.mock.method(globalThis, "clearInterval", (handle: { timer: RecordedInterval }) => { handle.timer.stopped = true; });
+	return intervals;
+}
+
+function petalGlyphOf(editor: GentlePromptEditor): string {
+	return stripAnsi(editor.render(60)[0]).match(/[✿❀❁✾]/)?.[0] ?? "";
+}
+
+test("streaming frames advance the working petal and the quality watchdog stays silent while renders flow", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => 1_000_000 });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.find((entry) => entry.delay === 1000);
+	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const glyphs = [0, 1, 2, 3].map(() => petalGlyphOf(editor));
+	assert.ok(new Set(glyphs).size > 1, `each streamed frame must advance the petal, got ${glyphs.join("")}`);
+	const before = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before, "renders are already flowing, so the watchdog must not force one");
+	editor.dispose();
+	assert.equal(watchdog!.stopped, true);
+});
+
+test("silent working phases repaint only through the 1000ms watchdog window", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const renders = t.mock.method(fakeTui, "requestRender", () => {});
+	let clock = 1_000_000;
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome }, { now: () => clock });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.find((entry) => entry.delay === 1000);
+	assert.ok(watchdog, "working installs the 1000ms silence watchdog");
+	const baseline = petalGlyphOf(editor);
+	const before = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before, "no frame painted within the window, but the window has not elapsed yet");
+	clock += 1000;
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), before + 1, "silence past the window forces exactly one repaint");
+	assert.notEqual(petalGlyphOf(editor), baseline, "the watchdog advanced the petal tick");
+	const afterForced = renders.mock.callCount();
+	watchdog!.tick();
+	assert.equal(renders.mock.callCount(), afterForced, "the watchdog's own repaint counts as render traffic for the next window");
+	editor.dispose();
+});
+
+test("potato installs no working watchdog and the petal never advances", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
+	const intervals = recordIntervals(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	assert.ok(!intervals.some((entry) => entry.delay !== 2000), "potato must not animate: no watchdog interval at all");
+	const glyphs = [0, 1, 2].map(() => petalGlyphOf(editor));
+	assert.deepEqual(glyphs, ["✿", "✿", "✿"], "potato keeps the petal static");
+	editor.dispose();
+});
+
+test("the working watchdog is cleared on settlement and on dispose", (t) => {
+	const configHome = scopedDoubleEscCancelConfigHome(t);
+	writeFileSync(join(configHome, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
+	const intervals = recordIntervals(t);
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: configHome });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const watchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
+	assert.ok(watchdog && !watchdog.stopped, "working keeps the watchdog armed");
+	for (const handler of handlers.get("agent_settled") ?? []) handler({}, ctx);
+	assert.equal(watchdog!.stopped, true, "settlement must clear the watchdog");
+	for (const handler of handlers.get("agent_start") ?? []) handler({}, ctx);
+	const rearmWatchdog = intervals.filter((entry) => entry.delay === 1000).at(-1);
+	assert.ok(rearmWatchdog && rearmWatchdog !== watchdog && !rearmWatchdog.stopped, "the next turn re-arms a fresh watchdog");
+	editor.dispose();
+	assert.equal(rearmWatchdog!.stopped, true, "dispose must clear the watchdog");
 });
 
 // ---------------------------------------------------------------------------
@@ -3551,7 +3694,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	const home = scopedDoubleEscCancelConfigHome(t);
 	writeCardStyle("float", { gentlePiConfigHome: home });
 	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
-	const { pi, handlers, commands } = fakePi();
+	const { pi, handlers, commands } = fakePi([{ numstat: "2\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }, { numstat: "3\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }]);
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
 	const { ctx, ui, overlayReady } = fakeContext();
 	await fire(handlers, "session_start", ctx);
@@ -3575,8 +3718,8 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		assert.equal(footer.handleMouse?.(click(initialUsageX, 3, 139)), undefined);
 		assert.equal(footer.handleMouse?.(click(initialUsageX, 2, 139))?.handled, true);
 		ui.closeOverlay?.();
-		sessionChange(ctx, "t4d-a", "/repo", "lib/live.ts", "", "one\ntwo\n");
 		await fire(handlers, "agent_end", ctx);
+		await changesSettled();
 		const changes = widget("gentle-shell-changes");
 		for (const width of [139, 140, 240]) {
 			tui.terminal.columns = width;
@@ -3599,9 +3742,9 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		statuses.set("mcp", "MCP updated");
 		assert.notEqual(railHeader.digest!(), digest, "live status changes update the grouped digest");
 		const statusDigest = railHeader.digest!();
-		sessionChange(ctx, "t4d-b", "/repo", "lib/live.ts", "one\ntwo\n", "one\ntwo\nthree\n");
 		await fire(handlers, "agent_end", ctx);
-		assert.notEqual(railHeader.digest!(), statusDigest, "captured changes update the grouped digest");
+		await changesSettled();
+		assert.notEqual(railHeader.digest!(), statusDigest, "Git changes update the grouped digest");
 		assert.match(stripAnsi(footer.render(240).join("\n")), /\+3 −0/);
 		assert.match(stripAnsi(footer.render(240).join("\n")), /MCP updated/);
 		state.active = true;
@@ -4664,49 +4807,69 @@ function renderFooter(ui: FakeUi): string {
 	return factory(fakeTui, plainTheme, footerData).render(160)[0];
 }
 
-function sessionChange(ctx: ExtensionContext, id: string, root: string, path: string, before = "", after = "agent\n"): void {
- const entries = ctx.sessionManager.getEntries() as any[];
- entries.push({ type: "custom", customType: "gentle-pi.session-change/v1", data: {
-  sessionId: ctx.sessionManager.getSessionId(),
-  evidence: { id, root, path, before: before ? {kind:"text",text:before} : {kind:"absent"}, after:{kind:"text",text:after} },
- } });
-}
+// Changes refreshes from Git off the turn-end path; let the fake scan land.
+const changesSettled = () => backgroundChangeRefreshesSettled();
 
-test("captured changes update the widget and bar without repository scans", async () => {
- const { pi, handlers, git } = fakePi([{numstat:"999\t0\tforeign.ts\n",porcelain:"?? foreign.ts\0"}]);
+// Changes reads each root's Git state and nothing else: worktree labels,
+// status and numstat against HEAD, and a lazy diff of the selected file.
+const gitStateOnly = (git: readonly string[][]) => git.length > 0 && git.every((args) => {
+ const command = args[0] === "-C" ? args.slice(2) : args;
+ return (command[0] === "worktree" && command[1] === "list") || (command[0] === "status" && command.includes("--porcelain=v1"))
+  || (command[0] === "diff" && command.includes("HEAD")) || command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+});
+
+test("Changes lists the session root's Git state at turn end, never at startup", async () => {
+ const { pi, handlers, git } = fakePi([{numstat:"2\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0?? other.ts\0"},{numstat:"3\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0?? other.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  assert.equal(git.length,0);
  assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- sessionChange(ctx,"a","/repo","lib/b.ts","","one\ntwo\n");
- pi.events.emit("gentle-pi:session-change",{sessionId:ctx.sessionManager.getSessionId()});
- await new Promise(resolve=>setImmediate(resolve));
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
  const factory=ui.widgets.get("gentle-shell-changes") as any;
- assert.match(factory(fakeTui,plainTheme).render(140)[0],/1 file · \+2 −0/);
- assert.match(renderFooter(ui),/main ±1/);
+ assert.match(factory(fakeTui,plainTheme).render(140)[0],/2 files · \+2 −0/, "files no agent wrote are listed too: Git decides");
+ assert.match(renderFooter(ui),/main ±2/);
  const rail = sidebarState(fakeTui as unknown as TUI).parts.get("footer")!;
  const digest = rail.digest!();
- assert.match(rail.render(46).join("\n"), /1 file · \+2 −0/);
- sessionChange(ctx,"b","/repo","lib/b.ts","one\ntwo\n","one\ntwo\nthree\n");
+ assert.match(rail.render(46).join("\n"), /2 files · \+2 −0/);
  await fire(handlers,"agent_end",ctx);
+ await changesSettled();
  assert.notEqual(rail.digest!(), digest, "same-count line changes invalidate the unified Status");
- assert.match(rail.render(46).join("\n"), /1 file · \+3 −0/);
- assert.equal(git.length,0);
+ assert.match(rail.render(46).join("\n"), /2 files · \+3 −0/);
+ assert.ok(gitStateOnly(git), JSON.stringify(git));
+ assert.ok(git.every((args) => args[1] === "/repo"), "only the session's own root is scanned");
  await fire(handlers,"session_shutdown",ctx);
 });
 
-
-// The changes overlay may ask Git for each captured root's HEAD label, and
-// nothing else: no status, diff, numstat or worktree scan behind the user's
-// back. Labelling is metadata, scanning is the behaviour these tests forbid.
-const onlyHeadLabels = (git: readonly string[][]) => git.every((args) => {
- const command = args[0] === "-C" ? args.slice(2) : args;
- return command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+test("committed work leaves the widget and the footer counter at the next turn end", async () => {
+ const { handlers, git, pi } = fakePi([{numstat:"1\t0\tlib/b.ts\n",porcelain:" M lib/b.ts\0"},{numstat:"",porcelain:""}]);
+ gentleShell(pi,{});
+ const {ctx,ui}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ assert.equal(git.length,0,"startup never scans");
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
+ assert.match(renderFooter(ui),/main ±1/);
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
+ assert.doesNotMatch(renderFooter(ui),/±/);
+ assert.equal(ui.widgets.has("gentle-shell-changes"),false);
+ await fire(handlers,"session_shutdown",ctx);
 });
 
-test("same-session explicit registration after bootstrap does not claim Changes", async () => {
-	const { pi, handlers, commands, tools, git } = fakePi();
+test("a turn end never waits for Git", async () => {
+ const { pi, handlers } = fakePi();
+ (pi as unknown as { exec: () => Promise<never> }).exec = () => new Promise<never>(() => {});
+ gentleShell(pi,{});
+ const {ctx}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ await Promise.race([fire(handlers,"agent_end",ctx), new Promise((_, reject) => setTimeout(() => reject(new Error("agent_end waited for Git")), 100))]);
+ await fire(handlers,"session_shutdown",ctx);
+});
+
+test("explicit registration validates the clone, and a clean registered root shows no Changes", async () => {
+	const { pi, handlers, commands, tools } = fakePi();
 	let bootstrapped = false;
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		resolveWorktree: (path) => bootstrapped ? { root: path === "." ? "/repo" : path, commonDir: path === "/foreign" ? "/foreign/git" : "/repo/.git" } : undefined,
@@ -4720,70 +4883,77 @@ test("same-session explicit registration after bootstrap does not claim Changes"
 	await register.execute("after", { path: "/repo" }, undefined, undefined, ctx);
 	await register.execute("dedup", { path: "/repo" }, undefined, undefined, ctx);
 	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /same Git clone/);
+	await assert.rejects(register.execute("foreign", { path: "/foreign" }, undefined, undefined, ctx), /subagent_run with repository_root/);
 	assert.equal(ctx.sessionManager, manager);
 	assert.equal(ctx.sessionManager.getEntries().length, 1);
 	await commands.get("gentle:changes")!.handler("", ctx);
-	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.match(ui.notices.join("\n"), /No uncommitted changes/);
 	assert.equal(ui.overlay, undefined);
-	assert.deepEqual(git, []);
 	await fire(handlers, "session_shutdown", ctx);
 });
 
-test("Changes opens only for captured mutations, not registered dirty roots", async () => {
- const {pi,handlers,commands,tools,git}=fakePi();
+test("a registered worktree opens Changes as its own group", async () => {
+ const {pi,handlers,commands,tools,git}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
  gentleShell(pi,{});
  const {ctx,ui,overlayReady}=fakeContext();
  await fire(handlers,"session_start",ctx);
  await tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,ctx);
- await commands.get("gentle:changes")!.handler("",ctx);
- assert.match(ui.notices.join("\n"),/No captured agent changes/);
- assert.equal(ui.overlay,undefined);
- sessionChange(ctx,"a","/linked","file.ts");
- await fire(handlers,"agent_end",ctx);
- const opened=commands.get("gentle:changes")!.handler("",ctx);
- await overlayReady;
- assert.match(ui.overlayView!.render(140).join("\n"),/linked/);
- assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
- ui.closeOverlay?.(); await opened;
- await fire(handlers,"session_shutdown",ctx);
-});
-
-test("overlay groups captured roots and refreshes same-count diffs without HEAD or external files", async () => {
- const {pi,handlers,commands,git}=fakePi();
- gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_POLL_MS:"5"});
- const {ctx,ui,overlayReady}=fakeContext();
- sessionChange(ctx,"a","/repo","same.ts","old\n","first\n");
- sessionChange(ctx,"child:a","/linked","same.ts","old\n","child\n");
- await fire(handlers,"session_start",ctx);
  const opened=commands.get("gentle:changes")!.handler("",ctx);
  await overlayReady;
  try {
-  ui.overlayView!.handleInput("\r"); ui.overlayView!.handleInput("j");
-  await new Promise(resolve=>setTimeout(resolve,10));
-  assert.match(ui.overlayView!.render(140).join("\n"),/first/);
-  sessionChange(ctx,"b","/repo","same.ts","first\n","second\n");
-  pi.events.emit("gentle-pi:session-change",{sessionId:ctx.sessionManager.getSessionId()});
-  await new Promise(resolve=>setTimeout(resolve,20));
-  assert.match(ui.overlayView!.render(140).join("\n"),/second/);
-  assert.doesNotMatch(ui.overlayView!.render(140).join("\n"),/first/);
-  assert.ok(onlyHeadLabels(git), `overlay ran more than HEAD labelling: ${JSON.stringify(git)}`);
+  const rendered=ui.overlayView!.render(140).join("\n");
+  assert.match(rendered,/main · repo/);
+  assert.match(rendered,/detached · linked/, "a root outside the worktree list asks for its own HEAD");
+  assert.ok(gitStateOnly(git), JSON.stringify(git));
  } finally { ui.closeOverlay?.(); await opened; await fire(handlers,"session_shutdown",ctx); }
 });
 
-test("new sessions ignore inherited captures, while reload restores the same session", async () => {
+// /gentle:changes opens like Gentle Agents: a full-terminal overlay whose
+// native fullscreen wrapper still routes mouse events to the changes view.
+test("Changes opens full screen and the wrapper keeps mouse hit-testing aligned", async () => {
+ const {pi,handlers,commands}=fakePi([{numstat:"",porcelain:" M file.ts\0?? dirty.ts\0"}]);
+ gentleShell(pi,{});
+ const {ctx,ui,overlayReady}=fakeContext();
+ await fire(handlers,"session_start",ctx);
+ const opened=commands.get("gentle:changes")!.handler("",ctx);
+ await overlayReady;
+ const overlay=ui.overlayView as unknown as { render(width: number): string[]; handleInput(data: string): void; handleMouse(event: unknown): unknown };
+ const at=(type: string, x: number, y: number) => ({ type, button: type === "move" ? "none" : "left", x, y, screenX: x, screenY: y, width: 140, height: 40, shift: false, alt: false, ctrl: false });
+ try {
+  assert.deepEqual(ui.customOptions?.at(-1), { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } });
+  assert.equal(overlay.render(140).length, 40, "the overlay uses every terminal row");
+  overlay.handleInput("\r");
+  overlay.render(140);
+  const { handled, render } = overlay.handleMouse(at("click", 3, 3)) as { handled?: boolean; render?: boolean };
+  assert.deepEqual({ handled, render }, { handled: true, render: true });
+  assert.match(overlay.render(140)[3]!, /▸   M file\.ts/, "a click through the wrapper selects the file");
+  overlay.handleInput("F");
+  assert.match(overlay.render(140)[1]!, /^│ M file\.ts +│$/, "F switches to diff-only inside the fullscreen overlay");
+ } finally { ui.closeOverlay?.(); await opened; }
+ const reopened=commands.get("gentle:changes")!.handler("",ctx);
+ for (let attempt=0; attempt<100 && ui.overlayView===overlay; attempt++) await new Promise((resolve)=>setTimeout(resolve,5));
+ try {
+  assert.match(ui.overlayView!.render(140)[1]!, /main · repo/, "diff-only mode is not persisted across openings");
+ } finally { ui.closeOverlay?.(); await reopened; await fire(handlers,"session_shutdown",ctx); }
+});
+
+test("new sessions do not inherit another session's worktrees", async () => {
  const h=fakePi(); gentleShell(h.pi,{});
  const first=fakeContext();
- sessionChange(first.ctx,"a","/repo","own.ts");
  await fire(h.handlers,"session_start",first.ctx);
- assert.match(renderFooter(first.ui),/±1/);
- await fire(h.handlers,"session_start",first.ctx);
- assert.match(renderFooter(first.ui),/±1/);
+ await h.tools.get("session_worktree_register")!.execute("r",{path:"/linked"},undefined,undefined,first.ctx);
+ // The registration kicks off its own async scan; settle it so its Git calls
+ // cannot land after the next session clears the shared call log.
+ await changesSettled();
+ await fire(h.handlers,"session_shutdown",first.ctx);
  const next=fakeContext({entries:[...first.ctx.sessionManager.getEntries()]});
  (next.ctx.sessionManager as any).getSessionId=()=>"new-session";
  await fire(h.handlers,"session_start",next.ctx);
- h.pi.events.emit("gentle-pi:session-change",{sessionId:"shell-session"});
- assert.doesNotMatch(renderFooter(next.ui),/±1/);
- assert.equal(h.git.length,0);
+ h.git.length=0;
+ await fire(h.handlers,"agent_end",next.ctx);
+ await changesSettled();
+ assert.ok(h.git.length>0);
+ assert.ok(h.git.every((args)=>args[1]==="/repo"), JSON.stringify(h.git));
  await fire(h.handlers,"session_shutdown",next.ctx);
 });
 
@@ -4815,7 +4985,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	h.pi.exec = ((command: string, args: string[], options: { timeout?: number } = {}) => new Promise((resolve) => {
 		execFile(command, args, { env: poisoned, encoding: "utf8", timeout: options.timeout, maxBuffer: Infinity }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error ? typeof error.code === "number" ? error.code : 1 : 0, killed: Boolean(error?.killed) }));
 	})) as ExtensionAPI["exec"];
-	const { ctx, ui } = fakeContext();
+	const { ctx, ui, overlayReady } = fakeContext();
 	(ctx as unknown as { cwd: string }).cwd = selected;
 	(ctx.sessionManager as unknown as { getCwd(): string }).getCwd = () => selected;
 	const run = shellGitRunner(selected, poisoned);
@@ -4825,7 +4995,7 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	installGentleShell(h.pi, isolatedEnv({ GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }), { devBinary: () => undefined, gitRunner: (cwd) => shellGitRunner(cwd, poisoned) });
 	await fire(h.handlers, "session_start", ctx);
 	t.after(() => fire(h.handlers, "session_shutdown", ctx));
-	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "preexisting dirty files are not agent changes");
+	assert.equal(ui.widgets.has("gentle-shell-changes"), false, "startup never scans the repository");
 	const diff = await loadFileDiff(run, { path: "tracked.txt", added: 1, deleted: 1, status: CHANGE_STATUS.MODIFIED });
 	assert.match(diff, /\+selected change/);
 	assert.doesNotMatch(diff, /foreign change/);
@@ -4839,8 +5009,15 @@ test("registered canonical root governs real Git discovery, status and diff desp
 	assert.equal(largeDiff.code, 0);
 	assert.ok(largeDiff.stdout.length > 1024 * 1024, "output must not inherit execFile's default one MiB cap");
 	assert.match(largeDiff.stdout, /\+selected final marker/);
-	await h.commands.get("gentle:changes")!.handler("", ctx);
-	assert.equal(ui.overlay, undefined);
+	const bounded = shellGitRunner(selected, poisoned, execFile, DIFF_MAX_BYTES);
+	assert.equal((await bounded(["diff", "HEAD", "--", "tracked.txt"])).truncated, true, "the diff runner stops at its bound instead of buffering everything");
+	assert.ok(await loadFileDiff(bounded, { path: "tracked.txt", added: 70_001, deleted: 1, status: CHANGE_STATUS.MODIFIED }) === DIFF_TOO_LARGE);
+	const opened = h.commands.get("gentle:changes")!.handler("", ctx);
+	await overlayReady;
+	const trees = (ui.overlayView as unknown as { children: Array<{ trees: Array<{ root: string; model: { files: Array<{ path: string }> } }> }> }).children[0]!.trees;
+	assert.deepEqual(trees.map((tree) => [tree.root, tree.model.files.map((file) => file.path)]), [[selected, ["selected-only.txt", "tracked.txt"]]], "inherited routing never lists the foreign repository");
+	ui.closeOverlay?.();
+	await opened;
 });
 
 test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked files", async () => {
@@ -4857,9 +5034,20 @@ test("loadFileDiff asks git for a HEAD diff, or a no-index diff for untracked fi
 	]);
 });
 
+test("loadFileDiff replaces one oversized diff with a short open-in-editor line", async () => {
+	const answer = (stdout: string, truncated?: boolean) => async () => ({ stdout, code: 0, ...(truncated ? { truncated } : {}) });
+	const file = { path: "big.ts", added: 1, deleted: 0, status: CHANGE_STATUS.MODIFIED };
+	// assert.ok keeps a failure from printing megabytes of diff.
+	assert.ok(await loadFileDiff(answer("+x\n".repeat(DIFF_MAX_LINES + 1)), file) === DIFF_TOO_LARGE, "too many lines");
+	assert.ok(await loadFileDiff(answer("+" + "x".repeat(DIFF_MAX_BYTES)), file) === DIFF_TOO_LARGE, "too many bytes");
+	assert.ok(await loadFileDiff(answer("+partial", true), file) === DIFF_TOO_LARGE, "a runner that hit its buffer bound");
+	assert.match(DIFF_TOO_LARGE, /too large.*o.*editor/i);
+	assert.equal(await loadFileDiff(answer("+x\n".repeat(10)), file), "+x\n".repeat(10));
+});
+
 test("shell Git runner hides initial and repeated background polling children", async () => {
 	const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
-	const run = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string) => void) => {
+	const run = ((command: string, args: readonly string[], options: Record<string, unknown>, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
 		calls.push({ command, args, options });
 		callback(null, "", "");
 	}) as typeof import("node:child_process").execFile;
@@ -4912,23 +5100,24 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 	const shortcut = shortcuts.get("alt+g");
 	assert.ok(shortcut, "alt+g not registered");
 	await shortcut.handler(ctx);
-	assert.match(ui.notices.join("\n"), /No captured agent changes/);
+	assert.match(ui.notices.join("\n"), /No uncommitted changes/);
 
 	const silent = fakePi();
 	gentleShell(silent.pi, { GENTLE_PI_SHELL_CHANGES_KEY: "off" });
 	assert.equal(silent.shortcuts.has("alt+g"), false, "the changes shortcut must not register when disabled");
 });
 
-test("external edits do not pollute Changes or trigger background Git scans", async () => {
+test("Changes never polls Git in the background; external edits appear at turn end", async () => {
  const {pi,handlers,git}=fakePi([{numstat:"4\t2\texternal.ts\n",porcelain:" M external.ts\0"}]);
  gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
  const {ctx,ui}=fakeContext();
  await fire(handlers,"session_start",ctx);
  await new Promise(resolve=>setTimeout(resolve,30));
- await fire(handlers,"agent_end",ctx);
  assert.equal(git.length,0);
  assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- assert.doesNotMatch(renderFooter(ui),/±/);
+ await fire(handlers,"agent_end",ctx);
+ await changesSettled();
+ assert.match(renderFooter(ui),/±1/);
  await fire(handlers,"session_shutdown",ctx);
 });
 
@@ -5333,6 +5522,41 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 	assert.doesNotMatch(renderFooter(ui), /codex/);
 });
 
+test("gentleShell files header usage under the provider that served the response", async () => {
+	// pi-claude-bridge forwards Claude Code's usage as the Anthropic unified
+	// headers, so the headers alone name `anthropic` while the session runs on
+	// `claude-bridge`.
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { model: { provider: string } }).model.provider = "claude-bridge";
+	await fire(handlers, "session_start", ctx);
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.25", "anthropic-ratelimit-unified-7d-utilization": "0.9" } }, ctx);
+	}
+	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25% · week 90%/);
+
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi).join("\n");
+	assert.match(plain, /✿ claude-bridge ·/);
+	assert.doesNotMatch(plain, /no subscription usage for this provider/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("gentleShell keeps the header provider when no model served the response", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { model: { provider: string } }).model.provider = "anthropic";
+	await fire(handlers, "session_start", ctx);
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.25" } }, { ...ctx, model: undefined });
+	}
+	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25%/);
+});
+
 test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
@@ -5504,15 +5728,15 @@ test("/gentle:commands shows only curated, registered commands, grouped, by thei
 	assert.match(rendered, /Diagnostics/);
 	assert.match(rendered, /Skills/);
 	assert.doesNotMatch(rendered, /\bSDD\b/, "the SDD group has no registered commands and must not appear");
-	assert.match(rendered, /Assign models and effort/);
-	assert.match(rendered, /Browse captured changes/);
+	assert.match(rendered, /Models and profiles/);
+	assert.match(rendered, /Browse changes/);
 	assert.match(rendered, /Gentle AI status/);
 	assert.match(rendered, /Refresh skill registry/);
-	assert.doesNotMatch(rendered, /gentle:models|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
+	assert.doesNotMatch(rendered, /gentle:profiles|gentle:changes|gentle:status|skill-registry:refresh/, "raw command names must not leak; only labels are shown");
 	assert.doesNotMatch(rendered, /gentle:not-in-catalog/);
 	assert.doesNotMatch(rendered, /skill:foo/);
-	const changesLine = lines.find((line) => line.includes("Browse captured changes"));
-	assert.match(changesLine ?? "", /alt\+g/, "expected the configured alt+g shortcut hint next to Browse captured changes");
+	const changesLine = lines.find((line) => line.includes("Browse changes"));
+	assert.match(changesLine ?? "", /alt\+g/, "expected the configured alt+g shortcut hint next to Browse changes");
 	ui.overlayView!.handleInput("\x1b");
 	await opened;
 });
@@ -5523,13 +5747,13 @@ test("selecting a command from the palette by its label sends the underlying com
 	const { ctx, ui, overlayReady } = fakeContext();
 	const opened = commands.get("gentle:commands")!.handler("", ctx);
 	await overlayReady;
-	// "mod" only matches the "Assign models and effort" label (it contains
-	// "mod" via "models"); nothing else in the fixture does.
+	// "mod" only matches the "Models and profiles" label (it contains "mod"
+	// via "Models"); nothing else in the fixture does.
 	for (const ch of "mod") ui.overlayView!.handleInput(ch);
-	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	assert.match(ui.overlayView!.render(100).join("\n"), /Models and profiles/);
 	ui.overlayView!.handleInput("\r");
 	await opened;
-	assert.deepEqual(sentMessages, [{ content: "/gentle:models", options: { expandPromptTemplates: true } }]);
+	assert.deepEqual(sentMessages, [{ content: "/gentle:profiles", options: { expandPromptTemplates: true } }]);
 });
 
 test("escaping the palette sends no message", async () => {
@@ -5572,7 +5796,7 @@ test("the alt+k shortcut opens the same command palette as the command", async (
 	assert.ok(shortcut, "alt+k not registered");
 	const opened = shortcut.handler(ctx);
 	await overlayReady;
-	assert.match(ui.overlayView!.render(100).join("\n"), /Assign models and effort/);
+	assert.match(ui.overlayView!.render(100).join("\n"), /Models and profiles/);
 	ui.overlayView!.handleInput("\x1b");
 	await opened;
 });
@@ -5929,12 +6153,70 @@ test("after a profile switch the panel stops presenting the old profile's provid
 	ui.closeOverlay?.();
 	await opened;
 
-	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: {} }, "solo");
+	// An open session changes profile only through its own Enter (gentle-shell#1064
+	// slice 3b-ii): a new global default would leave its frozen routing in place.
+	bindSessionProfile("shell-session", "solo", {});
+	t.after(() => resetSessionProfileBindingsForTesting());
 	const reopened = commands.get("gentle:usage")!.handler("", ctx);
 	await settle();
 	assert.equal(ui.overlayView!.render(90).map(stripAnsi).some((line) => line.includes("nan")), false, "a provider recorded under the previous profile's routing is not current scope");
 	ui.closeOverlay?.();
 	await reopened;
+});
+
+test("an open session keeps its frozen profile in the status and Usage scope when the defaults change", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "shell-frozen-"));
+	const commonDir = mkdtempSync(join(tmpdir(), "shell-frozen-git-"));
+	t.after(() => {
+		rmSync(home, { recursive: true, force: true });
+		rmSync(commonDir, { recursive: true, force: true });
+	});
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "team");
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch(NAN_QUOTA_PAYLOAD).fetchFn, now: () => 1_788_600_000_000, resolveWorktree: () => ({ root: "/repo", commonDir }) });
+	const { ctx, ui } = fakeContext({ token: JWT });
+	await fire(handlers, "session_start", ctx);
+	assert.equal(readFrozenInheritedProfile("shell-session")?.profile?.name, "team", "the session froze the global active profile at start");
+	writeProfilesStore(home, { team: { reviewer: { model: "nan/glm5.3" } }, solo: { reviewer: { model: "openai-codex/gpt-5.5" } } }, "solo");
+	writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "solo" }));
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await settle();
+	assert.ok(openPanelLines(ui).some((line) => /^│ nan ·/.test(line)), "Usage keeps the frozen profile's nan route");
+	ui.closeOverlay?.();
+	await opened;
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const status = (sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail).render(60).join("\n");
+		assert.match(status, /Profile.*team/, "the status keeps the bare global name of the frozen profile");
+		assert.doesNotMatch(status, /solo/);
+	} finally {
+		component.dispose();
+	}
+});
+
+test("active profile reader: a bound session shows its frozen profile, and follow shows the live default", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "shell-profile-frozen-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const commonDir = join(root, "git");
+	mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
+	writeFileSync(join(root, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {}, other: {} } }));
+	const pin = (profile: string) => writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile }));
+	pin("other");
+	const frozen = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root });
+	frozen.bind(root, () => ({ root, commonDir }), "session-frozen");
+	assert.equal(frozen(), "other (local)");
+	const follow = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: root, GENTLE_PI_PROFILE_FOLLOW: "1" });
+	follow.bind(root, () => ({ root, commonDir }), "session-follow");
+	assert.equal(follow(), "other (local)");
+	rmSync(join(commonDir, "gentle-ai", "profile-pin.json"));
+	assert.equal(frozen.refresh(), false, "the frozen label does not move");
+	assert.equal(frozen(), "other (local)");
+	assert.equal(follow.refresh(), true);
+	assert.equal(follow(), "team", "follow falls to the global active profile");
+	assert.equal(readFrozenInheritedProfile("session-follow"), undefined);
 });
 
 function openPanelLines(ui: FakeUi): string[] {
@@ -6195,4 +6477,137 @@ test("an explicit session binding routes the Usage scope ahead of the pin and th
 	} finally {
 		resetSessionProfileBindingsForTesting();
 	}
+});
+
+// S9: the config home each of these reads resolves, per case. The OS home is
+// a temporary folder in every case, so no case can reach the real one.
+// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
+// counts as unset (#2201; it used to name the current folder). "bundled" stands
+// in for this package running from a bundled install (testing overlay) whose
+// prefix the launcher passed; the user's own GENTLE_PI_CONFIG_HOME is then not
+// this install's.
+type ConfigHomeCase = "unset" | "empty" | "bundled";
+function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
+	const cwd = process.cwd();
+	process.env.HOME = join(base, "home");
+	process.env.USERPROFILE = join(base, "home");
+	delete process.env.GENTLE_PI_CONFIG_HOME;
+	delete process.env.GENTLE_SHELL_PREFIX;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
+	t.after(() => {
+		process.chdir(cwd);
+		setBundledInstallForTesting(undefined);
+		for (const [name, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(base, { recursive: true, force: true });
+	});
+	const userConfig = join(base, "user-config");
+	if (kind === "unset") return { env: {}, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	if (kind === "empty") {
+		mkdirSync(join(base, "cwd"));
+		process.chdir(join(base, "cwd"));
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	}
+	const prefix = join(base, "prefix");
+	mkdirSync(prefix);
+	setBundledInstallForTesting({ root: prefix });
+	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
+}
+
+function profileStore(dir: string, active: string, names: string[]) {
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles: Object.fromEntries(names.map((name) => [name, {}])) }));
+}
+
+for (const kind of ["unset", "empty", "bundled"] as const) {
+	test(`the profile reader reads the global store from the ${kind} config home`, (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		// The user's own store names another profile: only the bundled case must ignore it.
+		profileStore(userConfig, "team", ["team"]);
+		profileStore(dir, "other", ["team", "other"]);
+		assert.equal(createActiveProfileReader(env)(), "other");
+	});
+
+	test(`the bound profile reader resolves pins against the ${kind} config home`, (t) => {
+		const { env, dir, userConfig } = configHomeCase(t, kind);
+		profileStore(userConfig, "team", ["team"]);
+		profileStore(dir, "team", ["team", "other"]);
+		const repo = join(dir, "..", `repo-${kind}`);
+		mkdirSync(join(repo, ".pi", "gentle-ai"), { recursive: true });
+		writeFileSync(join(repo, ".pi", "gentle-ai", "profile.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "other" }));
+		const read = createActiveProfileReader(env);
+		read.bind(repo, () => ({ root: repo, commonDir: join(repo, ".git-common") }));
+		read.refresh();
+		assert.equal(read(), "other (repo)", "the pinned profile exists only in that config home's store");
+	});
+}
+
+// gentle-shell#2464: a pasted image is an atomic chip in the draft and a real
+// image attachment on submit, never a temp-file path the model must `read`.
+const CHIP_PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01]);
+const chipKeybindings = { matches: (data: string, action: string) => action === "app.clipboard.pasteImage" && data === "\x1bv" };
+
+async function pastedChipPrompt(model?: ExtensionContext["model"]) {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {}, { readClipboardImage: async () => ({ bytes: CHIP_PNG, mimeType: "image/png" }) });
+	const { ctx, ui } = fakeContext();
+	if (model) (ctx as { model: unknown }).model = model;
+	const editor = installedPrompt(ctx, ui, handlers, chipKeybindings);
+	editor.onPasteImage = () => assert.fail("Pi's path-inserting paste must not run when the clipboard holds an image");
+	editor.setText("what is this?");
+	editor.handleInput("\x1bv");
+	await settle();
+	const input = (text: string, source = "interactive") => handlers.get("input")?.[0]?.({ type: "input", text, source }, ctx);
+	// Pi's real order: the editor empties its draft, then onSubmit hands the
+	// text to session.prompt(), which runs the input handlers.
+	const submit = () => {
+		let sent = "";
+		editor.onSubmit = (text) => { sent = text; };
+		editor.handleInput("\r");
+		return input(sent);
+	};
+	return { editor, ui, input, submit };
+}
+
+test("pasted image chips are submitted as real image attachments (gentle-shell#2464)", async () => {
+	const { editor, ui, input, submit } = await pastedChipPrompt();
+	assert.equal(editor.getText(), "what is this? [Image#1]");
+	const strip = (ui.widgets.get("gentle-shell-image-attachments") as (tui: unknown, theme: unknown) => { render(width: number): string[] })(fakeTui, plainTheme);
+	assert.equal(stripAnsi(strip.render(80)[0] ?? ""), "[Image#1] png · 2×1 · 24 B");
+	assert.deepEqual(submit(), {
+		action: "transform",
+		text: "what is this? [Image#1]",
+		images: [{ type: "image", data: Buffer.from(CHIP_PNG).toString("base64"), mimeType: "image/png" }],
+	});
+	// Sent images are released: recalling the same text later is ordinary text.
+	assert.equal(editor.getText(), "");
+	assert.deepEqual(strip.render(80), []);
+	assert.deepEqual(input("what is this? [Image#1]"), { action: "continue" });
+});
+
+test("a pasted image chip deleted before submit is never sent (gentle-shell#2464)", async () => {
+	const { editor, submit } = await pastedChipPrompt();
+	editor.handleInput("\x7f");
+	assert.equal(editor.getText(), "what is this? ");
+	assert.deepEqual(submit(), { action: "continue" });
+});
+
+test("pasted image chips leave non-interactive input and deleted chips untouched (gentle-shell#2464)", async () => {
+	const { input } = await pastedChipPrompt();
+	assert.deepEqual(input("[Image#1] from an extension", "extension"), { action: "continue" });
+	assert.deepEqual(input("the chip was deleted"), { action: "continue" });
+});
+
+test("pasted image chips warn instead of sending images a text-only model rejects (gentle-shell#2464)", async () => {
+	const { ui, input } = await pastedChipPrompt({ id: "text-only", provider: "acme", input: ["text"] } as unknown as ExtensionContext["model"]);
+	assert.deepEqual(input("what is this? [Image#1]"), {
+		action: "transform",
+		text: "what is this? [Image#1 omitted: the current model does not accept images]",
+		images: [],
+	});
+	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
 });

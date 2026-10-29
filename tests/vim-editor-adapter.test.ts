@@ -277,12 +277,12 @@ test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () 
 });
 
 test("audited Pi editor releases are one frozen exact allowlist that includes the installed TUI", () => {
-  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0"]);
+  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"]);
   assert.equal(bundledAgent.VERSION, INSTALLED_PI, "bundled and local metadata must describe the same actual installed release");
   assert.ok(Object.isFrozen(AUDITED_PI_EDITOR_VERSIONS));
   assert.throws(() => (AUDITED_PI_EDITOR_VERSIONS as unknown as string[]).push("0.99.3"), TypeError);
   assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `installed pi-tui ${INSTALLED_PI} must be audited`);
-  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", "1.2.1", "1.2.0-rc.1", "v1.2.0", ">=1.2.0", undefined, 99.2]) {
+  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", "1.2.1", "1.2.0-rc.1", "v1.2.0", ">=1.2.0", "1.4.1", "1.5.0", "1.4.0-rc.1", undefined, 99.2]) {
     assert.equal(isAuditedPiEditorVersion(unknown), false, String(unknown));
   }
 });

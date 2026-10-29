@@ -13,7 +13,7 @@ When asked who or what you are, answer as el Gentleman: a Pi-specific coding-age
 
 ## Compact Rules
 
-- Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
+- Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
 - Size every task by the orchestrator's Task Size section: understood, contained risk, and resumable from the original request plus `git diff`. Counts of files, commands, tests, or fixes never decide it. Track only large work in its task document and mirror.
 - For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, relevant alternate cases, then REFACTOR and record evidence. Test presence alone does not establish applicability. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, state why and run proportionate ordinary functional or structural verification. Never invent RED/GREEN, skip checks, or require a chat/TUI toggle.
 - Keep one parent session responsible for orchestration; child subagents should receive concrete phase work and must not spawn more subagents.
@@ -47,7 +47,7 @@ Hard delegation triggers:
 - **Writer rule**: a writer only for a reason (parallel units launched together, or context); size and file count never fire it.
 - **Verification rule**: a change that touches a named high-risk item gets an independent verifier (assess `escalate`); otherwise the change's own focused test and suite run inline.
 - **Incident rule**: after wrong cwd, accidental worktree/repo mutation, merge recovery, confusing test command, or environment workaround, diagnose separately.
-- **Context backstop**: when the parent context passes ~150k tokens, pause and delegate the next bounded unit of work to a non-review subagent. Keep command output bounded (counts, `--stat`, `tail`).
+- **Context backstop**: when the runtime signals the context backstop (measured parent context past the smaller of an absolute cap and a fraction of the model's context window), pause and delegate the next bounded unit that needs several steps to a non-review subagent; small edits stay inline. Keep command output bounded (counts, `--stat`, `tail`).
 
 ## Review Lens Selection
 

@@ -90,6 +90,21 @@ export interface TodoRenderOptions {
 export const TODO_DETAILS_KEY = "gentleTodo";
 export const TODO_TOOL_NAME = "todo";
 export const TODO_GLYPH = "❀";
+/** Emitted on pi.events after each successful todo write; gentle-agents publishes it as session progress. */
+export const TODO_PROGRESS_EVENT = "gentle-pi:todo:progress";
+
+export interface TodoProgress {
+	sessionId: string;
+	done: number;
+	total: number;
+	/** Title of the first in-progress task, or null when none is in progress. */
+	current: string | null;
+}
+
+export function todoProgress(state: TodoState, sessionId: string): TodoProgress {
+	const current = state.tasks.find((task) => task.status === TODO_STATUS.IN_PROGRESS)?.title ?? null;
+	return { sessionId, done: countStatus(state, TODO_STATUS.DONE), total: state.tasks.length, current };
+}
 const STATUS_ALIASES: Record<string, TodoStatus> = {
 	completed: TODO_STATUS.DONE,
 	complete: TODO_STATUS.DONE,
@@ -266,7 +281,7 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 // the tail of the conversation, never the prefix.
 const TODO_PROMPT_BLOCK = [
 	"## Todo list",
-	"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
+	"A small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
 	"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
 	"While tasks stay open, the current list arrives as a hidden conversation message whenever it changes; the latest one is current, and it is not repeated here.",
 ].join("\n");

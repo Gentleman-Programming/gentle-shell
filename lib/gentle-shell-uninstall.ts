@@ -1,6 +1,8 @@
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { withoutBundledNpmCommand } from "./gentle-shell-bundled.ts";
 import { isolatedDir, launcherConfigPath, parseRawLauncherConfig, provisionedEntry, userPiHome } from "./gentle-shell-launcher.ts";
 
 // `gentle-shell self-uninstall`: removes what Gentle Shell itself created, then
@@ -778,6 +780,18 @@ function printBundledPlan(plan: BundledPlan, input: BundledSelfUninstallInput, o
 	}
 }
 
+/** Replaces `path`'s text through a same-directory temporary file, so a crash never leaves it half-written. */
+function writeTextAtomically(path: string, text: string): void {
+	const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+	try {
+		writeFileSync(temporary, text);
+		renameSync(temporary, path);
+	} catch (error) {
+		try { unlinkSync(temporary); } catch { /* The temporary file is best effort. */ }
+		throw error;
+	}
+}
+
 /**
  * Runs `gentle-shell self-uninstall` for the bundled install at `root`. Exit
  * codes as runSelfUninstall: 0 done or dry run, 1 refused, cancelled or failed,
@@ -836,6 +850,24 @@ export async function runBundledSelfUninstall(input: BundledSelfUninstallInput):
 		if (plan.removeRoot && plan.held.length === 0) removeIfEmpty(root);
 	} catch {
 		// A leftover empty folder is harmless.
+	}
+	// A home that stays must not keep Pi pointed at the npm this uninstall removed
+	// (#2469): an `npmCommand` naming the prefix fails every later `pi install`
+	// with ENOENT naming the deleted node.exe.
+	if (!confirmation.includeShared) {
+		const settingsPath = join(plan.shellHome, "agent", "settings.json");
+		let settingsText: string | undefined;
+		try { settingsText = readFileSync(settingsPath, "utf8"); } catch { settingsText = undefined; }
+		const removal = withoutBundledNpmCommand(settingsText, (path) => within(root, path, platform));
+		if (removal.status === "removed") {
+			try {
+				writeTextAtomically(settingsPath, removal.text);
+				out(`Removed npmCommand from ${settingsPath}: it named the removed install.`);
+			} catch (error) {
+				err(`gentle-shell self-uninstall: could not remove npmCommand from ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`);
+				err(`Pi package installs keep failing until the npmCommand naming ${root} is deleted from it.`);
+			}
+		}
 	}
 	if (plan.held.length > 0) {
 		try {

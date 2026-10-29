@@ -76,6 +76,28 @@ test("review Git environment rejects inherited unsafe Git overrides", () => {
 	}
 });
 
+// gentle-shell#2552: the unit-test runner pins the config-file keys for
+// hermeticity, and reviewGitEnvironment overrides them itself, so inherited
+// values must be tolerated instead of failing closed; routing overrides do not.
+test("review Git environment tolerates inherited config-file keys and still pins them", () => {
+	const prior = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT };
+	try {
+		process.env.GIT_CONFIG_GLOBAL = "/hostile/global.gitconfig";
+		process.env.GIT_CONFIG_NOSYSTEM = "1";
+		const environment = reviewGitEnvironment();
+		assert.equal(environment.GIT_CONFIG_GLOBAL, "/dev/null");
+		assert.equal(environment.GIT_CONFIG_SYSTEM, "/dev/null");
+		assert.equal(environment.GIT_CONFIG_NOSYSTEM, "1");
+		process.env.GIT_CONFIG_COUNT = "1";
+		assert.throws(() => reviewGitEnvironment(), /REVIEW_GIT_ENV_UNSAFE/);
+	} finally {
+		for (const [key, value] of Object.entries(prior)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
+
 test("a Windows drive-letter Git common directory resolves repository authority", { skip: process.platform !== "win32" }, (t) => {
 	const root = repository(t);
 	const commonDirectory = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");

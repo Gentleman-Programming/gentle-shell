@@ -50,6 +50,11 @@ export function inheritedUnsafeGitEnvironmentKeys(
 export function reviewGitEnvironment(): NodeJS.ProcessEnv {
 	for (const key of Object.keys(process.env)) {
 		const normalizedKey = key.toUpperCase();
+		// The three config-file keys are pinned unconditionally below, so an
+		// inherited value cannot redirect these Git calls; the unit-test runner
+		// pins them for hermeticity (gentle-shell#2552). Routing-critical keys
+		// still fail closed.
+		if (normalizedKey === "GIT_CONFIG_GLOBAL" || normalizedKey === "GIT_CONFIG_SYSTEM" || normalizedKey === "GIT_CONFIG_NOSYSTEM") continue;
 		if (UNSAFE_GIT_ENVIRONMENT.has(normalizedKey) || /^GIT_CONFIG_(?:KEY|VALUE)_/.test(normalizedKey)) throw new ReviewRepositoryError("REVIEW_GIT_ENV_UNSAFE: inherited Git routing/configuration override is present");
 	}
 	const environment: NodeJS.ProcessEnv = {};

@@ -16,6 +16,7 @@ import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, rend
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
@@ -1470,25 +1471,68 @@ const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
 
-export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity): GitRunner {
+// If taskkill cannot run (AppLocker, a broken PATH) the direct child can exit
+// while a descendant still holds the inherited pipes, which keeps execFile from
+// calling back; cut them after this grace so the scan still settles.
+const GIT_TREE_KILL_GRACE_MS = 1_000;
+
+export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity, killProcessTree: ProcessTreeKiller | undefined = process.platform === "win32" ? windowsProcessTreeKiller : undefined): GitRunner {
 	// Pi exec cannot replace the inherited environment. Use argv directly and
 	// a complete sanitized environment for discovery, status, and lazy diffs.
 	const childEnv = worktreeGitEnvironment(env);
+	// A timed-out Git scan on Windows is more than one process: `git` hands the
+	// status work to a descendant, and that descendant survives the direct child
+	// Node itself kills, so a large repository whose scan passes the timeout
+	// leaks another orphaned git.exe on every poll until physical memory is
+	// exhausted (#927). Windows therefore owns the deadline below, so the tree
+	// kill lands while the parent is still alive for taskkill to walk; everywhere
+	// else execFile's own timeout stays exactly as it was.
+	const treeKiller = killProcessTree;
 	return (args) => new Promise((resolve) => {
-		run("git", ["-C", cwd, ...args], {
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		let grace: ReturnType<typeof setTimeout> | undefined;
+		let settled = false;
+		// A scan that passed its deadline is a failed scan, never a partial
+		// success, even if the direct child exited 0 before its pipes closed.
+		let timedOut = false;
+		const settle = (error: { code?: unknown } | null, stdout: string): void => {
+			settled = true;
+			if (deadline !== undefined) clearTimeout(deadline);
+			if (grace !== undefined) clearTimeout(grace);
+			if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") { resolve({ stdout, code: 1, truncated: true }); return; }
+			if (timedOut) { resolve({ stdout, code: 1 }); return; }
+			resolve({ stdout, code: error ? typeof error.code === "number" ? error.code : 1 : 0 });
+		};
+		const child = run("git", ["-C", cwd, ...args], {
 			env: childEnv,
 			encoding: "utf8",
 			shell: false,
 			windowsHide: true,
-			timeout: GIT_TIMEOUT_MS,
+			...(treeKiller === undefined ? { timeout: GIT_TIMEOUT_MS } : {}),
 			// Pi exec accumulates output without a maxBuffer cap. In particular,
 			// large porcelain inventories must not become partial successful scans.
 			// Only a single diff passes a bound, and is told when it hit it.
 			maxBuffer,
-		}, (error, stdout) => {
-			if ((error as { code?: unknown } | null)?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return resolve({ stdout, code: 1, truncated: true });
-			resolve({ stdout, code: error ? typeof error.code === "number" ? error.code : 1 : 0 });
-		});
+		}, (error, stdout) => settle(error, stdout));
+		// The callback may already have settled a synchronous run (a fake in
+		// tests, a spawn error), so only arm the deadline while it is pending.
+		if (settled || treeKiller === undefined || child?.pid === undefined) return;
+		const pid = child.pid;
+		deadline = setTimeout(() => {
+			timedOut = true;
+			// taskkill walks the tree from a live parent. If the direct child
+			// already exited, only a descendant can be holding the inherited
+			// pipes, and a PID-based kill would just report "process not found";
+			// the grace below still cuts those pipes so the scan can settle.
+			if (child.exitCode === null && child.signalCode === null) treeKiller(pid);
+			grace = setTimeout(() => {
+				if (child.exitCode === null && child.signalCode === null) child.kill();
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, GIT_TREE_KILL_GRACE_MS);
+			grace.unref?.();
+		}, GIT_TIMEOUT_MS);
+		deadline.unref?.();
 	});
 }
 

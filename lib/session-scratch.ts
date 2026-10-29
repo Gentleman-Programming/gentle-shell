@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { directoryAfterSegment, SHELL_SEGMENT_SEPARATOR } from "./commit-slice-signal.ts";
@@ -12,6 +13,8 @@ import { directoryAfterSegment, SHELL_SEGMENT_SEPARATOR } from "./commit-slice-s
 // and every check refuses rather than guesses.
 
 export const LEDGER_VERSION = 1;
+/** The ledger keeps the most recent artifacts, evicting the oldest first, so a long session's ledger file stays bounded. */
+export const LEDGER_ARTIFACTS_CAP = 64;
 // Short on purpose (S9): TMPDIR points at `gpXXXXXX` and a subagent's TMPDIR at
 // `gaXXXXXX` under it, and Unix socket paths below them are capped near 104 bytes.
 export const SCRATCH_PREFIX = "gp";
@@ -105,8 +108,36 @@ export function readLedger(path: string): ScratchLedger | undefined {
 	}
 }
 
+// The fs functions the ledger file I/O uses. Tests spy on this object to pin the
+// ledger I/O to the async fs API; the sync fs functions stay for the single-ledger
+// read and the scratch-directory checks, which were already synchronous.
+export const ledgerFs = { mkdir, readFile, readdir, rename, stat, unlink, writeFile };
+
+/** A valid ledger read from `path`, or undefined for a missing, unreadable, or foreign file. */
+async function readLedgerFile(path: string): Promise<ScratchLedger | undefined> {
+	try {
+		const parsed: unknown = JSON.parse(await ledgerFs.readFile(path, "utf8"));
+		return isLedger(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Atomic and private: a temp file in the same directory, then a rename. */
-export function writeLedger(path: string, ledger: ScratchLedger): void {
+export async function writeLedger(path: string, ledger: ScratchLedger): Promise<void> {
+	await ledgerFs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+	try {
+		await ledgerFs.writeFile(temp, `${JSON.stringify(ledger, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		await ledgerFs.rename(temp, path);
+	} catch (error) {
+		try { await ledgerFs.unlink(temp); } catch { /* already renamed or never created */ }
+		throw error;
+	}
+}
+
+/** Synchronous `writeLedger`, for the one caller that cannot await it (the shutdown path, whose callers do not await the handler). */
+export function writeLedgerSync(path: string, ledger: ScratchLedger): void {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const temp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
@@ -123,7 +154,25 @@ export function deleteLedger(path: string): void {
 }
 
 /** Every valid ledger in the config home; other files are left alone. */
-export function listLedgers(configHome: string): StoredLedger[] {
+export async function listLedgers(configHome: string): Promise<StoredLedger[]> {
+	const dir = ledgerDirectory(configHome);
+	let names: string[];
+	try { names = await ledgerFs.readdir(dir); } catch { return []; }
+	const result: StoredLedger[] = [];
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue;
+		const path = join(dir, name);
+		try {
+			const ledger = await readLedgerFile(path);
+			if (!ledger) continue;
+			result.push({ path, ledger, mtimeMs: (await ledgerFs.stat(path)).mtimeMs });
+		} catch { /* removed meanwhile */ }
+	}
+	return result;
+}
+
+/** Synchronous `listLedgers`, for the one caller that cannot await it (the shutdown path, whose callers do not await the handler). */
+export function listLedgersSync(configHome: string): StoredLedger[] {
 	const dir = ledgerDirectory(configHome);
 	let names: string[];
 	try { names = readdirSync(dir); } catch { return []; }
@@ -388,7 +437,7 @@ const GIT_ENV_OVERRIDES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CO
 const runGit: Git = (args, cwd) => new Promise((resolveResult) => {
 	const env = { ...process.env };
 	for (const key of GIT_ENV_OVERRIDES) delete env[key];
-	execFile("git", args, { cwd, env, encoding: "utf8", timeout: 10_000 }, (error, stdout) => resolveResult(error ? undefined : stdout.trim()));
+	execFile("git", args, { cwd, env, encoding: "utf8", timeout: 10_000, windowsHide: true }, (error, stdout) => resolveResult(error ? undefined : stdout.trim()));
 });
 
 export type ArtifactCheck =

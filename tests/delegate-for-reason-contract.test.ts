@@ -244,9 +244,10 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 // names every line that admits it. The pin still guards against accidental drift.
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
+	// Re-pinned on purpose: the runtime admission now also accepts a `Risk: item N` sentence (verifier-admission.ts).
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"b159829cad24a31e23d6309b3bfe0e4cc71eec2316775ba07314fecd1fb6a63f",
+		"f052518b2905e4560d629397876057079aa71b45352272646261a611fb4a1e17",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

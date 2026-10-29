@@ -25,6 +25,11 @@ const SECTION_MARKER = "## Skills";
 const EXCLUDE_NAMES = new Set(["_shared", "skill-registry"]);
 const EXCLUDE_PREFIXES = ["sdd-"];
 const WATCH_DEBOUNCE_MS = 500;
+// inotify budgets are finite (ENOSPC/EMFILE) and recursive watches degrade
+// silently on exhausted systems -- WSL2 hits this constantly -- so a slow
+// poll is the floor that keeps regeneration working when the OS cannot
+// deliver change events. The fingerprint gate makes a redundant poll cheap.
+const WATCH_FALLBACK_POLL_MS = 2_000;
 const REGISTRY_SCHEMA_VERSION = 7;
 const NO_SKILL_REGISTRY_FLAG = "no-skill-registry";
 const NO_SKILL_REGISTRY_ENV = "GENTLE_PI_NO_SKILL_REGISTRY";
@@ -96,6 +101,15 @@ function projectSkillDirs(cwd: string): string[] {
 		join(cwd, ".agents/skills"),
 		join(cwd, ".atl/skills"),
 	];
+}
+
+// gentle-shell#373: only storage-capacity/permission faults degrade the
+// registry to a typed unavailable result. Anything else (ELOOP, ENOSPC, a
+// failing device) keeps its own diagnostic through the ordinary error path.
+function isStorageUnavailableError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) return false;
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EACCES" || code === "EPERM" || code === "EROFS" || code === "ENOTDIR" || code === "EISDIR" || code === "EEXIST";
 }
 
 function isMissingSkillFileError(error: unknown): boolean {
@@ -380,7 +394,7 @@ async function hasNoGitMetadata(cwd: string): Promise<boolean> {
 }
 
 // Freshness (including forced self-heal) never grants automatic write permission.
-async function automaticWriteWarning(
+export async function automaticWriteWarning(
 	cwd: string,
 	targets: string[],
 	remedy = "Run /skill-registry:refresh to deliberately regenerate runtime files.",
@@ -391,6 +405,7 @@ async function automaticWriteWarning(
 			cwd,
 			env: { ...process.env, LC_ALL: "C" },
 			timeout: gitTimeoutMs,
+			windowsHide: true,
 		});
 		tracked = stdout.split("\0").filter(Boolean);
 	} catch (error) {
@@ -519,9 +534,27 @@ async function regenerateRegistry(
 		return rel.startsWith("..") ? d : rel || ".";
 	});
 	const md = renderRegistry(cwd, sources, deduped);
-	await mkdir(join(cwd, ".atl"), { recursive: true });
-	await writeFile(registryPath, md);
-	await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	try {
+		await mkdir(join(cwd, ".atl"), { recursive: true });
+		await writeFile(registryPath, md);
+		await writeFile(cachePath, JSON.stringify({ fingerprint: fp }, null, 2));
+	} catch (error) {
+		if (isStorageUnavailableError(error)) {
+			// gentle-shell#373: an unwritable storage location must never
+			// report a successful regeneration. The typed result names the
+			// offending path and the safe next action; unexpected I/O keeps
+			// its own diagnostic by rethrowing.
+			const path = typeof (error as NodeJS.ErrnoException).path === "string" ? (error as NodeJS.ErrnoException).path as string : registryPath;
+			const relativePath = relative(cwd, path).split(sep).join("/") || REGISTRY_REL_PATH;
+			return {
+				regenerated: false,
+				skillCount: 0,
+				reason: "storage-unavailable",
+				warning: `Skill registry is unavailable: ${relativePath} is not writable (${(error as NodeJS.ErrnoException).code}). Restore write access, then run /skill-registry:refresh.`,
+			};
+		}
+		throw error;
+	}
 	return {
 		regenerated: true,
 		skillCount: deduped.length,
@@ -530,6 +563,7 @@ async function regenerateRegistry(
 }
 
 const watchedCwds = new Set<string>();
+const watcherPolls = new Map<string, ReturnType<typeof setInterval>>();
 // Startup regeneration runs after session_start returns; watcher refreshes
 // wait for it so an older startup scan never overwrites a newer refresh.
 const pendingStartups = new Map<string, Promise<void>>();
@@ -608,6 +642,8 @@ function closeSkillRegistryWatchers(): void {
 		}
 	}
 	activeWatchers.clear();
+	for (const poll of watcherPolls.values()) clearInterval(poll);
+	watcherPolls.clear();
 	watchedCwds.clear();
 }
 
@@ -622,6 +658,9 @@ async function startSkillRegistryWatcher(
 		...userSkillDirs(),
 	]);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	// The poll re-asks a state the watchers already answered: without this,
+	// an unchanged tracked-target warning would repeat every poll interval.
+	let lastWarning: string | undefined;
 	const refresh = () => {
 		if (timer) clearTimeout(timer);
 		timer = setTimeout(() => {
@@ -629,9 +668,14 @@ async function startSkillRegistryWatcher(
 				try {
 					await pendingStartups.get(cwd);
 					const result = await regenerateRegistry(cwd, false);
-					if (result.warning) notify(result.warning, "warning");
-					if (result.regenerated) {
-						notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+					if (result.warning) {
+						if (result.warning !== lastWarning) notify(result.warning, "warning");
+						lastWarning = result.warning;
+					} else {
+						lastWarning = undefined;
+						if (result.regenerated) {
+							notify(`Skill registry refreshed (${result.skillCount} skills)`, "info");
+						}
 					}
 				} catch (error) {
 					notify(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
@@ -654,6 +698,9 @@ async function startSkillRegistryWatcher(
 			// Some filesystems do not support recursive watches; session_start/manual refresh still work.
 		}
 	}
+	// Watchers may be absent (unsupported filesystem) or silently eventless
+	// (exhausted inotify budget): the poll keeps regeneration alive either way.
+	if (!watcherPolls.has(cwd)) watcherPolls.set(cwd, setInterval(refresh, WATCH_FALLBACK_POLL_MS));
 }
 
 export const __testing = {
@@ -661,6 +708,7 @@ export const __testing = {
 	userSkillDirs,
 	findSkillFiles,
 	isMissingSkillFileError,
+	isStorageUnavailableError,
 	uniqueExistingDirs,
 	dedupeBySkillName,
 	scopeForPath,
@@ -776,6 +824,10 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await ensureAtlIgnored(ctx.cwd, true);
 				const result = await regenerateRegistry(ctx.cwd, true, true);
+				if (result.reason === "storage-unavailable") {
+					ctx.ui.notify(result.warning ?? "Skill registry is unavailable.", "warning");
+					return;
+				}
 				ctx.ui.notify(
 					`Skill registry: ${result.skillCount} skill(s) written to ${REGISTRY_REL_PATH}`,
 					"info",

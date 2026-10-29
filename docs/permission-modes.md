@@ -53,14 +53,15 @@ Changing the default does **not** change the current session. To return this ses
 | **Normal** | Existing permission behavior; the default when no valid global preference exists. |
 | **Auto** | A separate reviewer using the current session model checks eligible actions against live user intent before execution. Local reads are classified too; locality does not exempt an action from explicit restrictions. |
 | **YOLO** | Standing permission for ordinary already-authorized work and delivery; no Auto classifier. Destructive and independent consent boundaries remain, except recursive removal of the session's own [temp scratch](yolo-mode.md#temp-scratch-removal). [Full YOLO details](yolo-mode.md). |
+| **Super Yolo** | No permission prompts at all, including data-loss confirmations and configured guardrail actions. The only remaining line is the sensitive-path guard: read/write/edit of `.env`, `.ssh`, keychains, `*.pem/*.key/*.p12/*.pfx`, `secrets/` and cloud credential files stays hard-blocked. Code-level catastrophic denies (`rm -rf /`, `--no-preserve-root`, `git reset --hard`, forced clean, force push) also remain. |
 
 ## Commands and menu
 
 | Command | Effect |
 | --- | --- |
-| `/gentle:mode normal`, `auto`, or `yolo` | Select exactly one mode for the current interactive primary session. |
+| `/gentle:mode normal`, `auto`, `yolo`, or `super-yolo` | Select exactly one mode for the current interactive primary session. |
 | `/gentle:mode status` or `/gentle:mode` | Show current mode and saved default. |
-| `/gentle:mode default normal`, `auto`, or `yolo` | Save the default for new primary sessions, leaving the current mode unchanged. |
+| `/gentle:mode default normal`, `auto`, `yolo`, or `super-yolo` | Save the default for new primary sessions, leaving the current mode unchanged. |
 | `/gentle:yolo enable`, `disable`, or `status` | Existing shortcut; enable selects YOLO, disable selects Normal. |
 
 In `/gentle:customize` → **Editor**, use **Session permissions** to change the current mode, or **Default permissions** to save a future-session preference. The original **YOLO: ON/OFF · session only** row still toggles the live mode; it does not save a default. Browsing, previews, and closing the menu do not grant permission.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import { normalizeNpmPackResult, parseNpmPackResult } from "./npm-pack-result.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -599,6 +600,23 @@ function runWindowsStartupTimingProbe(runtimeScript, env, cwd) {
 	});
 }
 
+export function createHookedPackedConsumerManifest(installDirectory, tarball) {
+	const ownedTarball = assertOwnedRegularFile(dirname(tarball), basename(tarball));
+	const consumer = realpathSync.native(installDirectory);
+	const canonicalTarball = realpathSync.native(ownedTarball);
+	const filePath = relative(consumer, canonicalTarball);
+	if (isAbsolute(filePath)) throw new Error("packed tarball must share the consumer filesystem root");
+	const fileSpec = `file:${filePath.split(sep).join("/")}`;
+	if (realpathSync.native(resolve(consumer, fileSpec.slice(5))) !== canonicalTarball) throw new Error("script approval does not resolve to the packed tarball");
+	// npm 12 matches local dependencies by their resolved file spec, not name.
+	// Absolute installs on npm 12 retain an absolute node.resolved; the relative
+	// key alone was empirically blocked. Both keys identify this same tarball.
+	// Older npm ignores this consumer-only field. No transitive script is approved.
+	const absoluteSpec = `file:${canonicalTarball.split(sep).join("/")}`;
+	if (realpathSync.native(absoluteSpec.slice(5)) !== canonicalTarball) throw new Error("absolute script approval does not resolve to the packed tarball");
+	return { name: "gentle-pi-packed-runner-test", private: true, allowScripts: { [fileSpec]: true, [absoluteSpec]: true } };
+}
+
 async function testHookedPackedRunner() {
 	const temporary = mkdtempSync(join(tmpdir(), "gentle-pi-packed-runner-"));
 	const packDirectory = join(temporary, "pack");
@@ -615,14 +633,14 @@ async function testHookedPackedRunner() {
 		mkdirSync(piAgentHome);
 	const originalSettings = '{ "tuiMode": "regular", "theme": "packed-fixture" }\n';
 	writeFileSync(join(agentHome, "settings.json"), originalSettings);
-	const packed = JSON.parse(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], {
+	const packed = parseNpmPackResult(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], {
 		cwd: root,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "inherit"],
 }));
 	if (packed.length !== 1 || typeof packed[0]?.filename !== "string") throw new Error("npm pack did not return one tarball");
-	const tarball = join(packDirectory, packed[0].filename);
-	writeFileSync(join(installDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-packed-runner-test", private: true }), "utf8");
+	const { tarball } = assertPackResult(packed, packDirectory, newUnhookedReceipt());
+	writeFileSync(join(installDirectory, "package.json"), JSON.stringify(createHookedPackedConsumerManifest(installDirectory, tarball)), "utf8");
 	runNpm(["install", "--ignore-scripts=false", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball], {
 		cwd: installDirectory,
 		stdio: "inherit",
@@ -657,6 +675,7 @@ async function testHookedPackedRunner() {
 	assert.ok(!abandonAuthorization.includes("evidence_records_present"));
 	// Accept prerelease pins too: a stable-only pattern here was a second,
 	// silent pin that refused the first prerelease version directory.
+	if (!existsSync(join(packageRoot, ".gentle-ai"))) throw new Error("packed postinstall did not create .gentle-ai; npm may have blocked lifecycle scripts — check the consumer allowScripts exact tarball approval and installer output");
 	const versions = readdirSync(join(packageRoot, ".gentle-ai"), { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?$/.test(entry.name));
 	if (versions.length !== 1) throw new Error("packed install did not contain exactly one package-local Gentle AI version");
 	const executable = join(packageRoot, ".gentle-ai", versions[0].name, process.platform === "win32" ? "gentle-ai.exe" : "gentle-ai");
@@ -801,8 +820,7 @@ export function validateWindowsStartupTimingMachinePaths(delta, operations = { l
 
 function assertPackResult(packed, packDirectory, receipt) {
 	selectUnhookedCheck(receipt, "pack-metadata");
-	if (!Array.isArray(packed) || packed.length !== 1 || !packed[0] || typeof packed[0] !== "object") throw new Error("npm pack did not return exactly one package");
-	const entry = packed[0];
+	const [entry] = normalizeNpmPackResult(packed);
 	if (entry.name !== "gentle-pi" || typeof entry.filename !== "string" || entry.filename !== basename(entry.filename)) throw new Error("npm pack returned an unsafe package identity");
 	if (typeof entry.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) throw new Error("npm pack did not report a sha512 integrity");
 	const tarball = resolve(packDirectory, entry.filename);
@@ -845,7 +863,32 @@ function assertNoNativeInstallerArtifacts(packageRoot, consumerDirectory, receip
 	if (existsSync(join(consumerDirectory, "node_modules", ".bin", nativeCommand))) throw new Error("unhooked install unexpectedly exposed a native Gentle AI executable");
 }
 
-function resolveInstalledJitiStaticEntry(consumerDirectory, sdkPackageJson, sdkVersion, selectCheck, checkIds) {
+function compareRelease(left, right) {
+	const a = left.split(".").map(Number);
+	const b = right.split(".").map(Number);
+	for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
+	return 0;
+}
+
+// The manifest's devDependency is a policy specifier (an open `>=` range), not
+// a version. Probes install the exact SDK release this checkout resolved, so
+// the consumer reproduces the tested runtime instead of the newest match.
+export function resolveProjectPiSdkVersion(projectRoot, probe = "packed probe") {
+	const manifest = safeJson(readFileSync(join(projectRoot, "package.json")), "project package manifest");
+	const range = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
+	const policy = typeof range === "string" ? /^(>=)?(\d+\.\d+\.\d+)$/.exec(range) : null;
+	if (policy === null) throw new Error(`${probe} requires an exact or >= Pi SDK development range`);
+	const installed = safeJson(readFileSync(join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")), "project-installed Pi SDK manifest");
+	const version = installed?.version;
+	if (installed?.name !== "@earendil-works/pi-coding-agent" || typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+		throw new Error(`${probe} requires a project-installed Pi SDK with an exact release version`);
+	}
+	const order = compareRelease(version, policy[2]);
+	if (policy[1] === ">=" ? order < 0 : order !== 0) throw new Error(`${probe}: project-installed Pi SDK ${version} does not satisfy ${range}`);
+	return version;
+}
+
+export function resolveInstalledJitiStaticEntry(consumerDirectory, sdkPackageJson, sdkVersion, selectCheck, checkIds) {
 	selectCheck(checkIds.sdkManifest);
 	const checkedSdkPackageJson = assertOwnedRegularFile(consumerDirectory, relative(consumerDirectory, sdkPackageJson));
 	const sdkRequire = createRequire(checkedSdkPackageJson);
@@ -855,7 +898,7 @@ function resolveInstalledJitiStaticEntry(consumerDirectory, sdkPackageJson, sdkV
 	const declaredJiti = installedSdk?.dependencies?.jiti;
 	selectCheck(checkIds.jitiManifest);
 	const jitiManifest = sdkRequire.resolve("jiti/package.json");
-	const checkedJitiPackageJson = assertOwnedRegularFile(consumerDirectory, relative(consumerDirectory, jitiManifest));
+	const checkedJitiPackageJson = assertOwnedRegularFile(consumerDirectory, relative(realpathSync.native(consumerDirectory), jitiManifest));
 	const jitiPackage = safeJson(readFileSync(checkedJitiPackageJson), "jiti package manifest");
 	selectCheck(checkIds.jitiStaticExport);
 	const staticExport = jitiPackage?.exports?.["./static"];
@@ -1404,9 +1447,7 @@ async function testSdkLifecyclePackedSession() {
 		const { env } = isolatedUnhookedEnvironment(temporary);
 		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectSdkLifecycleCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.85.1") throw new Error("SDK lifecycle probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "SDK lifecycle probe");
 		selectSdkLifecycleCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root), "npm pack output");
 		stage = "pack-result";
@@ -1479,9 +1520,7 @@ async function testWindowsStartupTimingPackedHelper() {
 		const { env } = isolatedUnhookedEnvironment(temporary);
 		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.85.1") throw new Error("Windows startup timing probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "Windows startup timing probe");
 		selectWindowsStartupTimingCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root), "npm pack output");
 		stage = "pack-result";
@@ -1557,9 +1596,7 @@ async function testWindowsStartupTimingEnvironmentExperiment() {
 		const pathDelta = deriveWindowsStartupTimingPathDelta(process.env);
 		const treatmentPathDelta = validateWindowsStartupTimingMachinePaths(pathDelta) ? pathDelta : undefined;
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.85.1") throw new Error("Windows startup environment experiment requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "Windows startup environment experiment");
 		selectWindowsStartupTimingCheck(receipt, "pack-command");
 		const packed = safeJson(runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], isolatedEnv, root), "npm pack output");
 		stage = "pack-result";
@@ -1656,9 +1693,7 @@ async function testUnhookedPackedImports() {
 		mkdirSync(consumerDirectory);
 		const { env, homes } = isolatedUnhookedEnvironment(temporary);
 		selectUnhookedCheck(receipt, "project-sdk-version");
-		const manifest = safeJson(readFileSync(join(root, "package.json")), "project package manifest");
-		const sdkVersion = manifest?.devDependencies?.["@earendil-works/pi-coding-agent"];
-		if (sdkVersion !== "0.85.1") throw new Error("unhooked probe requires the project-pinned Pi SDK");
+		const sdkVersion = resolveProjectPiSdkVersion(root, "unhooked probe");
 		selectUnhookedCheck(receipt, "pack-command");
 		const packOutput = runBoundedNpm("pack", ["pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory], env, root);
 		stage = "pack-result";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,17 +7,21 @@ import {
 	decodeReviewConsentV3,
 } from "../lib/review-integration-v2.ts";
 import {
-	decodeNativeSddStatusV2,
+	NATIVE_REVIEW_OPERATION,
 	NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES,
 	NATIVE_REVIEW_ERROR_CODE,
 	NativeReviewCliError,
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	createNodeExecFileAdapter,
+	createWindowsProcessTreeKiller,
+	windowsTaskkillPath,
+	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
+import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -59,100 +63,6 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
-
-// Structural test data follows the 2026-09-11 native 2.7.1-0.20260911070137-350f31554a4b
-// capture: seven dependencies and four phaseInstructions groups, not a legacy alias.
-function nativeSddStatus(changeName = "complete-native-review-lifecycle", workspaceRoot = "/repo"): Record<string, unknown> {
-	return {
-		schemaName: "gentle-ai.sdd-status",
-		schemaVersion: 2,
-		changeName,
-		artifactStore: "openspec",
-		planningHome: { mode: "repo-local", path: `${workspaceRoot}/openspec` },
-		changeRoot: `${workspaceRoot}/openspec/changes/${changeName}`,
-		actionContext: { mode: "repo-local", workspaceRoot, allowedEditRoots: [workspaceRoot] },
-		dependencies: { proposal: "all_done", specs: "all_done", design: "all_done", tasks: "all_done", apply: "all_done", verify: "all_done", archive: "ready" },
-		phaseInstructions: {
-			apply: ["Apply is complete."],
-			verify: ["Verification is complete."],
-			remediate: ["Bind remediation to failed evidence."],
-			archive: ["Archive the selected change."],
-		},
-		blockedReasons: [],
-		nextRecommended: "archive",
-	};
-}
-
-test("native SDD status executes its exact selected-root argv and returns only a validated v2 authority", async () => {
-	const body = nativeSddStatus();
-	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }]);
-	const status = await (client(queue.adapter) as unknown as {
-		sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-	}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" });
-
-	assert.deepEqual(status, body);
-	assert.deepEqual(queue.calls, [{
-		file: "/package/.gentle-ai/gentle-ai",
-		arguments: ["sdd-status", "complete-native-review-lifecycle", "--cwd", "/repo", "--json", "--instructions"],
-		cwd: "/repo",
-		timeoutMs: 30_000,
-	}]);
-});
-
-test("native SDD status rejects malformed v2 identities, dependencies, instructions, and blockers", async () => {
-	const invalidInstructions = { apply: ["ok"], verify: ["ok"], remediate: ["ok"], archive: [42] };
-	assert.doesNotThrow(() => decodeNativeSddStatusV2(
-		{ ...nativeSddStatus(), phaseInstructions: { ...invalidInstructions, archive: ["ok"] } },
-		{ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" },
-	));
-	const malformed = [
-		{ ...nativeSddStatus(), schemaName: "gentle-pi.sdd-status" },
-		{ ...nativeSddStatus(), schemaVersion: 1 },
-		{ ...nativeSddStatus(), changeName: "other-change" },
-		{ ...nativeSddStatus(), artifactStore: "future-store" },
-		{ ...nativeSddStatus(), planningHome: { mode: "future-mode", path: "/repo/openspec" } },
-		{ ...nativeSddStatus(), planningHome: { mode: "repo-local", path: "/outside" } },
-		{ ...nativeSddStatus(), changeRoot: "bad\nroot" },
-		{ ...nativeSddStatus(), actionContext: { mode: "repo-local", workspaceRoot: "/other", allowedEditRoots: ["/other"] } },
-		{ ...nativeSddStatus(), actionContext: { mode: "future-mode", workspaceRoot: "/repo", allowedEditRoots: ["/repo"] } },
-		{ ...nativeSddStatus(), actionContext: { mode: "repo-local", workspaceRoot: "/repo", allowedEditRoots: ["/outside"] } },
-		{ ...nativeSddStatus(), dependencies: { apply: "all_done", verify: "all_done", archive: "future" } },
-		{ ...nativeSddStatus(), phaseInstructions: invalidInstructions },
-		{ ...nativeSddStatus(), blockedReasons: "not-an-array" },
-		{ ...nativeSddStatus(), nextRecommended: "unknown" },
-		{ ...nativeSddStatus(), instructions: {}, phaseInstructions: undefined },
-		{ ...nativeSddStatus(), phaseInstructions: null },
-	];
-	for (const body of malformed) {
-		await assert.rejects(
-			() => (client(queuedAdapter([{ stdout: JSON.stringify(body) }]).adapter) as unknown as {
-				sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-			}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
-		);
-	}
-});
-
-test("native v2 read-only decoding preserves omitted optional phaseInstructions", () => {
-	const body = nativeSddStatus();
-	delete body.phaseInstructions;
-	assert.equal(decodeNativeSddStatusV2(body, { changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }), body);
-});
-
-test("native SDD status keeps malformed JSON, timeout, and nonzero execution fail-closed", async () => {
-	for (const [result, code] of [
-		[{ stdout: "not-json" }, NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON],
-		[{ stdout: "", timedOut: true }, NATIVE_REVIEW_ERROR_CODE.TIMEOUT],
-		[{ stdout: "{}", exitCode: 1 }, NATIVE_REVIEW_ERROR_CODE.NON_ZERO],
-	] as const) {
-		await assert.rejects(
-			() => (client(queuedAdapter([result]).adapter) as unknown as {
-				sddStatus(request: { changeName: string; workspaceRoot: string }): Promise<Record<string, unknown>>;
-			}).sddStatus({ changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" }),
-			(error: unknown) => error instanceof NativeReviewCliError && error.code === code && error.mutationOutcome === "none",
-		);
-	}
-});
 
 test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
 	const status = fixture("status-v5.captured.json");
@@ -512,6 +422,63 @@ test("native START queries STATUS then executes only the provider-rendered order
 	]);
 });
 
+// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// lens selection (verify-always-rdd-high S8).
+const LENS_SELECTION_UNSUPPORTED_FAILURE = {
+	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
+	phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started",
+	authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [],
+	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
+};
+
+test("native START preflights the agent lens selection through STATUS", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+		"--lenses=review-risk,review-reliability", "--lenses-reason=changes token parsing",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk", "review-reliability"], lensesReason: "changes token parsing" });
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk,review-reliability", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START falls back to the tier default when the provider predates lens selection", async () => {
+	const tokens = [
+		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
+		"--projection=workspace", "--agent=pi", "--consent=relay",
+	];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
+	assert.equal(result.action, "closed");
+	assert.deepEqual(queue.calls.map((call) => call.arguments), [
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
+			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
+		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
+		["review", "start", ...tokens],
+	]);
+});
+
+test("native START never retries a selection refusal that is not an unknown lens flag", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: 'review status --lenses names unknown lens "security"' };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["security"], lensesReason: "why" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === refusal.cause,
+	);
+	assert.equal(queue.calls.length, 1);
+});
+
 test("native START relays provider-owned intended-untracked selection and transition argv verbatim", async () => {
 	const selectionValue = JSON.stringify(["new.ts", "nested/other.ts"]);
 	const selectionTokens = ["--selection-kind=untracked", "--selection-json={{value}}", "--selection-proof=provider-issued"];
@@ -587,6 +554,85 @@ test("native consent completion decodes START/v4 and replays its provider argv u
 	if (answered.kind !== "started") throw new Error("expected started consent result");
 	assert.equal(answered.start.nextTransition?.execute?.operation, "review.status");
 	assert.deepEqual(queue.calls[0]?.arguments, consent.choices[0].invocation.split(" ").slice(1));
+});
+
+// Builds a Pi-bound consent/v3 envelope whose choices carry `--lenses-reason`
+// rendered exactly as `rendered`, plus the argv Pi must replay for the granted
+// choice when that rendering splits into `reason`.
+function consentWithLensReason(rendered: string, reason: string): { consent: ReturnType<typeof decodeReviewConsentV3>; expected: readonly string[] } {
+	const rawConsent = fixture("consent-v3.captured.json");
+	rawConsent.agent = "pi";
+	const expected: string[][] = [];
+	for (const choice of rawConsent.choices as Record<string, unknown>[]) {
+		const bound = String(choice.invocation)
+			.replace(/--cwd \S+ --target/, "--cwd /repo --target")
+			.replace(" --consent ", " --agent pi --lenses-reason REASON --consent ");
+		choice.invocation = bound.replace("REASON", () => rendered);
+		expected.push(bound.split(" ").slice(1).map((word) => word === "REASON" ? reason : word));
+	}
+	const consent = decodeReviewConsentV3(rawConsent, "pi");
+	assert.ok(consent.choices[0].invocation.includes(` --lenses-reason ${rendered} `));
+	return { consent, expected: expected[0]! };
+}
+
+// Answers the granted choice and proves Pi launched the package binary exactly
+// once with the exact argv, through execFile and never through a shell.
+async function assertLensReasonReplay(rendered: string, reason: string): Promise<void> {
+	const { consent, expected } = consentWithLensReason(rendered, reason);
+	const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(consent.targetIdentity)) }]);
+	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
+	assert.equal(answered.kind, "started");
+	assert.equal(queue.calls.length, 1);
+	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.deepEqual(queue.calls[0]?.arguments, expected);
+	const replayed = queue.calls[0]?.arguments ?? [];
+	const reasonIndex = replayed.indexOf("--lenses-reason");
+	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
+}
+
+// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
+test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
+	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
+});
+
+test("native consent answer treats a backslash before an apostrophe outside quotes as an escaped apostrophe", async () => {
+	await assertLensReasonReplay("package\\'s", "package's");
+});
+
+test("native consent answer treats a backslash before a double quote outside quotes as an escaped double quote", async () => {
+	await assertLensReasonReplay('say\\"x\\"', 'say"x"');
+});
+
+test("native consent answer joins a token across a backslash-escaped space outside quotes", async () => {
+	await assertLensReasonReplay("touched\\ parser", "touched parser");
+});
+
+test("native consent answer keeps a backslash before any other character verbatim outside quotes", async () => {
+	await assertLensReasonReplay("C:\\repo", "C:\\repo");
+	await assertLensReasonReplay("\\\\server\\share", "\\\\server\\share");
+	await assertLensReasonReplay("touched\\nparser", "touched\\nparser");
+});
+
+test("native consent answer keeps single quotes literal around double quotes and backslashes", async () => {
+	await assertLensReasonReplay("'say \"x\" and \\y'", 'say "x" and \\y');
+	await assertLensReasonReplay("'touched the package\\'", "touched the package\\");
+});
+
+test("native consent answer keeps backslashes verbatim inside double quotes", async () => {
+	await assertLensReasonReplay('"C:\\repo\\"', "C:\\repo\\");
+});
+
+test("native consent answer still rejects an unterminated quote before launching the provider", async () => {
+	for (const rendered of ["'touched the package'\\''s parser", "'touched the package", '"say x']) {
+		const { consent } = consentWithLensReason(rendered, "unused");
+		const queue = queuedAdapter([]);
+		await assert.rejects(
+			() => client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" }),
+			(error: unknown) => error instanceof TypeError && error.message === "Native consent invocation has invalid quoting",
+		);
+		assert.deepEqual(queue.calls, []);
+	}
 });
 
 test("native START refuses invalid committed-range and target bindings before STATUS", async () => {
@@ -759,6 +805,76 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 });
 
+// On Windows, killing gentle-ai alone leaves its git children running against
+// the repository index; abort and timeout must take the whole tree down.
+test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
+	const killed: number[] = [];
+	const killProcessTree = (pid: number) => { killed.push(pid); process.kill(pid); };
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree });
+	const request = { file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 10_000)"], cwd: process.cwd(), maxBufferBytes: 1024 };
+
+	const controller = new AbortController();
+	const aborted = adapter({ ...request, timeoutMs: 30_000, signal: controller.signal });
+	setTimeout(() => controller.abort(), 50);
+	await assert.rejects(aborted, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 1, "abort kills the tree once");
+
+	const timedOut = await adapter({ ...request, timeoutMs: 50 });
+	assert.equal(timedOut.timedOut, true);
+	assert.equal(killed.length, 2, "timeout kills the tree once");
+
+	const preAborted = new AbortController();
+	preAborted.abort();
+	await assert.rejects(adapter({ ...request, timeoutMs: 30_000, signal: preAborted.signal }), (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(killed.length, 2, "an already-aborted call spawns nothing");
+
+	const finished = await adapter({ ...request, arguments: ["-p", "'done'"], timeoutMs: 30_000 });
+	assert.deepEqual([finished.exitCode, finished.stdout.trim(), finished.timedOut], [0, "done", false]);
+	assert.equal(killed.length, 2, "a call that finishes kills nothing");
+});
+
+// taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
+// still hold, through a direct kill of gentle-ai itself.
+test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
+	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+	const startedAt = Date.now();
+	const result = await adapter({ file: process.execPath, arguments: ["-e", "setTimeout(() => {}, 5_000)"], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 100 });
+	assert.equal(result.timedOut, true);
+	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
+});
+
+// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
+// after gentle-ai itself exits; the deadline must still hold.
+test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const pidFile = join(directory, "descendant.pid");
+	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
+	try {
+		const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
+		const startedAt = Date.now();
+		const pending = adapter({ file: process.execPath, arguments: ["-e", script], cwd: process.cwd(), maxBufferBytes: 1024, timeoutMs: 300 });
+		const result = await Promise.race([pending, new Promise<"unsettled">((resolve) => setTimeout(() => resolve("unsettled"), 6_000).unref())]);
+		assert.notEqual(result, "unsettled", "the call settles while the descendant still holds the pipes");
+		if (result === "unsettled") return;
+		assert.equal(result.timedOut, true);
+		assert.ok(Date.now() - startedAt < 4_000, `settled after ${Date.now() - startedAt}ms`);
+	} finally {
+		try { process.kill(Number(readFileSync(pidFile, "utf8"))); } catch { /* Already gone. */ }
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// A bare "taskkill" resolves from the current directory first on Windows, so a
+// repository shipping its own taskkill.exe would run on any abort or timeout.
+test("Windows tree kill runs taskkill by its absolute System32 path from a trusted cwd", () => {
+	const calls: Array<{ file: string; args: readonly string[]; cwd: string }> = [];
+	const kill = createWindowsProcessTreeKiller({ SystemRoot: "D:\\Windows" }, (file, args, options) => { calls.push({ file, args, cwd: options.cwd }); return { on() {} }; });
+	kill(42);
+	assert.deepEqual(calls, [{ file: "D:\\Windows\\System32\\taskkill.exe", args: ["/pid", "42", "/T", "/F"], cwd: "D:\\Windows\\System32" }]);
+	assert.equal(windowsTaskkillPath({}), "C:\\Windows\\System32\\taskkill.exe");
+	assert.equal(windowsTaskkillPath({ SystemRoot: "relative\\dir" }), "C:\\Windows\\System32\\taskkill.exe", "a relative SystemRoot is never trusted");
+});
+
 test("capture-result receives the controller AbortSignal without an automatic mutation timeout", async () => {
 	const controller = new AbortController();
 	controller.abort();
@@ -786,8 +902,11 @@ test("capture-result receives the controller AbortSignal without an automatic mu
 	assert.equal(receivedTimeout, undefined);
 });
 
-test("native review client exposes native v2 SDD status without adding review lifecycle behavior", () => {
-	assert.equal(typeof (client(queuedAdapter([]).adapter) as unknown as { sddStatus?: unknown }).sddStatus, "function");
+test("native review transport has no SDD operations or methods", () => {
+	assert.equal(Object.values(NATIVE_REVIEW_OPERATION).some((operation) => operation.startsWith("sdd-")), false);
+	const transport = client(queuedAdapter([]).adapter) as unknown as Record<string, unknown>;
+	assert.equal("sddStatus" in transport, false);
+	assert.equal("sddContinue" in transport, false);
 });
 
 test("read-only authority inventory rejects a repository identity mismatch after decoding", async () => {
@@ -1001,25 +1120,27 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 	);
 });
 
-test("native continuation uses a distinct mutating operation and the same v2 decoder", async () => {
-	const queue = queuedAdapter([{ stdout: JSON.stringify(nativeSddStatus()) }, { stdout: "{}" }]);
-	const cli = client(queue.adapter);
-	const request = { changeName: "complete-native-review-lifecycle", workspaceRoot: "/repo" };
-	assert.equal((await cli.sddContinue(request)).nextRecommended, nativeSddStatus().nextRecommended);
-	assert.deepEqual(queue.calls[0]!.arguments, ["sdd-continue", request.changeName, "--cwd", "/repo", "--json", "--instructions"]);
-	assert.equal(queue.calls[0]!.timeoutMs, undefined);
-	await assert.rejects(() => cli.sddContinue(request), (error: unknown) => error instanceof NativeReviewCliError && error.mutating === true);
-});
+// S9: this package running from a bundled install (the testing overlay stands
+// in for its location; the detection itself is tested with real installs in
+// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	setBundledInstallForTesting({ root: prefix });
+	t.after(() => {
+		setBundledInstallForTesting(undefined);
+		rmSync(prefix, { recursive: true, force: true });
+	});
+	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+}
 
-test("native discovery preserves nullable selection and rejects an invented selected identity", () => {
-	const discovery = { ...nativeSddStatus(), changeName: null, changeRoot: null, nextRecommended: "select-change" };
-	assert.equal(decodeNativeSddStatusV2(discovery, { workspaceRoot: "/repo" }).changeName, null);
-	assert.throws(() => decodeNativeSddStatusV2(discovery, { changeName: "alpha", workspaceRoot: "/repo" }), /identity/);
-});
-
-test("all twelve native actions retain their exact tokens without prose routing", () => {
-	for (const nextRecommended of ["apply", "verify", "remediate", "archive", "archived", "resolve-blockers", "sdd-new", "select-change", "propose", "spec", "design", "tasks"]) {
-		const status = { ...nativeSddStatus(), nextRecommended, ...(nextRecommended === "remediate" ? { remediationState: { required: true, complete: false, failedEvidenceRevision: `sha256:${"a".repeat(64)}` } } : {}) };
-		assert.equal(decodeNativeSddStatusV2(status, { workspaceRoot: "/repo" }).nextRecommended, nextRecommended);
-	}
+test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+	const { prefix, env } = bundledIsolation(t);
+	const bundled = gentleAiProcessEnvironment(env);
+	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
+	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
+	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
+	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
 });

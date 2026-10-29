@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { withWindowsSystemProbeRetry } from "../lib/review-candidate-view-owner.ts";
+import { resolveWindowsSystemProbeTimeoutMs, withWindowsSystemProbeRetry } from "../lib/review-candidate-view-owner.ts";
 
 function failingProbe(code: string, attempts: { count: number }): () => string {
 	return () => {
@@ -60,4 +60,25 @@ test("windows system probe does not retry when the first attempt succeeds", () =
 	});
 	assert.equal(value, "S-1-5-18");
 	assert.equal(attempts.count, 1);
+});
+
+test("windows system probes default to a cold-runner-safe bounded timeout", () => {
+	assert.equal(resolveWindowsSystemProbeTimeoutMs({}), 15_000);
+});
+
+test("windows system probe timeout honors a bounded environment override", () => {
+	const env = (value: string) => ({ GENTLE_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS: value });
+	assert.equal(resolveWindowsSystemProbeTimeoutMs(env("30000")), 30_000);
+	assert.equal(resolveWindowsSystemProbeTimeoutMs(env("120000")), 120_000);
+	for (const invalid of ["0", "-1", "abc", "1.5", "120001", "", "015000"]) {
+		assert.equal(resolveWindowsSystemProbeTimeoutMs(env(invalid)), 15_000, invalid);
+	}
+});
+
+test("every windows system probe uses the configurable timeout", async () => {
+	const { readFileSync } = await import("node:fs");
+	const source = readFileSync(new URL("../lib/review-candidate-view-owner.ts", import.meta.url), "utf8");
+	const probes = source.match(/windowsSystemExecutable\([^)]*\), \[[^\]]*\], \{[^}]*\}/g) ?? [];
+	assert.equal(probes.length, 5);
+	for (const probe of probes) assert.match(probe, /timeout: resolveWindowsSystemProbeTimeoutMs\(\)/);
 });

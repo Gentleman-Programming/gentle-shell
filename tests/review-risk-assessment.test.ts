@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
@@ -16,6 +18,7 @@ import {
 	isSmallWriterProfile,
 	resolveWriterProfile,
 	verificationPlan,
+	verificationRisk,
 	REVIEW_ASSESSMENT_SCHEMA,
 	VERIFICATION_TIER,
 	RDD_LINE,
@@ -26,6 +29,8 @@ import {
 	type WriterProfile,
 	type NativeReviewOutcome,
 } from "../lib/review-risk-assessment.ts";
+import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } from "../lib/review-reminder-receipt.ts";
+import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 // ---------------------------------------------------------------------------
 // gentle-pi#662: decoder for the native `gentle-ai review assess` envelope
@@ -80,11 +85,248 @@ test("decodeReviewAssessmentV1 rejects a malformed shape", () => {
 	assert.throws(() => decodeReviewAssessmentV1(null), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1("gentle-ai.review-assessment/v1"), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: "none" })), TypeError);
-	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: [{ code: "x" }] })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ changed_paths: -1 })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ changed_lines: 1.5 })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ candidate: { kind: "unknown-kind" } })), TypeError);
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ candidate: { kind: "current-changes", base_ref: "" } })), TypeError);
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// reason, and adds `candidate.consumed`, `review_due`, `review_due_reason`,
+// and `next_transition`. Older binaries (for example gentle-ai v3.7.0)
+// predate those fields; they must decode without invented values.
+// ---------------------------------------------------------------------------
+
+function nextTransition(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		operation: "review.status",
+		command: "gentle-ai",
+		arguments: [
+			{ name: "review", value: "" },
+			{ name: "--cwd", value: "/repo" },
+			{ name: "--next-transition", value: "start", token: "opaque-token" },
+		],
+		...overrides,
+	};
+}
+
+function newEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return validEnvelope({
+		risk: "high",
+		candidate: { kind: "current-changes", consumed: false },
+		review_due: true,
+		review_due_reason: "high_risk",
+		next_transition: nextTransition(),
+		...overrides,
+	});
+}
+
+test("decodeReviewAssessmentV1 accepts a reason carrying only code and never synthesizes path or detail", () => {
+	const decoded = decodeReviewAssessmentV1(validEnvelope({ reasons: [{ code: "x" }, { code: "y", path: "a.ts" }, { code: "z", detail: "why" }] }));
+	assert.deepEqual(decoded.reasons, [{ code: "x" }, { code: "y", path: "a.ts" }, { code: "z", detail: "why" }]);
+	assert.equal(Object.hasOwn(decoded.reasons[0], "path"), false);
+	assert.equal(Object.hasOwn(decoded.reasons[0], "detail"), false);
+});
+
+test("decodeReviewAssessmentV1 rejects a reason with a missing code or an empty/non-string path or detail", () => {
+	for (const reason of [
+		{},
+		{ code: "" },
+		{ code: 1 },
+		{ path: "a.ts", detail: "why" },
+		{ code: "x", path: "" },
+		{ code: "x", detail: "" },
+		{ code: "x", path: 1 },
+		{ code: "x", detail: null },
+		"x",
+	]) {
+		assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ reasons: [reason] })), TypeError, `reason ${JSON.stringify(reason)} must be rejected`);
+	}
+});
+
+test("decodeReviewAssessmentV1 accepts an older envelope without consumed/review_due/review_due_reason and invents none of them", () => {
+	const decoded = decodeReviewAssessmentV1(validEnvelope());
+	for (const key of ["reviewDue", "reviewDueReason", "nextTransition"]) {
+		assert.equal(Object.hasOwn(decoded, key), false, `${key} must stay absent`);
+	}
+	assert.equal(Object.hasOwn(decoded.candidate, "consumed"), false, "consumed must stay absent, never defaulted");
+});
+
+test("decodeReviewAssessmentV1 decodes consumed, review_due, review_due_reason, and next_transition verbatim", () => {
+	const transition = nextTransition();
+	const decoded = decodeReviewAssessmentV1(newEnvelope({ next_transition: transition }));
+	assert.deepEqual(decoded.candidate, { kind: "current-changes", baseRef: undefined, consumed: false });
+	assert.equal(decoded.reviewDue, true);
+	assert.equal(decoded.reviewDueReason, "high_risk");
+	assert.deepEqual(decoded.nextTransition, nextTransition());
+	assert.equal(JSON.stringify(decoded.nextTransition), JSON.stringify(nextTransition()), "next_transition must keep its native key and argument order");
+
+	const consumed = decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "base-diff", base_ref: "origin/main", consumed: true }, review_due: false, review_due_reason: "already_reviewed", next_transition: undefined }));
+	assert.deepEqual(consumed.candidate, { kind: "base-diff", baseRef: "origin/main", consumed: true });
+	assert.equal(consumed.reviewDue, false);
+	assert.equal(consumed.reviewDueReason, "already_reviewed");
+	assert.equal(Object.hasOwn(consumed, "nextTransition"), false);
+
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		assert.equal(decodeReviewAssessmentV1(consistentEnvelope(pair)).reviewDueReason, pair.reason);
+	}
+
+	const noToken = decodeReviewAssessmentV1(newEnvelope({ next_transition: nextTransition({ arguments: [] }) }));
+	assert.deepEqual(noToken.nextTransition, nextTransition({ arguments: [] }));
+});
+
+test("decodeReviewAssessmentV1 rejects malformed consumed, review_due, and review_due_reason values", () => {
+	for (const consumed of ["true", 0, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "current-changes", consumed } })), TypeError, `consumed ${JSON.stringify(consumed)} must be rejected`);
+	}
+	for (const reviewDueReason of ["low_risk", "", 1, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due_reason: reviewDueReason })), TypeError, `review_due_reason ${JSON.stringify(reviewDueReason)} must be rejected`);
+	}
+	for (const reviewDue of ["true", 1, null]) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: reviewDue })), TypeError, `review_due ${JSON.stringify(reviewDue)} must be rejected`);
+	}
+});
+
+// gentle-pi#1175 (T2): the native schema fixes review_due by reason
+// (true for high_risk and slice_budget_reached, false for passive,
+// under_budget, and already_reviewed). Consumed candidates must report
+// already_reviewed, but an acknowledged predecessor plus a passive delta can
+// also produce that reason without consuming this exact candidate (#1954).
+interface ReviewDuePair {
+	reason: string;
+	due: boolean;
+	consumed: boolean;
+}
+
+const CONSISTENT_REVIEW_DUE_PAIRS: readonly ReviewDuePair[] = [
+	{ reason: "high_risk", due: true, consumed: false },
+	{ reason: "slice_budget_reached", due: true, consumed: false },
+	{ reason: "passive", due: false, consumed: false },
+	{ reason: "under_budget", due: false, consumed: false },
+	{ reason: "already_reviewed", due: false, consumed: true },
+	{ reason: "already_reviewed", due: false, consumed: false },
+];
+
+function consistentEnvelope(pair: ReviewDuePair): Record<string, unknown> {
+	return newEnvelope({
+		candidate: { kind: "current-changes", consumed: pair.consumed },
+		review_due: pair.due,
+		review_due_reason: pair.reason,
+		next_transition: pair.due ? nextTransition() : undefined,
+	});
+}
+
+test("decodeReviewAssessmentV1 accepts every consistent review_due/review_due_reason/consumed combination", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		const decoded = decodeReviewAssessmentV1(consistentEnvelope(pair));
+		assert.equal(decoded.reviewDue, pair.due, pair.reason);
+		assert.equal(decoded.reviewDueReason, pair.reason);
+		assert.equal(decoded.candidate.consumed, pair.consumed, pair.reason);
+	}
+	// Without next_transition the due pairs stay consistent too.
+	assert.equal(decodeReviewAssessmentV1(newEnvelope({ next_transition: undefined })).reviewDueReason, "high_risk");
+});
+
+test("decodeReviewAssessmentV1 rejects a review_due boolean that contradicts review_due_reason", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
+		const contradictory = newEnvelope({
+			candidate: { kind: "current-changes", consumed: pair.consumed },
+			review_due: !pair.due,
+			review_due_reason: pair.reason,
+			next_transition: undefined,
+		});
+		assert.throws(() => decodeReviewAssessmentV1(contradictory), TypeError, `review_due ${!pair.due} with ${pair.reason} must be rejected`);
+	}
+});
+
+function reviewedPredecessorEnvelope(): Record<string, unknown> {
+	// The executable range still has medium risk; only the delta after the
+	// acknowledged committed predecessor is a passive ODD note.
+	return validEnvelope({
+		risk: "medium",
+		reasons: [{ code: "executable_changes" }],
+		changed_paths: 3,
+		changed_lines: 24,
+		candidate: { kind: "current-changes", consumed: false },
+		review_due: false,
+		review_due_reason: "already_reviewed",
+	});
+}
+
+test("decodeReviewAssessmentV1 accepts an already-reviewed predecessor without consuming the medium-risk candidate (#1954)", () => {
+	const decoded = decodeReviewAssessmentV1(reviewedPredecessorEnvelope());
+	assert.equal(decoded.risk, "medium");
+	assert.deepEqual(decoded.reasons, [{ code: "executable_changes" }]);
+	assert.equal(decoded.changedPaths, 3);
+	assert.equal(decoded.changedLines, 24);
+	assert.equal(decoded.reviewDue, false);
+	assert.equal(decoded.reviewDueReason, "already_reviewed");
+	assert.equal(decoded.candidate.consumed, false);
+	assert.equal(Object.hasOwn(decoded, "nextTransition"), false);
+});
+
+test("decodeReviewAssessmentV1 rejects already_reviewed with missing consumed evidence", () => {
+	// Native v2 requires consumed; older envelopes omit the entire due pair.
+	assert.throws(
+		() => decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "current-changes" }, review_due: false, review_due_reason: "already_reviewed", next_transition: undefined })),
+		TypeError,
+	);
+});
+
+test("decodeReviewAssessmentV1 rejects a consumed candidate reported with any reason other than already_reviewed", () => {
+	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS.filter((entry) => entry.reason !== "already_reviewed")) {
+		assert.throws(
+			() => decodeReviewAssessmentV1(newEnvelope({
+				candidate: { kind: "current-changes", consumed: true },
+				review_due: pair.due,
+				review_due_reason: pair.reason,
+				next_transition: pair.due ? nextTransition() : undefined,
+			})),
+			TypeError,
+			`consumed with ${pair.reason} must be rejected`,
+		);
+	}
+});
+
+test("decodeReviewAssessmentV1 still accepts an older envelope without the review_due pair", () => {
+	assert.equal(decodeReviewAssessmentV1(validEnvelope()).risk, "medium");
+	assert.equal(Object.hasOwn(decodeReviewAssessmentV1(validEnvelope({ risk: "passive", reasons: [] })), "reviewDue"), false);
+});
+
+test("decodeReviewAssessmentV1 rejects only one of the review_due/review_due_reason pair", () => {
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ review_due: false })), TypeError);
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ review_due_reason: "passive" })), TypeError);
+});
+
+test("decodeReviewAssessmentV1 rejects a malformed next_transition or one not backed by review_due true", () => {
+	const malformed: Record<string, unknown>[] = [
+		nextTransition({ operation: "review.start" }),
+		nextTransition({ extra: true }),
+		nextTransition({ command: undefined }),
+		nextTransition({ command: "" }),
+		nextTransition({ arguments: undefined }),
+		nextTransition({ arguments: "--cwd" }),
+		nextTransition({ arguments: [{ name: "--cwd", value: "/repo", token: "" }] }),
+		nextTransition({ arguments: [{ name: "", value: "/repo" }] }),
+		nextTransition({ arguments: [{ name: "--cwd" }] }),
+		nextTransition({ arguments: [{ name: "--cwd", value: 1 }] }),
+		nextTransition({ arguments: [{ name: "--cwd", value: "/repo", extra: "x" }] }),
+		nextTransition({ arguments: [null] }),
+	];
+	for (const transition of malformed) {
+		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: transition })), TypeError, `next_transition ${JSON.stringify(transition)} must be rejected`);
+	}
+	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: null })), TypeError);
+	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: false, review_due_reason: "passive" })), TypeError, "next_transition requires review_due true");
+	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ next_transition: nextTransition() })), TypeError, "next_transition requires review_due true");
+});
+
+test("decodeReviewAssessmentV1 ignores unknown top-level fields and never projects them", () => {
+	const decoded = decodeReviewAssessmentV1(newEnvelope({ future_field: { anything: true } }));
+	assert.equal(Object.hasOwn(decoded, "future_field"), false);
+	assert.equal(Object.hasOwn(decoded, "futureField"), false);
+	assert.equal(decoded.reviewDue, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -96,24 +338,22 @@ const RDD_LINES: readonly RddLine[] = [RDD_LINE.ON, RDD_LINE.OFF, RDD_LINE.UNKNO
 const PROFILES: readonly WriterProfile[] = [WRITER_PROFILE.SMALL, WRITER_PROFILE.LARGE];
 const NON_CLOSED_OUTCOMES: readonly NativeReviewOutcome[] = [NATIVE_REVIEW_OUTCOME.DECLINED, NATIVE_REVIEW_OUTCOME.UNAVAILABLE, NATIVE_REVIEW_OUTCOME.UNKNOWN];
 
-test("verificationPlan: rdd on + closed, passive risk -> structural readback only regardless of writer profile", () => {
-	for (const writerProfile of PROFILES) {
-		const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.PASSIVE, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-		assert.equal(plan.structuralReadbackOnly, true);
-		assert.equal(plan.writerSelfVerification, false);
-		assert.equal(plan.independentVerifier, false);
-	}
-});
-
-test("verificationPlan: rdd on + closed, medium/high/unassessable risk -> writer self-verification, no independent verifier", () => {
-	for (const risk of [VERIFICATION_TIER.MEDIUM, VERIFICATION_TIER.HIGH, VERIFICATION_TIER.UNASSESSABLE]) {
+// verify-always-rdd-high S1: the native review is an additional outside view
+// and never replaces verification, so a closed review under rdd on yields the
+// exact risk-gated plan rdd off yields, for every risk and writer profile.
+test("verificationPlan: rdd on + closed behaves exactly like rdd off for every risk/profile combination", () => {
+	for (const risk of RISKS) {
 		for (const writerProfile of PROFILES) {
-			const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
-			assert.equal(plan.writerSelfVerification, true, `rdd on+closed, risk ${risk}, profile ${writerProfile}`);
-			assert.equal(plan.structuralReadbackOnly, false);
-			assert.equal(plan.independentVerifier, false, `the closed native review is the independent check under rdd on for risk ${risk}`);
+			const off = verificationPlan({ rddLine: RDD_LINE.OFF, risk, writerProfile });
+			const closed = verificationPlan({ rddLine: RDD_LINE.ON, risk, writerProfile, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+			assert.equal(closed.writerSelfVerification, off.writerSelfVerification, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.structuralReadbackOnly, off.structuralReadbackOnly, `closed, risk ${risk}, profile ${writerProfile}`);
+			assert.equal(closed.independentVerifier, off.independentVerifier, `closed, risk ${risk}, profile ${writerProfile}`);
 		}
 	}
+	const high = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.HIGH, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+	assert.equal(high.independentVerifier, true, "a closed review never removes the high-risk independent verifier");
+	assert.match(high.reason, /never replaces verification/);
 });
 
 // ---------------------------------------------------------------------------
@@ -150,8 +390,10 @@ test("verificationPlan: an omitted nativeReviewOutcome under rdd on defaults to 
 	}
 });
 
-test("verificationPlan: on+closed+medium+large -> no verifier", () => {
-	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
+// Changed with verification by named risk: the small-model bias is gone, so a
+// small writer on a medium plan no longer gets an independent verifier.
+test("verificationPlan: on+closed+medium+small -> no verifier (the writer's model never adds one)", () => {
+	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.CLOSED });
 	assert.equal(plan.independentVerifier, false);
 	assert.equal(plan.writerSelfVerification, true);
 });
@@ -162,9 +404,12 @@ test("verificationPlan: on+declined+medium+large -> no verifier (medium, large)"
 	assert.equal(plan.writerSelfVerification, true);
 });
 
-test("verificationPlan: on+declined+medium+small -> verifier", () => {
+// Changed with verification by named risk: no small-model bias, so a declined
+// review over a medium plan keeps the writer's self-verification only.
+test("verificationPlan: on+declined+medium+small -> no verifier", () => {
 	const plan = verificationPlan({ rddLine: RDD_LINE.ON, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.DECLINED });
-	assert.equal(plan.independentVerifier, true);
+	assert.equal(plan.independentVerifier, false);
+	assert.equal(plan.writerSelfVerification, true);
 });
 
 test("verificationPlan: on+declined+high -> verifier", () => {
@@ -229,29 +474,61 @@ for (const rddLine of [RDD_LINE.OFF, RDD_LINE.UNKNOWN]) {
 		}
 	});
 
-	test(`verificationPlan: rdd ${rddLine}, medium risk -> independent verifier only for a small writer profile`, () => {
-		const large = verificationPlan({ rddLine, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.LARGE });
-		assert.equal(large.writerSelfVerification, true);
-		assert.equal(large.structuralReadbackOnly, false);
-		assert.equal(large.independentVerifier, false);
-
-		const small = verificationPlan({ rddLine, risk: VERIFICATION_TIER.MEDIUM, writerProfile: WRITER_PROFILE.SMALL });
-		assert.equal(small.writerSelfVerification, true);
-		assert.equal(small.structuralReadbackOnly, false);
-		assert.equal(small.independentVerifier, true, "the small-model bias raises medium to high for verification purposes");
+	// Changed with verification by named risk: the small-model bias is gone, so
+	// medium never adds a verifier, whatever the writer profile.
+	test(`verificationPlan: rdd ${rddLine}, medium risk -> writer self-verification only, for every writer profile`, () => {
+		for (const writerProfile of PROFILES) {
+			const plan = verificationPlan({ rddLine, risk: VERIFICATION_TIER.MEDIUM, writerProfile });
+			assert.equal(plan.writerSelfVerification, true, `profile ${writerProfile}`);
+			assert.equal(plan.structuralReadbackOnly, false);
+			assert.equal(plan.independentVerifier, false, `profile ${writerProfile}`);
+		}
 	});
 
-	test(`verificationPlan: rdd ${rddLine}, high or unassessable risk -> writer self-verification plus independent verifier, always`, () => {
-		for (const risk of [VERIFICATION_TIER.HIGH, VERIFICATION_TIER.UNASSESSABLE]) {
-			for (const writerProfile of PROFILES) {
-				const plan = verificationPlan({ rddLine, risk, writerProfile });
-				assert.equal(plan.writerSelfVerification, true, `rdd ${rddLine}, risk ${risk}, profile ${writerProfile}`);
-				assert.equal(plan.structuralReadbackOnly, false);
-				assert.equal(plan.independentVerifier, true, `rdd ${rddLine}, risk ${risk}, profile ${writerProfile}`);
-			}
+	// The plan risk is high only through an agent escalation (verificationRisk),
+	// so high still means writer self-verification plus one independent verifier.
+	test(`verificationPlan: rdd ${rddLine}, high (escalated) risk -> writer self-verification plus independent verifier`, () => {
+		for (const writerProfile of PROFILES) {
+			const plan = verificationPlan({ rddLine, risk: VERIFICATION_TIER.HIGH, writerProfile });
+			assert.equal(plan.writerSelfVerification, true, `rdd ${rddLine}, profile ${writerProfile}`);
+			assert.equal(plan.structuralReadbackOnly, false);
+			assert.equal(plan.independentVerifier, true, `rdd ${rddLine}, profile ${writerProfile}`);
+			assert.match(plan.reason, /escalat/);
+		}
+	});
+
+	// Changed with verification by named risk: a failed or unrecognized
+	// assessment informs only; it is no longer treated as high.
+	test(`verificationPlan: rdd ${rddLine}, unassessable risk -> writer self-verification only, no verifier`, () => {
+		for (const writerProfile of PROFILES) {
+			const plan = verificationPlan({ rddLine, risk: VERIFICATION_TIER.UNASSESSABLE, writerProfile });
+			assert.equal(plan.writerSelfVerification, true, `rdd ${rddLine}, profile ${writerProfile}`);
+			assert.equal(plan.structuralReadbackOnly, false);
+			assert.equal(plan.independentVerifier, false, `rdd ${rddLine}, profile ${writerProfile}`);
 		}
 	});
 }
+
+test("verificationPlan: the writer's model never changes the plan, for every rdd line, risk, and outcome", () => {
+	for (const rddLine of RDD_LINES) {
+		for (const risk of RISKS) {
+			for (const nativeReviewOutcome of Object.values(NATIVE_REVIEW_OUTCOME)) {
+				const small = verificationPlan({ rddLine, risk, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome });
+				const large = verificationPlan({ rddLine, risk, writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome });
+				assert.deepEqual(small, large, `rdd ${rddLine}, risk ${risk}, outcome ${nativeReviewOutcome}`);
+			}
+		}
+	}
+});
+
+test("verificationRisk: only an escalation makes the plan high; a native high or unassessable tier informs as medium", () => {
+	const escalation = { item: 2 as const, reason: "weakens the permission check" };
+	for (const nativeRisk of RISKS) assert.equal(verificationRisk(nativeRisk, escalation), VERIFICATION_TIER.HIGH, `escalated ${nativeRisk}`);
+	assert.equal(verificationRisk(VERIFICATION_TIER.PASSIVE, undefined), VERIFICATION_TIER.PASSIVE);
+	assert.equal(verificationRisk(VERIFICATION_TIER.MEDIUM, undefined), VERIFICATION_TIER.MEDIUM);
+	assert.equal(verificationRisk(VERIFICATION_TIER.HIGH, undefined), VERIFICATION_TIER.MEDIUM, "a native high alone never adds a verifier");
+	assert.equal(verificationRisk(VERIFICATION_TIER.UNASSESSABLE, undefined), VERIFICATION_TIER.MEDIUM, "a failed assessment alone never adds a verifier");
+});
 
 test("verificationPlan: an unknown rdd line never lowers a tier relative to off", () => {
 	for (const risk of RISKS) {
@@ -328,12 +605,14 @@ test("resolveWriterProfile: an unknown or omitted profile fails closed to small,
 });
 
 // ---------------------------------------------------------------------------
-// Tool-level fail-closed path: the `gentle_review` tool's `assess` operation
+// Tool-level unassessable path: the `gentle_review` tool's `assess` operation
 // (`extensions/gentle-ai.ts`, gentle-pi#662) must treat a native CLI without
 // the `assess` verb (an older binary) or a rejected `assess` call (a process
-// failure) the same way -- risk "unassessable", which `verificationPlan`
-// treats as `high`. `assess` is exposed as a `gentle_review` operation, not a
-// dedicated tool, so the fixed `gentle_*` tool registry stays unchanged.
+// failure) the same way -- native risk "unassessable", which informs only:
+// the plan is medium and adds no independent verifier unless the agent
+// escalates a named high-risk item. `assess` is exposed as a `gentle_review`
+// operation, not a dedicated tool, so the fixed `gentle_*` tool registry stays
+// unchanged.
 
 function reviewControllerTool(nativeReviewCli: Partial<NativeReviewCli> | null): { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ content: readonly { type: string; text: string }[]; details: unknown }> } {
 	const tools = new Map<string, any>();
@@ -352,27 +631,37 @@ function reviewControllerTool(nativeReviewCli: Partial<NativeReviewCli> | null):
 
 const ctx = { cwd: process.cwd() } as ExtensionContext;
 
-test("gentle_review assess: an older binary without the assess verb fails closed to high", async () => {
+// The only input that makes the plan high: an agent escalation naming a Task
+// Size high-risk item. Tests whose subject is "closure or a decline never
+// removes the verifier the plan requires" pass it so a verifier is required.
+const ESCALATE = { escalate: { item: 3, reason: "changes a published export" } } as const;
+
+// Changed with verification by named risk: an unassessable candidate no longer
+// verifies like high; the plan is medium and the native tier stays visible.
+test("gentle_review assess: an older binary without the assess verb informs only (no verifier without escalate)", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		// assess intentionally absent: pre-gentle-ai#4295 binary.
 	};
 	const tool = reviewControllerTool(nativeReviewCli);
 	const result = await tool.execute("call-1", { operation: "assess" }, undefined, undefined, ctx);
-	const details = result.details as { risk: string; rddLine: string; plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean } };
-	assert.equal(details.risk, VERIFICATION_TIER.UNASSESSABLE);
+	const details = result.details as { risk: string; nativeRisk: string; rddLine: string; plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean } };
+	assert.equal(details.nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
+	assert.equal(details.risk, VERIFICATION_TIER.MEDIUM);
 	assert.equal(details.rddLine, "off");
 	assert.equal(details.plan.writerSelfVerification, true);
-	assert.equal(details.plan.independentVerifier, true);
+	assert.equal(details.plan.independentVerifier, false, "a failed assessment alone never adds a verifier");
 	assert.equal(details.plan.structuralReadbackOnly, false);
-	const highEquivalent = verificationPlan({ rddLine: "off", risk: VERIFICATION_TIER.HIGH, writerProfile: WRITER_PROFILE.LARGE });
-	assert.equal(details.plan.writerSelfVerification, highEquivalent.writerSelfVerification, "unassessable must verify exactly like high");
-	assert.equal(details.plan.independentVerifier, highEquivalent.independentVerifier, "unassessable must verify exactly like high");
-	assert.equal(details.plan.structuralReadbackOnly, highEquivalent.structuralReadbackOnly, "unassessable must verify exactly like high");
-	assert.equal(JSON.parse(result.content[0].text).risk, VERIFICATION_TIER.UNASSESSABLE);
+	assert.equal(JSON.parse(result.content[0].text).nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
+
+	const escalated = await tool.execute("call-1b", { operation: "assess", input: JSON.stringify(ESCALATE) }, undefined, undefined, ctx);
+	assert.equal((escalated.details as { risk: string }).risk, VERIFICATION_TIER.HIGH);
+	assert.equal((escalated.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, true, "an escalation over an unassessable candidate adds the verifier");
 });
 
-test("gentle_review assess: a rejected assess call fails closed to high, and RDD status read failure fails closed to unknown", async () => {
+// Changed with verification by named risk: a rejected assess call informs
+// only; the RDD status fail-closed half of this test is unchanged.
+test("gentle_review assess: a rejected assess call informs only, and RDD status read failure fails closed to unknown", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => {
 			throw new Error("native review mode is unavailable");
@@ -383,12 +672,13 @@ test("gentle_review assess: a rejected assess call fails closed to high, and RDD
 	};
 	const tool = reviewControllerTool(nativeReviewCli);
 	const result = await tool.execute("call-2", { operation: "assess" }, undefined, undefined, ctx);
-	const details = result.details as { risk: string; rddLine: string; reasons: readonly { code: string }[]; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
-	assert.equal(details.risk, VERIFICATION_TIER.UNASSESSABLE);
+	const details = result.details as { risk: string; nativeRisk: string; rddLine: string; reasons: readonly { code: string }[]; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
+	assert.equal(details.nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
+	assert.equal(details.risk, VERIFICATION_TIER.MEDIUM);
 	assert.equal(details.rddLine, "unknown", "an unresolved RDD status must fail closed to unknown, never on or off");
 	assert.equal(details.reasons[0]?.code, "native-assess-unavailable");
 	assert.equal(details.plan.writerSelfVerification, true);
-	assert.equal(details.plan.independentVerifier, true);
+	assert.equal(details.plan.independentVerifier, false);
 });
 
 test("gentle_review assess: a successful native assessment is reflected directly in the returned plan", async () => {
@@ -419,7 +709,10 @@ test("gentle_review assess: baseRef without committedOnly is rejected", async ()
 	);
 });
 
-test("gentle_review assess: writerModelId/writerEffort in input select the writer profile, and an omitted profile fails closed to small", async () => {
+// Changed with verification by named risk: the writer profile is still
+// resolved and reported (omitted fails closed to small, gemini is large), but
+// it no longer adds a verifier to a medium plan.
+test("gentle_review assess: writerModelId/writerEffort in input select the reported writer profile, which never changes the plan", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -433,12 +726,11 @@ test("gentle_review assess: writerModelId/writerEffort in input select the write
 	};
 	const tool = reviewControllerTool(nativeReviewCli);
 
-	// Omitted profile + medium + off -> fails closed to small -> independent
-	// verifier true (this is the fix for the fail-open finding: an omitted
-	// profile must never resolve as permissively as a known large model).
+	// Omitted profile + medium + off -> reported as small (fail closed), and
+	// still no independent verifier: the model never adds one.
 	const omitted = await tool.execute("call-5", { operation: "assess" }, undefined, undefined, ctx);
 	assert.equal((omitted.details as { writerProfile: string }).writerProfile, "small");
-	assert.equal((omitted.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, true, "an omitted writer profile must fail closed to small, not default to large");
+	assert.equal((omitted.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false, "an omitted writer profile never adds a verifier");
 
 	// Explicit large profile + medium + off -> independent verifier false.
 	const explicitLarge = await tool.execute(
@@ -449,10 +741,12 @@ test("gentle_review assess: writerModelId/writerEffort in input select the write
 		ctx,
 	);
 	assert.equal((explicitLarge.details as { writerProfile: string }).writerProfile, "large");
-	assert.equal((explicitLarge.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false, "an explicitly recorded large profile must not be forced into the small-model bias");
+	assert.equal((explicitLarge.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false);
 
 	const small = await tool.execute("call-7", { operation: "assess", input: JSON.stringify({ writerEffort: "low" }) }, undefined, undefined, ctx);
-	assert.equal((small.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, true, "a low-effort writer profile must trigger the small-model bias");
+	assert.equal((small.details as { writerProfile: string }).writerProfile, "small");
+	assert.equal((small.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false, "a low-effort writer profile never adds a verifier");
+	assert.deepEqual((small.details as { plan: unknown }).plan, (explicitLarge.details as { plan: unknown }).plan, "the writer's model never changes the plan");
 
 	// A gemini model id must resolve large, never small on the bare "mini" substring.
 	const gemini = await tool.execute("call-8", { operation: "assess", input: JSON.stringify({ writerModelId: "gemini-2.5-pro", writerEffort: "high" }) }, undefined, undefined, ctx);
@@ -460,6 +754,9 @@ test("gentle_review assess: writerModelId/writerEffort in input select the write
 	assert.equal((gemini.details as { plan: { independentVerifier: boolean } }).plan.independentVerifier, false);
 });
 
+// Changed with verification by named risk: a native high without escalate is
+// a medium plan (no verifier); the declined fallback still applies, and an
+// escalation still gets its verifier.
 test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input falls back to the risk-gated plan even when RDD is on (gentle-pi#668)", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
@@ -474,13 +771,19 @@ test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input f
 	};
 	const tool = reviewControllerTool(nativeReviewCli);
 	const result = await tool.execute("call-9", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "declined" }) }, undefined, undefined, ctx);
-	const details = result.details as { risk: string; rddLine: string; outcome_source: string; plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean } };
-	assert.equal(details.risk, "high");
+	const details = result.details as { risk: string; nativeRisk: string; rddLine: string; outcome_source: string; plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean } };
+	assert.equal(details.nativeRisk, "high");
+	assert.equal(details.risk, "medium", "a native high without escalate informs only");
 	assert.equal(details.rddLine, "on", "the rendered RDD line still reads on -- only the verification plan falls back");
 	assert.equal(details.outcome_source, "explicit");
 	assert.equal(details.plan.writerSelfVerification, true);
-	assert.equal(details.plan.independentVerifier, true, "a declined review for this candidate must re-enable the risk-gated independent verifier");
+	assert.equal(details.plan.independentVerifier, false, "a native high without escalate adds no verifier");
 	assert.equal(details.plan.structuralReadbackOnly, false);
+
+	const escalated = await tool.execute("call-9b", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "declined", ...ESCALATE }) }, undefined, undefined, ctx);
+	const escalatedDetails = escalated.details as { risk: string; plan: { independentVerifier: boolean } };
+	assert.equal(escalatedDetails.risk, "high");
+	assert.equal(escalatedDetails.plan.independentVerifier, true, "a declined review keeps the verifier an escalation requires");
 });
 
 test("gentle_review assess: an unrecognized nativeReviewOutcome value is rejected", async () => {
@@ -497,25 +800,46 @@ function assessOnNativeCli(currentTargetIdentity: () => string): Partial<NativeR
 	return {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({ schema: REVIEW_ASSESSMENT_SCHEMA, risk: "high", reasons: [], changedPaths: 1, changedLines: 5, candidate: { kind: "current-changes", baseRef: undefined } }),
-		targetStatus: (async () => ({ applicability: "current_target", targetIdentity: currentTargetIdentity() })) as NativeReviewCli["targetStatus"],
+		targetStatus: async (): Promise<ReviewStatusV3> => ({
+			contract: "gentle-ai.review-integration/v2", applicability: "current_target",
+			action: "stop", replayability: "manual_action_required", targetIdentity: currentTargetIdentity(),
+			projection: {
+				schema: "gentle-ai.review-integration.projection/v1",
+				kind: "current-changes", projection: "workspace", baseTree: "a".repeat(40),
+				initialReviewTree: "a".repeat(40), currentCandidateTree: "b".repeat(40),
+				pathsDigest: "c".repeat(64), paths: ["candidate.ts"], intendedUntracked: [],
+				intendedUntrackedProof: "d".repeat(64), initialSnapshotIdentity: "e".repeat(64),
+				currentSnapshotIdentity: currentTargetIdentity(),
+			},
+			repair: {
+				schema: "gentle-ai.review-authority-repair-assessment/v1", status: "unsupported",
+				counts: { lineages: 0, compactLineages: 0, legacyLineages: 0, events: 0, bytes: 0, eligibleCandidates: 0, unsupportedLineages: 0, conflicts: 0 },
+				supportedOperations: ["review/complete-fix", "review/validate-fix"],
+				authorizationSchema: "gentle-ai.review-repair-authorization/v1",
+			},
+			candidates: [], raw: {},
+		}),
 	};
 }
 
-test("gentle_review assess: derivation is bound to the exact candidate recorded, closed can only ever be passed explicitly (gentle-pi#668 correction)", async (t) => {
+test("gentle_review assess: derivation is bound to the exact candidate recorded, and a caller-declared closed is never trusted without native evidence (gentle-pi#668 correction, gentle-pi#1175)", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	let current = "target-a";
 	const tool = reviewControllerTool(assessOnNativeCli(() => current));
+	// Verification by named risk: the plan requires a verifier only through an
+	// escalation, so each call escalates to keep "never removes it" observable.
+	const escalated = { operation: "assess", input: JSON.stringify(ESCALATE) };
 
 	// Nothing recorded for candidate A yet -> unknown, risk-gated.
-	const before = (await tool.execute("call-11", { operation: "assess" }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
+	const before = (await tool.execute("call-11", escalated, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
 	assert.equal(before.nativeReviewOutcome, "unknown");
 	assert.equal(before.outcome_source, "unknown");
 	assert.equal(before.plan.independentVerifier, true);
 
 	// Candidate A recorded declined -> assess for A derives it.
 	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
-	const forA = (await tool.execute("call-12", { operation: "assess" }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
+	const forA = (await tool.execute("call-12", escalated, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
 	assert.equal(forA.nativeReviewOutcome, "declined");
 	assert.equal(forA.outcome_source, "derived");
 	assert.equal(forA.plan.independentVerifier, true, "a derived decline re-enables the independent verifier for the matching candidate");
@@ -524,17 +848,290 @@ test("gentle_review assess: derivation is bound to the exact candidate recorded,
 	// and since closed is never written, an acknowledged A can never leak a
 	// closed derivation into B either.
 	current = "target-b";
-	const forB = (await tool.execute("call-13", { operation: "assess" }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
+	const forB = (await tool.execute("call-13", escalated, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean } };
 	assert.equal(forB.nativeReviewOutcome, "unknown", "candidate B must never inherit candidate A's recorded outcome");
 	assert.equal(forB.outcome_source, "unknown");
 	assert.equal(forB.plan.independentVerifier, true);
 
-	// Explicit input always wins, and is the only way to reach "closed".
-	const closed = (await tool.execute("call-14", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "closed" }) }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
-	assert.equal(closed.nativeReviewOutcome, "closed");
-	assert.equal(closed.outcome_source, "explicit");
+	// gentle-pi#1175: a caller-declared closed is only a claim. This older
+	// assessment carries no candidate.consumed, so it fails closed to unknown.
+	const closed = (await tool.execute("call-14", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "closed", ...ESCALATE }) }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
+	assert.equal(closed.nativeReviewOutcome, "unknown");
+	assert.equal(closed.outcome_source, "unknown");
 	assert.equal(closed.plan.writerSelfVerification, true);
-	assert.equal(closed.plan.independentVerifier, false, "an explicit closed outcome restores the on-path: no separate verifier");
+	assert.equal(closed.plan.independentVerifier, true, "an uncorroborated closed claim must keep the separate verifier");
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175 (T2): closure comes only from the exact native evidence of
+// THIS assess call -- candidate.consumed === true, which native writes only
+// inside the approved-acknowledgement burn for that exact target identity.
+// ---------------------------------------------------------------------------
+
+interface ClosureCliOptions {
+	rdd?: "on" | "off";
+	risk?: "passive" | "medium" | "high";
+	/** undefined models an older binary that reports no consumed/review_due. */
+	consumed?: boolean;
+	targetIdentity?: () => string;
+	unassessable?: boolean;
+}
+
+function closureCli(options: ClosureCliOptions): Partial<NativeReviewCli> {
+	const rdd = options.rdd ?? "on";
+	const risk = options.risk ?? "high";
+	const raw = options.consumed === undefined
+		? validEnvelope({ risk, reasons: [] })
+		: validEnvelope({
+			risk,
+			reasons: [],
+			candidate: { kind: "current-changes", consumed: options.consumed },
+			review_due: options.consumed ? false : risk === "high",
+			review_due_reason: options.consumed ? "already_reviewed" : risk === "high" ? "high_risk" : risk === "passive" ? "passive" : "under_budget",
+		});
+	return {
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: rdd, cloneLocal: "", effective: rdd, source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
+		assess: async () => {
+			if (options.unassessable) throw new Error("native process failed");
+			return decodeReviewAssessmentV1(raw);
+		},
+		...(options.targetIdentity === undefined ? {} : {
+			targetStatus: (async () => ({ applicability: "current_target", targetIdentity: options.targetIdentity!() })) as unknown as NativeReviewCli["targetStatus"],
+		}),
+	};
+}
+
+interface AssessDetails {
+	risk: string;
+	nativeRisk: string;
+	nativeReviewOutcome: string;
+	outcome_source: string;
+	writerProfile: string;
+	writerProfileSource: string;
+	plan: { writerSelfVerification: boolean; independentVerifier: boolean; structuralReadbackOnly: boolean };
+}
+
+async function assessWith(cli: Partial<NativeReviewCli>, input?: Record<string, unknown>, context: ExtensionContext = ctx): Promise<AssessDetails> {
+	const params = input === undefined ? { operation: "assess" } : { operation: "assess", input: JSON.stringify(input) };
+	return (await reviewControllerTool(cli).execute("closure", params, undefined, undefined, context)).details as AssessDetails;
+}
+
+test("gentle_review assess: already-reviewed predecessor remains medium and never proves exact-candidate closure (#1954)", async (t) => {
+	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
+	__testing.clearNativeReviewOutcomeMemoForTesting();
+	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
+		const queue = queuedAdapter([{ stdout: JSON.stringify(reviewedPredecessorEnvelope()) }]);
+		const client = nativeClient(queue.adapter);
+		const cli = {
+			...closureCli({ risk: "medium", consumed: false }),
+			assess: client.assess.bind(client),
+		};
+		const details = await assessWith(cli, input) as AssessDetails & {
+			candidate: { consumed: boolean };
+			reviewDue: boolean;
+			reviewDueReason: string;
+		};
+		assert.equal(queue.calls.length, 1, "assessment must pass through the native CLI decoder");
+		assert.equal(details.risk, "medium", "supported predecessor evidence must not become unassessable");
+		assert.equal(details.candidate.consumed, false);
+		assert.equal(details.reviewDue, false);
+		assert.equal(details.reviewDueReason, "already_reviewed");
+		assert.equal(Object.hasOwn(details, "nextTransition"), false);
+		assert.equal(details.nativeReviewOutcome, "unknown", "already_reviewed is not exact-candidate consumption");
+		assert.equal(details.outcome_source, "unknown");
+		assert.deepEqual(details.plan, verificationPlan({
+			rddLine: RDD_LINE.ON,
+			risk: VERIFICATION_TIER.MEDIUM,
+			writerProfile: details.writerProfile as WriterProfile,
+			nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.UNKNOWN,
+		}));
+		assert.equal(details.plan.writerSelfVerification, true);
+		assert.equal(details.plan.structuralReadbackOnly, false);
+	}
+});
+
+// Verification by named risk: the closure tests below that check "closure or a
+// decline never removes the verifier" escalate, because only an escalation
+// makes the plan require one.
+test("gentle_review assess: native consumed true derives closed for this candidate", async () => {
+	const details = await assessWith(closureCli({ consumed: true }), ESCALATE);
+	assert.equal(details.nativeReviewOutcome, "closed");
+	assert.equal(details.outcome_source, "derived");
+	assert.equal(details.plan.writerSelfVerification, true);
+	assert.equal(details.plan.independentVerifier, true, "a natively closed candidate keeps the risk-tier verifier (verify-always-rdd-high S1)");
+});
+
+test("gentle_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
+	for (const consumed of [false, undefined]) {
+		const details = await assessWith(closureCli({ consumed }), { nativeReviewOutcome: "closed", ...ESCALATE });
+		assert.equal(details.nativeReviewOutcome, "unknown", `consumed ${String(consumed)}`);
+		assert.equal(details.outcome_source, "unknown");
+		assert.equal(details.plan.independentVerifier, true);
+	}
+});
+
+test("gentle_review assess: a caller-declared closed corroborated by native consumed stays closed", async () => {
+	const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: "closed", ...ESCALATE });
+	assert.equal(details.nativeReviewOutcome, "closed");
+	assert.equal(details.outcome_source, "derived", "closure is attributed to the native evidence, not to the caller's claim");
+	assert.equal(details.plan.independentVerifier, true, "closure never removes the risk-tier verifier");
+});
+
+test("gentle_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {
+	for (const outcome of ["declined", "unavailable", "unknown"]) {
+		const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: outcome, ...ESCALATE });
+		assert.equal(details.nativeReviewOutcome, outcome);
+		assert.equal(details.outcome_source, "explicit");
+		assert.equal(details.plan.independentVerifier, true, `${outcome} must keep the risk-gated verifier`);
+	}
+});
+
+test("gentle_review assess: a recorded decline for the same candidate beats native consumed and a caller-declared closed", async (t) => {
+	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
+	__testing.clearNativeReviewOutcomeMemoForTesting();
+	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
+	const cli = closureCli({ consumed: true, targetIdentity: () => "target-a" });
+	for (const input of [ESCALATE, { nativeReviewOutcome: "closed", ...ESCALATE }]) {
+		const details = await assessWith(cli, input);
+		assert.equal(details.nativeReviewOutcome, "declined", JSON.stringify(input));
+		assert.equal(details.outcome_source, "derived");
+		assert.equal(details.plan.independentVerifier, true);
+	}
+});
+
+test("gentle_review assess: a different candidate never inherits closure or a recorded decline", async (t) => {
+	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
+	__testing.clearNativeReviewOutcomeMemoForTesting();
+	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
+	// Candidate B was natively closed: A's recorded decline must not leak into it.
+	const closedB = await assessWith(closureCli({ consumed: true, targetIdentity: () => "target-b" }));
+	assert.equal(closedB.nativeReviewOutcome, "closed");
+	// Candidate C follows B, but its own assessment is not consumed: B's closure never carries over.
+	const openC = await assessWith(closureCli({ consumed: false, targetIdentity: () => "target-c" }), ESCALATE);
+	assert.equal(openC.nativeReviewOutcome, "unknown");
+	assert.equal(openC.outcome_source, "unknown");
+	assert.equal(openC.plan.independentVerifier, true);
+});
+
+// Changed with verification by named risk: an unassessable candidate is a
+// medium plan with no verifier unless escalated; it is still never closed.
+test("gentle_review assess: an unassessable candidate is never closed", async () => {
+	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
+		const details = await assessWith(closureCli({ unassessable: true }), input);
+		assert.equal(details.nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
+		assert.equal(details.risk, VERIFICATION_TIER.MEDIUM);
+		assert.equal(details.nativeReviewOutcome, "unknown");
+		assert.equal(details.plan.independentVerifier, false);
+	}
+});
+
+test("gentle_review assess: derived closure only changes the RDD on-path; RDD off plans are unchanged", async () => {
+	for (const risk of ["passive", "medium", "high"] as const) {
+		for (const consumed of [true, false]) {
+			// The plan follows verificationRisk (native high without escalate is medium).
+			const off = await assessWith(closureCli({ rdd: "off", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
+			const expectedOff = verificationPlan({ rddLine: RDD_LINE.OFF, risk: verificationRisk(risk, undefined), writerProfile: WRITER_PROFILE.LARGE });
+			assert.deepEqual(off.plan, { ...expectedOff }, `off ${risk} consumed ${consumed}`);
+			const on = await assessWith(closureCli({ rdd: "on", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
+			const expectedOn = verificationPlan({ rddLine: RDD_LINE.ON, risk: verificationRisk(risk, undefined), writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: consumed ? NATIVE_REVIEW_OUTCOME.CLOSED : NATIVE_REVIEW_OUTCOME.UNKNOWN });
+			assert.deepEqual(on.plan, { ...expectedOn }, `on ${risk} consumed ${consumed}`);
+		}
+	}
+});
+
+// ---------------------------------------------------------------------------
+// gentle-pi#1175 (T2): the writer profile comes from the runtime-recorded
+// mutation receipts for this root; caller input is used only when no pending
+// runtime receipt exists.
+// ---------------------------------------------------------------------------
+
+interface RuntimeProfileFields {
+	writerModelId?: string;
+	writerEffort?: string;
+}
+
+function receiptContext(): { context: ExtensionContext; record(evidence: RuntimeProfileFields & { toolCallId: string }): void; consumeAll(): void } {
+	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+	const session = { getSessionId: () => "assess-session", getBranch: () => entries, getCwd: () => process.cwd() };
+	const host = { appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); } };
+	const root = workspaceRoot();
+	return {
+		context: { cwd: process.cwd(), sessionManager: session } as unknown as ExtensionContext,
+		record: (evidence) => recordReviewMutation(host, session, root, { source: "direct", toolName: "write", ...evidence }),
+		consumeAll: () => consumeReviewMutation(host, session, root, pendingReviewMutation(session, root), "acknowledged", "target"),
+	};
+}
+
+function workspaceRoot(): string {
+	return realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd(), encoding: "utf8" }).trim());
+}
+
+const mediumOffCli = (): Partial<NativeReviewCli> => closureCli({ rdd: "off", risk: "medium" });
+
+// Changed with verification by named risk (here and in the next two tests):
+// the runtime writer profile still wins and is reported, but a small profile
+// no longer adds a verifier to a medium plan.
+test("gentle_review assess: the runtime writer profile wins over contradicting caller input", async () => {
+	const small = receiptContext();
+	small.record({ toolCallId: "w1", writerModelId: "openai/gpt-5-mini", writerEffort: "high" });
+	const claimedLarge = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, small.context);
+	assert.equal(claimedLarge.writerProfile, "small");
+	assert.equal(claimedLarge.writerProfileSource, "runtime");
+	assert.equal(claimedLarge.plan.independentVerifier, false, "the reported profile never adds a verifier");
+
+	const large = receiptContext();
+	large.record({ toolCallId: "w1", writerModelId: "google/gemini-2.5-pro", writerEffort: "high" });
+	const claimedSmall = await assessWith(mediumOffCli(), { writerEffort: "low" }, large.context);
+	assert.equal(claimedSmall.writerProfile, "large", "gemini must never count as mini");
+	assert.equal(claimedSmall.writerProfileSource, "runtime");
+	assert.equal(claimedSmall.plan.independentVerifier, false);
+});
+
+test("gentle_review assess: any small or unknown pending runtime writer makes the profile small", async () => {
+	const cases: Array<{ name: string; receipts: RuntimeProfileFields[] }> = [
+		{ name: "missing model id", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "high" }, { writerEffort: "high" }] },
+		{ name: "no profile at all", receipts: [{}] },
+		{ name: "gpt-5-mini", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "high" }, { writerModelId: "gpt-5-mini", writerEffort: "high" }] },
+		{ name: "low effort", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "low" }] },
+	];
+	for (const entry of cases) {
+		const fixture = receiptContext();
+		entry.receipts.forEach((receipt, index) => fixture.record({ toolCallId: `w${index}`, ...receipt }));
+		const details = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, fixture.context);
+		assert.equal(details.writerProfile, "small", entry.name);
+		assert.equal(details.writerProfileSource, "runtime", entry.name);
+		assert.equal(details.plan.independentVerifier, false, entry.name);
+	}
+
+	const known = receiptContext();
+	known.record({ toolCallId: "w1", writerModelId: "google/gemini-2.5-pro", writerEffort: "high" });
+	known.record({ toolCallId: "w2", writerModelId: "anthropic/claude-sonnet-5", writerEffort: "medium" });
+	const details = await assessWith(mediumOffCli(), undefined, known.context);
+	assert.equal(details.writerProfile, "large");
+	assert.equal(details.writerProfileSource, "runtime");
+});
+
+test("gentle_review assess: without pending runtime receipts the caller input path is unchanged", async () => {
+	const fixture = receiptContext();
+	fixture.record({ toolCallId: "w1", writerModelId: "gpt-5-mini" });
+	fixture.consumeAll();
+	const caller = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, fixture.context);
+	assert.equal(caller.writerProfile, "large", "a consumed runtime receipt is no longer evidence for the next candidate");
+	assert.equal(caller.writerProfileSource, "caller");
+
+	const callerSmall = await assessWith(mediumOffCli(), { writerEffort: "low" }, fixture.context);
+	assert.equal(callerSmall.writerProfile, "small");
+	assert.equal(callerSmall.writerProfileSource, "caller");
+
+	const fallback = await assessWith(mediumOffCli(), undefined, fixture.context);
+	assert.equal(fallback.writerProfile, "small");
+	assert.equal(fallback.writerProfileSource, "fallback");
+	assert.equal(fallback.plan.independentVerifier, false);
+
+	// No session at all behaves exactly the same way.
+	const noSession = await assessWith(mediumOffCli());
+	assert.equal(noSession.writerProfile, "small");
+	assert.equal(noSession.writerProfileSource, "fallback");
 });
 
 test("gentle_review assess never requires a lineageId (unlike most other operations)", async () => {
@@ -574,14 +1171,17 @@ function nativeClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
 
-test("gentle_review assess: stderr-only refusal preserves safe actionable diagnostics and fails closed", async () => {
+// Changed with verification by named risk: the refusal is reported as native
+// risk unassessable, which informs only (medium plan, no verifier).
+test("gentle_review assess: stderr-only refusal preserves safe actionable diagnostics and reports unassessable", async () => {
 	const queue = queuedAdapter([{ stdout: "", stderr: "untracked scope declaration required; use --untracked-scope=exclude or select; token=hidden-secret", exitCode: 1 }]);
 	const client = nativeClient(queue.adapter);
 	const tool = reviewControllerTool({ assess: client.assess.bind(client) });
 	const result = await tool.execute("refusal", { operation: "assess" }, undefined, undefined, ctx);
-	const details = result.details as { risk: string; reasons: { code: string; detail: string }[]; plan: { independentVerifier: boolean } };
-	assert.equal(details.risk, "unassessable");
-	assert.equal(details.plan.independentVerifier, true);
+	const details = result.details as { risk: string; nativeRisk: string; reasons: { code: string; detail: string }[]; plan: { independentVerifier: boolean } };
+	assert.equal(details.nativeRisk, "unassessable");
+	assert.equal(details.risk, "medium");
+	assert.equal(details.plan.independentVerifier, false);
 	assert.equal(details.reasons[0].code, NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT);
 	assert.match(details.reasons[0].detail, /untracked scope declaration required/);
 	assert.match(details.reasons[0].detail, /--untracked-scope=exclude/);
@@ -614,8 +1214,9 @@ for (const [shape, sensitive] of [
 		const queue = queuedAdapter([{ stdout: "", stderr: `${sensitive}\nuntracked scope declaration required; use --untracked-scope=exclude or select`, exitCode: 1 }]);
 		const client = nativeClient(queue.adapter);
 		const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("private-shape", { operation: "assess" }, undefined, undefined, ctx);
-		const details = result.details as { risk: string; reasons: { code: string; detail: string }[] };
-		assert.equal(details.risk, "unassessable");
+		// The failed assessment shows as nativeRisk; the plan risk is medium.
+		const details = result.details as { nativeRisk: string; reasons: { code: string; detail: string }[] };
+		assert.equal(details.nativeRisk, "unassessable");
 		assert.equal(details.reasons[0].code, NATIVE_REVIEW_ERROR_CODE.EMPTY_OUTPUT);
 		assert.doesNotMatch(JSON.stringify(result), /hidden|private_project| project|file\.ts|\/private\//);
 		assert.match(details.reasons[0].detail, /untracked scope declaration required; use --untracked-scope=exclude or select/);
@@ -670,8 +1271,9 @@ test("facade assess leaves absent declarations to native and preserves stale-inv
 		const client = nativeClient(queue.adapter);
 		const tool = reviewControllerTool({ assess: client.assess.bind(client) });
 		const result = await tool.execute("stale", { operation: "assess", input: JSON.stringify(selection) }, undefined, undefined, ctx);
-		const details = result.details as { risk: string; reasons: { detail: string }[] };
-		assert.equal(details.risk, "unassessable");
+		// The failed assessment shows as nativeRisk; the plan risk is medium.
+		const details = result.details as { nativeRisk: string; reasons: { detail: string }[] };
+		assert.equal(details.nativeRisk, "unassessable");
 		assert.match(details.reasons[0].detail, /inventory changed/);
 		if (!("untrackedScope" in selection)) assert.deepEqual(queue.calls[0].arguments, ["review", "assess", "--cwd", process.cwd(), "--json"]);
 	}
@@ -711,8 +1313,61 @@ test("native assess: a non-zero exit (an older binary reporting an unknown comma
 	const textOnStdout = queuedAdapter([{ stdout: "unknown command \"assess\" for \"gentle-ai review\"", exitCode: 1 }]);
 	await assert.rejects(
 		() => nativeClient(textOnStdout.adapter).assess!({ cwd: process.cwd() }),
-		(error: unknown) => error instanceof NativeReviewCliError && [NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON, NATIVE_REVIEW_ERROR_CODE.NON_ZERO].includes(error.code),
+		(error: unknown) => error instanceof NativeReviewCliError && (error.code === NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON || error.code === NATIVE_REVIEW_ERROR_CODE.NON_ZERO),
 	);
+});
+
+// gentle-pi#1175: the full native path (real decoder through the native CLI
+// wrapper) must keep a code-only reason assessable and project the new
+// native facts without fabricating them for older envelopes.
+
+test("gentle_review assess: a native envelope whose reasons lack path/detail is assessed, not unassessable", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope({ reasons: [{ code: "touches-auth-path" }] })) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("code-only", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as { risk: string; reasons: Record<string, unknown>[] };
+	assert.equal(details.risk, "medium");
+	assert.deepEqual(details.reasons, [{ code: "touches-auth-path" }]);
+});
+
+test("gentle_review assess: consumed, reviewDue, reviewDueReason, and nextTransition are projected verbatim from native", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(newEnvelope({ candidate: { kind: "current-changes", consumed: false } })) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("new-envelope", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as Record<string, unknown> & { candidate: Record<string, unknown> };
+	// Verification by named risk: the native high shows as nativeRisk; the
+	// plan risk is medium without an escalation. The projection is unchanged.
+	assert.equal(details.nativeRisk, "high");
+	assert.equal(details.risk, "medium");
+	assert.equal(details.candidate.consumed, false);
+	assert.equal(details.reviewDue, true);
+	assert.equal(details.reviewDueReason, "high_risk");
+	assert.deepEqual(details.nextTransition, nextTransition());
+	const text = JSON.parse(result.content[0].text) as Record<string, unknown>;
+	assert.deepEqual(text.nextTransition, nextTransition());
+});
+
+test("gentle_review assess: an older native envelope projects no consumed/reviewDue/reviewDueReason/nextTransition", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope()) }]);
+	const client = nativeClient(queue.adapter);
+	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("old-envelope", { operation: "assess" }, undefined, undefined, ctx);
+	const details = result.details as Record<string, unknown> & { candidate: Record<string, unknown> };
+	assert.equal(details.risk, "medium");
+	for (const key of ["reviewDue", "reviewDueReason", "nextTransition"]) {
+		assert.equal(Object.hasOwn(details, key), false, `${key} must not be fabricated`);
+	}
+	assert.equal(Object.hasOwn(details.candidate, "consumed"), false, "consumed must not be fabricated");
+});
+
+test("gentle_review assess: an unassessable projection omits reason.path instead of emitting an empty string", async () => {
+	const result = await reviewControllerTool({}).execute("no-assess", { operation: "assess" }, undefined, undefined, ctx);
+	// Verification by named risk: the failed assessment shows as nativeRisk.
+	const details = result.details as { nativeRisk: string; reasons: Record<string, unknown>[] };
+	assert.equal(details.nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
+	assert.equal(details.reasons.length, 1);
+	assert.equal(Object.hasOwn(details.reasons[0], "path"), false);
+	assert.equal(typeof details.reasons[0].detail, "string");
+	assert.ok((details.reasons[0].detail as string).length > 0);
 });
 
 test("native assess: a wrong schema or unrecognized risk value fails closed as schema-incompatible", async () => {

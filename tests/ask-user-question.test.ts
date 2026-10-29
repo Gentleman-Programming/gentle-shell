@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import askUserQuestion, { askMultiSelect } from "../extensions/ask-user-question.ts";
+import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 /** Plain theme fake: identity styling keeps rendered assertions readable. */
 interface Theme {
@@ -67,19 +68,28 @@ interface ExtensionSlot {
 
 const OURS_PATH = "gentle-pi/extensions/ask-user-question.ts";
 
-function registerQuestionTool(slot?: ExtensionSlot): { tool: RegisteredTool; slot: ExtensionSlot; emitted: LifecycleEvent[] } {
+function registerQuestionTool(slot?: ExtensionSlot, withHerdr = false): { tool: RegisteredTool; slot: ExtensionSlot; emitted: LifecycleEvent[] } {
 	const target: ExtensionSlot = slot ?? { path: OURS_PATH, tools: new Map() };
 	const emitted: LifecycleEvent[] = [];
+	const handlers = new Map<string, (data: unknown) => void>();
 	const pi = {
+		on() {},
+		registerCommand() {},
 		registerTool(tool: RegisteredTool) {
 			target.tools.set(tool.name, tool);
 		},
 		events: {
 			emit(channel: string, data: { active: boolean }) {
 				emitted.push({ channel, data });
+				handlers.get(channel)?.(data);
+			},
+			on(channel: string, handler: (data: unknown) => void) {
+				handlers.set(channel, handler);
+				return () => handlers.delete(channel);
 			},
 		},
 	};
+	if (withHerdr) createGentleAiExtension({ nativeReviewCli: null })(pi as never);
 	askUserQuestion(pi as never);
 	const tool = target.tools.get("ask_user_question");
 	if (!tool) throw new Error("ask_user_question must register");
@@ -580,6 +590,39 @@ test("ask_user_question settles its lifecycle after a custom UI error", async ()
 		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
 		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
 	]);
+});
+
+test("native questionnaires release the Herdr projection on answer, cancellation, and UI error", async () => {
+	const failure = new Error("custom UI failed");
+	for (const outcome of ["answer", "cancel", "error"] as const) {
+		const { tool, emitted } = registerQuestionTool(undefined, true);
+		let component!: Renderable;
+		let fail!: (reason: Error) => void;
+		const request = run(tool, { questions: single() }, {
+			mode: "tui",
+			ui: { custom: async (factory: CustomFactory) => new Promise((resolve, reject) => {
+				fail = reject;
+				component = factory({ requestRender() {} }, theme, {}, resolve);
+			}) },
+		});
+		const projection = () => emitted.filter(({ channel }) => channel === "herdr:blocked");
+		assert.deepEqual(projection(), [
+			{ channel: "herdr:blocked", data: { active: true, label: "Questionnaire awaiting input" } },
+		]);
+		if (outcome === "error") {
+			fail(failure);
+			await assert.rejects(request, (error: unknown) => error === failure);
+		} else {
+			component.handleInput?.(outcome === "cancel" ? "\x1b" : "\r");
+			const result = await request;
+			if (outcome === "cancel") assert.deepEqual(result.details, { cancelled: true });
+			else assert.equal(result.content[0]!.text, "1. Proceed? — Alpha");
+		}
+		assert.deepEqual(projection(), [
+			{ channel: "herdr:blocked", data: { active: true, label: "Questionnaire awaiting input" } },
+			{ channel: "herdr:blocked", data: { active: false } },
+		]);
+	}
 });
 
 test("ask_user_question owns an exclusive tool name across extensions", () => {

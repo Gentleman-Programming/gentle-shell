@@ -293,6 +293,18 @@ export function evaluateProfilePin(
 	return evaluation;
 }
 
+// Admission-only lookup at an explicitly bound non-Git project. Do not create
+// a fake commonDir or change public pin/status semantics outside repositories.
+export function resolveUnversionedProjectProfile(cwd: string, configHome: string): (ProfilePinSelection & { modelProfiles: AgentModelConfig }) | undefined {
+	const path = repoProfileDeclarationPath(cwd);
+	const pin = readProfilePinResult(path);
+	if (pin.status !== "valid") return undefined;
+	const store = readProfilesFileResult(profilesFilePath(configHome));
+	if (store.status !== "valid" || !hasProfile(store.file.profiles, pin.profile)) return undefined;
+	const config = store.file.profiles[pin.profile];
+	return { source: "repo", profile: pin.profile, path, modelProfiles: Object.fromEntries(profileRoleEntries(config).map(([agent, entry]) => [agent, { ...entry }])) };
+}
+
 export interface ProfilePinResolveOptions {
 	cwd: string;
 	configHome: string;

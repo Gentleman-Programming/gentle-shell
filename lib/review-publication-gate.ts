@@ -393,7 +393,7 @@ function deriveReleaseCiStatusForShaV1(options: {
 	} catch {
 		return { proven: false, status: null };
 	}
-	if (!isRecord(summary) || !Number.isSafeInteger(summary.total_count) || !Number.isSafeInteger(summary.returned) || !Array.isArray(summary.checks) || summary.total_count < 0 || summary.returned < 0 || summary.returned !== summary.checks.length || summary.total_count !== summary.checks.length) {
+	if (!isRecord(summary) || typeof summary.total_count !== "number" || typeof summary.returned !== "number" || !Number.isSafeInteger(summary.total_count) || !Number.isSafeInteger(summary.returned) || !Array.isArray(summary.checks) || summary.total_count < 0 || summary.returned < 0 || summary.returned !== summary.checks.length || summary.total_count !== summary.checks.length) {
 		return { proven: false, status: null };
 	}
 	if (summary.total_count > 0) {

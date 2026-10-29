@@ -115,10 +115,12 @@ function probeStageEnvironment(t: test.TestContext, env: NodeJS.ProcessEnv) {
 	const stagesPath = writeStagesFile(t, []);
 	const probePath = join(dirname(stagesPath), "probe.mjs");
 	writeFileSync(probePath, `
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 const home = process.env.GENTLE_PI_CONFIG_HOME;
+const gitGlobalPath = process.env.GIT_CONFIG_GLOBAL;
 console.log("ENV_PROBE=" + JSON.stringify({
   git: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GIT_"))),
+  gitGlobal: gitGlobalPath ? { exists: existsSync(gitGlobalPath), content: existsSync(gitGlobalPath) ? readFileSync(gitGlobalPath, "utf8") : null } : null,
   agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GENTLE_PI_AGENTS_"))),
   home,
   files: home && existsSync(home) ? readdirSync(home) : null,
@@ -153,8 +155,23 @@ test("unit stage strips inherited Git configuration without changing later stage
 		GIT_DIR: "inherited-repository", GIT_AUTHOR_NAME: "inherited-author",
 	};
 	const [unit, provider] = probeStageEnvironment(t, env);
-	assert.deepEqual(unit.git, {});
+	assert.equal(unit.git.GIT_DIR, undefined);
+	assert.equal(unit.git.GIT_AUTHOR_NAME, undefined);
+	assert.equal(unit.git.GIT_CONFIG_COUNT, undefined);
 	for (const [key, value] of Object.entries(env)) assert.equal(provider.git[key], value);
+});
+
+// gentle-shell#2552: Git reads its global/system config files by path, so
+// stripping inherited GIT_* environment was not enough — a host global ignore
+// (e.g. ".agents/") leaked into fixtures and dropped untracked symlink targets
+// from `git add -A`. The stage must pin every remaining config source.
+test("unit stage pins Git config files to empty defaults; later stages keep inherited ones", (t) => {
+	const [unit, provider] = probeStageEnvironment(t, { GIT_CONFIG_GLOBAL: "inherited-global", GIT_CONFIG_NOSYSTEM: "0" });
+	assert.match(unit.git.GIT_CONFIG_GLOBAL ?? "", /empty\.gitconfig$/);
+	assert.deepEqual(unit.gitGlobal, { exists: true, content: "" }, "the pinned global config exists and is empty while the stage runs");
+	assert.equal(unit.git.GIT_CONFIG_NOSYSTEM, "1");
+	assert.equal(provider.git.GIT_CONFIG_GLOBAL, "inherited-global");
+	assert.deepEqual(provider.gitGlobal, { exists: false, content: null }, "later stages keep their inherited Git config sources");
 });
 
 test("unit stage strips inherited subagent context without changing later stages", (t) => {
@@ -171,7 +188,7 @@ test("unit stage accepts an uncreated inherited config home without creating it"
 	assert.equal(existsSync(home), false);
 	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
 	assert.notEqual(unit.home, home);
-	assert.deepEqual(unit.files, []);
+	assert.deepEqual(unit.files, ["empty.gitconfig"]);
 	assert.equal(existsSync(unit.home), false);
 	assert.equal(provider.home, home);
 	assert.equal(provider.files, null);
@@ -186,7 +203,7 @@ test("unit stage uses an empty temporary config home and removes it after exit",
 	writeFileSync(configPath, config);
 	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
 	assert.notEqual(unit.home, home);
-	assert.deepEqual(unit.files, []);
+	assert.deepEqual(unit.files, ["empty.gitconfig"]);
 	assert.equal(existsSync(unit.home), false);
 	assert.equal(provider.home, home);
 	assert.deepEqual(provider.files, ["runtime-guardrails.json"]);

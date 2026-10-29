@@ -10,7 +10,7 @@
 // POSIX and Windows CI.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,18 @@ export async function runStage(stage) {
 	// fixture that leaves a subagent unfinished cannot leave its TMPDIR behind.
 	const unitTmp = configHome ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-tmp-")) : undefined;
 	if (unitTmp) env.TMPDIR = unitTmp;
+	// Stripping GIT_* environment still leaves Git's config files, which it reads
+	// by path: a host-level global ignore (e.g. ".agents/" in ~/.gitconfig or the
+	// XDG ignore file) made `git add -A` inside fixtures drop an untracked
+	// symlink target, so the candidate view materialized a dangling link and the
+	// suite saw an ENOENT (gentle-shell#2552). Pin every remaining config source
+	// to an empty file for the stage; fixtures that need identity pass -c flags.
+	if (configHome) {
+		const emptyGitConfig = join(configHome, "empty.gitconfig");
+		writeFileSync(emptyGitConfig, "");
+		env.GIT_CONFIG_GLOBAL = emptyGitConfig;
+		env.GIT_CONFIG_NOSYSTEM = "1";
+	}
 	try {
 		return await new Promise((resolve) => {
 			const child = spawn(stage.command, { shell: true, stdio: "inherit", env });

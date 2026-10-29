@@ -166,6 +166,7 @@ test("Todo keyboard scrolling targets the visible card after a cached sidebar br
 			const after = railLines();
 			assert.notDeepEqual(after, before, "DOWN changes the visible cached rail, not the hidden bottom widget");
 			assert.match(after.join("\n"), /↑↓ 4–/);
+			assert.match(after.join("\n"), /alt\+shift\+↑\/↓/, "scroll hint reflects alt+shift shortcuts");
 			await shortcuts.get("alt+shift+up")!.handler(ctx);
 			assert.deepEqual(railLines(), before, "UP restores the expanded viewport");
 		} finally {

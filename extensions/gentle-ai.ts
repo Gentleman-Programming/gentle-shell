@@ -63,7 +63,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys, removeRoutingKeysFromProfilesFile } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -4214,6 +4214,7 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "d default", keep: 8 },
 	{ text: "n new", keep: 10 },
 	{ text: "m menu", keep: 9 },
+	{ text: "x clean stale keys", keep: 11 },
 	{ text: "esc close", keep: 4 },
 	{ text: "a all fast", keep: 11 },
 ];
@@ -4365,12 +4366,18 @@ function followProfileFallbacks(profilesPath: string, from: string, to: string |
 	try { followProfileRename(dirname(profilesPath), from, to); } catch { /* The profile change already succeeded. */ }
 }
 
+type RoutingCleanup = { keys: string[]; apply: (keys: string[]) => AgentProfilesFile };
+
 class RoutingTablePanel implements OverlayComponent {
-	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | undefined;
+	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | "cleanup" | undefined;
 	/** The model and effort cards are picking a fallback step, not the row's own model. */
 	private pickingFallback = false;
 	private fallbackCursor = 0;
 	private readonly fallbacks: RoutingFallbacks | undefined;
+	private cleanup: RoutingCleanup | undefined;
+	private cleanupSelected = new Set<string>();
+	private cleanupCursor = 0;
+	private readonly prepareCleanup: (() => RoutingCleanup) | undefined;
 	private target: string = PROFILE_ORCHESTRATOR_KEY;
 	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
@@ -4425,8 +4432,10 @@ class RoutingTablePanel implements OverlayComponent {
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
 			modeDraft?: OrchestratorMode;
+			prepareCleanup?: () => RoutingCleanup;
 		} = {},
 	) {
+		this.prepareCleanup = options.prepareCleanup;
 		this.switchProfile = options.switchProfile;
 		this.fallbacks = options.fallbacks;
 		this.thinkingSupport = options.thinkingSupport ?? {};
@@ -4944,6 +4953,9 @@ class RoutingTablePanel implements OverlayComponent {
 			case "new":
 				this.handleMenuKey(data);
 				return;
+			case "cleanup":
+				this.handleCleanupKey(data);
+				return;
 			case "switch":
 				this.handleSwitchKey(data);
 				return;
@@ -4987,6 +4999,15 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "d")) return this.pressButton("default");
 		if (matchesKey(data, "n")) return this.openMenu("new");
 		if (matchesKey(data, "m")) return this.openMenu("menu");
+		if (matchesKey(data, "x") && this.prepareCleanup) {
+			try {
+				this.cleanup = this.prepareCleanup();
+				if (this.cleanup.keys.length === 0) return this.say("Nothing to clean.");
+				this.cleanupSelected = new Set(this.cleanup.keys);
+				this.cleanupCursor = 0;
+				this.overlay = "cleanup";
+			} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
+		}
 	}
 
 	private handleModelKey(data: string): void {
@@ -5039,6 +5060,29 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "return")) {
 			const item = items[this.menuCursor];
 			if (item) this.runMenuItem(item.id);
+		}
+	}
+
+	private handleCleanupKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		const keys = this.cleanup!.keys;
+		if (matchesKey(data, "up")) this.cleanupCursor = Math.max(0, this.cleanupCursor - 1);
+		if (matchesKey(data, "down")) this.cleanupCursor = Math.min(keys.length - 1, this.cleanupCursor + 1);
+		if (data === " ") {
+			const key = keys[this.cleanupCursor];
+			if (this.cleanupSelected.has(key)) this.cleanupSelected.delete(key);
+			else this.cleanupSelected.add(key);
+		}
+		if (matchesKey(data, "return")) {
+			const selected = keys.filter((key) => this.cleanupSelected.has(key));
+			this.closeOverlay();
+			if (selected.length === 0) return;
+			try {
+				this.file = this.cleanup!.apply(selected);
+				this.stored = removeRoutingKeys(this.stored, selected);
+				this.draft = removeRoutingKeys(this.draft, selected);
+				this.say(`Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`);
+			} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
 		}
 	}
 
@@ -5479,6 +5523,20 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private cardFor(inner: number): { lines: string[]; width: number; top: number; left: number } {
 		switch (this.overlay) {
+			case "cleanup": {
+				const width = Math.min(inner - 4, 68);
+				const keys = this.cleanup!.keys;
+				const visible = Math.max(1, (this.terminalRows?.() ?? 24) - 15);
+				const start = Math.max(0, Math.min(this.cleanupCursor - Math.floor(visible / 2), keys.length - visible));
+				const lines = [this.renderText("Clean stale routing keys", "title"), ""];
+				if (start > 0) lines.push(this.renderText(`↑ ${start} more`, "dim"));
+				for (let i = start; i < Math.min(keys.length, start + visible); i++) {
+					lines.push(this.renderText(`${i === this.cleanupCursor ? "▸" : " "} [${this.cleanupSelected.has(keys[i]) ? "x" : " "}] ${sanitizeTerminalText(keys[i])}`, i === this.cleanupCursor ? "title" : "text"));
+				}
+				if (start + visible < keys.length) lines.push(this.renderText("↓ more", "dim"));
+				lines.push("", this.renderText("↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
+				return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
+			}
 			case "model":
 				return this.modelCard(inner);
 			case "effort":
@@ -5765,6 +5823,7 @@ function renderRoutingTableForTesting(
 }
 
 interface RoutingTablePanelRequest {
+	prepareCleanup?: () => RoutingCleanup;
 	name: string;
 	config: AgentModelConfig;
 	file: AgentProfilesFile;
@@ -5883,6 +5942,7 @@ async function showRoutingTablePanel(
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
 					modeDraft: request.modeDraft,
+					prepareCleanup: request.prepareCleanup,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -7109,6 +7169,35 @@ async function openProfilesPanelLoop(
 				feedback,
 				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
+				prepareCleanup: () => {
+					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
+					const discovered = discoverAgents(roots).agents;
+					const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
+					const subagents = loadAgentsConfig(roots).modelProfiles;
+					const saved = readSavedModelConfig(ctx.cwd);
+					if (saved.status === "invalid") throw new Error(`Invalid routing file: ${saved.path}`);
+					const models = saved.status === "valid" ? saved.config : {};
+					const subKeys = staleRoutingKeys(subagents, known);
+					const modelKeys = staleRoutingKeys(models, known);
+					const profileKeys = Object.values(file.profiles).flatMap((profile) => staleRoutingKeys(profile, known));
+					const keys = [...new Set([...subKeys, ...modelKeys, ...profileKeys])].filter((key) => !isProfileOrchestratorKey(key)).sort();
+					return { keys, apply: (selected) => {
+						// Stop at the first write failure; earlier stores are not rolled back.
+						const remaining = removeRoutingKeys(subagents, selected.filter((key) => subKeys.includes(key)));
+						for (const source of ["project", "user"] as const) {
+							const subPath = agentModelProfileConfigPath(roots.cwd, source);
+							for (const key of subKeys) {
+								if (!(key in remaining)) updateSubagentModelProfileAtPath(subPath, key, undefined);
+							}
+						}
+						const nextModels = removeRoutingKeys(models, selected.filter((key) => modelKeys.includes(key)));
+						if (nextModels !== models) writeModelConfig(ctx.cwd, nextModels);
+						const next = removeRoutingKeysFromProfilesFile(file, selected);
+						if (next !== file) writeProfilesFileSync(path, next);
+						file = next;
+						return file;
+					} };
+				},
 			}));
 			draftOverride = undefined;
 			feedback = undefined;

@@ -3364,7 +3364,8 @@ test("a correction-plan binding bound to the frozen authority target is captured
 		targetStatus: async () => drifted(),
 		captureCorrectionPlan: async () => {
 			captures += 1;
-			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, state: "correction_required", storeRevision: SHA };
+			// The provider echoes the frozen target it was invoked with.
+			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, targetIdentity: frozenTarget, state: "correction_required", storeRevision: SHA };
 		},
 	} as unknown as NativeReviewCli;
 	const { controller, capture } = reviewRuntime(native, new CandidateViewRegistry());
@@ -3372,6 +3373,7 @@ test("a correction-plan binding bound to the frozen authority target is captured
 	const listed = await controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
 	const captured = await capture.execute("", { lineageId, collectBinding: bindingOf(listed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
 	assert.equal((captured.details as { outcome?: string }).outcome, "native-last-event-closure");
+	assert.equal((captured.details as { mutation_outcome?: string }).mutation_outcome === "none", false);
 	assert.equal(captures, 1);
 
 	// A target that is neither the frozen authority target nor the live one stays refused.

@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { parseModelRef } from "./agents-config.ts";
-import { paintGauge } from "./shell-gauge.ts";
+import { paintGauge, type GaugePaint } from "./shell-gauge.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
 // provider reports. Codex sends them as SSE headers and through its usage
@@ -269,7 +269,7 @@ export function formatReset(resetAt: number | null, now: number): string {
 }
 
 function parseWindow(raw: RawWindow | null | undefined, now: number): UsageWindow | undefined {
-	if (!raw || typeof raw.used_percent !== "number" || typeof raw.limit_window_seconds !== "number") return undefined;
+	if (!raw || !isFiniteNumber(raw.used_percent) || !isFiniteNumber(raw.limit_window_seconds) || raw.limit_window_seconds <= 0) return undefined;
 	const resetAt =
 		typeof raw.reset_at === "number" ? raw.reset_at * 1000 : typeof raw.reset_after_seconds === "number" ? now + raw.reset_after_seconds * 1000 : null;
 	return { label: windowLabel(raw.limit_window_seconds), usedPercent: raw.used_percent, windowSeconds: raw.limit_window_seconds, resetAt };
@@ -297,9 +297,10 @@ export function parseCodexUsage(payload: unknown, now: number): ProviderUsage {
 function headerWindow(headers: Record<string, string>, kind: "primary" | "secondary"): UsageWindow | undefined {
 	const used = Number.parseFloat(headers[`${HEADER_PREFIX}${kind}-used-percent`] ?? "");
 	if (!Number.isFinite(used)) return undefined;
-	const minutes = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-window-minutes`] ?? "", 10);
+	// Missing or invalid duration is not a zero-minute quota or an assumed 5h window.
+	const seconds = Number(headers[`${HEADER_PREFIX}${kind}-window-minutes`]) * MINUTE;
+	if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
 	const resetAt = Number.parseInt(headers[`${HEADER_PREFIX}${kind}-reset-at`] ?? "", 10);
-	const seconds = Number.isFinite(minutes) ? minutes * MINUTE : 0;
 	return { label: windowLabel(seconds), usedPercent: used, windowSeconds: seconds, resetAt: Number.isFinite(resetAt) ? resetAt * 1000 : null };
 }
 
@@ -513,16 +514,16 @@ export function accountIdFromToken(token: string): string | undefined {
 	}
 }
 
-function paintMeter(percent: number, cells: number, theme: UsageTheme): string {
-	return paintGauge(percent, theme, cells);
+function paintMeter(percent: number, cells: number, theme: UsageTheme, paint?: GaugePaint): string {
+	return paintGauge(percent, theme, cells, paint);
 }
 
-export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string): string | undefined {
+export function renderUsageBar(usage: ProviderUsage, theme: UsageTheme, activeModelId?: string, paint?: GaugePaint): string | undefined {
 	const main = selectUsageLimit(usage, activeModelId);
 	const [first, ...rest] = main?.windows ?? [];
 	if (!first) return undefined;
 	// An unlabeled window prints as the name, the meter and the percentage.
-	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
+	const head = [theme.fg(ROLE.LABEL, main.name), ...(first.label.length === 0 ? [] : [theme.fg(ROLE.LABEL, first.label)]), paintMeter(first.usedPercent, 8, theme, paint), theme.fg(ROLE.PERCENT, `${Math.round(first.usedPercent)}%`)].join(" ");
 	const tail = rest.map((window) => `${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, window.label)} ${theme.fg(ROLE.PERCENT, `${Math.round(window.usedPercent)}%`)}`);
 	return [head, ...tail].join(" ");
 }
@@ -573,7 +574,7 @@ export interface UsagePanelScope {
 // snapshot keeps that snapshot and says so beside it, and a provider recorded
 // under a previous profile's routing is never presented as current scope after
 // a profile switch.
-export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope): string[] {
+export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, width: number, now: number, active?: ActiveProvider, registry?: UsageSourceRegistry, scope?: UsagePanelScope, paint?: GaugePaint): string[] {
 	const activeUsage = active ? usages.find((usage) => usage.provider === active.provider) : undefined;
 	const byProvider = new Map(usages.map((usage) => [usage.provider, usage] as const));
 	const rows = scope
@@ -606,7 +607,7 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			const percent = `${Math.round(row.window.usedPercent)}%`.padStart(4);
 			const reset = formatReset(row.window.resetAt, now);
 			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
-			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
+			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme, paint)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
 		// A failure after a good snapshot never hides either fact: the last good
 		// snapshot stays on its rows and the failed refresh says so beside it.

@@ -52,7 +52,7 @@ Progress is published automatically from the todo list: never call `orchestrator
 | Write a large task with no Writer rule reason | ✅ following the logbook | — |
 | Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
 | Bash for state (`git`, `gh`) | ✅ | — |
-| Focused test and suite of the change being made | ✅ once each | — |
+| Focused test and suite of the change being made | ✅ in one command | — |
 | Named high-risk item (assess `escalate`), or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
 
 Use the platform's native bounded worker for delegated-direct work.
@@ -77,7 +77,7 @@ Route work through the smallest harness that is safe. "Smallest" means minimal s
 
 #### 1. Inline Direct
 
-Use inline execution when the task is small by the always-on Task Size section: read, edit (one understood change may span files), run its focused test and suite once each, or bash for state. Keep the ODD path proportionate. When a mechanism's own trigger fires, turn on only that mechanism, then re-evaluate.
+Use inline execution when the task is small by the always-on Task Size section: read, edit (one understood change may span files), run its focused test and suite in one command, or bash for state. Keep the ODD path proportionate. When a mechanism's own trigger fires, turn on only that mechanism, then re-evaluate.
 
 #### 2. Simple Delegation
 

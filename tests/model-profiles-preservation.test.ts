@@ -7,7 +7,7 @@ import test from "node:test";
 import { applyModelConfig, applyModelConfigAsync, applySavedModelConfig } from "../extensions/gentle-ai.ts";
 
 // gentle-ai#4946: the activation sweep re-applies saved routing without user
-// consent. Persisted clear entries (an "inherit" saved from /gentle:models is
+// consent. Persisted clear entries (an "inherit" saved from /gentle:profiles is
 // `{}`) must not delete `model_profiles` entries the user authored in the
 // agent-home `subagents.json`. Clearing stays owned by the consented flows
 // that issue it: the panel save and a confirmed profile apply.
@@ -66,7 +66,7 @@ function preservedProfilesFixture(t: test.TestContext) {
 
 test("startup sweep keeps user model_profiles entries for persisted clears", async (t) => {
 	const fixture = preservedProfilesFixture(t);
-	// Saved routing as /gentle:models leaves it after pressing "inherit" on
+	// Saved routing as /gentle:profiles leaves it after pressing "inherit" on
 	// worker: a persisted clear entry. The sweep must not delete the entries.
 	writeFileSync(fixture.globalModelsPath, JSON.stringify({ worker: {} }));
 	const result = await applySavedModelConfig(fixture.context);

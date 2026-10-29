@@ -405,7 +405,8 @@ test("a v9 host-mediated refuter slot routes through the host relay with its fix
 // review-refuter entry is refused typed, naming that exact key, never a
 // mid-relay transport failure.
 test("a missing review-refuter routing model is refused typed, naming the key, before any relay launch", async (t) => {
-	const cwd = repository(t);
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t);
 	const lineageId = "relay-role-missing-model";
 	const input = hostMediatedRefuterCollectInput(lineageId);
 	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
@@ -1399,4 +1400,90 @@ test("a pinned profile missing a required group role is refused typed before any
 	assert.match(String(result.reason), /no model is configured for review-resilience/, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
 	assert.equal(modelLookups, 0, "the typed refusal fires before any model resolution");
 	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
+});
+
+// gentle-pi#2271: review-refuter and review-validator are provider review
+// roles, not installable agents, so nothing seeds their routing entries and
+// profiles never carry them. When the routing snapshot in effect (saved
+// routing, pin, or session binding) has no model for one of them, the relay
+// uses Pi's persisted default model, as the routing panel already promises.
+// Lens reviewers keep their fail-closed rule.
+function isolatedAgentHome(t: test.TestContext, settings?: Record<string, unknown>): void {
+	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-agent-home-"));
+	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		rmSync(agentHome, { recursive: true, force: true });
+	});
+	if (settings !== undefined) writeFileSync(join(agentHome, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
+}
+
+const PI_DEFAULT_SETTINGS = { defaultProvider: "pidefault", defaultModel: "default-model", defaultThinkingLevel: "medium" };
+
+async function relayedRefuterRequest(t: test.TestContext, cwd: string, lineageId: string): Promise<ReviewHostRelayRequest[]> {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const harness = nativeHarness([finalizeStatus(lineageId, [hostMediatedRefuterCollectInput(lineageId)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+	await runCapture(cwd, harness, lineageId);
+	return relayed;
+}
+
+test("a refuter slot with no routing entry uses Pi's persisted default model and effort", async (t) => {
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+
+	const relayed = await relayedRefuterRequest(t, cwd, "relay-role-default");
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.routingKey, "review-refuter");
+	assert.equal(relayed[0]!.selection, "pidefault/default-model");
+	assert.equal(relayed[0]!.thinking, "medium");
+});
+
+test("a pinned profile that omits the refuter role uses Pi's persisted default model instead of refusing", async (t) => {
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+	pinLocal(cwd, "pinned-complete");
+
+	const relayed = await relayedRefuterRequest(t, cwd, "relay-role-pin-default");
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, "pidefault/default-model");
+});
+
+test("a configured review-refuter routing entry still wins over Pi's persisted default", async (t) => {
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+	writeFileSync(join(process.env.GENTLE_PI_CONFIG_HOME!, "models.json"), `${JSON.stringify({ ...GLOBAL_MODELS, "review-refuter": { model: "global/refuter-model", thinking: "high" } }, null, 2)}\n`);
+
+	const relayed = await relayedRefuterRequest(t, cwd, "relay-role-configured");
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, "global/refuter-model");
+	assert.equal(relayed[0]!.thinking, "high");
+});
+
+test("a lens slot with no routing entry never borrows Pi's persisted default model", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+	pinLocal(cwd, "pinned-partial");
+	const lineageId = "relay-lens-no-default";
+	const harness = nativeHarness([finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-reliability", 0)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+		relayed.push(request);
+		return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' };
+	});
+
+	await runCapture(cwd, harness, lineageId);
+
+	assert.equal(relayed.length, 1);
+	assert.equal(relayed[0]!.selection, undefined);
 });

@@ -221,7 +221,7 @@ test("refuses when the reviewer attempts a tool call", async () => {
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.TOOL_CALL_ATTEMPTED);
 });
 
-test("refuses empty assistant text with stopReason evidence", async () => {
+test("refuses empty assistant text with safe completion evidence", async () => {
 	const assistant = assistantText("", { content: [], stopReason: "stop" });
 	const outcome = await runInProcessReviewer(baseRequest(), {
 		registry: fakeRegistry([fakeModel()]),
@@ -229,7 +229,60 @@ test("refuses empty assistant text with stopReason evidence", async () => {
 	});
 	const refused = expectRefused(outcome);
 	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
-	assert.deepEqual(refused.evidence, { stopReason: "stop" });
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "openai/gpt-5", stopReason: "stop",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+		content: { blocks: 0, textBlocks: 0, thinkingBlocks: 0, textChars: 0, thinkingChars: 0 },
+	});
+});
+
+test("empty-output diagnostics allowlist facts, not provider secrets, and complete once", async () => {
+	const model = fakeModel({ provider: "nan", id: "deepseek-v4-flash" });
+	const assistant = assistantText("", {
+		content: [{ type: "text", text: "" }, { type: "thinking", thinking: "PRIVATE THINKING", thinkingSignature: "PRIVATE SIGNATURE" }],
+		stopReason: "length", errorMessage: "PRIVATE ERROR", rawStopReason: "PRIVATE STOP",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76, unknown: "PRIVATE USAGE", cost: { secret: "PRIVATE COST" } } as never,
+	});
+	const { complete, calls } = capturingComplete(assistant);
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: { ...fakeRegistry([model]), find: () => model }, complete,
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.equal(calls.length, 1);
+	assert.deepEqual(refused.evidence, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		usage: { input: 12, output: 64, reasoning: 64, cacheRead: 0, cacheWrite: 0, totalTokens: 76 },
+		content: { blocks: 2, textBlocks: 1, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(refused), /PRIVATE|errorMessage|rawStopReason|Signature|unknown|cost/);
+});
+
+test("empty-output evidence omits unknown or invalid counters and bounds resolved model identity", async () => {
+	for (const invalid of [undefined, NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "12"]) {
+		const assistant = assistantText("", {
+			content: [], stopReason: "PRIVATE STOP" as never,
+			usage: Object.fromEntries(["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"].map((key) => [key, invalid])) as never,
+		});
+		const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+			registry: { ...fakeRegistry([]), find: () => fakeModel({ id: "x".repeat(2_000) }) },
+			complete: async () => assistant,
+		}));
+		assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+		assert.equal(String(refused.evidence?.reviewerModel).length, 512);
+		assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+		assert.ok(!Object.hasOwn(refused.evidence!, "stopReason"));
+		assert.doesNotMatch(JSON.stringify(refused), /PRIVATE STOP/);
+	}
+});
+
+test("empty-output evidence does not invent usage or missing thinking lengths", async () => {
+	const refused = expectRefused(await runInProcessReviewer(baseRequest(), {
+		registry: fakeRegistry([fakeModel()]),
+		complete: async () => assistantText("", { content: [{ type: "thinking" } as never], usage: undefined }),
+	}));
+	assert.equal(refused.code, INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT);
+	assert.ok(!Object.hasOwn(refused.evidence!, "usage"));
+	assert.deepEqual(refused.evidence?.content, { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0 });
 });
 
 test("refuses with PROVIDER_FAILED when the provider itself reports an aborted completion", async () => {

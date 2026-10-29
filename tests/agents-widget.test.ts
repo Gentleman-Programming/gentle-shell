@@ -102,6 +102,51 @@ test("renderAgentsCard draws columns for agent, task, and model · tokens · cos
 	assert.deepEqual(renderAgentsCard([], plainTheme, 60, 0, { collapsed: false }), []);
 });
 
+test("sidebar activity appears below each agent without changing the capped above-editor view", () => {
+	const tasks = [
+		task({ id: "a", agent: "explore", label: "Investigando estado de subagentes" }),
+		task({ id: "b", agent: "writer", label: "Preparando pruebas", createdAt: 2000, startedAt: 2000 }),
+	];
+	const sidebar = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(sidebar[1]!, /explore.*34k · \$0\.270 · 4s/);
+	assert.equal(bodyText(sidebar[2]!), "Investigando estado de subagentes");
+	assert.match(sidebar[3]!, /writer.*34k · \$0\.270 · 3s/);
+	assert.equal(bodyText(sidebar[4]!), "Preparando pruebas");
+	for (const line of sidebar) assert.equal(visibleWidth(line), 44);
+
+	const above = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
+	assert.equal(above.length, 4);
+	assert.match(above[1]!, /explore.*34k · \$0\.270 · 4s/);
+	assert.match(above[2]!, /writer.*34k · \$0\.270 · 3s/);
+	assert.doesNotMatch(above.join("\n"), /Investigando|Preparando/);
+});
+
+test("sidebar activity uses waiting and error text, clips to width, and preserves fallback metadata", () => {
+	const tasks = [
+		task({ id: "a", agent: "explore", status: TASK_STATUS.WAITING, lastStep: "asked: ¿Continuar?", label: "not waiting text", model: "long-model-name", thinking: "high" }),
+		task({ id: "b", agent: "writer", status: TASK_STATUS.FAILED, endedAt: 4_000, error: "falló la ejecución", label: "not error text", model: "long-model-name", thinking: "high", createdAt: 2000, startedAt: 2000 }),
+	];
+	const sidebar = renderAgentsCard(tasks, plainTheme, 16, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.ok(sidebar.some((line) => bodyText(line) === "asked: ¿Con…"));
+	assert.ok(sidebar.some((line) => bodyText(line) === "falló la ej…"));
+	assert.equal(sidebar.filter((line) => line.includes(" · high")).length, 2, "fallback execution metadata survives on its own row");
+	assert.doesNotMatch(sidebar.join("\n"), /not waiting|not error/);
+	for (const line of sidebar) assert.equal(visibleWidth(line), 16);
+	for (const width of [0, 1, 2, 3, 4, 8, 16, 24, 28, 44]) {
+		for (const line of renderAgentsCard(tasks, plainTheme, width, 5_000, { collapsed: false })) assert.equal(visibleWidth(line), width);
+	}
+});
+
+test("sidebar activity is not duplicated when inline and includes queued tasks", () => {
+	const queued = task({ id: "q", agent: "writer", status: TASK_STATUS.QUEUED, startedAt: null, label: "Preparando pruebas" });
+	const narrow = renderAgentsCard([queued], plainTheme, 28, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(narrow[1]!, /writer.*queued/);
+	assert.equal(bodyText(narrow[2]!), "Preparando pruebas");
+	const wide = renderAgentsCard([queued], plainTheme, 100, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.equal(wide.length, 3);
+	assert.match(wide[1]!, /writer\s+Preparando pruebas/);
+});
+
 test("renderAgentsCard right-aligns model·effort, tokens, cost, and elapsed in fixed columns that line up across rows", () => {
 	const tasks = [
 		task({ id: "a", agent: "a", model: "claude-sonnet-5", thinking: "medium", startedAt: 1000, endedAt: 26_000, tokens: 34_000, cost: 0.27 }),
@@ -159,7 +204,7 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 	// Narrow cards degrade per column: task text first, then the model name,
 	// then tokens and cost. Elapsed is the one value the reader cannot rebuild
 	// from anything else on screen, so it is the last to go.
-	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
+	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.equal(narrow.length, 3);
 	assert.match(narrow[1], /^│ ◐  sdd-explore +34k · \$0\.270 · 4s │$/, "the model name goes before tokens, cost and elapsed");
 });
@@ -168,12 +213,12 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 // model-only fallback, silently dropping tokens, cost and the running time.
 test("renderAgentsCard keeps tokens, cost and elapsed when a long model name no longer fits", () => {
 	const tasks = [task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42, startedAt: 5_000 - 184_000 })];
-	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.equal(lines.length, 3);
 	assert.match(lines[1], /^│ ◐  sdd-explore +12k · \$0\.420 · 3m04s │$/, "tokens, cost and elapsed survive; the model name is what gives way");
-	const tighter = renderAgentsCard(tasks, plainTheme, 34, 5_000, { collapsed: false }).map(stripAnsi);
+	const tighter = renderAgentsCard(tasks, plainTheme, 34, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(tighter[1], /^│ ◐  sdd-explore +\$0\.420 · 3m04s │$/, "then tokens go, then cost, elapsed last");
-	const tightest = renderAgentsCard(tasks, plainTheme, 28, 5_000, { collapsed: false }).map(stripAnsi);
+	const tightest = renderAgentsCard(tasks, plainTheme, 28, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(tightest[1], /^│ ◐  sdd-explore +3m04s │$/, "elapsed is the last column standing");
 });
 
@@ -182,7 +227,7 @@ test("renderAgentsCard degrades every row of a mixed card together so columns st
 		task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42 }),
 		task({ id: "b", agent: "writer", model: "openai/gpt-5", tokens: 900, cost: 0.01 }),
 	];
-	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(lines[1], /12k · \$0\.420 · 4s │$/);
 	assert.match(lines[2], /900 · \$0\.010 · 4s │$/);
 	assert.equal(lines[1].indexOf("· 4s"), lines[2].indexOf("· 4s"), "elapsed stays in one column across rows");
@@ -215,14 +260,14 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 // the label is the one value the user already chose and can look up.
 test("usage outranks the model label at narrow widths without inventing unknown values", () => {
 	for (const width of [60, 100]) {
-		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
 		assert.match(lines[1], /gpt-5 · high · 34k · \$0\.270 · 4s/, "wide enough for every column");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
 	for (const width of [32, 44]) {
-		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
 		assert.doesNotMatch(lines[1], /gpt-5/, "the model label is the first column to go");
@@ -230,7 +275,7 @@ test("usage outranks the model label at narrow widths without inventing unknown 
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
 	for (const width of [0, 1, 2, 3, 4, 8, 16, 24]) {
-		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.ok(lines.length <= 4, "narrow metadata gets at most one dedicated row");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}

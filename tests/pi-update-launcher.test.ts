@@ -6,15 +6,16 @@ const PI = '@earendil-works/pi-coding-agent';
 // A virtual symlink filesystem: listed global links point into a pnpm store.
 // The store's adjacent peer is a sibling, not Shell/node_modules/Pi.
 function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
- const adjacent = scenario.startsWith('adjacent');
- const npm = scenario.startsWith('npm-');
+ const source = scenario === 'source';
+ const adjacent = source || scenario.startsWith('adjacent');
+ const npm = source || scenario.startsWith('npm-');
  const nodeModules = '/global/v11/selected/node_modules';
  const shellRoot = '/store/shell-peer/node_modules/gentle-pi';
  const piRoot = adjacent ? '/store/shell-peer/node_modules/' + PI : '/store/pi/node_modules/' + PI;
  const target = adjacent ? 'gentle-pi' : PI;
  const dependencies: Record<string, object> = {[target]:{path: `${nodeModules}/${target}`,
   ...(scenario === 'npm-link' ? {link:true} : {}),
-  ...(scenario === 'npm-file' ? {resolved:'file:/source/pi'} : {})}};
+  ...(scenario === 'npm-file' || source ? {resolved:'file:/source/pi'} : {})}};
  if (scenario.endsWith('shared')) dependencies['unrelated'] = {path:`${nodeModules}/unrelated`};
  if (scenario === 'separate') dependencies['unrelated'] = {path:'/global/v11/other/node_modules/unrelated'};
  const groups = [{path:'/global/v11',dependencies}, ...(scenario === 'ambiguous' ? [{path:'/global/other',dependencies}] : [])];
@@ -22,7 +23,11 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  // pnpm links only the top-level package into the global group; the peer
  // is reachable solely as the Shell package's store sibling.
  const links = {[`${nodeModules}/${target}`]:adjacent ? shellRoot : piRoot};
- const roots = [nodeModules, '/global/v11/other/node_modules', shellRoot, piRoot, `${piRoot}/dist/bundle/cli.js`];
+ if (source) {
+  links[`${shellRoot}/node_modules/${PI}`] = piRoot;
+  links[`${shellRoot}/node_modules/${PI}/dist/bundle/cli.js`] = `${piRoot}/dist/bundle/cli.js`;
+ }
+ const roots = [nodeModules, '/global/v11/other/node_modules', shellRoot, piRoot, `${piRoot}/dist/bundle/cli.js`, `${shellRoot}/.git`, `${shellRoot}/package.json`, `${shellRoot}/package-lock.json`];
  const bootstrap = `import { registerHooks } from 'node:module';
  const original = ${JSON.stringify(new URL('../bin/gentle-shell.mjs', import.meta.url).href)};
  registerHooks({load(url, context, next) {
@@ -40,12 +45,13 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  }});
  const links = ${JSON.stringify(links)}, roots = ${JSON.stringify(roots)};
  globalThis.fakeAdapters = {
-  fs: { realpath: async p => { if (links[p]) return links[p]; if (roots.includes(p)) return p; throw new Error('ENOENT ' + p); },
-   readFile: async p => { if (p === '${shellRoot}/package.json') return JSON.stringify({name:'gentle-pi',version:'4.1.0'}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); throw new Error('ENOENT ' + p); } },
+  fs: { realpath: async p => { if (links[p]) return links[p]; if (roots.includes(p)) return p; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); },
+   readFile: async p => { if (p === '${shellRoot}/package.json') return JSON.stringify({name:'gentle-pi',version:'4.1.0', ...(${source} ? {packageManager:'npm@11.1.1',devDependencies:{'${PI}':'^1.2.0'}} : {})}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); if (${source} && p === '${shellRoot}/package-lock.json') return '{}'; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); } },
   which: async n => n === '${npm ? 'npm' : 'pnpm'}' ? '/fake/' + n : null,
-  run: async (cmd, args) => {
+  run: async (cmd, args, options) => {
    if(args.includes('list') || args.includes('ls')) return {code:0,stdout:${JSON.stringify(listing)}};
-   console.log('MUTATION ' + JSON.stringify(args)); return {code:0};
+   if(args.includes('--version')) return {code:0,stdout:'11.1.1'};
+   console.log('MUTATION ' + JSON.stringify(args)); if (${source}) console.log('CWD ' + options.cwd); return {code:0};
   }
  };
  await import(original);`;
@@ -61,6 +67,24 @@ for (const scenario of ['owned','adjacent','separate']) test(`public linked-stor
  assert.match(result.stdout, /the selected Pi is still 1\.2\.0\./);
  assert.match(result.stdout, /minimumReleaseAge/);
  assert.equal(result.stderr, '');
+});
+
+for (const all of [false, true]) test(`public source-linked update uses the checkout and preserves extension forwarding (all: ${all})`, () => {
+ const result = launch(all ? ['update', '--all'] : ['update'], 'source');
+ assert.equal(result.status, 0, result.stderr);
+ assert.equal(result.stderr, '');
+ assert.match(result.stdout, /MUTATION \["update","@earendil-works\/pi-coding-agent","--no-save","--ignore-scripts","--global=false","--prefix","\/store\/shell-peer\/node_modules\/gentle-pi","--workspaces=false","--no-audit","--no-fund"\]/);
+ assert.match(result.stdout, /CWD \/store\/shell-peer\/node_modules\/gentle-pi/);
+ assert.doesNotMatch(result.stdout, /"-g"|@latest/);
+ assert.equal(result.stdout.includes('FORWARD ["update","--extensions"]'), all);
+});
+
+test('source-linked --latest preserves the ordinary local, range-respecting plan', () => {
+ const normal = launch(['update'], 'source');
+ const latest = launch(['update', '--latest'], 'source');
+ assert.equal(latest.status, 0, latest.stderr);
+ assert.deepEqual({status:latest.status, stdout:latest.stdout, stderr:latest.stderr}, {status:normal.status, stdout:normal.stdout, stderr:normal.stderr});
+ assert.doesNotMatch(latest.stdout, /"--latest"|"-g"|@latest/);
 });
 
 test('public all updates only its owner and then forwards extension updates', () => {

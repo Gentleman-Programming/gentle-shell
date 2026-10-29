@@ -25,6 +25,12 @@ interface SessionRun {
 
 type RddMode = "on" | "off" | "throws";
 
+const NATIVE_CONTINUATION = {
+	operation: "review.status",
+	command: "gentle-ai review status --agent pi --next-transition",
+	arguments: [{ name: "--agent", value: "pi" }, { name: "--next-transition" }],
+};
+
 function nativeCli(mode: () => RddMode): NativeReviewCli {
 	return {
 		reviewMode: async () => {
@@ -34,7 +40,10 @@ function nativeCli(mode: () => RddMode): NativeReviewCli {
 		},
 		assess: async () => ({
 			schema: "gentle-ai.review-assessment/v1",
-			risk: "medium",
+			risk: "high",
+			reviewDue: true,
+			reviewDueReason: "high_risk",
+			nextTransition: NATIVE_CONTINUATION,
 			reasons: [],
 			changedPaths: 1,
 			changedLines: 3,
@@ -120,7 +129,7 @@ async function runSession(
 	});
 	try {
 		await session.bindExtensions({ mode: "json", onError: (error) => run.errors.push(error.error) });
-		next = { name: "gentle_review", arguments: { operation: "assess" } };
+		next = { name: "gentle_review", arguments: { operation: "assess", input: { escalate: { item: 4, reason: "Fixture process concurrency boundary" } } } };
 		await session.prompt("Assess the current change.", { source: "interactive" });
 		beforeSecondPrompt();
 		await session.prompt("Report the plan.", { source: "interactive" });
@@ -162,6 +171,11 @@ function registeredGuidelines(run: SessionRun): string[] {
 function assertLeanRequest(request: RecordedRequest, run: SessionRun): void {
 	assert.match(request.systemPrompt, /Receipt-driven development: off /);
 	assert.match(request.systemPrompt, LEAN_GUIDELINE);
+	assert.match(request.systemPrompt, /relay it unchanged but do not execute it while RDD is off/);
+	assert.match(request.systemPrompt, /assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD/);
+	assert.doesNotMatch(request.systemPrompt, /relay it unchanged and follow it/);
+	assert.match(request.systemPrompt, /Continue the returned verification plan/);
+	assert.match(request.systemPrompt, /tests, builds, and functional checks still run/);
 	for (const guideline of registeredGuidelines(run)) assert.equal(request.systemPrompt.includes(guideline), false, `RDD off must leave out: ${guideline.slice(0, 80)}`);
 	const names = request.tools.map((tool) => tool.name);
 	assert.ok(names.includes("gentle_review"));
@@ -195,6 +209,13 @@ test("RDD off: the parent request carries only the lean ASSESS loadout; RDD on: 
 	assert.equal(off.assessResults.length, 1);
 	assert.equal(off.assessResults[0].isError, false);
 	assert.equal((off.assessResults[0].details as { schema?: string }).schema, "gentle-pi.review-assessment-plan/v1");
+	const plan = off.assessResults[0].details as Record<string, unknown>;
+	assert.equal(plan.rddLine, "off");
+	assert.equal(plan.reviewDue, true);
+	assert.equal(plan.reviewDueReason, "high_risk");
+	assert.deepEqual(plan.nextTransition, NATIVE_CONTINUATION);
+	assert.equal((plan.plan as Record<string, unknown>).writerSelfVerification, true);
+	assert.equal((plan.plan as Record<string, unknown>).independentVerifier, true);
 
 	for (const request of on.requests) {
 		assert.match(request.systemPrompt, /Receipt-driven development: on /);

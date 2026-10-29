@@ -14,7 +14,7 @@ Objective: remind once at settle when a run declared `Risk: item N` and never at
 ## Tasks
 
 - T1 [S1-S6] route: delegated (context backstop reached in the parent) — status: done (worker RED 8/11 then GREEN 20/20; parent spot check 20/20) — commit: see git log
-- T2 [S1-S6] independent verification (Risk: item 3, changes a consumed rejection message and mirrored prompt/tool contract text) — status: pending
+- T2 [S1-S6] independent verification (Risk: item 3, changes a consumed rejection message and mirrored prompt/tool contract text) — status: done (first pass FAIL S1, corrected in cb81e7a8b, recheck PASS)
 
 ## Log
 
@@ -22,3 +22,4 @@ Objective: remind once at settle when a run declared `Risk: item N` and never at
 - L2: Issue #2652 created and approved (status:approved) by Alan-TheGentleman (ADMIN). Refs #1359, #2478, #2647.
 - L3: T1 worker returned partial: focused 80/80, typecheck and runtime-modules check pass via node; full suite 7767 pass / 38 fail, believed environmental (Unix socket TMPDIR length, host config home), baseline comparison delegated to T2.
 - L4: T2 verifier FAIL on S1: handler gated on incoming `event.context.canContinue`, which Pi computes false for every completed run (last message is the assistant), so the reminder never fired in a real session; the fixture hardcoded `canContinue: true`. Correction: drop the gate (Pi re-validates after handlers), fixture now `canContinue: false`, plus a real `createAgentSession` regression test. RED 2 fail on the old handler; GREEN 81/81 focused, typecheck 0 diagnostics, runtime modules match. Baseline: the 8 reported suite files fail identically at bbb001636 (4 agent-home host-config failures), no regression. S2-S6 PASS.
+- L5: Bounded S1 recheck PASS on cb81e7a8b: 12/12 focused; independent real-SDK probe shows one reminder, continuation validated (recomputed canContinue true), second settle appends nothing, no boundary errors.

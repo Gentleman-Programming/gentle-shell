@@ -2270,7 +2270,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Publishing state.work with an explicit topic and no subject also refreshes Current from that topic; keep work.topic current when the task changes. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Publishing state.work with an explicit topic and no subject also refreshes Current from that topic; keep work.topic current when the task changes. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Work-state publication is mandatory for classified work: publish at session start and again on every task-topic change (objective plus work.topic/area) — a session whose task changed must not keep the previous publication; the catalog flags never-published peers. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
 			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
@@ -2370,7 +2370,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		...orchestratorToolRenderers("list", expandHint),
-		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
+		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list. Peers doing classified work without ever publishing state are flagged; publication at session start and on every task-topic change is mandatory.",
 		parameters: Type.Object({
 			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
 			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
@@ -2413,7 +2413,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return text(JSON.stringify(workSearch), { gentleAgents: { workSearch } });
 				}
 				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
-					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor, stateOnly: true } : { stateOnly: true });
 				const repository = (fact?: RepositoryFact) => fact?.root
 					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
 					: "repository: unknown";
@@ -2428,9 +2428,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const note = params.recipient_session_id ? `\n  owner-curated recorded state (not consent or owner reply; authority none): ${peer.state ? JSON.stringify(peer.state) : "unknown"}` : "";
 					// A legacy peer never publishes its scope: say so instead of reporting an unknown.
 					const legacy = peer.legacyLabel !== undefined;
-					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					// A peer doing classified work without ever publishing state cannot be
+					// routed or coordinated with; the catalog says so explicitly (#2633).
+					const unpublished = !legacy && peer.freshness === "recent" && !peer.state && !peer.statePublished
+						? " · work state: never published" : "";
+					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${unpublished}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
-				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
+				if (peers.length === 0) return text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.");
+				const unlisted = peers.filter(peer => peer.freshness === "recent" && peer.legacyLabel === undefined && !peer.state && !peer.statePublished);
+				const mandate = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.` : "";
+				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${mandate}`, { gentleAgents: { candidates: peers } });
 			} catch (error) {
 				// SessionPresenceError codes are a fixed enum with no record content,
 				// so surfacing the reason is safe and keeps diagnosis possible.

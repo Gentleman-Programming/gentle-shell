@@ -5073,6 +5073,47 @@ test("orchestrator_list labels a live peer that predates discovery publication (
 	} finally { publisher.dispose(); }
 });
 
+test("orchestrator_list flags classified-work peers that never publish state (#2633)", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const profile = realpathSync(mkdtempSync(join(root, "discovery-unpublished-")));
+	const peer = { version: 1 as const, sessionId: "peer", endpoint: "/fixture/peer.sock", createdAt: 1 };
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Silent worker", activity: [] });
+	try {
+		let ready = false;
+		const registry = { list: async () => [], listActivations: async () => [peer] };
+		runtime.deps.agentHome = profile;
+		runtime.deps.sessionTransport = {
+			createRegistry: async () => registry,
+			createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+			createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("no messages expected"); } }),
+		};
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx } = fakeContext();
+		await h.fire("session_start", ctx);
+		await eventually(() => ready, "discovery transport ready");
+		// A live peer with a discovery sidecar but no owner-curated state publication:
+		// the catalog must flag it instead of showing an unexplained unknown.
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
+		const result = await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx);
+		assert.equal(result.content[0].text, "Advertised sessions (reachability is unknown):\n"
+			+ "- peer · Silent worker · Session name: Silent worker · Current alias (CURRENT TASK): unknown · Initial alias (FIRST TASK): unknown · recorded workspace: /repo"
+			+ " · repository: unknown · metadata: recent\n  recorded catalog (not Git identity): {\"tasks\":[],\"registered\":[],\"omittedTasks\":0,\"omittedRegistered\":0} · work state: never published"
+			+ "\n1 of 1 advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.");
+		assert.equal((result.details.gentleAgents as any).candidates[0].statePublished, false);
+		publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [], state: {
+			schema: 2, sessionId: "peer", cwd: "/repo", recordedAt: 1, source: "owner-curated",
+			ownerReply: false, authority: "none", state: { objective: "Ship review", work: { area: "Auth" } },
+		} });
+		const published = await h.tools.get("orchestrator_list")!.execute("published", {}, undefined, undefined, ctx);
+		assert.doesNotMatch(published.content[0].text, /never published/);
+		assert.equal((published.details.gentleAgents as any).candidates[0].statePublished, true);
+		assert.equal(runtime.spawned.length, 0);
+		assert.equal(h.sent.length, 0);
+		await h.fire("session_shutdown", ctx);
+	} finally { publisher.dispose(); }
+});
+
 test("registered reasoning and revocation use live SDK host and published source only", async () => {
 	const h = fakePi(), runtime = deps();
 	const profile = realpathSync(mkdtempSync(join(root, "reasoning-runtime-")));

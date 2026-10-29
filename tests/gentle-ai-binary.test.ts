@@ -98,7 +98,7 @@ async function writeWindowsSourceBinary(packageRoot: string): Promise<{ binaryPa
 		method: "go-sumdb-source-build",
 		package: "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
 		module: "github.com/gentleman-programming/gentle-ai/v4",
-		tag: "v4.2.0",
+		tag: "v4.3.1",
 		architecture: process.arch === "x64" ? "x64" : "arm64",
 		binarySha256: createHash("sha256").update(binary).digest("hex"),
 		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,

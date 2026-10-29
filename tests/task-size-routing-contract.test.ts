@@ -61,7 +61,7 @@ test("AC2: counts never classify, and the step-count classifier is gone", () => 
 test("AC3: small work runs its checks inline and keeps test-first", () => {
 	const size = sectionOf(core, "## Task Size");
 	for (const clause of [
-		"run the focused test and the suite inline, once each",
+		"run the focused test and the suite inline in one command",
 		"observe RED inline before the fix",
 		"No explore, worker, or verifier",
 		"no feature document, mirror, or commits unless the user asks",

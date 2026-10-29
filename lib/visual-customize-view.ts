@@ -183,7 +183,8 @@ export class VisualCustomizeView {
 			if (!matchesKey(data, Key.enter)) field.value = appendInput(field.value, data.slice(0, -1));
 			// Guard against a resize that hides the field before this Enter: an unseen value never submits.
 			const area = this.previewCapacity();
-			field.visible = area !== undefined && !area.navOnly && area.lines > 0 && visibleWidth(`${field.prompt}: ${field.value}▏`) <= area.inner;
+			field.visible = area !== undefined && !area.navOnly
+				&& this.wrapInline(`${field.prompt}: ${field.value}▏`, area.inner, area.lines) !== undefined;
 			if (field.visible) { this.inlineInput = undefined; field.resolve(field.value); }
 		} else if (matchesKey(data, Key.backspace) || data === "\x7f") field.value = dropLastGrapheme(field.value);
 		else { const text = decodeKittyPrintable(data) ?? data; if (safeText(text)) field.value = appendInput(field.value, text); }
@@ -407,10 +408,13 @@ export class VisualCustomizeView {
 			else if (previewLines > 0) lines.push(paint("Confirmation needs more space · enlarge terminal", inner, "warning"));
 		} else if (this.inlineInput) {
 			const field = `${this.inlineInput.prompt}: ${this.inlineInput.value}▏`;
-			this.inlineInput.visible = !navOnly && previewLines > 0 && visibleWidth(field) <= inner;
-			if (previewLines > 0) {
-				lines.push(paint(field, inner, "accent"));
-				if (previewLines === 3) lines.push(paint(this.inlineInput.visible ? "Enter confirm · Esc cancel" : "Value too wide · enlarge terminal · Esc cancel", inner, "muted"));
+			const shows = !navOnly ? this.wrapInline(field, inner, previewLines) : undefined;
+			this.inlineInput.visible = shows !== undefined;
+			if (shows) {
+				for (const line of shows) lines.push(paint(line, inner, "accent"));
+				if (shows.length < previewLines) lines.push(paint("Enter confirm · Esc cancel", inner, "muted"));
+			} else if (previewLines > 0) {
+				lines.push(paint(`Needs ${visibleWidth(field) + CARD_PADDING} columns for one line · Esc cancel`, inner, "warning"));
 			}
 		} else if (previewLines === 3) {
 			let preview: ReturnType<NonNullable<CustomizeRow["preview"]>> | undefined;

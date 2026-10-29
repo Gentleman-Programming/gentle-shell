@@ -33,7 +33,10 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
 // Verification by named risk (escalate-only rule 3) and the writer-rule fix (triggers hold only when
 // their condition holds; a unit is independent behavior over a size floor), user decision 2026-10-14: 8,400 -> 9,100 B.
-const BUDGET_BYTES = 9100;
+// Weak-model economy (small path reads one batch with no todo; item 1 excludes rebuildable dev/test data), measured in
+// gentle-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
+// 2026-10-22: 9,100 -> 9,250 B.
+const BUDGET_BYTES = 9250;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -126,7 +129,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 9,100 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,250 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),

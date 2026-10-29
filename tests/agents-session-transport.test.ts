@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { createConnection, createServer, Socket } from "node:net";
+import { createConnection, createServer, Socket, type Server } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import nodeTest, { type TestContext } from "node:test";
@@ -124,7 +124,12 @@ test("lists only advertised peer IDs without mutating the private registry", asy
 	assert.equal(await snapshot(), before, "listing leaves presence files, directory modes, and socket entries unchanged");
 	assert.equal(alphaNew.createdAt >= alphaOld.createdAt, true);
 	for (let index = 0; index < 65; index++) await transport.publish(await transport.record(`overflow-${index}`, index));
-	await rejected(transport.list(), "busy");
+	// The over-cap scan sweeps provably dead records once instead of failing
+	// busy: the overflow endpoints were never bound, and the missing/malformed/
+	// symlinked fixtures are debris too. Live peers stay listed.
+	assert.deepEqual(await transport.list(self.sessionId), [{ sessionId: "alpha", reachability: "unknown" }]);
+	const remaining = (await readdir(transport.paths.presence)).sort();
+	assert.equal(remaining.length, 3, "only the live records (self, alpha twice) survive the sweep");
 });
 
 test("keeps same-session activations distinct and old cleanup preserves the newest", async (t) => {
@@ -161,7 +166,52 @@ test("isolates two sessions and bounds registry discovery at 65 entries", async 
 	assert.deepEqual(await transport.resolve("left"), left);
 	assert.deepEqual(await transport.resolve("right"), right);
 	for (let index = 0; index < 65; index++) await transport.publish(await transport.record("capped", index));
-	await rejected(transport.resolve("capped"), "busy");
+	// The dead-endpoint overflow is swept on the first over-cap scan, so the
+	// retry resolves the truth (nothing left) instead of failing busy.
+	await rejected(transport.resolve("capped"), "not_found");
+	assert.equal((await readdir(transport.paths.presence)).length, 0, "dead overflow records are swept, never retained");
+});
+
+test("foreign-schema presence files never count toward the activation cap", async (t) => {
+	const transport = await registry(t);
+	// The orchestrator publisher shares this directory with a different naming
+	// schema (<sessionHash>.<incarnation>.<kind>.json, three files per peer),
+	// and long-lived profiles accumulate hundreds of those records. They are
+	// never transport activations, so they must not trip the spam guard.
+	const incarnation = (index: number) => `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
+	for (let index = 0; index < 80; index++) {
+		for (const kind of ["header", "activity", "discovery"]) {
+			await writeFile(join(transport.paths.presence, `${"b".repeat(64)}.${incarnation(index)}.${kind}.json`), "{}");
+		}
+	}
+	const self = await raw(t, transport, "self", null);
+	const peer = await raw(t, transport, "peer", null);
+	assert.deepEqual(await transport.list(self.sessionId), [{ sessionId: "peer", reachability: "unknown" }], "listing survives a foreign-schema flood and still sees real activations");
+	assert.deepEqual(await transport.resolve("peer"), peer);
+	// The cap still bounds real transport activations exactly as before: the
+	// 65 advertised dead-endpoint records overflow the guard, the sweep removes
+	// them, and the live peers remain discoverable afterwards.
+	for (let index = 0; index < 65; index++) await transport.publish(await transport.record("capped", index + 10));
+	assert.deepEqual(await transport.list(self.sessionId), [{ sessionId: "peer", reachability: "unknown" }], "dead overflow is swept once and the live peer stays discoverable");
+	await rejected(transport.resolve("capped"), "not_found");
+});
+
+// The sweep must never trade the spam guard for liveness probing: a genuine
+// flood of records backed by real listening sockets stays over the cap, keeps
+// failing busy, and its records are never removed.
+test("a flood of live listeners stays over the cap and keeps failing busy", async (t) => {
+	const transport = await registry(t);
+	const servers: Server[] = [];
+	t.after(() => { for (const server of servers) server.close(); });
+	for (let index = 0; index < 66; index++) {
+		const record = await transport.record(`flood-${index}`, index);
+		const server = createServer(() => {});
+		await new Promise<void>((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(record.endpoint, resolveListen); });
+		servers.push(server);
+		await transport.publish(record);
+	}
+	await rejected(transport.list(), "busy");
+	assert.equal((await readdir(transport.paths.presence)).length, 66, "live records are never swept");
 });
 
 test("rejects unsafe IDs, v1 schema violations, prototypes, and content-leaking errors", async (t) => {

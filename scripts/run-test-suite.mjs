@@ -45,6 +45,10 @@ export async function runStage(stage) {
 		writeFileSync(emptyGitConfig, "");
 		env.GIT_CONFIG_GLOBAL = emptyGitConfig;
 		env.GIT_CONFIG_NOSYSTEM = "1";
+		// An empty GIT_CONFIG_GLOBAL does not disable Git's default ignore file:
+		// it still reads $XDG_CONFIG_HOME/git/ignore, so a host ignore (e.g.
+		// ".agents/") would keep dropping fixture files from `git add -A`.
+		env.XDG_CONFIG_HOME = configHome;
 	}
 	try {
 		return await new Promise((resolve) => {

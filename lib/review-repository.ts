@@ -70,7 +70,13 @@ export function reviewGitEnvironment(): NodeJS.ProcessEnv {
 
 export function publicationProbeGitEnvironment(): NodeJS.ProcessEnv {
 	const environment: NodeJS.ProcessEnv = { ...process.env };
-	for (const key of inheritedUnsafeGitEnvironmentKeys(environment)) delete environment[key];
+	for (const key of inheritedUnsafeGitEnvironmentKeys(environment)) {
+		// The config-file keys are not routing-critical, and deleting them makes
+		// Git fall back to the host's default config paths; keep any inherited
+		// pin (the unit-test runner sets one for hermeticity) instead.
+		if (key === "GIT_CONFIG_GLOBAL" || key === "GIT_CONFIG_SYSTEM" || key === "GIT_CONFIG_NOSYSTEM") continue;
+		delete environment[key];
+	}
 	environment.GIT_OPTIONAL_LOCKS = "0";
 	environment.LC_ALL = "C";
 	environment.LANG = "C";

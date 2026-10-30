@@ -66,7 +66,7 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 	let nativeCalls = 0;
 	const native = new Proxy({}, { get() { return async () => { nativeCalls++; }; } }) as NativeReviewCli;
 	for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
-		const inputs = operation === "start" || operation === "assess" || operation === "answer-consent" || operation === "abandon" ? [null] : [null, { consentBinding: "opaque", answer: "granted" }];
+		const inputs = operation === "start" || operation === "assess" || operation === "answer-consent" ? [null] : [null, { consentBinding: "opaque", answer: "granted" }];
 		for (const input of inputs) {
 			const args = validateToolArguments({ ...tools.get("gentle_review"), parameters: controller }, { type: "toolCall", id: "provider-shell", name: "gentle_review", arguments: { operation, input } });
 			assert.deepEqual(args.input, input, "provider-shell validation accepts and retains this input");
@@ -111,6 +111,22 @@ test("abandon admits JSON object input and coerces it to a serialized string", (
 	const args = validate("gentle_review", { operation: "abandon", lineageId: "review-1", input });
 	assert.deepEqual(args.input, input);
 	assert.equal(__testing.parseReviewControllerParameters(args).input, JSON.stringify(input));
+});
+
+test("validated abandon objects reach the mocked native facade and still fail closed", async () => {
+	let statusCalls = 0;
+	let abandonCalls = 0;
+	const native = {
+		reviewStatus: async () => { statusCalls++; return { entries: [] }; },
+		abandon: async () => { abandonCalls++; },
+	} as unknown as NativeReviewCli;
+	const bad = await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "not-a-reason" } }), process.cwd(), native);
+	assert.equal(bad.outcome, "native-input-invalid");
+	assert.equal(statusCalls, 0);
+	const ineligible = await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "operator_disposition" } }), process.cwd(), native);
+	assert.equal(ineligible.outcome, "native-abandon-ineligible");
+	assert.equal(statusCalls, 1);
+	assert.equal(abandonCalls, 0);
 });
 
 test("validated ASSESS objects reach the mocked native facade with parsed fields", async () => {

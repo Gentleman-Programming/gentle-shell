@@ -560,7 +560,7 @@ function fitSubject(
 	chips: Array<string | undefined>,
 ): string | undefined {
 	const shown = chips.filter((chip): chip is string => typeof chip === "string" && chip !== "");
-	while (shown.length > 1 && !headingFits({ ...card, subtitle: subjectLine(shown), body: [] }, hint, size)) shown.pop();
+	while (shown.length > 0 && !headingFits({ ...card, subtitle: subjectLine(shown), body: [] }, hint, size)) shown.pop();
 	return subjectLine(shown);
 }
 
@@ -2204,19 +2204,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// The agent chip: the call shows who it works with, and what that child
 		// runs on. Status-style calls only carry a task id, so the store resolves
 		// the agent and its launch profile.
-		const subject = (params: { agent?: string; task_id?: string }, launched?: { agentModel?: string; agentEffort?: string }): { agent?: string; taskRef?: string; model?: string; effort?: string } => {
+		const subject = (params: { agent?: string; task_id?: string }, launched?: { agentProfile?: boolean; agentModel?: string; agentEffort?: string }): { agent?: string; taskRef?: string; model?: string; effort?: string } => {
 			const task = typeof params.task_id === "string" ? store.get(params.task_id) : undefined;
 			const agent = typeof params.agent === "string" && params.agent.trim() ? headingText(params.agent)
 				: task ? headingText(task.agent) || undefined
 				: undefined;
 			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
 			// A launch has no task id at call time, so its profile arrives through
-			// the shared row state once the result slot knows it.
-			const model = modelChip(task?.model ?? launched?.agentModel);
-			const effort = task?.thinking ? headingText(task.thinking) : launched?.agentEffort ? headingText(launched.agentEffort) : undefined;
+			// the shared row state once the result slot knows it. Once it speaks for
+			// this call it wins whole: a continuation is a new task, so keeping the
+			// predecessor's model — or its effort when the new one has none — would
+			// name the wrong child.
+			const fresh = launched?.agentProfile === true;
+			const model = fresh ? launched?.agentModel : modelChip(task?.model);
+			const effort = fresh ? launched?.agentEffort : task?.thinking ? headingText(task.thinking) : undefined;
 			return { agent, taskRef, model, effort };
 		};
-		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean; agentModel?: string; agentEffort?: string } } | undefined) => context ?? {};
+		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean; agentProfile?: boolean; agentModel?: string; agentEffort?: string } } | undefined) => context ?? {};
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
@@ -2276,7 +2280,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					// The call slot draws the heading, so what the child runs on has to
 					// reach it the same way the failure does.
 					row.state.agentModel = modelChip(facts?.model);
-					row.state.agentEffort = facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined;
+					row.state.agentEffort = facts?.thinking ? headingText(facts.thinking) : undefined;
+					// From here the result speaks for this call's profile: the store's
+					// task may be a different one (a continuation's predecessor).
+					row.state.agentProfile = true;
 				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;

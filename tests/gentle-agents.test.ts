@@ -4121,7 +4121,8 @@ test("the Agent result card previews the answer or error when collapsed and keep
 
 test("agent cards name the model and effort beside the agent, so a delegation says what answers", async () => {
 	const h = fakePi();
-	gentleAgents(h.pi, {}, deps().deps);
+	const harness = deps();
+	gentleAgents(h.pi, {}, harness.deps);
 	const { ctx } = fakeContext();
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
 	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/alpha", effort: "high" } } })}\n`);
@@ -4143,7 +4144,8 @@ test("agent cards name the model and effort beside the agent, so a delegation sa
 	const heading = stripAnsi(run.renderCall({ agent: "explore" }, plainTheme, { expanded: false, state } as never).render(120).join("\n"));
 	assert.match(heading, /→ Delegating · explore · openai\/alpha · high/, "the card names what the child runs on once the launch exists");
 
-	// One heading row: a narrow terminal sheds the profile, never the key hint.
+	// One heading row: a tight row sheds the profile, and the hint outranks
+	// even the agent name at the narrowest widths.
 	const tight = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(70).join("\n"));
 	assert.match(tight, /expand/, "the affordance survives the wider heading");
 	assert.match(tight, /openai\/alpha/, "the model still fits");
@@ -4151,7 +4153,27 @@ test("agent cards name the model and effort beside the agent, so a delegation sa
 	const narrow = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(50).join("\n"));
 	assert.match(narrow, /expand/, "the affordance never goes");
 	assert.doesNotMatch(narrow, /openai\/alpha/, "the model is the next chip to go");
-	assert.match(narrow, /◎ Agent status · explore /, "the agent stays even when only it fits");
+	assert.match(narrow, /◎ Agent status · explore /, "the agent stays while it still fits");
+	const tiny = stripAnsi(status.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: {} } as never).render(32).join("\n"));
+	assert.match(tiny, /expand/, "the hint survives even when only the verb fits");
+	assert.doesNotMatch(tiny, /explore/, "the agent name is what gives up its columns");
+
+	// A continuation is a new task: once its result speaks, its profile wins
+	// whole, so the predecessor's model and effort never leak into the heading.
+	writeFileSync(join(cwd, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explore: { model: "openai/beta" } } })}\n`);
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "first done" }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	const resumed = h.tools.get("subagent_continue")!.execute("c8", { task_id: taskId, prompt: "go on", mode: "task" }, undefined, undefined, ctx);
+	await tick();
+	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "second done" }] }] });
+	harness.children[1].emit({ type: "agent_settled" });
+	const continuation = await resumed;
+	const continueState = {};
+	h.tools.get("subagent_continue")!.renderResult(continuation as Parameters<Registered["renderResult"]>[0], { expanded: false, isPartial: false }, plainTheme, { isError: false, isPartial: false, state: continueState } as never).render(120);
+	const continueHeading = stripAnsi(h.tools.get("subagent_continue")!.renderCall({ task_id: taskId }, plainTheme, { expanded: false, state: continueState } as never).render(120).join("\n"));
+	assert.match(continueHeading, /openai\/beta/, "the continuation names its own model");
+	assert.doesNotMatch(continueHeading, /openai\/alpha|high/, "the predecessor's model and effort never leak into it");
 
 	await h.fire("session_shutdown", ctx, { reason: "quit" });
 });
@@ -4171,8 +4193,9 @@ test("a rejected delegation reads as a FAIL card, never as a live one", () => {
 	assert.match(body, /Select an existing worktree/, "the reason is still shown");
 	assert.doesNotMatch(body, /RUNNING/, "a rejected call never reads as still delegating");
 	// The heading belongs to the call slot, which only shares `state` with the
-	// result, so the failure has to travel there.
-	const call = tool.renderCall({ agent: "explore" }, taggedTheme, { isError: true, expanded: false, state: context.state } as never).render(80);
+	// result, so the failure has to travel there: no `isError` here, or this
+	// would pass on the call's own frozen snapshot instead of the handshake.
+	const call = tool.renderCall({ agent: "explore" }, taggedTheme, { expanded: false, state: context.state } as never).render(80);
 	assert.match(call[0]!, /^<error>╭/, "the rejected card wears the error frame, not the live iris one");
 	assert.match(stripAnsi(call.join("\n").replace(/<\/?[a-z]+>/g, "")), /→ Delegating · explore/, "the heading stays the call's");
 });

@@ -3376,6 +3376,26 @@ test("a stale or unreadable pin degrades to the global routing instead of failin
 // gentle-shell#1558 (barbatdev review): the two registered launch-seam gaps.
 // The pure helpers were covered, but the real subagent_run seam had no
 // committed test for the session layer.
+// gentle-shell#1709: a context without a session manager must fail the launch
+// with the fail-closed authority message, not a TypeError from an unguarded
+// sessionManager read.
+test("a launch without a session manager fails closed with the authority message", async t => {
+	const base = pinFixture("no-session-manager");
+	base.writeStore({ pinned: { explore: { model: "openai/alpha" } } });
+	base.writePin("pinned");
+	const harness = deps();
+	harness.deps.resolveWorktree = () => ({ root: base.root, commonDir: base.commonDir });
+	harness.deps.env = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: base.configHome };
+	const { pi, tools, fire } = fakePi();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	const managerless = { ...ctx, sessionManager: undefined } as unknown as typeof ctx;
+	await assert.rejects(
+		tools.get("subagent_run")!.execute("no-manager", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, managerless),
+		(error: unknown) => error instanceof Error && error.message.includes("Session profile authority unavailable"),
+	);
+});
+
 test("a session binding outranks the repository pin at the launch seam", async t => {
 	t.after(() => resetSessionProfileBindingsForTesting());
 	const base = pinFixture("session-over-pin");

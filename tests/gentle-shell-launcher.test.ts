@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
+import { bundledChildEnv } from "../lib/gentle-shell-bundled.ts";
 import {
 	GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV,
 	MIN_PI_VERSION,
@@ -1315,7 +1316,18 @@ test("buildPiInvocation keeps git from opening an editor unless the user chose o
 	const explicit = build({ GIT_EDITOR: "code --wait", GIT_SEQUENCE_EDITOR: "" });
 	assert.equal(explicit.GIT_EDITOR, "code --wait");
 	assert.equal(explicit.GIT_SEQUENCE_EDITOR, "");
-	assert.deepEqual(nonInteractiveGitEnv({ GIT_EDITOR: "vim" }), { GIT_SEQUENCE_EDITOR: "true" });
+	assert.deepEqual(nonInteractiveGitEnv({ GIT_EDITOR: "vim" }, "linux"), { GIT_SEQUENCE_EDITOR: "true" });
+	// A key that is present but undefined is omitted from the spawn, so it still gets the default.
+	assert.equal(build({ GIT_EDITOR: undefined }).GIT_EDITOR, "true");
+});
+
+// The bundled launcher copies process.env into a plain object, which loses
+// Windows' case-insensitive lookup; a user's `git_editor` must still win.
+test("nonInteractiveGitEnv matches editor names case-insensitively on Windows only", () => {
+	const bundled = bundledChildEnv({ git_editor: "code --wait", Git_Sequence_Editor: "vim" }, { node: "/n/node", cli: "/n/cli.js", prefix: "/p" });
+	assert.deepEqual(nonInteractiveGitEnv(bundled, "win32"), {});
+	assert.deepEqual(nonInteractiveGitEnv(bundled, "linux"), NON_INTERACTIVE_GIT_ENV);
+	assert.deepEqual(nonInteractiveGitEnv({ git_editor: undefined }, "win32"), NON_INTERACTIVE_GIT_ENV);
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {

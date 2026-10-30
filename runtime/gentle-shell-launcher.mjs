@@ -223,11 +223,15 @@ export function userPiHome(env                                    , homedir     
 // Nobody can see or type into an editor git opens from Pi's bash tool, so
 // `git rebase --continue` or a bare `git commit` would wait on it forever.
 // `true` makes git keep the prepared message (or abort an empty one) instead.
-// A value the user already set is kept.
+// A value the user already set is kept; on Windows env names ignore case, so a
+// user's `git_editor` counts too.
 export const NON_INTERACTIVE_GIT_ENV = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" }         ;
 
-export function nonInteractiveGitEnv(env                                    )                         {
-	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => env[key] === undefined));
+export function nonInteractiveGitEnv(env                                    , platform         = process.platform)                         {
+	const isSet = (key        ) => platform === "win32"
+		? Object.entries(env).some(([name, value]) => value !== undefined && name.toUpperCase() === key)
+		: env[key] !== undefined;
+	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => !isSet(key)));
 }
 
 export function isolatedDir(env                                    , homedir        )         {
@@ -1014,6 +1018,8 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+
+
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
 //     config/auth/mcp on argv[0] before it even parses flags, so any injected
@@ -1092,8 +1098,8 @@ export function buildPiInvocation(input                        )               {
 	args.push(...input.passthrough);
 
 	const env                                     = {
-		...nonInteractiveGitEnv(input.baseEnv),
 		...input.baseEnv,
+		...nonInteractiveGitEnv(input.baseEnv, input.platform),
 		PI_CODING_AGENT_DIR: input.home.dir,
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),

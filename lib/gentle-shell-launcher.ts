@@ -222,11 +222,15 @@ export function userPiHome(env: Record<string, string | undefined>, homedir: str
 // Nobody can see or type into an editor git opens from Pi's bash tool, so
 // `git rebase --continue` or a bare `git commit` would wait on it forever.
 // `true` makes git keep the prepared message (or abort an empty one) instead.
-// A value the user already set is kept.
+// A value the user already set is kept; on Windows env names ignore case, so a
+// user's `git_editor` counts too.
 export const NON_INTERACTIVE_GIT_ENV = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" } as const;
 
-export function nonInteractiveGitEnv(env: Record<string, string | undefined>): Record<string, string> {
-	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => env[key] === undefined));
+export function nonInteractiveGitEnv(env: Record<string, string | undefined>, platform: string = process.platform): Record<string, string> {
+	const isSet = (key: string) => platform === "win32"
+		? Object.entries(env).some(([name, value]) => value !== undefined && name.toUpperCase() === key)
+		: env[key] !== undefined;
+	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => !isSet(key)));
 }
 
 export function isolatedDir(env: Record<string, string | undefined>, homedir: string): string {
@@ -995,6 +999,8 @@ export interface BuildPiInvocationInput {
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
 	baseEnv: Record<string, string | undefined>;
+	// Defaults to process.platform; decides whether env names ignore case.
+	platform?: string;
 	// A bundled launch: its gentle-pi keeps its config in the prefix, so Pi gets
 	// no standalone config marker (standaloneConfigHome).
 	bundled?: boolean;
@@ -1091,8 +1097,8 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	args.push(...input.passthrough);
 
 	const env: Record<string, string | undefined> = {
-		...nonInteractiveGitEnv(input.baseEnv),
 		...input.baseEnv,
+		...nonInteractiveGitEnv(input.baseEnv, input.platform),
 		PI_CODING_AGENT_DIR: input.home.dir,
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),

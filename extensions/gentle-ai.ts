@@ -44,7 +44,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -2889,8 +2889,6 @@ function isValidJsonObjectFileOrMissing(path: string): boolean {
 		return false;
 	}
 }
-
-const PROVIDER_REVIEW_ROLES = ["review-refuter", "review-validator"] as const;
 
 function isProviderReviewRole(name: string): boolean {
 	return PROVIDER_REVIEW_ROLES.some((role) => role === name);

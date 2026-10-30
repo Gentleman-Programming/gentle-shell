@@ -1946,9 +1946,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// only that provider is forced, never the whole scope.
 		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
 	});
-	pi.on("after_provider_response", (event) => {
-		const parsed = parseUsageHeaders(event.headers, deps.now());
-		if (!parsed) return;
+	pi.on("after_provider_response", (event, ctx) => {
+		const headerUsage = parseUsageHeaders(event.headers, deps.now());
+		if (!headerUsage) return;
+		// The headers name a format, not the provider: pi-claude-bridge reports
+		// Claude Code's usage as the Anthropic unified headers. File the snapshot
+		// under the provider that served the response, which the bar looks up.
+		const served = ctx?.model?.provider;
+		const parsed = served ? { ...headerUsage, provider: served } : headerUsage;
 		usage.record(parsed);
 		// A snapshot that arrived with a response is evidence the provider is
 		// answering: a failure some earlier refresh recorded no longer stands.

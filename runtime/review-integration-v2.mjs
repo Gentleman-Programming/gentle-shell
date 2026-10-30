@@ -1467,17 +1467,32 @@ function decodeTransitionArguments(value         , label        )               
 	});
 }
 
+// The intended-untracked submission re-enters STATUS for the same target: the
+// workspace projection, or a provider-issued base-diff selector (a base tree
+// plus --committed-only or --workspace-overlay). No other selector is accepted.
+const INTENDED_UNTRACKED_PREFIX = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi"]         ;
+const INTENDED_UNTRACKED_SELECTION_TOKEN = "--intended-untracked-selection={{value}}";
+const INTENDED_UNTRACKED_BASE_TREE = /^--base-ref=[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+
+/** True when a validated submission already carries the provider-issued base-diff target selector. */
+export function intendedUntrackedSubmissionCarriesTarget(tokens                   )          {
+	return isIntendedUntrackedSubmissionTokens(tokens) && tokens.length === INTENDED_UNTRACKED_PREFIX.length + 3;
+}
+
+function isIntendedUntrackedSubmissionTokens(tokens                   )          {
+	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens[tokens.length - 1] !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
+	const selector = tokens.slice(INTENDED_UNTRACKED_PREFIX.length, -1);
+	if (selector.length === 1) return selector[0] === "--projection=workspace";
+	return selector.length === 2 && INTENDED_UNTRACKED_BASE_TREE.test(selector[0] ) && (selector[1] === "--committed-only=true" || selector[1] === "--workspace-overlay=true");
+}
+
 function decodeCaptureSubmission(value         , label        , v5         , v6         , captureOperation        )                            {
 	// status/v6 adds the provider-owned intended-untracked selection form.
 	if (v6 && captureOperation === "external.select_intended_untracked" && typeof value === "object" && value !== null && (value                           ).operation_token === "status") {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
-		const expectedTokens = [
-			"--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi",
-			"--projection=workspace", "--intended-untracked-selection={{value}}",
-		]         ;
 		const operationToken = enumeration(submission.operation_token, ["status"]         , `${label}.operation_token`);
-		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: expectedTokens.length, maximum: expectedTokens.length });
-		if (argumentTokens.some((token, index) => token !== expectedTokens[index])) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
+		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: 6 });
+		if (!isIntendedUntrackedSubmissionTokens(argumentTokens)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
 		const row = exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"]);
 		return {
 			operationToken,
@@ -1486,7 +1501,7 @@ function decodeCaptureSubmission(value         , label        , v5         , v6 
 				slot: enumeration(row.slot, ["intended_untracked_selection"]         , `${label}.value.slot`),
 				domain: enumeration(row.domain, ["schema_bound_json"]         , `${label}.value.domain`),
 				schema: enumeration(row.schema, ["gentle-ai.review-intended-untracked-selection/v1"]         , `${label}.value.schema`),
-				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, 4, 4),
+				substitutionLocation: integer(row.substitution_location, `${label}.value.substitution_location`, argumentTokens.length - 1, argumentTokens.length - 1),
 			}],
 		};
 	}

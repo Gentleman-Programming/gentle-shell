@@ -154,6 +154,88 @@ function mainBuildTarball(version, {env, home, path}) {
  return path.join(config, 'main', 'packages', `${SHELL}-${version}.tgz`);
 }
 
+function managerVersionAtLeast(actual, minimum) {
+ if (!/^\d+\.\d+\.\d+$/.test(actual)) return false;
+ const current = actual.split('.').map(Number), required = minimum.split('.').map(Number);
+ for (let i = 0; i < current.length; i++) {
+  if (current[i] !== required[i]) return current[i] > required[i];
+ }
+ return true;
+}
+
+async function optionalFile(fs, file) {
+ try { return String(await fs.readFile(file, 'utf8')); }
+ catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined; throw error; }
+}
+
+// Source updates are deliberately standalone: never infer a workspace owner or
+// replace a global Shell link with a registry package.
+async function sourceOwner({root, linkPath, manifest, selected, adapters, path, key, canonical, platform, cwd, env}) {
+ await canonical(path.join(root, '.git'));
+ if (key(await canonical(path.join(root, 'package.json'))) !== key(path.join(root, 'package.json'))) throw refusal('source manifest is linked outside the checkout');
+ const pin = /^(npm|pnpm)@(\d+\.\d+\.\d+)$/.exec(manifest.packageManager ?? '');
+ if (!pin) throw refusal('source checkout needs an exact npm or pnpm packageManager pin');
+ const ranges = ['dependencies', 'devDependencies', 'optionalDependencies'].map(field => manifest[field]?.[PI]).filter(value => value !== undefined);
+ if (!ranges.length || ranges.some(value => typeof value !== 'string' || !/^[~^<>=*0-9][0-9A-Za-z.*~^<>=|+\s-]*$/.test(value)) || new Set(ranges).size !== 1) throw refusal('source Pi must be a direct registry dependency with one declared range');
+ let sourceConfig;
+ for (let dir = root; ; dir = path.dirname(dir)) {
+  const pkg = dir === root ? manifest : JSON.parse(await optionalFile(adapters.fs, path.join(dir, 'package.json')) ?? '{}');
+  const config = await optionalFile(adapters.fs, path.join(dir, 'pnpm-workspace.yaml'));
+  if (pkg.workspaces !== undefined || (config !== undefined && (dir !== root || pin[1] !== 'pnpm'))) throw refusal('source workspaces are unsupported; update Pi from the workspace owner');
+  if (dir === root) sourceConfig = config;
+  if (path.dirname(dir) === dir) break;
+ }
+ const locks = [];
+ for (const name of ['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb']) {
+  if (await optionalFile(adapters.fs, path.join(root, name)) !== undefined) locks.push(name);
+ }
+ const lock = pin[1] === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json';
+ if (locks.length !== 1 || locks[0] !== lock) throw refusal(`source checkout needs only ${lock}; conflicting or missing lockfiles require manual resolution`);
+ if (key(await canonical(path.join(root, lock))) !== key(path.join(root, lock))) throw refusal('source lockfile is linked outside the checkout');
+ const peerRoot = await canonical(path.join(root, 'node_modules', PI));
+ let packaged = false;
+ for (let dir = peerRoot; ; dir = path.dirname(dir)) {
+  if (path.basename(dir) === 'node_modules') { packaged = true; break; }
+  let source = false;
+  try { await adapters.fs.realpath(path.join(dir, '.git')); source = true; }
+  catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error; }
+  if (source) throw refusal('source Pi is a linked source checkout; update that checkout separately');
+  if (path.dirname(dir) === dir) break;
+ }
+ if (!packaged) throw refusal('source Pi has an unsupported installed override outside node_modules');
+ const peerCli = await canonical(path.join(root, 'node_modules', PI, 'dist/bundle/cli.js'));
+ if (key(peerCli) !== key(selected)) throw refusal('source checkout does not supply the selected adjacent Pi');
+ const invocation = await invocationFor(pin[1], adapters, platform);
+ if (!invocation) throw refusal(`source checkout requires ${pin[0]}`);
+ const sourceEnv = pin[1] === 'pnpm' ? {...(env ?? process.env), COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0'} : undefined;
+ const probeOptions = {deadlineMs:30_000, cwd, ...(sourceEnv ? {env:sourceEnv} : {})};
+ const version = await adapters.run(invocation.command, [...invocation.prefix, '--version'], probeOptions);
+ const actual = typeof version.stdout === 'string' ? version.stdout.trim() : '';
+ const compatible = pin[1] === 'pnpm' ? managerVersionAtLeast(actual, pin[2]) : actual === pin[2];
+ if (!succeeded(version) || !compatible) throw refusal(`source checkout requires ${pin[0]}${pin[1] === 'pnpm' ? ' or newer' : ''}; the available manager version differs`);
+ // Keep the compatible manager just checked; --dir must not acquire the older project pin.
+ const sourceOptions = pin[1] === 'pnpm' ? ['--pm-on-fail=ignore'] : [];
+ if (sourceConfig !== undefined) {
+  const selectors = await adapters.run(invocation.command, [...invocation.prefix, 'config', 'get', 'packages', '--json', '--dir', root, ...sourceOptions], probeOptions);
+  let packages;
+  try {
+   if (typeof selectors.stdout !== 'string') throw new Error('missing selector output');
+   const text = selectors.stdout.trim();
+   packages = text === '' || text === 'undefined' ? undefined : JSON.parse(text);
+  }
+  catch { throw refusal('source workspace package selectors could not be verified'); }
+  if (!succeeded(selectors) || (packages != null && (!Array.isArray(packages) || packages.length !== 0))) throw refusal('source workspace package selectors are unsupported; update Pi from the workspace owner');
+  const listing = await adapters.run(invocation.command, [...invocation.prefix, 'list', '--recursive', '--config.include-workspace-root=true', '--depth', '-1', '--json', '--dir', root, ...sourceOptions], probeOptions);
+  let projects;
+  try { projects = JSON.parse(listing.stdout); } catch { throw refusal('source workspace projects could not be verified'); }
+  if (!succeeded(listing) || !Array.isArray(projects) || projects.length !== 1 || key(await canonical(projects[0]?.path)) !== key(root)) throw refusal('source workspace has other or unknown projects; update Pi from the workspace owner');
+ }
+ const flags = pin[1] === 'pnpm' ? ['--dir', root, '--lockfile-dir', root, '--recursive=false', '--ignore-pnpmfile', ...(sourceConfig === undefined ? [] : ['--workspace-root'])] : ['--prefix', root, '--workspaces=false', '--no-audit', '--no-fund'];
+ return {name:pin[1], ...invocation, package:SHELL, spec:PI, sourceRoot:root, sourceConfig, sourceEnv, linkPath,
+  manifest:await adapters.fs.readFile(path.join(root, 'package.json'), 'utf8'),
+  args:['update', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...sourceOptions]};
+}
+
 export async function resolveUpdateOwner({runtime, packageRoot, platform = process.platform, adapters, cwd, env, home}) {
  const {path, key} = pathsFor(platform);
  const canonical = canonicalWith(adapters, path);
@@ -168,8 +250,10 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
   const {entries, members} = await listedEntries(groups, {adapters, path, key, canonical});
   for (const {pkg, dependency, groupRoot} of entries) {
    if ((pkg === SHELL) !== adjacent) continue;
-   if (dependency.link === true || [dependency.resolved, dependency.version].some(value => typeof value === 'string' && LINKED.test(value))) throw refusal('listed supplier is a source or linked package');
+   const linked = dependency.link === true || [dependency.resolved, dependency.version].some(value => typeof value === 'string' && LINKED.test(value));
    const root = await canonical(dependency.path);
+   if (pkg === SHELL && key(root) !== key(shellRoot)) continue;
+   if (linked && pkg === PI) throw refusal('listed supplier is a source or linked package');
    const manifest = await manifestOf(adapters, path, root);
    if (manifest.name !== pkg) throw refusal('listed package identity differs');
    let cli, spec, artifact = false;
@@ -184,6 +268,10 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
     const peer = await adjacentPeer({shellRoot: root, groupRoot, adapters, path, key, canonical});
     if (!peer) continue;
     cli = peer.cli;
+    if (linked) {
+     if (key(cli) === key(selected)) candidates.push(await sourceOwner({root, linkPath:dependency.path, manifest, selected, adapters, path, key, canonical, platform, cwd, env}));
+     continue;
+    }
     // Reinstalling the same Shell version re-resolves its peer; `update`
     // never upgrades Shell itself (that is `gentle-shell upgrade`).
     if (typeof manifest.version !== 'string') throw refusal('listed Shell version is missing');
@@ -232,8 +320,8 @@ export async function updateSelectedPi(input) {
  }
  // Exactly one approved package per command; never create a comma group or
  // reinstall arbitrary dependencies merely because they share a store.
- const args = owner.name === 'pnpm' ? ['add', '-g', owner.spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', owner.spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])];
- const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: input.cwd, stderrTail:4096});
+ const args = owner.args ?? (owner.name === 'pnpm' ? ['add', '-g', owner.spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', owner.spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
+ const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: owner.sourceRoot ?? input.cwd, stderrTail:4096, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
  if (!succeeded(result)) {
   // One sanitized line of the manager's own error: npm prints it on stderr,
   // pnpm 11 prints ERR_PNPM_* on stdout. Read as one text, stderr last, an
@@ -241,6 +329,28 @@ export async function updateSelectedPi(input) {
   const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
   const detail = setupErrorDetail(output, input.home, input.platform);
   throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.spec}${detail ? `\n${detail}` : ''}`);
+ }
+ if (owner.sourceRoot) {
+  const {path, key} = pathsFor(input.platform ?? process.platform);
+  const canonical = canonicalWith(input.adapters, path);
+  let sameLink = false;
+  try { sameLink = key(await canonical(owner.linkPath)) === key(owner.sourceRoot); } catch { /* checked below */ }
+  if (!sameLink) throw new Error('gentle-shell update: the Shell link changed during the source update; inspect the installation before retrying.');
+  if (await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'package.json'), 'utf8') !== owner.manifest) throw new Error('gentle-shell update: the source manifest changed during the update; inspect the checkout before retrying.');
+  if (owner.sourceConfig !== undefined && await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'pnpm-workspace.yaml'), 'utf8') !== owner.sourceConfig) throw new Error('gentle-shell update: the source pnpm configuration changed during the update; inspect the checkout before retrying.');
+  let after = null;
+  try {
+   const peer = await adjacentPeer({shellRoot:owner.sourceRoot, adapters:input.adapters, path, key, canonical});
+   const nested = await canonical(path.join(owner.sourceRoot, 'node_modules', PI, 'dist/bundle/cli.js'));
+   if (peer && key(peer.cli) === key(nested)) after = peer.manifest.version ?? null;
+  } catch { /* Never invent readback after a successful manager invocation. */ }
+  const location = `${owner.name} updated ${PI} in ${owner.sourceRoot}`;
+  if (after === null) input.out?.(`${location}. The Pi version could not be read back; run 'gentle-shell --version' to check it.`);
+  else {
+   input.out?.(`${location}; the selected Pi is ${after === input.currentVersion ? 'still' : 'now'} ${after}${after !== input.currentVersion && input.currentVersion !== undefined ? ` (was ${input.currentVersion})` : ''}.`);
+   if (after === input.currentVersion && owner.name === 'pnpm') input.out?.('The declared version range and pnpm minimumReleaseAge setting still apply; neither was overridden.');
+  }
+  return 0;
  }
  const after = await suppliedPiVersion(owner, input);
  const before = input.currentVersion;

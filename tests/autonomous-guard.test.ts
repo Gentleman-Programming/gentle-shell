@@ -991,6 +991,31 @@ test("evaluateBashPolicies: forwards the Auto permission gate to every policy", 
 	assert.deepEqual(seen, [autoGate], "the seam must thread the Auto gate into policies");
 });
 
+test("evaluateBashPolicies: forwards superYoloActive to every policy", async () => {
+	const seen: boolean[] = [];
+	const seam = makeBashPolicySeamHarness("/stub-cwd");
+	const result = await __testing.evaluateBashPolicies(
+		"git push --force origin main",
+		seam.ctx,
+		seam.events,
+		seam.herdrLifecycle,
+		false,
+		[
+			{
+				name: "super-yolo-recorder",
+				async evaluate(_command, _ctx, _events, _herdrLifecycle, _yoloActive, _autoGate, superYoloActive) {
+					seen.push(superYoloActive);
+					return undefined;
+				},
+			},
+		],
+		undefined,
+		true,
+	);
+	assert.equal(result, undefined);
+	assert.deepEqual(seen, [true], "the seam must thread superYoloActive into policies");
+});
+
 test("evaluateBashPolicies: real runtime-guardrails policy defers a non-guarded command to the Auto gate", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-ai-bash-policy-auto-"));
 	try {

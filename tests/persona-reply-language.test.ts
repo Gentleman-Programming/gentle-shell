@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
-// gentle-shell #55 / #57 / #125: the reply language is inferred every turn,
+// gentle-shell #55 / #57 / #125 / #2348: the reply language is inferred every
+// turn,
 // never stored, so the persona prompt itself must say how to infer it. The
 // rule lives on the single existing language-match bullet (the concept-level
 // duplication guard allows exactly one), so these tests read the rendered
@@ -21,6 +22,24 @@ for (const persona of ["gentleman", "neutral"] as const) {
 			prompt,
 			/never default to Spanish: a message in English gets a reply in English/,
 			`${persona} prompt must forbid a Spanish default, so an English message never gets a Spanish reply (#125)`,
+		);
+	});
+	test(`[${persona}] harness-generated turns are never a language signal (#2348)`, () => {
+		const prompt = __testing.buildGentlePrompt(persona);
+		assert.match(
+			prompt,
+			/Only a message written by the human can select or change the reply language/,
+			`${persona} prompt must let only a human-authored message change the reply language (#2348)`,
+		);
+		assert.match(
+			prompt,
+			/subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role/,
+			`${persona} prompt must exclude harness-generated user-role turns, so an English subagent or background notification cannot flip the session to English (#2348)`,
+		);
+		assert.match(
+			prompt,
+			/Translate relayed subagent findings into the selected reply language/,
+			`${persona} prompt must require translating relayed subagent findings (#2348)`,
 		);
 	});
 }

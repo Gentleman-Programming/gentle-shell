@@ -121,7 +121,6 @@ export async function runCurrentSessionProfileSelection<T>(
  }
 }
 
-/** Await before fork-copy/tree movement and before detach/invalidation. */
 /** Whether an Enter selection is still settling, so callers wait only when needed.
  * A registry protocol failure means nothing of ours is pending.
  */
@@ -135,6 +134,7 @@ export function hasPendingSessionProfileSelection(
  }
 }
 
+/** Await before fork-copy/tree movement and before detach/invalidation. */
 export async function waitCurrentSessionProfileSelection(
  manager: SessionProfileLifecycleManager,
 ): Promise<void> {

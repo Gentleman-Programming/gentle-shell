@@ -18,6 +18,7 @@ import {
 	decodeReviewStartV3,
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
+	intendedUntrackedSubmissionCarriesTarget,
 	type ReviewAcknowledgedExpectationV1,
 	type ReviewAcknowledgedV1,
 	type ReviewConsentEnvelope,
@@ -2399,7 +2400,11 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// value for the same flag. providerFlagValue also fails closed on a
 		// dangling `--flag` (last token, no value) or an empty `--flag=`.
 		const submittedBaseRefValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "base-ref");
-		if (request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		// A provider-issued base-diff selector (base tree plus scope) already binds
+		// the target the request named; the tree is not textually comparable to
+		// the request's ref, so it runs as issued and nothing is re-forwarded.
+		const providerOwnsTarget = submitted !== undefined && intendedUntrackedSubmissionCarriesTarget(submitted.argumentTokens);
+		if (!providerOwnsTarget && request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
 		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
 		let submittedHasCommittedOnly = false;
@@ -2412,7 +2417,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// Append only the half of the base-ref/committed-only pair the provider
 		// did not already carry (a present base-ref already equals
 		// request.baseRef; the throw above ruled out the conflicting case).
-		const forwardedBaseRef = request.baseRef === undefined ? [] : [
+		const forwardedBaseRef = request.baseRef === undefined || providerOwnsTarget ? [] : [
 			...(submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef] : []),
 			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
 		];

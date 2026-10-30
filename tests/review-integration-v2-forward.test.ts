@@ -1024,3 +1024,62 @@ test("START/v4 accepts every risk reason code and signal the published start sch
 	unknown.risk_reasons = [{ code: "code_from_a_newer_cli" }];
 	assert.throws(() => decodeReviewStartV4(unknown), /risk_reasons\[0\]\.code is unsupported/);
 });
+
+// A base-diff target keeps its selector in the intended-untracked submission
+// (provider-issued, exact forms only), so re-entering STATUS resolves the same
+// target instead of the workspace candidate.
+const PROVIDER_PREFIX = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi"];
+const SELECTION_TOKEN = "--intended-untracked-selection={{value}}";
+const TREE = "a".repeat(40);
+
+function intendedUntrackedSubmissionStatus(selector: readonly string[], location?: number): JsonObject {
+	const body = initialIntendedUntrackedStatusV6();
+	const input = ((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[];
+	const submission = input[0]!.submission as JsonObject;
+	const tokens = [...PROVIDER_PREFIX, ...selector, SELECTION_TOKEN];
+	submission.argument_tokens = tokens;
+	(submission.value as JsonObject).substitution_location = location ?? tokens.length - 1;
+	return body;
+}
+
+function decodedSubmissionTokens(body: JsonObject): readonly string[] {
+	const decoded = decodeReviewStatusV3(body);
+	const input = decoded.nextTransition?.kind === "collect" ? decoded.nextTransition.collect?.inputs[0] : undefined;
+	return input?.submission?.argumentTokens ?? [];
+}
+
+test("status/v6 intended-untracked submission accepts the workspace and provider-issued base-diff selectors", () => {
+	assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus(["--projection=workspace"])), [...PROVIDER_PREFIX, "--projection=workspace", SELECTION_TOKEN]);
+	for (const scope of ["--committed-only=true", "--workspace-overlay=true"]) {
+		const selector = [`--base-ref=${TREE}`, scope];
+		assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus(selector)), [...PROVIDER_PREFIX, ...selector, SELECTION_TOKEN]);
+	}
+	assert.deepEqual(decodedSubmissionTokens(intendedUntrackedSubmissionStatus([`--base-ref=${"b".repeat(64)}`, "--committed-only=true"])).length, 6);
+});
+
+test("status/v6 intended-untracked submission rejects any other selector or substitution location", () => {
+	for (const selector of [
+		["--projection=staged"],
+		["--base-ref=HEAD", "--committed-only=true"],
+		[`--base-ref=${TREE}`],
+		["--committed-only=true"],
+		[],
+		[`--base-ref=${TREE}`, "--committed-only=true", "--projection=workspace"],
+	]) {
+		assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus(selector)), /argument_tokens|substitution/, selector.join(" "));
+	}
+	assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus([`--base-ref=${TREE}`, "--committed-only=true"], 4)), /substitution_location/);
+});
+
+test("targetStatus runs a provider-issued base-diff submission as issued instead of re-forwarding the request base-ref", async () => {
+	const queue = queuedTargetStatusAdapter();
+	const tokens = [...PROVIDER_PREFIX, `--base-ref=${TREE}`, "--committed-only=true", SELECTION_TOKEN];
+	await targetStatusClient(queue.adapter).targetStatus({
+		cwd: "/repo", baseRef: "deadbeef", committedOnly: true,
+		intendedUntrackedSelection: { argumentTokens: tokens, value: '{"selection":true}' },
+	});
+	assert.deepEqual(queue.calls[0], [
+		"review", "status", "--cwd", "/repo",
+		...PROVIDER_PREFIX, `--base-ref=${TREE}`, "--committed-only=true", '--intended-untracked-selection={"selection":true}',
+	]);
+});

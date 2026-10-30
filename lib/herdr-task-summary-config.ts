@@ -35,7 +35,7 @@ function simpleValue(source: string): boolean {
 		space();
 		if (depth > 8) return false;
 		if (source[i] === '"') {
-			const match = /^"(?:[^"\\\x00-\x1f]|\\(?:["\\bfnrt]|u[0-9a-fA-F]{4}))*"/.exec(source.slice(i));
+			const match = /^"(?:[^"\\\x00-\x1f\x7f]|\\(?:["\\bfnrt]|u(?![dD][89a-fA-F])[0-9a-fA-F]{4}))*"/.exec(source.slice(i));
 			if (!match) return false;
 			i += match[0].length;
 			return true;

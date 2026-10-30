@@ -80,6 +80,16 @@ test("bounded syntax rejects forms that could hide conflicting ownership", () =>
 	]) rejected(text, 'Unsupported or ambiguous TOML; no changes proposed.');
 });
 
+test("basic strings reject surrogate escapes and raw DEL but keep scalar escapes", () => {
+	for (const text of ['x = "\\uD800"\n', 'x = "\\udfff"\n', 'x = "a\x7fb"\n', 'x = ["ok", "\\uDBFF"]\n']) {
+		rejected(text, 'Unsupported or ambiguous TOML; no changes proposed.');
+		rejected(text + enabled('').text, 'Unsupported or ambiguous TOML; no changes proposed.');
+	}
+	for (const text of ['x = "\\uD7FF"\n', 'x = "\\uE000"\n', 'x = "\\u00e9\\t"\n']) {
+		assert.equal(enabled(text).changed, true);
+	}
+});
+
 // Each fixture is valid TOML on its own, but defines a value where the
 // generated table would require a table ancestor (or the table itself).
 for (const [ancestor, text] of [
@@ -121,6 +131,27 @@ test("manually changed, duplicated or forged owned blocks are never overwritten"
 	for (const text of [original.replace('"agent"', '"custom"'), original.replace('#123456', 'accent'), original.replace('#123456', '#654321'), original + original,
 		original.replace('end v1', 'end v2'), original.replace('created join=0', 'existing join=0'),
 		original.replace('pi =', '# comment\npi ='), original + 'claude = [["agent"]]\n']) {
+		rejected(text, 'Owned task summary block was changed or is ambiguous; no changes proposed.');
+		assert.deepEqual(plan(text, { ...options, enabled: false }), { ok: false, error: 'Owned task summary block was changed or is ambiguous; no changes proposed.' });
+	}
+});
+
+test("an unchanged owned block moved away from its planned boundary is never adopted", () => {
+	const created = enabled('').text;
+	const table = header + '\n[other]\nvalue = 1\n';
+	const existing = enabled(table).text;
+	const existingBlock = existing.slice(existing.indexOf('# Gentle Shell'), existing.indexOf('[other]'));
+	const joined = enabled('# note').text;
+	const joinedBlock = joined.slice('# note'.length);
+	for (const text of [
+		created + '# note\n',
+		'# note\n' + created + '# after\n',
+		table + existingBlock,
+		existingBlock + table,
+		'# note\n' + joinedBlock,
+		joinedBlock,
+		'# note' + joinedBlock + '# after\n',
+	]) {
 		rejected(text, 'Owned task summary block was changed or is ambiguous; no changes proposed.');
 		assert.deepEqual(plan(text, { ...options, enabled: false }), { ok: false, error: 'Owned task summary block was changed or is ambiguous; no changes proposed.' });
 	}

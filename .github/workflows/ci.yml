@@ -123,12 +123,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checkout parents' }
           $prHead = [string]$event.pull_request.head.sha
           $prBase = [string]$event.pull_request.base.sha
+          $runMerge = [string]$env:GITHUB_SHA
           $nodeVersion = & node --version
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Node version' }
           $pnpmVersion = & pnpm --version
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve pnpm version' }
-          Evidence "checkout=$head parents=$($parents -join ' ') prHead=$prHead prBase=$prBase node=$nodeVersion pnpm=$pnpmVersion"
-          if ($parents.Count -ne 3 -or $parents[0] -ne $head -or $parents[1] -ne $prBase -or $parents[2] -ne $prHead) {
+          Evidence "checkout=$head parents=$($parents -join ' ') prHead=$prHead prBase=$prBase runMerge=$runMerge node=$nodeVersion pnpm=$pnpmVersion"
+          # GITHUB_SHA independently binds this run's tree and both merge parents.
+          # Event base is provenance from a separate snapshot, not the expected run parent.
+          if ($prBase -notmatch '^[0-9a-f]{40}$' -or $head -ne $runMerge -or $parents.Count -ne 3 -or $parents[0] -ne $runMerge -or $parents[2] -ne $prHead) {
             throw 'Checkout is not the declared PR synthetic merge of base and head'
           }
           $names = @(
@@ -187,6 +190,10 @@ jobs:
             throw 'Unexpected executed top-level cases or failing/TODO results'
           }
           Evidence 'Unselected skips are not coverage. Completion is not child-termination or unasserted cleanup proof.'
+
+      - name: Test immutable checkout identity
+        shell: pwsh
+        run: node --experimental-strip-types --test tests/ci-merge-base-identity.test.ts
 
       - name: Upload focused Windows routing log
         if: always()

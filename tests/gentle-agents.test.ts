@@ -7189,6 +7189,29 @@ test("subagent_run does not warn about a key that matches another discovered age
 	assert.equal(dialogs.filter((message) => /did not match any agent/.test(message)).length, 0, "a key naming a discovered agent is never unmatched");
 });
 
+// Issue #2430: review-refuter and review-validator are provider review roles
+// routed by key (gentle-pi#2271), never agent files, so the launch warning must
+// not report them as unmatched; a real typo next to them is still named.
+test("subagent_run never reports provider review routing keys as unmatched", async (t) => {
+	const child = fakePi();
+	const runtime = deps();
+	captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "provider-review-roles";
+	mkdirSync(join(cwd, ".pi"), { recursive: true });
+	const subagents = join(cwd, ".pi", "subagents.json");
+	t.after(() => rmSync(subagents, { force: true }));
+	writeFileSync(subagents, `${JSON.stringify({ model_profiles: { "review-refuter": { model: "openai/alpha" }, "review-validator": { model: "openai/beta" }, explor: { model: "openai/gamma" } } })}\n`);
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const warnings = dialogs.filter((message) => /did not match any agent/.test(message));
+	assert.equal(warnings.length, 1, "the typo is still reported once");
+	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.doesNotMatch(warnings[0]!, /review-refuter|review-validator/);
+});
+
 // Issue #2400: a model_profiles key that matches no discovered agent and has no
 // did-you-mean suggestion (a typo such as `explor`) was still silent, because
 // the launch warning only named keys suggesting the launched agent. The first

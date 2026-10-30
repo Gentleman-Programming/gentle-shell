@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 import { canonicalWriterRoot, normalizeSurfaceEntry, overlappingSurfaces, surfacesOverlap, WriterSurfaceRegistry, writerSurfaceConflictMessage } from "../lib/writer-surfaces.ts";
@@ -170,19 +170,21 @@ test("overlappingSurfaces lists every overlapping pair; an empty list claims eve
 
 test("the registry reports live overlapping writers in the same root only and releases them", () => {
 	const registry = new WriterSurfaceRegistry();
-	registry.claim("task-a", "/repo", ["lib/a.ts", "tests/a.test.ts"]);
-	registry.claim("task-b", "/repo", ["lib/b.ts"]);
-	registry.claim("task-c", "/repo-worktrees/feature", ["lib/a.ts"]);
-	assert.deepEqual(registry.conflicts("/repo", ["docs/x.md"]), []);
-	assert.deepEqual(registry.conflicts("/repo", ["lib/*.ts"]), [
-		{ taskId: "task-a", root: "/repo", pairs: [["lib/*.ts", "lib/a.ts"]] },
-		{ taskId: "task-b", root: "/repo", pairs: [["lib/*.ts", "lib/b.ts"]] },
+	const repo = resolve("/repo");
+	const feature = resolve("/repo-worktrees/feature");
+	registry.claim("task-a", repo, ["lib/a.ts", "tests/a.test.ts"]);
+	registry.claim("task-b", repo, ["lib/b.ts"]);
+	registry.claim("task-c", feature, ["lib/a.ts"]);
+	assert.deepEqual(registry.conflicts(repo, ["docs/x.md"]), []);
+	assert.deepEqual(registry.conflicts(repo, ["lib/*.ts"]), [
+		{ taskId: "task-a", root: repo, pairs: [["lib/*.ts", "lib/a.ts"]] },
+		{ taskId: "task-b", root: repo, pairs: [["lib/*.ts", "lib/b.ts"]] },
 	]);
 	assert.deepEqual(registry.conflicts("/elsewhere", ["lib/a.ts"]), [], "different worktree roots never conflict");
-	assert.deepEqual(registry.conflicts("/repo/", ["lib/b.ts"]).map(conflict => conflict.taskId), ["task-b"], "roots compare resolved");
+	assert.deepEqual(registry.conflicts(`${repo}/`, ["lib/b.ts"]).map(conflict => conflict.taskId), ["task-b"], "roots compare resolved");
 	assert.equal(registry.release("task-b"), true);
 	assert.equal(registry.release("task-b"), false, "release is idempotent");
-	assert.deepEqual(registry.conflicts("/repo", ["lib/b.ts"]), []);
+	assert.deepEqual(registry.conflicts(repo, ["lib/b.ts"]), []);
 	assert.equal(registry.size, 2);
 });
 

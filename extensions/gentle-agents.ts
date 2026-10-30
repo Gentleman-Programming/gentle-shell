@@ -28,7 +28,7 @@ import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -236,15 +236,15 @@ export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "a
 
 const workDescriptorSchema = {
 	type: "object", additionalProperties: false,
-	description: "Explicit non-authoritative classification, not child context. Topic requires area; limits are UTF-8 bytes. No nested tasks.",
+	description: "Non-authoritative, not child context; topic requires area; UTF-8 byte limits. No nested tasks.",
 	properties: {
 		area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
 		tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
 		refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
 			type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
 				kind: { type: "string", enum: ["issue", "pr", "task"] },
-				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo; not a URL or inferred identity." },
-				id: { type: "string", maxLength: 256, description: "Canonical positive decimal issue/PR ID or opaque historical task ID; never a peer route." },
+				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo, not URL or inferred identity." },
+				id: { type: "string", maxLength: 256, description: "Issue/PR: canonical positive decimal; task: opaque historical ID. Never a peer route." },
 			},
 		} },
 	},
@@ -1996,7 +1996,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// inheriting and a matched key never warns. Keys are checked against every
 		// discovered agent, so a key naming another agent is never reported here.
 		if (ctx.hasUI) {
-			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			// Provider review roles are routed by key and never have an agent file.
+			const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discoverAgents(roots(ctx)).agents];
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, known);
 			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
 			if (nearMisses.length > 0) {
 				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
@@ -2270,19 +2272,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Publishing state.work with an explicit topic and no subject also refreshes Current from that topic; keep work.topic current when the task changes. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Work-state publication is mandatory for classified work: publish at session start and again on every task-topic change (objective plus work.topic/area) — a session whose task changed must not keep the previous publication; the catalog flags never-published peers. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic, unknown for legacy history. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. Classified work must publish objective and work.topic/area at session start and every task-topic change; never retain old task state. Catalog flags never-published peers. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
-			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
+			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
-					description: "Optional historical, non-authoritative classification; topic requires area. Text plus work JSON fits 2048 UTF-8 bytes. Exact duplicate tags/refs are rejected; no ref resolution or routing.",
+					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",
 					properties: {
 						...workDescriptorSchema.properties,
 						tasks: { type: "object", maxProperties: 8, propertyNames: { type: "string", maxLength: 256 },
 							additionalProperties: workDescriptorSchema,
-							description: "Exact actual owner-declared task IDs, at most 256 UTF-8 bytes; controls, surrogates and __proto__/prototype/constructor rejected. Root-only; nonempty tasks alone are valid. Replacement omitting tasks clears annotations." },
+							description: "Exact owner-declared task IDs, max 256 UTF-8 bytes; no controls, surrogates or __proto__/prototype/constructor. Root-only; nonempty tasks alone valid; replacement without tasks clears annotations." },
 					},
 				},
 			} }] },
@@ -2370,15 +2372,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		...orchestratorToolRenderers("list", expandHint),
-		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list. Peers doing classified work without ever publishing state are flagged; publication at session start and on every task-topic change is mandatory.",
+		description: "List other sessions advertised by the trusted local profile. Omit filter for the existing list; filter searches published classified work only: bounded, non-exhaustive, no authority, unknown reachability. Classified work must publish at session start and each task-topic change; flag peers doing classified work who never published state.",
 		parameters: Type.Object({
-			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
-			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
+			recipient_session_id: Type.Optional(Type.String({ description: "Exact peer routing ID." })),
+			cursor: Type.Optional(Type.String({ description: "Opaque peer catalog continuation; requires recipient_session_id." })),
 			filter: Type.Optional(Type.Object({
 				area: Type.Optional(Type.String()),
 				topic: Type.Optional(Type.String({ description: "Requires area." })),
 				tag: Type.Optional(Type.String()),
-				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, never state prose or history." })),
+				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, not state prose or history." })),
 				ref: Type.Optional(Type.Object({
 					kind: Type.Union([Type.Literal("issue"), Type.Literal("pr"), Type.Literal("task")]),
 					repository: Type.String({ description: "Exact public host/owner/repo scope." }),
@@ -2389,7 +2391,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					session_id: Type.String({ description: "Exact stable source owner session ID." }),
 					task_id: Type.Optional(Type.String({ description: "Actual task ID on the current catalog page, not child session ID." })),
 				}, { additionalProperties: false })),
-			}, { additionalProperties: false, description: "Explicit {} indexes classified work; criteria combine with AND." })),
+			}, { additionalProperties: false, description: "{} indexes classified work; criteria combine with AND." })),
 		}, { additionalProperties: false }),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const params = _params as { recipient_session_id?: string; cursor?: string; filter?: unknown };

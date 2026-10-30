@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { commitSliceReport, commitSliceToolResult, commitTargetDirectory, isGitCommitCommand } from "../lib/commit-slice-signal.ts";
 
@@ -46,19 +46,21 @@ test("isGitCommitCommand counts a git invocation that starts a shell segment, no
 });
 
 test("commitTargetDirectory follows git -C and a leading cd", () => {
-	assert.equal(commitTargetDirectory("git commit -m x", "/work/repo"), "/work/repo");
-	assert.equal(commitTargetDirectory("git -C ../other commit -m x", "/work/repo"), "/work/other");
-	assert.equal(commitTargetDirectory("cd /tmp/x && git commit -m x", "/work/repo"), "/tmp/x");
+	const repo = resolve("/work/repo");
+	assert.equal(commitTargetDirectory("git commit -m x", repo), repo);
+	assert.equal(commitTargetDirectory("git -C ../other commit -m x", repo), resolve(repo, "../other"));
+	assert.equal(commitTargetDirectory("cd /tmp/x && git commit -m x", repo), resolve(repo, "/tmp/x"));
 });
 
 // PR #2290 review: only a leading `cd <dir> &&` moved the count, so a commit after
 // `cd <dir>;` or a later `cd` counted the session cwd instead.
 test("commitTargetDirectory follows a cd that precedes the commit through ;, && or ||", () => {
-	assert.equal(commitTargetDirectory("cd /tmp/x; git commit -m x", "/work/repo"), "/tmp/x");
-	assert.equal(commitTargetDirectory("git add -A && cd pkg && git commit -m x", "/work/repo"), "/work/repo/pkg");
-	assert.equal(commitTargetDirectory("cd /tmp/x || exit 1; git commit -m x", "/work/repo"), "/tmp/x");
-	assert.equal(commitTargetDirectory("cd a && cd 'b c'\ngit -C d commit -m x", "/work/repo"), "/work/repo/a/b c/d");
-	assert.equal(commitTargetDirectory("git commit -m x && cd /tmp/x", "/work/repo"), "/work/repo", "a cd after the commit does not move it");
+	const repo = resolve("/work/repo");
+	assert.equal(commitTargetDirectory("cd /tmp/x; git commit -m x", repo), resolve(repo, "/tmp/x"));
+	assert.equal(commitTargetDirectory("git add -A && cd pkg && git commit -m x", repo), resolve(repo, "pkg"));
+	assert.equal(commitTargetDirectory("cd /tmp/x || exit 1; git commit -m x", repo), resolve(repo, "/tmp/x"));
+	assert.equal(commitTargetDirectory("cd a && cd 'b c'\ngit -C d commit -m x", repo), resolve(repo, "a/b c/d"));
+	assert.equal(commitTargetDirectory("git commit -m x && cd /tmp/x", repo), repo, "a cd after the commit does not move it");
 });
 
 test("a feature branch reports authored changed lines since the default branch, lock files excluded", async (t) => {

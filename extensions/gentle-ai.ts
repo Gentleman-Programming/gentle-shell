@@ -4107,8 +4107,9 @@ class RoutingTablePanel implements OverlayComponent {
 		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
 		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
 			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
-		const fullLabel = (id: RoutingTableButton) => ROUTING_TABLE_BUTTONS[id];
-		const shortLabel = (id: RoutingTableButton) => ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id];
+		const keyed = (id: RoutingTableButton, text: string) => `${id === "use" ? "u" : id === "default" ? "d" : "s"} · ${text}`;
+		const fullLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_BUTTONS[id]);
+		const shortLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id]);
 		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
 		let footer = "";
 		let footerColumn = 0;

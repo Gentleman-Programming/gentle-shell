@@ -1385,7 +1385,7 @@ test("models screen shows profiles as tabs with their scope, the orchestrator fi
 	assert.match(plain[3] ?? "", /current\s+Used in this session\. Default for new sessions\./);
 	assert.match(plain[5] ?? "", /▸ Orchestrator\s+openai-codex\/gpt-6\.1-sol\s+max/);
 	assert.match(plain.join("\n"), /Agent\s+Model ▾\s+Effort ▾\s+set every agent/);
-	assert.match(plain.join("\n"), /\[ Use in this session \]  \[ Make default \]  \[ Save \]\s+Saved/);
+	assert.match(plain.join("\n"), /\[ u · Use in this session \]  \[ d · Make default \]  \[ s · Save \]\s+Saved/);
 	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}s save {2}u use {2}d default {2}n new {2}m menu {2}esc close/);
 	assert.doesNotMatch(plain.join("\n"), /⋯/, "no ellipsis-like glyph: it reads as cut text");
 });
@@ -1443,8 +1443,8 @@ test("models screen pointer: hover uses selectedBg, and one click runs exactly o
 	assert.ok(!outside.some((line) => line.includes("Model for")), "a click outside a card closes it");
 
 	const results: Array<{ type: string; name?: string; saveFirst?: AgentModelConfig }> = [];
-	renderScreen([], [{ type: "click", ...screenAt(base, "[ Use in this session ]") }], results);
-	renderScreen([], [{ type: "click", ...screenAt(base, "[ Make default ]") }], results);
+	renderScreen([], [{ type: "click", ...screenAt(base, "[ u · Use in this session ]") }], results);
+	renderScreen([], [{ type: "click", ...screenAt(base, "[ d · Make default ]") }], results);
 	renderScreen([], [{ type: "click", ...screenAt(base, " nan ") }], results);
 	assert.deepEqual(results.map((result) => result.type), ["use-session", "apply-global", "load"]);
 
@@ -1520,7 +1520,7 @@ test("models screen fits narrow terminals without cutting text", () => {
 		}
 	}
 	const narrow = renderScreen([], [], [], { width: 60 }).map(stripAnsi).join("\n");
-	assert.match(narrow, /\[ Use here \]  \[ Default \]  \[ Save \]/, "short labels when the full ones do not fit");
+	assert.match(narrow, /\[ u · Use here \]  \[ d · Default \]  \[ s · Save \]/, "short labels when the full ones do not fit");
 });
 
 test("models screen offers only the effort levels each model supports and shows where Pi lands the rest", async () => {

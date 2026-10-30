@@ -1794,6 +1794,41 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
+/**
+ * Ordered policy seam for the model-initiated `bash` tool_call path
+ * (gentle-pi#405 work unit S1).
+ *
+ * `evaluateBashPolicies` runs these policies in list order and the first
+ * verdict (a non-undefined ToolCallEventResult) wins: a policy returning
+ * `undefined` allows the command to pass to the next policy, and an overall
+ * `undefined` means no policy objected. Future policies (package-manager,
+ * SQL) append entries here so evaluation order stays explicit and greppable
+ * through the stable `name` strings.
+ */
+interface BashCommandPolicy {
+	/** Stable, greppable identifier; tests pin the ordered list by name. */
+	name: string;
+	evaluate: (
+		command: string,
+		ctx: ExtensionContext,
+		events: ExtensionAPI["events"],
+		herdrLifecycle: HerdrConfirmationLifecycle,
+		yoloActive: boolean,
+		autoGate?: () => Promise<ToolCallEventResult | undefined>,
+		superYoloActive?: boolean,
+	) => Promise<ToolCallEventResult | undefined>;
+}
+
+const BASH_COMMAND_POLICIES: readonly BashCommandPolicy[] = [
+	{
+		name: "runtime-guardrails",
+		// Thin adapter preserving confirmCommand's async signature; the guard
+		// logic itself stays byte-identical inside confirmCommand.
+		evaluate: async (command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive) =>
+			confirmCommand(command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive),
+	},
+];
+
 // Tools whose `path` input names the file or directory they reach. The guard
 // sees only that input: a search scoped to a directory (grep over ".", with or
 // without a glob) still reads whatever the directory contains, and bash is not
@@ -2210,6 +2245,33 @@ async function confirmCommand(
 		reason:
 			"Gentle AI safety policy blocked the command because it was not confirmed.",
 	};
+}
+
+/**
+ * Evaluate the ordered bash command policies for a model-initiated `bash`
+ * tool call. Policies run in `BASH_COMMAND_POLICIES` order; the first policy
+ * to return a verdict terminates evaluation with that verdict, while an
+ * `undefined` from a policy defers to the remaining policies. `yoloActive`
+ * threads the session YOLO state through to every policy, and `autoGate`
+ * threads the Auto permission-mode gate the same way. The optional
+ * `policies` argument exists for tests and future composition; production
+ * callers use the default ordered list.
+ */
+async function evaluateBashPolicies(
+	command: string,
+	ctx: ExtensionContext,
+	events: ExtensionAPI["events"],
+	herdrLifecycle: HerdrConfirmationLifecycle,
+	yoloActive: boolean,
+	policies: readonly BashCommandPolicy[] = BASH_COMMAND_POLICIES,
+	autoGate?: () => Promise<ToolCallEventResult | undefined>,
+	superYoloActive = false,
+): Promise<ToolCallEventResult | undefined> {
+	for (const policy of policies) {
+		const verdict = await policy.evaluate(command, ctx, events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
+		if (verdict !== undefined) return verdict;
+	}
+	return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -10555,6 +10617,8 @@ export const __testing = {
 	isReversibleYoloCommand,
 	evaluateSuperYoloCommand,
 	yoloConfiguredRestriction,
+	BASH_COMMAND_POLICIES,
+	evaluateBashPolicies,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
 	nativeStartRejection,
@@ -11521,7 +11585,16 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
+		return await evaluateBashPolicies(
+			command,
+			ctx,
+			pi.events,
+			herdrLifecycle,
+			yoloActive,
+			BASH_COMMAND_POLICIES,
+			autoGate,
+			superYoloActive,
+		);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

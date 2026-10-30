@@ -1097,6 +1097,23 @@ test("relay progress callback surfaces slot lifecycle phases from materialize th
 	assert.deepEqual(phases, ["materializing", "reviewing", "prepared", "submitting", "submitted"]);
 });
 
+test("a throwing periodic progress callback never aborts the reviewer", async (t) => {
+	const fixture = harness(t);
+	let periodicCalls = 0;
+	const slowReviewer = (async (): Promise<InProcessReviewerOutcome> => {
+		await new Promise((resolve) => setTimeout(resolve, 1300));
+		return { kind: "text", text: REVIEWER_TEXT, reviewerModel: "openai/gpt-5" };
+	}) as typeof runInProcessReviewer;
+	const prepared = await prepareReviewHostRelaySlot(relayRequest(fixture), slowReviewer, (progress) => {
+		if (progress.phase === "reviewing" && (progress.elapsedMs ?? 0) > 0) {
+			periodicCalls++;
+			throw new Error("host UI disposed");
+		}
+	});
+	assert.ok(periodicCalls >= 1, "the periodic progress callback must have fired and thrown");
+	assert.ok(prepared, "the reviewer outcome survives a throwing progress callback");
+});
+
 test("relay group runner emits indexed progress across parallel reviewers", async (t) => {
 	const fixture = harness(t);
 	const progressEvents: Array<{ index: number; phase: string }> = [];

@@ -818,12 +818,16 @@ export async function prepareReviewHostRelaySlot(
 	let progressInterval: ReturnType<typeof setInterval> | undefined;
 	if (onProgress !== undefined) {
 		progressInterval = setInterval(() => {
-			onProgress({
-				phase: "reviewing",
-				lens,
-				role: preparedRequest.routingKey,
-				elapsedMs: Date.now() - startedAt,
-			});
+			// Progress is best-effort: a throwing host callback inside a timer would
+			// surface as an uncaughtException and abort the review it only reports on.
+			try {
+				onProgress({
+					phase: "reviewing",
+					lens,
+					role: preparedRequest.routingKey,
+					elapsedMs: Date.now() - startedAt,
+				});
+			} catch {}
 		}, 1000);
 		try { progressInterval.unref(); } catch {}
 	}

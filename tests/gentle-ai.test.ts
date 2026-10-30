@@ -4660,6 +4660,8 @@ async function openedScreen(fixture: ReturnType<typeof routingConsumerFixture>):
 
 const screenTabLine = (rendered: string) => rendered.split("\n")[1] ?? "";
 const screenWorkerRow = (rendered: string) => rendered.split("\n").find((line) => /│\s*worker\s/.test(line)) ?? "";
+const savedRoutingNotice = (rendered: string, name: string) =>
+	rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ").includes(`This table shows the saved "${name}"; this session's launches keep the routing they took. Use in this session adopts what you see.`);
 
 test("a profile frozen at startup carries ◉ and opens first after the default changes", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
@@ -4674,7 +4676,23 @@ test("a profile frozen at startup carries ◉ and opens first after the default 
 	assert.equal(selectedProfileTitle(rendered), "team");
 	assert.match(screenWorkerRow(rendered), /openai\/alpha/);
 	assert.match(rendered, /Used in this session\./);
+	assert.equal(savedRoutingNotice(rendered, "team"), false, "the saved routing matches the launch routing");
 	assert.equal(readFileSync(storePath, "utf8"), before);
+});
+
+test("a session profile edited in profiles.json after the freeze or the binding says its launches keep the older routing", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	freezeScreenSession(fixture);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	const frozen = await openedScreen(fixture);
+	assert.match(screenWorkerRow(frozen), /openai\/beta/);
+	assert.equal(savedRoutingNotice(frozen, "team"), true);
+
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
+	assert.equal(savedRoutingNotice(await openedScreen(fixture), "team"), true);
 });
 
 test("an Enter binding opens on its profile while another is the default (#2451)", async (t) => {

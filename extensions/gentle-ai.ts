@@ -4522,6 +4522,7 @@ function routingScreenNotices(
 	file: AgentProfilesFile,
 	shownName: string,
 	sessionBoundName: string | undefined,
+	launchRouting?: AgentModelConfig,
 ): string[] {
 	const notices: string[] = [];
 	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
@@ -4533,6 +4534,14 @@ function routingScreenNotices(
 	}
 	if (sessionBoundName !== undefined && !hasOwnProfile(file.profiles, sessionBoundName)) {
 		notices.push(`This session launches with "${sessionBoundName}", which is no longer in profiles.json; its launches keep that routing.`);
+	}
+	// The table shows the saved profile; the session's launches keep the routing
+	// they took at the freeze or the binding. Both sides compare role routes only.
+	const roleRoutes = (config: unknown) => JSON.stringify(Object.entries(normalizeModelConfig(config) ?? {})
+		.filter(([key]) => !isProfileOrchestratorKey(key)).sort(([a], [b]) => a.localeCompare(b)));
+	if (shownName === sessionBoundName && launchRouting !== undefined && hasOwnProfile(file.profiles, shownName)
+		&& roleRoutes(file.profiles[shownName]) !== roleRoutes(launchRouting)) {
+		notices.push(`This table shows the saved "${shownName}"; this session's launches keep the routing they took. Use in this session adopts what you see.`);
 	}
 	const roots = {
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
@@ -5651,8 +5660,6 @@ async function openProfilesPanelLoop(
 	if (!store) return;
 	const { path } = store;
 	let file = store.file;
-	// The profile this session launches with, bound or frozen: the tab marked ◉.
-	const sessionBoundName = () => sessionLaunchProfile(ctx)?.name;
 	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
 	let selectedName = initialSelectedName
 		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
@@ -5680,12 +5687,13 @@ async function openProfilesPanelLoop(
 			return { error };
 		}
 		selectedName = name;
-		const boundName = sessionBoundName();
+		// The profile this session launches with, bound or frozen: the tab marked ◉.
+		const launch = sessionLaunchProfile(ctx);
 		return {
 			file,
-			sessionBoundName: boundName,
+			sessionBoundName: launch?.name,
 			pinWinner: pinWinner(),
-			notices: routingScreenNotices(ctx, file, name, boundName),
+			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles),
 			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
 		};
 	};
@@ -5725,15 +5733,15 @@ async function openProfilesPanelLoop(
 			}
 			const shown = selectedName;
 			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
-			const boundName = sessionBoundName();
+			const launch = sessionLaunchProfile(ctx);
 			const result = await step(() => showRoutingTablePanel(ctx, {
 				name: shown,
 				config: draftOverride ?? stored,
 				file,
-				sessionBoundName: boundName,
+				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
-				notices: routingScreenNotices(ctx, file, shown, boundName),
+				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles),
 				switchProfile,
 			}));
 			draftOverride = undefined;

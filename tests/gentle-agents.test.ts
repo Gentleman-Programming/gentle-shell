@@ -6638,7 +6638,7 @@ test("monitor delivers monitor-specific native wake text (#2384)", async () => {
 		);
 		const wake = sent.find((entry) => entry.message.customType === "gentle-agents.wake");
 		assert.ok(wake);
-		assert.equal(wake.message.content, "Review the delivered monitor events and continue.");
+		assert.equal(wake.message.content, "Review the delivered monitor notice and continue.");
 	} finally {
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();
@@ -6647,7 +6647,7 @@ test("monitor delivers monitor-specific native wake text (#2384)", async () => {
 
 for (const [kind, pattern] of [
 		["job", /background job exit notice/],
-		["monitor", /Monitor events/],
+		["monitor", /monitor notice/],
 		["mixed", /^\[System-generated Gentle Agents notification, not written by the user\] Output was delivered/],
 	] as Array<[string, RegExp]>) {
 	test(`claude-bridge ${kind} wake text names the delivered kind and stays hidden (#2384)`, async () => {
@@ -6686,6 +6686,38 @@ for (const [kind, pattern] of [
 		}
 	});
 }
+
+test("a run that consumes the owed wake does not leak its kind into the next wake (#2384)", async () => {
+	const { pi, tools, fire, sent } = fakePi("openai");
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make test", label: "test" }, undefined, undefined, ctx);
+		await fire("before_agent_start", ctx, { type: "before_agent_start", prompt: "go", systemPrompt: "base", systemPromptOptions: {} });
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		await tick();
+		assert.equal(sent.filter((e) => e.message.customType === "gentle-agents.wake").length, 0, "prompt start holds the wake");
+		await fire("agent_start", ctx);
+		await fire("agent_end", ctx);
+		await fire("agent_settled", ctx);
+		await tick();
+		await tools.get("monitor")!.execute("m1", { command: "tail -f app.log", timeout_seconds: 60 }, undefined, undefined, ctx);
+		jobs.runs[1]!.onData(Buffer.from("EVENT 1\n"));
+		timers.run(200);
+		await jobIo();
+		await eventually(() => sent.some((e) => e.message.customType === "gentle-agents.wake"), "wake must be dispatched");
+		const wakes = sent.filter((e) => e.message.customType === "gentle-agents.wake").map((e) => e.message.content);
+		assert.deepEqual(wakes, ["Review the delivered monitor notice and continue."]);
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
 
 test("nativeParentWakeText maps single and mixed delivery kinds distinctly (#2384)", () => {
 	assert.equal(nativeParentWakeText(new Set(["subagent"])), WAKE_TEXT_SUBAGENT);

@@ -104,7 +104,7 @@ type WakeTextKey = "subagent" | "job" | "monitor" | "output";
 const PARENT_WAKE_BODIES: Record<WakeTextKey, string> = {
 	subagent: "Subagent output was delivered to this session above. Review it and continue.",
 	job: "A background job exit notice was delivered to this session above. Review it and continue.",
-	monitor: "Monitor events were delivered to this session above. Review it and continue.",
+	monitor: "A monitor notice was delivered to this session above. Review it and continue.",
 	output: "Output was delivered to this session above. Review it and continue.",
 };
 const parentWakeText = (key: WakeTextKey): string => `${PARENT_WAKE_PREFIX} ${PARENT_WAKE_BODIES[key]}`;
@@ -122,7 +122,7 @@ export type WakeDeliveryKind = "subagent" | "job" | "monitor";
 
 export const WAKE_TEXT_SUBAGENT = "Review the delivered subagent output and continue.";
 export const WAKE_TEXT_JOB = "Review the background job's exit notice and continue.";
-export const WAKE_TEXT_MONITOR = "Review the delivered monitor events and continue.";
+export const WAKE_TEXT_MONITOR = "Review the delivered monitor notice and continue.";
 export const WAKE_TEXT_OUTPUT = "Review the delivered output and continue.";
 export const NATIVE_PARENT_WAKE_TEXT = WAKE_TEXT_SUBAGENT;
 
@@ -1262,6 +1262,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		wakeVisibilityWarning = false;
 		parentRunActive = false;
 		wakeOwed = false;
+		pendingWakeKinds.clear();
 		endPromptStart();
 		cancelBoundaryFlush?.();
 		cancelBoundaryFlush = undefined;
@@ -1334,6 +1335,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = true;
 		// The run carries everything stored while the parent was idle.
 		wakeOwed = false;
+		pendingWakeKinds.clear();
 		endDeliveryRetry();
 		deliveryRetries = 0;
 		endPromptStart();

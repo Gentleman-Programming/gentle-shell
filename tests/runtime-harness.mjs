@@ -1048,7 +1048,7 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"] },
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "subagent_parent_message"] },
 			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(

@@ -5,9 +5,9 @@ import test from "node:test";
 
 const agents = join(process.cwd(), "assets", "agents");
 const roles: Record<string, string[]> = {
-	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"],
-	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save"],
-	"gentle-ai-verify.md": ["read", "grep", "find", "bash"],
+	"gentle-ai-explore.md": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "subagent_parent_message"],
+	"gentle-ai-worker.md": ["read", "grep", "find", "edit", "write", "bash", "mem_save", "subagent_parent_message"],
+	"gentle-ai-verify.md": ["read", "grep", "find", "bash", "subagent_parent_message"],
 };
 
 function tools(file: string): string[] {
@@ -26,11 +26,26 @@ function tools(file: string): string[] {
 	return result;
 }
 
-test("generic ODD agents declare exact role tool allowlists without child delegation", () => {
+const REQUIRED_CAPABILITY_POLICY = [
+	"## Required capability check",
+	"",
+	"Before starting, compare every explicitly required step and evidence source with what your active tools can actually do. If a required step has no supported route, stop before attempting it; do not approximate it with a weaker or unrelated tool, inspect binary or internal storage formats, invent path syntax, or claim evidence you could not obtain. Continue only independent in-scope steps that remain useful, and mark impossible steps as blocked or unverified under your return contract.",
+	"",
+	"Return a structured capability-gap result that names the missing operation or tool, lists the required steps you could not complete, records independent work actually completed, and suggests a route that has the needed capability. For background tasks, send that handoff to the parent immediately with `subagent_parent_message`. Do not report the task as complete while a required step remains impossible.",
+].join("\n");
+
+test("generic ODD agents declare exact role tool allowlists without child-task access", () => {
 	for (const [file, expected] of Object.entries(roles)) {
 		assert.ok(existsSync(join(agents, file)), `${file} must exist`);
 		assert.deepEqual(tools(file), expected);
-		assert.ok(tools(file).every(tool => !tool.startsWith("subagent_")));
+		assert.deepEqual(tools(file).filter(tool => tool.startsWith("subagent_")), ["subagent_parent_message"]);
+	}
+});
+
+test("generic ODD agents share an early capability-gap handoff contract", () => {
+	for (const file of Object.keys(roles)) {
+		const source = readFileSync(join(agents, file), "utf8").replace(/\r\n?/g, "\n");
+		assert.ok(source.includes(REQUIRED_CAPABILITY_POLICY), `${file} must use the shared capability-gap policy`);
 	}
 });
 
@@ -45,6 +60,8 @@ test("ODD explorer and verifier remain read-only while writer is bounded", () =>
 	const worker = readFileSync(join(agents, "gentle-ai-worker.md"), "utf8");
 	assert.match(worker, /exact allowed edit surfaces/);
 	assert.match(worker, /Work-unit commit decisions and the independent RDD review lifecycle remain parent-owned/);
+	assert.match(worker, /Never create, delegate, inspect, or manage child tasks/);
+	assert.ok(worker.includes("`subagent_parent_message` is allowed only for the required capability-gap handoff"));
 });
 
 test("economical explorer retrieves web evidence directly without broader child authority", () => {

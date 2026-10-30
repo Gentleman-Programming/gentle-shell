@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>
-    <a href="https://gentle-ai.gentlemanprogramming.com/">Website</a>
+    <a href="https://gentlemanprogramming.com/">Website</a>
     &nbsp;·&nbsp;
     <a href="#get-started">Quickstart</a>
     &nbsp;·&nbsp;
@@ -98,9 +98,9 @@ Say what you need once, then keep moving. el Gentleman helps turn intent into cl
 
 <img width="100%" src="docs/assets/diagrams/odd-workflow.svg" alt="Organic Driven Development as seven numbered steps in one left-to-right flow: Authorize, Explore, and Resolve uncertainty to understand; Classify forks so small work stays light while substantial work gets step five, Track, with one feature document; both paths converge on Implement task by task and then Close with verified proof, above a band noting that one feature document mirrored in Engram lets work resume across sessions">
 
-**Organic Driven Development (ODD)** is the everyday path: the agent explores before changing anything, clarifies only real decisions, and keeps small understood work small. Substantial, authorized work gets one recoverable feature document — mirrored in memory when available — so progress, evidence, and the next step survive an interruption; behavior changes are test-first by default when a runnable test applies.
+**Organic Driven Development (ODD)** is the everyday path: questions, reviews and proposals stay read-only until you ask for a change; the agent explores before changing anything, clarifies only real decisions, and keeps small understood work small. Substantial, authorized work gets one recoverable feature document — mirrored in memory when available — so progress, evidence, and the next step survive an interruption; behavior changes are test-first by default when a runnable test applies.
 
-Tasks are sized by understanding, risk, and resumability: work you could finish from the request and `git diff` alone runs inline, with no subagents and no task document. The feature document quotes your spec verbatim, and every handoff points at it instead of paraphrasing it, so exact strings, error messages, and examples reach the workers intact.
+Tasks are sized by understanding, risk, and resumability: work that is understood, touches no high-risk item, and could be finished from the request and `git diff` alone runs inline, with no subagents and no task document. Work becomes large only when it can't be resumed from the diff — several sessions, external waits, or requirements too long to survive compaction — never because of its size. The feature document quotes your spec verbatim, and every handoff points at it instead of paraphrasing it, so exact strings, error messages, and examples reach the workers intact.
 
 **[Docs →](docs/readme-reference.md#organic-driven-development)**
 
@@ -143,7 +143,7 @@ Review the exact change, not a moving target. Native review keeps one candidate 
 
 Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
-> ℹ️ **RDD is opt-in:** enable native receipt-driven development only through an explicit `/gentle:review-mode enable` decision. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+> ℹ️ **RDD is optional and on by default:** turn native receipt-driven development off anytime with `/gentle:review-mode disable` (this clone) or `gentle-ai review mode disable` (machine-wide); `/gentle:review-mode status` shows the current mode. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 <details>
 <summary><kbd>More</kbd> <strong>Reviewer transport</strong> — how review completions follow Pi's transport setting</summary>
@@ -355,6 +355,9 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 | Gentle Todo | A plan card that turns amber when the model lets it go stale. |
 | Subscription usage | Per-window meters and resets for supported provider accounts. |
 | Gentle Stats | `/gentle:stats` shows local usage history: activity heatmap, tokens, cost, streaks, and per-model share. |
+| Gentle Design | Ask for a design in plain language, or run `/gentle:design <brief>`: the session model writes several self-contained HTML design directions to `design/<slug>/`, with any provider, and the canvas opens on its own. `open` shows them side by side on a local canvas, where a comment on any element, optionally with a pasted screenshot of an animation or transition state, is saved to `comments.json` and sent to the session now or in one batch; `stop` closes it. `sync` captures the project's tokens in `design/system.md` and `design/system.html`, which later designs follow and the canvas shows first; it runs on its own before the first design when the project has design sources, and the model warns when they changed since. `implement <slug>/<artboard>` (or the canvas Implement button) hands an artboard and its open comments to the session to build in the project's real stack, tracked in the design's linked ODD feature when it has one; the canvas marks it as the chosen direction, shows its handoff state live, and offers Compare with the running app once it is implemented. [Details](docs/gentle-shell.md#gentle-design). |
+| Gentle Music | `/gentle:music [mood]` opens the gentle-stream player full screen; `b` returns to Pi with the music playing. `next`, `pause`, `play`, `stop`, and `status` control it in place. [Details](docs/gentle-music.md). |
+| Gentle Voice | Optional local dictation: `/gentle:voice` downloads Parakeet once, then pastes what you say into the draft without sending it. [Details](docs/voice.md). |
 | Gentle notices | Gentle AI calls and review reminders as cards in the transcript. |
 
 Cross-orchestrator messages appear as compact `🤖 Sender → 🤖 Recipient` cards with single-row headings. Expand a card to inspect available identifiers and reasons. **Message queued** means queued, not delivered or read; long names are clipped to fit narrow terminals.
@@ -378,7 +381,7 @@ The first-party `nan` provider is included; no third-party provider package is r
 - **Streaming:** Pi streams chat completions through its OpenAI-compatible provider.
 - **Model discovery:** Model discovery intersects NaN's authenticated `/v1/models` response with a maintained subset of known chat IDs from the [official model documentation](https://nan.builders/docs/models); unknown and non-chat IDs are omitted. A successful response with no known chat IDs stays empty. Documented context, reasoning, and text/image capabilities are preserved with conservative numeric bounds for abbreviated limits; audio input is not advertised by Pi.
 - **Output caps:** The provider configures `maxTokens` caps rather than claiming undocumented model maxima: 32,768 for GLM 5.3, GLM 5.3 Flash, and MiMo; 16,384 for DeepSeek V4 Flash; 65,536 for Gemma 4 and Qwen 3.6; and 131,000 for Qwen 3.8 Flash (NaN documents 131K). Reasoning shares the output budget.
-- **Offline fallback:** Before a successful refresh, all seven documented chat models are available as the offline fallback in `/gentle:models`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, and `qwen3.6`. This fallback declares documented support, not proof of access for your key. Once refreshed, the successful live key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh. Changing credentials resets the catalog to the full documented fallback until discovery succeeds for the new key.
+- **Offline fallback:** Before a successful refresh, all seven documented chat models are available as the offline fallback in `/gentle:profiles`: `glm5.3`, `deepseek-v4-flash`, `glm5.3-flash`, `qwen3.8-flash`, `mimo-v2.6-flash`, `gemma4`, and `qwen3.6`. This fallback declares documented support, not proof of access for your key. Once refreshed, the successful live key-scoped list remains authoritative (including an empty list), even offline or after a failed refresh. Changing credentials resets the catalog to the full documented fallback until discovery succeeds for the new key.
 - **Not included:** NaN MCP search and media bridges are not included.
 
 Thinking levels follow NaN's [reasoning contract](https://nan.builders/docs/models):
@@ -582,7 +585,7 @@ gentle-shell upgrade --rollback
 - **Main channel:** On the main channel it rebuilds Gentle AI and Gentle Shell from the latest `main` commits (only what changed) and needs pnpm and Go (a Go older than the minimum is replaced, for the build only, by the pinned Go the installer left in its own folder); switching back to release restores the pinned Gentle AI binary. When the Gentle AI build fails but Gentle Shell moved, the new Gentle Shell is still installed and the command exits with an error asking you to run `gentle-shell upgrade --channel main` again. The retry rebuilds Gentle AI with the new Shell's code, and finishes once the cause of the original error is resolved.
 - **Your Pi:** With pnpm 11, the updated Gentle Shell may run a newer Pi that pnpm puts next to it (always at least the minimum); your own Pi is never changed.
 - **Bundled install:** A bundled install (the web installer's own Node, pnpm and Pi) follows the release channel only: it installs the new version beside the current one, verifies it, then switches, keeping the previous version for `--rollback`. On release, once the latest release publishes the bundled distribution, `upgrade` moves a global pnpm or npm installation to the bundled one and asks once before removing the old global `gentle-pi`.
-- **`update` vs `upgrade`:** `gentle-shell update` is a different command: it is Pi's own package update. In a bundled install Pi ships pinned with Gentle Shell, so updating Pi itself runs `gentle-shell upgrade` instead.
+- **`update` vs `upgrade`:** `gentle-shell update` updates the Pi this launcher runs. A verified source-linked Shell updates its checkout's local Pi without replacing the link; it requires a declared npm/pnpm (pnpm may be newer than its pin), one matching lockfile and a single-project Git root ([requirements](docs/gentle-shell.md#updating-pi-safely)). In a bundled install Pi ships pinned with Gentle Shell, so updating Pi itself runs `gentle-shell upgrade` instead. `gentle-shell update --latest` (also with `pi`, `self`, `--self` or `--all`) installs the newest published stable Pi with the active Gentle Shell instead, without the release's verified lockfile: it first warns that Gentle Shell features relying on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies that Pi, then verifies and switches to it like `upgrade`, keeping the previous version for `gentle-shell upgrade --rollback`. Afterwards `gentle-shell upgrade` never downgrades that Pi: a release of the same Gentle Shell with an older verified Pi changes nothing, and a newer Gentle Shell release upgrades as usual.
 
 </details>
 

@@ -11,7 +11,7 @@ import { YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
 const ON_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
 const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
-const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
+const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — standing permission (current: ${state})`;
 
 // An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
 const isolatedConfigHomes: string[] = [];

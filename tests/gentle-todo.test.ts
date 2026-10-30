@@ -166,6 +166,7 @@ test("Todo keyboard scrolling targets the visible card after a cached sidebar br
 			const after = railLines();
 			assert.notDeepEqual(after, before, "DOWN changes the visible cached rail, not the hidden bottom widget");
 			assert.match(after.join("\n"), /↑↓ 4–/);
+			assert.match(after.join("\n"), /alt\+shift\+↑\/↓/, "scroll hint reflects alt+shift shortcuts");
 			await shortcuts.get("alt+shift+up")!.handler(ctx);
 			assert.deepEqual(railLines(), before, "UP restores the expanded viewport");
 		} finally {
@@ -496,6 +497,17 @@ test("the system prompt carries only a byte-stable todo block; the current list 
 	const finishedEvent = promptEvent();
 	await fire("before_agent_start", ctx, finishedEvent);
 	assert.equal(finishedEvent.systemPromptOptions.appendSystemPrompt, emptyEvent.systemPromptOptions.appendSystemPrompt, "finishing the list must not change the system prompt");
+});
+
+// weak-model-economy S1: small tasks skip the todo list (bench C-econ).
+test("the todo block exempts small tasks before the tracking rules", async () => {
+	const { pi, fire } = fakePi();
+	gentleTodo(pi, {});
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const event = promptEvent();
+	await fire("before_agent_start", ctx, event);
+	assert.ok(event.systemPromptOptions.appendSystemPrompt.startsWith("## Todo list\nA small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it,"));
 });
 
 /**

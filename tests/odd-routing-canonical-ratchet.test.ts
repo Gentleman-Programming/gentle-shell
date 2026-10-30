@@ -149,7 +149,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		canonical: "run a differential check",
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Differential check (PRESERVE):**" },
-			{ surface: EXTENSION, includes: "run a differential check" },
+			// weak-model-economy S2: the harness gates the check on shared code an unnamed command uses.
+			{ surface: EXTENSION, includes: "run one differential check" },
 		],
 	},
 	{

@@ -22,7 +22,7 @@ export interface ShellBarModel {
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
-	changes?: { files: number; added: number; deleted: number; notice?: string };
+	changes?: { files: number; added: number; deleted: number };
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -240,7 +240,6 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				changes?.files
 					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
 					: label("No captured changes"),
-				...(changes?.notice ? [theme.fg("warning", sanitizeStatus(changes.notice))] : []),
 				label("/gentle:changes"),
 			],
 		}]),
@@ -252,10 +251,8 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
 			],
 		}] : []),
-		...(model.jobs?.length ? [{
-			title: "Jobs",
-			lines: [...model.jobs].sort((a, b) => b.startedAt - a.startedAt).map((job) => value(sanitizeStatus(job.label))),
-		}] : []),
+		// Running jobs live in their own sidebar card (extensions/gentle-shell.ts
+		// registers the "jobs" rail part); the compact bar keeps the count.
 		{ title: "Integrations", lines: model.statuses.length
 			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
 			: [label("No status reported")] },
@@ -273,9 +270,9 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 const HEADER_BRAND = "✿ Gentle Shell";
 
 // Narrower than the width, widest first: dropping the profile, then the
-// effort, then the whole location keeps the brand and the bare model id
-// alive as long as anything can still share the row with the right-aligned
-// counters.
+// effort, then the whole location keeps the brand and the model alive.
+// Once location goes, restore effort if it fits before trying model-only
+// alongside the right-aligned counters.
 function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showModelDetails: boolean): string[][] {
 	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
 	const location = locationSegment(model, theme);
@@ -287,6 +284,7 @@ function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showMod
 		[brand, location, withProfile],
 		[brand, location, withEffort],
 		[brand, location, modelOnly],
+		...(model.effort ? [[brand, withEffort]] : []),
 		[brand, modelOnly],
 		[brand],
 	];
@@ -389,7 +387,7 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 		.map((stage) => presentation?.density === "minimal" ? stage.slice(1) : stage);
 	const minimalLeft = Math.max(0, leftStages.length - 2); // brand + bare model id, before dropping the model too
 	// One flat, ordered cascade — never a per-stage nested search — so the
-	// left group fully degrades (profile → effort → location) before usage
+	// left group fully degrades (profile → effort → location → restored effort) before usage
 	// ever gives anything up, and usage fully degrades (gauges → secondary
 	// windows → the whole segment) before ctx/cost is touched: every window
 	// with its gauge, then text-only, then the first window only, then gone.
@@ -427,7 +425,9 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	const targetWidth = Math.max(0, Math.floor(width));
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
 	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, paint);
-	const changesRow = changes?.files.length && presentation.visibility.changes !== false
+	// The row exists only while files are actually tracked; an unborn-only root
+	// is silence here (/gentle:changes explains the state on demand).
+	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [

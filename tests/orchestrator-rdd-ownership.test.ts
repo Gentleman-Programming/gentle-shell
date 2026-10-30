@@ -72,7 +72,7 @@ test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mir
 		rendered.includes("Receipt-driven development: unknown (native status unavailable)"),
 		"the default render must include the worst-case RDD status line",
 	);
-	assert.ok(Buffer.byteLength(rendered, "utf8") <= 9250, "the rendered parent prompt must stay within the 9,250 B core budget");
+	assert.ok(Buffer.byteLength(rendered, "utf8") <= 9300, "the rendered parent prompt must stay within the 9,300 B core budget");
 });
 
 test("static prompts retain ODD and delegated-work guidance without SDD", () => {

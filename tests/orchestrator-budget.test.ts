@@ -36,7 +36,9 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // Weak-model economy (small path reads one batch with no todo; item 1 excludes rebuildable dev/test data), measured in
 // gentle-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
 // 2026-10-22: 9,100 -> 9,250 B.
-const BUDGET_BYTES = 9250;
+// gentle-shell#348: the Skill Registry Protocol binds the parent's own inline path to the same SKILL.md read
+// (one clause, 35 B), user decision 2026-10-18: 9,250 -> 9,300 B after merging main's 9,250 economy.
+const BUDGET_BYTES = 9300;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [

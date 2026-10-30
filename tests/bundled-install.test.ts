@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import test, { after, type TestContext } from "node:test";
 import { crc32, gzipSync } from "node:zlib";
-import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, filterNpmrc, installVersion, nodeExecutable,
+import { activateVersion, activeVersion, applyPathEntry, claimPrefix, prefixRoot, distributionFiles, engramExecutable, ensureEngram, ensureLauncher, ensureRuntime, ensureUv, filterNpmrc, installMusicPlayer, installedMusicPlayer, installVersion, nodeExecutable, uvExecutable,
 	nodeRuntimeFiles, pathEntryPlan, pnpmEnvironment, prefixLayout, pruneVersions, removePathEntry, rollbackBundled, setupEnvironment, bundledNpmCommand, ensureNpmShim, upgradeBundled, userNpmrc, writeNpmrcAuth,
-	describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
+	publishedPi, upgradePiLatest, describePathReceipt, readPathReceipt, scheduleWindowsRemoval, writePathReceipt }
 	from "../scripts/bundled-install.mjs";
 
 // Real directories, modes, symlinks and uids need a POSIX host.
@@ -381,6 +381,166 @@ test("engramExecutable takes only the top-level engram from the tarball and engr
 	assert.throws(() => engramExecutable(tarGz([tarEntry("engram", { type: "2", link: "/bin/sh" })]), tarball), /Engram archive rejected/);
 	assert.throws(() => engramExecutable(tarGz([tarEntry("bin/engram", { data: engramBytes })]), tarball), /Engram archive rejected/);
 	assert.throws(() => engramExecutable(zip([["engram", exe]]), zipped), /Engram archive rejected/);
+});
+
+// S5: the /gentle:music offer. Only uv is a new runtime; it, the uv-managed
+// Python and gentle-stream all live inside the prefix.
+const UV = "0.13.6";
+const uvBytes = Buffer.from("#!/bin/sh\necho fixture uv\n");
+const uvUrl = `https://github.com/astral-sh/uv/releases/download/${UV}/uv-aarch64-apple-darwin.tar.gz`;
+const uvArchive = tarGz([
+	tarEntry("uv-aarch64-apple-darwin/", { type: "5" }),
+	tarEntry("uv-aarch64-apple-darwin/uvx", { data: Buffer.from("#!/bin/sh\n"), mode: "0000755" }),
+	tarEntry("uv-aarch64-apple-darwin/uv", { data: uvBytes, mode: "0000755" }),
+]);
+const PLAYER_ARCHIVE = "https://github.com/Gentleman-Programming/gentle-stream/archive/381290451544ad2ca3348a68a81b3056bdac73b7.tar.gz";
+// A uv fixture: `--version` answers the pin; `tool install` writes the
+// executable into UV_TOOL_BIN_DIR unless `fail(spec)` says the spec fails.
+function uvAdapters({ version = `uv ${UV} (fixture 2026-10-26 aarch64-apple-darwin)`, fail = (_spec: string): boolean => false, writes = "inside" }: { version?: string; fail?: (spec: string) => boolean; writes?: "inside" | "outside" | "none" } = {}) {
+	const calls: { downloads: string[]; runs: { command: string; args: string[]; cwd: string; env: Record<string, string>; timeout?: number }[] } = { downloads: [], runs: [] };
+	return {
+		calls,
+		adapters: {
+			artifact: (name: string) => {
+				assert.equal(name, "uv");
+				return { name, version: UV, maxBytes: 1 << 20, integrity: `sha256-${sha256(uvArchive)}`, url: uvUrl };
+			},
+			download: async (descriptor: { name: string }) => { calls.downloads.push(descriptor.name); return uvArchive; },
+			run: (command: string, args: string[], options: { cwd: string; env: Record<string, string>; timeout?: number }) => {
+				calls.runs.push({ command, args, ...options });
+				if (args.length === 1 && args[0] === "--version") return { status: 0, stdout: `${version}\n`, stderr: "" };
+				if (args[0] === "tool" && args[1] === "install") {
+					const spec = args.at(-1)!;
+					if (fail(spec)) return { status: 1, stdout: "", stderr: "error: Failed to build `pyfluidsynth`" };
+					// As uv does on POSIX: the executable in the tool's venv, linked from the bin folder.
+					if (writes !== "none") {
+						const target = writes === "inside" ? join(options.env.UV_TOOL_DIR, "gentle-stream", "bin", "gentle-stream") : join(dirname(options.cwd), "elsewhere");
+						mkdirSync(dirname(target), { recursive: true });
+						writeFileSync(target, "#!/bin/sh\n", { mode: 0o755 });
+						mkdirSync(options.env.UV_TOOL_BIN_DIR, { recursive: true });
+						symlinkSync(target, join(options.env.UV_TOOL_BIN_DIR, "gentle-stream"));
+					}
+					return { status: 0, stdout: "Installed 1 executable: gentle-stream\n", stderr: "" };
+				}
+				if (args[0] === "cache" && args[1] === "clean") return { status: 0, stdout: "", stderr: "" };
+				return { status: 1, stdout: "", stderr: "unexpected" };
+			},
+		},
+	};
+}
+
+test("prefixLayout keeps uv, the managed Python and the music player inside the prefix", () => {
+	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
+	const root = "/home/me/.gentle-shell";
+	assert.equal(layout.uvDir, `${root}/runtime/uv-${UV}`);
+	assert.equal(layout.uv, `${root}/runtime/uv-${UV}/uv`);
+	assert.equal(layout.music, `${root}/music`);
+	assert.equal(layout.gentleStream, `${root}/music/bin/gentle-stream`);
+	const windows = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, home: "C:\\Users\\me" });
+	assert.equal(windows.uv, `C:\\Users\\me\\AppData\\Local\\gentle-shell\\runtime\\uv-${UV}\\uv.exe`);
+	assert.equal(windows.gentleStream, "C:\\Users\\me\\AppData\\Local\\gentle-shell\\music\\bin\\gentle-stream.exe");
+});
+
+test("uvExecutable takes only <stem>/uv from the tarball and uv.exe from the zip, regular files only", () => {
+	assert.deepEqual(uvExecutable(uvArchive, { url: uvUrl }), uvBytes);
+	const zipped = { url: `https://github.com/astral-sh/uv/releases/download/${UV}/uv-x86_64-pc-windows-msvc.zip` };
+	const exe = Buffer.from("MZ uv");
+	assert.deepEqual(uvExecutable(zip([["uvx.exe", Buffer.from("MZ uvx")], ["uv.exe", exe], ["uvw.exe", Buffer.from("MZ uvw")]]), zipped), exe);
+	assert.throws(() => uvExecutable(tarGz([tarEntry("uv-aarch64-apple-darwin/uv", { type: "2", link: "/bin/sh" })]), { url: uvUrl }), /uv archive rejected/);
+	assert.throws(() => uvExecutable(tarGz([tarEntry("uv", { data: uvBytes })]), { url: uvUrl }), /uv archive rejected/);
+	assert.throws(() => uvExecutable(zip([["uv", exe]]), zipped), /uv archive rejected/);
+});
+
+posixTest("ensureUv publishes only the verified uv after running it, once", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters();
+	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), true);
+	assert.deepEqual(readdirSync(layout.uvDir).sort(), [".gentle-shell-runtime", "uv"]);
+	assert.deepEqual(readFileSync(layout.uv), uvBytes);
+	assert.equal(lstatSync(layout.uv).mode & 0o777, 0o700);
+	assert.equal(readFileSync(join(layout.uvDir, ".gentle-shell-runtime"), "utf8"), `${uvUrl}\n`);
+	assert.match(calls.runs[0]!.command, /\/runtime\/\.stage-[^/]+\/uv$/);
+	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), false, "reused");
+	assert.deepEqual(calls.downloads, ["uv"]);
+	// Another version's answer, or a tampered archive, publishes nothing.
+	for (const broken of [uvAdapters({ version: "uv 0.9.0" }).adapters, { ...uvAdapters().adapters, download: async () => Buffer.from("x") }]) {
+		const other = claimed().layout;
+		await assert.rejects(ensureUv({ layout: other, platform: "darwin", arch: "arm64", adapters: broken }), /uv|integrity|size/);
+		assert.deepEqual(readdirSync(other.runtime), []);
+	}
+});
+
+posixTest("installedMusicPlayer accepts only a player that resolves to a regular file inside music/", () => {
+	const { layout } = claimed();
+	assert.equal(installedMusicPlayer(layout), false, "missing");
+	mkdirSync(dirname(layout.gentleStream), { recursive: true });
+	const outside = join(mkdtempSync(join(tmpdir(), "gs-player-")), "gentle-stream");
+	writeFileSync(outside, "#!/bin/sh\n");
+	symlinkSync(outside, layout.gentleStream);
+	assert.equal(installedMusicPlayer(layout), false, "a link out of music/");
+	rmSync(layout.gentleStream);
+	const tool = join(layout.music, "tools", "gentle-stream", "bin", "gentle-stream");
+	mkdirSync(dirname(tool), { recursive: true });
+	writeFileSync(tool, "#!/bin/sh\n");
+	symlinkSync(tool, layout.gentleStream);
+	assert.equal(installedMusicPlayer(layout), true, "uv's link into music/tools");
+	rmSync(dirname(outside), { recursive: true, force: true });
+});
+
+posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefix and installs from the pinned archive", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters();
+	const out: string[] = [];
+	const env = { HOME: "/home/me", PATH: "/usr/bin", UV_TOOL_DIR: "/home/me/.local/share/uv/tools", UV_INDEX_URL: "https://example.invalid", VIRTUAL_ENV: "/venv", HTTPS_PROXY: "http://proxy:3128",
+		PYTHONUSERBASE: "/home/me/.pybase", PYTHONSTARTUP: "/home/me/startup.py", PIP_INDEX_URL: "https://pip.invalid" };
+	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture, out: (line: string) => out.push(line) });
+	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: true, installed: true });
+	const install = calls.runs.find((run) => run.args[0] === "tool")!;
+	assert.equal(install.command, layout.uv);
+	assert.deepEqual(install.args, ["tool", "install", "--python", "3.13", `gentle-stream[samples] @ ${PLAYER_ARCHIVE}`]);
+	assert.ok(!install.args.join(" ").includes("git+"), "an archive URL, so git is never needed");
+	assert.ok(install.cwd.startsWith(layout.root));
+	assert.equal(install.env.UV_TOOL_DIR, join(layout.music, "tools"));
+	assert.equal(install.env.UV_TOOL_BIN_DIR, join(layout.music, "bin"));
+	assert.equal(install.env.UV_PYTHON_INSTALL_DIR, join(layout.music, "python"));
+	assert.equal(install.env.UV_PYTHON_BIN_DIR, join(layout.music, "python", "bin"));
+	assert.equal(install.env.UV_CACHE_DIR, join(layout.music, "cache"));
+	assert.equal(install.env.UV_PYTHON, "3.13");
+	assert.equal(install.env.UV_PYTHON_PREFERENCE, "only-managed");
+	assert.equal(install.env.UV_NO_CONFIG, "1");
+	// The user's uv settings and virtualenv never reach it; the network settings do.
+	assert.equal(install.env.UV_INDEX_URL, undefined);
+	assert.equal(install.env.VIRTUAL_ENV, undefined);
+	for (const key of ["PYTHONUSERBASE", "PYTHONSTARTUP", "PIP_INDEX_URL"]) assert.equal(install.env[key], undefined, key);
+	assert.equal(install.env.HTTPS_PROXY, "http://proxy:3128");
+	assert.ok(out.length >= 2, "progress is reported");
+	assert.deepEqual(calls.runs.at(-1)!.args, ["cache", "clean"], "the download cache is emptied afterwards");
+	// Idempotent: a second call downloads and runs nothing.
+	const before = calls.runs.length;
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture }), { gentleStream: layout.gentleStream, samples: true, installed: false });
+	assert.equal(calls.runs.length, before);
+	assert.deepEqual(calls.downloads, ["uv"]);
+});
+
+posixTest("installMusicPlayer retries without the samples extra when it cannot be installed, and says so", async () => {
+	const { layout } = claimed();
+	const { calls, adapters: fixture } = uvAdapters({ fail: (spec) => spec.includes("[samples]") });
+	const out: string[] = [];
+	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture, out: (line: string) => out.push(line) });
+	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: false, installed: true });
+	assert.deepEqual(calls.runs.filter((run) => run.args[0] === "tool").map((run) => run.args.at(-1)), [`gentle-stream[samples] @ ${PLAYER_ARCHIVE}`, `gentle-stream @ ${PLAYER_ARCHIVE}`]);
+	assert.ok(out.some((line) => /without the samples extra/i.test(line) && /FluidSynth/.test(line)));
+	// Reused without samples too, so no retry loop on every /gentle:music.
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture }), { gentleStream: layout.gentleStream, samples: false, installed: false });
+});
+
+posixTest("installMusicPlayer fails clearly when uv cannot install the player at all", async () => {
+	// uv failing twice, no executable, or one that leaves <prefix>/music.
+	for (const fixture of [uvAdapters({ fail: () => true }), uvAdapters({ writes: "none" }), uvAdapters({ writes: "outside" })]) {
+		const { layout } = claimed();
+		await assert.rejects(installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture.adapters }), /gentle-stream/);
+		assert.equal(existsSync(join(layout.music, ".gentle-shell-music")), false);
+	}
 });
 
 test("nodeExecutable takes only node.exe from the Windows zip and only bin/node from the tarball", () => {
@@ -1173,6 +1333,117 @@ posixTest("upgradeBundled reports success with a warning when only pruning fails
 	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: [], warning: "older versions were not removed (EBUSY)" });
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
 	assert.match(lines.join("\n"), /Upgraded to Gentle Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
+});
+
+posixTest("upgradeBundled never downgrades a newer Pi installed with update --latest, and a newer Gentle Shell release still upgrades", async () => {
+	const { user, layout } = await activeInstall();
+	await installed(layout, [["4.1.0", "1.0.5"]]);
+	activateVersion(layout, "4.1.0-1.0.5");
+	const same = upgradeAdapters(layout, { release: { shell: "4.1.0", pi: "1.0.1" } });
+	const lines: string[] = [];
+	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: same.adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: false });
+	assert.deepEqual(lines, ["Gentle Shell 4.1.0 is current; Pi 1.0.5 (installed with 'gentle-shell update --latest') is newer than this release's verified Pi 1.0.1."]);
+	assert.deepEqual([same.calls.ensureRuntime.length, same.calls.verify.length, same.calls.loaded.length], [0, 0, 0]);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
+	const newer = upgradeAdapters(layout);
+	const upgraded = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: newer.adapters });
+	assert.equal(upgraded.id, "4.2.0-1.0.2");
+	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
+});
+
+function latestAdapters(layout: ReturnType<typeof prefixLayout>, { latestPi = "1.0.5", reported = { shell: "4.1.0", pi: latestPi } } = {}) {
+	const upgrade = upgradeAdapters(layout, { release: { shell: "4.1.0", pi: latestPi }, reported });
+	const pnpm = fakePnpm({ shell: "4.1.0", pi: latestPi });
+	const { latest: _latest, distribution: _distribution, ...rest } = upgrade.adapters;
+	return { calls: upgrade.calls, pnpm, adapters: { ...rest, install: { run: pnpm.run }, latestPi: async () => latestPi } };
+}
+
+posixTest("upgradePiLatest changes nothing when the active version already has the latest published Pi", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout, { latestPi: "1.0.1" });
+	const lines: string[] = [];
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.1", changed: false });
+	assert.deepEqual(lines, ["Pi 1.0.1 is already the latest published Pi."]);
+	assert.deepEqual([pnpm.runs.length, calls.ensureRuntime.length, calls.verify.length], [0, 0, 0]);
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("upgradePiLatest never downgrades when the latest published Pi is older than the active Pi", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout, { latestPi: "1.0.0" });
+	const lines: string[] = [];
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.1", changed: false });
+	assert.deepEqual(lines, ["Pi 1.0.1 is newer than the latest published Pi (1.0.0); nothing changed."]);
+	assert.deepEqual([pnpm.runs.length, calls.ensureRuntime.length, calls.verify.length], [0, 0, 0]);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("upgradePiLatest warns, installs the newest Pi without a lockfile beside the active version, verifies and switches current", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, calls, pnpm } = latestAdapters(layout);
+	const lines: string[] = [];
+	adapters.install.run = (command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
+		lines.push("<install>");
+		return fakePnpm({ shell: "4.1.0", pi: "1.0.5" }).run(command, args, options);
+	};
+	const result = await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
+	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: true, previous: "4.1.0-1.0.1", removed: ["4.0.0-1.0.0"] });
+	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
+	assert.deepEqual(lines, [
+		"warning: Pi 1.0.5 is newer than the Pi verified for this Gentle Shell release (1.0.1); it installs without the release's verified lockfile, and Gentle Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies it.",
+		"<install>",
+		"Installed Pi 1.0.5 with Gentle Shell 4.1.0 (from 4.1.0-1.0.1). Run 'gentle-shell upgrade --rollback' to switch back.",
+	]);
+	const folder = join(layout.versions, "4.1.0-1.0.5");
+	assert.equal(existsSync(join(folder, "pnpm-lock.yaml")), false);
+	for (const [name, text] of Object.entries(distributionFiles({ shell: "4.1.0", pi: "1.0.5" }))) assert.equal(readFileSync(join(folder, name), "utf8"), text, name);
+	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.1.0-1.0.5")]);
+	assert.equal(calls.verify[0].env.GENTLE_SHELL_VERIFY_VERSION, "4.1.0-1.0.5");
+	assert.equal(pnpm.runs.length, 0);
+});
+
+posixTest("upgradePiLatest installs with plain pnpm install, never the frozen lockfile", async () => {
+	const { user, layout } = await activeInstall();
+	const { adapters, pnpm } = latestAdapters(layout);
+	await upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters });
+	assert.equal(pnpm.runs.length, 1);
+	assert.equal(pnpm.runs[0].command, layout.node);
+	assert.equal(pnpm.runs[0].args[0], layout.pnpm);
+	assert.equal(pnpm.runs[0].args[1], "install");
+	assert.equal(pnpm.runs[0].args.includes("--frozen-lockfile"), false);
+	assert.deepEqual(pnpm.runs[0].args.slice(1), ["install", "--no-frozen-lockfile"]);
+	assert.equal(pnpm.runs[0].env.pnpm_config_store_dir, layout.store);
+});
+
+posixTest("upgradePiLatest leaves current untouched and removes the new folder when verification fails, and refuses a prerelease", async () => {
+	const { user, layout } = await activeInstall();
+	const wrong = latestAdapters(layout, { reported: { shell: "4.1.0", pi: "1.0.1" } });
+	await assert.rejects(upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters: wrong.adapters }), /reported.*current stays at 4\.1\.0-1\.0\.1/s);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.1");
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+	const beta = latestAdapters(layout, { latestPi: "1.1.0-beta.1" });
+	await assert.rejects(upgradePiLatest({ layout, home: user, shell: "4.1.0", platform: "darwin", arch: "arm64", env: {}, adapters: beta.adapters }), /latest published Pi.*rejected/);
+	assert.equal(beta.pnpm.runs.length, 0);
+	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
+});
+
+posixTest("publishedPi asks our pnpm for Pi's latest dist-tag with the prefix npmrc and accepts only an exact stable version", async () => {
+	const { layout } = claimed();
+	const runs: { command: string; args: string[]; env: Record<string, string> }[] = [];
+	const run = (stdout: string, status = 0) => async (command: string, args: string[], options: { env: Record<string, string> }) => {
+		runs.push({ command, args, env: options.env });
+		return { status, stdout, stderr: "" };
+	};
+	assert.equal(await publishedPi(layout, { platform: "darwin", env: {}, run: run("1.4.0\n") }), "1.4.0");
+	assert.equal(runs[0].command, layout.node);
+	assert.deepEqual(runs[0].args, [layout.pnpm, "view", "@earendil-works/pi-coding-agent@latest", "version"]);
+	assert.equal(runs[0].env.pnpm_config_npmrc_auth_file, layout.npmrc);
+	for (const stdout of ["1.4.0-rc.1\n", "", "v1.4.0\n", "1.4\n"]) await assert.rejects(publishedPi(layout, { platform: "darwin", env: {}, run: run(stdout) }), /rejected/, stdout);
+	await assert.rejects(publishedPi(layout, { platform: "darwin", env: {}, run: run("", 1) }), /exit 1/);
 });
 
 function rollbackAdapters(module: Record<string, unknown> = {}) {

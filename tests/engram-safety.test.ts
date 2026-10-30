@@ -30,6 +30,83 @@ const clean = (extra: Record<string, string> = {}) => {
 const classify = (input: Partial<Parameters<typeof shell.classifyEngramStartup>[0]> = {}) =>
 	shell.classifyEngramStartup({ env: {}, endpoint: REFUSED, core: true, coreVersion: CORE, ...input });
 
+test("shared Engram environment drops only session scratch temp paths", () => {
+	for (const platform of ["win32", "linux"]) {
+		for (const prefix of ["gp", "ga"]) {
+			const scratch = platform === "win32" ? `C:\\Temp\\${prefix}Ab12Z9\\` : `/tmp/${prefix}Ab12Z9/`;
+			const base = { TEMP: scratch, TMP: scratch, TMPDIR: scratch, PATH: "keep", OTHER: scratch };
+			assert.deepEqual(shell.sharedEngramEnv(base, platform), { ...(platform === "win32" ? { TEMP: "C:\\Temp", TMP: "C:\\Temp", TMPDIR: "C:\\Temp" } : {}), PATH: "keep", OTHER: scratch, ENGRAM_NO_UPDATE_CHECK: "1" });
+			assert.equal(base.TEMP, scratch, "does not mutate parent");
+		}
+		for (const chosen of ["/tmp/custom", "/tmp/gp12345", "/tmp/ga1234567", "/tmp/gp123456/child", "/tmp/gp12-456"]) {
+			assert.equal(shell.sharedEngramEnv({ TEMP: chosen }, platform).TEMP, chosen);
+		}
+	}
+	assert.deepEqual(shell.sharedEngramEnv({ Temp: "C:\\Temp\\gp123456\\gaAb12Z9\\", tMp: "D:/custom", tmpdir: "C:/chosen" }, "win32"),
+		{ Temp: "C:\\Temp", tMp: "D:/custom", tmpdir: "C:/chosen", ENGRAM_NO_UPDATE_CHECK: "1" });
+	for (const key of ["TMP", "TMPDIR"]) {
+		assert.deepEqual(shell.sharedEngramEnv({ [key]: "C:\\Temp\\gp123456" }, "win32"),
+			{ [key]: "C:\\Temp", TEMP: "C:\\Temp", ENGRAM_NO_UPDATE_CHECK: "1" });
+		assert.equal(shell.sharedEngramEnv({ [key]: "C:\\Temp\\gp123456", Temp: "D:\\chosen" }, "win32").Temp, "D:\\chosen");
+	}
+	for (const invalid of ["gp123456", "relative\\ga123456", "C:gp123456", "\\gp123456"]) {
+		assert.throws(() => shell.sharedEngramEnv({ TEMP: invalid }, "win32"), /absolute.*scratch/i);
+	}
+	assert.equal(shell.sharedEngramEnv({ tmp: "/tmp/gp123456" }, "linux").tmp, "/tmp/gp123456");
+});
+
+test("shared Engram environment detects Windows scratch after a trailing dot", () => {
+	assert.equal(shell.sharedEngramEnv({ TEMP: "C:\\Temp\\gp123456\\." }, "win32").TEMP, "C:\\Temp");
+});
+
+test("shared Engram environment detects POSIX scratch after child/..", () => {
+	assert.deepEqual(shell.sharedEngramEnv({ TMPDIR: "/tmp/gp123456/child/.." }, "linux"), { ENGRAM_NO_UPDATE_CHECK: "1" });
+});
+
+test("shared Engram environment refuses original Windows .. even when normalization hides it", () => {
+	assert.throws(() => shell.sharedEngramEnv({ TEMP: "C:\\Temp\\gp123456\\child\\.." }, "win32"), /absolute.*scratch/i);
+});
+
+test("shared Engram environment refuses scratch-shaped UNC share roots without looping", () => {
+	const script = `import assert from 'node:assert/strict';
+		import { sharedEngramEnv } from './lib/gentle-shell-bundled.ts';
+		assert.throws(() => sharedEngramEnv({ TEMP: ${JSON.stringify("\\\\server\\gp123456\\")} }, 'win32'), /absolute.*scratch/i);`;
+	const result = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--experimental-strip-types", "--input-type=module", "-e", script], { cwd: repository, encoding: "utf8", timeout: 3000 });
+	assert.equal(result.error, undefined);
+	assert.equal(result.status, 0);
+	assert.equal(result.stdout, "");
+	assert.equal(result.stderr, "");
+	assert.equal(shell.sharedEngramEnv({ TEMP: "\\\\server\\share\\gp123456\\gaAb12Z9\\" }, "win32").TEMP, "\\\\server\\share\\");
+	assert.equal(shell.sharedEngramEnv({ TEMP: "C:\\gp123456\\" }, "win32").TEMP, "C:\\");
+});
+
+test("shared Engram environment reaches an actual Windows Node child with explicit stable TEMP", { skip: process.platform !== "win32" }, () => {
+	const stable = "C:\\chosen-temp";
+	const scratch = `${stable}\\gp123456\\gaAb12Z9`;
+	const probe = `const os = require('node:os'); process.stdout.write(JSON.stringify({TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR, tmpdir: os.tmpdir()}));`;
+	// Set known ambient scratch only inside an isolated parent process. No files
+	// are created: neither chosen path needs to exist for this zero-write probe.
+	const script = `import { sharedEngramEnv } from './lib/gentle-shell-bundled.ts';
+		import { spawnSync } from 'node:child_process';
+		process.env.TEMP = ${JSON.stringify(scratch)};
+		const env = sharedEngramEnv({ TMPDIR: ${JSON.stringify(scratch)} });
+		const child = spawnSync(process.execPath, ['-e', ${JSON.stringify(probe)}], {env, encoding: 'utf8'});
+		process.stdout.write(child.stdout); process.stderr.write(child.stderr); process.exit(child.status ?? 99);`;
+	const result = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--experimental-strip-types", "--input-type=module", "-e", script], { cwd: repository, encoding: "utf8", timeout: 10000 });
+	assert.equal(result.error, undefined);
+	assert.equal(result.status, 0);
+	assert.equal(result.stderr, "");
+	assert.equal(result.stdout, JSON.stringify({ TEMP: stable, TMPDIR: stable, tmpdir: stable }));
+});
+
+test("shared Engram environment retains sanitization and detached spawn wiring", () => {
+	assert.deepEqual(shell.sharedEngramEnv({ ENGRAM_BIN: "chosen", ENGRAM_OTHER: "value", ENGRAM_NO_UPDATE_CHECK: "0", GH_TOKEN: "token", GITHUB_TOKEN: "token", HOME: "home", TEMP: "chosen" }),
+		{ HOME: "home", TEMP: "chosen", ENGRAM_NO_UPDATE_CHECK: "1" });
+	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	assert.match(launcher, /const env = sharedEngramEnv\(process\.env\);/);
+	assert.match(launcher, /spawn\(core, \["serve"\], \{ cwd: homedir\(\), env, detached: true, stdio: "ignore", windowsHide: true \}\)/);
+});
+
 test("nothing listening with a verified bundled core starts the shared server and reuses it through the default URL", () => {
 	assert.deepEqual(classify(), { policy: "allow", url: "http://127.0.0.1:7437", spawn: true });
 });

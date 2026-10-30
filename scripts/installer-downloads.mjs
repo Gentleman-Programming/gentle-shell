@@ -57,6 +57,23 @@ const engram = Object.freeze({
 });
 /** The Engram version the bundled install publishes under runtime/. */
 export const engramPinVersion = engram.version;
+// uv for the /gentle:music offer (installMusicPlayer), never part of the default
+// install: the astral-sh/uv release. Each sha256 and size comes from GitHub's
+// asset digests; every archive was downloaded and re-hashed before pinning.
+const uv = Object.freeze({
+	version: "0.13.6",
+	redirectHosts: engram.redirectHosts,
+	archives: Object.freeze({
+		"darwin-arm64": ["uv-aarch64-apple-darwin.tar.gz", "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472", 14235670],
+		"darwin-x64": ["uv-x86_64-apple-darwin.tar.gz", "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02", 17004934],
+		"linux-x64": ["uv-x86_64-unknown-linux-gnu.tar.gz", "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645", 16799024],
+		"linux-arm64": ["uv-aarch64-unknown-linux-gnu.tar.gz", "229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d", 15794886],
+		"win32-x64": ["uv-x86_64-pc-windows-msvc.zip", "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f", 15239500],
+		"win32-arm64": ["uv-aarch64-pc-windows-msvc.zip", "c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c", 15439263],
+	}),
+});
+/** The uv version the music offer publishes under runtime/. */
+export const uvPinVersion = uv.version;
 
 /** Fixed allowlist; callers cannot supply download URLs, checksums or commands. */
 export function artifactFor(name, platform, arch) {
@@ -76,6 +93,13 @@ export function artifactFor(name, platform, arch) {
 		return Object.freeze({ name, version: engram.version, platform, arch,
 			url: `https://github.com/Gentleman-Programming/engram/releases/download/v${engram.version}/engram_${engram.version}_${suffix}`,
 			integrity: `sha256-${sha256}`, size, maxBytes: size, redirectHosts: engram.redirectHosts });
+	}
+	if (name === "uv") {
+		const pin = Object.hasOwn(uv.archives, `${platform}-${arch}`) ? uv.archives[`${platform}-${arch}`] : null;
+		if (!pin) throw new Error("Unsupported acquisition target");
+		const [asset, sha256, size] = pin;
+		return Object.freeze({ name, version: uv.version, platform, arch, url: `https://github.com/astral-sh/uv/releases/download/${uv.version}/${asset}`,
+			integrity: `sha256-${sha256}`, size, maxBytes: size, redirectHosts: uv.redirectHosts });
 	}
 	if (name === "go") {
 		const pin = Object.hasOwn(go.archives, `${platform}-${arch}`) ? go.archives[`${platform}-${arch}`] : null;

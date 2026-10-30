@@ -27,6 +27,8 @@ export interface ChangesModel {
 	files: ChangedFile[];
 	added: number;
 	deleted: number;
+	/** Stored once per model build; the footer memo reads it every keystroke. */
+	digest?: string;
 }
 
 export interface ChangesSnapshot {
@@ -63,7 +65,7 @@ const HAS_RENAME_BRACES = /\{[^{}]* => [^{}]*\}/;
 const RENAME_ARROW = " => ";
 
 export function emptyChanges(): ChangesModel {
-	return { files: [], added: 0, deleted: 0 };
+	return { files: [], added: 0, deleted: 0, digest: EMPTY_CHANGES_DIGEST };
 }
 
 function renamedPath(path: string): string {
@@ -124,8 +126,41 @@ export function changesModel(changed: ChangedFile[]): ChangesModel {
 		files,
 		added: files.reduce((total, file) => total + file.added, 0),
 		deleted: files.reduce((total, file) => total + file.deleted, 0),
+		digest: changesDigest({ files, added: 0, deleted: 0 }),
 	};
 }
+
+// The footer Status memo asks "did any change move?" on every keystroke, so
+// the answer must be O(1) to read: the model stores this digest once per
+// build (changesModel/emptyChanges) and consumers read the stored field.
+// It is a 64-bit FNV-1a roll over every per-file tuple the renderer consumes
+// (path, status, counts, diffRevision, countsUnavailable), so counts alone
+// cannot miss a same-count edit. A hash collision could only skip one
+// refresh until the next change moves the digest again -- it never renders a
+// wrong picture -- but it is a probabilistic signal, not an exact one.
+function fnv1a(hash: number, text: string): number {
+	for (let index = 0; index < text.length; index += 1) {
+		hash ^= text.charCodeAt(index);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return hash >>> 0;
+}
+
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const SECOND_SEED = 0x811c9dc5 ^ 0x9e3779b9;
+
+export function changesDigest(model: ChangesModel): string {
+	let first = FNV_OFFSET_BASIS;
+	let second = SECOND_SEED;
+	for (const file of model.files) {
+		const tuple = `\u0000${file.path}\u0000${file.status}\u0000${file.added}\u0000${file.deleted}\u0000${file.diffRevision ?? ""}\u0000${file.countsUnavailable ?? ""}`;
+		first = fnv1a(first, tuple);
+		second = fnv1a(second, tuple);
+	}
+	return `${first.toString(16).padStart(8, "0")}${second.toString(16).padStart(8, "0")}`;
+}
+
+const EMPTY_CHANGES_DIGEST = changesDigest({ files: [], added: 0, deleted: 0 });
 
 export function changesSummary(model: ChangesModel): string {
 	const noun = model.files.length === 1 ? "file" : "files";
@@ -137,19 +172,36 @@ export function changesSummary(model: ChangesModel): string {
 // The idle widget exists only while files are tracked. An unborn root (no
 // commits yet) is silence here: /gentle:changes explains the state on demand,
 // where the message has room and context.
+//
+// Both surfaces that paint it (the sidebar part and the below-input header
+// row) re-render every frame, so the paint is memoized per digest, width and
+// theme identity -- one stored frame, like CodemodeCard's cachedFrame. The
+// digest already rolls up every per-file detail the paint consumes (path,
+// status, counts, diffRevision, countsUnavailable), so a digest hit skips the
+// per-file join entirely; a digest-less (hand-built) model never caches, and
+// a new theme object repaints.
+type WidgetFrame = { digest: string; width: number; theme: ChangesTheme; lines: string[] };
+let widgetFrame: WidgetFrame | undefined;
+
 export function renderChangesWidget(model: ChangesModel, theme: ChangesTheme, width: number): string[] {
 	if (model.files.length === 0) return [];
+	if (model.digest !== undefined && widgetFrame?.digest === model.digest && widgetFrame.width === width && widgetFrame.theme === theme) return widgetFrame.lines;
 	const noun = model.files.length === 1 ? "file" : "files";
 	const dot = theme.fg("muted", "·");
 	const head = `${theme.fg("accent", WIDGET_GLYPH)} ${theme.fg("text", `${model.files.length} ${noun}`)} ${dot} ${theme.fg("success", `+${model.added}`)} ${theme.fg("error", `−${model.deleted}`)}${model.files.some(file => file.countsUnavailable) ? " · partial counts" : ""}`;
 	const hint = theme.fg("dim", CHANGES_COMMAND);
 	const list = model.files.map((file) => theme.fg("muted", file.path)).join(` ${dot} `);
 	const left = `${head} ${dot} ${list}`;
+	let lines: string[];
 	const gap = width - visibleWidth(left) - visibleWidth(hint);
-	if (gap >= 2) return [`${left}${" ".repeat(gap)}${hint}`];
-	const headGap = width - visibleWidth(head) - visibleWidth(hint);
-	if (headGap >= 2) return [`${head}${" ".repeat(headGap)}${hint}`];
-	return [truncateToWidth(head, width, "…")];
+	if (gap >= 2) lines = [`${left}${" ".repeat(gap)}${hint}`];
+	else {
+		const headGap = width - visibleWidth(head) - visibleWidth(hint);
+		lines = headGap >= 2 ? [`${head}${" ".repeat(headGap)}${hint}`] : [truncateToWidth(head, width, "…")];
+	}
+	if (model.digest === undefined) return lines;
+	widgetFrame = { digest: model.digest, width, theme, lines };
+	return lines;
 }
 
 export interface GitResult {

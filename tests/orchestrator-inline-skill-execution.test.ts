@@ -25,7 +25,7 @@ import type {
 //    primary session's `before_agent_start` handler injects) delivers BOTH
 //    halves of the read duty at the composition boundary: the subagent-directed
 //    clause ("subagents read those `SKILL.md` files first") AND the parent's
-//    own inline duty ("the parent's own inline path owes the same read"). The
+//    own inline duty ("inline, the parent reads them too"). The
 //    always-on core clause is the delivery path; the execution detail
 //    (attribution line, contract markers, unreadable-path fallback) lives in
 //    the lazy `assets/orchestrator-skills.md` `### Parent inline execution`
@@ -100,7 +100,7 @@ export default function (pi) {
 function assertParentPromptCarriesInlineSkillReadObligation(prompt: string): void {
 	assert.match(
 		prompt,
-		/; the parent's own inline path owes the same read\./,
+		/; inline, the parent reads them too\./,
 		"composed parent prompt must bind the parent's own inline path to the same exact-file SKILL.md read subagents owe",
 	);
 }

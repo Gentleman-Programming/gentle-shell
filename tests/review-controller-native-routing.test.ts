@@ -3349,3 +3349,42 @@ test("collect-state public STATUS, INSPECT, and START serialize each provider co
 		assert.ok(serialized.length < 2 * JSON.stringify(bindings).length, `${parameters.operation} answer (${serialized.length} characters) must not double the ${JSON.stringify(bindings).length}-character binding projection`);
 	}
 });
+
+test("a correction-plan binding bound to the frozen authority target is captured after the worktree drifts", async () => {
+	// gentle-ai binds correction-plan collect inputs to authority_target_identity
+	// (the frozen candidate), not to the live target_identity, once the
+	// candidate has drifted; the host must accept the target the provider issued.
+	const lineageId = "drifted-correction";
+	const frozenTarget = `sha256:${"c".repeat(64)}`;
+	const input = correctionPlanInput(lineageId);
+	(input.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: frozenTarget, token: `--target=${frozenTarget}` };
+	const drifted = (): ReviewStatusV3 => ({ ...status(lineageId, [input], "correction_required"), authorityTargetIdentity: frozenTarget });
+	let captures = 0;
+	const native = {
+		targetStatus: async () => drifted(),
+		captureCorrectionPlan: async () => {
+			captures += 1;
+			// The provider echoes the frozen target it was invoked with.
+			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, targetIdentity: frozenTarget, state: "correction_required", storeRevision: SHA };
+		},
+	} as unknown as NativeReviewCli;
+	const { controller, capture } = reviewRuntime(native, new CandidateViewRegistry());
+	const context = reviewContext(process.cwd());
+	const listed = await controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const captured = await capture.execute("", { lineageId, collectBinding: bindingOf(listed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((captured.details as { outcome?: string }).outcome, "native-last-event-closure");
+	assert.equal((captured.details as { mutation_outcome?: string }).mutation_outcome === "none", false);
+	assert.equal(captures, 1);
+
+	// A target that is neither the frozen authority target nor the live one stays refused.
+	const foreign = correctionPlanInput(lineageId);
+	(foreign.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: `sha256:${"d".repeat(64)}`, token: `--target=sha256:${"d".repeat(64)}` };
+	const foreignNative = {
+		targetStatus: async () => ({ ...status(lineageId, [foreign], "correction_required"), authorityTargetIdentity: frozenTarget }),
+		captureCorrectionPlan: async () => { throw new Error("must not capture"); },
+	} as unknown as NativeReviewCli;
+	const runtime = reviewRuntime(foreignNative, new CandidateViewRegistry());
+	const foreignListed = await runtime.controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const refused = await runtime.capture.execute("", { lineageId, collectBinding: bindingOf(foreignListed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((refused.details as { outcome?: string }).outcome, "capture-binding-rejected");
+});

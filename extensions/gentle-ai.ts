@@ -1417,7 +1417,7 @@ const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
-- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
@@ -1426,7 +1426,7 @@ const GENTLEMAN_PERSONA_PROMPT = `Persona:
 
 const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Be direct, technical, concise, warm, and professional.
-- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - Do not use slang or regional expressions.
 - When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations, regular or irregular: use tú or usted forms, never vos forms (tienes, not tenés; ajustas, not ajustás; vives, not vivís; mira, not mirá; haz, not hacé).
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
@@ -1790,7 +1790,12 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
-const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit"]);
+// Tools whose `path` input names the file or directory they reach. The guard
+// sees only that input: a search scoped to a directory (grep over ".", with or
+// without a glob) still reads whatever the directory contains, and bash is not
+// covered here. Keeping secret bytes out of those results is a separate design
+// (gentle-shell#2349).
+const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
 	"paths",
@@ -9005,13 +9010,21 @@ function selectExactReviewCapture(
 	const inputTargetIdentity = exactCollectArgument(input, "target");
 	// Go's targeted-validator vector binds its capture target to the correction
 	// target from the provider-owned validation request, rather than STATUS's
-	// current candidate identity. All other captures remain bound to STATUS.
-	const expectedInputTargetIdentity = input.validationRequest?.correctionTargetIdentity ?? statusTargetIdentity;
+	// current candidate identity. All other captures are bound to STATUS's live
+	// target, except correction plans: gentle-ai's reviewAuthorityTargetIdentity
+	// binds them to the frozen authority target (authority_target_identity)
+	// once the candidate drifts.
+	const validationTarget = input.validationRequest?.correctionTargetIdentity;
+	const expectedInputTargetIdentities = validationTarget !== undefined
+		? [validationTarget]
+		: input.captureOperation === "review.capture-correction-plan"
+			? [statusTargetIdentity, status.authorityTargetIdentity]
+			: [statusTargetIdentity];
 	if (
 		!isCanonicalProcessString(inputLineageId) ||
 		!isCanonicalProcessString(inputTargetIdentity) ||
 		inputLineageId !== lineageId ||
-		inputTargetIdentity !== expectedInputTargetIdentity
+		!expectedInputTargetIdentities.includes(inputTargetIdentity)
 	) {
 		return captureBindingRejected("collectBinding does not carry one non-empty matching provider lineage and target token");
 	}
@@ -9267,7 +9280,10 @@ async function executeReviewCaptureOperation(
 				cwd,
 				...(signal === undefined ? {} : { signal }),
 			});
-			return withCorrectionTarget(mapAndClearLastEventClosure(closure, selected.binding, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
+			// The provider echoes the target the plan was captured for (the frozen
+			// authority target after drift); reconciliation stays on STATUS's target.
+			const capturedTarget = exactCollectArgument(selected.input, "target") ?? selected.binding.targetIdentity;
+			return withCorrectionTarget(mapAndClearLastEventClosure(closure, { ...selected.binding, targetIdentity: capturedTarget }, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
 		} catch (error) {
 			return await reconcileUnknownReviewCaptureFailure(error, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route);
 		}

@@ -521,6 +521,31 @@ test("renderShellHeaderBar shows every usage window with its gauge and the short
 	assert.equal(text.slice(usageSpan.start, usageSpan.end), "usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u");
 });
 
+test("header retains effort without location when it fits beside full usage windows", () => {
+	const header = buildShellHeaderModel(model({ cwd: "~/work/" + "x".repeat(80), profile: "current", usage: USAGE_TWO_WINDOWS }));
+	for (const density of ["minimal", "compact", "comfortable"] as const) {
+		const settings = { ...DEFAULT_VISUAL_SETTINGS, density };
+		const right = "ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u";
+		const left = density === "minimal" ? "gpt-5.5 · medium" : "✿ Gentle Shell ⟡ gpt-5.5 · medium";
+		const width = visibleWidth(left) + 2 + visibleWidth(right);
+		const result = renderShellHeaderBar(header, plainTheme, width, "alt+u", settings);
+		assert.equal(result.text, left + "  " + right, density);
+		assert.ok(result.usageSpan);
+		assert.equal(result.text.slice(result.usageSpan.start, result.usageSpan.end), right.slice(right.indexOf("usage")));
+
+		const narrower = renderShellHeaderBar(header, plainTheme, width - 1, "alt+u", settings).text;
+		assert.match(narrower, /gpt-5\.5/);
+		assert.doesNotMatch(narrower, /medium|current|~\/work/);
+		assert.ok(narrower.endsWith(right), "model-only fallback preserves full usage");
+		assert.equal(visibleWidth(narrower), width - 1);
+
+		const withoutEffort = renderShellHeaderBar({ ...header, effort: undefined }, plainTheme, width, "alt+u", settings).text;
+		assert.doesNotMatch(withoutEffort, /medium|current|~\/work/);
+		assert.ok(withoutEffort.endsWith(right));
+		assert.equal(visibleWidth(withoutEffort), width);
+	}
+});
+
 test("renderShellHeaderBar shows 'usage · <shortcut>' with no data, and drops the hint when the shortcut is disabled", () => {
 	const withHint = renderShellHeaderBar(buildShellHeaderModel(model({ usage: undefined })), plainTheme, 140, "alt+u");
 	assert.match(withHint.text, /usage · alt\+u$/);

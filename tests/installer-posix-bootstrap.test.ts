@@ -636,7 +636,18 @@ for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", 
 		try {
 			f.addPnpm(); f.wizard();
 			const hash = artifactFor("node", platform, architecture).integrity.slice(7);
-			assert.equal(f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash }).status, 0);
+			const result = f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash });
+			assert.equal(result.status, 0, JSON.stringify({
+				status: result.status,
+				signal: result.signal,
+				error: result.error ? {
+					name: result.error.name,
+					message: result.error.message,
+					code: "code" in result.error ? result.error.code : null,
+				} : null,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			}));
 		} finally { f.cleanup(); }
 	});
 }

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -21,7 +20,7 @@ import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
 import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
-import { resolveProjectPiSdkVersion } from "../scripts/test-packed-runner.mjs";
+import { resolveProjectPiSdkVersion, runNpmWithEnv } from "../scripts/test-packed-runner.mjs";
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -944,12 +943,29 @@ test("native windows audio ships an owned encoded-command adapter without script
 	assert.doesNotMatch(source, /postinstall|installer|download/i, path);
 });
 
+test("shell-free npm helper preserves packed tarball arguments and options", () => {
+	const source = readFileSync(join(PACKAGE_ROOT, "tests", "package-manifest.test.ts"), "utf8");
+	const runner = readFileSync(join(PACKAGE_ROOT, "scripts", "test-packed-runner.mjs"), "utf8");
+	const tarball = source.split('\ntest("packed tarball excludes retired workflow paths')[1]?.split('\n});')[0] ?? "";
+	assert.match(source, /import \{[^}]*runNpmWithEnv[^}]*\} from "\.\.\/scripts\/test-packed-runner\.mjs"/);
+	assert.match(tarball, /runNpmWithEnv\(\["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination\], process\.env, \{/);
+	assert.match(tarball, /cwd: PACKAGE_ROOT/);
+	assert.match(tarball, /encoding: "utf8"/);
+	assert.match(tarball, /maxBuffer: 8 \* 1024 \* 1024/);
+	assert.doesNotMatch(tarball, /execFileSync|shell\s*:\s*true/);
+	assert.match(runner, /export function runNpmWithEnv\(/);
+	const helper = readNamedFunction(runner, "runNpmWithEnv");
+	assert.match(helper, /process\.platform === "win32" \? windowsNpmInvocation\(\) : \{ file: "npm", prefix: \[\] \}/);
+	assert.match(helper, /execFileSync\(invocation\.file, \[\.\.\.invocation\.prefix, \.\.\.arguments_\], \{ \.\.\.options, env \}\)/);
+	assert.doesNotMatch(helper, /shell\s*:\s*true|cmd\.exe|npm\.cmd/);
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
 	const destination = mkdtempSync(join(tmpdir(), "gentle-pi-pack-manifest-"));
 	try {
-		const output = execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination], {
+		const output = runNpmWithEnv(["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination], process.env, {
 			cwd: PACKAGE_ROOT,
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,

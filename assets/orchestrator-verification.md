@@ -1,6 +1,6 @@
 # Orchestrator — Verification (lazy-loaded)
 
-Bind this to the parent Pi session only. Load it when the Verification rule fires (a high-risk change) or a delegated writer returns; the small path never needs it.
+Parent only: load when Verification fires or a delegated writer returns; not for small work.
 
 ## Verification rule (normative)
 
@@ -17,18 +17,22 @@ The independent verifier runs only when the change touches a named Task Size hig
 
 ## Agent escalation (gentle-shell#1494)
 
-When the change touches a Task Size high-risk item, whatever the native tier, pass `"escalate": {"item": <1-6>, "reason": "<one line>"}` in the same assess input: the plan adds the independent verifier only when `escalate` names a Task Size high-risk item; the tool raises the tier to high, keeps the native one as `nativeRisk`, returns `agentEscalation`, and never lowers a tier. Until the installed gentle-ai assess accepts it, the raise binds this verification plan only, not the native review tier.
+For Task Size high-risk work (any native tier), assess with `"escalate": {"item": <1-6>, "reason": "<one line>"}`. It adds a verifier only when `escalate` names a Task Size high-risk item; raises to high, keeps `nativeRisk`, returns `agentEscalation`, never lowers. Unsupported: raise this plan, not native review.
+
+## Verifier preparation failure
+
+If one isolated setup attempt fails, stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks as a concrete blocker and unverified checks. Do not keep repairing helpers. Do not automatically relaunch the verifier for the same missing prerequisite. Distinguish setup or infrastructure failure from genuine code findings. Auxiliary tooling defects remain subject to the existing correction bound; setup failure does not reset it. Keep consent.
 
 ## Verification proportionality
 
-Before introducing or retaining an auxiliary gate, name the acceptance criterion, concrete threat, or authoritative contract it protects. Without that basis it must not become a delivery blocker. Do not build a framework for a bounded capability probe: use the existing command path and retain its observed result. Auxiliary tooling defects stay within the existing correction bound; they do not justify a new verification project or reset that bound.
+Before adding or retaining an auxiliary gate, name its acceptance criterion, concrete threat, or authoritative contract; otherwise it must not become a delivery blocker. Do not build a framework for a bounded capability probe; use the existing command path and retain its observed result.
 
-When the user warns about overengineering, remove or collapse optional artifacts and checks before continuing. State what was removed, what remains indispensable, and the next application outcome. Keep required functional checks, security controls, and native review authority intact; do not call missing proof a pass or weaken permissions merely to proceed.
+On overengineering warnings, remove or collapse optional artifacts and checks. State what was removed, what remains indispensable, and the next application outcome. Keep required functional checks, security controls, and native review authority intact; do not pass missing proof or weaken permissions.
 
 ## Parallel review protocol (gentle-shell#1731)
 
 1. **Self-review**, required by each writer prompt, in its own session before returning: spec sections by reference (#1713), the request's authorized examples, tests, and typecheck; it fixes and continues (one correction per failing check, a second only if the same check still fails, then `partial`), reporting requirement by requirement. Low and medium risk need nothing else.
-2. **Independent verify per unit**, once, after its final self-review (never per worker cycle or retry), in parallel when several finish together, only when that unit is high risk: its Risk line, `assess` over its actual diff or the worker's own `escalate` (high-risk list in Task Size), never inferred from the worker's summary alone. Assess per unit via its work-unit commit (`{"baseRef":"<previous>","committedOnly":true}`) or its own isolated worktree. Inline code over several deliveries of one feature: one verify at the feature's end.
+2. **Independent verify per unit**, once, after its final self-review (never per worker cycle or retry), in parallel when several finish together, only when that unit is high risk: its Risk line, `assess` over its actual diff or the worker's own `escalate` (high-risk list in Task Size), never inferred from the worker's summary alone. Assess via its work-unit commit (`{"baseRef":"<previous>","committedOnly":true}`) or its own isolated worktree. Inline code over several deliveries of one feature: one verify at the feature's end.
 3. **Seam check**: after parallel units finish, one inline full-suite command (the parent spot check) catches seams between units.
-4. **Verify handoff**: the whole feature document for context, the assigned unit and its linked `S#` plus affected interactions, the baseline commit, and the probe command forms (tests, CLI, typecheck) for probes on isolated state in a fresh `mktemp -d` scratch copy, never just "read-only"; the runtime removes each subagent's own TMPDIR, which holds that copy; `gentle-ai-verify` holds the checklist. Requirements belonging only to future or unrelated units are out of scope, not unmet; final feature verification covers every `S#`. Resolve every in-scope unmet item before closing the unit; the writer commits its probes as regression tests.
+4. **Verify handoff**: the whole feature document, the assigned unit and its linked `S#` plus affected interactions, the baseline commit, and the probe command forms (tests, CLI, typecheck) for probes on isolated state in a fresh `mktemp -d` scratch copy, never just "read-only"; the runtime removes each subagent's own TMPDIR, which holds that copy; `gentle-ai-verify` holds the checklist. Future or unrelated requirements are out of scope, not unmet; final feature verification covers every `S#`. Resolve every in-scope unmet item before closing the unit; the writer commits its probes as regression tests.
 5. **One correction**: verify blockers get one correction batch that fixes every reported blocker, then one re-verify limited to those blockers, never a new full sweep. Blockers still open after that stop as one **Needs your decision**. Advisories never start a correction. A second correction runs automatically only when the recheck shows the same blocker still failing; a new finding never earns one. A `partial` or `blocked` writer report gets only this correction, never an extra verify run beyond the risk tier's verifier; partial, blocked, unavailable, or exhausted proof left after it becomes that one **Needs your decision**.

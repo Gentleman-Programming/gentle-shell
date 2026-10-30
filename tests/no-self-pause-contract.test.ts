@@ -16,6 +16,25 @@ const read = (relative: string): string => readFileSync(join(REPO_ROOT, relative
 const tracking = read("assets/orchestrator-tracking.md");
 const core = read("assets/orchestrator.md");
 
+const contextualApproval = 'Interpret short replies such as "yes", "go ahead", or "eso mismo" against the immediately preceding proposal. When the human unambiguously accepts a concrete implementation action they already understand, execute that action within its agreed scope without asking again. Confirming a preference alone does not authorize implementation; genuinely unclear change intent still requires one focused question. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.';
+const informedClarification = 'Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.';
+
+test("contextual approval continues the agreed action without weakening consent boundaries", () => {
+	assert.ok(__testing.buildGentlePrompt("gentleman").includes(contextualApproval));
+});
+
+test("clarification preserves understanding without reopening informed approval", () => {
+	assert.ok(__testing.buildGentlePrompt("gentleman").includes(informedClarification));
+	assert.ok(read("skills/gentle-ai/SKILL.md").includes(informedClarification));
+});
+
+test("resolved subdecisions retain the original authorized objective", () => {
+	const prompt = __testing.buildGentlePrompt("gentleman");
+	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision."));
+	assert.ok(prompt.includes("Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop."));
+	assert.ok(prompt.includes("Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule."));
+});
+
 function authorizationSection(): string {
 	const start = tracking.indexOf("#### Authorization and progress");
 	assert.ok(start !== -1, "tracking module must keep its Authorization and progress section");

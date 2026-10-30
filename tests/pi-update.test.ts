@@ -98,6 +98,11 @@ for (const args of [['update', '--extensions-only'], ['update', '--extensions'],
  assert.deepEqual(managedUpdatePlan(args), {self: false, piArgs: args});
 });
 
+test('a non-bundled install ignores --latest: its managed self update already installs the latest Pi', () => {
+ assert.deepEqual(managedUpdatePlan(['update', '--latest']), {self: true});
+ assert.deepEqual(managedUpdatePlan(['update', '--all', '--latest']), {self: true, piArgs: ['update', '--extensions']});
+});
+
 test('all strips only self update before forwarding extension flags', () => {
  assert.deepEqual(managedUpdatePlan(['update', '--all', '--approve']), {self: true, piArgs: ['update', '--extensions', '--approve']});
 });

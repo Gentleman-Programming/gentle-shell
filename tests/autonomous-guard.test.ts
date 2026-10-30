@@ -910,3 +910,23 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:{} (object) in JSON does NOT a
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("evaluateSuperYoloCommand: waives data-loss and configured confirmations, keeps only catastrophic denies", () => {
+	const { evaluateSuperYoloCommand } = __testing;
+	// Ordinary data-loss commands run without confirmation.
+	assert.equal(evaluateSuperYoloCommand("rm -rf node_modules build"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git rebase origin/main"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git branch -D feature/x"), "allow");
+	assert.equal(evaluateSuperYoloCommand("npm publish"), "allow");
+	assert.equal(evaluateSuperYoloCommand("git push -u origin feature"), "allow");
+	// Code-level catastrophic denies survive: root/home removal and hard-coded
+	// destructive Git forms (reset --hard, forced clean, force push).
+	assert.equal(evaluateSuperYoloCommand("rm -rf /"), "block");
+	assert.equal(evaluateSuperYoloCommand("rm -rf ~"), "block");
+	assert.equal(evaluateSuperYoloCommand("rm -rf --no-preserve-root /"), "block");
+	assert.equal(evaluateSuperYoloCommand("git reset --hard HEAD~1"), "block");
+	assert.equal(evaluateSuperYoloCommand("git push --force origin main"), "block");
+	assert.equal(evaluateSuperYoloCommand("git clean -fd"), "block");
+	// Harmless commands are unaffected.
+	assert.equal(evaluateSuperYoloCommand("git status && npm test"), "allow");
+});

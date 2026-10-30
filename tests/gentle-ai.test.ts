@@ -4648,10 +4648,10 @@ function freezeScreenSession(fixture: ReturnType<typeof routingConsumerFixture>)
 }
 
 /** The first screen bare `/gentle:profiles` opens, as text, closed right after. */
-async function openedScreen(fixture: ReturnType<typeof routingConsumerFixture>): Promise<string> {
+async function openedScreen(fixture: ReturnType<typeof routingConsumerFixture>, width = 120): Promise<string> {
 	let rendered: string | undefined;
 	fixture.onInput((panel) => {
-		rendered ??= stripAnsi(renderComponent(panel));
+		rendered ??= stripAnsi(panel.render(width).join("\n"));
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
@@ -4660,8 +4660,50 @@ async function openedScreen(fixture: ReturnType<typeof routingConsumerFixture>):
 
 const screenTabLine = (rendered: string) => rendered.split("\n")[1] ?? "";
 const screenWorkerRow = (rendered: string) => rendered.split("\n").find((line) => /│\s*worker\s/.test(line)) ?? "";
+const flatScreen = (rendered: string) => rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ");
 const savedRoutingNotice = (rendered: string, name: string) =>
-	rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ").includes(`This table shows the saved "${name}"; this session's launches keep the routing they took. Use in this session adopts what you see.`);
+	flatScreen(rendered).includes(`Saved "${name}" differs from this session's launches; Use in this session adopts it.`);
+const authorityNotice = "Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.";
+
+/** A real session frozen on "team"; `unreadable` appends a session profile record it cannot read. */
+function frozenRealSession(fixture: ReturnType<typeof routingConsumerFixture>, unreadable: boolean): void {
+	const manager = profileActionManager(fixture.root);
+	freezeSessionProfileAtStartup({ sessionId: manager.getSessionId(), cwd: fixture.root, configHome: fixture.configHome });
+	if (unreadable) manager.appendCustomEntry("gentle-pi.session-profile/v99", { invalid: true });
+	fixture.useSessionManager(manager);
+}
+
+test("a frozen profile is not marked as used while session profile authority is unavailable", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, "team");
+	frozenRealSession(fixture, false);
+	const available = await openedScreen(fixture);
+	assert.match(screenTabLine(available), /team ◉/);
+	assert.doesNotMatch(flatScreen(available), /authority is unavailable/);
+
+	frozenRealSession(fixture, true);
+	const rendered = await openedScreen(fixture, 40);
+	assert.doesNotMatch(rendered, /◉|Used in this session\./);
+	assert.ok(flatScreen(rendered).includes(authorityNotice), "the whole notice fits at 40 columns");
+
+	t.after(() => resetSessionProfileBindingsForTesting());
+	actOnProfile(fixture, "u", "team");
+	await fixture.run("gentle:profiles");
+	const recovered = fixture.panels.at(-1) ?? "";
+	assert.match(screenTabLine(recovered), /team ◉/, "Use in this session recovers");
+	assert.doesNotMatch(flatScreen(recovered), /authority is unavailable/);
+});
+
+test("From what's running now refuses while session profile authority is unavailable", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	frozenRealSession(fixture, true);
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, SCREEN_KEYS.newFromLive);
+	assert.equal(fixture.inputPrompts.length, 0, "no name is asked for");
+	assert.match(profilesPanelFooter(reopened), /Session profile authority is unavailable; affected launches are blocked\. No profile created\./);
+	assert.equal(readFileSync(storePath, "utf8"), before);
+});
 
 test("a profile frozen at startup carries ◉ and opens first after the default changes", async (t) => {
 	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
@@ -4677,6 +4719,7 @@ test("a profile frozen at startup carries ◉ and opens first after the default 
 	assert.match(screenWorkerRow(rendered), /openai\/alpha/);
 	assert.match(rendered, /Used in this session\./);
 	assert.equal(savedRoutingNotice(rendered, "team"), false, "the saved routing matches the launch routing");
+	assert.doesNotMatch(flatScreen(rendered), /authority is unavailable/);
 	assert.equal(readFileSync(storePath, "utf8"), before);
 });
 
@@ -4688,6 +4731,7 @@ test("a session profile edited in profiles.json after the freeze or the binding 
 	const frozen = await openedScreen(fixture);
 	assert.match(screenWorkerRow(frozen), /openai\/beta/);
 	assert.equal(savedRoutingNotice(frozen, "team"), true);
+	assert.equal(savedRoutingNotice(await openedScreen(fixture, 40), "team"), true, "the whole notice fits at 40 columns");
 
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetSessionProfileBindingsForTesting());

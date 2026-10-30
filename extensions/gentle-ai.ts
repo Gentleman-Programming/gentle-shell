@@ -2508,9 +2508,11 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
  * launcher reads. It resolves from the session's directory, as the freeze and
  * the launcher do. `undefined` means the session resolves no profile, so
  * launches keep the global routing; a pin the session did not freeze never
- * reaches them and is not read here.
+ * reaches them and is not read here. Without session profile authority the
+ * launches are blocked, so no profile is theirs.
  */
-function sessionLaunchProfile(ctx: ExtensionContext): { name: string; modelProfiles: AgentModelConfig } | undefined {
+function sessionLaunchProfile(ctx: ExtensionContext, authorityAvailable: boolean): { name: string; modelProfiles: AgentModelConfig } | undefined {
+	if (!authorityAvailable) return undefined;
 	const resolution = resolveSessionProfile({
 		sessionId: ctx.sessionManager?.getSessionId?.(),
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
@@ -2521,9 +2523,20 @@ function sessionLaunchProfile(ctx: ExtensionContext): { name: string; modelProfi
 	return name === undefined || routing === undefined ? undefined : { name, modelProfiles: cloneModelConfig(routing) };
 }
 
+/**
+ * Whether this session's launches may run, read as the launcher reads it (and,
+ * like it, clearing a binding it cannot corroborate). A manager without a
+ * branch has no session profile record to distrust.
+ */
+function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
+	const manager = ctx.sessionManager;
+	if (typeof manager?.getSessionId !== "function" || typeof manager.getBranch !== "function") return true;
+	return readSessionProfileAuthority(manager).available;
+}
+
 /** The routing this session's launches use: its profile, or the global effective routing. */
-async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext): Promise<AgentModelConfig> {
-	return sessionLaunchProfile(ctx)?.modelProfiles
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext, authorityAvailable: boolean): Promise<AgentModelConfig> {
+	return sessionLaunchProfile(ctx, authorityAvailable)?.modelProfiles
 		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
 }
 
@@ -4523,8 +4536,10 @@ function routingScreenNotices(
 	shownName: string,
 	sessionBoundName: string | undefined,
 	launchRouting?: AgentModelConfig,
+	authorityAvailable = true,
 ): string[] {
 	const notices: string[] = [];
+	if (!authorityAvailable) notices.push("Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.");
 	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
 	for (const issue of pins.invalid) {
 		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
@@ -4541,7 +4556,7 @@ function routingScreenNotices(
 		.filter(([key]) => !isProfileOrchestratorKey(key)).sort(([a], [b]) => a.localeCompare(b)));
 	if (shownName === sessionBoundName && launchRouting !== undefined && hasOwnProfile(file.profiles, shownName)
 		&& roleRoutes(file.profiles[shownName]) !== roleRoutes(launchRouting)) {
-		notices.push(`This table shows the saved "${shownName}"; this session's launches keep the routing they took. Use in this session adopts what you see.`);
+		notices.push(`Saved "${shownName}" differs from this session's launches; Use in this session adopts it.`);
 	}
 	const roots = {
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
@@ -4650,9 +4665,10 @@ async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promi
 			: undefined;
 	// The screen opens on the profile this session launches with while the store
 	// still has it (gentle-shell#1064 slice 3c).
-	const launchName = sessionLaunchProfile(ctx)?.name;
+	const authorityAvailable = sessionProfileAuthorityAvailable(ctx);
+	const launchName = sessionLaunchProfile(ctx, authorityAvailable)?.name;
 	const opensOnLaunch = read.status === "valid" && launchName !== undefined && hasOwnProfile(read.file.profiles, launchName);
-	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name);
+	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name, authorityAvailable);
 }
 
 /** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
@@ -5655,6 +5671,7 @@ async function openProfilesPanelLoop(
 	ctx: ExtensionContext,
 	live: LiveSession,
 	initialSelectedName?: string,
+	openingAuthority?: boolean,
 ): Promise<void> {
 	const store = await loadProfilesStore(ctx);
 	if (!store) return;
@@ -5666,6 +5683,8 @@ async function openProfilesPanelLoop(
 		?? Object.keys(file.profiles)[0];
 	let feedback: string | undefined;
 	let draftOverride: AgentModelConfig | undefined;
+	// Read once per visit: the opening read serves the first one.
+	let authorityAvailable = true;
 	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
 		try {
 			const next = hasOwnProfile(file.profiles, name)
@@ -5688,12 +5707,12 @@ async function openProfilesPanelLoop(
 		}
 		selectedName = name;
 		// The profile this session launches with, bound or frozen: the tab marked ◉.
-		const launch = sessionLaunchProfile(ctx);
+		const launch = sessionLaunchProfile(ctx, authorityAvailable);
 		return {
 			file,
 			sessionBoundName: launch?.name,
 			pinWinner: pinWinner(),
-			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles),
+			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
 		};
 	};
@@ -5733,7 +5752,9 @@ async function openProfilesPanelLoop(
 			}
 			const shown = selectedName;
 			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
-			const launch = sessionLaunchProfile(ctx);
+			authorityAvailable = openingAuthority ?? sessionProfileAuthorityAvailable(ctx);
+			openingAuthority = undefined;
+			const launch = sessionLaunchProfile(ctx, authorityAvailable);
 			const result = await step(() => showRoutingTablePanel(ctx, {
 				name: shown,
 				config: draftOverride ?? stored,
@@ -5741,7 +5762,7 @@ async function openProfilesPanelLoop(
 				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
-				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles),
+				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
 			}));
 			draftOverride = undefined;
@@ -5815,6 +5836,10 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "create-live": {
+					if (!authorityAvailable) {
+						feedback = `${savedNote}Session profile authority is unavailable; affected launches are blocked. No profile created.`;
+						continue;
+					}
 					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
 					const name = answer?.trim() ?? "";
 					if (name === "") {
@@ -5824,7 +5849,7 @@ async function openProfilesPanelLoop(
 					// Captures the routing this session's launches resolve and the
 					// orchestrator it actually runs, the way the old snapshot did.
 					const snapshot = profileSnapshotFrom(
-						await step(() => readSessionLaunchModelConfigAsync(ctx)),
+						await step(() => readSessionLaunchModelConfigAsync(ctx, authorityAvailable)),
 						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 					);
 					try {

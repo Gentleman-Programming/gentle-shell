@@ -1,9 +1,10 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
 import { execFile, spawnSync } from "node:child_process";
+import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -12,11 +13,11 @@ import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_STYLE, CARD_TONE, cardStyle, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
@@ -31,7 +32,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, V
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
@@ -124,7 +125,9 @@ import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
-import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
+import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
+import { JOBS_FINISHED_TTL_MS, jobsCardTone, renderJobsCard } from "../lib/jobs-widget.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -278,33 +281,38 @@ function sessionCost(ctx: ExtensionContext): number {
 }
 
 type ShellSessionStats = { costTotal: number; usage: ReturnType<ExtensionContext["getContextUsage"]> };
-const shellSessionStats = new WeakMap<object, {
-	sessionId: string | undefined;
-	leafId: string | null;
-	entryCount: number | undefined;
-	model: ExtensionContext["model"];
-	contextWindow: number | undefined;
-	stats: ShellSessionStats;
-}>();
+// The exact identity sessionStats' memo keys on: when any element differs the
+// stats are recomputed. Undefined means the host lacks the leaf identity and
+// the stats must be computed fresh on every call. Callers that digest live
+// state per frame (issue #1681) reuse this key so their own memos can never
+// disagree with sessionStats about what is still current.
+type SessionStatsKey = readonly [
+	sessionId: string | undefined,
+	leafId: string | null,
+	entryCount: number | undefined,
+	model: ExtensionContext["model"],
+	contextWindow: number | undefined,
+];
+const shellSessionStats = new WeakMap<object, { key: SessionStatsKey; stats: ShellSessionStats }>();
 
-function sessionStats(ctx: ExtensionContext): ShellSessionStats {
+function sessionStatsKey(ctx: ExtensionContext): SessionStatsKey | undefined {
 	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?(): number };
-	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
 	// Append-only session entries move the leaf, including compaction and branch
 	// switches. A virtual model's routed physical model comes from the latest
 	// response, which is appended as an entry, so the leaf covers it as well.
 	// Older/test hosts without that identity must stay uncached.
-	if (typeof manager.getLeafId !== "function") return compute();
-	const sessionId = manager.getSessionId();
-	const leafId = manager.getLeafId();
-	const entryCount = manager.getEntryCount?.();
-	const model = ctx.model;
-	const contextWindow = model?.contextWindow;
-	const cached = shellSessionStats.get(manager);
-	if (cached && cached.sessionId === sessionId && cached.leafId === leafId &&
-		cached.entryCount === entryCount && cached.model === model && cached.contextWindow === contextWindow) return cached.stats;
+	if (typeof manager.getLeafId !== "function") return undefined;
+	return [manager.getSessionId(), manager.getLeafId(), manager.getEntryCount?.(), ctx.model, ctx.model?.contextWindow] as const;
+}
+
+function sessionStats(ctx: ExtensionContext): ShellSessionStats {
+	const compute = (): ShellSessionStats => ({ costTotal: sessionCost(ctx), usage: ctx.getContextUsage() });
+	const key = sessionStatsKey(ctx);
+	if (!key) return compute();
+	const cached = shellSessionStats.get(ctx.sessionManager);
+	if (cached && cached.key.every((value, index) => value === key[index])) return cached.stats;
 	const stats = compute();
-	shellSessionStats.set(manager, { sessionId, leafId, entryCount, model, contextWindow, stats });
+	shellSessionStats.set(ctx.sessionManager, { key, stats });
 	return stats;
 }
 
@@ -338,6 +346,75 @@ export function buildShellBarModel(
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
 	};
+}
+
+export interface FooterStatusMemoDeps {
+	pi: ExtensionAPI;
+	ctx: ExtensionContext;
+	footerData: ShellFooterData;
+	usage: () => ProviderUsage | undefined;
+	profile: () => string | undefined;
+	jobs: () => RunningJobDisplay[] | undefined;
+	review: () => ReviewSidebarSnapshot | undefined;
+	tracker: () => Pick<WorktreeChangesTracker, "model" | "unbornRoots">;
+	visualSettings: () => unknown;
+	cardStyle: () => unknown;
+}
+
+// Issue #1681: railDigest evaluates every rail's digest before the fullscreen
+// layout's prepared cache can answer, so both Status rails digest per
+// keystroke and a cache hit still paid for building and serializing the whole
+// bar model. The memo keys on the cheap live inputs the model reads instead:
+// the digest serializes only this key, and the model is rebuilt just when one
+// of those inputs moved. On hosts without leaf identity the session stats
+// stay uncached and ride the key by value, so those hosts keep exactly the
+// pre-memo digest honesty.
+export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): string; model(): ShellBarModel } {
+	const { pi, ctx, footerData } = deps;
+	let cache: { key: string; model: ShellBarModel } | undefined;
+	const key = (): string => {
+		const statsKey = sessionStatsKey(ctx);
+		const model = ctx.model;
+		return JSON.stringify([
+			// Session statistics identity by value: without leaf identity the
+			// computed stats ride the key, so those hosts keep exactly the pre-memo
+			// digest honesty. The model rides its value pieces (id, contextWindow,
+			// effort lookup, OAuth state) because that is all buildShellBarModel
+			// reads — serializing the model object itself would bloat every digest.
+			statsKey ? [statsKey[0], statsKey[1], statsKey[2]] : sessionStats(ctx),
+			model?.id ?? null,
+			model?.contextWindow ?? null,
+			model?.reasoning ? (isNanAdaptiveReasoningModel(model) ? "auto" : pi.getThinkingLevel()) : undefined,
+			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+			footerData.getGitBranch(),
+			deps.profile(),
+			ctx.sessionManager.getSessionName(),
+			ctx.sessionManager.getCwd(),
+			[...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b)),
+			deps.usage(),
+			deps.jobs(),
+			deps.review(),
+			(() => {
+				const { model: changes, unbornRoots } = deps.tracker();
+				return { fingerprint: changesFingerprint(changes), files: changes.files.length, added: changes.added, deleted: changes.deleted, unbornRoots: unbornRoots.length };
+			})(),
+			deps.visualSettings(),
+			deps.cardStyle(),
+		]);
+	};
+	const model = (): ShellBarModel => {
+		const k = key();
+		if (cache?.key === k) return cache.model;
+		const tracker = deps.tracker();
+		const built: ShellBarModel = {
+			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), jobs: deps.jobs() }),
+			changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
+			review: deps.review(),
+		};
+		cache = { key: k, model: built };
+		return built;
+	};
+	return { key, model };
 }
 
 // Gauge-specific theme roles (issue #2222): resolved from the installed theme
@@ -399,6 +476,8 @@ interface PromptEditorDeps {
 	/** Pasted images become atomic `[Image#N]` chips; absent, Pi's paste handler runs unchanged. */
 	attachments?: ImageAttachments;
 	readClipboardImage?: () => Promise<ClipboardImage | null>;
+	/** Injectable silence-watchdog window; production and tests default to SHELL_PULSE_WATCHDOG_MS. */
+	watchdogMs?: number;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -453,7 +532,10 @@ export class GentlePromptEditor extends CustomEditor {
 	private visualReplacePending = false;
 	private visualObjectPending: "i" | "a" | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
-	private pulse: NodeJS.Timeout | undefined;
+	private watchdog: NodeJS.Timeout | undefined;
+	// Last time a frame painted (or the watchdog forced one) while working; the
+	// quality watchdog repaints only when now() drifts past its window.
+	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
@@ -477,6 +559,9 @@ export class GentlePromptEditor extends CustomEditor {
 	private piPasteImage: (() => void) | undefined;
 	private pastingImage = false;
 	private disposed = false;
+	// Counts submitted drafts, so a clipboard read that resolves after its
+	// draft was sent never lands in (and rides along with) the next message.
+	private submittedDrafts = 0;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -488,9 +573,17 @@ export class GentlePromptEditor extends CustomEditor {
 		// SAFETY: Pi's Editor routes cursor movement, wrapping and deletion through
 		// its private segment(). Wrapping it only merges registered chips into one
 		// segment; if a future Pi drops the method, chips degrade to plain text.
-		const host = this as unknown as { segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }> };
+		const host = this as unknown as {
+			segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }>;
+			submitValue?: () => void;
+		};
 		const segment = host.segment;
 		if (typeof segment === "function") host.segment = (text, mode) => attachments.segment(text, segment.call(this, text, mode));
+		// SAFETY: Pi empties the draft in its private submitValue() before onSubmit.
+		// Counting here only marks the draft boundary; if a future Pi drops the
+		// method, a late read falls back to landing in the next draft.
+		const submitValue = host.submitValue;
+		if (typeof submitValue === "function") host.submitValue = () => { this.submittedDrafts += 1; submitValue.call(this); };
 		// Undefined until Pi installs its handler, so Pi's `if (!onPasteImage)`
 		// wiring still runs; afterwards every read returns the chip handler.
 		Object.defineProperty(this, "onPasteImage", {
@@ -519,11 +612,18 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	private async insertClipboardImage(attachments: ImageAttachments, read: () => Promise<ClipboardImage | null>): Promise<void> {
+		const draft = this.submittedDrafts;
 		let image: ClipboardImage | null;
 		try { image = await read(); } catch { image = null; }
 		// A read that outlives this editor (session switch, quit) must not
 		// register bytes in the next session or write into a disposed prompt.
 		if (this.disposed) return;
+		// The draft this paste belonged to was already sent: neither attach the
+		// image to the next message nor run Pi's fallback into the new draft.
+		if (this.submittedDrafts !== draft) {
+			if (image) this.deps.notifyCompatibility?.("Image paste discarded: the message was sent before the clipboard finished reading. Paste again to attach it.");
+			return;
+		}
 		try {
 			if (!image) { this.piPasteImage?.(); return; }
 			const { token } = attachments.add(image);
@@ -542,8 +642,8 @@ export class GentlePromptEditor extends CustomEditor {
 	setAnimationPolicy(policy: AnimationPolicy): void {
 		if (this.animationPolicy === policy) return;
 		this.animationPolicy = policy;
-		this.stopPulse();
-		if (this.promptState === PROMPT_STATE.WORKING) this.startPulse();
+		this.stopWatchdog();
+		if (this.promptState === PROMPT_STATE.WORKING) this.startWatchdog();
 		this.deps.requestRender();
 	}
 
@@ -628,24 +728,32 @@ export class GentlePromptEditor extends CustomEditor {
 		this.deps.requestRender();
 	}
 
-	private startPulse(): void {
+	private startWatchdog(): void {
 		if (this.animationPolicy === "potato") return;
-		this.pulse = setInterval(() => {
+		const windowMs = this.deps.watchdogMs ?? SHELL_PULSE_WATCHDOG_MS;
+		this.lastRenderAt = this.deps.now();
+		this.watchdog = setInterval(() => {
+			// Render-driven petal (gentle-shell#994): streaming frames already
+			// advance the animation in render(), so under quality the watchdog
+			// stays silent unless no frame painted within its window. performance
+			// keeps its coarse cadence regardless of render traffic.
+			if (this.animationPolicy === "quality" && this.deps.now() - this.lastRenderAt < windowMs) return;
 			this.tick += 1;
+			this.lastRenderAt = this.deps.now();
 			this.deps.requestRender();
-		}, this.animationPolicy === "performance" ? 1000 : SHELL_PULSE_MS);
-		this.pulse.unref();
+		}, windowMs);
+		this.watchdog.unref();
 	}
 
 	setWorking(working: boolean): void {
 		this.promptState = working ? PROMPT_STATE.WORKING : PROMPT_STATE.IDLE;
-		this.stopPulse();
+		this.stopWatchdog();
 		if (!working) {
 			this.pendingEscapeCancelDeadline = undefined;
 		} else {
 			this.pendingIdleClearDeadline = undefined;
 			this.pendingIdleClearText = undefined;
-			this.startPulse();
+			this.startWatchdog();
 		}
 		this.deps.requestRender();
 	}
@@ -1132,6 +1240,13 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	render(width: number): string[] {
+		// Render-driven petal (gentle-shell#994): every frame the host already
+		// paints while working advances the animation for free, so no fast
+		// timer forces renders during streaming.
+		if (this.promptState === PROMPT_STATE.WORKING && this.animationPolicy === "quality") {
+			this.tick += 1;
+			this.lastRenderAt = this.deps.now();
+		}
 		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg);
 		this.floatMouseLayout = layout.background ? layout : undefined;
 		const inner = layout.nativeWidth;
@@ -1196,7 +1311,7 @@ export class GentlePromptEditor extends CustomEditor {
 
 	dispose(): void {
 		this.disposed = true;
-		this.stopPulse();
+		this.stopWatchdog();
 	}
 
 	private isPendingEscapeCancel(): boolean {
@@ -1211,9 +1326,9 @@ export class GentlePromptEditor extends CustomEditor {
 		);
 	}
 
-	private stopPulse(): void {
-		if (this.pulse) clearInterval(this.pulse);
-		this.pulse = undefined;
+	private stopWatchdog(): void {
+		if (this.watchdog) clearInterval(this.watchdog);
+		this.watchdog = undefined;
 		this.tick = 0;
 	}
 }
@@ -1296,7 +1411,7 @@ function installPrompt(
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
-		// re-render is implicitly guaranteed, and the WORKING pulse loop does not
+		// re-render is implicitly guaranteed, and the WORKING watchdog does not
 		// run at all under the "potato" animation policy. Register this session's
 		// redraw so a phase reported by the tool is visible immediately.
 		oddPhaseRegistry.setRenderRequest(ctx.sessionManager.getSessionId(), () => tui.requestRender());
@@ -1398,26 +1513,7 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 	return `${info.size}:${info.mtimeMs}`;
 };
 
-export interface ExternalEditorHost {
-	stop(): void;
-	start(): void;
-	requestRender(force?: boolean): void;
-}
-
-export function openInExternalEditor(host: ExternalEditorHost, path: string, env: NodeJS.ProcessEnv = process.env, spawn: typeof spawnSync = spawnSync, cwd?: string): boolean {
-	const command = env.VISUAL || env.EDITOR;
-	if (!command) return false;
-	const [editor, ...editorArgs] = command.split(" ");
-	host.stop();
-	try {
-		spawn(editor, [...editorArgs, path], { cwd, stdio: "inherit", shell: process.platform === "win32" });
-	} finally {
-		host.start();
-		host.requestRender(true);
-	}
-	return true;
-}
-
+export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
 	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
@@ -1445,8 +1541,11 @@ function changesPollMs(env: NodeJS.ProcessEnv): number {
 const USAGE_FETCH_TIMEOUT_DEFAULT_MS = 10_000;
 const usageFetchTimeoutMs = (env: NodeJS.ProcessEnv): number => positiveMs(env.GENTLE_PI_SHELL_USAGE_TIMEOUT_MS, USAGE_FETCH_TIMEOUT_DEFAULT_MS);
 
+// The footer memo reads this every keystroke: tracker models store the
+// digest once per scan (lib/shell-changes.ts), so this is O(1); hand-built
+// models without a stored digest fall back to computing it here.
 function changesFingerprint(model: ChangesModel): string {
-	return model.files.map((file) => `${file.path}:${file.status}:${file.added}:${file.deleted}:${file.diffRevision ?? ""}:${file.countsUnavailable ?? ""}`).join("|");
+	return model.digest ?? changesDigest(model);
 }
 
 interface OverlayDeps {
@@ -1491,7 +1590,11 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
 		);
 		if (!chosen || !host) return;
-		if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		try {
+			if (!openInExternalEditor(host, chosen.file.path, process.env, spawnSync, chosen.root)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	} finally {
 		clearInterval(poll);
 		view?.dispose();
@@ -1843,9 +1946,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// only that provider is forced, never the whole scope.
 		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
 	});
-	pi.on("after_provider_response", (event) => {
-		const parsed = parseUsageHeaders(event.headers, deps.now());
-		if (!parsed) return;
+	pi.on("after_provider_response", (event, ctx) => {
+		const headerUsage = parseUsageHeaders(event.headers, deps.now());
+		if (!headerUsage) return;
+		// The headers name a format, not the provider: pi-claude-bridge reports
+		// Claude Code's usage as the Anthropic unified headers. File the snapshot
+		// under the provider that served the response, which the bar looks up.
+		const served = ctx?.model?.provider;
+		const parsed = served ? { ...headerUsage, provider: served } : headerUsage;
 		usage.record(parsed);
 		// A snapshot that arrived with a response is evidence the provider is
 		// answering: a failure some earlier refresh recorded no longer stands.
@@ -1947,6 +2055,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let currentContext: ExtensionContext | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
+	let jobsCollapsed = false;
 	const redrawReview = () => {
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -1962,7 +2071,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const event = value as { sessionId?: unknown; snapshot?: unknown } | undefined;
 		if (!currentContext || event?.sessionId !== currentContext.sessionManager.getSessionId()) return;
 		if (!isJobsSidebarSnapshot(event.snapshot)) return;
-		runningJobs = event.snapshot.jobs.map(({ id, label, startedAt }) => ({ id, label, startedAt }));
+		runningJobs = event.snapshot.jobs.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode }));
 		redrawReview();
 	});
 	pi.on("session_tree", () => {
@@ -2047,13 +2156,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
 			// part for: model, effort, context, cost, session name and extension
-			// statuses. The digest is what keeps the fullscreen memo honest, and it
-			// rebuilds the model exactly as the narrow bottom bar does every frame.
-			const footerModel = (): ShellBarModel => ({
-				...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: usage.get(ctx.model?.provider ?? ""), profile: deps.activeProfile(), jobs: runningJobs }),
-				changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
-				review,
+			// statuses. The digest is what keeps the fullscreen memo honest. Issue
+			// #1681: railDigest evaluates every rail's digest per keystroke, so both
+			// Status rails digest a cheap key and reuse the memoized model
+			// (createFooterStatusMemo).
+			const footerStatus = createFooterStatusMemo({
+				pi, ctx, footerData,
+				usage: () => usage.get(ctx.model?.provider ?? ""),
+				profile: () => deps.activeProfile(),
+				// The compact bar and header derive ⧗ N jobs from model.jobs.length,
+				// so this input is running-only: the snapshot carries the finished tail.
+				jobs: () => runningJobs?.filter((job) => job.status === undefined),
+				review: () => review,
+				tracker: () => tracker,
+				visualSettings: () => visualSettings,
+				cardStyle: () => cardStyle(),
 			});
+			const footerModel = footerStatus.model;
 			// At narrow fullscreen widths only one status row paints: a top header
 			// suppresses the bottom bar in the layout, and otherwise the bottom bar
 			// takes over the header's data while the below-input header steps aside.
@@ -2081,16 +2200,78 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			};
 			const part = sidebarPart(tui, "footer", bottomBar, {
-				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
+				digest: () => footerStatus.key(),
 				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
 				invalidate() {},
 			});
+			// The Jobs card: its own rail section, like Agents and Todos, fed by the
+			// same running-job display snapshot the Status card used to print. The
+			// rail is natively scrollable, so it lists every running job; there is
+			// no above-editor copy — regular mode keeps the compact bar count.
+			let jobsHovered = false;
+			let jobsPainted = false;
+			let jobsHeaderRow = 0;
+			const jobsRailCard: Component = {
+				render(width: number) {
+					const jobs = runningJobs ?? [];
+					if (jobs.length === 0) { jobsPainted = false; return []; }
+					const lines = renderJobsCard(jobs, theme, width, deps.now(), { collapsed: jobsCollapsed, collapseKey: jobsKey, collapseControl: true, hovered: jobsHovered });
+					jobsPainted = lines.length > 0;
+					jobsHeaderRow = jobsPainted ? panelHeaderRow(theme, width, jobsCardTone(jobs)) : 0;
+					return lines;
+				},
+				invalidate() {
+					jobsHovered = false;
+				},
+			};
+			const jobsRegion = new NativePointerRegion(jobsRailCard, {
+				onHover(event) {
+					const next = event.y === jobsHeaderRow;
+					if (next === jobsHovered) return { handled: true };
+					jobsHovered = next;
+					return { handled: true, render: true };
+				},
+				onLeave() {
+					if (!jobsHovered) return;
+					jobsHovered = false;
+					tui.requestRender();
+				},
+				onClick(event) {
+					if (event.button !== "left" || event.y !== jobsHeaderRow) return undefined;
+					jobsCollapsed = !jobsCollapsed;
+					invalidateSidebar(tui);
+					tui.requestRender();
+					return { handled: true, render: true };
+				},
+			});
+			const jobsRail: Component & { digest(): string; dispose(): void } = {
+				digest: () => JSON.stringify([jobsCollapsed, jobsHovered, runningJobs, Math.floor(deps.now() / 1000)]),
+				render: (width) => jobsRegion.render(width),
+				handleMouse: (event) => jobsRegion.handleMouse(event),
+				invalidate() {
+					jobsRegion.invalidate();
+				},
+				dispose() {
+					jobsRegion.dispose();
+				},
+			};
+			const jobsPart = sidebarPart(tui, "jobs", { render: () => [], invalidate() {}, dispose() {} }, jobsRail);
+			// Elapsed time moves while a job runs, and a finished tail must clear
+			// itself once its TTL expires with nothing running behind it; one frame
+			// a second is enough, and the digest's second bucket revalidates the
+			// cached section.
+			const jobsTimer = setInterval(() => {
+				const now = deps.now();
+				const fresh = (runningJobs ?? []).some((job) => job.status === undefined || now - (job.endedAt ?? 0) < JOBS_FINISHED_TTL_MS);
+				if (jobsPainted || fresh) tui.requestRender();
+			}, 1_000);
+			jobsTimer.unref?.();
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
 			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
-				digest: () => JSON.stringify([footerModel(), tracker.model, visualSettings, cardStyle()]),
+				digest: () => footerStatus.key(),
 				render: (width) => headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
@@ -2120,15 +2301,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}), { placement: "belowEditor" });
 			return { ...part,
 				render(width: number) {
-					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && runningJobs?.length) {
-						return [truncateToWidth(theme.fg("muted", shellJobsCount(runningJobs.length)), width, "…")];
+					// Running-only: a finished tail must never paint a ⧗ 0 jobs row.
+					const compactRunningJobs = runningJobs?.filter((job) => job.status === undefined);
+					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && compactRunningJobs?.length) {
+						return [truncateToWidth(theme.fg("muted", shellJobsCount(compactRunningJobs.length)), width, "…")];
 					}
 					const rows = part.render(width);
 					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2213,10 +2396,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyChanges(ctx, model);
 		// A failed root scan is unknown, never clean: say so whenever one failed.
 		const failed = tracker.failedRoots.length;
+		const unborn = tracker.unbornRoots.length;
 		const roots = tracker.scannedRootCount;
 		if (model.files.length === 0) {
 			if (failed > 0 && failed === roots) ctx.ui.notify(`Could not read Git status for ${failed} ${failed === 1 ? "root" : "roots"}; uncommitted changes are unknown.`, "error");
 			else if (failed > 0) ctx.ui.notify(`No uncommitted changes in the roots Git could read; Git status failed for ${failed} of ${roots} roots.`, "warning");
+			else if (unborn > 0) ctx.ui.notify(unborn === roots
+				? `No commits yet in ${unborn === 1 ? "this session's repository" : "any root"} — make a commit to start tracking changes.`
+				: `No uncommitted changes; ${unborn} of ${roots} roots have no commits yet, so they are not tracked.`, "info");
 			else ctx.ui.notify("No uncommitted changes in this session's repository or its subagents' worktrees.", "info");
 			return;
 		}
@@ -2243,6 +2430,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
+		});
+	}
+	const jobsKey = jobsCollapseKey(env);
+	if (jobsKey) {
+		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Collapse or expand the jobs card",
+			handler: async () => {
+				jobsCollapsed = !jobsCollapsed;
+				if (sidebarTui) invalidateSidebar(sidebarTui);
+				renderHost?.requestRender();
+			},
 		});
 	}
 	pi.registerCommand("gentle:customize", {

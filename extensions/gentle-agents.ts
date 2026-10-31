@@ -19,16 +19,19 @@ import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobR
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
 import { JobsView } from "../lib/jobs-view.ts";
+import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, PROFILE_SOURCE, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
+import { requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { resolveBackgroundSubagentsPolicy } from "../lib/background-subagents-policy.ts";
 import { installBackgroundCacheWarming } from "../lib/background-cache-warming.ts";
 import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type AskRequest, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -58,8 +61,8 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, renderCard } from "../lib/shell-card.ts";
+import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -233,15 +236,15 @@ export function agentRuntimePaths(home: string, agentHome = join(home, ".pi", "a
 
 const workDescriptorSchema = {
 	type: "object", additionalProperties: false,
-	description: "Explicit non-authoritative classification, not child context. Topic requires area; limits are UTF-8 bytes. No nested tasks.",
+	description: "Non-authoritative, not child context; topic requires area; UTF-8 byte limits. No nested tasks.",
 	properties: {
 		area: { type: "string", maxLength: 64 }, topic: { type: "string", maxLength: 64 },
 		tags: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", maxLength: 64 } },
 		refs: { type: "array", maxItems: 8, uniqueItems: true, items: {
 			type: "object", additionalProperties: false, required: ["kind", "repository", "id"], properties: {
 				kind: { type: "string", enum: ["issue", "pr", "task"] },
-				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo; not a URL or inferred identity." },
-				id: { type: "string", maxLength: 256, description: "Canonical positive decimal issue/PR ID or opaque historical task ID; never a peer route." },
+				repository: { type: "string", maxLength: 256, description: "Explicit public host/owner/repo, not URL or inferred identity." },
+				id: { type: "string", maxLength: 256, description: "Issue/PR: canonical positive decimal; task: opaque historical ID. Never a peer route." },
 			},
 		} },
 	},
@@ -406,7 +409,10 @@ function runtimeWriterProfile(task: TaskRecord): { writerModelId?: string; write
 }
 
 function taskDetails(task: TaskRecord): Record<string, unknown> {
-	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd } };
+	// Additive fields (label, turns, toolCalls, lastStep, error, model, thinking)
+	// feed the status card renderer; the model never sees details, so widening is
+	// display-only.
+	return { gentleAgents: { taskId: task.id, agent: task.agent, status: task.status, mode: task.mode, cwd: task.cwd, label: task.label, turns: task.turns, toolCalls: task.toolCalls, lastStep: task.lastStep, model: task.model, ...(task.thinking ? { thinking: task.thinking } : {}), ...(task.error ? { error: task.error } : {}) } };
 }
 
 export function describeTask(task: TaskRecord): string {
@@ -418,6 +424,162 @@ export function describeTask(task: TaskRecord): string {
 function finishedText(task: TaskRecord): string {
 	if (task.status === "completed") return task.result ?? "(the subagent returned no text)";
 	return `Subagent ${task.agent} ${task.status}${task.error ? `: ${task.error}` : ""}${task.result ? `\n\nLast answer:\n${task.result}` : ""}`;
+}
+
+// The status card speaks the Agents widget's visual language: the same glyph
+// per state, and a card tone the reader can scan for — info while alive,
+// success when done, error when the run ended without an answer, warning when
+// the child is blocked on the parent.
+const STATUS_CARD_TONE: Record<string, CardTone> = {
+	[TASK_STATUS.QUEUED]: CARD_TONE.INFO,
+	[TASK_STATUS.RUNNING]: CARD_TONE.INFO,
+	[TASK_STATUS.WAITING]: CARD_TONE.WARNING,
+	[TASK_STATUS.COMPLETED]: CARD_TONE.SUCCESS,
+	[TASK_STATUS.FAILED]: CARD_TONE.ERROR,
+	[TASK_STATUS.CANCELLED]: CARD_TONE.ERROR,
+	[TASK_STATUS.TIMED_OUT]: CARD_TONE.ERROR,
+};
+// The per-action identity from the design handoff (agent-tool-cards/04):
+// each agent tool carries its own glyph and reads as a verb, so the transcript
+// feels like working with agents rather than calling functions.
+const ACTION_GLYPH: Record<string, string> = {
+	run: "→",
+	status: "◎",
+	result: "↩",
+	cancel: "⨯",
+	send_message: "✉",
+	reply: "✉",
+	continue: "↻",
+	list_tasks: "☰",
+	list_agents: "☰",
+};
+const ACTION_HEADING: Record<string, string> = {
+	run: "Delegating",
+	status: "Agent status",
+	result: "Agent answer",
+	cancel: "Stopping agent",
+	send_message: "Messaging agent",
+	reply: "Replying to agent",
+	continue: "Resuming agent",
+	list_tasks: "Agent tasks",
+	list_agents: "Agent roster",
+};
+
+// The state word as a scanable pill: uppercase, colored by the state's role.
+function statusPill(status: string, theme: CardTheme): string {
+	const role = status === TASK_STATUS.COMPLETED ? "success"
+		: status === TASK_STATUS.WAITING ? "warning"
+		: (status === TASK_STATUS.FAILED || status === TASK_STATUS.CANCELLED || status === TASK_STATUS.TIMED_OUT) ? "error"
+		: "accent";
+	return theme.fg(role, status.replace("_", " ").toUpperCase());
+}
+
+// The agent identity palette from the design handoff (agent-tool-cards/04):
+// agent cards wear the iris chrome — heading, glyph, frame and running pill —
+// whatever the active accent is, so working with agents reads as its own
+// mode. The palette is emitted as truecolor ANSI exactly like pi renders
+// theme hex values; every other role stays theme-native, so body text,
+// hints and the success/error states keep the user's theme.
+const IRIS_FG = "\x1b[38;2;185;167;242m";
+const IRIS_DEEP_FG = "\x1b[38;2;143;122;217m";
+const IRIS_TINT_BG = "\x1b[48;2;26;21;38m";
+
+// The float tint follows the card tone: info cards (live agent work) wear the
+// iris tint; success, warning and error cards keep the theme's background.
+function agentTheme(theme: CardTheme, tone: CardTone): CardTheme {
+	const tint = tone === CARD_TONE.INFO;
+	return {
+		fg: (color, text) => color === "accent" ? `${IRIS_FG}${text}\x1b[39m`
+			: color === "border" ? `${IRIS_DEEP_FG}${text}\x1b[39m`
+			: theme.fg(color, text),
+		...(theme.bg ? { bg: (color, text) => tint && color === "toolSuccessBg" ? `${IRIS_TINT_BG}${text}\x1b[49m` : theme.bg!(color, text) } : {}),
+	};
+}
+
+// Card headings are one row: fold any line break a caller passes in before
+// the usual control-character escaping.
+function headingText(value: string): string {
+	return sanitizeTerminalText(value.replace(/[\r\n]+/g, " "));
+}
+
+// Structured task facts carried on the tool result; anything missing or of the
+// wrong shape falls back to the plain preview, so older details and error
+// results keep rendering.
+interface StatusCardFacts {
+	taskId?: string;
+	agent?: string;
+	status?: string;
+	mode?: string;
+	cwd?: string;
+	label?: string;
+	turns?: number;
+	toolCalls?: number;
+	lastStep?: string;
+	error?: string;
+	model?: string;
+	thinking?: string;
+}
+
+function statusCardFacts(details: unknown): StatusCardFacts | undefined {
+	const raw = (details as { gentleAgents?: unknown } | undefined)?.gentleAgents;
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const source = raw as Record<string, unknown>;
+	if (typeof source.taskId !== "string") return undefined;
+	const facts: StatusCardFacts = { taskId: source.taskId };
+	for (const key of ["agent", "status", "mode", "cwd", "label", "lastStep", "error", "model", "thinking"] as const) {
+		if (typeof source[key] === "string") facts[key] = source[key] as string;
+	}
+	for (const key of ["turns", "toolCalls"] as const) {
+		if (typeof source[key] === "number" && Number.isFinite(source[key])) facts[key] = source[key];
+	}
+	return facts;
+}
+
+// What the child runs on, beside the agent it runs as. The record stores the
+// launch profile's model as `formatModelRef(undefined)` = "default" when no
+// layer picked one, which is an inheritance, not a model name: say so.
+function modelChip(model: string | undefined): string | undefined {
+	const named = model ? sanitizeTerminalText(model).trim() : "";
+	if (!named) return undefined;
+	return named === "default" ? "inherit" : named;
+}
+
+// One muted identity line: who, which task, and what the child runs on.
+function subjectLine(chips: Array<string | undefined>): string | undefined {
+	const shown = chips.filter((chip): chip is string => typeof chip === "string" && chip !== "");
+	return shown.length > 0 ? shown.join(" · ") : undefined;
+}
+
+// A heading row carries identity, then the launch profile, then the key hint.
+// The row is one line, so a narrow terminal sheds the profile from the end
+// before it sheds the affordance the reader needs to open the card.
+function fitSubject(
+	card: { title: string; tone: CardTone; glyph?: string },
+	hint: string | undefined,
+	size: number,
+	chips: Array<string | undefined>,
+): string | undefined {
+	const shown = chips.filter((chip): chip is string => typeof chip === "string" && chip !== "");
+	while (shown.length > 0 && !headingFits({ ...card, subtitle: subjectLine(shown), body: [] }, hint, size)) shown.pop();
+	return subjectLine(shown);
+}
+
+// One Gentle Shell card body for a task's live or final state, built from the
+// details the execute path already records. Pure: facts in, body rows out.
+// The state leads as a pill (RUNNING/OK/FAIL, colored by role); collapsed
+// keeps pill, task label, and last step; expanded adds workspace and error.
+function statusCardRows(facts: StatusCardFacts, theme: CardTheme, expanded: boolean): string[] {
+	const status = facts.status ?? "unknown";
+	const pill = statusPill(status, theme);
+	const head = [pill, facts.mode];
+	if (facts.turns !== undefined && facts.toolCalls !== undefined) head.push(`${facts.turns} turns · ${facts.toolCalls} tool calls`);
+	const headLine = head.filter((part) => part !== undefined).join(" · ");
+	const label = facts.label ? sanitizeTerminalText(facts.label) : undefined;
+	const cwd = facts.cwd ? `cwd ${sanitizeTerminalText(facts.cwd)}` : undefined;
+	const last = facts.lastStep ? `last: ${sanitizeTerminalText(facts.lastStep)}` : undefined;
+	const error = facts.error ? sanitizeTerminalText(facts.error) : undefined;
+	if (!expanded) return [headLine, ...(label ? [label] : []), ...(last ? [last] : [])];
+	return [headLine, ...(label ? [label] : []), ...(cwd ? [cwd] : []), ...(last ? [last] : []), ...(error ? [error] : [])];
 }
 
 // pi's keybinding hint needs a live theme; outside one (tests, headless) the
@@ -561,7 +723,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		};
 		return PresencePublisher.start({ profile: agentHome, sessionId, label: labelSource(), labelSource, activity: [] });
 	};
-	const publishActivity = () => {
+	const publishActivityNow = (deferred = false) => {
 		if (!sessions) return;
 		try {
 			if (!presence || presence.error) {
@@ -580,14 +742,59 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return data?.sessionId === activeSessionId() && typeof data.root === "string" && typeof data.evidence === "string" ? [data.root] : [];
 				});
 				presence?.updateDiscovery(transport.listener.record, { workspace: sessions.getCwd(), tasks, registered,
-					scope: scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
+					// A deferred (render-cadence trailing) publish must never resolve Git:
+					// its timer can land while a peer metadata query is being served, and
+					// that contract adds no caller Git probes. It reuses the snapshot the
+					// last event-time publication projected; the next event-time publish
+					// refreshes the facts.
+					scope: deferred ? scopeCache.cachedScope() : scopeCache.project(sessions.getCwd(), tasks, registered), state: stateCache.get(sessions) });
 			}
 		} catch { presence?.dispose(); presence = undefined; }
+	};
+	// Coalesced like requestRender: the first call publishes immediately so an
+	// idle→working transition or a resumed session never waits, and every call
+	// inside the window collapses into one trailing publish, so a burst of child
+	// deltas costs one publication instead of one per event.
+	let activityPublishQueued = false;
+	let activityPublishTrailing = false;
+	let cancelActivityPublish: (() => void) | undefined;
+	const resetActivityPublish = () => {
+		cancelActivityPublish?.();
+		cancelActivityPublish = undefined;
+		activityPublishQueued = false;
+		activityPublishTrailing = false;
+	};
+	const flushDeferredPublish = () => {
+		cancelActivityPublish = undefined;
+		activityPublishQueued = false;
+		if (!activityPublishTrailing) return;
+		activityPublishTrailing = false;
+		publishActivityNow(true);
+	};
+	const publishActivity = () => {
+		if (activityPublishQueued) {
+			activityPublishTrailing = true;
+			return;
+		}
+		publishActivityNow();
+		activityPublishQueued = true;
+		cancelActivityPublish = deps.schedule(flushDeferredPublish, RENDER_COALESCE_MS);
+	};
+	// Discrete semantic events publish immediately so peers and readers see them
+	// promptly (a consult binds to the published snapshot); the coalescing window
+	// stays armed so a child-delta burst that follows still collapses into one
+	// trailing publish.
+	const publishActivityPrompt = () => {
+		publishActivityNow();
+		if (!activityPublishQueued) {
+			activityPublishQueued = true;
+			cancelActivityPublish = deps.schedule(flushDeferredPublish, RENDER_COALESCE_MS);
+		}
 	};
 	const unsubscribeScope = pi.events.on(SESSION_WORKTREE_CHANGED, (event) => {
 		if ((event as { sessionId?: string } | undefined)?.sessionId !== sessions?.getSessionId()) return;
 		scopeCache.clear();
-		publishActivity();
+		publishActivityPrompt();
 	});
 	// The todo list is the session's progress: publish it for peers so the model
 	// spends no turn on orchestrator_session_id. Merged into the owner's curated
@@ -736,7 +943,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					await closeStartupTransport();
 					return;
 				}
-				publishActivity();
+				// Publish immediately, not on the coalescing trailing edge: this is the
+				// session's first discovery publication, and a peer metadata query binds
+				// to the activation only through it — a 400 ms lag here makes a prompt
+				// consult read publication-unknown-or-stale.
+				publishActivityPrompt();
 			} catch {
 				if (activeSessionTransport?.generation === generation) activeSessionTransport = undefined;
 				await closeStartupTransport();
@@ -1181,11 +1392,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// Structured descriptions feed Status; native hosts keep the compact count.
 	const refreshJobStatus = () => {
 		const sessionId = activeSessionId();
-		const running = jobs.list(sessionId ?? "").filter((job) => job.status === "running")
+		const sessionJobs = jobs.list(sessionId ?? "");
+		const running = sessionJobs.filter((job) => job.status === "running")
 			.sort((a, b) => b.startedAt - a.startedAt);
+		// Finished tails ride the same snapshot so the sidebar card can linger
+		// them briefly, like the Agents card's results; failed jobs ride too,
+		// painting the ✗ glyph like a nonzero exit.
+		const finished = sessionJobs.filter((job) => (job.status === "exited" || job.status === "stopped" || job.status === "failed") && job.endedAt !== undefined && deps.now() - job.endedAt < JOBS_FINISHED_TTL_MS)
+			.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0)).slice(0, 3);
 		try { parentCtx?.ui.setStatus(JOBS_STATUS_KEY, running.length === 0 ? undefined : `${JOB_GLYPH} ${running.length} job${running.length === 1 ? "" : "s"}`); } catch { /* Status is cosmetic. */ }
 		if (sessionId) {
-			try { pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: running.map(({ id, label, startedAt }) => ({ id, label, startedAt })) } }); } catch { /* Display only. */ }
+			try {
+				pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: [
+					...running.map(({ id, label, startedAt }) => ({ id, label, startedAt })),
+					...finished.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode })),
+				] } });
+			} catch { /* Display only. */ }
 		}
 	};
 
@@ -1366,7 +1588,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const details = (message.details as { gentleAgents?: { taskId?: unknown; agent?: unknown } } | undefined)?.gentleAgents;
 		const taskId = typeof details?.taskId === "string" ? details.taskId : "unknown";
 		const agent = typeof details?.agent === "string" ? details.agent : "Subagent";
-		const heading = `${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
+		const heading = `${ACTION_GLYPH.send_message} ${sanitizeTerminalText(agent)} message · Task ${sanitizeTerminalText(taskId)}`;
 		const body = sanitizeTerminalText(messageText(message.content));
 		return new Text(`${theme.fg("customMessageLabel", heading)}\n${theme.fg("customMessageText", body)}`, options.outputPad, 0);
 	});
@@ -1380,12 +1602,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const details = (message.details as { gentleAgents?: { agent?: string; status?: string } } | undefined)?.gentleAgents;
 		const content = message.content as string | Array<{ type: string; text?: string }>;
 		const text = typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
-		const body = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const tone = details?.status === "completed" ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
 		const hint = expandHint(options.expanded);
+		// The same answer card as the tool result: iris chrome, the state pill
+		// on top, the answer below ("answer" keeps its name through the flow).
+		const t = agentTheme(theme, tone);
+		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
+		const chips = [details?.agent, modelChip(facts?.model), facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined];
+		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
+		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
 		return {
 			render(width: number) {
-				return renderCard({ title: "Agent result", subtitle: details?.agent, body, tone, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint });
+				// Same one-line heading budget as the tool cards: the answer card's
+				// inner columns are the style's, not the terminal's.
+				const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
+				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
 			},
 			invalidate() {},
 		};
@@ -1407,7 +1638,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		];
 		return {
 			render(width: number) {
-				return renderCard({ title: "Stale agent result", subtitle: `${agent} · task ${taskId}`, body, tone: CARD_TONE.WARNING, glyph: AGENTS_GLYPH }, theme, width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
+				return renderCard({ title: "Stale agent answer", subtitle: `${headingText(agent)} · task ${headingText(taskId)}`, body, tone: CARD_TONE.WARNING, glyph: ACTION_GLYPH.result }, agentTheme(theme, CARD_TONE.WARNING), width, { expanded: options.expanded, previewRows: 3, hint: expandHint(options.expanded) });
 			},
 			invalidate() {},
 		};
@@ -1565,7 +1796,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			ctx.ui.notify(`Could not read the task's session: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			return;
 		}
-		if (!openInExternalEditor(overlayHost, transcriptPath)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		try {
+			if (!openInExternalEditor(overlayHost, transcriptPath)) ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		}
 	};
 
 	const writeTranscript = async (task: TaskRecord): Promise<string> => {
@@ -1597,21 +1832,74 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			host?.requestRender();
 		});
 		tickClock();
-		// Agents is not a rail part: the fullscreen sidebar only suppresses
-		// bottom components registered through sidebarPart, and this widget is
-		// the only Agents surface in every mode, so it stays a plain component.
+		// Agents follows Todos: the fullscreen rail shows it when the terminal is
+		// wide enough, and sidebarPart suppresses the above-editor copy only
+		// while the rail owns the host; narrower terminals keep the widget.
 		ui?.setWidget(AGENTS_WIDGET_KEY, (tui, theme) => {
 			host = tui;
 			sidebarTui = tui;
-			return {
-				render(width: number) {
-					if (!agentsVisible) return [];
-					const lines = renderAgentsCard(visibleTasks(), theme, width, deps.now(), { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey });
-					return lines.length === 0 ? [] : [...lines, ""];
-				},
-				invalidate() {},
-			};
+			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
 		});
+	};
+
+	const toggleCollapsed = () => {
+		collapsed = !collapsed;
+		if (sidebarTui) invalidateSidebar(sidebarTui);
+		host?.requestRender();
+	};
+
+	// One surface of the Agents card. The rail is natively scrollable, so it
+	// lists every task; the above-editor widget keeps its row budget. Only the
+	// header row is the clickable collapse control, exactly like Todos.
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string } => {
+		let hovered = false;
+		let headerRow = 0;
+		const card: Component = {
+			render(width: number) {
+				if (!agentsVisible) return [];
+				const tasks = visibleTasks();
+				const now = deps.now();
+				headerRow = panelHeaderRow(theme, width, agentsCardTone(tasks, now));
+				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: rail ? undefined : widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered });
+				return lines.length === 0 || rail ? lines : [...lines, ""];
+			},
+			invalidate() {
+				hovered = false;
+			},
+		};
+		const region = new NativePointerRegion(card, {
+			onHover(event) {
+				const next = event.y === headerRow;
+				if (next === hovered) return { handled: true };
+				hovered = next;
+				return { handled: true, render: true };
+			},
+			onLeave() {
+				if (!hovered) return;
+				hovered = false;
+				host?.requestRender();
+			},
+			onClick(event) {
+				if (event.button !== "left" || event.y !== headerRow) return undefined;
+				toggleCollapsed();
+				return { handled: true, render: true };
+			},
+		});
+		return {
+			// The rail memo repaints a part only when its digest moves: task
+			// state, the local controls, and the elapsed clock (to the second)
+			// only while a task is still running, so an idle or finished card
+			// never forces a rail rebuild every second.
+			digest: () => {
+				const tasks = visibleTasks();
+				const clock = tasks.some((task) => !isFinished(task.status)) ? Math.floor(deps.now() / 1000) : 0;
+				return JSON.stringify([agentsVisible, collapsed, hovered, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
+			},
+			render: (width) => region.render(width),
+			handleMouse: (event) => region.handleMouse(event),
+			invalidate: () => region.invalidate(),
+			dispose: () => region.dispose(),
+		};
 	};
 
 	const roots = (ctx: ExtensionContext) => ({ cwd: ctx.sessionManager.getCwd(), home: deps.home, agentHome });
@@ -1641,6 +1929,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// bound session used to kill its own non-git writer mid-preparation because
 		// admission still read only the pin/global layers). Slice 3b-ii: the same
 		// read covers the frozen inherited profile and `follow` mode.
+		requireSessionProfileAuthority(ctx.sessionManager);
 		const profileConfigHome = gentlePiConfigHome(deps.env);
 		const sessionProfile = resolveSessionProfile({
 			sessionId: ctx.sessionManager.getSessionId(),
@@ -1662,6 +1951,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			admittedModel = `${catalogModel.provider}/${catalogModel.id}`;
 			if (!current() || !await prepareBoundSessionRepository(originalManager, originalCwd, signal) || !current() || safeBootstrapDirectory(originalCwd) !== root || resolveSessionWorktree(originalCwd, originalCwd)?.root !== root) throw new Error("Writer repository preparation was unavailable or its session/target changed.");
 		}
+		requireSessionProfileAuthority(originalManager);
 		const parentCwd = ctx.sessionManager.getCwd();
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
@@ -1708,6 +1998,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// included; only `follow` reads the defaults of the target. The profile is
 		// resolved here, at task-request creation, so queued and running children
 		// keep the routing frozen into their requests even if the session rebinds.
+		requireSessionProfileAuthority(originalManager);
 		// The routing target this launch reads (#1064), reused to name the winning
 		// layer (#2180) so both answers come from one resolution.
 		const routingTarget = {
@@ -1740,7 +2031,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// inheriting and a matched key never warns. Keys are checked against every
 		// discovered agent, so a key naming another agent is never reported here.
 		if (ctx.hasUI) {
-			const unmatched = unmatchedProfileKeys(config.modelProfiles, discoverAgents(roots(ctx)).agents);
+			// Provider review roles are routed by key and never have an agent file.
+			const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discoverAgents(roots(ctx)).agents];
+			const unmatched = unmatchedProfileKeys(config.modelProfiles, known);
 			const nearMisses = unmatched.filter((entry) => entry.suggestion === agent.name);
 			if (nearMisses.length > 0) {
 				ctx.ui.notify(nearMisses.map((entry) => `"${entry.key}" did not match any agent, did you mean ${agent.name}?`).join(" "), "warning");
@@ -1865,7 +2158,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (launched && foreignRequest) foreignTasks.set(task.id, foreignRequest);
 		ownedTaskIds.add(task.id);
 		publishWork?.(task.id);
-		publishActivity(); // Admission's summary notification precedes runtime ownership.
+		publishActivityPrompt(); // Admission's summary notification precedes runtime ownership.
 		store.subscribe(task.id, () => { publishActivity(); requestRender(); });
 		if (request.mode === AGENT_MODE.BACKGROUND) return text(`Started ${task.agent} in the background as task ${task.id}. Retain that id; completion is pushed automatically. Never sleep or periodically poll subagent_status/subagent_result for completion or cache maintenance. Inspect status only at a real orchestration decision boundary; never relaunch equivalent queued/running work.`, taskDetails(task));
 		// A tool call aborted by the host (a human interrupting the turn, a timeout)
@@ -1906,28 +2199,152 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	};
 
 	const tool = (name: string, description: string, parameters: Record<string, unknown>, execute: (params: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => Promise<ToolText>) => {
+		const heading = ACTION_HEADING[name] ?? `agent ${name.replace(/_/g, " ")}`;
+		const glyph = ACTION_GLYPH[name] ?? AGENTS_GLYPH;
+		// The agent chip: the call shows who it works with, and what that child
+		// runs on. Status-style calls only carry a task id, so the store resolves
+		// the agent and its launch profile.
+		const subject = (params: { agent?: string; task_id?: string }, launched?: { agentProfile?: boolean; agentModel?: string; agentEffort?: string }): { agent?: string; taskRef?: string; model?: string; effort?: string } => {
+			const task = typeof params.task_id === "string" ? store.get(params.task_id) : undefined;
+			const agent = typeof params.agent === "string" && params.agent.trim() ? headingText(params.agent)
+				: task ? headingText(task.agent) || undefined
+				: undefined;
+			const taskRef = typeof params.task_id === "string" ? `task ${headingText(params.task_id)}` : undefined;
+			// A launch has no task id at call time, so its profile arrives through
+			// the shared row state once the result slot knows it. Once it speaks for
+			// this call it wins whole: a continuation is a new task, so keeping the
+			// predecessor's model — or its effort when the new one has none — would
+			// name the wrong child.
+			const fresh = launched?.agentProfile === true;
+			const model = fresh ? launched?.agentModel : modelChip(task?.model);
+			const effort = fresh ? launched?.agentEffort : task?.thinking ? headingText(task.thinking) : undefined;
+			return { agent, taskRef, model, effort };
+		};
+		const agentToolContext = (context: CardRowContext & { expanded?: boolean; isError?: boolean; state?: { agentFailed?: boolean; agentProfile?: boolean; agentModel?: string; agentEffort?: string } } | undefined) => context ?? {};
 		pi.registerTool({
 			name: `${TOOL_PREFIX}${name}`,
 			renderShell: "self",
 			label: `Agent ${name.replace(/_/g, " ")}`,
 			description,
 			parameters: { type: "object", additionalProperties: false, ...parameters } as never,
-			renderCall(args, theme) {
+			// The same tool-card protocol the orchestrator tools use: the call
+			// draws the card heading and closes its own frame while the result
+			// is pending; the result then continues the card (afterHeading) and
+			// closes it — one continuous card in the user's card style, never a
+			// bare title over a second frame.
+			renderCall(args, theme, context) {
 				// The result title belongs with the result body so a running poll
 				// can hide both without changing the tool call or its model output.
 				if (name === "result") return { render: () => [], invalidate() {} };
-				const params = args as { agent?: string; task_id?: string };
-				return new Text(theme.fg("toolTitle", `${AGENTS_GLYPH} agent ${name.replace(/_/g, " ")}${params.agent ? ` · ${params.agent}` : params.task_id ? ` · ${params.task_id}` : ""}`), 0, 0);
+				return {
+					render(width: number) {
+						if (width <= 0) return [];
+						const row = agentToolContext(context);
+						// Resolved per frame: the store gains the task and its profile after
+						// the call is first drawn, and the heading has to catch up.
+						const { agent, taskRef, model, effort } = subject(args as { agent?: string; task_id?: string }, row.state);
+						const chips = [agent, taskRef, model, effort];
+						// The heading is this slot's, so a failure the result slot learns about
+						// has to travel through the shared row state: a rejected call wears the
+						// error frame instead of reading as a delegation still in flight. The
+						// row context is a snapshot, so its own isError cannot be trusted here.
+						const tone = row.isError || row.state?.agentFailed ? CARD_TONE.ERROR : CARD_TONE.INFO;
+						const iris = agentTheme(theme, tone);
+						const hint = expandHint(!!row.expanded);
+						return floatRows(tone, iris, width, (inner) => ({
+							head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, chips), body: [], tone, glyph }, iris, inner, hint)],
+							...(cardAwaitingResult(row) ? { body: [cardRunningLine(tone, iris, inner)], bottom: cardBottom(tone, iris, inner) } : {}),
+						}));
+					},
+					invalidate() {},
+				};
 			},
-			renderResult(result, options, theme) {
-				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string } } | undefined)?.gentleAgents;
+			renderResult(result, options, theme, context) {
+				const task = (result.details as { gentleAgents?: { status?: string; taskId?: string; agent?: string } } | undefined)?.gentleAgents;
 				if (name === "result" && task?.status === TASK_STATUS.RUNNING) {
 					return { render: () => [], invalidate() {} };
 				}
+				if (!options.isPartial) markCardResult(agentToolContext(context).state);
+				// A host error (a throw before any details exist) counts like a
+				// details error, so the result keeps the tone the call already shows —
+				// and the call's snapshot needs the flag to wear it too.
+				const row = agentToolContext(context);
+				const failed = row.isError === true || (result.details as { error?: unknown } | undefined)?.error !== undefined;
+				if (row.state !== undefined) {
+					row.state.agentFailed = failed;
+				}
+				// Parsed for every tool: the answer and status cards lead with the
+				// facts, and every card names the launch profile in its heading.
+				const facts = statusCardFacts(result.details);
+				if (row.state !== undefined) {
+					// The call slot draws the heading, so what the child runs on has to
+					// reach it the same way the failure does.
+					row.state.agentModel = modelChip(facts?.model);
+					row.state.agentEffort = facts?.thinking ? headingText(facts.thinking) : undefined;
+					// From here the result speaks for this call's profile: the store's
+					// task may be a different one (a continuation's predecessor).
+					row.state.agentProfile = true;
+				}
 				const body = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-				const visibleBody = options.expanded ? body : theme.fg("muted", agentResultPreview(body).split("\n")[0] ?? "");
-				const title = `${AGENTS_GLYPH} agent result${task?.taskId ? ` · ${sanitizeTerminalText(task.taskId)}` : ""}`;
-				return new Text(name === "result" ? `${theme.fg("toolTitle", title)}\n${visibleBody}` : visibleBody, 0, 0);
+				let tone: CardTone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
+				// Status answers a real orchestration decision, so its task facts
+				// lead the card; the answer card gets the state pill when the
+				// result carries them. Anything without structured details (older
+				// sessions, error results) falls back to the text preview.
+				// Only the status and answer cards lead with the facts; every card
+				// still names the launch profile in its heading.
+				const cardFacts = name === "status" || name === "result" ? facts : undefined;
+				if (cardFacts) tone = STATUS_CARD_TONE[cardFacts.status ?? ""] ?? tone;
+				const iris = agentTheme(theme, tone);
+				let rows: string[];
+				if (cardFacts) {
+					if (name === "status") {
+						rows = statusCardRows(cardFacts, iris, options.expanded);
+					} else {
+						// The answer card: the state pill on top, the answer below.
+						const pillRow = statusCardRows(cardFacts, iris, options.expanded)[0] ?? "";
+						const answer = options.expanded ? body.split("\n") : agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+						rows = [pillRow, ...answer];
+					}
+				} else if (options.expanded) {
+					rows = failed ? [statusPill(TASK_STATUS.FAILED, iris), ...body.split("\n")] : body.split("\n");
+				} else {
+					// The collapsed preview leads with the meaningful content: the
+					// answer for finished tasks, the state line for anything else.
+					const preview = agentResultPreview(body).split("\n").filter((line) => line.trim() !== "");
+					// Without facts there is no status to name, but a failure still has
+					// to lead: the pill is the card's one scanable state channel.
+					rows = failed ? [statusPill(TASK_STATUS.FAILED, iris), ...preview] : preview;
+				}
+				// The result tool hides its call, so the result draws the heading
+				// itself; every other tool continues the call's card. Either way the
+				// heading names the agent and what it runs on.
+				const ownHeading = name === "result";
+				// A collapsed status card keeps state, label and last step on one
+				// row each, so a narrow terminal clips them instead of wrapping the
+				// last step out of the three-row preview.
+				const fitRows = !options.expanded && name === "status" && facts !== undefined;
+				const ownChips = ownHeading
+					? [
+						facts?.agent ? headingText(facts.agent) : facts ? `task ${headingText(facts.taskId)}` : undefined,
+						modelChip(facts?.model),
+						facts?.thinking ? headingText(facts.thinking) : undefined,
+					]
+					: [];
+				return {
+					render(width: number) {
+						if (width <= 0) return [];
+						const hint = expandHint(options.expanded);
+						return floatRows(tone, iris, width, (inner) => ({
+							...(ownHeading ? {
+								head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
+							} : { afterHeading: true }),
+							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
+							bottom: cardBottom(tone, iris, inner),
+						}));
+					},
+					invalidate() {},
+				};
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -1938,19 +2355,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerTool({
 		name: "orchestrator_session_id",
 		label: "Orchestrator session ID",
-		description: "Return this host session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Explicit subjects update Current even when named; Initial stays the first declared branch topic, unknown for legacy history. Before delegation or cross-session coordination, declare a short recognizable subject here. Do not require a subject declaration for small direct tasks; do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Use a concise non-sensitive label, not a prompt. Progress is published automatically from the todo list; publish state here only for objective, decisions, blockers, or work, never just to report progress. Owner-curated state (2048 UTF-8 bytes total): null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
+		description: "Return this session's stable routing ID, Initial alias (FIRST TASK), Current alias (CURRENT TASK), and separate human Session name. Subject updates Current even when named; Initial is the first declared branch topic, unknown for legacy history. Without subject, explicit state.work.topic updates Current; keep it current as tasks change. Before delegation or cross-session coordination, declare a short recognizable non-sensitive subject, not a prompt. Do not require a subject declaration for small direct tasks. Do not query all peers. Names never authenticate. Existing Pi names and human renames are preserved. Progress is published automatically from the todo list; publish state only for objective, decisions, blockers or work, never just progress. Classified work must publish objective and work.topic/area at session start and every task-topic change; never retain old task state. Catalog flags never-published peers. Owner-curated state: 2048 UTF-8 bytes total; null withdraws, omission leaves unchanged. Never include credentials, internal instructions, or raw prompts. Historical notes are not consent or an owner reply.",
 		...orchestratorToolRenderers("session", expandHint),
 		parameters: { type: "object", additionalProperties: false, properties: {
-			subject: { type: "string", maxLength: 120, description: "Optional short task subject; updates task aliases independently of human names. Also names an unnamed Pi session." },
+			subject: { type: "string", maxLength: 120, description: "Short task subject; updates aliases independently of human names and names unnamed Pi sessions." },
 			state: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, properties: {
 				objective: { type: "string" }, progress: { type: "string" }, decisions: { type: "string" }, blockers: { type: "string" },
 				work: { type: "object", additionalProperties: false,
-					description: "Optional historical, non-authoritative classification; topic requires area. Text plus work JSON fits 2048 UTF-8 bytes. Exact duplicate tags/refs are rejected; no ref resolution or routing.",
+					description: "Historical, non-authoritative; topic requires area. Text and work JSON share 2048 UTF-8 bytes. Reject exact duplicate tags/refs; no ref resolution or routing.",
 					properties: {
 						...workDescriptorSchema.properties,
 						tasks: { type: "object", maxProperties: 8, propertyNames: { type: "string", maxLength: 256 },
 							additionalProperties: workDescriptorSchema,
-							description: "Exact actual owner-declared task IDs, at most 256 UTF-8 bytes; controls, surrogates and __proto__/prototype/constructor rejected. Root-only; nonempty tasks alone are valid. Replacement omitting tasks clears annotations." },
+							description: "Exact owner-declared task IDs, max 256 UTF-8 bytes; no controls, surrogates or __proto__/prototype/constructor. Root-only; nonempty tasks alone valid; replacement without tasks clears annotations." },
 					},
 				},
 			} }] },
@@ -1978,7 +2395,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (declared && !ctx.sessionManager.getSessionName?.()) pi.setSessionName(declared);
 			const alias = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
 			const aliases = stateCache.get(ctx.sessionManager)?.aliases;
-			if (state !== undefined || declared) publishActivity();
+			if (state !== undefined || declared) publishActivityPrompt();
 			presence?.refreshLabel();
 			return text(`Active session ID: ${transport.sessionId}\nCurrent alias (CURRENT TASK): ${aliases?.currentAlias ?? "unknown"}\nInitial alias (FIRST TASK): ${aliases?.initialAlias ?? "unknown"}\nSession name: ${alias || "unnamed"}`,
 				{ gentleAgents: { senderSessionId: transport.sessionId, alias, sessionName: alias, initialAlias: aliases?.initialAlias ?? null, currentAlias: aliases?.currentAlias ?? null } });
@@ -2038,15 +2455,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		name: "orchestrator_list",
 		label: "List orchestrators",
 		...orchestratorToolRenderers("list", expandHint),
-		description: "List other sessions advertised by the trusted local profile. Optional filter searches only published classified work with bounded, non-exhaustive coverage, no authority and unknown reachability. Omit filter for the existing session list.",
+		description: "List other sessions advertised by the trusted local profile. Omit filter for the existing list; filter searches published classified work only: bounded, non-exhaustive, no authority, unknown reachability. Classified work must publish at session start and each task-topic change; flag peers doing classified work who never published state.",
 		parameters: Type.Object({
-			recipient_session_id: Type.Optional(Type.String({ description: "Exact routing ID of the peer to inspect." })),
-			cursor: Type.Optional(Type.String({ description: "Opaque catalog continuation from that peer; requires recipient_session_id." })),
+			recipient_session_id: Type.Optional(Type.String({ description: "Exact peer routing ID." })),
+			cursor: Type.Optional(Type.String({ description: "Opaque peer catalog continuation; requires recipient_session_id." })),
 			filter: Type.Optional(Type.Object({
 				area: Type.Optional(Type.String()),
 				topic: Type.Optional(Type.String({ description: "Requires area." })),
 				tag: Type.Optional(Type.String()),
-				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, never state prose or history." })),
+				text: Type.Optional(Type.String({ description: "Literal label/descriptor search, not state prose or history." })),
 				ref: Type.Optional(Type.Object({
 					kind: Type.Union([Type.Literal("issue"), Type.Literal("pr"), Type.Literal("task")]),
 					repository: Type.String({ description: "Exact public host/owner/repo scope." }),
@@ -2057,7 +2474,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					session_id: Type.String({ description: "Exact stable source owner session ID." }),
 					task_id: Type.Optional(Type.String({ description: "Actual task ID on the current catalog page, not child session ID." })),
 				}, { additionalProperties: false })),
-			}, { additionalProperties: false, description: "Explicit {} indexes classified work; criteria combine with AND." })),
+			}, { additionalProperties: false, description: "{} indexes classified work; criteria combine with AND." })),
 		}, { additionalProperties: false }),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			const params = _params as { recipient_session_id?: string; cursor?: string; filter?: unknown };
@@ -2081,7 +2498,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					return text(JSON.stringify(workSearch), { gentleAgents: { workSearch } });
 				}
 				const peers = discoverOrchestrators(agentHome, activations, Date.now(), params.recipient_session_id
-					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor } : undefined);
+					? { recipientSessionId: params.recipient_session_id, cursor: params.cursor, stateOnly: true } : { stateOnly: true });
 				const repository = (fact?: RepositoryFact) => fact?.root
 					? `repository: ${fact.root} · clone: ${fact.cloneHash} · Git resolved at: ${fact.resolvedAt} (${fact.source})`
 					: "repository: unknown";
@@ -2096,9 +2513,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					const note = params.recipient_session_id ? `\n  owner-curated recorded state (not consent or owner reply; authority none): ${peer.state ? JSON.stringify(peer.state) : "unknown"}` : "";
 					// A legacy peer never publishes its scope: say so instead of reporting an unknown.
 					const legacy = peer.legacyLabel !== undefined;
-					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
+					// A peer doing classified work without ever publishing state cannot be
+					// routed or coordinated with; the catalog says so explicitly (#2633).
+					const unpublished = !legacy && peer.freshness === "recent" && !peer.state && !peer.statePublished
+						? " · work state: never published" : "";
+					return `- ${peer.sessionId}${context} · ${legacy ? "repository: not published" : repository(peer.scope?.host)} · metadata: ${legacy ? "legacy" : peer.freshness}${tasks}${registered}${gaps}${catalog}${note}${unpublished}${peer.omitted ? `\n  (${peer.omitted} more tasks omitted)` : ""}`;
 				});
-				return peers.length === 0 ? text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.") : text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}`, { gentleAgents: { candidates: peers } });
+				if (peers.length === 0) return text("No other sessions are currently advertised. Advertisements have unknown reachability and do not guarantee a live session.");
+				const unlisted = peers.filter(peer => peer.freshness === "recent" && peer.legacyLabel === undefined && !peer.state && !peer.statePublished);
+				const mandate = unlisted.length > 0 ? `\n${unlisted.length} of ${peers.length} advertised sessions have never published work state. Publication is mandatory for classified work: each owner session publishes state (objective, work.topic) at session start and again on every task-topic change via orchestrator_session_id.` : "";
+				return text(`Advertised sessions (reachability is unknown):\n${rows.join("\n")}${mandate}`, { gentleAgents: { candidates: peers } });
 			} catch (error) {
 				// SessionPresenceError codes are a fixed enum with no record content,
 				// so surfacing the reason is safe and keeps diagnosis possible.
@@ -2207,6 +2631,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		},
 		async (params, ctx, signal) => {
+			requireSessionProfileAuthority(ctx.sessionManager);
 			const work = Object.hasOwn(params, "work") ? decodeWorkDescriptor(params.work) : undefined;
 			const manager = ctx.sessionManager, sessionId = manager.getSessionId();
 			if (typeof params.agent !== "string" || !params.agent.trim() || typeof params.task !== "string" || !params.task.trim() || (params.context !== undefined && typeof params.context !== "string") || (params.label !== undefined && typeof params.label !== "string")) throw new Error("Subagent dispatch requires a named agent, non-empty task and string context/label.");
@@ -2292,6 +2717,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		"Resume a finished subagent task in its own session with a follow-up prompt.",
 		{ required: ["task_id", "prompt"], properties: { task_id: { type: "string" }, prompt: { type: "string" }, label: { type: "string", description: "Three to six words naming the follow-up." }, mode: { type: "string", enum: ["task", "background"] } } },
 		async (params, ctx, signal) => {
+			requireSessionProfileAuthority(ctx.sessionManager);
 			if (Object.hasOwn(params, "sdd_change") || Object.hasOwn(params, "remediation") || Object.hasOwn(params, "research_selection")) return text("Error: retired SDD delegation is not supported.", { error: "retired SDD delegation" });
 			const previous = await resolveTask(String(params.task_id));
 			if (!previous) return unknownTask(params.task_id, ctx);
@@ -2313,11 +2739,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	if (collapseKey) {
 		pi.registerShortcut(collapseKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the agents card",
-			handler: async () => {
-				collapsed = !collapsed;
-				if (sidebarTui) invalidateSidebar(sidebarTui);
-				host?.requestRender();
-			},
+			handler: async () => toggleCollapsed(),
 		});
 	}
 
@@ -2373,7 +2795,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		helperPermission.clear();
 		if (sessions !== ctx.sessionManager) return;
 		stateCache.load(ctx.sessionManager);
-		publishActivity();
+		publishActivityPrompt();
 	});
 	pi.on("session_start", async (event, ctx) => {
 		// gentle-shell#1064 slice 3b-ii: a parent session that has no explicit
@@ -2415,7 +2837,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (preexisting && sessionId) void restoreSessionHistory(ctx, sessionId);
 		try {
 			presence = startPresence(ctx.sessionManager);
-			publishActivity();
+			resetActivityPublish();
+			publishActivityPrompt();
 		} catch { presence = undefined; }
 		void startSessionTransport(ctx);
 		// The desktop app's own pi process: publish live subagent state through
@@ -2458,6 +2881,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		rpcActivityPublisher?.stop();
 		rpcActivityPublisher = undefined;
 		cancelClock?.();
+		resetActivityPublish();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 		sessions = undefined;

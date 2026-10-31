@@ -25,7 +25,9 @@ const PREFIXED_NAMES: Record<string, string> = {
 	"work-unit-commits": "gentle-ai-work-unit-commits",
 };
 
-const UNPREFIXED_DIRS = ["gentle-ai"];
+// gentle-pi-owned skills that gentle-ai does not install keep their own
+// gentle- namespace, so they need no gentle-ai- prefix to avoid a collision.
+const UNPREFIXED_DIRS = ["gentle-ai", "design"];
 
 for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 	test(`skills/${dir}/SKILL.md frontmatter name is prefixed`, () => {

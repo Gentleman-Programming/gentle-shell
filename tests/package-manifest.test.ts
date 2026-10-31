@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -19,8 +18,9 @@ import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
-import { resolveProjectPiSdkVersion } from "../scripts/test-packed-runner.mjs";
+import { resolveProjectPiSdkVersion, runNpmWithEnv } from "../scripts/test-packed-runner.mjs";
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -431,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.2.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v4.3.1 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.2\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "4\.3\.1"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:J8EluS7QrfM\+m3vmQlF26B\/shZRjD6rBfsKtrABL5mc="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:00p8dnjJrhYFq1Qikk2oY6K\/UXIty9A\/IBUUOUiX9XA="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.2\.0/);
+	assert.match(verifier, /v4\.3\.1/);
 });
 
 
@@ -630,7 +630,7 @@ test("packaged agents use YAML list syntax for tool allowlists", () => {
 		assert.doesNotMatch(
 			frontmatter,
 			/^tools:\s*[^\n,]+(?:,\s*[^\n,]+)+$/m,
-			`${file} must not use comma-separated inline tools; pi-subagents expects a YAML list`,
+			`${file} must not use comma-separated inline tools; the agent runtime expects a YAML list`,
 		);
 		assert.match(
 			frontmatter,
@@ -665,6 +665,46 @@ test("packaged agents declare only tool names a Pi child session can resolve", (
 			);
 		}
 	}
+});
+
+// The tool-allowlist marker that denies everything else. An allowlist already
+// denies unlisted tools, so the runtime tolerates this entry by design: it is
+// not a tool name and Pi drops it from --tools.
+const DENY_ALL_TOOLS_MARKER = '"*": false';
+
+// gentle-shell#62: the declared YAML list once collapsed into one malformed
+// token on its way to the child, which then started without its filesystem
+// tools. This walks the real path every packaged agent takes at runtime:
+// install into an agent home, then discover and parse with the agent runtime,
+// and compares what the runtime yields against what the file declares.
+test("packaged agents reach the agent runtime with their declared tool allowlists", () => {
+	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
+	const agentFiles = readdirSync(agentsDir).flatMap((entry) =>
+		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
+	);
+	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+
+	withIsolatedAssetHome((agentHome) => {
+		installPackageAssets(agentHome, false);
+		const empty = mkdtempSync(join(tmpdir(), "gentle-agent-roots-"));
+		try {
+			const { agents, errors } = discoverAgents({ cwd: empty, home: empty, agentHome });
+			assert.deepEqual(errors, [], "every packaged agent must parse through the agent runtime");
+			for (const file of agentFiles) {
+				const { name, tools: declared } = readAgentDefinition(file);
+				const agent = agents.find((candidate) => candidate.name === name);
+				assert.ok(agent, `${file} must be discovered by the agent runtime after installation`);
+				assert.deepEqual(
+					agent.tools.filter((tool) => tool !== DENY_ALL_TOOLS_MARKER),
+					declared,
+					`${file} must reach the runtime with exactly its declared tool allowlist`,
+				);
+				assert.ok(agent.tools.includes("read"), `${file} must keep read so the child can inspect files`);
+			}
+		} finally {
+			rmSync(empty, { recursive: true, force: true });
+		}
+	});
 });
 
 function withIsolatedAssetHome(run: (agentHome: string) => void): void {
@@ -903,12 +943,29 @@ test("native windows audio ships an owned encoded-command adapter without script
 	assert.doesNotMatch(source, /postinstall|installer|download/i, path);
 });
 
+test("shell-free npm helper preserves packed tarball arguments and options", () => {
+	const source = readFileSync(join(PACKAGE_ROOT, "tests", "package-manifest.test.ts"), "utf8");
+	const runner = readFileSync(join(PACKAGE_ROOT, "scripts", "test-packed-runner.mjs"), "utf8");
+	const tarball = source.split('\ntest("packed tarball excludes retired workflow paths')[1]?.split('\n});')[0] ?? "";
+	assert.match(source, /import \{[^}]*runNpmWithEnv[^}]*\} from "\.\.\/scripts\/test-packed-runner\.mjs"/);
+	assert.match(tarball, /runNpmWithEnv\(\["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination\], process\.env, \{/);
+	assert.match(tarball, /cwd: PACKAGE_ROOT/);
+	assert.match(tarball, /encoding: "utf8"/);
+	assert.match(tarball, /maxBuffer: 8 \* 1024 \* 1024/);
+	assert.doesNotMatch(tarball, /execFileSync|shell\s*:\s*true/);
+	assert.match(runner, /export function runNpmWithEnv\(/);
+	const helper = readNamedFunction(runner, "runNpmWithEnv");
+	assert.match(helper, /process\.platform === "win32" \? windowsNpmInvocation\(\) : \{ file: "npm", prefix: \[\] \}/);
+	assert.match(helper, /execFileSync\(invocation\.file, \[\.\.\.invocation\.prefix, \.\.\.arguments_\], \{ \.\.\.options, env \}\)/);
+	assert.doesNotMatch(helper, /shell\s*:\s*true|cmd\.exe|npm\.cmd/);
+});
+
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
 	const destination = mkdtempSync(join(tmpdir(), "gentle-pi-pack-manifest-"));
 	try {
-		const output = execFileSync("npm", ["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination], {
+		const output = runNpmWithEnv(["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination], process.env, {
 			cwd: PACKAGE_ROOT,
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,
@@ -1793,9 +1850,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.3.0 package manifest declares the release version", () => {
+test("Gentle Shell v4.5.1 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.3.0", "the release manifest must be explicitly pinned to v4.3.0");
+	assert.equal(packageJson.version, "4.5.1", "the release manifest must be explicitly pinned to v4.5.1");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

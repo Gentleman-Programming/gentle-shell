@@ -12,8 +12,9 @@
 // fresh, and prints the rendered prompt's UTF-8 byte length to stdout.
 
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const { __testing } = await import(join(import.meta.dirname, "..", "..", "extensions", "gentle-ai.ts"));
+const { __testing } = await import(pathToFileURL(join(import.meta.dirname, "..", "..", "extensions", "gentle-ai.ts")).href);
 const assetsDir = process.argv[2];
 if (!assetsDir) {
 	throw new Error("usage: measure-orchestrator-prompt.mjs <assets-dir>");

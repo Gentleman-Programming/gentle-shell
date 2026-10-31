@@ -95,7 +95,7 @@ export function discoverYoloUiAdapter(pi: ExtensionAPI, context: ExtensionContex
 export interface YoloSessionController {
 	active(context: ExtensionContext): Promise<boolean>;
 	superActive(context: ExtensionContext): Promise<boolean>;
-	mode(context: ExtensionContext): Promise<PermissionMode>;
+	mode(context: ExtensionContext, admission?: { toolCallId: string }): Promise<PermissionMode>;
 	setMode(mode: PermissionMode, context: ExtensionContext): Promise<boolean>;
 	defaultMode(): PermissionMode;
 	saveDefault(mode: PermissionMode, context: ExtensionContext): Promise<boolean>;
@@ -110,7 +110,7 @@ interface ModeIdentity {
 }
 /** UI/slash authoring only. Defaults are read from the dedicated trusted user store. */
 export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessEnv,
-	options: { onChange?: () => void } = {}): YoloSessionController {
+	options: { onChange?: () => void; resolveIdentity?: typeof resolveCanonicalGitRepositoryIdentity } = {}): YoloSessionController {
 	const store = { gentlePiConfigHome: gentlePiConfigHome(env) };
 	let generation = 0;
 	let ownerGeneration = 0;
@@ -121,6 +121,15 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	const seen = new WeakMap<object, Set<string>>();
 	const observers = new Set<() => void>();
 	const pendingCaptures = new Set<{ manager: ModeIdentity["manager"]; id: string }>();
+	// Identity is re-captured for every tool admission: freshness is a security
+	// invariant, so cross-admission reuse is never allowed (a mid-lookup mode
+	// reselection must invalidate). Within one admission the redundant mode()
+	// lookups of the same tool call share at most ONE capture, keyed by that
+	// admission's tool call id; a different or absent id re-captures, and a
+	// generation bump or cwd change still invalidates a shared slot.
+	let capturedMode: (ModeIdentity & { cwd: string; generation: number; admission: string }) | undefined;
+	// Rendered strings last published for each context; identical repaints are skipped.
+	const published = new WeakMap<ExtensionContext, { yolo: string | undefined; modeText: string }>();
 	const primary = () => env.GENTLE_PI_AGENTS_CHILD !== "1";
 	const interactive = (ctx: ExtensionContext): boolean => {
 		if (!primary() || !ctx.hasUI) return false;
@@ -139,9 +148,14 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	};
 	const publish = (ctx: ExtensionContext): void => {
 		const yolo = liveMode === "yolo" ? YOLO_STATUS_TEXT : liveMode === "super-yolo" ? SUPER_YOLO_STATUS_TEXT : undefined;
-		try { ctx.ui.setStatus(YOLO_STATUS_KEY, yolo); } catch { /* display only */ }
-		try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [yolo] : undefined); } catch { /* display only */ }
-		try { ctx.ui.setStatus(MODE_STATUS_KEY, `Permissions: ${liveMode.toUpperCase()}`); } catch { /* display only */ }
+		const modeText = `Permissions: ${liveMode.toUpperCase()}`;
+		const previous = published.get(ctx);
+		if (previous && previous.yolo === yolo && previous.modeText === modeText) return;
+		let painted = true;
+		try { ctx.ui.setStatus(YOLO_STATUS_KEY, yolo); } catch { painted = false; /* display only */ }
+		try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [yolo] : undefined); } catch { painted = false; /* display only */ }
+		try { ctx.ui.setStatus(MODE_STATUS_KEY, modeText); } catch { painted = false; /* display only */ }
+		if (painted) published.set(ctx, { yolo, modeText });
 	};
 	const changed = (ctx: ExtensionContext): void => {
 		generation += 1; publish(ctx);
@@ -171,17 +185,25 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		try {
 			const canonical = await realpath(cwd);
 			if (!current()) return undefined;
-			const clone = await resolveCanonicalGitRepositoryIdentity(canonical);
+			const clone = await (options.resolveIdentity ?? resolveCanonicalGitRepositoryIdentity)(canonical);
 			if (!current()) return undefined;
 			return { ...scope, workspace: clone ?? `cwd:${canonical}` };
 		} catch { return undefined; }
 		finally { pendingCaptures.delete(scope); }
 	};
 	const defaultMode = (): PermissionMode => resolvePermissionModePolicy(store).mode;
-	const mode = async (ctx: ExtensionContext): Promise<PermissionMode> => {
-		const epoch = generation;
-		const identity = await capture(ctx);
-		if (epoch !== generation) return "normal";
+	const mode = async (ctx: ExtensionContext, admission?: { toolCallId: string }): Promise<PermissionMode> => {
+		const scope = session(ctx);
+		const admissionId = admission?.toolCallId;
+		let identity: ModeIdentity | undefined;
+		if (admissionId !== undefined && scope && capturedMode &&
+			capturedMode.admission === admissionId && capturedMode.generation === generation &&
+			capturedMode.manager === scope.manager && capturedMode.id === scope.id && capturedMode.cwd === ctx.cwd) identity = capturedMode;
+		if (!identity) {
+			const epoch = generation;
+			identity = await capture(ctx);
+			if (epoch !== generation) return "normal";
+		}
 		if (binding && (!identity || binding.manager !== identity.manager || binding.id !== identity.id ||
 			binding.workspace !== identity.workspace || (interactiveGrant && !interactive(ctx)))) {
 			binding = undefined; liveMode = "normal"; interactiveGrant = false; changed(ctx);
@@ -191,13 +213,17 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			remember(identity); binding = identity;
 			if (fresh) { liveMode = defaultMode(); interactiveGrant = false; changed(ctx); }
 		}
+		// Record after the binding pass: internal changed() bumps above must not strand
+		// a cache entry stamped with a superseded generation. Only admission-keyed
+		// lookups record; the slot is overwritten when a different admission id arrives.
+		if (identity && scope && admissionId !== undefined) capturedMode = { ...identity, cwd: ctx.cwd, generation, admission: admissionId };
 		publish(ctx);
 		return identity && binding ? liveMode : "normal";
 	};
 	const active = async (ctx: ExtensionContext): Promise<boolean> => await mode(ctx) === "yolo";
 	const superActive = async (ctx: ExtensionContext): Promise<boolean> => await mode(ctx) === "super-yolo";
 	const reset = (ctx: ExtensionContext): void => {
-		ownerGeneration += 1;
+		ownerGeneration += 1; capturedMode = undefined;
 		// Initial session_start remains fresh; shutdown/reload of an observed session revokes.
 		if (binding) remember(binding);
 		const scope = session(ctx);

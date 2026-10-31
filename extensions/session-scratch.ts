@@ -15,9 +15,11 @@ import {
 	isProtectedPath,
 	isSessionScratchName,
 	isWithin,
+	LEDGER_ARTIFACTS_CAP,
 	LEDGER_VERSION,
 	ledgerPath,
 	listLedgers,
+	listLedgersSync,
 	liveSubagentScratch,
 	processStartToken,
 	readLedger,
@@ -32,6 +34,7 @@ import {
 	type ScratchLedger,
 	type StoredLedger,
 	writeLedger,
+	writeLedgerSync,
 } from "../lib/session-scratch.ts";
 
 // Session scratch and artifact ledger (odd/tasks/session-scratch-ledger.md):
@@ -92,10 +95,18 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 	const tempVariables = (options.platform ?? process.platform) === "win32" ? ["TMPDIR", "TMP", "TEMP"] : ["TMPDIR"];
 	const configHome = () => options.configHome ?? gentlePiConfigHome(env);
 
-	const persist = (path: string, ledger: ScratchLedger) => {
+	const persist = async (path: string, ledger: ScratchLedger) => {
 		try {
 			if (ledger.scratchDir === null && ledger.artifacts.length === 0) deleteLedger(path);
-			else writeLedger(path, ledger);
+			else await writeLedger(path, ledger);
+		} catch { /* Best effort: an unwritable config home keeps the session running. */ }
+	};
+	// The shutdown path stays synchronous: its callers (tests/agents-runner.ts, and any
+	// handler consumer that does not await) read its post-conditions right after it runs.
+	const persistSync = (path: string, ledger: ScratchLedger) => {
+		try {
+			if (ledger.scratchDir === null && ledger.artifacts.length === 0) deleteLedger(path);
+			else writeLedgerSync(path, ledger);
 		} catch { /* Best effort: an unwritable config home keeps the session running. */ }
 	};
 	// Paths the runtime never records or removes, whatever a ledger says.
@@ -121,26 +132,28 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 	const endSession = (session: ActiveSession) => {
 		const { ledger } = session;
 		// A running or quarantined subagent's TMPDIR stays; the scratch then stays in the ledger for a later sweep.
-		const removal = removeSessionScratch(ledger, heldBy(listLedgers(configHome()))(session.path, ledger), { ownRoot: ledger.tempRoot ?? undefined, liveSubagentDirs: subagentDirs() });
+		const removal = removeSessionScratch(ledger, heldBy(listLedgersSync(configHome()))(session.path, ledger), { ownRoot: ledger.tempRoot ?? undefined, liveSubagentDirs: subagentDirs() });
 		if (removal === "removed" || removal === "absent") ledger.scratchDir = null;
 		for (const [key, value] of Object.entries(ledger.inherited)) {
 			if (value === null) delete env[key];
 			else env[key] = value;
 		}
-		persist(session.path, ledger);
+		persistSync(session.path, ledger);
 		activeSessions.delete(env);
 		pending.clear();
 	};
 
 	// S5(b): scratch of ended sessions past the grace period; their artifacts stay for the command.
+	// The startup sweep stays synchronous: session_start's callers (tests/agents-runner.ts) read
+	// its post-conditions right after it runs, without awaiting the handler.
 	const sweep = (ownPath: string) => {
-		const ledgers = listLedgers(configHome());
+		const ledgers = listLedgersSync(configHome());
 		const held = heldBy(ledgers);
 		for (const { path, ledger, mtimeMs } of ledgers) {
 			if (path === ownPath || isLive(ledger) || now() - mtimeMs < graceMs) continue;
 			const artifacts = ledger.artifacts.filter((artifact) => { try { lstatSync(artifact.path); return true; } catch { return false; } });
 			const removal = ledger.scratchDir === null ? "absent" : removeSessionScratch(ledger, held(path, { ...ledger, artifacts }), { ownRoot: ownRoot(), liveSubagentDirs: subagentDirs() });
-			persist(path, { ...ledger, scratchDir: removal === "removed" || removal === "absent" ? null : ledger.scratchDir, artifacts });
+			persistSync(path, { ...ledger, scratchDir: removal === "removed" || removal === "absent" ? null : ledger.scratchDir, artifacts });
 		}
 	};
 
@@ -152,6 +165,8 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 		return !!current && [resolve(current), realTempRoot(current)].some((dir) => dir !== undefined && isWithin(dir, ledger.scratchDir!));
 	};
 
+	// The startup path stays synchronous, like the shutdown path: its callers
+	// (tests/agents-runner.ts) read its post-conditions without awaiting the handler.
 	const startSession = (ctx: ExtensionContext, reason: string) => {
 		const sessionId = ctx.sessionManager.getSessionId?.();
 		if (!sessionId) return;
@@ -162,7 +177,7 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 		const previous = readLedger(path);
 		if (previous && isLiveScratch(previous)) {
 			activeSessions.set(env, { sessionId, path, ledger: previous });
-			persist(path, previous);
+			persistSync(path, previous);
 			sweep(path);
 			return;
 		}
@@ -202,11 +217,11 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 		};
 		// A scratch of this process is never removed at startup: it may still be in use.
 		if (previous?.scratchDir && previous.scratchDir !== scratchDir && previous.pid !== process.pid && !isLive(previous)) {
-			const held = heldBy(listLedgers(configHome()))(path, ledger);
+			const held = heldBy(listLedgersSync(configHome()))(path, ledger);
 			removeSessionScratch(previous, scratchDir ? [...held, scratchDir] : held, { ownRoot: ownRoot(), liveSubagentDirs: subagentDirs() });
 		}
 		activeSessions.set(env, { sessionId, path, ledger });
-		persist(path, ledger);
+		persistSync(path, ledger);
 		sweep(path);
 	};
 
@@ -222,8 +237,10 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 		if (absent.length > 0) pending.set(toolCallId, absent);
 	};
 
-	// S4: the noted destinations that a successful command created.
-	const capture = (targets: readonly ArtifactTarget[], command: string) => {
+	// S4: the noted destinations that a successful command created. The ledger keeps
+	// only the most recent artifacts, evicting the oldest first, so a long session's
+	// ledger file stays bounded.
+	const capture = async (targets: readonly ArtifactTarget[], command: string) => {
 		const session = activeSessions.get(env);
 		if (!session) return;
 		const { ledger } = session;
@@ -238,22 +255,24 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 			ledger.artifacts.push({ kind: target.kind, path, command, recordedAt: new Date(now()).toISOString() });
 			changed = true;
 		}
-		if (changed) persist(session.path, ledger);
+		if (!changed) return;
+		if (ledger.artifacts.length > LEDGER_ARTIFACTS_CAP) ledger.artifacts = ledger.artifacts.slice(-LEDGER_ARTIFACTS_CAP);
+		await persist(session.path, ledger);
 	};
 
-	const endedLedgers = (ownPath: string | undefined) =>
-		listLedgers(configHome()).filter(({ path, ledger }) => path !== ownPath && !isLive(ledger));
+	const endedLedgers = async (ownPath: string | undefined) =>
+		(await listLedgers(configHome())).filter(({ path, ledger }) => path !== ownPath && !isLive(ledger));
 
 	const describe = (artifact: ScratchArtifact) => `${artifact.kind} ${artifact.path}`;
 
-	const list = (): string => {
+	const list = async (): Promise<string> => {
 		const session = activeSessions.get(env);
 		const lines: string[] = [];
 		const own = session?.ledger;
 		lines.push(own?.scratchDir
 			? `Session scratch: ${own.scratchDir} (${formatSize(directorySize(own.scratchDir))})`
 			: `Session scratch: none (TMPDIR ${env.TMPDIR ?? tmpdir()})`);
-		const ended = endedLedgers(session?.path);
+		const ended = await endedLedgers(session?.path);
 		for (const { ledger } of ended) if (ledger.scratchDir) lines.push(`Ended-session scratch: ${ledger.scratchDir} (session ${ledger.sessionId})`);
 		const artifacts = [
 			...(own?.artifacts ?? []).map((artifact) => `  ${describe(artifact)} (this session)`),
@@ -269,7 +288,7 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 		const session = activeSessions.get(env);
 		const groups = [
 			...(session ? [{ path: session.path, ledger: session.ledger, own: true }] : []),
-			...endedLedgers(session?.path).map(({ path, ledger }) => ({ path, ledger, own: false })),
+			...(await endedLedgers(session?.path)).map(({ path, ledger }) => ({ path, ledger, own: false })),
 		];
 		const lines: string[] = [];
 		const entries = groups.flatMap((group) => group.ledger.artifacts.map((artifact) => ({ group, artifact })));
@@ -305,7 +324,7 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 			}
 		}
 		// Scratch goes without asking; the live session keeps its TMPDIR and empties it.
-		const held = heldBy(listLedgers(configHome()));
+		const held = heldBy(await listLedgers(configHome()));
 		for (const group of groups) {
 			const { ledger } = group;
 			if (!ledger.scratchDir) continue;
@@ -316,7 +335,7 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 			else if (removal === "kept") lines.push(`${group.own ? "Emptied" : "Kept"} scratch ${dir}${group.own ? " except subagent scratch, live sessions' scratch, recorded artifacts, and entries changed in the last minute" : ": holds a recorded artifact, a live session's scratch, or a live subagent's scratch"}`);
 			else lines.push(`${group.own ? "Emptied" : "Removed"} scratch ${dir}`);
 		}
-		for (const group of groups) persist(group.path, group.ledger);
+		for (const group of groups) await persist(group.path, group.ledger);
 		return lines.length > 0 ? lines.join("\n") : "Nothing to clean.";
 	};
 
@@ -338,13 +357,13 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 			try { note(event.toolCallId, command, ctx); } catch { /* Capture never blocks a tool call. */ }
 			return undefined;
 		});
-		pi.on("tool_result", (event) => {
+		pi.on("tool_result", async (event) => {
 			const targets = pending.get(event.toolCallId);
 			if (!targets) return undefined;
 			pending.delete(event.toolCallId);
 			const command = (event.input as { command?: unknown } | undefined)?.command;
 			if (event.toolName !== "bash" || event.isError !== false || typeof command !== "string") return undefined;
-			try { capture(targets, command); } catch { /* Capture never changes a tool result. */ }
+			try { await capture(targets, command); } catch { /* Capture never changes a tool result. */ }
 			return undefined;
 		});
 		pi.registerCommand("gentle:scratch", {
@@ -352,7 +371,7 @@ export function createSessionScratchExtension(options: SessionScratchOptions = {
 			getArgumentCompletions: (prefix) => ["list", "clean"].filter((action) => action.startsWith(prefix.trim())).map((action) => ({ value: action, label: action })),
 			handler: async (args, ctx) => {
 				const action = args.trim() || "list";
-				if (action === "list") ctx.ui.notify(list(), "info");
+				if (action === "list") ctx.ui.notify(await list(), "info");
 				else if (action === "clean") ctx.ui.notify(await clean(ctx), "info");
 				else ctx.ui.notify(SCRATCH_COMMAND_USAGE, "warning");
 			},

@@ -122,6 +122,35 @@ test("a clipboard read that finishes after the prompt is disposed changes nothin
 	assert.deepEqual(piPastes, []);
 });
 
+test("a clipboard read that finishes after the draft was sent is discarded with a notice", async () => {
+	let resolve!: (image: ClipboardImage) => void;
+	const { editor, attachments, piPastes, notices } = chipEditor(() => new Promise((done) => { resolve = done; }));
+	const sent: string[] = [];
+	editor.onSubmit = (text) => sent.push(text);
+	editor.setText("what is this?");
+	editor.handleInput(PASTE_KEY);
+	editor.handleInput("\r");
+	resolve(png());
+	await settle();
+	assert.deepEqual(sent, ["what is this?"]);
+	assert.equal(editor.getText(), "", "the next draft stays empty");
+	assert.equal(attachments.size, 0, "no image waits to ride along with the next message");
+	assert.deepEqual(piPastes, []);
+	assert.deepEqual(notices, ["Image paste discarded: the message was sent before the clipboard finished reading. Paste again to attach it."]);
+});
+
+test("a clipboard read during an unsent draft still lands in that draft", async () => {
+	let resolve!: (image: ClipboardImage) => void;
+	const { editor, notices } = chipEditor(() => new Promise((done) => { resolve = done; }));
+	editor.setText("look");
+	editor.handleInput(PASTE_KEY);
+	editor.handleInput("!");
+	resolve(png());
+	await settle();
+	assert.equal(editor.getText(), "look! [Image#1]");
+	assert.deepEqual(notices, []);
+});
+
 test("a failure after the clipboard read is reported, never an unhandled rejection", async () => {
 	const attachments = new ImageAttachments();
 	attachments.add = () => { throw new Error("out of memory"); };

@@ -190,6 +190,55 @@ posixTest("no initial Node acquires verified native binary and refreshes child P
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
 	} finally { f.cleanup(); }
 });
+// BSD ls appends `@` (extended attributes) or `+` (an ACL) to the mode
+// string. Current macOS attaches com.apple.provenance to every new
+// directory, so `@` is the normal case there (#2144). GNU ls appends `.`
+// when the directory has an SELinux security context, which is every
+// directory on an SELinux-enabled host, and `+` for an ACL. This ls reports a
+// fixed marker on every host, so the guard is checked the same way on
+// Linux CI and macOS.
+function lsWithModeMarker(f: ReturnType<typeof fixture>, marker: "" | "@" | "." | "+") {
+	f.executable("ls", `${systemUtility("ls")} "$@" | awk -v m='${marker}' '{ sub(/[@+.]$/, "", $1); $1 = $1 m; print }'`);
+}
+posixTest("a tools directory whose mode shows the extended-attribute marker @ is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "@");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the SELinux context marker . is accepted (#2144)", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, ".");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.doesNotMatch(result.stderr, /Unsafe tooling ownership/);
+		assert.match(result.stdout, /wizard-child:.*bootstrap-tools/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory whose mode shows the ACL marker + is still refused", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "+");
+		const result = f.run();
+		assert.notEqual(result.status, 0);
+		assert.match(result.stderr, /Unsafe tooling ownership/);
+		assert.doesNotMatch(result.stdout, /wizard-child/);
+	} finally { f.cleanup(); }
+});
+posixTest("a tools directory with a plain drwx------ mode is still accepted", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard(); lsWithModeMarker(f, "");
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /wizard-child:/);
+	} finally { f.cleanup(); }
+});
 posixTest("successful exit removes only the owned tools directory", () => {
 	const f = fixture();
 	try {
@@ -587,7 +636,18 @@ for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", 
 		try {
 			f.addPnpm(); f.wizard();
 			const hash = artifactFor("node", platform, architecture).integrity.slice(7);
-			assert.equal(f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash }).status, 0);
+			const result = f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash });
+			assert.equal(result.status, 0, JSON.stringify({
+				status: result.status,
+				signal: result.signal,
+				error: result.error ? {
+					name: result.error.name,
+					message: result.error.message,
+					code: "code" in result.error ? result.error.code : null,
+				} : null,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			}));
 		} finally { f.cleanup(); }
 	});
 }
@@ -934,19 +994,19 @@ test("Go has no descriptor for other targets", () => {
 // The Engram release the bundled install ships (S9), from its checksums.txt and
 // the GitHub asset digests; every archive was downloaded and re-hashed.
 const engramPins = {
-	"darwin-arm64": ["darwin_arm64.tar.gz", "d0aa59c9a83d17ae3fc7f5dd31fdab6a26fd8c00fc5e692195753cd0719294f7", 7470202],
-	"darwin-x64": ["darwin_amd64.tar.gz", "3c5bdc73d226af5629cf4f4a781e223142e37c1ebb443c4b596f2e284352e381", 7961674],
-	"linux-x64": ["linux_amd64.tar.gz", "715fda625556e46d65ddb4526bb7f88a3fee5339ca3c44ce44cc652f17fa57f1", 7821191],
-	"linux-arm64": ["linux_arm64.tar.gz", "3309e9c0bbb539d183fd5aa9f9a13cd7aa0e81ec2512b5bedefb8b2bdd35b3e5", 7176726],
-	"win32-x64": ["windows_amd64.zip", "3065736ec7ff8137eb3fc607275f542ea13bb743a5157318c8a8770f11ce3289", 8021225],
-	"win32-arm64": ["windows_arm64.zip", "7463872a85a5e5434cf958bdffc71dda1926bced30d3b6b38c80fec9bb98fbba", 7231641],
+	"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
+	"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
+	"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
+	"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
+	"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
+	"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
 } as const;
 test("fixed Engram descriptors are the GitHub release archives and checksums, and nothing else", () => {
 	for (const [target, [suffix, sha256, size]] of Object.entries(engramPins)) {
 		const [platform, arch] = target.split("-");
 		const artifact = artifactFor("engram", platform, arch);
-		assert.equal(artifact.version, "3.4.0");
-		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.4.0/engram_3.4.0_${suffix}`);
+		assert.equal(artifact.version, "3.5.2");
+		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.5.2/engram_3.5.2_${suffix}`);
 		assert.equal(artifact.integrity, `sha256-${sha256}`);
 		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
 		// GitHub serves release assets from its asset hosts.

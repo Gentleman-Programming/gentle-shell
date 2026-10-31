@@ -3762,8 +3762,7 @@ class RoutingTablePanel implements OverlayComponent {
 			this.cursor = Math.min(this.rows.length - 1, this.cursor + 1);
 			return;
 		}
-		// matchesKey does not match uppercase literals; "G" needs a raw compare.
-		if (data === "G") {
+		if (matchesKey(data, "shift+g")) {
 			this.cursor = this.rows.length - 1;
 			return;
 		}
@@ -3823,6 +3822,8 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private handleMenuKey(data: string): void {
 		const items = this.menuItems();
+		// Any other key (the close keys included) drops a pending gg sequence.
+		if (this.pendingG && !matchesKey(data, "g")) this.pendingG = false;
 		if (matchesKey(data, "escape")) return this.closeOverlay();
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.menuCursor = Math.max(0, this.menuCursor - 1);
@@ -3832,7 +3833,7 @@ class RoutingTablePanel implements OverlayComponent {
 			this.menuCursor = Math.min(items.length - 1, this.menuCursor + 1);
 			return;
 		}
-		if (data === "G") {
+		if (matchesKey(data, "shift+g")) {
 			this.menuCursor = items.length - 1;
 			return;
 		}

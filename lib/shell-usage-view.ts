@@ -95,7 +95,7 @@ export class UsageView {
 		}
 		if (data === "r") { this.refresh(); return; }
 		if (data === "g") { this.pendingG = true; return; }
-		if (data === "G") { this.scrollTo(Number.POSITIVE_INFINITY); return; }
+		if (matchesKey(data, "shift+g")) { this.scrollTo(Number.POSITIVE_INFINITY); return; }
 		if (data === "j" || matchesKey(data, Key.down)) { this.scrollBy(1); return; }
 		if (data === "k" || matchesKey(data, Key.up)) { this.scrollBy(-1); return; }
 		if (matchesKey(data, Key.pageDown)) { this.scrollBy(this.pageRows()); return; }

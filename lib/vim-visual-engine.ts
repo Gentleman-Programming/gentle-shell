@@ -1,8 +1,82 @@
 import type { VimPosition } from "./vim-normal-engine.ts";
 
-const MODES = { char: "char", line: "line" } as const;
+const MODES = { char: "char", line: "line", block: "block" } as const;
 type VisualMode = (typeof MODES)[keyof typeof MODES];
-export interface VisualRange { start: VimPosition; end: VimPosition; linewise: boolean }
+export interface VisualRange { start: VimPosition; end: VimPosition; linewise: boolean; block?: boolean }
+
+/** Ordered bounds of a blockwise range: rows and inclusive columns of the rectangle. */
+export function blockBounds(range: VisualRange): { first: number; last: number; minCol: number; maxCol: number } {
+  // A block range's end.col is exclusive (maxCol + 1), like the charwise span.
+  return {
+    first: Math.min(range.start.line, range.end.line),
+    last: Math.max(range.start.line, range.end.line),
+    minCol: Math.min(range.start.col, range.end.col - 1),
+    maxCol: Math.max(range.start.col, range.end.col - 1),
+  };
+}
+
+/** The rectangle's cells per row, as the yank register text. */
+export function blockMatrix(text: string, range: VisualRange): string {
+  const { first, last, minCol, maxCol } = blockBounds(range);
+  return text.split("\n").slice(first, last + 1).map((line) => line.slice(minCol, maxCol + 1)).join("\n");
+}
+
+/** Byte offset of a position in `text`. */
+export function offsetAt(text: string, pos: VimPosition): number {
+  return text.split("\n").slice(0, pos.line).reduce((n, line) => n + line.length + 1, 0) + pos.col;
+}
+
+/** Position of a byte offset in `text`. */
+export function positionAt(text: string, offset: number): VimPosition {
+  const lines = text.split("\n");
+  let line = 0;
+  while (line < lines.length - 1 && offset > lines[line]!.length) offset -= lines[line++]!.length + 1;
+  return { line, col: offset };
+}
+
+/** Pairs the object machinery understands, delimiters included. */
+const PAIR_SETS: ReadonlyArray<readonly [string, string]> = [
+  ["(", ")"], ["[", "]"], ["{", "}"], ["<", ">"], ['"', '"'], ["'", "'"], ["`", "`"],
+];
+
+/**
+ * Nearest complete pair block in a direction from `at`, delimiters included.
+ * Forward seeks the next block after `at`; backward seeks the last one fully
+ * before it. Used when the cursor is outside any block ("the match siguiente").
+ */
+export function seekPair(text: string, at: number, pair: readonly [string, string], direction: 1 | -1): [number, number] | undefined {
+  if (pair[0] === pair[1]) {
+    const quotes: number[] = [];
+    for (let i = 0; i < text.length; i++) if (text[i] === pair[0] && (i === 0 || text[i - 1] !== "\\")) quotes.push(i);
+    for (let i = 0; i + 1 < quotes.length; i += 2) {
+      const open = quotes[i]!, close = quotes[i + 1]!;
+      if (direction === 1 ? open > at : close < at) return [open, close];
+    }
+    return undefined;
+  }
+  for (let i = at + direction; i >= 0 && i < text.length; i += direction) {
+    if (text[i] !== pair[0]) continue;
+    let depth = 0;
+    for (let j = i; j < text.length; j++) {
+      if (text[j] === pair[0]) depth++;
+      else if (text[j] === pair[1] && --depth === 0) {
+        if (direction === 1 || j < at) return [i, j];
+        break;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Nearest pair block of any type in a direction, for the vin/vil objects. */
+export function nearestBlock(text: string, at: number, direction: 1 | -1): [number, number] | undefined {
+  let best: [number, number] | undefined;
+  for (const pair of PAIR_SETS) {
+    const block = seekPair(text, at, pair, direction);
+    if (block && (!best || Math.abs(block[0] - at) < Math.abs(best[0] - at))) best = block;
+  }
+  return best;
+}
 
 export class VimVisualEngine {
   private anchor: VimPosition | undefined;
@@ -13,7 +87,7 @@ export class VimVisualEngine {
   start(mode: VisualMode, cursor: VimPosition): void { this.anchor = { ...cursor }; this.mode = mode; }
   cancel(): void { this.anchor = undefined; }
   /** Resolve without changing the anchor; the caller validates paste markers before selecting. */
-  object(text: string, cursor: VimPosition, boundaries: number[][], around: "i" | "a", key: string): VisualRange | undefined {
+  object(text: string, cursor: VimPosition, boundaries: number[][], around: "i" | "a", key: string, seek?: 1 | -1): VisualRange | undefined {
     if (!this.active || this.mode !== MODES.char) return undefined;
     const lines = text.split("\n");
     const at = lines.slice(0, cursor.line).reduce((n, line) => n + line.length + 1, 0) + cursor.col;
@@ -67,7 +141,11 @@ export class VimVisualEngine {
           }
         }
       }
-      if (left < 0 || right <= left) return undefined;
+      if (left < 0 || right <= left) {
+        const sought = seekPair(text, at, pair, seek ?? 1);
+        if (!sought) return undefined;
+        left = sought[0]; right = sought[1];
+      }
       from = left + (around === "i" ? 1 : 0);
       to = right + (around === "a" ? 1 : 0);
     }
@@ -94,6 +172,18 @@ export class VimVisualEngine {
     const order = (a: VimPosition, b: VimPosition) => a.line - b.line || a.col - b.col;
     const first = order(anchor, cursor) <= 0 ? anchor : cursor;
     const last = order(anchor, cursor) <= 0 ? cursor : anchor;
+    if (this.mode === MODES.block) {
+      const minCol = Math.min(anchor.col, cursor.col);
+      const maxCol = Math.max(anchor.col, cursor.col);
+      return {
+        start: { line: first.line, col: minCol },
+        // end.col is exclusive (maxCol + 1), like the charwise span; consumers
+        // that need a valid apply position clamp it to the line length.
+        end: { line: last.line, col: maxCol + 1 },
+        linewise: false,
+        block: true,
+      };
+    }
     if (this.mode === MODES.line) return {
       start: { line: first.line, col: 0 }, end: { line: last.line, col: lines[last.line]!.length }, linewise: true,
     };

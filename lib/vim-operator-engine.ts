@@ -1,5 +1,5 @@
 import { VimNormalEngine, type VimPosition } from "./vim-normal-engine.ts";
-import type { VisualRange } from "./vim-visual-engine.ts";
+import { blockBounds, seekPair, type VisualRange } from "./vim-visual-engine.ts";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const word = /[\p{L}\p{N}_]/u;
@@ -17,6 +17,7 @@ export class VimOperatorEngine {
   private digits = "";
   private operandCount = "";
   private object: "i" | "a" | undefined;
+  private objectSeek: 1 | -1 | undefined;
   private find: "f" | "F" | "t" | "T" | undefined;
   private shiftG = false;
   private register: Register | undefined;
@@ -62,12 +63,59 @@ export class VimOperatorEngine {
   get isPending(): boolean { return !!(this.pending || this.object || this.find); }
 
   // Caller validates registered paste markers before committing this register.
+  /**
+   * Blockwise edit: one contiguous replace that reconstructs every row with
+   * the rectangle transformed. Supported keys: d/x (delete), r<ch> (replace
+   * each cell), ~/u/U (case per cell); y and everything else make no edit.
+   */
+  private blockEdit(key: string, lines: string[], range: VisualRange): OperatorResult {
+    const { first, last, minCol, maxCol } = blockBounds(range);
+    const transform = (mid: string): string | undefined => {
+      if (key === "d" || key === "x") return "";
+      if (key.startsWith("r")) return [...segmenter.segment(mid)].map(() => key.slice(1)).join("");
+      if (key === "~" || key === "u" || key === "U") {
+        return [...segmenter.segment(mid)].map((unit) =>
+          key === "u" ? unit.segment.toLowerCase() : key === "U" ? unit.segment.toUpperCase() :
+          unit.segment === unit.segment.toUpperCase() ? unit.segment.toLowerCase() : unit.segment.toUpperCase()).join("");
+      }
+      return undefined;
+    };
+    const build = (transformed: boolean): string => {
+      const pieces: string[] = [];
+      for (let row = first; row <= last; row++) {
+        const line = lines[row] ?? "";
+        const mid = line.slice(minCol, maxCol + 1);
+        const piece = transformed ? transform(mid) ?? mid : mid;
+        const left = line.slice(0, minCol);
+        const right = line.slice(maxCol + 1);
+        if (row === first && row === last) pieces.push(piece);
+        else if (row === first) pieces.push(piece + right);
+        else if (row === last) pieces.push(left + piece);
+        else pieces.push(left + piece + right);
+      }
+      return pieces.join("\n");
+    };
+    const before = build(false);
+    const after = build(true);
+    if (before === after) return { handled: true };
+    return {
+      handled: true,
+      edit: {
+        start: { line: first, col: minCol },
+        end: { line: last, col: Math.min(maxCol + 1, lines[last]?.length ?? 0) },
+        text: after,
+        cursor: { line: first, col: minCol },
+      },
+    };
+  }
+
   visualRegister(text: string, linewise: boolean): void {
     if (text || linewise) this.register = { text, linewise };
   }
 
   visualEdit(key: string, text: string, range: VisualRange): OperatorResult {
     const lines = text.split("\n");
+    if (range.block) return this.blockEdit(key, lines, range);
     const offset = (p: VimPosition) => lines.slice(0, p.line).reduce((n, line) => n + line.length + 1, 0) + p.col;
     if (key === "y" || (!range.linewise && range.start.line === range.end.line && range.start.col === range.end.col)) return { handled: true };
     if (key === "J") {
@@ -128,7 +176,7 @@ export class VimOperatorEngine {
   cancel(): boolean {
     const pending = !!(this.pending || this.digits || this.object || this.find);
     this.pending = undefined; this.digits = ""; this.operandCount = "";
-    this.object = undefined; this.find = undefined; this.shiftG = false;
+    this.object = undefined; this.objectSeek = undefined; this.find = undefined; this.shiftG = false;
     this.sequence = [];
     return pending;
   }
@@ -162,6 +210,9 @@ export class VimOperatorEngine {
     if (this.pending && !this.find && !this.object && /^[0-9]$/.test(key) && (key !== "0" || !!this.operandCount)) {
       this.operandCount += key; return { handled: true };
     }
+    if (this.pending && this.object && !this.objectSeek && (key === "n" || key === "l")) {
+      this.objectSeek = key === "n" ? 1 : -1; return { handled: true };
+    }
     if (this.pending && (key === "i" || key === "a") && !this.object && !this.find) {
       this.object = key; return { handled: true };
     }
@@ -175,6 +226,7 @@ export class VimOperatorEngine {
     const object = this.object;
     const find = this.find;
     const shiftG = this.shiftG;
+    const objectSeek = this.objectSeek;
     const explicitShift = !!(this.digits || this.operandCount);
     const count = Math.min(10000, (Number(this.digits) || 1) * (Number(this.operandCount) || 1));
     const lines = text.split("\n");
@@ -266,7 +318,8 @@ export class VimOperatorEngine {
       let a = offset(cursor);
       let b: number | undefined;
       if (object) {
-        const range = this.textObject(key, object, text, a, count);
+        const range = this.textObject(key, object, text, a, count, objectSeek);
+        this.objectSeek = undefined;
         if (range) { a = range[0]; b = range[1]; }
       } else if (find) {
         if ([...segmenter.segment(key)].length === 1 && !key.includes("\n")) {
@@ -359,7 +412,7 @@ export class VimOperatorEngine {
     return null;
   }
 
-  private textObject(key: string, around: "i" | "a", text: string, at: number, count: number): [number, number] | undefined {
+  private textObject(key: string, around: "i" | "a", text: string, at: number, count: number, seek?: 1 | -1): [number, number] | undefined {
     if (key === "w" || key === "W") {
       const units = [...segmenter.segment(text)].map((p) => ({ start: p.index, end: p.index + p.segment.length, char: p.segment }));
       let index = units.findIndex((p) => p.start <= at && p.end > at);
@@ -410,7 +463,12 @@ export class VimOperatorEngine {
         else if (text[right] === pair[1] && --depth === 0) break;
       }
     }
-    if (left < 0 || right < 0 || right >= text.length || left >= right) return undefined;
+    if (left < 0 || right < 0 || right >= text.length || left >= right) {
+      if (!pair) return undefined;
+      const sought = seekPair(text, at, pair, seek ?? 1);
+      if (!sought) return undefined;
+      [left, right] = sought;
+    }
     return around === "a" ? [left, right + 1] : [left + 1, right];
   }
 }

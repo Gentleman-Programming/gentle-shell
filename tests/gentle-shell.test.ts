@@ -1260,7 +1260,7 @@ test("visual anchor swap, grapheme delete and registered paste rejection keep se
   } finally { editor.dispose(); }
 });
 
-test("visual text objects select exact range then operate, with failed match retaining selection and register", () => {
+test("visual text objects select exact range then operate, seeking the next match when the cursor is outside", () => {
   const { pi, handlers } = fakePi(); gentleShell(pi, {});
   const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
   try {
@@ -1275,7 +1275,14 @@ test("visual text objects select exact range then operate, with failed match ret
     editor.handleInput("v"); editor.handleInput("i"); editor.handleInput('"');
     assert.match(editor.render(30).join("\n"), /VISUAL/);
     assert.equal(editor.getText(), 'one two (é 👩‍💻) "hi"');
-    editor.handleInput("d"); assert.equal(editor.getText(), 'one two (é ) "hi"');
+    // Outside the quotes the object seeks the next match: vi" grabs "hi".
+    editor.handleInput("d"); assert.equal(editor.getText(), 'one two (é 👩‍💻) ""');
+    // A type with no block anywhere still fails and keeps the selection.
+    editor.setText('one two (é 👩‍💻) "hi"'); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("v");
+    editor.handleInput("i"); editor.handleInput("}");
+    assert.match(editor.render(30).join("\n"), /VISUAL/, "no braces anywhere: the selection stays");
+    assert.equal(editor.getText(), 'one two (é 👩‍💻) "hi"');
   } finally { editor.dispose(); }
 });
 

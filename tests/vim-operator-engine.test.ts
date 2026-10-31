@@ -213,3 +213,12 @@ test("cancel and failed motions never overwrite register or mutate paste markers
   assert.deepEqual(engine.input("w", text, markerStart, [[0, 1, end, text.length]]), { handled: true });
   assert.deepEqual(engine.input("p", text, pos), { handled: true });
 });
+
+test("operator objects take n/l direction prefixes: din{ and cil( reach the next and last blocks", () => {
+  const text = 'a (one) b {two} c "three"';
+  const din = run(text, 0, ["d", "i", "n", "{"]);
+  assert.equal(din.text, 'a (one) b {} c "three"', "din{ deletes inside the next braces");
+  const cil = run(text, 20, ["c", "i", "l", "("]);
+  assert.equal(cil.text, 'a () b {two} c "three"', "cil( replaces inside the last parens");
+  assert.deepEqual(cil.edit?.start, { line: 0, col: 3 }, "the last parens block");
+});

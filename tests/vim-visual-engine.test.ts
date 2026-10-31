@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
+import { offsetAt, positionAt, VimVisualEngine } from "../lib/vim-visual-engine.ts";
 
 const bounds = (text: string) => text.split("\n").map((line) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)].map((unit) => unit.index).concat(line.length));
 
@@ -32,8 +32,13 @@ test("visual objects resolve word, WORD, quotes and nested brackets across graph
   assert.deepEqual(engine.object(text, { line: 1, col: 11 }, stops, "a", '"'), {
     start: { line: 1, col: 10 }, end: { line: 1, col: 14 }, linewise: false,
   });
-  assert.equal(engine.object(text, { line: 1, col: 0 }, stops, "i", '"'), undefined);
-  assert.equal(engine.object(text, { line: 0, col: 0 }, stops, "i", "["), undefined);
+  // Outside any block the object seeks the next match of its type (the
+  // requested vim-everywhere behavior); a type with no block anywhere still
+  // fails without moving.
+  assert.deepEqual(engine.object(text, { line: 1, col: 0 }, stops, "i", '"'), {
+    start: { line: 1, col: 11 }, end: { line: 1, col: 13 }, linewise: false,
+  });
+  assert.equal(engine.object(text, { line: 0, col: 0 }, stops, "i", "}"), undefined);
   assert.equal(engine.object("(one\ntwo)", { line: 1, col: 1 }, bounds("(one\ntwo)"), "i", "(")?.end.line, 1);
   const across = "(one\nnext\n)";
   assert.deepEqual(engine.object(across, { line: 0, col: 1 }, bounds(across), "i", "("), {
@@ -49,4 +54,43 @@ test("line selection includes complete lines even at the final line without a ne
   assert.deepEqual(engine.range("one\ntwo\nthree", { line: 2, col: 2 }, bounds("one\ntwo\nthree")), {
     start: { line: 1, col: 0 }, end: { line: 2, col: 5 }, linewise: true,
   });
+});
+
+test("visual objects seek the next match when the cursor is outside any block", () => {
+	const engine = new VimVisualEngine();
+	const text = "alpha (one) beta (two) gamma";
+	const boundaries = [text.split("").map((_, i) => i)];
+	engine.start("char", { line: 0, col: 0 }); // before every parenthesis
+	const range = engine.object(text, { line: 0, col: 0 }, boundaries, "i", "(");
+	assert.ok(range, "vi( seeks the next paren block instead of failing");
+	assert.equal(text.slice(offsetOf(text, range!.start), offsetOf(text, range!.end)), "one", "the next block's inside is selected");
+});
+
+
+function offsetOf(text: string, pos: { line: number; col: number }): number {
+	return text.split("\n").slice(0, pos.line).reduce((n, line) => n + line.length + 1, 0) + pos.col;
+}
+
+test("offsetAt and positionAt round-trip across lines", () => {
+	const text = "ab\ncde\nf";
+	for (const pos of [{ line: 0, col: 0 }, { line: 0, col: 2 }, { line: 1, col: 3 }, { line: 2, col: 1 }]) {
+		assert.deepEqual(positionAt(text, offsetAt(text, pos)), pos);
+	}
+});
+
+test("vin and vil take an object character and select the next/last block inside its delimiters", () => {
+	const engine = new VimVisualEngine();
+	const text = 'a [first] b {second} c "third"';
+	const stops = bounds(text);
+	engine.start("char", { line: 0, col: 10 });
+	const next = engine.object(text, { line: 0, col: 10 }, stops, "i", "{", 1);
+	assert.deepEqual(next, { start: { line: 0, col: 13 }, end: { line: 0, col: 19 }, linewise: false }, "vin{ selects inside the next braces");
+	const last = engine.object(text, { line: 0, col: 10 }, stops, "i", "[", -1);
+	assert.deepEqual(last, { start: { line: 0, col: 3 }, end: { line: 0, col: 8 }, linewise: false }, "vil[ selects inside the last brackets");
+	const opposite = engine.object(text, { line: 0, col: 10 }, stops, "i", "}", 1);
+	assert.deepEqual(opposite, next, "the closing delimiter names the same object");
+	const around = engine.object(text, { line: 0, col: 10 }, stops, "a", '"', 1);
+	assert.deepEqual(around, { start: { line: 0, col: 23 }, end: { line: 0, col: 30 }, linewise: false }, 'van" includes the quotes');
+	const none = engine.object(text, { line: 0, col: 10 }, stops, "i", "<", 1);
+	assert.equal(none, undefined, "no angle brackets anywhere: fails without moving");
 });

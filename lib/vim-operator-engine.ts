@@ -89,7 +89,9 @@ export class VimOperatorEngine {
         start: { line: first, col: 0 },
         end: { line: last, col: rows[rows.length - 1]!.length },
         text: edited.join("\n"),
-        cursor: { line: first, col: Math.min(minCol, edited[0]!.length) },
+        // The first row's left part ends on a grapheme boundary, unlike minCol,
+        // which may fall inside a wide grapheme taken from another row.
+        cursor: { line: first, col: blockCells(rows[0]!, minCol, maxCol)[0].length },
       },
     };
   }

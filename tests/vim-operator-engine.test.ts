@@ -272,3 +272,8 @@ test("blockEdit makes no edit for a key it does not support", () => {
 test("din( inside a block edits the next block, as the n prefix says", () => {
   assert.equal(run("x (one) y (two)", 4, ["d", "i", "n", "("]).text, "x (one) y ()");
 });
+
+test("blockEdit places its cursor on a grapheme boundary of the first row", () => {
+  const edit = new VimOperatorEngine().visualEdit("d", "🙂abc\nxy", { start: { line: 0, col: 1 }, end: { line: 1, col: 2 }, linewise: false, block: true }).edit;
+  assert.deepEqual(edit?.cursor, { line: 0, col: 2 }, "after the emoji, never inside it");
+});

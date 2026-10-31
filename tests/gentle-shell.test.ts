@@ -6907,3 +6907,16 @@ test("a block whose left edge falls inside a wide grapheme still edits and highl
     assert.equal(editor.getText(), "🙂\na", "the block edit runs; the emoji stays whole");
   } finally { editor.dispose(); }
 });
+
+test("a block edit lands the cursor on a grapheme boundary when the first row starts with a wide grapheme", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("🙂abc\nxy"); editor.handleInput("\x1b");
+    editor.handleInput("G"); editor.handleInput("0"); editor.handleInput("l"); // (1,1): on y
+    editor.handleInput("\x16"); editor.handleInput("k"); // up to row 0: block cols 1-2 starts inside 🙂
+    editor.handleInput("d");
+    assert.doesNotMatch(editor.render(30).join("\n"), /VISUAL/, "the edit completes and leaves VISUAL");
+    assert.equal(editor.getText().split("\n")[1], "x", "the block cell is deleted on the second row");
+  } finally { editor.dispose(); }
+});

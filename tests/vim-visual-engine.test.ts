@@ -102,3 +102,10 @@ test("a pair object with the cursor on its closing delimiter selects that pair, 
 	assert.deepEqual(pairBlock("(a (b) c)", 5, "("), [3, 5], "on the inner ): the inner block, not the outer one");
 	assert.deepEqual(pairBlock("f(a) g(b)", 1, "("), [1, 3], "previous behavior holds: on the opener");
 });
+
+test("an explicit n/l seek picks the next/last block even inside one", () => {
+	const text = "x (one) y (two)";
+	assert.deepEqual(pairBlock(text, 4, "(", 1), [10, 14], "n inside (one) reaches (two)");
+	assert.deepEqual(pairBlock(text, 12, "(", -1), [2, 6], "l inside (two) reaches (one)");
+	assert.deepEqual(pairBlock(text, 4, "("), [2, 6], "previous behavior holds: no prefix keeps the enclosing block");
+});

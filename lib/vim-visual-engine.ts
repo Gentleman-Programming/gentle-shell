@@ -101,13 +101,15 @@ export function seekPair(text: string, at: number, pair: readonly [string, strin
 }
 
 /**
- * The block an object key names: the one around `at`, else the nearest one in
- * the `seek` direction (outside a block, `vi(` selects the next one).
+ * The block an object key names. An explicit `seek` (the n/l prefixes) takes
+ * the next/last block even inside one; without it, the block around `at`,
+ * else the next one (outside a block, `vi(` selects the next one).
  */
-export function pairBlock(text: string, at: number, key: string, seek: 1 | -1 = 1): Block | undefined {
+export function pairBlock(text: string, at: number, key: string, seek?: 1 | -1): Block | undefined {
   const pair = PAIR_BY_KEY.get(key);
   if (!pair) return undefined;
-  return enclosingPair(text, at, pair) ?? seekPair(text, at, pair, seek);
+  if (seek) return seekPair(text, at, pair, seek);
+  return enclosingPair(text, at, pair) ?? seekPair(text, at, pair, 1);
 }
 
 /** Nearest pair block of any type in a direction: the [ and ] motions. */

@@ -795,15 +795,17 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	/**
-	 * The range readRange can validate. A block's end column is exclusive
-	 * (maxCol + 1) and may pass a shorter last row or land inside a wide
-	 * grapheme; snap it to that row's next boundary.
+	 * The range readRange and renderSelection can validate. A block's columns
+	 * come from other rows, so on this row they may land inside a wide
+	 * grapheme or past its end; snap each to that row's next boundary.
 	 */
 	private readableRange(range: VisualRange, stops: number[][]): VisualRange {
 		if (!range.block) return range;
-		const rowStops = stops[range.end.line] ?? [0];
-		const col = rowStops.find((stop) => stop >= range.end.col) ?? rowStops[rowStops.length - 1]!;
-		return { ...range, end: { line: range.end.line, col } };
+		const snap = (line: number, col: number) => {
+			const rowStops = stops[line] ?? [0];
+			return { line, col: rowStops.find((stop) => stop >= col) ?? rowStops[rowStops.length - 1]! };
+		};
+		return { ...range, start: snap(range.start.line, range.start.col), end: snap(range.end.line, range.end.col) };
 	}
 
 	/** Drop VISUAL's half-typed r / i|a / n|l keys. */
@@ -1351,18 +1353,17 @@ export class GentlePromptEditor extends CustomEditor {
 		if (this.vimPolicy === "on" && this.vimVisual.active) {
 			try {
 				const adapter = this.vimAdapter();
-				const range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries());
+				const stops = adapter.motionBoundaries();
+				const range = this.vimVisual.range(this.getText(), this.getCursor(), stops);
 				if (range?.block) {
-					// Rectangular highlight: invert the same columns on every row.
+					// Rectangular highlight: invert the same columns on every row,
+					// each snapped to that row's grapheme boundaries (an invalid
+					// column would throw and drop the whole highlight).
 					const { first, last, minCol, maxCol } = blockBounds(range);
 					let out = lines;
-					// Clamp against the logical line, not the rendered row (which
-					// carries the frame): past-the-end columns would throw and drop
-					// the whole highlight.
-					const logical = this.getText().split("\n");
 					for (let row = first; row <= last; row++) {
-						const end = Math.min(maxCol + 1, (logical[row] ?? "").length);
-						if (end > minCol) out = adapter.renderSelection(inner, { line: row, col: minCol }, { line: row, col: end }, out);
+						const cells = this.readableRange({ start: { line: row, col: minCol }, end: { line: row, col: maxCol + 1 }, linewise: false, block: true }, stops);
+						if (cells.end.col > cells.start.col) out = adapter.renderSelection(inner, cells.start, cells.end, out);
 					}
 					editorLines = out;
 				} else if (range) editorLines = adapter.renderSelection(inner, range.start, range.end, lines);

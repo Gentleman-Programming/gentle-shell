@@ -6893,3 +6893,17 @@ test("a block edit never splits a grapheme cluster on an inner row", () => {
     assert.doesNotMatch(editor.getText(), /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/, "no lone surrogate is left behind");
   } finally { editor.dispose(); }
 });
+
+test("a block whose left edge falls inside a wide grapheme still edits and highlights", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("🙂x\nab"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("l"); // (0,2): on x
+    editor.handleInput("\x16"); editor.handleInput("j"); // (1,1): block cols 1-2 starts inside 🙂 on row 0
+    const rows = editor.render(30);
+    assert.ok(reverseColumns(rows[1]!).length > 0 && reverseColumns(rows[2]!).length > 0, "both rows keep their highlight");
+    editor.handleInput("d");
+    assert.equal(editor.getText(), "🙂\na", "the block edit runs; the emoji stays whole");
+  } finally { editor.dispose(); }
+});

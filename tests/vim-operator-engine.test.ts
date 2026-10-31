@@ -268,3 +268,7 @@ test("blockEdit makes no edit for a key it does not support", () => {
     assert.equal(applyBlock(key, "abcd\nefgh", block({ line: 0, col: 1 }, { line: 1, col: 3 })), undefined, `${key} is not a block edit`);
   }
 });
+
+test("din( inside a block edits the next block, as the n prefix says", () => {
+  assert.equal(run("x (one) y (two)", 4, ["d", "i", "n", "("]).text, "x (one) y ()");
+});

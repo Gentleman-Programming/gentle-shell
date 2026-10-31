@@ -4864,3 +4864,55 @@ test("profile menu accepts vim gg/G row jumps", async (t) => {
 	await fixture.run("gentle:profiles");
 	assert.equal(visits, 1);
 });
+
+test("models screen: kitty-encoded Shift+G reaches the last row", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker"]);
+	const storePath = join(fixture.configHome, "profiles.json");
+	mkdirSync(dirname(storePath), { recursive: true });
+	writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles",
+		version: 1,
+		active: "team",
+		profiles: {
+			team: { worker: { model: "openai/alpha", thinking: "high" } },
+			other: { worker: { model: "openai/beta", thinking: "high" } },
+		},
+	}));
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		const frame = () => renderComponent(panel);
+		panel.handleInput("\x1b[103;2u");
+		assert.match(frame(), /▸\s*worker/);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 1);
+});
+
+test("profile menu clears pending gg across other input and across a close, and accepts encoded Shift+G", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker"]);
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		panel.handleInput("m");
+		const first = renderComponent(panel);
+		assert.match(first, /▸\s*Rename/);
+		panel.handleInput("g");
+		panel.handleInput("j");
+		panel.handleInput("g");
+		assert.doesNotMatch(renderComponent(panel), /▸\s*Rename/, "pending g never leaks across other menu input");
+		panel.handleInput("\x1b[103;2u");
+		assert.match(renderComponent(panel), /▸\s*Delete/, "encoded Shift+G reaches the last row");
+		panel.handleInput("g");
+		panel.handleInput("\x1b");
+		panel.handleInput("m");
+		panel.handleInput("j");
+		panel.handleInput("g");
+		assert.doesNotMatch(renderComponent(panel), /▸\s*Rename/, "pending g does not carry across a menu close");
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 1);
+});

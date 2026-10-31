@@ -760,3 +760,17 @@ test("agents view scrolls the thread half a page with ctrl+d/ctrl+u and pageUp/p
 	assert.ok(maxLine() < half, "pageUp still scrolls a full page (more than ctrl+u's half)");
 	view.dispose();
 });
+
+test("agents view accepts kitty-encoded Shift+G for the row jump", () => {
+	const h = harness();
+	h.store.add(task("t1", { label: "first" }));
+	h.store.add(task("t2", { label: "third" }));
+	const frame = () => h.view.render(80).map(stripAnsi);
+	h.view.handleInput("G");
+	const last = frame();
+	h.view.handleInput("g");
+	h.view.handleInput("g");
+	h.view.handleInput("\x1b[103;2u");
+	assert.deepEqual(frame(), last, "encoded Shift+G reaches the last row like raw G");
+	h.view.dispose();
+});

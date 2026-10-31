@@ -75,7 +75,7 @@ export class JobsView {
 		} else if (data === "\t" || matchesKey(data, Key.enter)) this.details = !this.details;
 		else if (data === "j" || matchesKey(data, Key.down)) this.selectedId = jobs[Math.min(jobs.length - 1, index + 1)]?.id;
 		else if (data === "k" || matchesKey(data, Key.up)) this.selectedId = jobs[Math.max(0, index - 1)]?.id;
-		else if (data === "G") this.selectedId = jobs[jobs.length - 1]?.id;
+		else if (matchesKey(data, "shift+g")) this.selectedId = jobs[jobs.length - 1]?.id;
 		else if (data === "g") {
 			if (this.pendingG) {
 				this.pendingG = false;

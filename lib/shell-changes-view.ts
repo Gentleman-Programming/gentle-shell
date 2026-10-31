@@ -286,7 +286,7 @@ export class WorktreeChangesView {
 		if (this.pendingG && data !== "g") this.pendingG = false;
 		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + 1));
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "G") this.selected = rows.length - 1;
+		else if (matchesKey(data, "shift+g")) this.selected = rows.length - 1;
 		else if (data === "g") {
 			if (this.pendingG) {
 				this.pendingG = false;
@@ -523,7 +523,7 @@ export class ChangesView {
 		// the scroll keys are checked before the open key; a real Enter is CR.
 		if (data === "j" || matchesKey(data, Key.down)) this.select(this.selected + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(this.selected - 1);
-		else if (data === "G") this.select(this.model.files.length - 1);
+		else if (matchesKey(data, "shift+g")) this.select(this.model.files.length - 1);
 		else if (data === "g") {
 			if (this.pendingG) {
 				this.pendingG = false;

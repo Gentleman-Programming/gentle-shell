@@ -351,7 +351,7 @@ export class AgentsView {
 		if (this.pendingG && data !== "g") this.pendingG = false;
 		if (data === "j" || matchesKey(data, Key.down)) this.select(index + 1, rows);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);
-		else if (data === "G") this.select(rows.length - 1, rows);
+		else if (matchesKey(data, "shift+g")) this.select(rows.length - 1, rows);
 		else if (data === "g") {
 			if (this.pendingG) {
 				this.pendingG = false;

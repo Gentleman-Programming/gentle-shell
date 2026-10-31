@@ -2507,9 +2507,16 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
 }
 
-/** Resolve one complete reviewer routing snapshot without per-role fallback. */
+/**
+ * Resolve one complete reviewer routing snapshot without per-role fallback. The
+ * session's own profile -- the Enter binding, else the profile it froze at
+ * startup -- wins, through the same rule the launcher reads (gentle-shell#1064),
+ * so a reviewer never runs on routing the session no longer uses.
+ */
 function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
-	return readSessionProfileBinding(sessionId)?.modelProfiles ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: gentleAiConfigHome() });
+	const session = resolution.kind === "explicit" || resolution.kind === "inherited" ? sessionProfileModelProfiles(resolution) : undefined;
+	return (session === undefined ? undefined : cloneModelConfig(session)) ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */
@@ -8416,6 +8423,16 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
 	let thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
 	if (model === undefined && isProviderReviewRole(routingKey)) {
+		// These roles default to the orchestrator: the session profile's own one
+		// first, so a session that switched profile never reviews on the model it
+		// started with (gentle-shell#1064).
+		const orchestrator = readProfileOrchestrator(config);
+		if (orchestrator?.model !== undefined) {
+			model = orchestrator.model;
+			thinking ??= orchestrator.thinking;
+		}
+	}
+	if (model === undefined && isProviderReviewRole(routingKey)) {
 		const persisted = readOrchestratorSettings(orchestratorSettingsPath());
 		if (persisted.status === "valid" && persisted.entry?.model !== undefined) {
 			model = persisted.entry.model;
@@ -10609,6 +10626,7 @@ export const __testing = {
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
+	reviewHostRelaySelection,
 	readEffectiveModelConfigAsync,
 	followRenamedPin,
 	profilePinScopeNote,

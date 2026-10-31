@@ -4406,6 +4406,27 @@ test("provider review roles ignore an orchestrator saved in global routing", (t)
 	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
 });
 
+test("reviewer routing of a session frozen without a profile uses a foreign repository's own pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const foreignRoot = join(fixture.root, "foreign");
+	const identity = (path: string) => path.startsWith(foreignRoot)
+		? { root: foreignRoot, commonDir: join(foreignRoot, ".git") }
+		: { root: join(fixture.root, "worktree"), commonDir: join(fixture.root, "git-common") };
+	setProfilePinWorktreeResolverForTesting(identity);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "home-session", cwd: fixture.root, configHome: fixture.configHome });
+	const foreignPin = join(foreignRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(foreignPin), { recursive: true });
+	writeFileSync(foreignPin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(foreignRoot, "home-session", fixture.root)).selection, "openai/theirs");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "home-session", fixture.root)).selection, "openai/global", "the session's own repository still ignores pins");
+});
+
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
 	for (const rejected of [false, true]) {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);

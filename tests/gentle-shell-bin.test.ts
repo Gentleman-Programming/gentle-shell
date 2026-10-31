@@ -86,6 +86,30 @@ test("a genuinely absent adjacent peer falls back to PATH", (t) => {
 	assert.match(result.stdout, /pi 1\.2\.1/);
 });
 
+test("a bundled runtime launch performs zero real version-probe spawns", (t) => {
+	const f = standaloneLauncher(t);
+	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
+	writeFileSync(join(peer, "dist", "index.js"), "");
+	writeFileSync(join(peer, "package.json"), JSON.stringify({
+		name: "@earendil-works/pi-coding-agent", type: "module", version: "1.2.5",
+		exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" },
+	}));
+	const log = join(f.root, "version-probes.log");
+	writeFileSync(log, "");
+	writeFileSync(join(peer, "dist", "bundle", "cli.js"), [
+		"import { appendFileSync } from 'node:fs';",
+		"const args = process.argv.slice(2);",
+		`if (args.length === 1 && args[0] === '--version') { appendFileSync(${JSON.stringify(log)}, 'x'); console.error('unexpected-version-probe'); process.exit(77); }`,
+		"console.log('bundled-session-ok');",
+	].join("\n"));
+	const result = spawnSync(process.execPath, [f.launcher], { env: f.env, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.stdout, "bundled-session-ok\n");
+	assert.doesNotMatch(result.stderr, /unexpected-version-probe/);
+	assert.equal(readFileSync(log, "utf8"), "", "only --version invocations record a probe");
+});
+
 test("malformed adjacent metadata never silently falls back to PATH; env override still wins", (t) => {
 	const f = standaloneLauncher(t);
 	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
@@ -104,6 +128,344 @@ test("malformed adjacent metadata never silently falls back to PATH; env overrid
 	const override = spawnSync(process.execPath, [f.launcher, "--version"], { env: { ...f.env, GENTLE_SHELL_PI: fallback }, encoding: "utf8" });
 	assert.equal(override.status, 0, override.stderr);
 	assert.match(override.stdout, /pi 1\.2\.1/);
+});
+
+test("an adjacent package.json with a non-string version fails closed with a clean message, not a crash", (t) => {
+	const f = standaloneLauncher(t);
+	const peer = join(f.root, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(peer, "dist", "bundle"), { recursive: true });
+	writeFileSync(join(peer, "dist", "index.js"), "");
+	writePiScript(join(peer, "dist", "bundle", "cli.js"), "0.99.1");
+	writeFileSync(
+		join(peer, "package.json"),
+		JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: { ".": { import: "./dist/index.js" } }, bin: { pi: "dist/bundle/cli.js" }, version: 1 }),
+	);
+	const result = spawnSync(process.execPath, [f.launcher, "--version"], { env: f.env, encoding: "utf8" });
+	assert.equal(result.status, 1);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /Unsupported adjacent Pi package entry\/name\/bin metadata/);
+	assert.doesNotMatch(result.stderr, /TypeError|is not a function/);
+});
+
+// --- pi version probe cache (env/path runtimes, #2096) ---------------------
+
+test("a cache hit for an env-override pi skips the real version spawn on the next launch", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const first = run(env, ["--version"]);
+	assert.equal(first.status, 0, first.stderr);
+	assert.match(first.stdout, /pi 1\.2\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "first launch spawns the probe once");
+
+	const second = run(env, ["--version"]);
+	assert.equal(second.status, 0, second.stderr);
+	assert.match(second.stdout, /pi 1\.2\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "the cached version is reused instead of spawning again");
+});
+
+test("a changed script behind an unchanged .cmd wrapper still invalidates the cache on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	const wrapperBefore = readFileSync(command);
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 1.2.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	assert.deepEqual(readFileSync(command), wrapperBefore, "the .cmd wrapper itself is untouched");
+
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/);
+	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed only by the unchanged wrapper must not reuse the old version");
+});
+
+test("a same-size, older-than-wrapper replacement of the wrapped script still invalidates the cache on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	const wrapperBefore = readFileSync(command);
+	const wrapperMtime = statSync(command).mtimeMs;
+
+	// Same byte length as the "1.2.5" script (the version digit position is the
+	// only difference), so a cache keyed on wrapper.size + target.size cannot
+	// tell the two apart by size alone; an explicit older mtime keeps
+	// Math.max(wrapper.mtimeMs, target.mtimeMs) pinned to the wrapper's own,
+	// unchanged value, defeating a blended wrapper+target fingerprint.
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 1.2.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	const olderMtime = new Date(wrapperMtime - 10_000);
+	utimesSync(script, olderMtime, olderMtime);
+	assert.deepEqual(readFileSync(command), wrapperBefore, "the .cmd wrapper itself is untouched");
+	assert.ok(statSync(script).mtimeMs < wrapperMtime, "the replacement script's mtime stays older than the wrapper's");
+
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/, "the cache must track the wrapped script's own identity, not a blend an older-mtime, same-size replacement can hide behind");
+	assert.equal(readFileSync(log, "utf8").length, 2, "a same-size, older-mtime replacement of the wrapped script must still invalidate the cache");
+});
+
+test("a quoted .js path on an earlier comment line in the .cmd wrapper is never mistaken for the executed script on Windows", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+
+	// A decoy file whose quoted path sits on a `rem` comment line, before the
+	// real invocation line. resolveVersionProbeIdentity's regex scans the
+	// whole wrapper text, so without skipping comment lines it fingerprints
+	// this unrelated, never-changing file instead of the script that
+	// actually runs.
+	const decoyPath = join(f.root, "decoy.js");
+	writeFileSync(decoyPath, "// never executed\n");
+	const wrapperBefore = readFileSync(command, "utf8");
+	writeFileSync(command, wrapperBefore.replace("@echo off\r\n", `@echo off\r\nrem "${decoyPath}"\r\n`));
+
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	const script = join(f.root, "counting-pi.mjs");
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			"// version 1.2.6",
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log("1.2.6"); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+
+	// The decoy file itself never changes between launches.
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/, "the wrapped script changed; a decoy quoted .js path on an earlier comment line must not shadow it and keep a stale cache hit");
+	assert.equal(readFileSync(log, "utf8").length, 2, "the wrapped script changed, so a cache keyed on an unrelated decoy comment-line path must not reuse the old version");
+});
+
+for (const extension of ["cmd", "bat"]) {
+	test(`a relative script in a .${extension} wrapper never caches the wrapper-directory decoy on Windows`, { skip: process.platform !== "win32" }, (t) => {
+		const f = fixture(t);
+		const wrapperDir = join(f.root, "wrapper");
+		const cwd = join(f.root, "working-directory");
+		mkdirSync(wrapperDir);
+		mkdirSync(cwd);
+		const decoy = writeCountingPiScript(wrapperDir, "1.2.7");
+		const actual = writeCountingPiScript(cwd, "1.2.5");
+		const command = join(wrapperDir, `relative-pi.${extension}`);
+		writeFileSync(command, `@echo off\r\n"${process.execPath}" "counting-pi.mjs" %*\r\n`);
+		const wrapperBefore = readFileSync(command);
+		const decoyBefore = readFileSync(join(wrapperDir, "counting-pi.mjs"));
+		const env = { ...f.env, GENTLE_SHELL_PI: command };
+		const check = (version: string) => {
+			const result = run(env, ["--version"], { cwd });
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stderr, "");
+			assert.equal(result.stdout, `gentle-shell ${ownGentlePiVersion()}\npi ${version}\nhome isolated ${f.gentleShellHome}\n`);
+		};
+		check("1.2.5");
+		assert.equal(readFileSync(actual.log, "utf8").length, 1);
+		const script = join(cwd, "counting-pi.mjs");
+		writeFileSync(script, readFileSync(script, "utf8").replaceAll("1.2.5", "1.2.6") + "\n");
+		check("1.2.6");
+		assert.equal(readFileSync(actual.log, "utf8").length, 2, "the script executed from cwd must be re-probed after changing");
+		check("1.2.6");
+		assert.equal(readFileSync(actual.log, "utf8").length, 3, "a relative script must always re-probe rather than cache the decoy");
+		assert.equal(readFileSync(decoy.log, "utf8"), "", "the wrapper-directory decoy must never execute");
+		assert.deepEqual(readFileSync(command), wrapperBefore);
+		assert.deepEqual(readFileSync(join(wrapperDir, "counting-pi.mjs")), decoyBefore);
+	});
+}
+
+for (const shape of ["unreachable", "non-node-variable", "npm-cmd-shim", "pnpm-js-shim", "pnpm-divergent-branches"]) {
+	test(`wrapper cache recognizes only supported execution shapes: ${shape}`, { skip: process.platform !== "win32" }, (t) => {
+		const f = fixture(t);
+		const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+		const script = join(f.root, "counting-pi.mjs");
+		const decoy = join(f.root, "decoy.js");
+		writeFileSync(decoy, "// never executed\n");
+		const actual = join(f.root, "actual.cmd");
+		writeFileSync(actual, `@echo off\r\n"${process.execPath}" "${script}" --version\r\n`);
+		writeFileSync(command, shape === "unreachable"
+			? `@echo off\r\ngoto actual\r\nnode "${decoy}" %*\r\n:actual\r\ncall "${actual}" %*\r\n`
+			: shape === "non-node-variable"
+			? `@echo off\r\nset "_prog=${actual}"\r\n"%_prog%" "${decoy}" %*\r\n`
+			: shape === "npm-cmd-shim"
+			? `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${script.slice(dirname(script).length + 1)}" %*\r\n`
+			: shape === "pnpm-js-shim"
+			? `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`
+			// Same real pnpm template, but the two branches point at two
+			// different scripts. The ELSE branch is the one cmd.exe actually
+			// runs here (no node.exe sits beside the wrapper); it must still
+			// never cache, since a different machine could pick the other.
+			: `@SETLOCAL\r\n@IF EXIST "%~dp0\\node.exe" (\r\n  "%~dp0\\node.exe"  "%~dp0\\decoy.js" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  "%~dp0\\${script.slice(dirname(script).length + 1)}" %*\r\n)\r\n`);
+		const env = { ...f.env, GENTLE_SHELL_PI: command };
+		const check = (version: string) => {
+			const result = run(env, ["--version"]);
+			assert.equal(result.status, 0, result.stderr);
+			assert.equal(result.stderr, "");
+			assert.equal(result.stdout, `gentle-shell ${ownGentlePiVersion()}\npi ${version}\nhome isolated ${f.gentleShellHome}\n`);
+		};
+		check("1.2.5");
+		check("1.2.5");
+		const supported = shape === "npm-cmd-shim" || shape === "pnpm-js-shim";
+		assert.equal(readFileSync(log, "utf8").length, supported ? 1 : 2);
+		writeFileSync(script, readFileSync(script, "utf8").replaceAll("1.2.5", "1.2.6") + "\n");
+		check("1.2.6");
+		assert.equal(readFileSync(log, "utf8").length, supported ? 2 : 3);
+	});
+}
+
+test("GENTLE_SHELL_PI as a bare .cmd command name (no directory) never caches, regardless of which cwd/PATH candidate cmd.exe actually runs", { skip: process.platform !== "win32" }, (t) => {
+	const f = fixture(t);
+	const pathRoot = join(f.root, "pathdir");
+	mkdirSync(pathRoot, { recursive: true });
+	const onPath = writeCountingPiScript(pathRoot, "1.2.5");
+
+	// A decoy sharing the bare command's exact name, in the directory the
+	// launcher runs from. Whether cmd.exe's own PATH search actually picks this
+	// cwd candidate or the one on PATH depends on the environment (e.g.
+	// NoDefaultCurrentDirectoryInExePath) — this test does not assume either way.
+	// What must hold regardless: a bare command name never gets a cache entry,
+	// because statSync(command) below resolves relative to cwd, which can name
+	// a completely different file than whatever actually runs.
+	const decoyRoot = join(f.root, "decoy-cwd");
+	mkdirSync(decoyRoot, { recursive: true });
+	const inCwd = writeCountingPiScript(decoyRoot, "1.2.7");
+
+	const totalInvocations = () => readFileSync(onPath.log, "utf8").length + readFileSync(inCwd.log, "utf8").length;
+
+	const env = { ...f.env, GENTLE_SHELL_PI: "counting-pi.cmd", PATH: `${pathRoot}${delimiter}${f.env.PATH}` };
+	const first = run(env, ["--version"], { cwd: decoyRoot });
+	assert.equal(first.status, 0, first.stderr);
+	assert.equal(totalInvocations(), 1, "exactly one of the two candidates actually ran");
+
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+	assert.equal(
+		(config.piVersionProbeCache ?? {})["counting-pi.cmd"],
+		undefined,
+		"a bare command name must never get a cache entry: statSync(command) resolves against cwd, which can name a completely different file than whatever the OS/shell actually runs",
+	);
+
+	const second = run(env, ["--version"], { cwd: decoyRoot });
+	assert.equal(second.status, 0, second.stderr);
+	assert.equal(totalInvocations(), 2, "every launch re-probes; a bare name can never trust a cache keyed on the wrong file's identity");
+});
+
+test("a changed pi binary at the same path invalidates the cache and re-probes", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	assert.equal(run(env, ["--version"]).status, 0);
+	assert.equal(readFileSync(log, "utf8").length, 1);
+
+	writeCountingPiScript(f.root, "1.2.6");
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.6/);
+	assert.equal(readFileSync(log, "utf8").length, 2, "a changed binary re-probes instead of trusting the stale cache");
+});
+
+test("a malformed pi version cache entry in config.json is tolerated and just re-probes", (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	mkdirSync(dirname(configPath), { recursive: true });
+	writeFileSync(configPath, JSON.stringify({ piVersionProbeCache: "not-an-object" }));
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.5/);
+});
+
+test("a cached entry with an unparseable version re-probes instead of failing the launch", (t) => {
+	const f = fixture(t);
+	const { command, log } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configPath = join(f.home, ".gentle-shell", "config.json");
+	mkdirSync(dirname(configPath), { recursive: true });
+	const s = statSync(command);
+	writeFileSync(
+		configPath,
+		JSON.stringify({ piVersionProbeCache: { [command]: { dev: s.dev, ino: s.ino, size: s.size, mtimeMs: s.mtimeMs, version: "garbage" } } }),
+	);
+	const result = run(env, ["--version"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /pi 1\.2\.5/);
+	assert.equal(readFileSync(log, "utf8").length, 1, "an unparseable cached version is a miss, not a trusted result");
+});
+
+test("an unwritable config.json never fails an env-override launch; the cache write is best-effort", (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const configDir = join(f.home, ".gentle-shell");
+	const configPath = join(configDir, "config.json");
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(configPath, JSON.stringify({ home: "isolated" }));
+	const before = readFileSync(configPath, "utf8");
+	if (process.platform === "win32") spawnSync("attrib", ["+R", configPath]);
+	else chmodSync(configDir, 0o555);
+	t.after(() => {
+		if (process.platform === "win32") spawnSync("attrib", ["-R", configPath]);
+		else chmodSync(configDir, 0o755);
+	});
+	for (let i = 0; i < 2; i++) {
+		const result = run(env, ["--version"]);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /pi 1\.2\.5/);
+	}
+	assert.equal(readFileSync(configPath, "utf8"), before, "a failed cache write never corrupts or replaces the existing config");
+});
+
+test("concurrent first launches with an env-override pi all succeed despite a config.json write race", async (t) => {
+	const f = fixture(t);
+	const { command } = writeCountingPiScript(f.root, "1.2.5");
+	const env = { ...f.env, GENTLE_SHELL_PI: command };
+	const codes = await Promise.all(
+		Array.from(
+			{ length: 8 },
+			() =>
+				new Promise<number | null>((resolve) => {
+					const child = spawn(process.execPath, [binPath, "--version"], { env, stdio: "ignore" });
+					child.on("close", resolve);
+				}),
+		),
+	);
+	assert.deepEqual(codes, Array(8).fill(0));
+	JSON.parse(readFileSync(join(f.home, ".gentle-shell", "config.json"), "utf8"));
 });
 
 // The launcher's own gentle-pi version, exactly as `ownPackageVersion()` in
@@ -197,6 +559,38 @@ function writePathPiScript(root: string, version: string): string {
 
 function run(env: NodeJS.ProcessEnv, args: string[], options: { cwd?: string } = {}) {
 	return spawnSync(process.execPath, [binPath, ...args], { encoding: "utf8", env, ...options });
+}
+
+// Same contract as writePiScript's --version branch, plus one observable
+// side effect per invocation (an appended byte in a shared .invocations
+// file) so a test can tell whether the version-probe cache (#2096) actually
+// skipped the real spawn. Same POSIX-shebang-vs-Windows-.cmd-shim split as
+// writePathPiScript, with `version` embedded as a comment in whichever file
+// is the one actually resolved and stat'd on each platform (runtime.command),
+// so a version change is also a genuine identity change there — the same way
+// a real, different pi binary would never keep the old one's dev/ino/size/mtimeMs.
+function writeCountingPiScript(root: string, version: string): { command: string; log: string } {
+	const log = join(root, "counting-pi.invocations");
+	if (!existsSync(log)) writeFileSync(log, "");
+	const script = join(root, "counting-pi.mjs");
+	writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env node",
+			`// version ${version}`,
+			"import { appendFileSync } from 'node:fs';",
+			`appendFileSync(${JSON.stringify(log)}, "x");`,
+			"const args = process.argv.slice(2);",
+			`if (args.includes("--version")) { console.log(${JSON.stringify(version)}); }`,
+			"process.exit(0);",
+			"",
+		].join("\n"),
+	);
+	chmodSync(script, 0o755);
+	if (process.platform !== "win32") return { command: script, log };
+	const command = join(root, "counting-pi.cmd");
+	writeFileSync(command, `@echo off\r\nrem version ${version}\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`);
+	return { command, log };
 }
 
 // Herdr tests model terminal/socket metadata only: no socket is opened and the

@@ -37,8 +37,12 @@ export interface VimScrollKeyOwner {
 }
 
 export interface VimKeyTranslationOptions {
-	/** True while the prompt editor holds focus: its ctrl+h/ctrl+j meanings survive. */
-	promptFocused(): boolean;
+	/**
+	 * True while the prompt editor holds focus: its ctrl+h/ctrl+j meanings survive.
+	 * Undefined means the prompt is unknown (not created yet, or a foreign editor
+	 * owns it); an editor may hold focus, so nothing translates.
+	 */
+	promptFocused(): boolean | undefined;
 }
 
 function focusOwnsScrollKeys(tui: TUI): boolean {
@@ -55,7 +59,7 @@ function focusOwnsScrollKeys(tui: TUI): boolean {
 export function installVimKeyTranslation(tui: TUI, options: VimKeyTranslationOptions): () => void {
 	if (!tui.terminal || typeof tui.addInputListener !== "function") return () => {};
 	return tui.addInputListener((data) => {
-		if (options.promptFocused() || RESERVED_BARE_BYTES.has(data) || isKeyRelease(data)) return undefined;
+		if (options.promptFocused() !== false || RESERVED_BARE_BYTES.has(data) || isKeyRelease(data)) return undefined;
 		const ownsScroll = focusOwnsScrollKeys(tui);
 		for (const [name, arrow] of Object.entries(ARROWS) as Array<[keyof typeof ARROWS, string]>) {
 			if (ownsScroll && (name === "ctrl+j" || name === "ctrl+k")) continue;

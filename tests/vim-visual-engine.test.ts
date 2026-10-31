@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { offsetAt, positionAt, seekPair, VimVisualEngine } from "../lib/vim-visual-engine.ts";
+import { offsetAt, pairBlock, positionAt, seekPair, VimVisualEngine } from "../lib/vim-visual-engine.ts";
 
 const bounds = (text: string) => text.split("\n").map((line) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)].map((unit) => unit.index).concat(line.length));
 
@@ -95,4 +95,10 @@ test("backward quote seek returns the nearest preceding pair", () => {
 	const text = 'x "one" y "two" z';
 	const block = seekPair(text, 16, ['"', '"'], -1);
 	assert.deepEqual(block, [10, 14], "the nearest preceding pair, not the first");
+});
+
+test("a pair object with the cursor on its closing delimiter selects that pair, flat and nested", () => {
+	assert.deepEqual(pairBlock("f(a) g(b)", 3, "("), [1, 3], "on ) of (a): that block, not the next one");
+	assert.deepEqual(pairBlock("(a (b) c)", 5, "("), [3, 5], "on the inner ): the inner block, not the outer one");
+	assert.deepEqual(pairBlock("f(a) g(b)", 1, "("), [1, 3], "previous behavior holds: on the opener");
 });

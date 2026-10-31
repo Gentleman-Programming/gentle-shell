@@ -66,3 +66,11 @@ test("a focused view that owns ctrl+j/k paging receives them untranslated", () =
 	assert.deepEqual(state.listener!("\x0b"), { data: "\x1b[A" }, "previous behavior holds: other pickers still get the arrow");
 	dispose();
 });
+
+test("no translation while the prompt is unknown (no Gentle prompt, or a foreign editor)", () => {
+	const { tui, state } = fakeTui();
+	const dispose = installVimKeyTranslation(tui, { promptFocused: () => undefined });
+	assert.equal(state.listener!("\x0b"), undefined, "ctrl+k stays the editor's kill-line");
+	assert.equal(state.listener!("\x1b[104;5u"), undefined, "Kitty ctrl+h stays with the editor");
+	dispose();
+});

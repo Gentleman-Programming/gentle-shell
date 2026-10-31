@@ -1,5 +1,5 @@
 import { VimNormalEngine, type VimPosition } from "./vim-normal-engine.ts";
-import { blockBounds, pairBlock, type VisualRange } from "./vim-visual-engine.ts";
+import { blockBounds, blockCells, pairBlock, type VisualRange } from "./vim-visual-engine.ts";
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const word = /[\p{L}\p{N}_]/u;
@@ -79,8 +79,8 @@ export class VimOperatorEngine {
     if (!cell) return { handled: true };
     const rows = lines.slice(first, last + 1);
     const edited = rows.map((line) => {
-      const mid = [...segmenter.segment(line.slice(minCol, maxCol + 1))].map((unit) => cell(unit.segment)).join("");
-      return line.slice(0, minCol) + mid + line.slice(maxCol + 1);
+      const [left, cells, right] = blockCells(line, minCol, maxCol);
+      return left + [...segmenter.segment(cells)].map((unit) => cell(unit.segment)).join("") + right;
     });
     if (edited.join("\n") === rows.join("\n")) return { handled: true };
     return {

@@ -123,7 +123,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installVimKeyTranslation } from "../lib/vim-key-translate.ts";
-import { blockBounds, blockMatrix, nearestBlock, offsetAt, positionAt } from "../lib/vim-visual-engine.ts";
+import { blockBounds, blockMatrix, nearestBlock, offsetAt, positionAt, type VisualRange } from "../lib/vim-visual-engine.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -794,6 +794,18 @@ export class GentlePromptEditor extends CustomEditor {
 		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d), (d) => this.onExtensionShortcut?.(d) === true);
 	}
 
+	/**
+	 * The range readRange can validate. A block's end column is exclusive
+	 * (maxCol + 1) and may pass a shorter last row or land inside a wide
+	 * grapheme; snap it to that row's next boundary.
+	 */
+	private readableRange(range: VisualRange, stops: number[][]): VisualRange {
+		if (!range.block) return range;
+		const rowStops = stops[range.end.line] ?? [0];
+		const col = rowStops.find((stop) => stop >= range.end.col) ?? rowStops[rowStops.length - 1]!;
+		return { ...range, end: { line: range.end.line, col } };
+	}
+
 	/** Drop VISUAL's half-typed r / i|a / n|l keys. */
 	private clearVisualPending(): void {
 		this.visualReplacePending = false;
@@ -993,9 +1005,11 @@ export class GentlePromptEditor extends CustomEditor {
 					if (singleGrapheme(command) && !command.includes("\n")) {
 						try {
 							const adapter = this.vimAdapter();
-							const range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries());
+							const stops = adapter.motionBoundaries();
+							const range = this.vimVisual.range(this.getText(), this.getCursor(), stops);
 							if (range) {
-								adapter.readRange(range.start, range.end);
+								const readable = this.readableRange(range, stops);
+								adapter.readRange(readable.start, readable.end);
 								const edit = this.vimOperator.visualEdit("r" + command, this.getText(), range).edit;
 								if (edit) { adapter.replace(edit.start, edit.end, edit.text); adapter.move(edit.cursor); }
 								this.vimVisual.cancel(); this.visualAnchor = undefined;
@@ -1056,13 +1070,15 @@ export class GentlePromptEditor extends CustomEditor {
 					}
 					if (["d", "x", "c", "s", "y", "p", "~", "u", "U", ">", "<", "J"].includes(command)) {
 						let range;
-						try { range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries()); }
+						let stops: number[][] = [];
+						try { stops = adapter.motionBoundaries(); range = this.vimVisual.range(this.getText(), this.getCursor(), stops); }
 						catch (error) { this.notifyUnsafeVisual("range", error); return; }
 						if (!range) { this.notifyUnsafeVisual("range"); return; }
 						let stage: "readRange" | "operation" | "beginInsertSession" | "replace" | "move" = "readRange";
 						let beganInsert = false;
 						try {
-							const selected = adapter.readRange(range.start, range.end);
+							const readable = this.readableRange(range, stops);
+							const selected = adapter.readRange(readable.start, readable.end);
 							const text = this.getText();
 							if (!selected && (!range.linewise || !text)) {
 								this.vimVisual.cancel(); this.visualAnchor = undefined;
@@ -2301,7 +2317,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let jobsHovered = false;
 			let jobsPainted = false;
 			let jobsHeaderRow = 0;
-			const disposeKeyTranslation = installVimKeyTranslation(tui, { promptFocused: () => prompt?.focused === true });
+			const disposeKeyTranslation = installVimKeyTranslation(tui, { promptFocused: () => prompt?.focused ?? true });
 			const jobsRailCard: Component = {
 				render(width: number) {
 					const jobs = runningJobs ?? [];
@@ -2343,7 +2359,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					jobsRegion.invalidate();
 				},
 				dispose() {
-					disposeKeyTranslation();
 					jobsRegion.dispose();
 				},
 			};
@@ -2403,7 +2418,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); disposeKeyTranslation(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(

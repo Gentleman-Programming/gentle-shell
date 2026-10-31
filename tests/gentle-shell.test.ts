@@ -6868,3 +6868,28 @@ test("the block highlight clamps to each logical line so mixed lengths keep it",
     assert.ok(reverseColumns(rows[3]!).length >= 4, "the last row stays highlighted past the short middle line");
   } finally { editor.dispose(); }
 });
+
+test("blockwise ops work when the last row is shorter than the block's right edge", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("abcdef\nab"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("$"); // (0,5)
+    editor.handleInput("\x16"); editor.handleInput("j"); editor.handleInput("0"); // block cols 0-5, last row "ab"
+    editor.handleInput("d");
+    assert.equal(editor.getText(), "\n", "the rectangle is deleted on both rows despite the short last row");
+  } finally { editor.dispose(); }
+});
+
+test("a block edit never splits a grapheme cluster on an inner row", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("abcd\n😀bcd\nabcd"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g"); editor.handleInput("l"); // (0,1)
+    editor.handleInput("\x16"); editor.handleInput("j"); editor.handleInput("j"); // rows 0-2, col 1
+    editor.handleInput("d");
+    assert.equal(editor.getText(), "acd\n😀bcd\nacd", "the emoji spans the block's column, so no cell of it starts there and the row keeps it whole");
+    assert.doesNotMatch(editor.getText(), /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/, "no lone surrogate is left behind");
+  } finally { editor.dispose(); }
+});

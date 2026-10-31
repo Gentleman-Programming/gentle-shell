@@ -354,6 +354,8 @@ export class AgentsView {
 		const jump = this.listKeys.action(data);
 		if (jump === "pending") return;
 		if (jump === "first" || jump === "last") this.select(vimListIndex(jump, index, rows.length, 0), rows);
+		// ctrl+d/u scroll the thread; narrow list mode hides it, so they move the selection there.
+		else if (jump && this.isNarrow() && this.narrowView === "list") this.select(vimListIndex(jump, index, rows.length, this.pageRows()), rows);
 		else if (jump) this.scrollBy((jump === "halfDown" ? 1 : -1) * Math.max(1, Math.floor(this.pageRows() / 2)));
 		else if (data === "j" || matchesKey(data, Key.down)) this.select(index + 1, rows);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);

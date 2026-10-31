@@ -12,7 +12,21 @@ export function blockBounds(range: VisualRange): { first: number; last: number; 
 /** The rectangle's cells per row, as the yank register text. */
 export function blockMatrix(text: string, range: VisualRange): string {
   const { first, last, minCol, maxCol } = blockBounds(range);
-  return text.split("\n").slice(first, last + 1).map((line) => line.slice(minCol, maxCol + 1)).join("\n");
+  return text.split("\n").slice(first, last + 1).map((line) => blockCells(line, minCol, maxCol)[1]).join("\n");
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * A row split around the block's columns: [left, mid, right]. Whole grapheme
+ * clusters only: a cluster belongs to the block when it starts inside it, so an
+ * emoji or a combining mark is never cut in half on rows the caller did not
+ * validate.
+ */
+export function blockCells(line: string, minCol: number, maxCol: number): [string, string, string] {
+  const parts: [string, string, string] = ["", "", ""];
+  for (const { segment, index } of graphemes.segment(line)) parts[index < minCol ? 0 : index <= maxCol ? 1 : 2] += segment;
+  return parts;
 }
 
 /** Byte offset of a position in `text`. */
@@ -57,8 +71,9 @@ function closeOf(text: string, open: number, pair: readonly [string, string]): n
 /** The pair block that contains `at`, delimiters included. */
 function enclosingPair(text: string, at: number, pair: readonly [string, string]): Block | undefined {
   if (pair[0] === pair[1]) return quoteBlocks(text, pair[0]).find(([open, close]) => open <= at && at <= close);
+  // The closer under the cursor belongs to this pair: it is never a nested one.
   for (let i = at, depth = 0; i >= 0; i--) {
-    if (text[i] === pair[1]) depth++;
+    if (text[i] === pair[1] && i !== at) depth++;
     else if (text[i] === pair[0] && depth-- === 0) {
       const close = closeOf(text, i, pair);
       return close !== undefined && close >= at ? [i, close] : undefined;

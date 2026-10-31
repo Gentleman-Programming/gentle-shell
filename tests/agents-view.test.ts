@@ -760,3 +760,16 @@ test("agents view scrolls the thread half a page with ctrl+d/ctrl+u and pageUp/p
 	assert.ok(maxLine() < half, "pageUp still scrolls a full page (more than ctrl+u's half)");
 	view.dispose();
 });
+
+test("narrow list mode moves the selection half a page with ctrl+d/ctrl+u", () => {
+	const { store, view } = harness(8);
+	for (let i = 0; i < 12; i++) store.add(task(`t${i}`, { label: `task ${i}` }));
+	// Every row reads alike, so track the selection by its position in the list.
+	const selectedRow = () => view.render(40).findIndex((line) => line.includes("▸"));
+	const top = selectedRow();
+	view.handleInput("\x04");
+	assert.ok(selectedRow() > top, "ctrl+d moves the visible list selection down, not the hidden thread");
+	view.handleInput("\x15");
+	assert.equal(selectedRow(), top, "ctrl+u moves it back");
+	view.dispose();
+});

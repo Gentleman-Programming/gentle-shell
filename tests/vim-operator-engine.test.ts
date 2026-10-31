@@ -213,3 +213,58 @@ test("cancel and failed motions never overwrite register or mutate paste markers
   assert.deepEqual(engine.input("w", text, markerStart, [[0, 1, end, text.length]]), { handled: true });
   assert.deepEqual(engine.input("p", text, pos), { handled: true });
 });
+
+test("operator objects take n/l direction prefixes: din{ and cil( reach the next and last blocks", () => {
+  const text = 'a (one) b {two} c "three"';
+  const din = run(text, 0, ["d", "i", "n", "{"]);
+  assert.equal(din.text, 'a (one) b {} c "three"', "din{ deletes inside the next braces");
+  const cil = run(text, 20, ["c", "i", "l", "("]);
+  assert.equal(cil.text, 'a () b {two} c "three"', "cil( replaces inside the last parens");
+  assert.deepEqual(cil.edit?.start, { line: 0, col: 3 }, "the last parens block");
+});
+test("di\" between two quoted strings seeks inside the next pair instead of spanning both", () => {
+  const text = 'a "one" b "two" c';
+  const result = run(text, 9, ["d", "i", '"']);
+  assert.equal(result.text, 'a "one" b "" c', "quotes from different pairs never form one object");
+});
+
+test("vil\" picks the nearest preceding pair, not the first one in the text", () => {
+  const result = run('x "one" y "two" z', 16, ["d", "i", "l", '"']);
+  assert.equal(result.text, 'x "one" y "" z', "dil\" deletes inside the nearest preceding quotes");
+  assert.deepEqual(result.edit?.start, { line: 0, col: 11 }, "the second pair's inside, not the first");
+});
+const block = (start: { line: number; col: number }, end: { line: number; col: number }) => ({ start, end, linewise: false, block: true });
+
+function applyBlock(key: string, text: string, range: ReturnType<typeof block>): string | undefined {
+  const edit = new VimOperatorEngine().visualEdit(key, text, range).edit;
+  if (!edit) return undefined;
+  const lines = text.split("\n");
+  const at = (p: { line: number; col: number }) => lines.slice(0, p.line).reduce((n, line) => n + line.length + 1, 0) + p.col;
+  return text.slice(0, at(edit.start)) + edit.text + text.slice(at(edit.end));
+}
+
+test("blockEdit deletes, replaces and changes case over a rectangle", () => {
+  const text = "abcd\nefgh\nijkl";
+  const d = applyBlock("d", text, block({ line: 0, col: 1 }, { line: 2, col: 3 }));
+  assert.equal(d?.split("\n").length, 3, "a block delete keeps every row");
+  assert.equal(d, "ad\neh\nil", "d removes columns 1-2 on every row");
+  const r = applyBlock("rz", text, block({ line: 0, col: 1 }, { line: 1, col: 3 }));
+  assert.equal(r, "azzd\nezzh\nijkl", "r replaces every cell one for one");
+  const upper = applyBlock("U", text, block({ line: 0, col: 0 }, { line: 1, col: 2 }));
+  assert.equal(upper?.toLowerCase(), text, "U only changes case");
+  assert.equal(applyBlock("u", upper!, block({ line: 0, col: 0 }, { line: 1, col: 2 })), text, "u reverts U over the same rectangle");
+  const toggled = applyBlock("~", "aBcD\nEfGh", block({ line: 0, col: 0 }, { line: 1, col: 4 }));
+  assert.equal(applyBlock("~", toggled!, block({ line: 0, col: 0 }, { line: 1, col: 4 })), "aBcD\nEfGh", "~ twice is the identity");
+  assert.notEqual(toggled, "aBcD\nEfGh", "~ toggles case");
+});
+
+test("blockEdit leaves rows shorter than the block's first column untouched", () => {
+  const after = applyBlock("d", "abcd\na\nabcd", block({ line: 0, col: 2 }, { line: 2, col: 4 }));
+  assert.equal(after?.split("\n")[1], "a", "the short middle row survives");
+});
+
+test("blockEdit makes no edit for a key it does not support", () => {
+  for (const key of ["c", "p", ">", "<", "J"]) {
+    assert.equal(applyBlock(key, "abcd\nefgh", block({ line: 0, col: 1 }, { line: 1, col: 3 })), undefined, `${key} is not a block edit`);
+  }
+});

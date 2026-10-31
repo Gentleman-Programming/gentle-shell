@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VimListKeys, vimListIndex } from "./vim-list-keys.ts";
 import { renderUsagePanel, type ActiveProvider, type UsagePanelScope, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 import type { GaugePaint } from "./shell-gauge.ts";
 import { paintHoverable } from "./shell-hover.ts";
@@ -23,6 +24,9 @@ export interface UsageViewDeps {
 	onRefresh(): Promise<void>;
 	onClose(): void;
 	requestRender(): void;
+	// Body rows the framed panel can show at once (top/keys/bottom excluded);
+	// without it the panel renders every row and scroll keys stay inert.
+	viewportRows?(): number;
 }
 
 const TITLE = "✿ Subscriptions";
@@ -34,6 +38,7 @@ const KEY_TEXT_ROLE = "dim";
 const KEYS = [
 	["r", "refresh"],
 	["esc", "close"],
+	["j/k", "scroll"],
 ] as const;
 
 function rule(length: number): string {
@@ -71,6 +76,9 @@ export class UsageView {
 	private refreshing = false;
 	private pointer: PointerLayout | undefined;
 	private hoveredHint: HintAction | undefined;
+	private scroll = 0;
+	private readonly listKeys = new VimListKeys();
+	private bodyRows = 0;
 
 	constructor(store: UsageStore, deps: UsageViewDeps) {
 		this.store = store;
@@ -78,11 +86,40 @@ export class UsageView {
 	}
 
 	handleInput(data: string): void {
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
+		// The scroll offset is the "row" here: 0..maxScroll, paged by the viewport.
+		if (jump) { this.scrollTo(vimListIndex(jump, this.scroll, this.maxScroll() + 1, this.pageRows())); return; }
 		if (matchesKey(data, Key.escape) || data === "q") {
 			this.deps.onClose();
 			return;
 		}
-		if (data === "r") this.refresh();
+		if (data === "r") { this.refresh(); return; }
+		if (data === "j" || matchesKey(data, Key.down)) { this.scrollBy(1); return; }
+		if (data === "k" || matchesKey(data, Key.up)) { this.scrollBy(-1); return; }
+		if (matchesKey(data, Key.pageDown)) { this.scrollBy(this.pageRows()); return; }
+		if (matchesKey(data, Key.pageUp)) { this.scrollBy(-this.pageRows()); return; }
+	}
+
+	private scrollBy(delta: number): void {
+		this.scrollTo(this.scroll + delta);
+	}
+
+	private maxScroll(): number {
+		const viewport = this.deps.viewportRows?.();
+		return viewport === undefined ? 0 : Math.max(0, this.bodyRows - viewport);
+	}
+
+	private scrollTo(target: number): void {
+		if (this.deps.viewportRows === undefined) return;
+		const next = Math.min(this.maxScroll(), Math.max(0, target));
+		if (next === this.scroll) return;
+		this.scroll = next;
+		this.deps.requestRender();
+	}
+
+	private pageRows(): number {
+		return Math.max(1, this.deps.viewportRows?.() ?? 1);
 	}
 
 	// A failing usage fetch is the store's problem to report (its rows already
@@ -113,19 +150,24 @@ export class UsageView {
 		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.(), this.deps.scope?.(), this.deps.gauge?.()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
-		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));
+		// The scroll hint is keyboard help only: it has no action and no clickable span.
+		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : key === "esc" ? "close" : undefined) as HintAction | undefined }));
 		// The hovered hint paints entirely in the shared hover role (key and
 		// label together, one color) instead of its ordinary two-role split --
 		// the same treatment every other clickable surface uses.
 		const keys = hints
 			.map(({ key, label, action }) =>
-				this.hoveredHint === action ? paintHoverable(theme, `${key} ${label}`, true) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`,
+				action && this.hoveredHint === action ? paintHoverable(theme, `${key} ${label}`, true) : `${theme.fg(KEY_ROLE, key)} ${theme.fg(KEY_TEXT_ROLE, label)}`,
 			)
 			.join(HINT_GAP);
 		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
 		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);
-		const lines = [top, ...body, keysLine, bottom];
-		this.pointer = this.hintLayout(width, lines.length, body.length + 1, hints, inner - 2);
+		const viewport = this.deps.viewportRows?.();
+		this.bodyRows = body.length;
+		this.scroll = Math.min(this.scroll, this.maxScroll());
+		const visible = viewport === undefined ? body : body.slice(this.scroll, this.scroll + viewport);
+		const lines = [top, ...visible, keysLine, bottom];
+		this.pointer = this.hintLayout(width, lines.length, visible.length + 1, hints, inner - 2);
 		return lines;
 	}
 
@@ -160,7 +202,7 @@ export class UsageView {
 	// Spans are only registered when the hints text fits without truncation:
 	// past that point `fit` clips it with an ellipsis and per-hint columns no
 	// longer line up with the plain "key label" text used here.
-	private hintLayout(width: number, height: number, row: number, hints: Array<{ text: string; action: HintAction }>, contentWidth: number): PointerLayout | undefined {
+	private hintLayout(width: number, height: number, row: number, hints: Array<{ text: string; action?: HintAction }>, contentWidth: number): PointerLayout | undefined {
 		const plainWidth = hints.reduce((total, hint) => total + hint.text.length, 0) + HINT_GAP.length * Math.max(0, hints.length - 1);
 		if (plainWidth > contentWidth) return undefined;
 		const spans: HintSpan[] = [];
@@ -168,7 +210,7 @@ export class UsageView {
 		for (const hint of hints) {
 			const start = cursor;
 			const end = start + hint.text.length;
-			spans.push({ start, end, action: hint.action });
+			if (hint.action) spans.push({ start, end, action: hint.action });
 			cursor = end + HINT_GAP.length;
 		}
 		return { width, height, row, spans };

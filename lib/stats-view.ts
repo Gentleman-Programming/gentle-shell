@@ -167,8 +167,8 @@ export class StatsView {
 	handleInput(data: string): void {
 		if (this.closed) return;
 		if (data === "q" || matchesKey(data, Key.escape)) return this.close();
-		if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) this.shiftTab(1);
-		else if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) this.shiftTab(-1);
+		if (matchesKey(data, Key.tab) || matchesKey(data, Key.right) || matchesKey(data, "l")) this.shiftTab(1);
+		else if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left) || matchesKey(data, "h")) this.shiftTab(-1);
 		else if (data === "1" || data === "2" || data === "3") this.setTab(TABS[Number(data) - 1].id);
 		else if (data === "r") this.cycleRange();
 		else if (data === "s") this.toggleScope();

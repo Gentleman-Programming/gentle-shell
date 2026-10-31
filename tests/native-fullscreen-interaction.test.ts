@@ -123,3 +123,10 @@ test("native fullscreen interaction preserves Container geometry and SelectList 
 	assert.equal(click?.handled, true);
 	assert.deepEqual(selected, ["second", "second"]);
 });
+
+test("the fullscreen wrapper forwards its keyboard target's ctrl+j/k paging claim", () => {
+	const owner = createNativeFullscreenInteraction({ keyboardTarget: { ownsVimScrollKeys: true, render: () => [], invalidate() {} } as never, requestRender() {} });
+	const plain = createNativeFullscreenInteraction({ keyboardTarget: { render: () => [], invalidate() {} } as never, requestRender() {} });
+	assert.equal((owner as unknown as { ownsVimScrollKeys: boolean }).ownsVimScrollKeys, true, "the claim reaches the focused wrapper");
+	assert.equal((plain as unknown as { ownsVimScrollKeys: boolean }).ownsVimScrollKeys, false, "targets without the claim keep the translation");
+});

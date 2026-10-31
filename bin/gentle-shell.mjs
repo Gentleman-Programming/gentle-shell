@@ -137,14 +137,14 @@ function resolveBundledCli() {
 	const expectedEntry = join(root, "dist", "index.js");
 	const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	if (entry !== expectedEntry || metadata.name !== "@earendil-works/pi-coding-agent" ||
-		metadata.bin?.pi !== "dist/bundle/cli.js") {
+		metadata.bin?.pi !== "dist/bundle/cli.js" || typeof metadata.version !== "string") {
 		throw new Error("Unsupported adjacent Pi package entry/name/bin metadata");
 	}
 	const cliPath = join(root, metadata.bin.pi);
 	if (realpathSync(cliPath) !== cliPath || !statSync(cliPath).isFile()) {
 		throw new Error("Unsupported adjacent Pi CLI path");
 	}
-	return cliPath;
+	return { path: cliPath, version: metadata.version };
 }
 
 function findOnPath(name) {
@@ -315,6 +315,22 @@ function bundledProcessEnv() {
 function ownPackageVersion() {
 	const packageJson = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 	return packageJson.version;
+}
+
+// The real spawn, only ever needed for a runtime with no in-memory version
+// (env override, PATH pi): kind "bundled" always has runtime.version set and
+// skips this entirely (#2096).
+function probePiVersion(runtime) {
+	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
+	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: 15000,
+		encoding: "utf8",
+		shell: versionProbePlan.shell,
+		env: bundledEnv ?? process.env,
+	});
+	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
+	return checkPiVersion(versionProbe.stdout ?? "");
 }
 
 function emptyArgs() {
@@ -1920,7 +1936,7 @@ async function main() {
 		// S8: only the version's own Pi, never GENTLE_SHELL_PI, an adjacent fallback or PATH.
 		const pi = bundledPi(bundled, { platform: process.platform, fs: bundledFs });
 		if (!pi.ok) fail(pi.message, 1);
-		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli] };
+		runtime = { kind: "bundled", command: process.execPath, args: [pi.cli], version: pi.version };
 		bundledInstall = bundled;
 		bundledCli = pi.cli;
 		bundledMemory = engramQuiet ? { policy: "disabled", notice: ENGRAM_RECOVERY_NOTICE } : await classifyBundledMemory();
@@ -1936,16 +1952,11 @@ async function main() {
 		if (runtime === undefined) fail(missingPiMessage(), 1);
 	}
 
-	const versionProbePlan = planSpawn({ command: runtime.command, args: [...runtime.args, "--version"], platform: process.platform });
-	const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: 15000,
-		encoding: "utf8",
-		shell: versionProbePlan.shell,
-		env: bundledEnv ?? process.env,
-	});
-	if (versionProbe.error) fail(`Could not run the pi runtime at "${runtime.command}": ${versionProbe.error.message}`, 1);
-	const versionCheck = checkPiVersion(versionProbe.stdout ?? "");
+	// Bundled runtimes already carry their version in memory (package.json /
+	// the pinned dependency): spawning a whole process just to print it back
+	// is the redundant cost issue #2096 reports, so only env/path runtimes
+	// (which have no such in-memory source) still pay for a real probe.
+	const versionCheck = runtime.version !== undefined ? checkPiVersion(runtime.version) : probePiVersion(runtime);
 	// A managed self update is how an old Pi gets replaced, so the minimum-version
 	// gate must not block it; everything else still requires the minimum.
 	const managedSelfUpdate = !bundled && args.piSubcommand === "update" && versionCheck.version !== undefined

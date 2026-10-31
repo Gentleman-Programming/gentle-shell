@@ -122,6 +122,8 @@ import {
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { installVimKeyTranslation } from "../lib/vim-key-translate.ts";
+import { blockBounds, blockMatrix, nearestBlock, offsetAt, positionAt } from "../lib/vim-visual-engine.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -525,12 +527,17 @@ export class GentlePromptEditor extends CustomEditor {
 	private readonly vimEngine = new VimNormalEngine();
 	private readonly vimOperator = new VimOperatorEngine();
 	private vimInsertIntent?: { operator?: OperatorResult; command?: string };
+	// Focusable for pi-tui: the TUI maintains this flag when focus moves to an
+	// overlay or picker. The global key translation layer (vim-key-translate)
+	// gates on it; the safe default (true) keeps the prompt's own ctrl keys.
+	focused = true;
 	private readonly vimVisual = new VimVisualEngine();
 	private pasteFrame: string | undefined;
 	private pasteOverflow = false;
 	private pasteTail = "";
 	private visualReplacePending = false;
 	private visualObjectPending: "i" | "a" | undefined;
+	private visualObjectSeek: 1 | -1 | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
 	private watchdog: NodeJS.Timeout | undefined;
 	// Last time a frame painted (or the watchdog forced one) while working; the
@@ -788,12 +795,35 @@ export class GentlePromptEditor extends CustomEditor {
 	private handleInputNative(data: string): void {
 		if ((this.vimPolicy === "on" || this.vimRejected) && this.handleVimPasteFrame(data)) return;
 		if (this.vimPolicy === "on" && isKeyRelease(data)) return;
+		// While Pi's autocomplete menu is open under the Vim policy, ctrl+j/k
+		// move its selection like the arrows (fzf convention); Enter (\r) still
+		// accepts and the editor's own ctrl+j/ctrl+k meanings resume the moment
+		// the menu closes. Without the policy the editor keeps its own keys.
+		if (this.vimPolicy === "on" && this.isShowingAutocomplete() && !isKeyRelease(data)) {
+			const direction = matchesKey(data, "ctrl+k") ? "\x1b[A" : matchesKey(data, "ctrl+j") ? "\x1b[B" : undefined;
+			if (direction) return void super.handleInput(direction);
+		}
+		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "ctrl+v")) {
+			// Blockwise VISUAL is claimed before app.clipboard.pasteImage (its
+			// default chord) so NORMAL gets Ctrl-V; INSERT keeps image paste.
+			if (this.vimVisual.active && this.vimVisual.kind === "block") {
+				this.vimVisual.cancel();
+				this.visualAnchor = undefined;
+			} else {
+				this.visualAnchor = this.getCursor();
+				this.vimVisual.start("block", this.getCursor());
+			}
+			this.vimOperator.cancel();
+			this.vimEngine.reset();
+			this.deps.requestRender();
+			return;
+		}
 		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "escape") && this.vimVisual.active) {
 			if (this.isShowingAutocomplete()) {
 				try { this.vimAdapter().dismissAutocomplete(); } catch { return; }
 			}
 			this.vimVisual.cancel(); this.visualAnchor = undefined;
-			this.visualReplacePending = false; this.visualObjectPending = undefined;
+			this.visualReplacePending = false; this.visualObjectPending = undefined; this.visualObjectSeek = undefined;
 			this.vimOperator.cancel(); this.vimEngine.cancelPendingFind();
 			this.deps.requestRender();
 			return;
@@ -840,11 +870,13 @@ export class GentlePromptEditor extends CustomEditor {
 					const visualMode = this.vimVisual.kind;
 					const replacePending = this.visualReplacePending;
 					const objectPending = this.visualObjectPending;
+					const objectSeek = this.visualObjectSeek;
 					const restoreMode = () => {
 						this.vimNormal = true;
 						this.visualAnchor = anchor;
 						this.visualReplacePending = replacePending;
 						this.visualObjectPending = objectPending;
+						this.visualObjectSeek = objectSeek;
 						if (anchor) this.vimVisual.start(visualMode, anchor);
 						this.deps.requestRender();
 					};
@@ -917,12 +949,18 @@ export class GentlePromptEditor extends CustomEditor {
 			}
 			if (this.vimNormal && command) {
 				if (this.visualObjectPending && this.vimVisual.active) {
+					if ((command === "n" || command === "l") && this.visualObjectSeek === undefined) {
+						this.visualObjectSeek = command === "n" ? 1 : -1;
+						this.deps.requestRender(); return;
+					}
 					const around = this.visualObjectPending;
+					const seek = this.visualObjectSeek;
 					this.visualObjectPending = undefined;
+					this.visualObjectSeek = undefined;
 					try {
 						const adapter = this.vimAdapter();
 						const stops = adapter.motionBoundaries();
-						const range = this.vimVisual.object(this.getText(), this.getCursor(), stops, around, command);
+						const range = this.vimVisual.object(this.getText(), this.getCursor(), stops, around, command, seek);
 						if (range) {
 							adapter.readRange(range.start, range.end);
 							const endStops = stops[range.end.line]!;
@@ -979,6 +1017,19 @@ export class GentlePromptEditor extends CustomEditor {
 					this.deps.requestRender();
 					return;
 				}
+				// [ and ] jump to the previous/next pair block's opening
+				// delimiter. Standalone motions only: an operator pending owns
+				// its own motion keys, so d] keeps the engine's behavior.
+				if (!this.vimOperator.isPending && (command === "[" || command === "]")) {
+					try {
+						const adapter = this.vimAdapter();
+						const text = this.getText();
+						const block = nearestBlock(text, offsetAt(text, this.getCursor()), command === "]" ? 1 : -1);
+						if (block) adapter.move(positionAt(text, block[0]));
+					} catch { return; }
+					this.deps.requestRender();
+					return;
+				}
 				let adapter;
 				try { adapter = this.vimAdapter(); } catch { return; }
 				if (this.vimVisual.active) {
@@ -1017,7 +1068,10 @@ export class GentlePromptEditor extends CustomEditor {
 								}
 								stage = "move"; adapter.move(operation.edit.cursor);
 							}
-							if (["d", "x", "c", "s", "y", "p"].includes(command)) this.vimOperator.visualRegister(range.linewise ? selected + "\n" : selected, range.linewise);
+							if (["d", "x", "c", "s", "y", "p"].includes(command)) {
+								const yankText = range.block ? blockMatrix(this.getText(), range) : range.linewise ? selected + "\n" : selected;
+								this.vimOperator.visualRegister(yankText, range.linewise && !range.block);
+							}
 							this.vimVisual.cancel(); this.visualAnchor = undefined;
 							this.vimOperator.cancel(); this.vimEngine.reset();
 							if (operation.edit?.insert) this.enterVimInsert(true, true, false);
@@ -1262,7 +1316,16 @@ export class GentlePromptEditor extends CustomEditor {
 			try {
 				const adapter = this.vimAdapter();
 				const range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries());
-				if (range) editorLines = adapter.renderSelection(inner, range.start, range.end, lines);
+				if (range?.block) {
+					// Rectangular highlight: invert the same columns on every row.
+					const { first, last, minCol, maxCol } = blockBounds(range);
+					let out = lines;
+					for (let row = first; row <= last; row++) {
+						const end = Math.min(maxCol + 1, (lines[row] ?? "").length);
+						if (end > minCol) out = adapter.renderSelection(inner, { line: row, col: minCol }, { line: row, col: end }, out);
+					}
+					editorLines = out;
+				} else if (range) editorLines = adapter.renderSelection(inner, range.start, range.end, lines);
 			} catch { /* Unknown layout: keep the original rendered prompt. */ }
 		}
 		if (this.vimPolicy !== "on") editorLines = this.selectionEngine.decorateRows(editorLines, inner, 0);
@@ -1279,7 +1342,7 @@ export class GentlePromptEditor extends CustomEditor {
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
 			escHint: [
-				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
+				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : this.vimVisual.kind === "block" ? "VISUAL BLOCK" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
 					? DOUBLE_ESC_CANCEL_HINT
 					: this.promptState === PROMPT_STATE.IDLE && this.isPendingIdleClear()
@@ -1980,6 +2043,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestRender: () => tui.requestRender(),
 					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
 					gauge: () => gaugePaint(ctx),
+					// The overlay clips at 80% of the terminal (maxHeight below); the
+					// panel spends 3 of those rows on top/keys/bottom and the rest scrolls.
+					viewportRows: () => Math.max(1, Math.floor(tui.terminal.rows * 0.8) - 3),
 				});
 				// Open promptly: the panel draws whatever the store already holds
 				// while the forced refresh runs underneath it, and repaints when
@@ -1987,7 +2053,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				view.refresh();
 				return view;
 			},
-			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
+			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, maxHeight: "80%", anchor: "center" } },
 		);
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
@@ -2211,6 +2277,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let jobsHovered = false;
 			let jobsPainted = false;
 			let jobsHeaderRow = 0;
+			const disposeKeyTranslation = installVimKeyTranslation(tui, { promptFocused: () => prompt?.focused === true });
 			const jobsRailCard: Component = {
 				render(width: number) {
 					const jobs = runningJobs ?? [];
@@ -2252,6 +2319,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					jobsRegion.invalidate();
 				},
 				dispose() {
+					disposeKeyTranslation();
 					jobsRegion.dispose();
 				},
 			};

@@ -2000,6 +2000,131 @@ test("owned frame fails closed when the installed TUI version does not match the
 	} finally { editor.dispose(); }
 });
 
+test("Ctrl-V enters and toggles blockwise VISUAL with a VISUAL BLOCK label", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI, notifyCompatibility: () => {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		editor.setText("abc\ndef");
+		editor.focused = true;
+		editor.handleInput("\x1b"); // NORMAL
+		editor.handleInput("\x16"); // ctrl+v
+		const state = editor as unknown as { vimVisual: { active: boolean; kind: string } };
+		assert.equal(state.vimVisual.active, true, "ctrl+v enters VISUAL");
+		assert.equal(state.vimVisual.kind, "block", "the visual kind is blockwise");
+		assert.match(editor.render(60).join("\n"), /VISUAL BLOCK/, "the frame labels the blockwise mode");
+		editor.handleInput("\x16"); // toggle off
+		assert.equal(state.vimVisual.active, false, "ctrl+v toggles blockwise off");
+		editor.handleInput("v");
+		assert.equal(state.vimVisual.kind, "char", "previous behavior holds: v is charwise");
+		editor.handleInput("\x16"); // switch charwise to blockwise
+		assert.equal(state.vimVisual.kind, "block", "ctrl+v switches an active charwise selection to blockwise");
+		editor.handleInput("\x1b");
+		assert.equal(state.vimVisual.active, false);
+	} finally {
+		editor.dispose();
+	}
+});
+
+test("ctrl+j/k move the autocomplete selection while the menu is open", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI, notifyCompatibility: () => {},
+	});
+	const base = Object.getPrototypeOf(GentlePromptEditor.prototype) as { handleInput(data: string): void };
+	const synthesized: string[] = [];
+	const original = base.handleInput;
+	base.handleInput = function (this: unknown, data: string) {
+		synthesized.push(data);
+	};
+	try {
+		editor.setVimPolicy("on");
+		const autocomplete = editor as unknown as { isShowingAutocomplete(): boolean };
+		autocomplete.isShowingAutocomplete = () => true;
+		editor.handleInput("\x0b"); // ctrl+k
+		assert.deepEqual(synthesized.splice(0), ["\x1b[A"], "ctrl+k moves the selection up like the arrow");
+		editor.handleInput("\n"); // ctrl+j
+		assert.deepEqual(synthesized.splice(0), ["\x1b[B"], "ctrl+j moves the selection down like the arrow");
+		editor.handleInput("\x1b[107;5:2u"); // ctrl+k repeat
+		assert.deepEqual(synthesized.splice(0), ["\x1b[A"], "repeats keep moving like holding an arrow");
+		editor.handleInput("\x1b[106;5:3u"); // ctrl+j release
+		assert.deepEqual(synthesized.splice(0), [], "key releases never move");
+		autocomplete.isShowingAutocomplete = () => false;
+		editor.handleInput("\n"); // ctrl+j
+		assert.deepEqual(synthesized.splice(0), ["\n"], "previous behavior holds: without the menu ctrl+j is the editor's newline");
+	} finally {
+		base.handleInput = original;
+		editor.dispose();
+	}
+});
+
+test("the prompt editor is Focusable so the key translation layer can see its focus", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI, notifyCompatibility: () => {},
+	});
+	try {
+		const focusable = editor as unknown as { focused?: boolean };
+		assert.equal(focusable.focused, true, "the editor starts assumed focused (safe default: no translation)");
+		focusable.focused = false;
+		assert.equal(focusable.focused, false, "the TUI can move focus away and the flag follows");
+	} finally {
+		editor.dispose();
+	}
+});
+
+test("blockwise operators edit the rectangular block", () => {
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_color, text) => text, bold: (text) => text, requestRender() {},
+		pending: () => false, now: () => 0, doubleEscCancelEnabled: () => false,
+		dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI, notifyCompatibility: () => {},
+	});
+	try {
+		editor.setVimPolicy("on");
+		const state = editor as unknown as { vimNormal: boolean; vimVisual: { active: boolean; kind: string } };
+		// d deletes the rectangle (columns 1..2 on every row).
+		editor.setText("abcd\nefgh\nijkl");
+		editor.focused = true;
+		const adapter = createVimEditorAdapter(editor, INSTALLED_PI);
+		editor.handleInput("\x1b"); // NORMAL
+		assert.equal(state.vimNormal, true, "ESC reaches NORMAL");
+		adapter.move({ line: 0, col: 1 });
+		editor.handleInput("\x16"); // ctrl+v blockwise
+		assert.equal(state.vimVisual.active, true, "ctrl+v is active");
+		adapter.move({ line: 2, col: 2 });
+		assert.equal(state.vimVisual.active, true, "move keeps selection");
+		assert.deepEqual(reverseColumns(editor.render(30)[1]!), [2, 3], "row 0 inverts the rectangle columns");
+		assert.deepEqual(reverseColumns(editor.render(30)[2]!), [2, 3], "row 1 inverts the rectangle columns");
+		assert.deepEqual(reverseColumns(editor.render(30)[3]!), [2, 3], "row 2 inverts the rectangle columns");
+		editor.handleInput("d");
+		assert.equal(editor.getText(), "ad\neh\nil", "d deletes the rectangle on every row");
+		// r replaces each cell of the rectangle.
+		editor.setText("abcd\nefgh\nijkl");
+		adapter.move({ line: 0, col: 1 });
+		editor.handleInput("\x16");
+		adapter.move({ line: 2, col: 2 });
+		editor.handleInput("r");
+		editor.handleInput("X");
+		assert.equal(editor.getText(), "aXXd\neXXh\niXXl", "r replaces each cell of the rectangle");
+		// y yanks the rectangle as a row matrix.
+		editor.setText("abcd\nefgh\nijkl");
+		adapter.move({ line: 0, col: 1 });
+		editor.handleInput("\x16");
+		adapter.move({ line: 2, col: 2 });
+		editor.handleInput("y");
+		adapter.move({ line: 2, col: 3 });
+		editor.handleInput("p");
+		assert.equal(editor.getText(), "abcd\nefgh\nijklbc\nfg\njk", "p pastes the yanked matrix after the cursor");
+	} finally {
+		editor.dispose();
+	}
+});
+
 test("duplicate registered paste marker disables Vim visibly and keeps ordinary editing", () => {
 	const notices: string[] = [];
 	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
@@ -6617,4 +6742,44 @@ test("pasted image chips warn instead of sending images a text-only model reject
 		images: [],
 	});
 	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
+});
+
+test("bracket motions jump between pair blocks and extend the visual selection", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("a (one) b (two) c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("]"); editor.handleInput("x");
+    assert.equal(editor.getText(), "a one) b (two) c", "] lands on the next block's opening delimiter");
+    editor.setText("a (one) b (two) c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("]"); editor.handleInput("]"); editor.handleInput("x");
+    assert.equal(editor.getText(), "a (one) b two) c", "] repeats to the following block");
+    editor.setText("a (one) b (two) c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("]"); editor.handleInput("["); editor.handleInput("x");
+    assert.equal(editor.getText(), "a one) b (two) c", "[ walks back to the previous block");
+    editor.setText("a (one) b (two) c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("v"); editor.handleInput("]"); editor.handleInput("d");
+    assert.equal(editor.getText(), "one) b (two) c", "in VISUAL, ] extends the selection to the block start");
+  } finally { editor.dispose(); }
+});
+
+test("visual direction prefixes vin and vil select the next and last block insides", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("a [first] b {second} c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("f"); editor.handleInput("b"); // between the two blocks
+    for (const key of ["v", "i", "n", "{", "d"]) editor.handleInput(key);
+    assert.equal(editor.getText(), "a [first] b {} c", "vin{ deletes inside the next braces");
+    editor.setText("a [first] b {second} c"); editor.handleInput("\x1b");
+    editor.handleInput("g"); editor.handleInput("g");
+    editor.handleInput("f"); editor.handleInput("b");
+    for (const key of ["v", "i", "l", "[", "d"]) editor.handleInput(key);
+    assert.equal(editor.getText(), "a [] b {second} c", "vil[ deletes inside the last brackets");
+  } finally { editor.dispose(); }
 });

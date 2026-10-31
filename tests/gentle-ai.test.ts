@@ -4327,6 +4327,21 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
 });
 
+test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Pinned routing drops the orchestrator key, so the pin's own orchestrator never feeds the fallback.
+	writeStore({ pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } } });
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
 	for (const rejected of [false, true]) {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);

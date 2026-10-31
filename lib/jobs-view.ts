@@ -42,6 +42,8 @@ export class JobsView {
 	private selectedId: string | undefined;
 	private details = false;
 	private listScroll = 0;
+	private bodyRows = 0;
+	private pendingG = false;
 	private closed = false;
 	private readonly timer: ReturnType<typeof setInterval>;
 
@@ -63,6 +65,7 @@ export class JobsView {
 
 	handleInput(data: string): void {
 		if (this.closed) return;
+		if (this.pendingG && data !== "g") this.pendingG = false;
 		const jobs = this.orderedJobs();
 		const index = Math.max(0, jobs.findIndex((job) => job.id === this.selected(jobs)?.id));
 		if (data === "q") this.close();
@@ -72,7 +75,20 @@ export class JobsView {
 		} else if (data === "\t" || matchesKey(data, Key.enter)) this.details = !this.details;
 		else if (data === "j" || matchesKey(data, Key.down)) this.selectedId = jobs[Math.min(jobs.length - 1, index + 1)]?.id;
 		else if (data === "k" || matchesKey(data, Key.up)) this.selectedId = jobs[Math.max(0, index - 1)]?.id;
-		else if (data === "s") {
+		else if (data === "G") this.selectedId = jobs[jobs.length - 1]?.id;
+		else if (data === "g") {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.selectedId = jobs[0]?.id;
+			} else {
+				this.pendingG = true;
+				return;
+			}
+		} else if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, Key.ctrl("u"))) {
+			const half = Math.max(1, Math.floor(this.bodyRows / 2));
+			const direction = matchesKey(data, Key.ctrl("d")) ? 1 : -1;
+			this.selectedId = jobs[Math.max(0, Math.min(jobs.length - 1, index + direction * half))]?.id;
+		} else if (data === "s") {
 			const job = this.selected(jobs);
 			if (job?.status === "running") this.deps.onStop(job);
 		} else return;
@@ -122,6 +138,7 @@ export class JobsView {
 	}
 
 	private listLines(jobs: JobRecord[], selected: JobRecord | undefined, width: number, rows: number): string[] {
+		this.bodyRows = rows;
 		const { theme } = this.deps;
 		if (jobs.length === 0) return [theme.fg(ROLE.EMPTY, "No jobs")];
 		const index = jobs.findIndex((job) => job.id === selected?.id);

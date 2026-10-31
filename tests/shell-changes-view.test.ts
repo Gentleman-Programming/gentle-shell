@@ -893,3 +893,63 @@ test("the native fullscreen wrapper keeps keyboard, hover, click and wheel on th
 		tui.stop();
 	}
 });
+
+test("changes view accepts vim gg/G row jumps", () => {
+	const h = view();
+	h.view.handleInput("G");
+	h.view.handleInput("o");
+	assert.deepEqual(h.events.filter((e) => e.startsWith("open:")), ["open:lib/b.ts"], "G selects the last file");
+	h.view.handleInput("g");
+	h.view.handleInput("g");
+	h.view.handleInput("o");
+	assert.deepEqual(
+		h.events.filter((e) => e.startsWith("open:")),
+		["open:lib/b.ts", "open:lib/a.ts"],
+		"gg selects the first file",
+	);
+});
+
+test("WorktreeChangesView accepts vim gg/G row jumps", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const opened: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: (root: string, target: { path: string }) => { opened.push(`${root}:${target.path}`); },
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	component.handleInput("\r"); // expand /main
+	component.handleInput("j");
+	component.handleInput("j");
+	component.handleInput("\r"); // expand /linked
+	component.handleInput("G");
+	component.handleInput("o");
+	assert.deepEqual(opened, ["/linked:same.ts"], "G selects the last file");
+	opened.length = 0;
+	component.handleInput("g");
+	component.handleInput("g");
+	component.handleInput("j");
+	component.handleInput("o");
+	assert.deepEqual(opened, ["/main:same.ts"], "gg returns to the first row");
+});
+
+test("ctrl+d/ctrl+u move the changes selection half a page", async () => {
+	const files = Array.from({ length: 20 }, (_, i) => file(`f${i + 1}.ts`, 1, 0));
+	const trees = [{ root: "/main", branch: "main", model: changesModel(files) }];
+	const opened: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: (_root: string, target: { path: string }) => { opened.push(target.path); },
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	component.handleInput("\r"); // expand /main
+	component.handleInput("G");
+	component.handleInput("\x15"); // ctrl+u: half a page up
+	component.handleInput("o");
+	assert.notEqual(opened[0], "f9.ts", "ctrl+u moved the selection up from the last file (rows sort alphabetically)");
+	assert.notEqual(opened[0], "f1.ts", "half a page, not the whole list");
+	component.dispose();
+});

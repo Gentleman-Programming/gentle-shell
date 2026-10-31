@@ -726,3 +726,37 @@ test("AgentsView rejects cached-height pointer input before the live resize rend
 	assert.match(stripAnsi(view.render(80)[2] ?? ""), /l0/, "the live wheel scrolls past the semantic block label after the new frame");
 	view.dispose();
 });
+
+test("agents view accepts vim gg/G row jumps", () => {
+	const h = harness();
+	h.store.add(task("t1", { label: "first" }));
+	h.store.add(task("t2", { label: "middle" }));
+	h.store.add(task("t3", { label: "third" }));
+	const frame = () => h.view.render(80).map(stripAnsi);
+	h.view.handleInput("G");
+	const last = frame();
+	h.view.handleInput("g");
+	h.view.handleInput("g");
+	const first = frame();
+	assert.notDeepEqual(first, last, "gg moves the selection to the first row");
+	h.view.handleInput("G");
+	assert.deepEqual(frame(), last, "G returns to the last row");
+	h.view.dispose();
+});
+
+test("agents view scrolls the thread half a page with ctrl+d/ctrl+u and pageUp/pageDown still scroll a full page", () => {
+	const { store, view } = harness(8);
+	store.add(task("a"));
+	for (let i = 0; i < 30; i++) store.apply("a", { type: TASK_EVENT.TEXT, text: `line ${i}\n` }, 2000);
+	const maxLine = () => Math.max(...[...view.render(80).join("\n").matchAll(/line (\d+)/g)].map((m) => Number(m[1])));
+	const bottom = maxLine();
+	assert.equal(bottom, 29, "the thread tail starts visible");
+	view.handleInput("\x15"); // ctrl+u: half a page up
+	const half = maxLine();
+	assert.ok(half < bottom, "ctrl+u scrolls the thread up");
+	view.handleInput("\x04"); // ctrl+d
+	assert.equal(maxLine(), bottom, "ctrl+d returns to the tail");
+	view.handleInput("\x0b"); // pageUp: previous behavior holds
+	assert.ok(maxLine() < half, "pageUp still scrolls a full page (more than ctrl+u's half)");
+	view.dispose();
+});

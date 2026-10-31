@@ -83,7 +83,7 @@ const STOP_BUTTON = "[Stop]";
 const SCOPE_BUTTON = "[Scope]";
 const KEYS = [
 	["j/k", "task"],
-	["ctrl+j/k", "scroll"],
+	["pgup/pgdn", "scroll"],
 	["f", "follow"],
 	["o", "open session"],
 	["esc", "back"],
@@ -325,6 +325,8 @@ export class AgentsView {
 		return this.tasks.find((task) => `task:${task.id}` === this.selectedId);
 	}
 
+	private pendingG = false;
+
 	handleInput(data: string): void {
 		if (this.closed) return;
 		if (data === "q") return this.close();
@@ -346,12 +348,26 @@ export class AgentsView {
 			this.scrollBy(data === "j" || matchesKey(data, Key.down) ? 1 : -1);
 			return;
 		}
+		if (this.pendingG && data !== "g") this.pendingG = false;
 		if (data === "j" || matchesKey(data, Key.down)) this.select(index + 1, rows);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);
-		else if (matchesKey(data, Key.left) && selected?.kind === "heading") this.setExpanded(selected.group, false);
+		else if (data === "G") this.select(rows.length - 1, rows);
+		else if (data === "g") {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.select(0, rows);
+			} else {
+				this.pendingG = true;
+				return;
+			}
+		} else if (matchesKey(data, Key.left) && selected?.kind === "heading") this.setExpanded(selected.group, false);
 		else if (matchesKey(data, Key.right) && selected?.kind === "heading") this.setExpanded(selected.group, true);
 		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(this.pageRows());
 		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-this.pageRows());
+		else if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, Key.ctrl("u"))) {
+			const half = Math.max(1, Math.floor(this.pageRows() / 2));
+			this.scrollBy(matchesKey(data, Key.ctrl("d")) ? half : -half);
+		}
 		else if (data === "f" && task) {
 			this.follow = true;
 			this.deps.requestRender();

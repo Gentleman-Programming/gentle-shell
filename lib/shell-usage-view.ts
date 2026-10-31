@@ -23,6 +23,9 @@ export interface UsageViewDeps {
 	onRefresh(): Promise<void>;
 	onClose(): void;
 	requestRender(): void;
+	// Body rows the framed panel can show at once (top/keys/bottom excluded);
+	// without it the panel renders every row and scroll keys stay inert.
+	viewportRows?(): number;
 }
 
 const TITLE = "✿ Subscriptions";
@@ -34,6 +37,7 @@ const KEY_TEXT_ROLE = "dim";
 const KEYS = [
 	["r", "refresh"],
 	["esc", "close"],
+	["j/k", "scroll"],
 ] as const;
 
 function rule(length: number): string {
@@ -50,7 +54,7 @@ function fit(text: string, width: number): string {
 const HINT_CONTENT_OFFSET = 2;
 const HINT_GAP = "   ";
 
-type HintAction = "refresh" | "close";
+type HintAction = "refresh" | "close" | "scroll";
 
 interface HintSpan {
 	start: number;
@@ -71,6 +75,9 @@ export class UsageView {
 	private refreshing = false;
 	private pointer: PointerLayout | undefined;
 	private hoveredHint: HintAction | undefined;
+	private scroll = 0;
+	private pendingG = false;
+	private bodyRows = 0;
 
 	constructor(store: UsageStore, deps: UsageViewDeps) {
 		this.store = store;
@@ -78,11 +85,41 @@ export class UsageView {
 	}
 
 	handleInput(data: string): void {
+		if (this.pendingG) {
+			this.pendingG = false;
+			if (data === "g") { this.scrollTo(0); return; }
+		}
 		if (matchesKey(data, Key.escape) || data === "q") {
 			this.deps.onClose();
 			return;
 		}
-		if (data === "r") this.refresh();
+		if (data === "r") { this.refresh(); return; }
+		if (data === "g") { this.pendingG = true; return; }
+		if (data === "G") { this.scrollTo(Number.POSITIVE_INFINITY); return; }
+		if (data === "j" || matchesKey(data, Key.down)) { this.scrollBy(1); return; }
+		if (data === "k" || matchesKey(data, Key.up)) { this.scrollBy(-1); return; }
+		if (matchesKey(data, Key.pageDown)) { this.scrollBy(this.pageRows()); return; }
+		if (matchesKey(data, Key.pageUp)) { this.scrollBy(-this.pageRows()); return; }
+		if (matchesKey(data, Key.ctrl("d"))) { this.scrollBy(Math.max(1, Math.floor(this.pageRows() / 2))); return; }
+		if (matchesKey(data, Key.ctrl("u"))) { this.scrollBy(-Math.max(1, Math.floor(this.pageRows() / 2))); return; }
+	}
+
+	private scrollBy(delta: number): void {
+		this.scrollTo(this.scroll + delta);
+	}
+
+	private scrollTo(target: number): void {
+		const viewport = this.deps.viewportRows?.();
+		if (viewport === undefined) return;
+		const max = Math.max(0, this.bodyRows - viewport);
+		const next = Math.min(max, Math.max(0, target));
+		if (next === this.scroll) return;
+		this.scroll = next;
+		this.deps.requestRender();
+	}
+
+	private pageRows(): number {
+		return Math.max(1, this.deps.viewportRows?.() ?? 1);
 	}
 
 	// A failing usage fetch is the store's problem to report (its rows already
@@ -113,7 +150,7 @@ export class UsageView {
 		const body = renderUsagePanel(this.store.all(), theme, inner - 2, this.deps.now(), this.deps.active(), this.deps.registry?.(), this.deps.scope?.(), this.deps.gauge?.()).map(
 			(line) => `${theme.fg(FRAME_ROLE, "│")} ${fit(line, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`,
 		);
-		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : "close") as HintAction }));
+		const hints = KEYS.map(([key, label]) => ({ key, label, text: `${key} ${label}`, action: (key === "r" ? "refresh" : key === "esc" ? "close" : "scroll") as HintAction }));
 		// The hovered hint paints entirely in the shared hover role (key and
 		// label together, one color) instead of its ordinary two-role split --
 		// the same treatment every other clickable surface uses.
@@ -124,8 +161,20 @@ export class UsageView {
 			.join(HINT_GAP);
 		const keysLine = `${theme.fg(FRAME_ROLE, "│")} ${fit(keys, inner - 2)} ${theme.fg(FRAME_ROLE, "│")}`;
 		const bottom = theme.fg(FRAME_ROLE, `╰${rule(inner)}╯`);
-		const lines = [top, ...body, keysLine, bottom];
-		this.pointer = this.hintLayout(width, lines.length, body.length + 1, hints, inner - 2);
+		const viewport = this.deps.viewportRows?.();
+		this.bodyRows = body.length;
+		let visible = body;
+		if (viewport === undefined || body.length <= viewport) {
+			this.scroll = 0;
+		} else {
+			const max = body.length - viewport;
+			if (this.scroll > max) this.scroll = max;
+			if (this.scroll < 0) this.scroll = 0;
+			visible = body.slice(this.scroll, this.scroll + viewport);
+		}
+		const lines = [top, ...visible, keysLine, bottom];
+		// The scroll hint is keyboard help only: it has no clickable span.
+		this.pointer = this.hintLayout(width, lines.length, visible.length + 1, hints.filter((hint) => hint.action !== "scroll"), inner - 2);
 		return lines;
 	}
 

@@ -45,7 +45,7 @@ const EMPTY_DIFF = "no diff for this file";
 const CLEAN_TREE = "working tree is clean";
 const KEYS = [
 	["j/k", "file"],
-	["ctrl+j/k", "scroll"],
+	["pgup/pgdn", "scroll"],
 	["o", "open in editor"],
 	["esc", "close"],
 ] as const;
@@ -247,6 +247,8 @@ export class WorktreeChangesView {
 		this.deps.requestRender();
 	}
 
+	private pendingG = false;
+
 	handleInput(data: string): void {
 		if (this.disposed) return;
 		if (data === "r") return this.deps.onRefresh();
@@ -262,6 +264,16 @@ export class WorktreeChangesView {
 			if (row?.file) this.previews.get(rowKey(row))?.view.handleInput(data);
 			return;
 		}
+		if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, Key.ctrl("u"))) {
+			const half = Math.max(1, Math.floor(this.bodyRows() / 2));
+			const direction = matchesKey(data, Key.ctrl("d")) ? 1 : -1;
+			if (this.diffOnly) for (let i = 0; i < half; i++) this.stepFile(direction > 0 ? 1 : -1);
+			else this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + direction * half));
+			this.ensureSelectedVisible();
+			this.ensurePreview();
+			this.deps.requestRender();
+			return;
+		}
 		if (this.diffOnly) {
 			// Only files have a diff: j/k walk every file, crossing groups.
 			if (data === "j" || matchesKey(data, Key.down)) this.stepFile(1);
@@ -271,9 +283,19 @@ export class WorktreeChangesView {
 			this.deps.requestRender();
 			return;
 		}
+		if (this.pendingG && data !== "g") this.pendingG = false;
 		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + 1));
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (row && (matchesKey(data, Key.left) || matchesKey(data, Key.backspace))) {
+		else if (data === "G") this.selected = rows.length - 1;
+		else if (data === "g") {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.selected = 0;
+			} else {
+				this.pendingG = true;
+				return;
+			}
+		} else if (row && (matchesKey(data, Key.left) || matchesKey(data, Key.backspace))) {
 			if (row.file) this.selected = rows.findIndex((item) => item.tree.root === row.tree.root && !item.file);
 			else this.expanded.delete(row.tree.root);
 		} else if (row && !row.file && (matchesKey(data, Key.enter) || data === " " || matchesKey(data, Key.right))) {
@@ -356,8 +378,8 @@ export class WorktreeChangesView {
 			return `${marker} ${text}`;
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, this.diffOnly
-			? "j/k file   ctrl+j/k scroll   o open   r refresh   F files   esc files"
-			: "j/k select   enter toggle/open   ← fold   ctrl+j/k scroll   r refresh   F diff only   esc close");
+			? "j/k file   pgup/pgdn scroll   o open   r refresh   F files   esc files"
+			: "j/k select   enter toggle/open   ← fold   pgup/pgdn scroll   r refresh   F diff only   esc close");
 		this.pointerLayout = pointerLayout(width, height, this.diffOnly);
 		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file, this.diffOnly);
 	}
@@ -488,8 +510,11 @@ export class ChangesView {
 		this.pointerLayout = undefined;
 	}
 
+	private pendingG = false;
+
 	handleInput(data: string): void {
 		if (this.disposed) return;
+		if (this.pendingG && data !== "g") this.pendingG = false;
 		if (matchesKey(data, Key.escape) || data === "q") {
 			this.deps.onClose();
 			return;
@@ -498,8 +523,21 @@ export class ChangesView {
 		// the scroll keys are checked before the open key; a real Enter is CR.
 		if (data === "j" || matchesKey(data, Key.down)) this.select(this.selected + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(this.selected - 1);
-		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(diffRows(this.bodyRows()));
+		else if (data === "G") this.select(this.model.files.length - 1);
+		else if (data === "g") {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.select(0);
+			} else {
+				this.pendingG = true;
+				return;
+			}
+		} else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(diffRows(this.bodyRows()));
 		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-diffRows(this.bodyRows()));
+		else if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, Key.ctrl("u"))) {
+			const half = Math.max(1, Math.floor(diffRows(this.bodyRows()) / 2));
+			this.scrollBy(matchesKey(data, Key.ctrl("d")) ? half : -half);
+		}
 		else if (data === "o" || matchesKey(data, Key.enter)) {
 			const file = this.model.files[this.selected];
 			if (file) this.deps.onOpen(file);

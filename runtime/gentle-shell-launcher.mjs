@@ -220,6 +220,32 @@ export function userPiHome(env                                    , homedir     
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
 }
 
+// Nobody can see or type into an editor git opens from Pi's bash tool, so
+// `git rebase --continue` or a bare `git commit` would wait on it forever.
+// `true` makes git keep the prepared message (or abort an empty one) instead.
+// A value the user already set is kept; on Windows env names ignore case, so a
+// user's `git_editor` counts too.
+export const NON_INTERACTIVE_GIT_ENV = { GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" }         ;
+
+export function nonInteractiveGitEnv(env                                    , platform         = process.platform)                         {
+	const isSet = (key        ) => platform === "win32"
+		? Object.entries(env).some(([name, value]) => value !== undefined && name.toUpperCase() === key)
+		: env[key] !== undefined;
+	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => !isSet(key)));
+}
+
+// On Windows, Node keeps only the first of a set of case variants (in sorted
+// order) and then skips it if it is undefined, so `{ GIT_EDITOR: undefined,
+// git_editor: "vim" }` would reach the child with neither. Drop the undefined
+// variants so the defined one is what gets spawned.
+export function dropUndefinedCaseVariants(env                                    , platform         = process.platform)       {
+	if (platform !== "win32") return;
+	const defined = new Set(Object.entries(env).filter(([, value]) => value !== undefined).map(([name]) => name.toUpperCase()));
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined && defined.has(name.toUpperCase())) delete env[name];
+	}
+}
+
 export function isolatedDir(env                                    , homedir        )         {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
@@ -1004,6 +1030,8 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+
+
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
 //     config/auth/mcp on argv[0] before it even parses flags, so any injected
@@ -1083,6 +1111,7 @@ export function buildPiInvocation(input                        )               {
 
 	const env                                     = {
 		...input.baseEnv,
+		...nonInteractiveGitEnv(input.baseEnv, input.platform),
 		PI_CODING_AGENT_DIR: input.home.dir,
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
@@ -1095,6 +1124,7 @@ export function buildPiInvocation(input                        )               {
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+	dropUndefinedCaseVariants(env, input.platform);
 
 	return { command: input.runtime.command, args, env };
 }

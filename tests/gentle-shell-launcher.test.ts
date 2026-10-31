@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
+import { bundledChildEnv } from "../lib/gentle-shell-bundled.ts";
 import {
 	GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV,
 	MIN_PI_VERSION,
@@ -25,6 +26,8 @@ import {
 	type LooseExtensionFsEntry,
 	missingPiMessage,
 	needsProvisioning,
+	NON_INTERACTIVE_GIT_ENV,
+	nonInteractiveGitEnv,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
@@ -1287,7 +1290,69 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		homedir: "/home/u",
 		cwd: "/work",
 	});
-	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+	assert.deepEqual(built.env, { ...NON_INTERACTIVE_GIT_ENV, PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+});
+
+// An editor git opens from Pi's bash tool has no terminal anyone can reach, so
+// `git rebase --continue` or a bare `git commit` hung the tool call forever.
+test("buildPiInvocation keeps git from opening an editor unless the user chose one for git", () => {
+	const build = (baseEnv: Record<string, string | undefined>) => buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv,
+		homedir: "/home/u",
+		cwd: "/work",
+	}).env;
+	const defaults = build({ EDITOR: "nvim", VISUAL: "nvim" });
+	assert.equal(defaults.GIT_EDITOR, "true");
+	assert.equal(defaults.GIT_SEQUENCE_EDITOR, "true");
+	assert.equal(defaults.EDITOR, "nvim");
+	assert.equal(defaults.VISUAL, "nvim");
+	const explicit = build({ GIT_EDITOR: "code --wait", GIT_SEQUENCE_EDITOR: "" });
+	assert.equal(explicit.GIT_EDITOR, "code --wait");
+	assert.equal(explicit.GIT_SEQUENCE_EDITOR, "");
+	assert.deepEqual(nonInteractiveGitEnv({ GIT_EDITOR: "vim" }, "linux"), { GIT_SEQUENCE_EDITOR: "true" });
+	// A key that is present but undefined is omitted from the spawn, so it still gets the default.
+	assert.equal(build({ GIT_EDITOR: undefined }).GIT_EDITOR, "true");
+});
+
+// The bundled launcher copies process.env into a plain object, which loses
+// Windows' case-insensitive lookup; a user's `git_editor` must still win.
+test("nonInteractiveGitEnv matches editor names case-insensitively on Windows only", () => {
+	const bundled = bundledChildEnv({ git_editor: "code --wait", Git_Sequence_Editor: "vim" }, { node: "/n/node", cli: "/n/cli.js", prefix: "/p" });
+	assert.deepEqual(nonInteractiveGitEnv(bundled, "win32"), {});
+	assert.deepEqual(nonInteractiveGitEnv(bundled, "linux"), NON_INTERACTIVE_GIT_ENV);
+	assert.deepEqual(nonInteractiveGitEnv({ git_editor: undefined }, "win32"), NON_INTERACTIVE_GIT_ENV);
+});
+
+// Node on Windows keeps the first case variant in sorted order (GIT_EDITOR)
+// and then skips it as undefined, so the user's git_editor would be lost too.
+test("buildPiInvocation on Windows drops an undefined case variant so the user's git editor reaches the child", () => {
+	const build = (platform: string) => buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv: { GIT_EDITOR: undefined, git_editor: "vim" },
+		homedir: "/home/u",
+		cwd: "/work",
+		platform,
+	}).env;
+	const win = build("win32");
+	assert.equal("GIT_EDITOR" in win, false);
+	assert.equal(win.git_editor, "vim");
+	assert.equal(win.GIT_SEQUENCE_EDITOR, "true");
+	const linux = build("linux");
+	assert.equal(linux.GIT_EDITOR, "true");
+	assert.equal(linux.git_editor, "vim");
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
@@ -1361,6 +1426,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 		cwd: "/work",
 	});
 	assert.deepEqual(built.env, {
+		...NON_INTERACTIVE_GIT_ENV,
 		PATH: "/usr/bin",
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
@@ -1384,7 +1450,7 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
-	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { ...NON_INTERACTIVE_GIT_ENV, PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
 });
 
 // The isolated home overrides PI_CODING_AGENT_DIR for the session, so the

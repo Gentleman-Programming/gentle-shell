@@ -12,6 +12,16 @@ interface RepeatChange { keys: string[]; register?: Register; inserted?: string;
 export interface OperatorResult { edit?: OperatorEdit; handled: true; repeat?: RepeatChange }
 interface Register { text: string; linewise: boolean }
 
+/**
+ * The first grapheme boundary of `line` at or after `col`, else its end. An edit
+ * can merge the graphemes around a cut (deleting x from 🇦x🇧 leaves one flag),
+ * so a column valid before the edit may fall inside a grapheme after it.
+ */
+function boundaryAtOrAfter(line: string, col: number): number {
+  for (const { index } of segmenter.segment(line)) if (index >= col) return index;
+  return line.length;
+}
+
 export class VimOperatorEngine {
   private pending: Operator | undefined;
   private digits = "";
@@ -89,9 +99,7 @@ export class VimOperatorEngine {
         start: { line: first, col: 0 },
         end: { line: last, col: rows[rows.length - 1]!.length },
         text: edited.join("\n"),
-        // The first row's left part ends on a grapheme boundary, unlike minCol,
-        // which may fall inside a wide grapheme taken from another row.
-        cursor: { line: first, col: blockCells(rows[0]!, minCol, maxCol)[0].length },
+        cursor: { line: first, col: boundaryAtOrAfter(edited[0]!, blockCells(rows[0]!, minCol, maxCol)[0].length) },
       },
     };
   }

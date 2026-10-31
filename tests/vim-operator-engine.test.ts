@@ -277,3 +277,10 @@ test("blockEdit places its cursor on a grapheme boundary of the first row", () =
   const edit = new VimOperatorEngine().visualEdit("d", "🙂abc\nxy", { start: { line: 0, col: 1 }, end: { line: 1, col: 2 }, linewise: false, block: true }).edit;
   assert.deepEqual(edit?.cursor, { line: 0, col: 2 }, "after the emoji, never inside it");
 });
+
+test("blockEdit snaps its cursor to a boundary of the edited row when graphemes merge", () => {
+  // Deleting x from 🇦x🇧 joins the two regional indicators into one flag grapheme.
+  const edit = new VimOperatorEngine().visualEdit("d", "🇦x🇧", { start: { line: 0, col: 2 }, end: { line: 0, col: 3 }, linewise: false, block: true }).edit;
+  assert.equal(edit?.text, "🇦🇧");
+  assert.deepEqual(edit?.cursor, { line: 0, col: 4 }, "the old column 2 is inside the merged flag; the next boundary is the row end");
+});

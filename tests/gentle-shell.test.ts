@@ -6920,3 +6920,15 @@ test("a block edit lands the cursor on a grapheme boundary when the first row st
     assert.equal(editor.getText().split("\n")[1], "x", "the block cell is deleted on the second row");
   } finally { editor.dispose(); }
 });
+
+test("a block delete that merges graphemes still completes and leaves VISUAL", () => {
+  const { pi, handlers } = fakePi(); gentleShell(pi, {});
+  const { ctx, ui } = fakeContext(); const editor = installedPrompt(ctx, ui, handlers);
+  try {
+    editor.setVimPolicy("on"); editor.setText("🇦x🇧"); editor.handleInput("\x1b");
+    editor.handleInput("0"); editor.handleInput("l"); // on x
+    editor.handleInput("\x16"); editor.handleInput("d");
+    assert.equal(editor.getText(), "🇦🇧");
+    assert.doesNotMatch(editor.render(30).join("\n"), /VISUAL/, "the cursor move succeeds, so VISUAL closes");
+  } finally { editor.dispose(); }
+});

@@ -4313,6 +4313,20 @@ test("provider review roles fall back to the session profile orchestrator before
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", {}).selection, "nan/flash", "without a session orchestrator the persisted default still applies");
 });
 
+test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "inherited-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+});
+
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
 	for (const rejected of [false, true]) {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);

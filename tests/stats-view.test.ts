@@ -200,3 +200,19 @@ test("clickable header and footer controls switch tabs, toggle filters, and clos
 	click(view, width, 0, "[× Close]");
 	assert.equal(events.filter((event) => event === "close").length, 1);
 });
+
+test("stats view accepts vim h/l as tab aliases", () => {
+	const { view } = makeView();
+	const frame = () => joined(view);
+	const base = frame();
+	view.handleInput("l");
+	const next = frame();
+	assert.notDeepEqual(next, base, "l moves one tab right");
+	view.handleInput("h");
+	assert.deepEqual(frame(), base, "h moves one tab back");
+	view.handleInput("l");
+	assert.deepEqual(frame(), next, "previous behavior holds: l matches the tab key");
+	view.handleInput("h");
+	view.handleInput("\t");
+	assert.deepEqual(frame(), next, "previous behavior holds: tab keeps cycling");
+});

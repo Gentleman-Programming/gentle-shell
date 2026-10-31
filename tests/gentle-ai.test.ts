@@ -1381,7 +1381,7 @@ test("models screen shows profiles as tabs with their scope, the orchestrator fi
 	assert.match(plain[5] ?? "", /▸ Orchestrator\s+openai-codex\/gpt-6\.1-sol\s+max/);
 	assert.match(plain.join("\n"), /Agent\s+Model ▾\s+Effort ▾\s+set every agent/);
 	assert.match(plain.join("\n"), /\[ Use in this session \]  \[ Make default \]  \[ Save \]\s+Saved/);
-	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}s save {2}u use {2}d default {2}n new {2}m menu {2}esc close/);
+	assert.match(plain.join("\n"), /←→\/hl profile {2}↑↓\/jk agent {2}enter model {2}e effort {2}s save {2}u use {2}d default {2}m menu {2}esc close/);
 	assert.doesNotMatch(plain.join("\n"), /⋯/, "no ellipsis-like glyph: it reads as cut text");
 });
 
@@ -4776,4 +4776,91 @@ test("switching profile tabs redraws in place: the overlay never closes and reop
 	assert.match(saved ?? "", /worker\s+openai\/alpha/);
 	assert.match(profilesPanelFooter(saved ?? ""), /Saved "other"\. Showing "team"\./);
 	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.other, { worker: { model: "openai/alpha", thinking: "high" } });
+});
+
+test("models screen accepts vim aliases h/l for tab switches and gg/G for row jumps", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker"]);
+	const storePath = join(fixture.configHome, "profiles.json");
+	mkdirSync(dirname(storePath), { recursive: true });
+	writeFileSync(storePath, JSON.stringify({
+		kind: "gentle-pi.agent_model_profiles",
+		version: 1,
+		active: "team",
+		profiles: {
+			team: { worker: { model: "openai/alpha", thinking: "high" } },
+			other: { worker: { model: "openai/beta", thinking: "high" } },
+		},
+	}));
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		const frame = () => renderComponent(panel);
+		assert.match(frame(), /▸ Orchestrator/);
+		// G jumps to the last row (the agent row).
+		panel.handleInput("G");
+		assert.match(frame(), /▸\s*worker/);
+		// gg jumps back to the first row.
+		panel.handleInput("g");
+		panel.handleInput("g");
+		assert.match(frame(), /▸ Orchestrator/);
+		// l switches forward one profile tab; h switches back.
+		panel.handleInput("l");
+		assert.match(frame(), /worker\s+openai\/beta/);
+		assert.match(profilesPanelFooter(frame()), /Showing "other"\./);
+		panel.handleInput("h");
+		assert.match(frame(), /worker\s+openai\/alpha/);
+		assert.match(profilesPanelFooter(frame()), /Showing "team"\./);
+		// Previous behavior holds: arrow keys still move the row cursor.
+		panel.handleInput("\x1b[B");
+		panel.handleInput("\x1b[B");
+		assert.match(frame(), /▸\s*review-refuter/);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 1);
+});
+
+test("effort strip accepts vim aliases h/l and j/k for its level row", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker"]);
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		for (let step = 0; step < 4; step++) panel.handleInput("j"); // the worker row
+		panel.handleInput("e"); // effort strip for the row
+		const base = renderComponent(panel);
+		panel.handleInput("l");
+		const right = renderComponent(panel);
+		assert.notDeepEqual(right, base, "l moves the effort cursor right");
+		panel.handleInput("h");
+		assert.deepEqual(renderComponent(panel), base, "h moves the effort cursor back");
+		panel.handleInput("j");
+		assert.deepEqual(renderComponent(panel), right, "j aliases the right arrow");
+		panel.handleInput("k");
+		assert.deepEqual(renderComponent(panel), base, "k aliases the left arrow");
+		panel.handleInput("\x1b"); // close the effort strip
+		panel.handleInput("\x1b"); // finish the panel
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 1);
+});
+
+test("profile menu accepts vim gg/G row jumps", async (t) => {
+	const fixture = routingConsumerFixture(t, ["worker"]);
+	let visits = 0;
+	fixture.onInput((panel) => {
+		visits += 1;
+		panel.handleInput("m"); // the profile menu
+		const first = renderComponent(panel);
+		assert.match(first, /▸\s*Rename/);
+		panel.handleInput("G");
+		const last = renderComponent(panel);
+		assert.match(last, /▸\s*Delete/);
+		panel.handleInput("g");
+		panel.handleInput("g");
+		assert.deepEqual(renderComponent(panel), first, "gg returns to the first item");
+		panel.handleInput("\x1b"); // close the menu
+		panel.handleInput("\x1b"); // finish the panel
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(visits, 1);
 });

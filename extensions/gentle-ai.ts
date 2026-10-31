@@ -3230,8 +3230,9 @@ const ROUTING_TABLE_SHORT_BUTTONS: Partial<Record<RoutingTableButton, string>> =
  * longer): narrow terminals drop whole hints instead of cutting one in half.
  */
 const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
-	{ text: "←→ profile", keep: 5 },
-	{ text: "↑↓ agent", keep: 6 },
+	{ text: "←→/hl profile", keep: 5 },
+	{ text: "↑↓/jk agent", keep: 6 },
+	{ text: "gg/G rows", keep: 11 },
 	{ text: "enter model", keep: 1 },
 	{ text: "e effort", keep: 2 },
 	{ text: "s save", keep: 3 },
@@ -3325,6 +3326,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private target: string = PROFILE_ORCHESTRATOR_KEY;
 	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
+	private pendingG = false;
 	private query = "";
 	private modelCursor = 0;
 	private effortCursor = 0;
@@ -3749,14 +3751,29 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		this.escArmed = false;
-		if (matchesKey(data, "left")) return this.switchBy(-1);
-		if (matchesKey(data, "right")) return this.switchBy(1);
+		if (this.pendingG && !matchesKey(data, "g")) this.pendingG = false;
+		if (matchesKey(data, "left") || matchesKey(data, "h")) return this.switchBy(-1);
+		if (matchesKey(data, "right") || matchesKey(data, "l")) return this.switchBy(1);
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.cursor = Math.max(0, this.cursor - 1);
 			return;
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
 			this.cursor = Math.min(this.rows.length - 1, this.cursor + 1);
+			return;
+		}
+		// matchesKey does not match uppercase literals; "G" needs a raw compare.
+		if (data === "G") {
+			this.cursor = this.rows.length - 1;
+			return;
+		}
+		if (matchesKey(data, "g")) {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.cursor = 0;
+			} else {
+				this.pendingG = true;
+			}
 			return;
 		}
 		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
@@ -3795,11 +3812,11 @@ class RoutingTablePanel implements OverlayComponent {
 	private handleEffortKey(data: string): void {
 		if (matchesKey(data, "escape")) return this.closeOverlay();
 		if (matchesKey(data, "return")) return this.pickEffort(this.effortCursor);
-		if (matchesKey(data, "left") || matchesKey(data, "up")) {
+		if (matchesKey(data, "left") || matchesKey(data, "up") || matchesKey(data, "h") || matchesKey(data, "k")) {
 			this.effortCursor = Math.max(0, this.effortCursor - 1);
 			return;
 		}
-		if (matchesKey(data, "right") || matchesKey(data, "down")) {
+		if (matchesKey(data, "right") || matchesKey(data, "down") || matchesKey(data, "l") || matchesKey(data, "j")) {
 			this.effortCursor = Math.min(this.effortOptions().length - 1, this.effortCursor + 1);
 		}
 	}
@@ -3813,6 +3830,19 @@ class RoutingTablePanel implements OverlayComponent {
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
 			this.menuCursor = Math.min(items.length - 1, this.menuCursor + 1);
+			return;
+		}
+		if (data === "G") {
+			this.menuCursor = items.length - 1;
+			return;
+		}
+		if (matchesKey(data, "g")) {
+			if (this.pendingG) {
+				this.pendingG = false;
+				this.menuCursor = 0;
+			} else {
+				this.pendingG = true;
+			}
 			return;
 		}
 		if (matchesKey(data, "return")) {

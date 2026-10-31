@@ -127,7 +127,7 @@ import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/se
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
-import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2508,15 +2508,22 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 }
 
 /**
- * Resolve one complete reviewer routing snapshot without per-role fallback. The
- * session's own profile -- the Enter binding, else the profile it froze at
- * startup -- wins, through the same rule the launcher reads (gentle-shell#1064),
- * so a reviewer never runs on routing the session no longer uses.
+ * Resolve one complete reviewer routing snapshot without per-role fallback,
+ * through the same rule launches read (gentle-shell#1064): the Enter binding,
+ * else the profile the session froze at startup (a session frozen without one
+ * never adopts a later pin), else in follow mode the profile the target
+ * resolves now. A reviewer never runs on routing the session no longer uses.
  */
 function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
 	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: gentleAiConfigHome() });
-	const session = resolution.kind === "explicit" || resolution.kind === "inherited" ? sessionProfileModelProfiles(resolution) : undefined;
-	return (session === undefined ? undefined : cloneModelConfig(session)) ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+	// A caller without a session keeps the routing it read before session profiles.
+	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd) : sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome() });
+	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
+	// Only a profile chosen with Use in this session carries its orchestrator to
+	// the provider review roles; inherited, pinned and global routing leave them on
+	// Pi's persisted default (gentle-shell#2716 A1).
+	if (resolution.kind !== "explicit") delete config.orchestrator;
+	return config;
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */

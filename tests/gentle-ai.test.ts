@@ -4342,6 +4342,70 @@ test("provider review roles skip the orchestrator fallback for a repository pin"
 	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
 });
 
+test("reviewer routing keeps a frozen pin snapshot after the pin changes", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({
+		pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } },
+		later: { "review-risk": { model: "openai/later-risk" }, "review-refuter": { model: "openai/later-refuter" } },
+	});
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "pinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "pinned-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing of a session frozen without a profile ignores a pin added later", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ later: { "review-risk": { model: "openai/later-risk" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "unpinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "unpinned-session")).selection, "openai/global");
+});
+
+test("reviewer routing in follow mode reads the profile the target resolves now", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	const previous = process.env.GENTLE_PI_PROFILE_FOLLOW;
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+		else process.env.GENTLE_PI_PROFILE_FOLLOW = previous;
+		resetFrozenInheritedProfilesForTesting();
+	});
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/sol");
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } }, moon: { "review-risk": { model: "openai/moon" } } }, "moon");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/moon");
+});
+
+test("provider review roles ignore an orchestrator saved in global routing", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	writeStore({ team: {} });
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale" } }));
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
 	for (const rejected of [false, true]) {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);

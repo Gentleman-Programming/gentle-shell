@@ -2519,7 +2519,8 @@ function readReviewerModelConfig(cwd: string, sessionId: string | undefined, ses
 	// A target in another Git repository keeps its own pin layers, as launches do.
 	const target = readProfilePinStatus(cwd)?.commonDir;
 	const home = readProfilePinStatus(sessionCwd)?.commonDir;
-	const foreignRepository = target !== undefined && home !== undefined && target !== home;
+	// A session outside Git has no repository of its own, so any Git target is foreign.
+	const foreignRepository = target !== undefined && target !== home;
 	// A caller without a session keeps the routing it read before session profiles.
 	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd) : sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
 	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);

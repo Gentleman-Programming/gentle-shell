@@ -4427,6 +4427,25 @@ test("reviewer routing of a session frozen without a profile uses a foreign repo
 	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "home-session", fixture.root)).selection, "openai/global", "the session's own repository still ignores pins");
 });
 
+test("reviewer routing of a session started outside Git uses the target repository's pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const repoRoot = join(fixture.root, "repo");
+	const outside = join(fixture.root, "outside");
+	mkdirSync(outside, { recursive: true });
+	setProfilePinWorktreeResolverForTesting((path: string) => path.startsWith(repoRoot) ? { root: repoRoot, commonDir: join(repoRoot, ".git") } : undefined);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "outside-session", cwd: outside, configHome: fixture.configHome });
+	const pin = join(repoRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(pin), { recursive: true });
+	writeFileSync(pin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(repoRoot, "outside-session", outside)).selection, "openai/theirs");
+});
+
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
 	for (const rejected of [false, true]) {
 		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);

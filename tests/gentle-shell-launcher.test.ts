@@ -1330,6 +1330,31 @@ test("nonInteractiveGitEnv matches editor names case-insensitively on Windows on
 	assert.deepEqual(nonInteractiveGitEnv({ git_editor: undefined }, "win32"), NON_INTERACTIVE_GIT_ENV);
 });
 
+// Node on Windows keeps the first case variant in sorted order (GIT_EDITOR)
+// and then skips it as undefined, so the user's git_editor would be lost too.
+test("buildPiInvocation on Windows drops an undefined case variant so the user's git editor reaches the child", () => {
+	const build = (platform: string) => buildPiInvocation({
+		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
+		home: linkHome,
+		packageRoot: "/pkg",
+		declaration: undefined,
+		takeOver: false,
+		otherPackagePaths: [],
+		passthrough: [],
+		baseEnv: { GIT_EDITOR: undefined, git_editor: "vim" },
+		homedir: "/home/u",
+		cwd: "/work",
+		platform,
+	}).env;
+	const win = build("win32");
+	assert.equal("GIT_EDITOR" in win, false);
+	assert.equal(win.git_editor, "vim");
+	assert.equal(win.GIT_SEQUENCE_EDITOR, "true");
+	const linux = build("linux");
+	assert.equal(linux.GIT_EDITOR, "true");
+	assert.equal(linux.git_editor, "vim");
+});
+
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },

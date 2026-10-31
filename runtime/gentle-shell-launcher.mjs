@@ -234,6 +234,18 @@ export function nonInteractiveGitEnv(env                                    , pl
 	return Object.fromEntries(Object.entries(NON_INTERACTIVE_GIT_ENV).filter(([key]) => !isSet(key)));
 }
 
+// On Windows, Node keeps only the first of a set of case variants (in sorted
+// order) and then skips it if it is undefined, so `{ GIT_EDITOR: undefined,
+// git_editor: "vim" }` would reach the child with neither. Drop the undefined
+// variants so the defined one is what gets spawned.
+export function dropUndefinedCaseVariants(env                                    , platform         = process.platform)       {
+	if (platform !== "win32") return;
+	const defined = new Set(Object.entries(env).filter(([, value]) => value !== undefined).map(([name]) => name.toUpperCase()));
+	for (const [name, value] of Object.entries(env)) {
+		if (value === undefined && defined.has(name.toUpperCase())) delete env[name];
+	}
+}
+
 export function isolatedDir(env                                    , homedir        )         {
 	return env.GENTLE_SHELL_HOME || join(homedir, ".gentle-shell", "agent");
 }
@@ -1112,6 +1124,7 @@ export function buildPiInvocation(input                        )               {
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+	dropUndefinedCaseVariants(env, input.platform);
 
 	return { command: input.runtime.command, args, env };
 }

@@ -5500,12 +5500,20 @@ test("recipient picker keeps one row per session when a transport repeats an act
 	const runtime = deps();
 	const alphaId = "11111111-1111-4111-8111-111111111111";
 	const betaId = "22222222-2222-4222-8222-222222222222";
-	// The same session reported twice must not shift the rows of the sessions after it.
+	// The canonical activation is the one the publication binds to, and it comes last, so a
+	// deduplication that keeps only one record would resolve the label of an ambiguous peer.
 	const activations: PresenceRecord[] = [
-		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 1 },
-		{ version: 1, sessionId: alphaId, endpoint: "/alpha-again.sock", createdAt: 2 },
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha-again.sock", createdAt: 1 },
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 2 },
 		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 3 },
 	];
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-"));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
 	const sent: Array<{ recipient: string }> = [];
 	const registry = { list: async () => [], listActivations: async () => activations };
 	runtime.deps.sessionTransport = {
@@ -5514,11 +5522,18 @@ test("recipient picker keeps one row per session when a transport repeats an act
 		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
 	} as never;
 	let chosen = 1;
-	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (_title, options) => options[chosen]);
-	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-")) });
-	await h.fire("session_start", ctx);
-	await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
-	assert.equal(dialogs[0]?.split(":")[2]?.split("|").length, 2, "one row per session, not per activation");
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// One row per session, and the duplicated session stays unlabelled: discovery still
+	// sees both activations and fails closed instead of guessing which one it is.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:Orchestrator · 1111|database (db) · 2222");
 	assert.deepEqual(sent, [{ recipient: betaId }], "the second row must still be the second session");
 });
 

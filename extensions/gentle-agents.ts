@@ -98,9 +98,11 @@ function messagePeerLabel(profile: string, sessionId: string): string | undefine
  * nothing to choose by, so the published session label and the workspace are used when
  * they exist, and a short id suffix keeps every label unique: the chosen label is mapped
  * back to a peer by exact match, so a collision would select the wrong one. */
-function recipientSelectionLabels(profile: string, candidates: readonly PresenceRecord[]): string[] {
+function recipientSelectionLabels(profile: string, candidates: readonly PresenceRecord[], activations: readonly PresenceRecord[] = candidates): string[] {
 	let discovered: ReturnType<typeof discoverOrchestrators> = [];
-	try { discovered = discoverOrchestrators(profile, candidates); } catch { /* labels are best-effort, never routing */ }
+	// Discovery must see every activation: it fails closed when one session resolves to
+	// several, and deduplicating before this point would silently label an ambiguous peer.
+	try { discovered = discoverOrchestrators(profile, activations); } catch { /* labels are best-effort, never routing */ }
 	const peersById = new Map(discovered.map(peer => [peer.sessionId, peer] as const));
 	const bases = candidates.map((candidate) => {
 		const peer = peersById.get(candidate.sessionId);
@@ -2602,7 +2604,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						recipient = candidates[0].sessionId;
 						activation = candidates[0];
 					} else {
-						const labels = recipientSelectionLabels(agentHome, candidates);
+						const labels = recipientSelectionLabels(agentHome, candidates, activations);
 						if (!ctx.hasUI) return text(`Several recipient orchestrators are available. Ask the user to choose one of these recipient labels; do not ask for a session ID:\n${labels.map((label) => `- ${label}`).join("\n")}\nSending still requires interactive human consent.`, { gentleAgents: { candidates: candidates.map((candidate, index) => ({ label: labels[index]!, sessionId: candidate.sessionId })) } });
 						const selected = await ctx.ui.select("Select recipient orchestrator", labels, { signal });
 						if (selected === undefined || activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });

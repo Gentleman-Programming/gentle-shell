@@ -3,6 +3,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { captureQuestionnaireAnswers } from "../lib/auto-permission-answers.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { setPendingAgentPrompt } from "../lib/prompt-keyboard-ownership.ts";
 import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
 	QuestionnaireView,
@@ -299,10 +300,15 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(view);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+					// Registered before Pi focuses the prompt, so an overlay that
+					// is open above it can keep the keyboard (see
+					// lib/prompt-keyboard-ownership.ts).
+					setPendingAgentPrompt(container);
 					return container;
 				});
 			}
 			finally {
+				setPendingAgentPrompt(undefined);
 				pi.events.emit(ASK_USER_QUESTION_BLOCKED_EVENT, { active: false });
 			}
 

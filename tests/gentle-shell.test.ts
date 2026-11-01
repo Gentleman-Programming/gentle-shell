@@ -16,6 +16,7 @@ import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } fr
 // Fixture sessions share ids across tests; the inherited-profile freeze is
 // process state keyed by session id (gentle-shell#1064 slice 3b-ii).
 afterEach(() => resetFrozenInheritedProfilesForTesting());
+import { setPendingAgentPrompt } from "../lib/prompt-keyboard-ownership.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
@@ -239,6 +240,10 @@ function fakeContext(options: { theme?: typeof plainTheme & { getBgAnsi?(): stri
 					// An identity bg mock hides focused rows; omit it so overlay navigation
 					// remains inspectable through Commands' ▸ fallback.
 					ui.overlayView = factory(fakeTui, { ...plainTheme, bg: undefined }, fakeKeybindings, (value: T) => resolve(value));
+					// Pi hands the overlay handle over after the component is
+					// built; the fake mirrors that order.
+					const handleOptions = options as { onHandle?: (handle: { focus(): void }) => void } | undefined;
+					handleOptions?.onHandle?.({ focus: () => { fakeTui.setFocus(ui.overlayView ?? null); } });
 					resolveOverlay();
 				});
 			},
@@ -848,7 +853,39 @@ test("gentleShell stays out of the way without a UI or when disabled", () => {
 	assert.equal(ui.footerFactory, undefined);
 });
 
-const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
+// The fake screen carries a minimal focus model: tests can tell which
+// component holds the keyboard and which one receives a key.
+interface FakeFocusTarget {
+	handleInput?(data: string): void;
+}
+
+const fakeTui = {
+	terminal: { rows: 40, columns: 120 },
+	requestRender() {},
+	focused: undefined as FakeFocusTarget | undefined,
+	inputListeners: new Set<(data: string) => unknown>(),
+	getFocusedComponent() {
+		return this.focused ?? null;
+	},
+	setFocus(component: FakeFocusTarget | null | undefined) {
+		this.focused = component ?? undefined;
+	},
+	addInputListener(listener: (data: string) => unknown) {
+		this.inputListeners.add(listener);
+		return () => {
+			this.inputListeners.delete(listener);
+		};
+	},
+	removeInputListener(listener: (data: string) => unknown) {
+		this.inputListeners.delete(listener);
+	},
+	// Deliver one key the way pi-tui does: the input listeners run first, then
+	// the focused component.
+	press(data: string) {
+		for (const listener of [...this.inputListeners]) listener(data);
+		this.focused?.handleInput?.(data);
+	},
+};
 const editorTheme = { borderColor: (text: string) => text, selectList: {} };
 const fakeKeybindings = { matches: () => false };
 
@@ -5810,6 +5847,38 @@ test("resolving the overlay through closeOverlay sends nothing and does not thro
 	ui.closeOverlay?.();
 	await opened;
 	assert.deepEqual(sentMessages, []);
+});
+
+test("the command palette keeps the keyboard over a pending agent prompt and hands it back when it closes", async () => {
+	const { pi, shortcuts } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui, overlayReady } = fakeContext();
+	const received: string[] = [];
+	const prompt = {
+		render: () => [""],
+		invalidate() {},
+		handleInput: (data: string) => { received.push(data); },
+	};
+	setPendingAgentPrompt(prompt);
+	try {
+		const opened = shortcuts.get("alt+k")!.handler(ctx);
+		await overlayReady;
+		// Pi focuses the agent prompt that arrives while the palette is open.
+		fakeTui.setFocus(prompt);
+		fakeTui.press("\x1b[B");
+		const rendered = ui.overlayView!.render(100).join("\n");
+		assert.match(rendered, /▸ Browse changes/, "the arrow key moved the visible palette selection");
+		assert.doesNotMatch(rendered, /▸ Models and profiles/);
+		assert.deepEqual(received, [], "the prompt below the palette received nothing");
+		// Closing the palette hands the keyboard back to the waiting prompt.
+		ui.overlayView!.handleInput("\x1b");
+		await opened;
+		assert.equal(fakeTui.getFocusedComponent(), prompt, "the pending prompt holds the keyboard again");
+	}
+	finally {
+		setPendingAgentPrompt(undefined);
+		fakeTui.setFocus(null);
+	}
 });
 
 // Targeted usage scope: the session's own provider plus every provider the

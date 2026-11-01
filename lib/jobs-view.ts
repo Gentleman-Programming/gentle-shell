@@ -4,6 +4,7 @@
 // small standalone view: jobs have no peers, groups, or threads.
 
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { VimListKeys, vimListIndex } from "./vim-list-keys.ts";
 import type { JobRecord } from "./background-jobs.ts";
 import { formatJobDuration, JOB_GLYPH, jobOutcome } from "./background-jobs-tools.ts";
 import { measureAgentsViewLayout } from "./agents-view-layout.ts";
@@ -42,6 +43,8 @@ export class JobsView {
 	private selectedId: string | undefined;
 	private details = false;
 	private listScroll = 0;
+	private bodyRows = 0;
+	private readonly listKeys = new VimListKeys();
 	private closed = false;
 	private readonly timer: ReturnType<typeof setInterval>;
 
@@ -65,7 +68,10 @@ export class JobsView {
 		if (this.closed) return;
 		const jobs = this.orderedJobs();
 		const index = Math.max(0, jobs.findIndex((job) => job.id === this.selected(jobs)?.id));
-		if (data === "q") this.close();
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
+		if (jump) this.selectedId = jobs[vimListIndex(jump, index, jobs.length, this.bodyRows)]?.id;
+		else if (data === "q") this.close();
 		else if (matchesKey(data, Key.escape)) {
 			if (this.details) this.details = false;
 			else this.close();
@@ -122,6 +128,7 @@ export class JobsView {
 	}
 
 	private listLines(jobs: JobRecord[], selected: JobRecord | undefined, width: number, rows: number): string[] {
+		this.bodyRows = rows;
 		const { theme } = this.deps;
 		if (jobs.length === 0) return [theme.fg(ROLE.EMPTY, "No jobs")];
 		const index = jobs.findIndex((job) => job.id === selected?.id);

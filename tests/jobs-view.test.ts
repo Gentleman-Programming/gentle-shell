@@ -158,3 +158,32 @@ test("a monitor shows its kind and event count in the list and details", () => {
 		assert.match(text, /Status +running · .* · 3 events/);
 	} finally { h.view.dispose(); }
 });
+
+test("jobs view accepts vim gg/G row jumps", () => {
+	const h = harness([job({ id: "job-1" }), job({ id: "job-2" }), job({ id: "job-3" })]);
+	try {
+		h.view.handleInput("G");
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["job-3"], "G selects the last job");
+		h.view.handleInput("g");
+		h.view.handleInput("g");
+		h.view.handleInput("s");
+		assert.deepEqual(h.stopped, ["job-3", "job-1"], "gg selects the first job");
+	} finally { h.view.dispose(); }
+});
+
+test("jobs view moves the selection half a page with ctrl+d/ctrl+u", () => {
+	const h = harness(Array.from({ length: 20 }, (_, i) => job({ id: `job-${i + 1}` })));
+	try {
+		h.view.render(80);
+		h.view.handleInput("G");
+		h.view.handleInput("\x15"); // ctrl+u: half a page up
+		h.view.handleInput("s");
+		assert.equal(h.stopped.length, 1);
+		assert.notEqual(h.stopped[0], "job-20", "ctrl+u moved the selection up from the last job");
+		assert.notEqual(h.stopped[0], "job-1", "half a page, not the whole list");
+		h.view.handleInput("\x04"); // ctrl+d: half a page down
+		h.view.handleInput("s");
+		assert.equal(h.stopped[1], "job-20", "ctrl+d returns to the last job");
+	} finally { h.view.dispose(); }
+});

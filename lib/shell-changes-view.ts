@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VimListKeys, vimListIndex } from "./vim-list-keys.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { basename, posix } from "node:path";
 import { CHANGE_STATUS, DIFF_TOO_LARGE, changesSummary, type ChangedFile, type ChangesModel, type WorktreeChanges } from "./shell-changes.ts";
@@ -45,7 +46,7 @@ const EMPTY_DIFF = "no diff for this file";
 const CLEAN_TREE = "working tree is clean";
 const KEYS = [
 	["j/k", "file"],
-	["ctrl+j/k", "scroll"],
+	["pgup/pgdn", "scroll"],
 	["o", "open in editor"],
 	["esc", "close"],
 ] as const;
@@ -202,6 +203,8 @@ function rowKey(row: WorktreeRow): string {
 
 // The accordion owns navigation; standalone file views still own lazy previews.
 export class WorktreeChangesView {
+	/** ctrl+j/k page this view; the key translation layer leaves them alone. */
+	readonly ownsVimScrollKeys = true;
 	private trees: WorktreeChanges[];
 	private readonly deps: WorktreeChangesViewDeps;
 	private selected = 0;
@@ -247,6 +250,8 @@ export class WorktreeChangesView {
 		this.deps.requestRender();
 	}
 
+	private readonly listKeys = new VimListKeys();
+
 	handleInput(data: string): void {
 		if (this.disposed) return;
 		if (data === "r") return this.deps.onRefresh();
@@ -262,16 +267,25 @@ export class WorktreeChangesView {
 			if (row?.file) this.previews.get(rowKey(row))?.view.handleInput(data);
 			return;
 		}
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
 		if (this.diffOnly) {
-			// Only files have a diff: j/k walk every file, crossing groups.
-			if (data === "j" || matchesKey(data, Key.down)) this.stepFile(1);
+			// Only files have a diff: j/k walk every file, crossing groups; gg and G
+			// jump to the ends, and ctrl+d/u scroll the one diff shown, like pgup/pgdn.
+			if (jump === "halfDown" || jump === "halfUp") {
+				if (row?.file) this.previews.get(rowKey(row))?.view.handleInput(data);
+				return;
+			}
+			if (jump) this.jumpFile(jump === "first" ? 1 : -1);
+			else if (data === "j" || matchesKey(data, Key.down)) this.stepFile(1);
 			else if (data === "k" || matchesKey(data, Key.up)) this.stepFile(-1);
 			else if (row?.file && (data === "o" || matchesKey(data, Key.enter))) return this.deps.onOpen(row.tree.root, row.file);
 			else return;
 			this.deps.requestRender();
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + 1));
+		if (jump) this.selected = vimListIndex(jump, this.selected, rows.length, this.bodyRows());
+		else if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.max(0, Math.min(rows.length - 1, this.selected + 1));
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
 		else if (row && (matchesKey(data, Key.left) || matchesKey(data, Key.backspace))) {
 			if (row.file) this.selected = rows.findIndex((item) => item.tree.root === row.tree.root && !item.file);
@@ -356,8 +370,8 @@ export class WorktreeChangesView {
 			return `${marker} ${text}`;
 		};
 		const keys = theme.fg(ROLE.KEY_TEXT, this.diffOnly
-			? "j/k file   ctrl+j/k scroll   o open   r refresh   F files   esc files"
-			: "j/k select   enter toggle/open   ← fold   ctrl+j/k scroll   r refresh   F diff only   esc close");
+			? "j/k file   pgup/pgdn scroll   o open   r refresh   F files   esc files"
+			: "j/k select   enter toggle/open   ← fold   pgup/pgdn scroll   r refresh   F diff only   esc close");
 		this.pointerLayout = pointerLayout(width, height, this.diffOnly);
 		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file, this.diffOnly);
 	}
@@ -400,7 +414,16 @@ export class WorktreeChangesView {
 		let index = current ? all.findIndex((row) => rowKey(row) === rowKey(current)) : -1;
 		do index += direction;
 		while (index >= 0 && index < all.length && !all[index]!.file);
-		const target = all[index];
+		this.selectFile(all[index]);
+	}
+
+	/** Select the first (1) or last (-1) file in tree order. */
+	private jumpFile(from: 1 | -1): void {
+		const files = this.trees.flatMap((tree) => tree.model.files.map((file) => ({ tree, file })));
+		this.selectFile(from === 1 ? files[0] : files[files.length - 1]);
+	}
+
+	private selectFile(target: WorktreeRow | undefined): void {
 		if (!target) return;
 		this.expanded.add(target.tree.root);
 		this.selected = this.visibleRows().findIndex((row) => rowKey(row) === rowKey(target));
@@ -439,6 +462,8 @@ export class WorktreeChangesView {
 }
 
 export class ChangesView {
+	/** ctrl+j/k page this view; the key translation layer leaves them alone. */
+	readonly ownsVimScrollKeys = true;
 	private model: ChangesModel;
 	private readonly deps: ChangesViewDeps;
 	private selected = 0;
@@ -488,18 +513,26 @@ export class ChangesView {
 		this.pointerLayout = undefined;
 	}
 
+	private readonly listKeys = new VimListKeys();
+
 	handleInput(data: string): void {
 		if (this.disposed) return;
 		if (matchesKey(data, Key.escape) || data === "q") {
 			this.deps.onClose();
 			return;
 		}
+		// gg/G pick the first/last file; ctrl+d/u scroll the diff half a page.
+		const jump = this.listKeys.action(data);
+		const page = diffRows(this.bodyRows());
+		if (jump === "pending") return;
+		if (jump === "first" || jump === "last") this.select(vimListIndex(jump, this.selected, this.model.files.length, 0));
+		else if (jump) this.scrollBy((jump === "halfDown" ? 1 : -1) * Math.max(1, Math.floor(page / 2)));
 		// ctrl+j arrives as a bare line feed, which pi also reads as enter, so
 		// the scroll keys are checked before the open key; a real Enter is CR.
-		if (data === "j" || matchesKey(data, Key.down)) this.select(this.selected + 1);
+		else if (data === "j" || matchesKey(data, Key.down)) this.select(this.selected + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(this.selected - 1);
-		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(diffRows(this.bodyRows()));
-		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-diffRows(this.bodyRows()));
+		else if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) this.scrollBy(page);
+		else if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) this.scrollBy(-page);
 		else if (data === "o" || matchesKey(data, Key.enter)) {
 			const file = this.model.files[this.selected];
 			if (file) this.deps.onOpen(file);

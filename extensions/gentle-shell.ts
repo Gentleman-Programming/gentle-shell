@@ -122,6 +122,8 @@ import {
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { installVimKeyTranslation } from "../lib/vim-key-translate.ts";
+import { blockBounds, blockMatrix, nearestBlock, offsetAt, positionAt, type VisualRange } from "../lib/vim-visual-engine.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -514,6 +516,8 @@ export function extractQueuedText(combined: string, draft: string): string | und
 	return combined.endsWith(suffix) ? combined.slice(0, combined.length - suffix.length) : undefined;
 }
 
+const VISUAL_LABEL = { char: "VISUAL", line: "VISUAL LINE", block: "VISUAL BLOCK" } as const;
+
 export class GentlePromptEditor extends CustomEditor {
 	private promptState: PromptState = PROMPT_STATE.IDLE;
 	private tick = 0;
@@ -525,12 +529,17 @@ export class GentlePromptEditor extends CustomEditor {
 	private readonly vimEngine = new VimNormalEngine();
 	private readonly vimOperator = new VimOperatorEngine();
 	private vimInsertIntent?: { operator?: OperatorResult; command?: string };
+	// Focusable for pi-tui: the TUI maintains this flag when focus moves to an
+	// overlay or picker. The global key translation layer (vim-key-translate)
+	// gates on it; the safe default (true) keeps the prompt's own ctrl keys.
+	focused = true;
 	private readonly vimVisual = new VimVisualEngine();
 	private pasteFrame: string | undefined;
 	private pasteOverflow = false;
 	private pasteTail = "";
 	private visualReplacePending = false;
 	private visualObjectPending: "i" | "a" | undefined;
+	private visualObjectSeek: 1 | -1 | undefined;
 	private visualAnchor: { line: number; col: number } | undefined;
 	private watchdog: NodeJS.Timeout | undefined;
 	// Last time a frame painted (or the watchdog forced one) while working; the
@@ -785,15 +794,62 @@ export class GentlePromptEditor extends CustomEditor {
 		else this.selectionEngine.handleInput(data, (d) => this.handleInputNative(d), (d) => this.onExtensionShortcut?.(d) === true);
 	}
 
+	/**
+	 * The range readRange and renderSelection can validate. A block's columns
+	 * come from other rows, so on this row they may land inside a wide
+	 * grapheme or past its end; snap each to that row's next boundary.
+	 */
+	private readableRange(range: VisualRange, stops: number[][]): VisualRange {
+		if (!range.block) return range;
+		const snap = (line: number, col: number) => {
+			const rowStops = stops[line] ?? [0];
+			return { line, col: rowStops.find((stop) => stop >= col) ?? rowStops[rowStops.length - 1]! };
+		};
+		return { ...range, start: snap(range.start.line, range.start.col), end: snap(range.end.line, range.end.col) };
+	}
+
+	/** Drop VISUAL's half-typed r / i|a / n|l keys. */
+	private clearVisualPending(): void {
+		this.visualReplacePending = false;
+		this.visualObjectPending = undefined;
+		this.visualObjectSeek = undefined;
+	}
+
 	private handleInputNative(data: string): void {
 		if ((this.vimPolicy === "on" || this.vimRejected) && this.handleVimPasteFrame(data)) return;
 		if (this.vimPolicy === "on" && isKeyRelease(data)) return;
+		// While Pi's autocomplete menu is open under the Vim policy, ctrl+j/k
+		// move its selection like the arrows (fzf convention); Enter (\r) still
+		// accepts and the editor's own ctrl+j/ctrl+k meanings resume the moment
+		// the menu closes. Without the policy the editor keeps its own keys.
+		if (this.vimPolicy === "on" && this.isShowingAutocomplete() && !isKeyRelease(data)) {
+			const direction = matchesKey(data, "ctrl+k") ? "\x1b[A" : matchesKey(data, "ctrl+j") ? "\x1b[B" : undefined;
+			if (direction) return void super.handleInput(direction);
+		}
+		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "ctrl+v")) {
+			// Blockwise VISUAL is claimed before app.clipboard.pasteImage (its
+			// default chord) so NORMAL gets Ctrl-V; INSERT keeps image paste.
+			if (this.vimVisual.active && this.vimVisual.kind === "block") {
+				this.vimVisual.cancel();
+				this.visualAnchor = undefined;
+			} else {
+				// Switching to blockwise keeps the anchor of an active selection,
+				// like the v/V handler.
+				this.visualAnchor = this.visualAnchor ?? this.getCursor();
+				this.vimVisual.start("block", this.visualAnchor);
+			}
+			this.clearVisualPending();
+			this.vimOperator.cancel();
+			this.vimEngine.reset();
+			this.deps.requestRender();
+			return;
+		}
 		if (this.vimPolicy === "on" && this.vimNormal && matchesKey(data, "escape") && this.vimVisual.active) {
 			if (this.isShowingAutocomplete()) {
 				try { this.vimAdapter().dismissAutocomplete(); } catch { return; }
 			}
 			this.vimVisual.cancel(); this.visualAnchor = undefined;
-			this.visualReplacePending = false; this.visualObjectPending = undefined;
+			this.clearVisualPending();
 			this.vimOperator.cancel(); this.vimEngine.cancelPendingFind();
 			this.deps.requestRender();
 			return;
@@ -840,11 +896,13 @@ export class GentlePromptEditor extends CustomEditor {
 					const visualMode = this.vimVisual.kind;
 					const replacePending = this.visualReplacePending;
 					const objectPending = this.visualObjectPending;
+					const objectSeek = this.visualObjectSeek;
 					const restoreMode = () => {
 						this.vimNormal = true;
 						this.visualAnchor = anchor;
 						this.visualReplacePending = replacePending;
 						this.visualObjectPending = objectPending;
+						this.visualObjectSeek = objectSeek;
 						if (anchor) this.vimVisual.start(visualMode, anchor);
 						this.deps.requestRender();
 					};
@@ -917,12 +975,18 @@ export class GentlePromptEditor extends CustomEditor {
 			}
 			if (this.vimNormal && command) {
 				if (this.visualObjectPending && this.vimVisual.active) {
+					if ((command === "n" || command === "l") && this.visualObjectSeek === undefined) {
+						this.visualObjectSeek = command === "n" ? 1 : -1;
+						this.deps.requestRender(); return;
+					}
 					const around = this.visualObjectPending;
+					const seek = this.visualObjectSeek;
 					this.visualObjectPending = undefined;
+					this.visualObjectSeek = undefined;
 					try {
 						const adapter = this.vimAdapter();
 						const stops = adapter.motionBoundaries();
-						const range = this.vimVisual.object(this.getText(), this.getCursor(), stops, around, command);
+						const range = this.vimVisual.object(this.getText(), this.getCursor(), stops, around, command, seek);
 						if (range) {
 							adapter.readRange(range.start, range.end);
 							const endStops = stops[range.end.line]!;
@@ -943,9 +1007,11 @@ export class GentlePromptEditor extends CustomEditor {
 					if (singleGrapheme(command) && !command.includes("\n")) {
 						try {
 							const adapter = this.vimAdapter();
-							const range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries());
+							const stops = adapter.motionBoundaries();
+							const range = this.vimVisual.range(this.getText(), this.getCursor(), stops);
 							if (range) {
-								adapter.readRange(range.start, range.end);
+								const readable = this.readableRange(range, stops);
+								adapter.readRange(readable.start, readable.end);
 								const edit = this.vimOperator.visualEdit("r" + command, this.getText(), range).edit;
 								if (edit) { adapter.replace(edit.start, edit.end, edit.text); adapter.move(edit.cursor); }
 								this.vimVisual.cancel(); this.visualAnchor = undefined;
@@ -979,6 +1045,21 @@ export class GentlePromptEditor extends CustomEditor {
 					this.deps.requestRender();
 					return;
 				}
+				// [ and ] jump to the previous/next pair block's opening
+				// delimiter. Standalone motions only: an operator pending owns
+				// its own motion keys, so d] keeps the engine's behavior.
+				if (!this.vimOperator.isPending && !this.vimEngine.findPending && (command === "[" || command === "]")) {
+					// The jump takes no count: drop a typed one so it never leaks into the next command.
+					this.vimOperator.cancel(); this.vimEngine.clearCount();
+					try {
+						const adapter = this.vimAdapter();
+						const text = this.getText();
+						const block = nearestBlock(text, offsetAt(text, this.getCursor()), command === "]" ? 1 : -1);
+						if (block) adapter.move(positionAt(text, block[0]));
+					} catch { return; }
+					this.deps.requestRender();
+					return;
+				}
 				let adapter;
 				try { adapter = this.vimAdapter(); } catch { return; }
 				if (this.vimVisual.active) {
@@ -991,20 +1072,28 @@ export class GentlePromptEditor extends CustomEditor {
 					}
 					if (["d", "x", "c", "s", "y", "p", "~", "u", "U", ">", "<", "J"].includes(command)) {
 						let range;
-						try { range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries()); }
+						let stops: number[][] = [];
+						try { stops = adapter.motionBoundaries(); range = this.vimVisual.range(this.getText(), this.getCursor(), stops); }
 						catch (error) { this.notifyUnsafeVisual("range", error); return; }
 						if (!range) { this.notifyUnsafeVisual("range"); return; }
 						let stage: "readRange" | "operation" | "beginInsertSession" | "replace" | "move" = "readRange";
 						let beganInsert = false;
 						try {
-							const selected = adapter.readRange(range.start, range.end);
-							if (!selected && (!range.linewise || !this.getText())) {
+							const readable = this.readableRange(range, stops);
+							const selected = adapter.readRange(readable.start, readable.end);
+							const text = this.getText();
+							if (!selected && (!range.linewise || !text)) {
 								this.vimVisual.cancel(); this.visualAnchor = undefined;
 								this.vimEngine.reset(); this.deps.requestRender();
 								return;
 							}
 							stage = "operation";
-							const operation = this.vimOperator.visualEdit(command === "x" ? "d" : command === "s" ? "c" : command, this.getText(), range);
+							const operation = this.vimOperator.visualEdit(command === "x" ? "d" : command === "s" ? "c" : command, text, range);
+							if (range.block && !operation.edit && !["d", "x", "y"].includes(command)) {
+								// blockEdit supports d/x/r/~/u/U only; anything else is a no-op that keeps VISUAL and the register.
+								this.deps.requestRender();
+								return;
+							}
 							if (command === "p" && !operation.edit) {
 								this.deps.notifyCompatibility?.("Vim register is empty; yank text before visual paste.");
 								return;
@@ -1017,7 +1106,10 @@ export class GentlePromptEditor extends CustomEditor {
 								}
 								stage = "move"; adapter.move(operation.edit.cursor);
 							}
-							if (["d", "x", "c", "s", "y", "p"].includes(command)) this.vimOperator.visualRegister(range.linewise ? selected + "\n" : selected, range.linewise);
+							if (["d", "x", "c", "s", "y", "p"].includes(command)) {
+								const yankText = range.block ? blockMatrix(text, range) : range.linewise ? selected + "\n" : selected;
+								this.vimOperator.visualRegister(yankText, range.linewise && !range.block);
+							}
 							this.vimVisual.cancel(); this.visualAnchor = undefined;
 							this.vimOperator.cancel(); this.vimEngine.reset();
 							if (operation.edit?.insert) this.enterVimInsert(true, true, false);
@@ -1261,8 +1353,20 @@ export class GentlePromptEditor extends CustomEditor {
 		if (this.vimPolicy === "on" && this.vimVisual.active) {
 			try {
 				const adapter = this.vimAdapter();
-				const range = this.vimVisual.range(this.getText(), this.getCursor(), adapter.motionBoundaries());
-				if (range) editorLines = adapter.renderSelection(inner, range.start, range.end, lines);
+				const stops = adapter.motionBoundaries();
+				const range = this.vimVisual.range(this.getText(), this.getCursor(), stops);
+				if (range?.block) {
+					// Rectangular highlight: invert the same columns on every row,
+					// each snapped to that row's grapheme boundaries (an invalid
+					// column would throw and drop the whole highlight).
+					const { first, last, minCol, maxCol } = blockBounds(range);
+					let out = lines;
+					for (let row = first; row <= last; row++) {
+						const cells = this.readableRange({ start: { line: row, col: minCol }, end: { line: row, col: maxCol + 1 }, linewise: false, block: true }, stops);
+						if (cells.end.col > cells.start.col) out = adapter.renderSelection(inner, cells.start, cells.end, out);
+					}
+					editorLines = out;
+				} else if (range) editorLines = adapter.renderSelection(inner, range.start, range.end, lines);
 			} catch { /* Unknown layout: keep the original rendered prompt. */ }
 		}
 		if (this.vimPolicy !== "on") editorLines = this.selectionEngine.decorateRows(editorLines, inner, 0);
@@ -1279,7 +1383,7 @@ export class GentlePromptEditor extends CustomEditor {
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
 			escHint: [
-				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
+				this.vimPolicy === "on" ? (this.vimVisual.active ? VISUAL_LABEL[this.vimVisual.kind] : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
 					? DOUBLE_ESC_CANCEL_HINT
 					: this.promptState === PROMPT_STATE.IDLE && this.isPendingIdleClear()
@@ -1980,6 +2084,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestRender: () => tui.requestRender(),
 					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
 					gauge: () => gaugePaint(ctx),
+					// The overlay clips at 80% of the terminal (maxHeight below); the
+					// panel spends 3 of those rows on top/keys/bottom and the rest scrolls.
+					viewportRows: () => Math.max(1, Math.floor(tui.terminal.rows * 0.8) - 3),
 				});
 				// Open promptly: the panel draws whatever the store already holds
 				// while the forced refresh runs underneath it, and repaints when
@@ -1987,7 +2094,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				view.refresh();
 				return view;
 			},
-			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, anchor: "center" } },
+			{ overlay: true, overlayOptions: { width: "70%", minWidth: 60, maxHeight: "80%", anchor: "center" } },
 		);
 	pi.registerCommand(USAGE_COMMAND_NAME, {
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
@@ -2211,6 +2318,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let jobsHovered = false;
 			let jobsPainted = false;
 			let jobsHeaderRow = 0;
+			const disposeKeyTranslation = installVimKeyTranslation(tui, { promptFocused: () => prompt?.focused ?? true });
 			const jobsRailCard: Component = {
 				render(width: number) {
 					const jobs = runningJobs ?? [];
@@ -2311,7 +2419,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); disposeKeyTranslation(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(

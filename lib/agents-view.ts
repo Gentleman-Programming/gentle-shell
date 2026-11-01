@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VimListKeys, vimListIndex } from "./vim-list-keys.ts";
 import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-layout.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
@@ -83,7 +84,7 @@ const STOP_BUTTON = "[Stop]";
 const SCOPE_BUTTON = "[Scope]";
 const KEYS = [
 	["j/k", "task"],
-	["ctrl+j/k", "scroll"],
+	["pgup/pgdn", "scroll"],
 	["f", "follow"],
 	["o", "open session"],
 	["esc", "back"],
@@ -150,6 +151,8 @@ export function taskHeader(task: TaskRecord, now: number): string {
 }
 
 export class AgentsView {
+	/** ctrl+j/k page this view; the key translation layer leaves them alone. */
+	readonly ownsVimScrollKeys = true;
 	private readonly deps: AgentsViewDeps;
 	private tasks: TaskRecord[] = [];
 	private selectedId: string | undefined;
@@ -325,6 +328,8 @@ export class AgentsView {
 		return this.tasks.find((task) => `task:${task.id}` === this.selectedId);
 	}
 
+	private readonly listKeys = new VimListKeys();
+
 	handleInput(data: string): void {
 		if (this.closed) return;
 		if (data === "q") return this.close();
@@ -346,7 +351,13 @@ export class AgentsView {
 			this.scrollBy(data === "j" || matchesKey(data, Key.down) ? 1 : -1);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.select(index + 1, rows);
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
+		if (jump === "first" || jump === "last") this.select(vimListIndex(jump, index, rows.length, 0), rows);
+		// ctrl+d/u scroll the thread; narrow list mode hides it, so they move the selection there.
+		else if (jump && this.isNarrow() && this.narrowView === "list") this.select(vimListIndex(jump, index, rows.length, this.pageRows()), rows);
+		else if (jump) this.scrollBy((jump === "halfDown" ? 1 : -1) * Math.max(1, Math.floor(this.pageRows() / 2)));
+		else if (data === "j" || matchesKey(data, Key.down)) this.select(index + 1, rows);
 		else if (data === "k" || matchesKey(data, Key.up)) this.select(index - 1, rows);
 		else if (matchesKey(data, Key.left) && selected?.kind === "heading") this.setExpanded(selected.group, false);
 		else if (matchesKey(data, Key.right) && selected?.kind === "heading") this.setExpanded(selected.group, true);

@@ -5461,7 +5461,7 @@ test("recipient picker uses published labels and grows the suffix until every la
 		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 2 },
 		{ version: 1, sessionId: gammaId, endpoint: "/gamma.sock", createdAt: 3 },
 	];
-	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-labels-"));
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-labels-")));
 	const publishers = [
 		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
 		PresencePublisher.start({ profile, sessionId: betaId, label: "api", activity: [] }),
@@ -5507,7 +5507,7 @@ test("recipient picker keeps one row per session when a transport repeats an act
 		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 2 },
 		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 3 },
 	];
-	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-"));
+	const profile = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-")));
 	const publishers = [
 		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
 		PresencePublisher.start({ profile, sessionId: betaId, label: "database", activity: [] }),

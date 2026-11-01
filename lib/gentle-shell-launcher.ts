@@ -1083,6 +1083,7 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	const env: Record<string, string | undefined> = {
 		...input.baseEnv,
 		PI_CODING_AGENT_DIR: input.home.dir,
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};

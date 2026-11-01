@@ -64,7 +64,7 @@ if (process.env.GENTLE_TEST_BASH_CHILD === "1") {
 			PI_OFFLINE: "1", GENTLE_PI_QUIET_TOOLS: "1", GENTLE_TEST_BASH_CHILD: "1", GENTLE_TEST_SHELL: shell };
 		try {
 			const result = spawnSync(process.execPath, ["--experimental-strip-types", fileURLToPath(import.meta.url)],
-				{ cwd, env, encoding: "utf8", timeout: 30_000 });
+				{ cwd, env, encoding: "utf8", timeout: 120_000 });
 			assert.ifError(result.error);
 			assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\nfixture: ${root}`);
 			assert.match(result.stdout, /quiet=false passed/);

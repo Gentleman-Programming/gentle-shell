@@ -117,11 +117,17 @@ test("CodeGraph query timeout is reported distinctly from user abort and never b
 	});
 
 	const bounded = createCodeGraphTool(hanging, { queryTimeoutMs: 20 });
-	for (const parameters of [{ operation: "query", query: "x" }, { operation: "explore", query: "x" }] as const) {
-		const result = await bounded.execute("test", parameters, undefined, undefined, ctx);
-		assert.match(result.content[0].text, /CodeGraph timed out after 20 ms/);
-		assert.match(result.content[0].text, /Use read, grep, and find/);
-		assert.equal((result.details as { status: string }).status, "failed");
+	// AbortSignal.timeout is unref'd; on Node 22 nothing else keeps the loop alive while the hanging runner awaits it.
+	const keepalive = setTimeout(() => {}, 2000);
+	try {
+		for (const parameters of [{ operation: "query", query: "x" }, { operation: "explore", query: "x" }] as const) {
+			const result = await bounded.execute("test", parameters, undefined, undefined, ctx);
+			assert.match(result.content[0].text, /CodeGraph timed out after 20 ms/);
+			assert.match(result.content[0].text, /Use read, grep, and find/);
+			assert.equal((result.details as { status: string }).status, "failed");
+		}
+	} finally {
+		clearTimeout(keepalive);
 	}
 
 	// A user cancellation is not a timeout.

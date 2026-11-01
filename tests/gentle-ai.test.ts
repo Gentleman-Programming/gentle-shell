@@ -4272,17 +4272,178 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 
 test("reviewer routing uses the selecting session snapshot without leaking to other sessions", (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	writeStore({ team: {} }, "team");
+	// No active profile: an unbound session inherits none, so it reads the global routing.
+	writeStore({ team: {} });
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" }, "review-reliability": { model: "openai/global" } }));
 	resetSessionProfileBindingsForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => { resetSessionProfileBindingsForTesting(); resetFrozenInheritedProfilesForTesting(); });
 	bindSessionProfile("selecting-session", "team", { "review-risk": { model: "openai/session", thinking: "high" } });
 	const selected = __testing.readReviewerModelConfig(fixture.root, "selecting-session");
 	assert.equal(selected["review-risk"]?.model, "openai/session");
 	assert.equal(selected["review-reliability"], undefined, "a complete session snapshot never falls back per role");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, "other-session")["review-risk"]?.model, "openai/global");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, undefined)["review-risk"]?.model, "openai/global");
+});
+
+test("reviewer routing follows the profile the session froze at startup, not later global routing", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "nan/flash" } }));
+	freezeSessionProfileAtStartup({ sessionId: "frozen-session", cwd: fixture.root, configHome: fixture.configHome });
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "frozen-session")).selection, "openai/sol");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, undefined)).selection, "nan/flash");
+});
+
+test("provider review roles fall back to the session profile orchestrator before the persisted default", (t) => {
+	const { writeStore, writeSettings } = profilesStoreFixture(t);
+	writeStore({ sol: {} }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("bound-session", "sol", { orchestrator: { model: "openai/sol", thinking: "high" }, "review-validator": { model: "openai/validator" } });
+	const routing = __testing.readReviewerModelConfig(process.cwd(), "bound-session");
+	assert.deepEqual(__testing.reviewHostRelaySelection("review-refuter", routing), { selection: "openai/sol", thinking: "high", routingKey: "review-refuter" });
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "openai/validator");
+	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { routingKey: "review-risk" }, "lens roles stay fail-closed");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", {}).selection, "nan/flash", "without a session orchestrator the persisted default still applies");
+});
+
+test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "inherited-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+});
+
+test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Pinned routing drops the orchestrator key, so the pin's own orchestrator never feeds the fallback.
+	writeStore({ pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } } });
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing keeps a frozen pin snapshot after the pin changes", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({
+		pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } },
+		later: { "review-risk": { model: "openai/later-risk" }, "review-refuter": { model: "openai/later-refuter" } },
+	});
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "pinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "pinned-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing of a session frozen without a profile ignores a pin added later", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ later: { "review-risk": { model: "openai/later-risk" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "unpinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "unpinned-session")).selection, "openai/global");
+});
+
+test("reviewer routing in follow mode reads the profile the target resolves now", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	const previous = process.env.GENTLE_PI_PROFILE_FOLLOW;
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+		else process.env.GENTLE_PI_PROFILE_FOLLOW = previous;
+		resetFrozenInheritedProfilesForTesting();
+	});
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/sol");
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } }, moon: { "review-risk": { model: "openai/moon" } } }, "moon");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/moon");
+});
+
+test("provider review roles ignore an orchestrator saved in global routing", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	writeStore({ team: {} });
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale" } }));
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing of a session frozen without a profile uses a foreign repository's own pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const foreignRoot = join(fixture.root, "foreign");
+	const identity = (path: string) => path.startsWith(foreignRoot)
+		? { root: foreignRoot, commonDir: join(foreignRoot, ".git") }
+		: { root: join(fixture.root, "worktree"), commonDir: join(fixture.root, "git-common") };
+	setProfilePinWorktreeResolverForTesting(identity);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "home-session", cwd: fixture.root, configHome: fixture.configHome });
+	const foreignPin = join(foreignRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(foreignPin), { recursive: true });
+	writeFileSync(foreignPin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(foreignRoot, "home-session", fixture.root)).selection, "openai/theirs");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "home-session", fixture.root)).selection, "openai/global", "the session's own repository still ignores pins");
+});
+
+test("reviewer routing of a session started outside Git uses the target repository's pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const repoRoot = join(fixture.root, "repo");
+	const outside = join(fixture.root, "outside");
+	mkdirSync(outside, { recursive: true });
+	setProfilePinWorktreeResolverForTesting((path: string) => path.startsWith(repoRoot) ? { root: repoRoot, commonDir: join(repoRoot, ".git") } : undefined);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "outside-session", cwd: outside, configHome: fixture.configHome });
+	const pin = join(repoRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(pin), { recursive: true });
+	writeFileSync(pin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(repoRoot, "outside-session", outside)).selection, "openai/theirs");
 });
 
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {

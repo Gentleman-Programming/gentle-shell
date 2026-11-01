@@ -101,11 +101,12 @@ function messagePeerLabel(profile: string, sessionId: string): string | undefine
 function recipientSelectionLabels(profile: string, candidates: readonly PresenceRecord[]): string[] {
 	let discovered: ReturnType<typeof discoverOrchestrators> = [];
 	try { discovered = discoverOrchestrators(profile, candidates); } catch { /* labels are best-effort, never routing */ }
-	const bases = candidates.map((candidate, index) => {
-		const peer = discovered[index];
+	const peersById = new Map(discovered.map(peer => [peer.sessionId, peer] as const));
+	const bases = candidates.map((candidate) => {
+		const peer = peersById.get(candidate.sessionId);
 		const name = peer?.label ?? peer?.legacyLabel;
 		if (!name) return "Orchestrator";
-		const workspace = peer.workspace?.split(/[\\/]/).filter(Boolean).at(-1);
+		const workspace = peer?.workspace?.split(/[\\/]/).filter(Boolean).at(-1);
 		return workspace && workspace !== name ? `${name} (${workspace})` : name;
 	});
 	// Short ids stay whole (fixtures and test sessions); long ones are suffixed.
@@ -2591,7 +2592,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			if (recipient === undefined) {
 				try {
-					const candidates = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					const activations = (await transport.listener.registry.listActivations(transport.sessionId)).filter((candidate) => candidate.sessionId !== transport.sessionId);
+					// A transport may report more than one activation for one session; the picker maps
+					// the chosen label back to a single activation, so keep one entry per session ID.
+					const candidates = [...new Map(activations.map((candidate) => [candidate.sessionId, candidate] as const)).values()];
 					if (activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
 					if (candidates.length === 0) return text("No other sessions are currently advertised; message delivery is unavailable.", { error: "unavailable" });
 					if (candidates.length === 1) {
@@ -2599,7 +2603,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						activation = candidates[0];
 					} else {
 						const labels = recipientSelectionLabels(agentHome, candidates);
-						if (!ctx.hasUI) return text("Several recipient orchestrators are available. Ask the user to choose a recipient label; do not ask for a session ID.", { gentleAgents: { candidates: candidates.map((candidate, index) => ({ label: labels[index]!, sessionId: candidate.sessionId })) } });
+						if (!ctx.hasUI) return text(`Several recipient orchestrators are available. Ask the user to choose one of these recipient labels; do not ask for a session ID:\n${labels.map((label) => `- ${label}`).join("\n")}\nSending still requires interactive human consent.`, { gentleAgents: { candidates: candidates.map((candidate, index) => ({ label: labels[index]!, sessionId: candidate.sessionId })) } });
 						const selected = await ctx.ui.select("Select recipient orchestrator", labels, { signal });
 						if (selected === undefined || activeTransportFor(ctx) !== transport || signal?.aborted) return text("Message selection was cancelled.", { error: "cancelled" });
 						const index = labels.indexOf(selected);

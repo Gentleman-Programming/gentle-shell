@@ -5448,6 +5448,80 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	await h.fire("session_shutdown", ctx);
 });
 
+test("recipient picker uses published labels and grows the suffix until every label is unique", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	// Three long ids share their last four characters, and two peers share the same
+	// published label, so only a grown suffix can tell the whole list apart.
+	const alphaId = "11111111-1111-4111-8111-11111111abcd";
+	const betaId = "22222222-2222-4222-8222-22222222abcd";
+	const gammaId = "33333333-3333-4333-8333-33333333abcd";
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 1 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 2 },
+		{ version: 1, sessionId: gammaId, endpoint: "/gamma.sock", createdAt: 3 },
+	];
+	const profile = mkdtempSync(join(tmpdir(), "gentle-agents-labels-"));
+	const publishers = [
+		PresencePublisher.start({ profile, sessionId: alphaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: betaId, label: "api", activity: [] }),
+		PresencePublisher.start({ profile, sessionId: gammaId, label: "database", activity: [] }),
+	];
+	publishers[0]!.updateDiscovery(activations[0]!, { workspace: "/repo/api", tasks: [] });
+	publishers[1]!.updateDiscovery(activations[1]!, { workspace: "/repo/api", tasks: [] });
+	publishers[2]!.updateDiscovery(activations[2]!, { workspace: "/repo/melia/db", tasks: [] });
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 0;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (title, options) => title.startsWith("Select recipient") ? options[chosen] : options[0]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: profile });
+	try {
+		await h.fire("session_start", ctx);
+		const tool = h.tools.get("orchestrator_send_message")!;
+		const params = { message: "hello", reason: "because the peer needs an update" };
+		for (chosen = 0; chosen < 3; chosen += 1) await tool.execute("send", params, undefined, undefined, ctx);
+	} finally {
+		for (const publisher of publishers) publisher.dispose();
+		rmSync(profile, { recursive: true, force: true });
+	}
+	// The published label leads, the workspace basename follows only when it adds
+	// something, and the shared four-character tail forces the suffix to grow to six.
+	assert.equal(dialogs[0], "select:Select recipient orchestrator:api · 11abcd|api · 22abcd|database (db) · 33abcd");
+	assert.deepEqual(sent, [{ recipient: alphaId }, { recipient: betaId }, { recipient: gammaId }], "each displayed label must send to its own session");
+});
+
+test("recipient picker keeps one row per session when a transport repeats an activation", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const alphaId = "11111111-1111-4111-8111-111111111111";
+	const betaId = "22222222-2222-4222-8222-222222222222";
+	// The same session reported twice must not shift the rows of the sessions after it.
+	const activations: PresenceRecord[] = [
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha.sock", createdAt: 1 },
+		{ version: 1, sessionId: alphaId, endpoint: "/alpha-again.sock", createdAt: 2 },
+		{ version: 1, sessionId: betaId, endpoint: "/beta.sock", createdAt: 3 },
+	];
+	const sent: Array<{ recipient: string }> = [];
+	const registry = { list: async () => [], listActivations: async () => activations };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => {}, close: async () => {} }),
+		createClient: () => ({ close: () => {}, sendNotification: async (recipient: string) => { sent.push({ recipient }); return { id: "accepted-1", accepted: true }; } }),
+	} as never;
+	let chosen = 1;
+	const { ctx, dialogs } = fakeContext(undefined, undefined, undefined, undefined, async (_title, options) => options[chosen]);
+	gentleAgents(h.pi, {}, { ...runtime.deps, agentHome: mkdtempSync(join(tmpdir(), "gentle-agents-dedupe-")) });
+	await h.fire("session_start", ctx);
+	await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
+	assert.equal(dialogs[0]?.split(":")[2]?.split("|").length, 2, "one row per session, not per activation");
+	assert.deepEqual(sent, [{ recipient: betaId }], "the second row must still be the second session");
+});
+
 test("all orchestrator tools own compact and expanded card rendering", () => {
 	const h = fakePi();
 	gentleAgents(h.pi, {}, deps().deps);

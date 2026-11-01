@@ -5420,7 +5420,7 @@ test("session transport selects a peer for outbound delivery and rejects stale c
 	Object.assign(ctx.sessionManager, { getSessionName: () => "Backend" });
 	const result = await h.tools.get("orchestrator_send_message")!.execute("send", { message: "hello peer", reason: "because the peer needs an update" }, undefined, undefined, ctx);
 	assert.deepEqual(dialogs, [
-		"select:Select recipient orchestrator:Orchestrator alpha|Orchestrator beta",
+		"select:Select recipient orchestrator:Orchestrator · alpha|Orchestrator · beta",
 		"select:Authorize cross-orchestrator message to alpha?\nReason: because the peer needs an update\nMessage: hello peer:Allow once|Allow for this session|Deny",
 	]);
 	assert.deepEqual(sent, [{ recipient: "alpha", message: "hello peer", expectedActivation: records[0] }]);
@@ -5661,7 +5661,7 @@ test("orchestrator_send_message snapshots message and reason before recipient an
 	await eventually(() => dialogs.length === 1, "recipient selector opens");
 	params.message = "mutated during recipient selection";
 	params.reason = "mutated reason one";
-	chooseRecipient("Orchestrator alpha");
+	chooseRecipient("Orchestrator · alpha");
 	await eventually(() => dialogs.length === 2, "consent selector opens");
 	params.message = "mutated during consent selection";
 	params.reason = "mutated reason two";

@@ -454,11 +454,16 @@ export interface PiRuntime {
 	kind: PiRuntimeKind;
 	command: string;
 	args: string[];
+	// Only ever set for kind "bundled": the adjacent peer's and the
+	// gentle-shell-managed install's version both come from a package.json
+	// already read into memory, so main() can run checkPiVersion(runtime.version)
+	// without spawning a process just to print it back (#2096).
+	version?: string;
 }
 
 export interface PiRuntimeDeps {
 	env: Record<string, string | undefined>;
-	resolveBundledCli: () => string | undefined;
+	resolveBundledCli: () => { path: string; version: string } | undefined;
 	findOnPath: (name: string) => string | undefined;
 	nodeExecPath: string;
 }
@@ -467,8 +472,8 @@ export function resolvePiRuntime(deps: PiRuntimeDeps): PiRuntime | undefined {
 	const envOverride = deps.env.GENTLE_SHELL_PI;
 	if (envOverride !== undefined && envOverride.length > 0) return { kind: "env", command: envOverride, args: [] };
 
-	const bundledCliPath = deps.resolveBundledCli();
-	if (bundledCliPath !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCliPath] };
+	const bundledCli = deps.resolveBundledCli();
+	if (bundledCli !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCli.path], version: bundledCli.version };
 
 	const onPath = deps.findOnPath("pi");
 	if (onPath !== undefined) return { kind: "path", command: onPath, args: [] };

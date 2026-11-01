@@ -464,12 +464,17 @@ export function recordProvisioned(config                   , homeDir        , pi
 
 
 
+
+
+
+
+
 export function resolvePiRuntime(deps               )                        {
 	const envOverride = deps.env.GENTLE_SHELL_PI;
 	if (envOverride !== undefined && envOverride.length > 0) return { kind: "env", command: envOverride, args: [] };
 
-	const bundledCliPath = deps.resolveBundledCli();
-	if (bundledCliPath !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCliPath] };
+	const bundledCli = deps.resolveBundledCli();
+	if (bundledCli !== undefined) return { kind: "bundled", command: deps.nodeExecPath, args: [bundledCli.path], version: bundledCli.version };
 
 	const onPath = deps.findOnPath("pi");
 	if (onPath !== undefined) return { kind: "path", command: onPath, args: [] };

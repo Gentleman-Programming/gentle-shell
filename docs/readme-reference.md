@@ -126,8 +126,9 @@ other layouts may need manual adjustment. No CLI/socket query measures width.
 Source `gentle:activity` owns only `summary`/`summary2`, not lifecycle. Updates are
 latest-only, serialized and best-effort offline, with a 30-second TTL refreshed every
 10 seconds while active. Each report clears an unused second row; idle, session
-changes and shutdown clear both. TTL expiry covers abrupt exits. The managed Herdr
-bridge remains lifecycle authority. Reports invoke `HERDR_BIN_PATH` when supplied,
+changes and shutdown clear both. TTL expiry covers abrupt exits. The pane's lifecycle
+reporter (Gentle Shell's own, or Herdr's managed bridge; see [Herdr lifecycle bridge](#herdr-lifecycle-bridge))
+remains lifecycle authority, and summaries carry its agent label (`gentle-shell` or `pi`). Reports invoke `HERDR_BIN_PATH` when supplied,
 otherwise `herdr` from `PATH`, without a shell.
 
 ## Navigation
@@ -619,9 +620,13 @@ Setting `GENTLE_SHELL_INTERACTIVE_HOST=1` on a `pi --mode rpc` process turns on 
 
 ### Herdr lifecycle bridge
 
-For an interactive isolated-home launch inside Herdr, `gentle-shell` explicitly loads the existing managed `extensions/herdr-agent-state.ts` bridge. It looks first in the selected agent home, then the incoming `PI_CODING_AGENT_DIR`, then `~/.pi/agent`, using the first readable file's canonical path. Pi deduplicates that same file against normal discovery, explicit `-e` aliases, and package-manifest entries; presence alone is not treated as proof that it loaded. The launcher does not implement a second reporter, copy the bridge, or rewrite home configuration.
+For an interactive isolated-home launch inside Herdr, Gentle Shell reports its own agent identity: Herdr lists the pane as `gentle-shell`, while plain Pi sessions keep Herdr's managed Pi integration and still show as `pi`. Herdr's managed `extensions/herdr-agent-state.ts` bridge always reports `agent: "pi"`, so `gentle-shell` no longer loads it from the incoming `PI_CODING_AGENT_DIR` or `~/.pi/agent`. Instead it sets `GENTLE_SHELL_HERDR_REPORTER=1`, and the bundled `gentle-herdr-agent` extension sends the same lifecycle reports (session, `working`, `blocked`, `idle`) with source and agent `gentle-shell`, following Herdr's custom-agent contract. Herdr's Pi integration does not need to be installed. The activity summary (`gentle:activity`) uses the same agent label.
 
-Automatic loading requires `HERDR_ENV=1`, a nonempty `HERDR_PANE_ID`, an existing Unix socket at `HERDR_SOCKET_PATH`, and terminal stdin/stdout. It is skipped for `--no-extensions`/`-ne`, print/JSON/RPC modes (including interactive RPC hosts), export/model listing, package commands, and Gentle Agents children. `--mode text` still permits an interactive TUI. Linked and explicit custom homes keep their own resource policy; use normal Pi discovery or an explicit `-e` there. An absent or unreadable bridge is nonfatal. User-supplied extension paths remain unchanged, including under `--no-extensions`; this automatic bridge is not added on top of that opt-out.
+Exactly one reporter owns a pane, because Herdr rejects a second source once a session has an owner. When the selected Gentle Shell home already contains the bridge, Pi discovers it anyway: the launcher declares that canonical file as before, does not enable its own reporter, and the pane shows as `pi`. An explicit `-e` that resolves to the bridge is treated the same way. A home whose `settings.json` declares its own `gentle-pi` loads that installed copy instead of this package, and the copy may predate the reporter, so that launch keeps loading the managed bridge exactly as before. Nothing is installed into Herdr, and the launcher never copies the bridge or rewrites home configuration.
+
+Tradeoffs of a custom agent name on Herdr 0.9.3: Herdr keeps no session reference for a custom agent, so it cannot restore a Gentle Shell pane after a Herdr server restart (Pi panes are restored as Pi sessions). Custom resume commands require Herdr 0.10.0 or later and are not reported yet. Herdr operations that need a known agent kind, such as `agent.prompt`, may not apply to `gentle-shell` panes.
+
+The Gentle Shell reporter requires `HERDR_ENV=1`, a nonempty `HERDR_PANE_ID`, an existing Unix socket at `HERDR_SOCKET_PATH`, and terminal stdin/stdout. It is skipped for `--no-extensions`/`-ne`, print/JSON/RPC modes (including interactive RPC hosts), export/model listing, package commands, and Gentle Agents children; the launcher also removes an inherited `GENTLE_SHELL_HERDR_REPORTER` there. `--mode text` still permits an interactive TUI. Linked and explicit custom homes keep their own resource policy, so they keep whatever Herdr integration that home discovers and show as `pi`. User-supplied extension paths remain unchanged, including under `--no-extensions`.
 
 ### Herdr native working detection
 

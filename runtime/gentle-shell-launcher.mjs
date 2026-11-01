@@ -215,6 +215,9 @@ function linkDir(env                                    , homedir        )      
 // launched from inside a Gentle Shell session sees the outer isolated home as
 // PI_CODING_AGENT_DIR, so `--link` must not re-select it (#2015).
 export const USER_PI_HOME_ENV = "GENTLE_SHELL_USER_PI_HOME";
+// Set by bin/gentle-shell.mjs only when Gentle Shell, not Herdr's Pi bridge,
+// owns the pane's Herdr agent reports (extensions/gentle-herdr-agent.ts).
+export const HERDR_REPORTER_ENV = "GENTLE_SHELL_HERDR_REPORTER";
 
 export function userPiHome(env                                    , homedir        )         {
 	return env[USER_PI_HOME_ENV] || linkDir(env, homedir);
@@ -1084,6 +1087,7 @@ export function buildPiInvocation(input                        )               {
 	const env                                     = {
 		...input.baseEnv,
 		PI_CODING_AGENT_DIR: input.home.dir,
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: input.home.dir,
 		[USER_PI_HOME_ENV]: userPiHome(input.baseEnv, input.homedir),
 	};

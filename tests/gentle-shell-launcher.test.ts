@@ -1274,6 +1274,21 @@ test("package injection relies on Pi's -e resource discovery in isolated and tak
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
 const isolatedHomeResolved: ResolvedHome = { mode: "isolated", dir: "/gentle-shell/agent", source: "default" };
 
+test("buildPiInvocation activates program identity only in its child environment", () => {
+	for (const home of [linkHome, isolatedHomeResolved]) {
+		const baseEnv = Object.freeze({ PATH: "/usr/bin", PI_PROGRAM_STATUS_APP: "pi", PI_PROGRAM_STATUS: "0" });
+		const built = buildPiInvocation({
+			runtime: { kind: "path", command: "/usr/bin/pi", args: [] }, home,
+			packageRoot: "/pkg", declaration: { kind: "npm" }, takeOver: false,
+			otherPackagePaths: [], passthrough: [], baseEnv, homedir: "/home/u", cwd: "/work",
+		});
+		assert.equal(built.env.PI_PROGRAM_STATUS_APP, "gentle-shell");
+		assert.equal(built.env.PI_PROGRAM_STATUS, "0");
+		assert.equal(built.env.PI_CODING_AGENT_DIR, home.dir);
+		assert.deepEqual(baseEnv, { PATH: "/usr/bin", PI_PROGRAM_STATUS_APP: "pi", PI_PROGRAM_STATUS: "0" });
+	}
+});
+
 test("buildPiInvocation injects the launcher env into baseEnv", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
@@ -1287,7 +1302,7 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		homedir: "/home/u",
 		cwd: "/work",
 	});
-	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", PI_PROGRAM_STATUS_APP: "gentle-shell", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
@@ -1363,6 +1378,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 	assert.deepEqual(built.env, {
 		PATH: "/usr/bin",
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
 		GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent"),
 	});
@@ -1384,7 +1400,7 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
-	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", PI_PROGRAM_STATUS_APP: "gentle-shell", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
 });
 
 // The isolated home overrides PI_CODING_AGENT_DIR for the session, so the

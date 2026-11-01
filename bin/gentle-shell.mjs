@@ -62,6 +62,7 @@ import {
 	shellQuote,
 	standaloneConfigHome,
 	userPiHome,
+	HERDR_REPORTER_ENV,
 } from "../runtime/gentle-shell-launcher.mjs";
 import { formatImportPiReport, importPi } from "../runtime/gentle-shell-import-pi.mjs";
 import {
@@ -367,43 +368,70 @@ function isDirectory(path) {
 	}
 }
 
-// Reuse Herdr's managed bridge, never its transport. This process-boundary
-// lookup is deliberately best-effort and does not modify either agent home.
-function managedHerdrExtensionArgs(home, args) {
-	const env = process.env;
-	if (home.mode !== "isolated" || args.piSubcommand !== undefined || args.passthrough[0] === "mcp") return [];
-	if (env.HERDR_ENV !== "1" || !env.HERDR_SOCKET_PATH?.trim() || !env.HERDR_PANE_ID?.trim()) return [];
-	if (env.GENTLE_PI_AGENTS_CHILD === "1" || !process.stdin.isTTY || !process.stdout.isTTY) return [];
-	// Only automatic interactive loading: a user opt-out must not become an
-	// explicit -e (which Pi loads even under --no-extensions). Conservatively
-	// skip ambiguous mode flags too; --mode text alone still allows a TUI.
-	const forwarded = args.passthrough;
-	if (forwarded.some((arg) => ["--no-extensions", "-ne", "--print", "-p", "--export", "--list-models", "-v"].includes(arg))) return [];
-	if (forwarded.some((arg, i) => (arg === "--mode" && forwarded[i + 1] !== "text") || arg.startsWith("--mode="))) return [];
+const HERDR_BRIDGE_FILE = "herdr-agent-state.ts";
+
+// Canonical file name check; an unreadable path is simply not a bridge.
+function isHerdrBridge(path) {
 	try {
-		if (!statSync(env.HERDR_SOCKET_PATH).isSocket()) return [];
+		return basenameOf(realpathSync(path)) === HERDR_BRIDGE_FILE;
 	} catch {
-		return [];
+		return false;
 	}
-	// Prefer a bridge in the selected home over adding a competing copy; keep
-	// the incoming Pi home override before falling back to Herdr's usual home.
-	const agentHomes = [home.dir, env.PI_CODING_AGENT_DIR, join(homedir(), ".pi", "agent")];
-	for (const agentHome of agentHomes) {
+}
+
+// First readable managed bridge among `homes`, as an explicit -e of its
+// canonical path. Pi's package-manager.toResolvedPaths and
+// resource-loader.mergePaths dedupe canonical files across discovery,
+// explicit -e and manifests, so declaring it is harmless.
+function managedBridgeArgs(homes) {
+	for (const agentHome of homes) {
 		if (!agentHome) continue;
-		const bridge = join(agentHome, "extensions", "herdr-agent-state.ts");
+		const bridge = join(agentHome, "extensions", HERDR_BRIDGE_FILE);
 		try {
 			if (!statSync(bridge).isFile()) continue;
 			accessSync(bridge, fsConstants.R_OK);
-			// Pi's package-manager.toResolvedPaths and resource-loader.mergePaths
-			// dedupe canonical files across discovery, explicit -e and manifests.
-			// Existence alone is NOT proof of loading: declare the resource and
-			// let that resolver dedupe it, including explicit aliases from argv.
 			return ["-e", realpathSync(bridge)];
 		} catch {
 			// An absent/unreadable bridge never prevents the ordinary launch.
 		}
 	}
 	return [];
+}
+
+// Herdr agent identity for an interactive isolated launch (#2705). Herdr's
+// managed Pi bridge reports every pane as `pi`, so when this launcher loads
+// its own package (`loadsOwnPackage`) Gentle Shell no longer loads the bridge
+// and enables its own reporter (extensions/gentle-herdr-agent.ts) through
+// HERDR_REPORTER_ENV. Exactly one reporter owns the pane: a bridge in the
+// selected home is discovered by Pi anyway, and a bridge the user passes
+// explicitly is theirs, so Gentle Shell does not compete with either. A home
+// that loads its own declared gentle-pi may predate the reporter, so it keeps
+// the managed bridge. Best-effort, and it never modifies either agent home.
+function herdrLaunchPlan(home, args, loadsOwnPackage) {
+	const none = { extensionArgs: [], reporter: false };
+	const env = process.env;
+	if (home.mode !== "isolated" || args.piSubcommand !== undefined || args.passthrough[0] === "mcp") return none;
+	if (env.HERDR_ENV !== "1" || !env.HERDR_SOCKET_PATH?.trim() || !env.HERDR_PANE_ID?.trim()) return none;
+	if (env.GENTLE_PI_AGENTS_CHILD === "1" || !process.stdin.isTTY || !process.stdout.isTTY) return none;
+	// Only automatic interactive loading: a user opt-out must not become an
+	// explicit -e (which Pi loads even under --no-extensions). Conservatively
+	// skip ambiguous mode flags too; --mode text alone still allows a TUI.
+	const forwarded = args.passthrough;
+	if (forwarded.some((arg) => ["--no-extensions", "-ne", "--print", "-p", "--export", "--list-models", "-v"].includes(arg))) return none;
+	if (forwarded.some((arg, i) => (arg === "--mode" && forwarded[i + 1] !== "text") || arg.startsWith("--mode="))) return none;
+	try {
+		if (!statSync(env.HERDR_SOCKET_PATH).isSocket()) return none;
+	} catch {
+		return none;
+	}
+	if (forwarded.some((arg, i) => (arg === "-e" || arg === "--extension") && isHerdrBridge(forwarded[i + 1] ?? ""))) return none;
+	if (!loadsOwnPackage) {
+		// Prefer the selected home, keep the incoming Pi home override, then
+		// fall back to Herdr's usual home.
+		return { extensionArgs: managedBridgeArgs([home.dir, env.PI_CODING_AGENT_DIR, join(homedir(), ".pi", "agent")]), reporter: false };
+	}
+	const selected = managedBridgeArgs([home.dir]);
+	return selected.length > 0 ? { extensionArgs: selected, reporter: false } : { extensionArgs: [], reporter: true };
 }
 
 // Real-fs adapter for discoverLooseExtensionEntries (lib/gentle-shell-launcher.ts):
@@ -2185,6 +2213,9 @@ async function main() {
 		}
 		bundledEnv = bundledProcessEnv();
 	}
+	// buildPiInvocation injects this package unless the home's own declared
+	// gentle-pi is used as-is.
+	const herdr = herdrLaunchPlan(home, args, takeOver || declaration === undefined);
 	const invocation = buildPiInvocation({
 		runtime,
 		home,
@@ -2193,7 +2224,7 @@ async function main() {
 		takeOver,
 		otherPackagePaths,
 		looseExtensionEntries,
-		passthrough: [...managedHerdrExtensionArgs(home, args), ...passthrough],
+		passthrough: [...herdr.extensionArgs, ...passthrough],
 		piSubcommand: args.piSubcommand,
 		baseEnv: bundledEnv ?? process.env,
 		bundled: Boolean(bundled),
@@ -2204,6 +2235,10 @@ async function main() {
 
 	// Only an interactive session ends with pi's exit resume hint, which
 	// gentle-shell completes with its own line; a pi subcommand gets no handoff.
+	// A nested launch must not inherit a stale reporter handoff.
+	if (herdr.reporter) invocation.env[HERDR_REPORTER_ENV] = "1";
+	else delete invocation.env[HERDR_REPORTER_ENV];
+
 	const resumeHandoff = args.piSubcommand === undefined ? createResumeHandoff() : undefined;
 	const childEnv = resumeHandoff ? { ...invocation.env, [RESUME_HANDOFF_ENV]: resumeHandoff.path } : invocation.env;
 

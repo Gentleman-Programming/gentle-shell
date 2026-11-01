@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { HERDR_REPORTER_ENV } from "./gentle-shell-launcher.ts";
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -135,18 +136,23 @@ export function herdrSetupHint(
 	];
 }
 
-export function metadataArgs(pane: string, summary: string | null, seq: number): string[] {
+/** The agent label this pane reports to Herdr: Gentle Shell's own, or Herdr's Pi bridge. */
+export function herdrAgentLabel(env: NodeJS.ProcessEnv): "gentle-shell" | "pi" {
+	return env[HERDR_REPORTER_ENV] === "1" ? "gentle-shell" : "pi";
+}
+
+export function metadataArgs(pane: string, summary: string | null, seq: number, agent = "pi"): string[] {
 	const rows = summary?.split("\n") ?? [];
 	const tokens = ["summary", "summary2"].flatMap((token, index) => rows[index]
 		? ["--token", `${token}=${rows[index]}`] : ["--clear-token", token]);
-	return ["pane", "report-metadata", pane, "--source", "gentle:activity", "--agent", "pi",
+	return ["pane", "report-metadata", pane, "--source", "gentle:activity", "--agent", agent,
 		"--seq", String(seq), "--ttl-ms", "30000", ...tokens];
 }
 
 export function metadataTransport(env: NodeJS.ProcessEnv): (summary: string | null, seq: number) => Promise<void> {
 	return (summary, seq) => new Promise((resolve) => {
 		// No shell, bounded output/time, and failure never blocks Pi's handlers.
-		execFile(env.HERDR_BIN_PATH ?? "herdr", metadataArgs(env.HERDR_PANE_ID!, summary, seq), {
+		execFile(env.HERDR_BIN_PATH ?? "herdr", metadataArgs(env.HERDR_PANE_ID!, summary, seq, herdrAgentLabel(env)), {
 			env, timeout: 1500, maxBuffer: 4096, windowsHide: true,
 		}, () => resolve());
 	});

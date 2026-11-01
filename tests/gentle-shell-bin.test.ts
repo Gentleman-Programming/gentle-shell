@@ -176,6 +176,7 @@ function writePiScript(path: string, version: string, removeExitCode = 0) {
 			"  GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME,",
 			"  GENTLE_SHELL_USER_PI_HOME: process.env.GENTLE_SHELL_USER_PI_HOME,",
 			"  GENTLE_SHELL_CHILD_PACKAGE_INJECTION: process.env.GENTLE_SHELL_CHILD_PACKAGE_INJECTION,",
+			"  GENTLE_SHELL_HERDR_REPORTER: process.env.GENTLE_SHELL_HERDR_REPORTER,",
 			"}));",
 			"process.exit(0);",
 			"",
@@ -227,73 +228,95 @@ function herdrFixture(t: test.TestContext) {
 	delete env.GENTLE_PI_AGENTS_CHILD;
 	// Keep parent agent-home inheritance out of every portable test fixture.
 	delete env.PI_CODING_AGENT_DIR;
-	const launch = (args: string[] = [], overrides: NodeJS.ProcessEnv = {}) => {
+	const launchWithEnv = (args: string[] = [], overrides: NodeJS.ProcessEnv = {}) => {
 		const result = spawnSync(process.execPath, ["--require", preload, binPath, ...args], {
 			encoding: "utf8", env: { ...env, ...overrides }, cwd: f.root,
 		});
 		assert.equal(result.status, 0, result.stderr);
-		return JSON.parse(result.stdout).args as string[];
+		return JSON.parse(result.stdout) as { args: string[]; GENTLE_SHELL_HERDR_REPORTER?: string };
 	};
-	return { ...f, bridge, env, launch };
+	const launch = (args: string[] = [], overrides: NodeJS.ProcessEnv = {}) => launchWithEnv(args, overrides).args;
+	return { ...f, bridge, env, launch, launchWithEnv };
 }
 
 function extensionPaths(args: string[]): string[] {
 	return args.flatMap((arg, i) => arg === "-e" || arg === "--extension" ? [args[i + 1]] : []);
 }
 
-test("Herdr isolated TUI launch explicitly loads the canonical managed bridge", (t) => {
+test("Herdr isolated TUI launch reports as Gentle Shell instead of loading Herdr's Pi bridge", (t) => {
 	const f = herdrFixture(t);
-	assert.ok(extensionPaths(f.launch()).includes(realpathSync(f.bridge)));
+	const launched = f.launchWithEnv();
+	assert.ok(!extensionPaths(launched.args).includes(realpathSync(f.bridge)));
+	assert.equal(launched.GENTLE_SHELL_HERDR_REPORTER, "1");
 	assert.equal(readFileSync(f.bridge, "utf8"), "export default function () {}\n");
 });
 
-test("Herdr prefers the incoming agent-home bridge and falls back to the conventional home", (t) => {
+test("Herdr keeps a bridge the selected home discovers anyway and never adds a competing reporter", (t) => {
 	const f = herdrFixture(t);
 	const previousHome = join(f.root, "previous-agent");
 	const previousBridge = join(previousHome, "extensions", "herdr-agent-state.ts");
 	mkdirSync(dirname(previousBridge), { recursive: true });
 	writeFileSync(previousBridge, "export default function () {}\n");
-	const previousPaths = extensionPaths(f.launch([], { PI_CODING_AGENT_DIR: previousHome }));
-	assert.ok(previousPaths.includes(realpathSync(previousBridge)));
-	assert.ok(!previousPaths.includes(realpathSync(f.bridge)));
-	assert.ok(extensionPaths(f.launch([], { PI_CODING_AGENT_DIR: f.gentleShellHome })).includes(realpathSync(f.bridge)));
+	const previous = f.launchWithEnv([], { PI_CODING_AGENT_DIR: previousHome });
+	assert.ok(!extensionPaths(previous.args).includes(realpathSync(previousBridge)));
+	assert.ok(!extensionPaths(previous.args).includes(realpathSync(f.bridge)));
+	assert.equal(previous.GENTLE_SHELL_HERDR_REPORTER, "1");
 	const selectedBridge = join(f.gentleShellHome, "extensions", "herdr-agent-state.ts");
 	mkdirSync(dirname(selectedBridge), { recursive: true });
 	writeFileSync(selectedBridge, "export default function () {}\n");
-	const selectedPaths = extensionPaths(f.launch([], { PI_CODING_AGENT_DIR: previousHome }));
-	assert.ok(selectedPaths.includes(realpathSync(selectedBridge)));
-	assert.ok(!selectedPaths.includes(realpathSync(previousBridge)));
-	assert.ok(!selectedPaths.includes(realpathSync(f.bridge)));
+	const selected = f.launchWithEnv([], { PI_CODING_AGENT_DIR: previousHome, GENTLE_SHELL_HERDR_REPORTER: "1" });
+	assert.ok(extensionPaths(selected.args).includes(realpathSync(selectedBridge)));
+	assert.ok(!extensionPaths(selected.args).includes(realpathSync(previousBridge)));
+	assert.ok(!extensionPaths(selected.args).includes(realpathSync(f.bridge)));
+	assert.equal(selected.GENTLE_SHELL_HERDR_REPORTER, undefined);
 });
 
-test("Herdr bridge injection respects disabled extensions, headless modes and child launches", (t) => {
+test("Herdr keeps the managed bridge when the home's own declared gentle-pi is loaded instead of this package", (t) => {
 	const f = herdrFixture(t);
+	mkdirSync(f.gentleShellHome, { recursive: true });
+	writeFileSync(join(f.gentleShellHome, "settings.json"), JSON.stringify({ packages: ["npm:gentle-pi@3.5.1"] }));
+	// An installed copy may predate the Gentle Shell reporter, so the pane must
+	// not lose its only lifecycle reporter.
+	const launched = f.launchWithEnv([], { GENTLE_SHELL_HERDR_REPORTER: "1" });
+	assert.ok(extensionPaths(launched.args).includes(realpathSync(f.bridge)));
+	assert.equal(launched.GENTLE_SHELL_HERDR_REPORTER, undefined);
+});
+
+test("Herdr identity handoff respects disabled extensions, headless modes and child launches", (t) => {
+	const f = herdrFixture(t);
+	const inherited = { GENTLE_SHELL_HERDR_REPORTER: "1" };
 	for (const args of [["--no-extensions"], ["-ne"], ["-p", "prompt"], ["--print", "prompt"],
 		["--mode", "rpc"], ["--mode", "json"], ["--export", "session.jsonl"], ["--list-models"],
 		["--link"], ["--home", f.gentleShellHome], ["list"]]) {
-		assert.ok(!extensionPaths(f.launch(args)).includes(realpathSync(f.bridge)), JSON.stringify(args));
+		const launched = f.launchWithEnv(args, inherited);
+		assert.ok(!extensionPaths(launched.args).includes(realpathSync(f.bridge)), JSON.stringify(args));
+		assert.equal(launched.GENTLE_SHELL_HERDR_REPORTER, undefined, JSON.stringify(args));
 	}
 	for (const overrides of [{ HERDR_ENV: "0" }, { HERDR_ENV: undefined }, { HERDR_PANE_ID: "" },
 		{ HERDR_SOCKET_PATH: "" }, { TEST_SOCKET_VALID: "0" }, { TEST_STDIN_TTY: "0" },
 		{ TEST_STDOUT_TTY: "0" }, { GENTLE_PI_AGENTS_CHILD: "1" }]) {
-		assert.ok(!extensionPaths(f.launch([], overrides)).includes(realpathSync(f.bridge)), JSON.stringify(overrides));
+		const launched = f.launchWithEnv([], { ...inherited, ...overrides });
+		assert.ok(!extensionPaths(launched.args).includes(realpathSync(f.bridge)), JSON.stringify(overrides));
+		assert.equal(launched.GENTLE_SHELL_HERDR_REPORTER, undefined, JSON.stringify(overrides));
 	}
-	assert.ok(extensionPaths(f.launch(["--mode", "text"])).includes(realpathSync(f.bridge)));
+	assert.equal(f.launchWithEnv(["--mode", "text"]).GENTLE_SHELL_HERDR_REPORTER, "1");
 });
 
-test("Herdr absent bridge is nonfatal and explicit resources are preserved", (t) => {
+test("Herdr identity needs no installed Pi bridge and explicit resources are preserved", (t) => {
 	const f = herdrFixture(t);
 	const absentHome = join(f.root, "empty-home");
 	mkdirSync(absentHome);
-	assert.ok(!extensionPaths(f.launch([], { HOME: absentHome, USERPROFILE: absentHome })).includes(realpathSync(f.bridge)));
+	assert.equal(f.launchWithEnv([], { HOME: absentHome, USERPROFILE: absentHome }).GENTLE_SHELL_HERDR_REPORTER, "1");
 	const alias = join(f.root, "bridge-alias.ts");
 	symlinkSync(f.bridge, alias);
-	const args = f.launch(["-e", alias]);
-	assert.ok(extensionPaths(args).includes(alias));
-	assert.ok(extensionPaths(args).includes(realpathSync(f.bridge)));
-	const disabled = f.launch(["--no-extensions", "-e", alias]);
-	assert.ok(extensionPaths(disabled).includes(alias));
-	assert.ok(!extensionPaths(disabled).includes(realpathSync(f.bridge)));
+	const explicit = f.launchWithEnv(["-e", alias]);
+	assert.ok(extensionPaths(explicit.args).includes(alias));
+	assert.ok(!extensionPaths(explicit.args).includes(realpathSync(f.bridge)));
+	assert.equal(explicit.GENTLE_SHELL_HERDR_REPORTER, undefined);
+	const disabled = f.launchWithEnv(["--no-extensions", "-e", alias]);
+	assert.ok(extensionPaths(disabled.args).includes(alias));
+	assert.ok(!extensionPaths(disabled.args).includes(realpathSync(f.bridge)));
+	assert.equal(disabled.GENTLE_SHELL_HERDR_REPORTER, undefined);
 });
 
 test("Pi real resource loader deduplicates the bridge across discovery, explicit files and package directories", async (t) => {

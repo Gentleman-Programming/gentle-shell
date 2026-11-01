@@ -5,7 +5,7 @@ import { resolve, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrActivityExtension } from "../extensions/gentle-herdr-activity.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
-import { metadataArgs } from "../lib/herdr-activity.ts";
+import { herdrAgentLabel, metadataArgs } from "../lib/herdr-activity.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => void;
 function harness(overrides: NodeJS.ProcessEnv = {}, socket = true) {
@@ -151,6 +151,16 @@ test("width changes reproject and long-to-short/no-task/idle clear both rows tog
 	h.fire("session_tree"); await wait(); assert.equal(h.values.at(-1), null);
 	assert.deepEqual(h.reports.at(-1)?.slice(-4), ["--clear-token", "summary", "--clear-token", "summary2"]);
 	h.fire("session_shutdown");
+});
+
+test("activity metadata follows the agent label that owns the pane", () => {
+	assert.equal(herdrAgentLabel({ GENTLE_SHELL_HERDR_REPORTER: "1" }), "gentle-shell");
+	assert.equal(herdrAgentLabel({}), "pi");
+	assert.equal(herdrAgentLabel({ GENTLE_SHELL_HERDR_REPORTER: "0" }), "pi");
+	assert.deepEqual(metadataArgs("pane", "◐ one", 7, "gentle-shell"), ["pane", "report-metadata", "pane", "--source", "gentle:activity",
+		"--agent", "gentle-shell", "--seq", "7", "--ttl-ms", "30000", "--token", "summary=◐ one", "--clear-token", "summary2"]);
+	assert.deepEqual(metadataArgs("pane", null, 8), ["pane", "report-metadata", "pane", "--source", "gentle:activity",
+		"--agent", "pi", "--seq", "8", "--ttl-ms", "30000", "--clear-token", "summary", "--clear-token", "summary2"]);
 });
 
 test("malformed successful Todo snapshots clear previous activity, unlike failed snapshots", async () => {

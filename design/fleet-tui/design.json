@@ -6,6 +6,7 @@
     { "file": "01-command-deck.html", "title": "Command deck", "tradeoff": "Familiar and scales to 20 members: chat plus a scrollable, attention-first rail of one-line rows that expand into full cards, a pinned inbox, and a Map tab plus m modal for the whole objective; detail and thinking cost a keypress per member", "width": 1440, "height": 900 },
     { "file": "02-transit-map.html", "title": "Transit map", "tradeoff": "Best at-a-glance progress and doubles as the fleet odd.md view; needs width and shows less per-member detail", "width": 1440, "height": 900 },
     { "file": "03-one-conversation.html", "title": "One conversation", "tradeoff": "Simplest mental model, one timeline with member cards inline; can get noisy and relies on filters and collapsing", "width": 1440, "height": 900 },
-    { "file": "04-focus-lens.html", "title": "Focus lens", "tradeoff": "Least distraction with the deepest view of one member's reasoning, todos and tools; seeing the others takes a keypress", "width": 1440, "height": 900 }
+    { "file": "04-focus-lens.html", "title": "Focus lens", "tradeoff": "Least distraction with the deepest view of one member's reasoning, todos and tools; seeing the others takes a keypress", "width": 1440, "height": 900 },
+    { "file": "05-calm-deck.html", "title": "Calm deck", "tradeoff": "Default first launch: objective strip plus one focal item (decision, then blocker, then review) and the conversation; members, map, costs and log are lenses over the same rows, and density grows light → normal → power. Calm and guided, but power users need a keypress (alt+m, f/m/$/l) for what 01 shows at once", "width": 1440, "height": 900 }
   ]
 }

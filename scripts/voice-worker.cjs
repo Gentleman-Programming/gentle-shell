@@ -347,7 +347,12 @@ class WorkerSession {
 				deviceId: device.deviceId,
 				config,
 				onData: (data) => this.onData(data),
-				onError: () => void this.fail(new WorkerFailure("capture")),
+				// A buffer underrun or overrun drops some audio but the stream keeps
+				// running; WASAPI reports one at start on some devices.
+				onError: (error) => {
+					if (isRecord(error) && error.code === "XRUN") return;
+					void this.fail(new WorkerFailure("capture"));
+				},
 				autoStart: true,
 				queueCapacityBuffers: 64,
 			});

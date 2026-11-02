@@ -312,6 +312,46 @@ test("reports a missing microphone, an unusable format and empty audio", async (
 	}
 });
 
+// node-cpal reports stream errors as CpalError objects with a string code.
+const cpalError = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+test("a buffer underrun or overrun keeps capturing and the dictation is still transcribed", async (t) => {
+	const worker = harness(t);
+	worker.send(startRequest(worker.paths));
+	await worker.waitFor(() => worker.types().includes("recording"));
+	const [stream] = worker.streams;
+	// WASAPI reports one before the first buffer on some devices; others may report one between buffers.
+	stream!.options.onError(cpalError("XRUN", "A buffer underrun or overrun occurred."));
+	stream!.options.onData(interleaved(4800, 2, () => 16384));
+	stream!.options.onError(cpalError("XRUN", "A buffer underrun or overrun occurred."));
+	stream!.options.onData(interleaved(4800, 2, () => 16384));
+	worker.send({ schema: SCHEMA, type: "stop" });
+	await worker.done;
+	assert.deepEqual(worker.types(), ["recording", "transcribing", "result"]);
+	assert.equal(worker.messages.at(-1)!.text, "hello world");
+	assert.equal(worker.recognizers[0]!.waves[0]!.samples.length, 3200);
+	assert.equal(stream!.closes, 1);
+	assert.equal(worker.exitCode(), 0);
+});
+
+test("any other stream error ends the session with capture", async (t) => {
+	for (const error of [cpalError("DEVICE_NOT_AVAILABLE", "The requested audio device is not available."), cpalError("OTHER", "backend failure"), new Error("no code"), undefined]) {
+		await t.test(String(error?.message), async (st) => {
+			const worker = harness(st);
+			worker.send(startRequest(worker.paths));
+			await worker.waitFor(() => worker.types().includes("recording"));
+			const [stream] = worker.streams;
+			stream!.options.onData(interleaved(4800, 2, () => 16384));
+			stream!.options.onError(error);
+			await worker.done;
+			assert.deepEqual(worker.messages.at(-1), { schema: SCHEMA, type: "error", code: "capture" });
+			assert.equal(worker.exitCode(), 1);
+			assert.equal(stream!.closes, 1);
+			assert.equal(worker.recognizers.length, 0);
+		});
+	}
+});
+
 test("refuses to run on Node older than 22", async (t) => {
 	const worker = harness(t, {}, { nodeVersion: "20.18.0" });
 	await worker.done;

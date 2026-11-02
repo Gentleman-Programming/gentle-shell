@@ -1,8 +1,10 @@
 # Native MCP status API
+
 Objective: implement issue #2303 in native Pi first, then make the supported contract usable from Gentle Shell extensions.
 Branches: Pi `feat/mcp-status-api-2303` (base `6291b9bcc3ee9480c2caba8676fc2f6cd321eaa9`), Shell `feat/mcp-server-status-2303` (base `9fe14aadc1f6c905f7aee93ecb4e724e342cba50`); delivery: auto-chain / feature-branch-chain, local work-unit commits only; runners: Pi focused Vitest, `npm run check`, `./test.sh`; Shell focused Node tests and applicable checks.
 
 ## Specs
+
 S1. User request (verbatim): "revisa e implementa este issue https://github.com/Gentleman-Programming/gentle-shell/issues/2303#issuecomment-6553124058".
 S2. Issue contract (verbatim):
 ```ts
@@ -29,6 +31,7 @@ S11. Diagnostic decision (verbatim): "Capture one bounded diagnostic". One Bun-c
 S12. Bun guarantee decision (verbatim): "Bun: verificar solo el resultado (recomendado)". For Bun, require the cancelled result to arrive promptly, then terminate the child; Node keeps all exit guarantees.
 
 ## Tasks
+
 T5 | S1,S7 | inline: recover missing feature worktree/native source after workspace incident; exact-artifact recovery only, no new behavior or functional verification | done: original native commit c8fb968 and tree d93ae646651ca5050e23faf52230003f1aaaf14f recovered exactly; Shell worktree restored and upstream patch preserved in tracked Git; raw logs unavailable and reported | recovery commits: Shell 43097b35d and cb0a4c41e.
 T1 | S1-S7 | inline: complete native snapshot/subscription API, transition publisher, typed sanitization, lifecycle and docs/tests; one behavior, no writer trigger | done: exact original authored commit recovered; historical root check/165-test/build/differential self-verification remains attached to that same commit, not a new pass; full feature proof remains partial in T4 | Pi commit: c8fb968ea8c5672e11217b02610a729a80cac881.
 T2 | S2-S6 | inline: native transition publication | dropped: folded into T1 because API, native publisher and public-interface tests form one coherent behavior, not independent deliveries | commit: held by T1.
@@ -38,6 +41,7 @@ T7 | S9-S12 | inline harness, independent Risk5 verifier | done: native 85a0576+
 T4 | S1-S12 | delegated independent verifier + parent qualification | done: no change-caused failures; full suite (tini) has one baseline-reproduced auth-storage failure; 4 earlier process-tree failures are missing-init runner defects | evidence full-suite-tini/coding-agent-compare/reaper-qualification.
 
 ## Log
+
 L1. Original request: "revisa e implementa este issue https://github.com/Gentleman-Programming/gentle-shell/issues/2303#issuecomment-6553124058".
 L2. User continuation: "Review the delivered subagent output and continue."
 L3. User scope extension: "exten". Preceding proposal: "extend the work to implement the sanitized API in Pi first, then integrate Shell."

@@ -87,3 +87,11 @@ test("a subagent child of the controller never holds a fleet role", () => {
 	assert.equal(fleetRole({ [FLEET_ROLE_ENV]: "controller", GENTLE_PI_AGENTS_CHILD: "1" }), undefined);
 	assert.equal(fleetRole({ [FLEET_ROLE_ENV]: "member", GENTLE_PI_AGENTS_CHILD: "1" }), undefined);
 });
+
+// T5-U3: the fleet opens on its own deck; Pi's "Update Available" notice is
+// skipped with Pi's documented PI_SKIP_VERSION_CHECK (docs/environment-variables.md).
+test("the fleet launch skips Pi's version check; a normal launch keeps the inherited env untouched", () => {
+	assert.equal(invocation(true, { PATH: "/usr/bin" }).env.PI_SKIP_VERSION_CHECK, "1");
+	assert.equal("PI_SKIP_VERSION_CHECK" in invocation(undefined, { PATH: "/usr/bin" }).env, false);
+	assert.equal(invocation(undefined, { PATH: "/usr/bin", PI_SKIP_VERSION_CHECK: "0" }).env.PI_SKIP_VERSION_CHECK, "0");
+});

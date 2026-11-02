@@ -137,6 +137,8 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	// odd/tasks/fleet-orchestrator.md T3: a fleet member is a primary session
 	// but never inherits the human's saved elevated default nor raises its own.
 	const fleetMember = fleetRole(env) === "member";
+	// T5-U3: the fleet controller's deck shows the mode in its status line instead of the card.
+	const fleetController = fleetRole(env) === "controller";
 	const interactive = (ctx: ExtensionContext): boolean => {
 		if (!primary() || !ctx.hasUI) return false;
 		const mode = (ctx as ExtensionContext & { mode?: string }).mode;
@@ -159,7 +161,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		if (previous && previous.yolo === yolo && previous.modeText === modeText) return;
 		let painted = true;
 		try { ctx.ui.setStatus(YOLO_STATUS_KEY, yolo); } catch { painted = false; /* display only */ }
-		try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [yolo] : undefined); } catch { painted = false; /* display only */ }
+		if (!fleetController) try { ctx.ui.setWidget(YOLO_STATUS_KEY, yolo ? [yolo] : undefined); } catch { painted = false; /* display only */ }
 		try { ctx.ui.setStatus(MODE_STATUS_KEY, modeText); } catch { painted = false; /* display only */ }
 		if (painted) published.set(ctx, { yolo, modeText });
 	};

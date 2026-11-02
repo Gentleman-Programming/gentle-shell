@@ -32,6 +32,11 @@ export interface SidebarRail extends Component {
 	 * one; explicit invalidateSidebar() stays for discrete state changes.
 	 */
 	digest?(): string;
+	/**
+	 * When this part is the whole rail (the fleet controller's lens panel),
+	 * renders it to fill the rail's height; `render` serves everywhere else.
+	 */
+	fill?(width: number, height: number): string[];
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;

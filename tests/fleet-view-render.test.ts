@@ -6,10 +6,12 @@ import {
 	FLEET_HINT_CONTEXTS,
 	renderFocalBar,
 	renderHintLine,
+	renderFleetColumn,
 	renderLensBar,
 	renderLensPanel,
 	renderObjectiveStrip,
 	renderStatusLine,
+	renderWelcomeCard,
 	type FleetViewTheme,
 } from "../lib/fleet-view-render.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -91,11 +93,14 @@ test("accent and bold mark only the focal item: the strip, the focal bar and the
 		assert.ok(weighted(parts.focal).length >= 1);
 		for (const line of weighted(parts.focal)) assert.match(line, /Your call → Invite links/);
 		assert.deepEqual(weighted(parts.panel).map((line) => line.includes("web-invite-flow")), [true], `${lens}/${density}`);
-		for (const part of [parts.lensBar, parts.status, parts.hints]) assert.deepEqual(weighted(part), []);
+		for (const part of [parts.status, parts.hints]) assert.deepEqual(weighted(part), []);
+		// The other weight is the active tab (T5-U3): its label and its underline.
+		assert.equal(weighted(parts.lensBar).length, 2);
+		assert.match(weighted(parts.lensBar)[0], new RegExp(lens.charAt(0).toUpperCase() + lens.slice(1)));
 	}
-	// With nothing focal, nothing carries the weight.
+	// With nothing focal, only the active tab carries the weight.
 	const calm = screen(quiet(), 180, "flows", "power");
-	for (const lines of Object.values(calm)) for (const line of lines) assert.ok(!line.includes(ACCENT) && !line.includes(BOLD), stripAnsi(line));
+	for (const [part, lines] of Object.entries(calm)) if (part !== "lensBar") for (const line of lines) assert.ok(!line.includes(ACCENT) && !line.includes(BOLD), stripAnsi(line));
 });
 
 test("the objective strip shows progress, next step and the focal item with then: N more", () => {
@@ -118,7 +123,7 @@ test("the focal bar asks the question with numbered options and the count that f
 });
 
 test("the lens bar names every lens with its key and the panel keeps one row per member", () => {
-	assert.equal(stripAnsi(renderLensBar("costs", 80, theme)[0]).trimEnd(), "lens: [f]lows [m]ap [$]costs [l]og");
+	assert.match(stripAnsi(renderLensBar("costs", 80, theme)[0]), /^ Flows {2}Map {2}Costs {2}Log +alt\+1-4$/);
 	const snapshot = inkwellFleet();
 	for (const lens of FLEET_LENSES) {
 		const text = renderLensPanel(lensRows(lens, "normal", snapshot), 180, theme, OPEN).map(stripAnsi);
@@ -148,11 +153,101 @@ test("the status line counts live members and the queue; the budget shows only i
 test("the hint line teaches the next key for the focused place", () => {
 	const queue = attentionQueue(inkwellFleet());
 	const hint = (context: (typeof FLEET_HINT_CONTEXTS)[number], density: (typeof FLEET_DENSITIES)[number] = "light") => stripAnsi(renderHintLine(context, queue, density, 180, theme)[0]);
-	assert.match(hint("input"), /tab your call .*enter send .*F1-F4 lenses .*F5 zoom .*alt\+m more detail: normal/);
+	assert.match(hint("input"), /tab your call .*enter send .*alt\+1-4 lenses .*alt\+z zoom .*alt\+m detail/);
+	for (const context of FLEET_HINT_CONTEXTS) for (const density of ["light", "power"] as const) assert.doesNotMatch(hint(context, density), /\bF\d/, `${context}/${density}`);
 	// Letter keys act only outside the input, so the input hint never offers them.
 	assert.doesNotMatch(hint("input"), /\? help|f m \$ l/);
-	assert.match(hint("input", "power"), /alt\+m less detail: light/);
+	assert.doesNotMatch(hint("input"), /more detail|the current task per member/, "the short hint");
 	assert.match(hint("focal"), /1-4 choose .*tab back to the conversation .*f m \$ l lenses .*z zoom .*\? help/);
 	assert.match(hint("lens"), /f m \$ l switch lens .*z zoom/);
 	assert.match(hint("zoom"), /z back to the conversation/);
+});
+
+// T5-U3 (design/fleet-tui/05-calm-deck.html): the deck renders from the first
+// frame, with an empty state in every part, and the permission mode lives in
+// the status line instead of a card.
+const EMPTY: FleetViewSnapshot = { title: null, objective: null, members: [], log: [] };
+
+test("an empty fleet invites the human to state the objective and says nothing needs them yet", () => {
+	const queue = attentionQueue(EMPTY);
+	const [objective, focal] = renderObjectiveStrip(objectiveProgress(EMPTY), queue, 180, theme).map(stripAnsi);
+	assert.equal(objective, "◎ No objective yet — tell the fleet what you want to achieve");
+	assert.equal(focal, "◌ Nothing needs you yet. No member is working yet.");
+	assert.deepEqual(renderFocalBar(queue, 180, theme), []);
+	assert.match(stripAnsi(renderStatusLine(fleetStatus(EMPTY, queue), "flows", "light", 180, theme)[0]), /^0 of 0 members live · nothing needs you +lens flows · density light$/);
+	// A stated objective without members keeps the progress strip.
+	const stated = { ...EMPTY, title: "Ship team workspaces" };
+	assert.match(stripAnsi(renderObjectiveStrip(objectiveProgress(stated), attentionQueue(stated), 180, theme)[0]), /^◎ Ship team workspaces · .*0% of the plan/);
+});
+
+test("each lens's empty state is one short, muted, centered line in light density", () => {
+	const expected = { flows: "No members yet", map: "No map yet", costs: "No spend yet", log: "No events yet" };
+	for (const lens of FLEET_LENSES) for (const width of [30, 46]) {
+		const lines = renderLensPanel(lensRows(lens, "light", EMPTY), width, theme);
+		const text = lines.map(stripAnsi).filter((line) => line.trim());
+		assert.deepEqual(text.map((line) => line.trim()), [expected[lens]], `${lens}@${width}`);
+		const pad = text[0].length - text[0].trimStart().length;
+		assert.ok(Math.abs(pad - (width - expected[lens].length - pad)) <= 1, `${lens}@${width} centered`);
+		for (const line of lines) assert.ok(visibleWidth(line) <= width && !line.includes(ACCENT));
+	}
+});
+
+test("the status line carries the controller's super-yolo as one segment; other modes add nothing", () => {
+	const line = (permission?: string) => stripAnsi(renderStatusLine(fleetStatus({ ...EMPTY, permission }), "flows", "light", 180, theme)[0]);
+	assert.match(line("super-yolo"), /^0 of 0 members live · nothing needs you · super-yolo: auto-approves guarded prompts +lens flows/);
+	for (const permission of [undefined, "normal", "yolo", "auto"]) assert.doesNotMatch(line(permission), /yolo|auto-approves/, String(permission));
+});
+
+test("the lens bar is a tab bar: four tabs, the active one selected in accent, an alt+1-4 hint, and an underline", () => {
+	const [tabs, rule] = renderLensBar("costs", 46, theme);
+	assert.match(stripAnsi(tabs), /^ Flows {2}Map {2}Costs {2}Log +alt\+1-4$/);
+	assert.equal(visibleWidth(tabs), 46);
+	assert.ok(tabs.includes(`\x1b[48;5;236m${BOLD}${ACCENT} Costs `), "the active tab: selected background, bold, accent");
+	assert.equal(stripAnsi(rule), `${"─".repeat(12)}${"━".repeat(7)}${"─".repeat(27)}`, "the rule underlines the active tab");
+	for (const width of [20, 30]) for (const line of renderLensBar("flows", width, theme)) assert.ok(visibleWidth(line) <= width);
+});
+
+test("the fleet column: title, objective with a slim gauge, the tab bar, a blank row, then the lens; filled to its height", () => {
+	const stated = inkwellFleet();
+	const lines = renderFleetColumn("flows", lensRows("flows", "light", stated), objectiveProgress(stated), 47, theme, 40);
+	assert.equal(lines.length, 40);
+	const text = lines.map(stripAnsi);
+	assert.ok(text.every((line) => line.startsWith("│ ")), "one edge and one column of padding on every row");
+	assert.equal(text[0].trimEnd(), "│ ✿ Fleet");
+	assert.equal(text[1].trimEnd(), "│ Team workspaces for Inkwell");
+	assert.match(text[2], /^│ [▰▱]{8} 0 of 5 fronts/);
+	assert.equal(text[3].trim(), "│");
+	assert.match(text[4], /^│ {2}Flows {2}Map/);
+	assert.match(text[5], /^│ ━+─+/);
+	assert.equal(text[6].trim(), "│");
+	assert.ok(text.some((line) => line.includes("web-invite-flow")));
+	for (const line of lines) assert.ok(visibleWidth(line) <= 47);
+	// Accent marks only the active tab and the focal member.
+	assert.deepEqual(lines.filter((line) => line.includes(ACCENT)).map((line) => stripAnsi(line).includes("Flows") || stripAnsi(line).includes("web-invite-flow") || /━/.test(stripAnsi(line))), lines.filter((line) => line.includes(ACCENT)).map(() => true));
+});
+
+test("an empty fleet column has no objective block and centers the lens's empty line in the space left", () => {
+	const lines = renderFleetColumn("map", lensRows("map", "light", EMPTY), objectiveProgress(EMPTY), 47, theme, 30).map(stripAnsi);
+	assert.equal(lines.length, 30);
+	assert.equal(lines[0].trimEnd(), "│ ✿ Fleet");
+	assert.equal(lines[1].trim(), "│");
+	assert.match(lines[2], /^│ {2}Flows {2}Map/);
+	const row = lines.findIndex((line) => line.includes("No map yet"));
+	assert.ok(row > 10 && row < 20, `vertically centered: row ${row}`);
+	// Taller content keeps every line; the rail scrolls.
+	assert.ok(renderFleetColumn("flows", lensRows("flows", "normal", inkwellFleet()), objectiveProgress(inkwellFleet()), 47, theme, 5).length > 5);
+});
+
+test("before the objective, a welcome card offers the first message: a sentence, example prompts and the keys", () => {
+	for (const width of [60, 120]) {
+		const lines = renderWelcomeCard(width, theme);
+		// The card wraps long lines; read it as words.
+		const text = lines.map(stripAnsi).join(" ").replace(/[│╭╮╰╯─]/g, " ").replace(/\s+/g, " ");
+		assert.match(text, /Start a fleet/);
+		assert.match(text, /Describe the objective; the fleet splits it into fronts and runs a member for each\./);
+		assert.match(text, /Ship team workspaces for Inkwell: API, web app and docs/);
+		assert.match(text, /Run my YouTube channel this week: script, edit, publish shorts/);
+		assert.match(text, /enter send · alt\+1-4 lenses · alt\+z zoom · alt\+m detail/);
+		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${stripAnsi(line)}`);
+	}
 });

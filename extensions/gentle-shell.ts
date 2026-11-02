@@ -24,6 +24,7 @@ import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } fr
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
+import { fleetRole } from "../lib/fleet-role.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
@@ -1676,6 +1677,7 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const USAGE_SHORTCUT_DEFAULT = "alt+u";
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
+const FLEET_HEADER_BRAND = "✿ Gentle Shell fleet";
 const SHA_PREFIX_LENGTH = 16;
 
 function messageText(content: string | Array<{ type: string; text?: string }>): string {
@@ -1796,6 +1798,9 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
+	// The fleet controller opens on its deck (odd/tasks/fleet-orchestrator.md
+	// T5-U3): the shell keeps its title row and prompt, the deck owns the rest.
+	const fleetController = fleetRole(env) === "controller";
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
@@ -2071,7 +2076,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let groupedChangesOwner: (width: number) => boolean = () => false;
 	const refreshVisual = () => {
 		visualSettings = resolveVisualSettings(animationOptions).settings;
-		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
+		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes && !fleetController, (width) => groupedChangesOwner(width));
 		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
@@ -2113,7 +2118,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const fingerprint = changesFingerprint(model);
 		if (fingerprint === shown) return;
 		shown = fingerprint;
-		showChanges(ctx, model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
+		showChanges(ctx, model, visualSettings.visibility.changes && !fleetController, (width) => groupedChangesOwner(width));
 	};
 	const gitForRoot = (root: string) => deps.gitRunner(root);
 	// Changes is the Git state of the session's roots that still exist: read
@@ -2299,7 +2304,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The header row carries everything that ticks every frame (model,
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
-			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+			const headerModel = () => buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden"));
+			const headerBar = (width: number) => renderShellHeaderChrome(fleetController ? { ...headerModel(), brand: FLEET_HEADER_BRAND } : headerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
 				render: (width) => headerBar(width).rows,
@@ -2365,7 +2371,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// thinking blocks remain Pi-owned; this changes only the supported loader UI.
 		// Inside Herdr the row stays: its native Pi detection reads it.
 		if (ownsPrompt && !keepNativeWorkingRow(env)) ctx.ui.setWorkingVisible(false);
-		const notice = deps.devBinary();
+		const notice = fleetController ? undefined : deps.devBinary();
 		ctx.ui.setWidget(
 			DEV_BINARY_WIDGET_KEY,
 			notice

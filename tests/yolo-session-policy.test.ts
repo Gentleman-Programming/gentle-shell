@@ -113,3 +113,29 @@ test("a normal session and the fleet controller still start in the saved default
 		assert.equal(await h.controller.mode(h.context("tui")), "super-yolo", String(role));
 	}
 });
+
+// T5-U3: the controller opens on the fleet deck, which shows the permission
+// mode in its own status line; the YOLO card above the editor stays out of it.
+// Statuses and every mode behavior are unchanged.
+test("the fleet controller paints no YOLO card; normal and member sessions keep theirs byte-identical", async () => {
+	const painted = async (role: string | undefined) => {
+		const h = savedDefaultHarness(role, "super-yolo");
+		const calls: unknown[] = [];
+		const ctx = { ...h.context("tui") } as unknown as Record<string, unknown>;
+		ctx.ui = { notify() {}, select: async () => "enable", setStatus: (key: string, text: unknown) => calls.push(["status", key, text]), setWidget: (key: string, lines: unknown) => calls.push(["widget", key, lines]) };
+		const mode = await h.controller.mode(ctx as unknown as ExtensionContext);
+		return { mode, calls };
+	};
+	const normal = await painted(undefined);
+	assert.deepEqual(normal.calls, [
+		["status", "gentle:yolo", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"],
+		["widget", "gentle:yolo", ["💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"]],
+		["status", "gentle:mode", "Permissions: SUPER-YOLO"],
+	]);
+	const controller = await painted("controller");
+	assert.equal(controller.mode, "super-yolo");
+	assert.deepEqual(controller.calls, normal.calls.filter(call => (call as unknown[])[0] !== "widget"));
+	const member = await painted("member");
+	// A member resolves NORMAL before painting anything, as before.
+	assert.deepEqual(member, { mode: "normal", calls: [] });
+});

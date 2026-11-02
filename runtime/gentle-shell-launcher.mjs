@@ -1125,6 +1125,9 @@ export function buildPiInvocation(input                        )               {
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
 	if (input.fleet === true) env[FLEET_ROLE_ENV] = "controller";
 	else delete env[FLEET_ROLE_ENV];
+	// The fleet opens on its own deck: no "Update Available" notice in it
+	// (Pi docs/environment-variables.md). Other launches keep what they inherit.
+	if (input.fleet === true) env.PI_SKIP_VERSION_CHECK = "1";
 
 	return { command: input.runtime.command, args, env };
 }

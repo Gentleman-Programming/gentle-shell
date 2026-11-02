@@ -1200,9 +1200,60 @@ test("a session without a fleet part paints the same rail as before the fleet se
 	assert.deepEqual(rail(f).render(50).map((line) => line.trimEnd()), ["                 ✿ Gentle Shell ✿", "", " Status", "", " jobs card", "", " agents card", "", " todo card"]);
 });
 
-test("a registered fleet part paints in the rail right after Status", (t) => {
+// T5-U3 (design/fleet-tui/05-calm-deck.html): in the fleet controller the
+// lens panel is the whole right column.
+test("a registered fleet part is the whole rail: no banner, Status, jobs, agents or todo", (t) => {
 	const f = railSections(true);
 	t.after(installSidebar(f.tui, theme));
-	const lines = rail(f).render(50).map((line) => line.trim()).filter(Boolean);
-	assert.deepEqual(lines.slice(1), ["Status", "Fleet lens", "jobs card", "agents card", "todo card"]);
+	assert.deepEqual(rail(f).render(50).map((line) => line.trimEnd()), [" Fleet lens"]);
+	assert.deepEqual(f.bottom.render(140), [], "Status paints nowhere while the rail is active");
+});
+
+// T5-U3: while the rail is active the objective strip heads the conversation
+// column and the lens column starts right under the title row; without the
+// rail the strip stays above the input.
+function fleetTop(f: ReturnType<typeof fixture>) {
+	return sidebarPart(f.tui, "fleet-top", { render: (_width: number) => ["strip above the input"], invalidate() {} }, { digest: () => "top", render: (width: number) => [`STRIP ${width}`, "FOCAL LINE"], invalidate() {} });
+}
+
+test("a fleet-top part heads the conversation column while the rail is active; the rail starts under the title row", (t) => {
+	for (const placement of ["top", "below-input"] as const) {
+		const f = railSections(true);
+		sidebarHeader(f.tui, { render: (available: number) => [`HEADER ${available}`], invalidate() {} });
+		const top = fleetTop(f);
+		t.after(installSidebar(f.tui, theme, () => "auto", () => placement));
+		const hstack = hstackOf(f);
+		if (placement === "top") assert.deepEqual((f.root[NODE]() as unknown as { entries: { component: Component }[] }).entries[0].component.render(180), ["HEADER 138"], "the title row alone");
+		const column = (hstack.entries[0].component as unknown as { [NODE](): { type: string; entries: { component: Component & { [NODE]?: unknown } }[] } })[NODE]();
+		assert.equal(column.type, "vstack");
+		assert.deepEqual(column.entries[0].component.render(87), ["STRIP 87", "FOCAL LINE"]);
+		assert.equal(typeof column.entries[1].component[NODE], "function", "the native transcript follows");
+		assert.deepEqual(top.render(80), [], `${placement}: the strip is not painted twice`);
+	}
+});
+
+test("without the rail the fleet-top part stays above the input and the header row is unchanged", (t) => {
+	const f = fixture("fullscreen", 100);
+	sidebarHeader(f.tui, { render: (available: number) => [`HEADER ${available}`], invalidate() {} });
+	const top = fleetTop(f);
+	t.after(installSidebar(f.tui, theme));
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.deepEqual(node.entries[0].component.render(100), ["HEADER 100"]);
+	assert.deepEqual(top.render(100), ["strip above the input"]);
+});
+
+test("a fleet part that fills gets the rail's height: the rows under the header and the strip", (t) => {
+	const f = railSections(true);
+	(f.host.terminal as { rows?: number }).rows = 40;
+	sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+	fleetTop(f);
+	const heights: number[] = [];
+	sidebarState(f.tui).parts.set("fleet", { digest: () => "fleet", render: () => ["short"], fill: (_width: number, height: number) => { heights.push(height); return Array.from({ length: height }, (_, i) => `lens ${i}`); }, invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	f.root[NODE]();
+	assert.deepEqual(heights, [39], "40 rows minus the header row: the column starts right under it");
+	assert.equal(railWithHeader(f).render(50).length, 39);
+	(f.host.terminal as { rows?: number }).rows = 30;
+	f.root[NODE]();
+	assert.deepEqual(heights, [39, 29], "a taller or shorter terminal fills again");
 });

@@ -30,6 +30,7 @@ type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
 	revision: number;
 	width: number;
+	rows?: number;
 	mode: string | undefined;
 	headerPlacement: HeaderPlacement;
 	cardStyle: CardStyle;
@@ -240,6 +241,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		const unchanged = prepared?.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
+			(!state.parts.has("fleet") || prepared.rows === tui.terminal.rows) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
 			railLines = prepared.lines;
@@ -254,21 +256,28 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const headerPart = state.parts.get("header");
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
+			// The fleet controller's deck (odd/tasks/fleet-orchestrator.md T5-U3):
+			// its lens column is the whole rail and fills the rows under the title
+			// row. Sessions without a "fleet" part paint as before.
+			const fleet = state.parts.has("fleet");
+			const shownHeader = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
+			const railRows = fleet ? Math.max(0, (tui.terminal.rows ?? 0) - shownHeader.length) : 0;
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "fleet", "jobs", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const sections = (fleet ? ["fleet"] : ["footer", "jobs", "agents", "todo"]).filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
 					return { key, component, lines: [] as string[] };
 				}
-				const digest = digestByPart.get(key);
+				const fill = fleet ? (component as SidebarRail).fill : undefined;
+				const digest = fill && digestByPart.get(key) !== undefined ? `${digestByPart.get(key)}@${railRows}` : digestByPart.get(key);
 				const existing = sectionCache.get(key);
 				// Sections paint their card chrome in the active style, which their
 				// own digests do not track, so a style switch must re-render them.
 				const reusable = existing?.component === component && existing.contentWidth === contentWidth && existing.cardStyle === style && existing.theme === theme && existing.themeSignature === signature &&
 					(digest !== undefined ? existing.digest === digest : existing.digest === undefined && existing.revision === cache.revision);
 				const lines = reusable ? existing.lines : (() => {
-					const rendered = [...(component.render(contentWidth - RAIL_PADDING * 2) ?? [])];
+					const rendered = [...((fill && railRows > 0 ? fill.call(component, contentWidth - RAIL_PADDING * 2, railRows) : component.render(contentWidth - RAIL_PADDING * 2)) ?? [])];
 					while (rendered.length && rendered[rendered.length - 1]?.trim() === "") rendered.pop();
 					return rendered;
 				})();
@@ -277,7 +286,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
 			// The header carries the brand once it is active; the banner is the
 			// rail's fallback identity when no header is wired up.
-			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
+			const branding = headerActive || fleet ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
 			railLines = [];
 			if (sections.length && branding.length) {
@@ -297,8 +306,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			headerLines = shownHeader;
+			prepared = { revision: cache.revision, width, rows: tui.terminal.rows, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -352,11 +361,18 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already
 			// recurses into a nested layout via [NODE].
+			// The fleet deck's objective strip heads the conversation column, so
+			// the lens column starts right under the title row (T5-U3).
+			const fleetTop: Component = { render: (columnWidth) => [...(state.parts.get("fleet-top")?.render(columnWidth) ?? [])], invalidate() {} };
+			const fleetColumn = { render: () => [], invalidate() {}, [NODE]: (): LayoutNode => ({ type: "vstack", gap: 0, align: "stretch", entries: [
+				{ component: fleetTop, basis: "auto", grow: 0, shrink: 0, minSize: 0 },
+				{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+			] }) };
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
 				[NODE]: () => ({ type: "hstack", gap: GAP, align: "stretch", entries: [
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: state.parts.has("fleet-top") ? fleetColumn : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),
 			};

@@ -5695,6 +5695,42 @@ test("gentleShell keeps a dev-binary override visible above the editor for the w
 	assert.deepEqual(factory(fakeTui, plainTheme).render(0), [""], "zero width keeps only the spacer");
 });
 
+// odd/tasks/fleet-orchestrator.md T5-U3: the fleet controller opens on its
+// deck (design/fleet-tui/05-calm-deck.html), so the shell keeps only its title
+// row there; normal sessions and fleet members paint exactly what they did.
+test("the fleet controller gets no dev-binary card or Changes widget and a fleet brand; normal and member sessions are unchanged", async () => {
+	const screen = async (role: string | undefined) => {
+		const { pi, handlers } = fakePi([{ numstat: "2\t0\tlib/b.ts\n", porcelain: " M lib/b.ts\0" }]);
+		gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off", ...(role ? { GENTLE_SHELL_FLEET_ROLE: role } : {}) }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0, devBinary: () => ({ state: "active" as const, path: "/Users/me/go/bin/gentle-ai", sha256: "6e53bfc6305a3949deadbeef" }) });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const devCard = ui.widgets.has("gentle-shell-dev-binary");
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+		const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, {
+			getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+		});
+		try {
+			const header = sidebarState(tui as unknown as TUI).parts.get("header")!.render(178).map(stripAnsi);
+			await fire(handlers, "agent_end", ctx);
+			await changesSettled();
+			const changes = ui.widgets.has("gentle-shell-changes");
+			await fire(handlers, "session_shutdown", ctx);
+			return { devCard, changes, header };
+		} finally { footer.dispose(); }
+	};
+	const normal = await screen(undefined);
+	assert.equal(normal.devCard, true);
+	assert.equal(normal.changes, true);
+	assert.match(normal.header[0], /^\s*✿ Gentle Shell /);
+	assert.deepEqual(await screen("member"), normal, "a member is byte-identical to a normal session");
+	const controller = await screen("controller");
+	assert.equal(controller.devCard, false);
+	assert.equal(controller.changes, false);
+	assert.match(controller.header[0], /^\s*✿ Gentle Shell fleet /);
+	const words = (line: string) => line.replace(/\s+/g, " ");
+	assert.equal(words(controller.header[0]).replace("✿ Gentle Shell fleet", "✿ Gentle Shell"), words(normal.header[0]), "only the brand differs in the title row");
+});
+
 test("gentle:commands registers alt+k by default", () => {
 	const { pi, shortcuts } = fakePi();
 	gentleShell(pi, {});

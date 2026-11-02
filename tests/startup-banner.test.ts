@@ -10,10 +10,12 @@ import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 
 // The banner reads process.env directly; a suite launched from a delegated
-// child must still exercise the parent paths (gentle-shell#1690).
+// child or a fleet session must still exercise the parent paths (gentle-shell#1690).
 delete process.env.GENTLE_PI_AGENTS_CHILD;
+delete process.env[FLEET_ROLE_ENV];
 
 test("startup artwork spells Gentle Shell with aligned animation spans", () => {
 	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
@@ -436,13 +438,23 @@ test("launcher-injected extension directories do not suppress the startup banner
 
 // gentle-shell#1690: a delegated rpc child has hasUI=true; only a piped stdout
 // without rows/columns kept the banner off before the explicit child guard.
-test("delegated children never paint the startup banner", async (t) => {
-	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
-	process.env.GENTLE_PI_AGENTS_CHILD = "1";
-	t.after(() => {
-		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
-		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
-	});
+// odd/tasks/fleet-orchestrator.md T5-U3: the fleet controller opens on its
+// own deck (design/fleet-tui/05-calm-deck.html), never on the banner; members
+// and normal sessions keep it.
+for (const [label, key, value, painted] of [
+	["delegated children never paint", "GENTLE_PI_AGENTS_CHILD", "1", 0],
+	["the fleet controller never paints", FLEET_ROLE_ENV, "controller", 0],
+	["a fleet member still paints", FLEET_ROLE_ENV, "member", 1],
+	["a normal session paints", undefined, undefined, 1],
+] as const) test(`${label} the startup banner`, async (t) => {
+	if (key) {
+		const previous = process.env[key];
+		process.env[key] = value;
+		t.after(() => {
+			if (previous === undefined) delete process.env[key];
+			else process.env[key] = previous;
+		});
+	}
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-child-"));
 	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
 	process.env.GENTLE_PI_CONFIG_HOME = home;
@@ -473,7 +485,7 @@ test("delegated children never paint the startup banner", async (t) => {
 	let headers = 0;
 	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: () => { headers++; } } });
 	t.mock.timers.tick(50);
-	assert.equal(headers, 0);
+	assert.equal(headers, painted);
 });
 
 // S9: the config home each of these reads resolves, per case. The OS home is

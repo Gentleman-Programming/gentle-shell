@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { PassThrough } from "node:stream";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import gentleFleet, { FLEET_DIGEST_MESSAGE_TYPE, FLEET_WAKE_WINDOW_MS, type FleetDeps } from "../extensions/gentle-fleet.ts";
 import { DEFAULT_MAX_LIVE_MEMBERS } from "../lib/fleet-config.ts";
 import type { FleetLedgerState } from "../lib/fleet-ledger.ts";
@@ -14,6 +15,7 @@ import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -75,8 +77,10 @@ function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 	let editorText = "";
 	let entriesRead = 0;
 	let renders = 0;
-	// The prompt editor has the focus unless a test moves it to a dialog.
+	// The prompt editor has the focus unless a test moves it to a dialog; like
+	// Pi, an overlay takes the focus while it is open.
 	const editor = { getText: () => editorText, isShowingAutocomplete: () => false };
+	const dialog = { kind: "dialog" };
 	let focused: unknown = editor;
 	const tui = { requestRender: () => { renders += 1; }, getFocusedComponent: () => focused, terminal: { rows: 40, columns: 100 } };
 	const ctx = {
@@ -85,7 +89,12 @@ function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 		mode: "tui",
 		isIdle: () => true,
 		ui: {
-			setWidget: (key: string, content: unknown, options?: unknown) => { widgets.set(key, content); placements.set(key, options); },
+			// Like Pi's TUI, a widget factory is mounted when it is set.
+			setWidget: (key: string, content: unknown, options?: unknown) => {
+				widgets.set(key, content);
+				placements.set(key, options);
+				if (typeof content === "function") content(tui, plainTheme);
+			},
 			setStatus() {},
 			notify: (message: string, level: string) => notices.push([message, level]),
 			onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
@@ -96,7 +105,9 @@ function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 			setEditorText: (text: string) => { editorText = text; },
 			custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => unknown, options: unknown) => new Promise(resolve => {
 				const overlay = { component: undefined as never, options, closed: false };
-				overlay.component = factory(tui, plainTheme, {}, value => { overlay.closed = true; resolve(value); }) as never;
+				const before = focused;
+				overlay.component = factory(tui, plainTheme, {}, value => { overlay.closed = true; focused = before; resolve(value); }) as never;
+				focused = overlay.component;
 				overlays.push(overlay);
 			}),
 		},
@@ -124,7 +135,8 @@ function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 	return {
 		ctx, widgets, placements, notices, inputs, overlays, render, press, type,
 		setEditor: (text: string) => { editorText = text; },
-		focusDialog: () => { focused = {}; },
+		/** Pi focuses a dialog when it opens; the relay's own dialog by default. */
+		focusDialog: (component: unknown = dialog) => { focused = component; },
 		focusEditor: () => { focused = editor; },
 		entriesRead: () => entriesRead,
 		renders: () => renders,
@@ -1012,7 +1024,9 @@ test("a grant never lets the fleet answer a protected dialog", async () => {
 
 // --- T5-U2 (S1, S4, S7): the calm deck in the controller TUI.
 
-const F1 = "\x1bOP", F2 = "\x1bOQ", F3 = "\x1bOR", F4 = "\x1bOS", F5 = "\x1b[15~", ALT_M = "\x1bm", TAB = "\t";
+// The deck's keys from anywhere (user, T5-U3): alt+1-4 lenses, alt+z zoom, alt+m density.
+const ALT_1 = "\x1b1", ALT_2 = "\x1b2", ALT_3 = "\x1b3", ALT_4 = "\x1b4", ALT_Z = "\x1bz", ALT_M = "\x1bm", TAB = "\t";
+const FUNCTION_KEYS = ["\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS", "\x1b[15~"];
 
 async function deckFleet(options: HarnessOptions = {}) {
 	const h = harness(controllerEnv, options);
@@ -1020,8 +1034,14 @@ async function deckFleet(options: HarnessOptions = {}) {
 	const asked: Array<{ title: string; options?: string[]; signal?: AbortSignal }> = [];
 	const ui = view.ctx.ui as unknown as Record<string, unknown>;
 	// The human has not answered the open dialog yet.
-	ui.select = (title: string, choices: string[], opts?: { signal?: AbortSignal }) => { asked.push({ title, options: choices, signal: opts?.signal }); return new Promise(() => {}); };
-	ui.confirm = (title: string, _message: string, opts?: { signal?: AbortSignal }) => { asked.push({ title, signal: opts?.signal }); return new Promise(() => {}); };
+	// Like Pi, the open dialog has the focus until it closes.
+	const open = (signal?: AbortSignal) => {
+		view.focusDialog();
+		signal?.addEventListener("abort", () => view.focusEditor(), { once: true });
+		return new Promise(() => {});
+	};
+	ui.select = (title: string, choices: string[], opts?: { signal?: AbortSignal }) => { asked.push({ title, options: choices, signal: opts?.signal }); return open(opts?.signal); };
+	ui.confirm = (title: string, _message: string, opts?: { signal?: AbortSignal }) => { asked.push({ title, signal: opts?.signal }); return open(opts?.signal); };
 	await h.fire("session_start", view.ctx);
 	await h.tools.get("fleet_objective")!.execute("o", { title: `deck-${harnesses}`, objective: "Ship team workspaces." }, undefined, undefined, view.ctx);
 	await spawnMember(h, view.ctx, "web-invites", { worktree: false });
@@ -1037,14 +1057,18 @@ test("in the TUI the deck replaces the one-line widget: strip and focal bar abov
 	const d = await deckFleet();
 	assert.equal(typeof d.widgets.get("gentle-fleet"), "function", "a component, not digest lines");
 	assert.deepEqual(d.placements.get("gentle-fleet"), { placement: "aboveEditor" });
+	assert.deepEqual(d.placements.get("gentle-fleet-top"), { placement: "aboveEditor" });
 	assert.deepEqual(d.placements.get("gentle-fleet-status"), { placement: "belowEditor" });
-	assert.match(d.render("gentle-fleet")[0], /◎ deck-\d+ · .* 0% of the plan · 0 of 1 fronts done/);
-	assert.match(d.render("gentle-fleet")[1], /Nothing needs you/);
+	assert.deepEqual([...d.widgets.keys()].filter(key => key.startsWith("gentle-fleet")), ["gentle-fleet-top", "gentle-fleet-lens", "gentle-fleet", "gentle-fleet-status"], "strip, lens fallback, focal bar, then below the input");
+	assert.match(d.render("gentle-fleet-top")[0], /◎ deck-\d+ · .* 0% of the plan · 0 of 1 fronts done/);
+	assert.match(d.render("gentle-fleet-top")[1], /Nothing needs you/);
+	assert.deepEqual(d.render("gentle-fleet"), [], "no focal item: no focal bar");
 	const lens = d.render("gentle-fleet-lens").join("\n");
-	assert.match(lens, /lens: \[f\]lows \[m\]ap \[\$\]costs \[l\]og/);
+	assert.match(lens, /Flows {2}Map {2}Costs {2}Log +alt\+1-4/);
 	assert.match(lens, /● web-invites/);
 	assert.match(d.status(), /1 of 1 members live · nothing needs you .*lens flows · density light/);
-	assert.match(d.status(), /enter send .*F1-F4 lenses .*F5 zoom .*alt\+m more detail/);
+	assert.match(d.status(), /enter send .*alt\+1-4 lenses .*alt\+z zoom .*alt\+m detail/);
+	assert.doesNotMatch(d.status(), /\bF\d/, "no function keys in the hints");
 });
 
 test("member changes refresh the deck coalesced: many events, one snapshot per render", async () => {
@@ -1063,22 +1087,24 @@ test("member changes refresh the deck coalesced: many events, one snapshot per r
 	assert.match(d.status(), /1 of 1 members live/);
 });
 
-test("F1-F4 switch the lens, alt+m cycles the density, F5 zooms and z or F5 closes the zoom", async () => {
+test("alt+1-4 switch the lens, alt+m cycles the density, alt+z zooms and z or alt+z closes the zoom; F-keys do nothing", async () => {
 	const d = await deckFleet();
-	assert.deepEqual(d.press(F2), [true]);
+	assert.deepEqual(d.press(...FUNCTION_KEYS), FUNCTION_KEYS.map(() => false));
+	assert.equal(d.overlays.length, 0);
+	assert.deepEqual(d.press(ALT_2), [true]);
 	assert.match(d.status(), /lens map · density light/);
-	d.press(F3);
+	d.press(ALT_3);
 	assert.match(d.render("gentle-fleet-lens").join("\n"), /\$0\.00/, "the costs lens shows spend");
-	d.press(F4, F1);
+	d.press(ALT_4, ALT_1);
 	assert.match(d.status(), /lens flows/);
 	d.press(ALT_M);
 	assert.match(d.status(), /density normal/);
 	d.press(ALT_M, ALT_M);
 	assert.match(d.status(), /density light/, "power wraps back to light");
-	assert.deepEqual(d.press(F5), [true]);
+	assert.deepEqual(d.press(ALT_Z), [true]);
 	assert.equal(d.overlays.length, 1);
 	assert.deepEqual(d.overlays[0].options, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } });
-	assert.match(d.overlays[0].component.render(100).join("\n"), /lens: \[f\]lows.*\n[\s\S]*web-invites/);
+	assert.match(d.overlays[0].component.render(100).join("\n"), /Flows {2}Map.*\n[\s\S]*web-invites/);
 	assert.match(d.status(), /z back to the conversation/);
 	// Inside the zoom, letters switch the lens.
 	assert.deepEqual(d.press("m"), [true]);
@@ -1086,8 +1112,8 @@ test("F1-F4 switch the lens, alt+m cycles the density, F5 zooms and z or F5 clos
 	assert.deepEqual(d.press("z"), [true]);
 	assert.equal(d.overlays[0].closed, true);
 	await d.settle();
-	d.press(F5);
-	d.press(F5);
+	d.press(ALT_Z);
+	d.press(ALT_Z);
 	assert.equal(d.overlays[1].closed, true, "the zoom key closes it too");
 });
 
@@ -1132,7 +1158,8 @@ test("1-4 on a relayed dialog forward the human's choice through the relay, once
 	d.h.runTimers();
 	const ledger = readLedger(d.h);
 	assert.ok(ledger.log.some(entry => entry.kind === "answer" && /human answered \(relayed by the fleet\) "Authorize cross-orchestrator message to peer\? Reason: sync": Deny/.test(entry.text)), JSON.stringify(ledger.log));
-	assert.match(d.render("gentle-fleet").join("\n"), /Nothing needs you/);
+	assert.deepEqual(d.render("gentle-fleet"), [], "the focal bar leaves");
+	assert.match(d.render("gentle-fleet-top").join("\n"), /Nothing needs you/);
 	assert.deepEqual(d.h.userMessages, [], "a relayed answer never goes to the fleet model");
 });
 
@@ -1149,7 +1176,8 @@ test("fleet_answer escalate brings a member question to the deck; the human's ch
 	assert.equal(d.h.userMessages.length, 1);
 	assert.match(String(d.h.userMessages[0].content), /^The human answered web-invites's escalated question q1 \("Invite links expire after\?"\): 30 days\. Answer the member with fleet_answer\.$/);
 	assert.deepEqual(d.responses(), [], "the fleet, not the deck, answers the member");
-	assert.match(d.render("gentle-fleet").join("\n"), /Nothing needs you/);
+	assert.deepEqual(d.render("gentle-fleet"), [], "the focal bar leaves");
+	assert.match(d.render("gentle-fleet-top").join("\n"), /Nothing needs you/);
 	await d.h.tools.get("fleet_answer")!.execute("a", { name: "web-invites", answer: "30 days" }, undefined, undefined, d.ctx);
 	d.h.runTimers();
 	assert.deepEqual(readLedger(d.h).escalations, []);
@@ -1204,4 +1232,157 @@ test("without the deck (rpc) fleet_answer escalate is refused and the question s
 	assert.equal(result.content[0].text, "Error: the human has no fleet deck in this mode; ask them with ask_user_question or ask_user_choice.");
 	assert.deepEqual(f.h.userMessages, []);
 	assert.match((await f.answer({ answer: "yes" })).content[0].text, /^Answered/);
+});
+
+// --- T5-U3 (S1, S4, S7): the deck is the controller's whole screen from the
+// first frame (design/fleet-tui/05-calm-deck.html), empty fleet included.
+
+test("the deck renders from the first frame of an empty fleet: invitation, nothing needs you yet, empty lenses", async () => {
+	const h = harness();
+	const view = fakeContext();
+	await h.fire("session_start", view.ctx);
+	const welcome = view.render("gentle-fleet-top").join("\n");
+	assert.match(welcome, /Start a fleet[\s\S]*Describe the objective[\s\S]*Ship team workspaces for Inkwell/);
+	assert.doesNotMatch(welcome, /◎/, "no objective strip before the objective");
+	assert.deepEqual(view.render("gentle-fleet"), []);
+	for (const [key, empty] of [[ALT_1, /No members yet/], [ALT_2, /No map yet/], [ALT_3, /No spend yet/], [ALT_4, /No events yet/]] as const) {
+		view.press(key);
+		assert.match(view.render("gentle-fleet-lens").join("\n"), empty);
+	}
+	assert.match(view.render("gentle-fleet-status")[0], /^0 of 0 members live · nothing needs you +lens log · density light$/);
+});
+
+test("the controller's super-yolo is one segment of the status line; normal adds none", async () => {
+	for (const [mode, segment] of [["super-yolo", true], ["normal", false], ["yolo", false]] as const) {
+		const h = harness(controllerEnv, { permissionMode: async () => mode });
+		const view = fakeContext();
+		await h.fire("session_start", view.ctx);
+		await tick();
+		const status = view.render("gentle-fleet-status")[0];
+		assert.equal(/· super-yolo: auto-approves guarded prompts/.test(status), segment, `${mode}: ${status}`);
+	}
+});
+
+test("on the fullscreen rail the lens card is the fleet part and the objective strip is the fleet-top part", async () => {
+	const h = harness();
+	const view = fakeContext();
+	await h.fire("session_start", view.ctx);
+	const tui = { requestRender() {}, getFocusedComponent: () => undefined, terminal: { rows: 40, columns: 180 } } as unknown as TUI;
+	(view.widgets.get("gentle-fleet-top") as (tui: TUI, theme: unknown) => unknown)(tui, plainTheme);
+	(view.widgets.get("gentle-fleet-lens") as (tui: TUI, theme: unknown) => unknown)(tui, plainTheme);
+	const parts = sidebarState(tui).parts;
+	assert.match(parts.get("fleet")!.render(48).join("\n"), /✿ Fleet[\s\S]*Flows {2}Map {2}Costs {2}Log[\s\S]*No members yet/);
+	const fill = (parts.get("fleet") as { fill?(width: number, height: number): string[] }).fill;
+	assert.equal(fill?.(48, 33).length, 33, "the lens card fills the rail's height");
+	assert.match(parts.get("fleet-top")!.render(120).join("\n"), /Start a fleet/);
+	await h.tools.get("fleet_objective")!.execute("o", { title: "Ship team workspaces", objective: "API, web app and docs." }, undefined, undefined, view.ctx);
+	assert.match(parts.get("fleet-top")!.render(120)[0], /◎ Ship team workspaces/, "the objective strip replaces the welcome card");
+	assert.match(parts.get("fleet")!.render(48).join("\n"), /✿ Fleet\s*\n.*Ship team workspaces\s*\n.*[▰▱]{8} 0 of 0 fronts/);
+});
+
+// Verifier B on c5ff132d4 (Risk item 2): focal mode belongs to the component
+// that had the keys when it began; a dialog opened over it gets every key.
+test("verifier B: a dialog opened over focal mode on a relayed protected dialog gets every key and approves nothing", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "p1", ...MESSAGING });
+	await d.settle();
+	assert.deepEqual(d.press(TAB), [true], "the relay dialog has the keys: focal mode starts");
+	d.focusDialog({ kind: "ask_user_question input" });
+	assert.deepEqual(d.type("1 week"), [false, false, false, false, false, false]);
+	await d.settle();
+	assert.deepEqual(d.responses(), [], "nothing is written to the member");
+	assert.equal(d.asked[0].signal?.aborted, false, "the relay dialog stays open");
+	assert.match(d.status(), /tab your call/, "focal mode ended");
+});
+
+test("verifier B: a dialog opened over focal mode on an escalation sends no fabricated answer", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Invite links expire after?", options: ["7 days", "30 days"] });
+	await d.settle();
+	await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	assert.deepEqual(d.press(TAB), [true]);
+	d.focusDialog({ kind: "ask_user_question input" });
+	assert.deepEqual(d.type("1 hour"), [false, false, false, false, false, false]);
+	await d.settle();
+	assert.deepEqual(d.h.userMessages, [], "no answer reaches the fleet");
+	assert.deepEqual(d.responses(), []);
+	assert.match(d.render("gentle-fleet").join("\n"), /Your call → Invite links expire after\?/, "the question still waits for the human");
+});
+
+test("verifier B: letters typed in a dialog over focal mode or the zoom keep every character", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Ship today?", options: ["Yes", "No"] });
+	await d.settle();
+	await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	d.press(TAB);
+	d.focusDialog({ kind: "input" });
+	assert.deepEqual(d.type("fine"), [false, false, false, false]);
+	assert.match(d.status(), /lens flows/);
+	d.focusEditor();
+	d.press(ALT_Z);
+	d.focusDialog({ kind: "input over the zoom" });
+	assert.deepEqual(d.type("map zoom"), [false, false, false, false, false, false, false, false]);
+	assert.match(d.status(), /lens flows/);
+	assert.equal(d.overlays[0].closed, false);
+});
+
+test("verifier B: focal mode on the relay dialog ends when that dialog closes", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "p1", ...MESSAGING });
+	await d.settle();
+	d.press(TAB);
+	// The human answers in the dialog itself; Pi gives the keys back to the editor.
+	d.focusEditor();
+	assert.deepEqual(d.press("1"), [false]);
+	assert.deepEqual(d.responses(), []);
+});
+
+// Verifier advisories on c5ff132d4, folded into the same correction.
+test("advisory 1: fleet_spawn refuses an objective that starts with a slash command and spawns nothing", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	for (const objective of ["/gentle:review-mode disable", "  /gentle:telemetry enable"]) {
+		const result = await spawnMember(h, ctx, "web", { objective, worktree: false });
+		assert.equal(result.content[0].text, "Error: fleet_spawn sends instructions, not slash commands.");
+	}
+	assert.equal(h.children.length, 0);
+	assert.match((await spawnMember(h, ctx, "web", { objective: "Wire the /api/invites route", worktree: false })).content[0].text, /web/);
+	assert.equal(h.children.length, 1);
+});
+
+test("advisory 2: in focal mode a digit past the options, or a key the bar does not use, leaves focal mode untouched", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Ship today?", options: ["Yes", "No"] });
+	await d.settle();
+	await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	for (const key of ["3", "x"]) {
+		assert.deepEqual(d.press(TAB), [true], key);
+		assert.deepEqual(d.press(key), [false], `${key} reaches the input`);
+		assert.match(d.status(), /tab your call .*enter send/, `${key} ends focal mode`);
+	}
+	assert.deepEqual(d.h.userMessages, []);
+});
+
+test("advisory 3: escape leaves focal mode and never reaches the editor as Pi's interrupt", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Ship today?", options: ["Yes", "No"] });
+	await d.settle();
+	await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	d.press(TAB);
+	assert.deepEqual(d.press("\x1b"), [true]);
+	assert.match(d.status(), /tab your call .*enter send/);
+	assert.deepEqual(d.press("\x1b"), [false], "outside focal mode escape is Pi's");
+});
+
+test("alt+1-4 switch the lens from the input and every typed character still reaches the editor", async () => {
+	const d = await deckFleet();
+	for (const [key, lens] of [["\x1b2", "map"], ["\x1b3", "costs"], ["\x1b4", "log"], ["\x1b1", "flows"]] as const) {
+		assert.deepEqual(d.press(key), [true], lens);
+		assert.match(d.status(), new RegExp(`lens ${lens} · density light`));
+	}
+	d.setEditor("");
+	assert.ok(d.type("1 fix map 2 costs").every(consumed => !consumed));
+	assert.match(d.status(), /lens flows/);
+	assert.match(d.status(), /alt\+1-4 lenses/);
 });

@@ -79,6 +79,8 @@ export interface FleetMemberOptions {
 	name: string;
 	objective?: string;
 	launch: MemberLaunch;
+	/** The member's own worktree and branch when it works in a git repository. */
+	worktree?: { path: string; branch: string };
 	spawn: Spawn;
 	schedule(fn: () => void, ms: number): () => void;
 	process?: ProcessControl;
@@ -242,6 +244,8 @@ export class FleetMember {
 	detail(): string {
 		const lines = [this.digest()];
 		if (this.objective) lines.push(`objective: ${oneLine(this.objective, DETAIL_FIELD_MAX)}`);
+		const worktree = this.options.worktree;
+		if (worktree) lines.push(`worktree: ${worktree.path} (branch ${worktree.branch})`);
 		if (this.prefixTokens !== undefined) lines.push(`prefix ${tokens(this.prefixTokens)} tok`);
 		for (const dialog of this.dialogs) {
 			const choices = dialog.options?.length ? ` [${dialog.options.map(option => oneLine(option, 40)).join(" | ")}]` : "";

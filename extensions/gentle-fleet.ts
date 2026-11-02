@@ -4,19 +4,23 @@ import os from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
+import { readFleetConfig } from "../lib/fleet-config.ts";
 import { FleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
 import { buildMemberLaunch, FleetMember, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
+import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
 
-// Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1). Active only
-// in the session `gentle-shell orchestrator` starts: it spawns full headless
-// Gentle Shell members, tracks them in code, keeps the fleet ledger and its
-// general document current by code, and wakes the controller model with one
-// coalesced digest when a member settles, asks or exits.
+// Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1, F3). Active
+// only in the session `gentle-shell orchestrator` starts: it spawns full
+// headless Gentle Shell members (each git member in its own worktree), tracks
+// them in code, keeps the fleet ledger and its general document current by
+// code, and wakes the controller model with one coalesced digest when a member
+// settles, asks or exits. The human's fleet.json sets the live-member limit
+// and optional budgets; crossed budget thresholds ride the next digest.
 
-export const FLEET_MEMBER_CAP = 3;
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
 const WIDGET_KEY = "gentle-fleet";
@@ -24,6 +28,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const FLEET_INSPECT_LINES = 40;
 const INSPECT_LINES_MAX = 200;
 const LOG_TEXT_MAX = 120;
+// Budget thresholds in percent, highest first: a jump past both warns once.
+const BUDGET_THRESHOLDS = [100, 80];
 
 // Live E2E (L8): the controller prefix is mostly tool schemas, and peer/session
 // tools invited needless calls. The controller only coordinates, reads and
@@ -44,6 +50,9 @@ export interface FleetDeps {
 	now?(): Date;
 	/** Atomic text write for the ledger and the fleet document. */
 	writeFile?(path: string, text: string): void;
+	/** gentle-pi config home holding the human's fleet.json. */
+	configHome?: string;
+	git: GitExec;
 }
 
 const defaultDeps = (): FleetDeps => ({
@@ -54,6 +63,7 @@ const defaultDeps = (): FleetDeps => ({
 		return () => clearTimeout(timer);
 	},
 	home: os.homedir(),
+	git: runGit,
 });
 
 function text(value: string, details: Record<string, unknown> = {}) {
@@ -67,6 +77,15 @@ function oneLine(value: string, max: number): string {
 
 function questionLine(dialog: { title: string; options?: string[] }): string {
 	return `${dialog.title}${dialog.options?.length ? ` [${dialog.options.join(" | ")}]` : ""}`;
+}
+
+/** The highest threshold `spent` newly reaches; marks it and every lower one seen. */
+function crossedThreshold(spent: number, budget: number | undefined, seen: Set<number>): number | undefined {
+	if (budget === undefined) return undefined;
+	const hit = BUDGET_THRESHOLDS.find(threshold => spent >= budget * threshold / 100);
+	if (hit === undefined || seen.has(hit)) return undefined;
+	for (const threshold of BUDGET_THRESHOLDS) if (threshold <= hit) seen.add(threshold);
+	return hit;
 }
 
 function ledgerFields(member: FleetMember): FleetMemberFields {
@@ -84,6 +103,10 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	if (fleetRole(env) !== "controller") return;
 	const deps: FleetDeps = { ...defaultDeps(), ...overrides };
 	const agentHome = resolveAgentHomeDirectory({ env, home: deps.home, agentHome: overrides.agentHome, homeOverridden: overrides.home !== undefined });
+	// Read at load for the tool description, again at session start and before
+	// every spawn so the human's edits apply without a restart.
+	const configHome = deps.configHome ?? gentlePiConfigHome(env);
+	let config = readFleetConfig(configHome);
 	const members = new Map<string, FleetMember>();
 	let ctxRef: ExtensionContext | undefined;
 	let fleetSessionId = "unknown";
@@ -92,6 +115,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let closed = false;
 	let ledger: FleetLedger | undefined;
 	let reportedWriteError = false;
+	// Budget state of this fleet session: spend of members replaced by a
+	// respawn, thresholds already warned, warnings waiting for the next digest.
+	let retiredCost = 0;
+	const fleetThresholds = new Set<number>();
+	const memberThresholds = new WeakMap<FleetMember, Set<number>>();
+	const pendingBudget: string[] = [];
 
 	const ensureLedger = (cwd: string) => ledger ??= new FleetLedger({
 		fleetSessionId,
@@ -108,8 +137,25 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 
 	const isCurrent = (member: FleetMember) => members.get(member.name) === member;
+	const fleetSpend = () => [...members.values()].reduce((sum, member) => sum + member.usage.cost, retiredCost);
+	const warnBudget = (member: string | null, text: string) => {
+		pendingBudget.push(text);
+		ledger?.budgetWarning(member, text);
+	};
+	// Cost is information (L15): a crossed threshold is reported once, nothing stops.
+	const checkBudgets = (member: FleetMember) => {
+		const seen = memberThresholds.get(member) ?? new Set<number>();
+		memberThresholds.set(member, seen);
+		const memberHit = crossedThreshold(member.usage.cost, config.memberBudgetUsd, seen);
+		if (memberHit !== undefined) warnBudget(member.name, `member ${member.name} spent $${member.usage.cost.toFixed(2)} of its $${config.memberBudgetUsd!.toFixed(2)} budget (${memberHit}%)${memberHit === 100 ? "; it keeps working" : ""}`);
+		const spent = fleetSpend();
+		const fleetHit = crossedThreshold(spent, config.fleetBudgetUsd, fleetThresholds);
+		if (fleetHit !== undefined) warnBudget(null, `fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd!.toFixed(2)} budget (${fleetHit}%)${fleetHit === 100 ? "; fleet_spawn refuses new members" : ""}`);
+	};
 	const track = (member: FleetMember) => {
-		if (isCurrent(member)) ledger?.update(member.name, ledgerFields(member));
+		if (!isCurrent(member)) return;
+		ledger?.update(member.name, ledgerFields(member));
+		checkBudgets(member);
 	};
 
 	// Only ever removes tools: another extension may have disabled one of the
@@ -142,6 +188,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				if (event.kind === "exit") lines.push(`  exited (code ${event.code ?? "none"}${event.signal ? `, ${event.signal}` : ""})`);
 			}
 		}
+		for (const warning of pendingBudget.splice(0)) lines.push(`budget: ${warning}`);
 		pending.clear();
 		pi.sendMessage({ customType: FLEET_DIGEST_MESSAGE_TYPE, content: lines.join("\n"), display: true, details: { gentleFleet: { members: [...members.keys()] } } }, { deliverAs: "followUp", triggerTurn: true });
 	};
@@ -179,7 +226,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		members.clear();
 		ledger = undefined;
 		reportedWriteError = false;
+		retiredCost = 0;
+		fleetThresholds.clear();
+		pendingBudget.length = 0;
 		ctxRef = ctx;
+		config = readFleetConfig(configHome);
+		if (config.ignored.length > 0) ctx.ui.notify(`Gentle Fleet ignored invalid values in ${config.path} and uses the defaults for: ${config.ignored.join(", ")}.`, "warning");
 		closed = false;
 		fleetSessionId = ctx.sessionManager.getSessionId() || fleetSessionId;
 		ensureLedger(ctx.cwd);
@@ -220,21 +272,34 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerTool({
 		name: "fleet_spawn",
 		label: "Fleet spawn",
-		description: `Start a new full Gentle Shell member session for one long, independent front and send it its objective. Costs a full session prefix (~124k tokens); prefer fleet_send to an existing member. At most ${FLEET_MEMBER_CAP} live members.`,
+		description: `Start a new full Gentle Shell member session for one long, independent front and send it its objective. Costs a full session prefix (~124k tokens); prefer fleet_send to an existing member. At most ${config.maxLiveMembers} live members (maxLiveMembers in the human's fleet.json). Refused once the fleet budget is spent.`,
 		parameters: Type.Object({
 			name: Type.String({ description: "Short member name: lowercase letters, digits and dashes." }),
 			objective: Type.String({ description: "The member's objective with scope, acceptance criteria and non-goals." }),
 			cwd: Type.Optional(Type.String({ description: "Working directory; defaults to this session's cwd." })),
 			model: Type.Optional(Type.String({ description: "Optional provider/model for the member." })),
+			worktree: Type.Optional(Type.Boolean({ description: "Inside a git repository the member works in its own new worktree on branch fleet/<fleet>/<member> by default; false runs it in the cwd." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			ctxRef = ctx;
-			const { name, objective, cwd, model } = params as { name: string; objective: string; cwd?: string; model?: string };
+			const { name, objective, cwd, model, worktree } = params as { name: string; objective: string; cwd?: string; model?: string; worktree?: boolean };
 			if (!NAME_PATTERN.test(name)) return text(`Error: member name "${name}" must match ${NAME_PATTERN.source}.`, { error: "invalid name" });
 			if (!objective?.trim()) return text("Error: objective is required.", { error: "missing objective" });
 			if (members.get(name)?.live) return text(`Error: member "${name}" is already live; use fleet_send.`, { error: "duplicate" });
-			if (liveCount() >= FLEET_MEMBER_CAP) return text(`Error: the fleet runs at most ${FLEET_MEMBER_CAP} live members. Send the work to an existing member or stop one first.`, { error: "cap" });
-			const memberCwd = cwd ? (isAbsolute(cwd) ? cwd : resolve(ctx.cwd, cwd)) : ctx.cwd;
+			config = readFleetConfig(configHome);
+			if (liveCount() >= config.maxLiveMembers) return text(`Error: the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path}). Send the work to an existing member or stop one first.`, { error: "cap" });
+			const spent = fleetSpend();
+			if (config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd) {
+				return text(`Error: the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget (fleetBudgetUsd in ${config.path}). Existing members keep working: send them work with fleet_send, or ask the human to raise the budget.`, { error: "fleet budget" });
+			}
+			const requestedCwd = cwd ? (isAbsolute(cwd) ? cwd : resolve(ctx.cwd, cwd)) : ctx.cwd;
+			const fleetLedger = ensureLedger(ctx.cwd);
+			// Refusals happen before any side effect; a created worktree is never removed.
+			const prepared = worktree === false ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git });
+			if (prepared?.kind === "refused") return text(`Error: could not give member "${name}" its own worktree: ${prepared.message}`, { error: "worktree" });
+			const created = prepared?.kind === "created" ? prepared.worktree : undefined;
+			const memberWorktree = created ? { path: created.path, branch: created.branch } : undefined;
+			const memberCwd = created?.cwd ?? requestedCwd;
 			const sessionDir = join(agentHome, "gentle-fleet", "sessions", fleetSessionId, name);
 			try { mkdirSync(sessionDir, { recursive: true }); }
 			catch (error) { return text(`Error: could not create ${sessionDir}: ${error instanceof Error ? error.message : String(error)}`, { error: "session dir" }); }
@@ -242,6 +307,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				name,
 				objective,
 				launch: buildMemberLaunch({ env, cwd: memberCwd, sessionDir, model, pi: deps.pi }),
+				worktree: memberWorktree,
 				spawn: deps.spawn,
 				schedule: deps.schedule,
 				process: deps.process,
@@ -251,13 +317,15 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					track(changed);
 				},
 			});
+			retiredCost += members.get(name)?.usage.cost ?? 0;
 			members.set(name, member);
-			ensureLedger(ctx.cwd).spawned(name, objective, memberCwd);
+			fleetLedger.spawned(name, objective, memberCwd, memberWorktree);
 			member.start();
 			member.prompt(objective);
 			track(member);
 			refreshWidget();
-			return text(`Spawned fleet member "${name}" in ${memberCwd}. Its digest arrives when it settles, asks a question or exits.`, { name, cwd: memberCwd });
+			const where = created ? `${memberCwd} on new branch ${created.branch} (worktree of ${created.repo})` : memberCwd;
+			return text(`Spawned fleet member "${name}" in ${where}. Its digest arrives when it settles, asks a question or exits.`, { name, cwd: memberCwd, ...(memberWorktree ? { worktree: memberWorktree.path, branch: memberWorktree.branch } : {}) });
 		},
 	});
 

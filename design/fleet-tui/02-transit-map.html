@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Fleet orchestrator TUI · 02 Transit map</title>
+<style>
+/* Palettes from themes/Gentle.json, themes/Gentleman-Cute.json, themes/Gentleman-Sexy.json; rules in design/system.md. */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+	--lh: 17px;
+	--bg: #06080f; --panel: #0d0f14; --user-bg: #161D2E; --sel: #232A40; --border: #313342; --border-subtle: #232A40;
+	--text: #F3F6F9; --dim: #8394A3; --accent: #7FB4CA; --accent-strong: #7FB4CA; --label: #7FB4CA; --heading: #B5B2D0;
+	--success: #B7CC85; --warning: #DEBA87; --error: #CB7C94; --thinking: #8394A3; --code: #B7CC85;
+	--tool-ok-bg: #1a2e1a; --tool-pending-bg: #0d0f14; --custom-bg: #0d0f14;
+	--m-api: #E0C15A; --m-web: #B99BF2; --m-docs: #A4DAA7;
+	--theme-name: "Gentle";
+	width: 1440px; height: 900px; overflow: hidden;
+	background: var(--bg); color: var(--text);
+	font: 13px/17px "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+body:has(#theme-cute:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2A1523; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F095C8; --accent-strong: #FFB1DD; --label: #E0C27A; --heading: #E0C27A;
+	--success: #B4E7C7; --warning: #F2B86D; --error: #FF718F; --thinking: #D7A0B8; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #B4E7C7;
+	--theme-name: "Gentleman-Cute";
+}
+body:has(#theme-sexy:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2E0F1F; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F43888; --accent-strong: #FF4F9A; --label: #E0C27A; --heading: #E0C27A;
+	--success: #D2CBD0; --warning: #F2B86D; --error: #FF718F; --thinking: #A78E9B; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #C49BFF;
+	--theme-name: "Gentleman-Sexy";
+}
+h1, h2, h3, p, ul, ol, dl, dd, fieldset { margin: 0; padding: 0; font: inherit; }
+ul, ol { list-style: none; }
+button, input, textarea { font: inherit; line-height: var(--lh); color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+kbd { font: inherit; color: var(--accent); }
+code { font: inherit; color: var(--code); }
+:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 16px; top: -40px; z-index: 5; background: var(--accent); color: var(--bg); padding: 0 1ch; }
+.skip:focus { top: 4px; }
+
+/* Window chrome */
+.titlebar { height: 28px; display: flex; align-items: center; gap: 2ch; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.dots { display: flex; gap: 6px; }
+.dots span { width: 10px; height: 10px; border-radius: 50%; }
+.titlebar h1 { font-weight: 700; }
+.themes { margin-left: auto; border: 0; display: flex; align-items: center; gap: 1ch; }
+.themes input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.themes label { padding: 0 1ch; cursor: pointer; color: var(--dim); }
+.themes input:checked + label { color: var(--bg); background: var(--accent); }
+.themes input:focus-visible + label { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.screen { position: relative; width: 180ch; height: calc(50 * var(--lh)); margin: 4px auto 0; }
+
+/* Terminal boxes: frames are drawn with box-drawing characters by the script below. */
+.tbox { position: relative; padding: var(--lh) 2ch; min-width: 0; }
+.tbox > .fr { position: absolute; inset: 0; margin: 0; font: inherit; color: var(--border); white-space: pre; overflow: hidden; pointer-events: none; }
+.tbox > :not(.fr) { position: relative; }
+.tbox.hot > .fr { color: var(--accent-strong); }
+.tbox.ask > .fr { color: var(--warning); }
+.tbox > .ttl, .tbox > .tmeta, .tbox > .tfoot { position: absolute; padding: 0 1ch; background: var(--bg); white-space: nowrap; }
+.tbox > .ttl { top: 0; left: 2ch; font-weight: 700; color: var(--accent); }
+.tbox > .tmeta { top: 0; right: 2ch; color: var(--dim); }
+.tbox > .tfoot { bottom: 0; right: 2ch; color: var(--dim); }
+
+.dim { color: var(--dim); } .acc { color: var(--accent); } .ok { color: var(--success); } .warn { color: var(--warning); }
+.err { color: var(--error); } .think { color: var(--thinking); } .lbl { color: var(--label); } .bd { color: var(--border); }
+.api { color: var(--m-api); } .web { color: var(--m-web); } .docs { color: var(--m-docs); } .b { font-weight: 700; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line { white-space: pre; }
+.caret::after { content: "▍"; color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+	.caret::after { animation: blink 1.1s steps(1) infinite; }
+	.pulse { animation: pulse 1.6s ease-in-out infinite; }
+}
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 50% { opacity: .55; } }
+
+/* Direction 02 — transit map */
+.screen { display: grid; grid-template-columns: 132ch 48ch; grid-template-rows: var(--lh) calc(27 * var(--lh)) calc(20 * var(--lh)) calc(2 * var(--lh)); }
+.top { grid-column: 1 / -1; display: flex; gap: 2ch; padding: 0 1ch; white-space: nowrap; }
+.top .obj { flex: 1; min-width: 0; }
+.legend { display: flex; gap: 3ch; white-space: nowrap; margin-bottom: var(--lh); }
+.lines { display: grid; }
+.mline { display: grid; grid-template-columns: 12ch 3ch 7ch repeat(8, 13ch); grid-template-rows: repeat(6, var(--lh)); }
+.hub { grid-column: 1; grid-row: 1 / span 2; white-space: pre; color: var(--accent); }
+.trunk { grid-column: 2; grid-row: 1 / -1; white-space: pre; color: var(--accent); }
+.mname { grid-column: 3; grid-row: 1; white-space: pre; font-weight: 700; }
+.stations { grid-column: 4 / -1; grid-row: 1 / span 2; display: grid; grid-template-columns: repeat(8, 13ch); grid-template-rows: repeat(2, var(--lh)); }
+.st { display: grid; grid-template-rows: var(--lh) var(--lh); }
+.trk { white-space: pre; }
+.nm { text-align: center; white-space: nowrap; overflow: hidden; }
+.st.done .nm { color: var(--text); }
+.st.todo .nm { color: var(--dim); }
+.st.todo .trk, .trk .rest { color: var(--border); }
+.st.pr .nm { color: var(--dim); }
+.cap { grid-row: 3 / span 3; margin-left: 6ch; }
+.cap p { padding-left: 3ch; text-indent: -3ch; }
+.cap .opts { display: flex; gap: 1ch; padding-left: 3ch; white-space: nowrap; }
+.cap p.cont { text-indent: 0; }
+.opt { padding: 0 1ch; background: var(--sel); color: var(--text); }
+.opt kbd { color: var(--warning); }
+.opt:hover { color: var(--accent-strong); }
+.now { font-weight: 700; }
+.wakes { display: flex; gap: 1ch; white-space: nowrap; margin-top: var(--lh); }
+.odd h3 { color: var(--heading); font-weight: 700; }
+.odd section + section { margin-top: var(--lh); }
+.odd table { border-collapse: collapse; width: 100%; }
+.odd th { text-align: left; font-weight: 400; color: var(--dim); padding: 0; }
+.odd td { padding: 0; white-space: nowrap; }
+.odd ol li { display: grid; grid-template-columns: 6ch 1fr; }
+.odd ol li span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat { grid-column: 1 / -1; display: flex; flex-direction: column; }
+.log { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+.log > div + div { margin-top: var(--lh); }
+.msg-you { background: var(--user-bg); padding: 0 1ch; }
+.prompt { flex: none; height: calc(3 * var(--lh)); margin-top: var(--lh); }
+.prompt textarea { display: block; width: 100%; height: var(--lh); padding: 0; border: 0; resize: none; background: transparent; caret-color: var(--accent); }
+.prompt textarea::placeholder { color: var(--dim); opacity: 1; }
+.prompt .row { display: flex; }
+.hints { padding: 0 1ch; color: var(--dim); white-space: nowrap; }
+.status { grid-column: 1 / -1; }
+.status p { display: flex; gap: 3ch; padding: 0 1ch; white-space: nowrap; }
+.status p:first-child { background: var(--panel); }
+.theme-name::after { content: var(--theme-name); }
+</style>
+</head>
+<body>
+<a class="skip" href="#prompt-input">Skip to message input</a>
+<header class="titlebar">
+	<div class="dots" aria-hidden="true"><span style="background:var(--error)"></span><span style="background:var(--warning)"></span><span style="background:var(--success)"></span></div>
+	<h1>gentle-shell orchestrator</h1>
+	<span class="dim">~/work/inkwell · 180×50</span>
+	<fieldset class="themes">
+		<legend class="sr-only">Terminal theme</legend>
+		<span class="dim" aria-hidden="true">theme</span>
+		<input type="radio" name="theme" id="theme-gentle" value="gentle" checked><label for="theme-gentle">Gentle</label>
+		<input type="radio" name="theme" id="theme-cute" value="cute"><label for="theme-cute">Gentleman-Cute</label>
+		<input type="radio" name="theme" id="theme-sexy" value="sexy"><label for="theme-sexy">Gentleman-Sexy</label>
+	</fieldset>
+</header>
+
+<div class="screen">
+	<p class="top">
+		<span class="acc b">✿ fleet</span>
+		<span class="obj trunc"><span class="dim">objective</span> Add team workspaces to Inkwell (notes app): API, web app and docs</span>
+		<span><span class="dim">view</span> map <kbd>ctrl+l</kbd></span>
+	</p>
+
+	<section class="tbox map" aria-labelledby="map-title">
+		<h2 class="ttl" id="map-title">✿ objective map</h2>
+		<span class="tmeta">updated by code · 14:23</span>
+		<p class="legend dim">
+			<span>each line is a member · each station a todo</span>
+			<span><span class="ok">●</span> done</span>
+			<span><span class="acc">◉</span> now</span>
+			<span><span class="warn">◆</span> waiting on you</span>
+			<span>○ pending</span>
+			<span>□ pull request (you merge)</span>
+		</p>
+		<div class="lines">
+			<section class="mline" aria-labelledby="l-api">
+				<span class="trunk" aria-hidden="true">┏━━
+┃
+┃
+┃
+┃
+┃</span>
+				<h3 class="mname api" id="l-api"> api <span aria-hidden="true">━━</span><span class="sr-only">: working, 3 of 7 todos done</span></h3>
+				<ol class="stations">
+					<li class="st done"><span class="trk api" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">schema</span><span class="sr-only">Done: Workspace + membership schema</span></li>
+					<li class="st done"><span class="trk api" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">CRUD</span><span class="sr-only">Done: Workspaces CRUD endpoints</span></li>
+					<li class="st done"><span class="trk api" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">role guard</span><span class="sr-only">Done: Role guard middleware</span></li>
+					<li class="st cur"><span class="trk" aria-hidden="true"><span class="api">━━━━━━</span><span class="acc pulse">◉</span><span class="rest">━━━━━━</span></span><span class="nm now api" aria-hidden="true">token table</span><span class="sr-only">In progress: Add invite token table migration</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">POST invite</span><span class="sr-only">Pending: POST /workspaces/:id/invites</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">accept</span><span class="sr-only">Pending: Accept invite endpoint</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">int. tests</span><span class="sr-only">Pending: Integration tests for invites</span></li>
+					<li class="st todo pr"><span class="trk" aria-hidden="true">━━━━━━□</span><span class="nm" aria-hidden="true">PR → you</span><span class="sr-only">Pending: pull request, merged by you</span></li>
+				</ol>
+				<div class="cap" style="grid-column: 7 / -1">
+					<p class="think"><span class="dim" aria-hidden="true">╰─ </span>∴ Token table needs a unique index on (workspace_id, email) — checking existing users schema</p>
+					<p class="dim cont">last tool <span class="lbl">read</span> prisma/schema.prisma · 182k tok · $1.12</p>
+				</div>
+			</section>
+
+			<section class="mline" aria-labelledby="l-web">
+				<span class="hub" aria-hidden="true">✿ fleet ━━━━
+ orchestrator</span>
+				<span class="trunk" aria-hidden="true">╋━━
+┃
+┃
+┃
+┃
+┃</span>
+				<h3 class="mname web" id="l-web"> web <span aria-hidden="true">━━</span><span class="sr-only">: waiting on you, 2 of 6 todos done</span></h3>
+				<ol class="stations">
+					<li class="st done"><span class="trk web" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">switcher</span><span class="sr-only">Done: Workspace switcher in sidebar</span></li>
+					<li class="st done"><span class="trk web" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">context</span><span class="sr-only">Done: Workspace context provider + route param</span></li>
+					<li class="st cur"><span class="trk" aria-hidden="true"><span class="web">━━━━━━</span><span class="warn pulse">◆</span><span class="rest">━━━━━━</span></span><span class="nm now warn" aria-hidden="true">invite dialog</span><span class="sr-only">Waiting on you: Invite dialog with expiring link</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">invites list</span><span class="sr-only">Pending: Pending invites list</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">accept page</span><span class="sr-only">Pending: Accept-invite page</span></li>
+					<li class="st todo"><span class="trk" aria-hidden="true">━━━━━━○━━━━━━</span><span class="nm" aria-hidden="true">e2e test</span><span class="sr-only">Pending: Playwright flow test</span></li>
+					<li class="st todo pr"><span class="trk" aria-hidden="true">━━━━━━□</span><span class="nm" aria-hidden="true">PR → you</span><span class="sr-only">Pending: pull request, merged by you</span></li>
+				</ol>
+				<div class="cap" style="grid-column: 6 / -1">
+					<p><span class="dim" aria-hidden="true">╰─ </span><span class="warn b">◆ waiting on you</span> Invite links: expire after 7 days or 30 days?</p>
+					<div class="opts" role="group" aria-label="Answer web">
+						<button class="opt" type="button"><kbd>1</kbd> 7 days</button>
+						<button class="opt" type="button"><kbd>2</kbd> 30 days</button>
+						<button class="opt" type="button"><kbd>3</kbd> Never (admins revoke)</button>
+						<button class="opt" type="button"><kbd>4</kbd> Type…</button>
+					</div>
+				</div>
+			</section>
+
+			<section class="mline" aria-labelledby="l-docs">
+				<span class="trunk" aria-hidden="true">┗━━</span>
+				<h3 class="mname docs" id="l-docs"> docs <span aria-hidden="true">━</span><span class="sr-only">: idle, 4 of 4 todos done</span></h3>
+				<ol class="stations">
+					<li class="st done"><span class="trk docs" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">outline</span><span class="sr-only">Done: Outline team workspaces guide</span></li>
+					<li class="st done"><span class="trk docs" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">sections</span><span class="sr-only">Done: Write guide sections</span></li>
+					<li class="st done"><span class="trk docs" aria-hidden="true">━━━━━━●━━━━━━</span><span class="nm" aria-hidden="true">changelog</span><span class="sr-only">Done: Changelog entry (Unreleased)</span></li>
+					<li class="st done"><span class="trk" aria-hidden="true"><span class="docs">━━━━━━●</span><span class="rest">━━━━━━</span></span><span class="nm" aria-hidden="true">nav link</span><span class="sr-only">Done: Link guide from sidebar nav</span></li>
+					<li class="st todo pr"><span class="trk" aria-hidden="true">━━━━━━□</span><span class="nm" aria-hidden="true">PR → you</span><span class="sr-only">Pending: pull request, merged by you</span></li>
+				</ol>
+				<div class="cap" style="grid-column: 7 / -1">
+					<p><span class="dim" aria-hidden="true">╰─ </span><span class="dim">◇ idle · 4/4 done</span> <span class="think">∴ one placeholder left for invite expiry</span></p>
+					<p class="dim cont">last tool <span class="lbl">write</span> CHANGELOG.md · 41k tok · $0.48</p>
+				</div>
+			</section>
+		</div>
+		<p class="wakes dim" aria-label="Fleet wake timeline">
+			<span>wakes</span><span aria-hidden="true">┄</span>
+			<span>14:02 plan</span><span aria-hidden="true">┄</span>
+			<span>14:03 spawn ×3</span><span aria-hidden="true">┄</span>
+			<span>14:11 <span class="api">api</span> turn end</span><span aria-hidden="true">┄</span>
+			<span>14:14 you steer <span class="api">api</span></span><span aria-hidden="true">┄</span>
+			<span>14:18 <span class="web">web</span> question</span><span aria-hidden="true">┄</span>
+			<span>14:21 <span class="docs">docs</span> done</span><span aria-hidden="true">┄</span>
+			<span class="acc">14:23 now</span>
+		</p>
+	</section>
+
+	<aside class="tbox odd" aria-labelledby="odd-title">
+		<h2 class="ttl" id="odd-title">odd.md · state of everything</h2>
+		<section aria-labelledby="odd-obj">
+			<h3 id="odd-obj">Objective</h3>
+			<p>Add team workspaces to Inkwell (notes app): API, web app and docs</p>
+		</section>
+		<section aria-labelledby="odd-mem">
+			<h3 id="odd-mem">Members</h3>
+			<table>
+				<thead><tr><th scope="col">name</th><th scope="col">owns</th><th scope="col">status</th></tr></thead>
+				<tbody>
+					<tr><td class="api b">api</td><td>apps/api, prisma/</td><td class="acc">● 3/7</td></tr>
+					<tr><td class="web b">web</td><td>apps/web</td><td class="warn">◆ waiting</td></tr>
+					<tr><td class="docs b">docs</td><td>docs/, CHANGELOG.md</td><td class="dim">◇ 4/4</td></tr>
+				</tbody>
+			</table>
+		</section>
+		<section aria-labelledby="odd-block">
+			<h3 id="odd-block">Blockers</h3>
+			<p><span class="warn">◆</span> <span class="web">web</span> ← you: invite link expiry</p>
+			<p><span class="dim">◇</span> <span class="docs">docs</span> ← same answer (placeholder)</p>
+		</section>
+		<section aria-labelledby="odd-log">
+			<h3 id="odd-log">Log</h3>
+			<ol reversed>
+				<li><span class="dim">14:21</span><span><span class="docs">docs</span> finished 4/4</span></li>
+				<li><span class="dim">14:18</span><span><span class="web">web</span> asked: invite expiry</span></li>
+				<li><span class="dim">14:14</span><span>you steered <span class="api">api</span>: hash tokens</span></li>
+				<li><span class="dim">14:11</span><span><span class="api">api</span> started token migration</span></li>
+			</ol>
+		</section>
+		<section aria-labelledby="odd-budget">
+			<h3 id="odd-budget">Budget</h3>
+			<p>$2.50 / $6.00 <span role="img" aria-label="42 percent used"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> 42%</p>
+		</section>
+		<span class="tfoot"><kbd>ctrl+o</kbd> open file</span>
+	</aside>
+
+	<main class="tbox chat" aria-labelledby="chat-title">
+		<h2 class="ttl" id="chat-title">✿ fleet orchestrator</h2>
+		<span class="tmeta">ctx 34k · $0.19</span>
+		<div class="log" role="log" aria-label="Conversation with the fleet orchestrator">
+			<div>
+				<p><span class="lbl b">✿ fleet</span> <span class="dim">· 14:14</span> Steered <span class="api">api</span> (queued as a follow-up). It answered: “storing sha256(token) + expires_at; the raw token only travels in the email link.”</p>
+			</div>
+			<div class="msg-you">
+				<p><span class="b">you</span> <span class="dim">· 14:22</span> Where are we? Anything blocked?</p>
+			</div>
+			<div>
+				<p><span class="lbl b">✿ fleet</span> <span class="dim">· 14:22</span></p>
+				<p>One blocker, and it is yours: <span class="web">web</span> needs the invite link expiry (the <span class="warn">◆</span> station on its line). The same answer fills the last placeholder in <span class="docs">docs</span>.</p>
+				<p><span class="api">api</span> is not blocked; it stores <code>expires_at</code> per invite, so your answer only sets the default. Spent $2.50 of $6.00 (42%).</p>
+			</div>
+		</div>
+		<div class="tbox prompt hot">
+			<div class="row"><label for="prompt-input" class="sr-only">Message the fleet</label><span class="acc" aria-hidden="true">›&nbsp;</span><textarea id="prompt-input" rows="1" placeholder="Message the fleet, or press 1-4 to answer web"></textarea></div>
+		</div>
+		<p class="hints"><kbd>enter</kbd> send · <kbd>@web</kbd> steer a member · <kbd>←→</kbd> move along a line · <kbd>↑↓</kbd> switch line · <kbd>enter</kbd> on a station opens its todo</p>
+	</main>
+
+	<footer class="status">
+		<p>
+			<span><span class="dim">fleet budget</span> $2.50 / $6.00 <span role="img" aria-label="42 percent of budget used"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> 42%</span>
+			<span><span class="dim">members</span> 3/3 live</span>
+			<span><span class="dim">tokens</span> 353k</span>
+			<span><span class="warn">◆</span> inbox 1</span>
+			<span><span class="dim">layout</span> map</span>
+			<span><span class="dim">theme</span> <span class="theme-name"></span></span>
+		</p>
+		<p class="dim"><span><kbd>tab</kbd> focus member</span><span><kbd>1-4</kbd> answer</span><span><kbd>m</kbd> toggle map</span><span><kbd>s</kbd> steer</span><span><kbd>ctrl+l</kbd> layout</span><span><kbd>ctrl+t</kbd> theme</span><span><kbd>?</kbd> help</span></p>
+	</footer>
+</div>
+
+<script>
+// Draw each .tbox frame with box-drawing characters sized to its cell grid.
+(() => {
+	const screen = document.querySelector(".screen");
+	const probe = document.createElement("span");
+	probe.textContent = "0".repeat(100);
+	probe.setAttribute("aria-hidden", "true");
+	probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;left:0;top:0";
+	screen.append(probe);
+	function draw() {
+		const cw = probe.getBoundingClientRect().width / 100;
+		const lh = parseFloat(getComputedStyle(document.body).getPropertyValue("--lh"));
+		for (const box of document.querySelectorAll(".tbox")) {
+			const cols = Math.round(box.offsetWidth / cw);
+			const rows = Math.round(box.offsetHeight / lh);
+			if (cols < 2 || rows < 2) continue;
+			let fr = box.querySelector(":scope > .fr");
+			if (!fr) {
+				fr = document.createElement("pre");
+				fr.className = "fr";
+				fr.setAttribute("aria-hidden", "true");
+				box.prepend(fr);
+			}
+			const rule = "─".repeat(cols - 2);
+			const side = "│" + " ".repeat(cols - 2) + "│";
+			fr.textContent = ["╭" + rule + "╮", ...Array(rows - 2).fill(side), "╰" + rule + "╯"].join("\n");
+		}
+	}
+	draw();
+	if (document.fonts) document.fonts.ready.then(draw);
+	addEventListener("resize", draw);
+})();
+</script>
+</body>
+</html>

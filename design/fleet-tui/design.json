@@ -1,0 +1,11 @@
+{
+  "title": "Fleet orchestrator TUI",
+  "brief": "Terminal UI (180×50 cells, Gentle Shell theme palettes) for `gentle-shell orchestrator`: the human chats with one fleet orchestrator that leads up to three headless Gentle Shell members, and sees in a friendly, customizable way how each member unfolds, what it is thinking, and which questions wait on them, without the office metaphor.",
+  "feature": "odd/tasks/fleet-orchestrator.md",
+  "artboards": [
+    { "file": "01-command-deck.html", "title": "Command deck", "tradeoff": "Familiar and dense: chat plus a rail of member cards with a pinned question inbox; each member's thinking is compressed to one line", "width": 1440, "height": 900 },
+    { "file": "02-transit-map.html", "title": "Transit map", "tradeoff": "Best at-a-glance progress and doubles as the fleet odd.md view; needs width and shows less per-member detail", "width": 1440, "height": 900 },
+    { "file": "03-one-conversation.html", "title": "One conversation", "tradeoff": "Simplest mental model, one timeline with member cards inline; can get noisy and relies on filters and collapsing", "width": 1440, "height": 900 },
+    { "file": "04-focus-lens.html", "title": "Focus lens", "tradeoff": "Least distraction with the deepest view of one member's reasoning, todos and tools; seeing the others takes a keypress", "width": 1440, "height": 900 }
+  ]
+}

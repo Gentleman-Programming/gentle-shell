@@ -2,6 +2,7 @@
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection,                            } from "./child-package-injection.mjs";
 import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.mjs";
+import { FLEET_ROLE_ENV } from "./fleet-role.mjs";
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
@@ -32,6 +33,10 @@ function isPiSubcommand(token        )                        {
 
 
 	                                                                  
+
+
+
+
 
 
 
@@ -69,6 +74,7 @@ export function parseLauncherArgs(argv          )                     {
 	let command                             ;
 	let commandArgs           = [];
 	let piSubcommand                          ;
+	let fleet = false;
 	const passthrough           = [];
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -160,10 +166,20 @@ export function parseLauncherArgs(argv          )                     {
 			commandArgs = argv.slice(i + 1);
 			break;
 		}
+		// Like `setup`, `orchestrator` is only the first non-flag token, after
+		// optional home selectors; the rest stays Pi's own arguments.
+		if (arg === "orchestrator" && !fleet && command === undefined && passthrough.length === 0) {
+			fleet = true;
+			continue;
+		}
 		if (passthrough.length === 0 && isPiSubcommand(arg)) {
 			piSubcommand = arg;
 		}
 		passthrough.push(arg);
+	}
+
+	if (error === undefined && fleet && piSubcommand !== undefined) {
+		error = `orchestrator cannot be combined with the pi subcommand '${piSubcommand}'`;
 	}
 
 	if (error === undefined) {
@@ -176,7 +192,7 @@ export function parseLauncherArgs(argv          )                     {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, ...(fleet ? { fleet: true          } : {}), error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -1007,6 +1023,8 @@ export function discoverLooseExtensionEntries(dir        , fs                  )
 
 
 
+
+
 // Four cases, checked in this order — `piSubcommand` first, then `takeOver`:
 //   - piSubcommand: pi dispatches install/remove/uninstall/update/list/
 //     config/auth/mcp on argv[0] before it even parses flags, so any injected
@@ -1082,6 +1100,9 @@ export function buildPiInvocation(input                        )               {
 		childInjection = { noExtensions: false, extensionPaths: [absoluteExtensionPath(input.packageRoot, input.cwd)] };
 	}
 
+	// The fleet controller never edits code, so it skips the coding context
+	// files (AGENTS.md is ~30% of a full session prefix); members load them.
+	if (input.fleet === true) args.push("--no-context-files");
 	args.push(...input.passthrough);
 
 	const env                                     = {
@@ -1099,6 +1120,8 @@ export function buildPiInvocation(input                        )               {
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+	if (input.fleet === true) env[FLEET_ROLE_ENV] = "controller";
+	else delete env[FLEET_ROLE_ENV];
 
 	return { command: input.runtime.command, args, env };
 }
@@ -1301,6 +1324,7 @@ export function helpText()         {
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell [home selectors] orchestrator [pi-args...]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
@@ -1320,6 +1344,8 @@ export function helpText()         {
 		"  --version        Show gentle-shell, pi, and home version information.",
 		"",
 		"Commands:",
+		"  orchestrator     Open the fleet orchestrator: one agent you talk to, which leads several",
+		"                   headless Gentle Shell sessions toward your objective (experimental).",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
 		"  home import-pi   Copy your pi sign-ins (auth.json) and MCP servers (mcp.json) into the",
 		"                   resolved separate home, plus your default provider, model and thinking",

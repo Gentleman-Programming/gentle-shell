@@ -2226,6 +2226,7 @@ async function main() {
 		looseExtensionEntries,
 		passthrough: [...herdr.extensionArgs, ...passthrough],
 		piSubcommand: args.piSubcommand,
+		fleet: args.fleet === true,
 		baseEnv: bundledEnv ?? process.env,
 		bundled: Boolean(bundled),
 		homedir: homedir(),

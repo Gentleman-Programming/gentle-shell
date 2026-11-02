@@ -60,6 +60,7 @@ import { validateWorkFilter, searchPublishedWork } from "../lib/orchestrator-wor
 import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator-scope.ts";
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
+import { fleetRole } from "../lib/fleet-role.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
@@ -2840,7 +2841,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			resetActivityPublish();
 			publishActivityPrompt();
 		} catch { presence = undefined; }
-		void startSessionTransport(ctx);
+		// Fleet members talk only through their controller (star topology).
+		if (fleetRole(deps.env) !== "member") void startSessionTransport(ctx);
 		// The desktop app's own pi process: publish live subagent state through
 		// setWidget's RPC-mode string[] path. Plain headless RPC (no variable) and
 		// TUI are untouched -- the TUI card above the editor is showWidget's own

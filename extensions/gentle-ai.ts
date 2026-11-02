@@ -19,6 +19,7 @@ import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
+import { fleetRole } from "../lib/fleet-role.ts";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
@@ -1278,6 +1279,15 @@ function getOrchestratorPrompt(
 		orchestratorPromptCache.set(cacheKey, prompt);
 	}
 	return prompt;
+}
+
+// odd/tasks/fleet-orchestrator.md: the `gentle-shell orchestrator` controller
+// leads member sessions instead of coding, so it gets this lean prompt in
+// place of the ODD orchestrator prompt. Read once per process.
+let fleetOrchestratorPrompt: string | undefined;
+function getFleetOrchestratorPrompt(): string {
+	fleetOrchestratorPrompt ??= readFileSync(join(ASSETS_DIR, "fleet-orchestrator.md"), "utf8").trim();
+	return fleetOrchestratorPrompt;
 }
 
 function renderOrchestratorPrompt(
@@ -11372,7 +11382,10 @@ function createGentleAiExtensionForTesting(
 		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
 		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
-		const gentlePrompt = rddStatusLine === undefined
+		const isFleetController = isPrimarySession && fleetRole(permissionEnvironment) === "controller";
+		const gentlePrompt = isFleetController
+			? `\n\n${getFleetOrchestratorPrompt()}`
+			: rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(
 					readPersonaMode(ctx.cwd),
@@ -11387,7 +11400,7 @@ function createGentleAiExtensionForTesting(
 		// gentle-shell#1494: skip it while RDD reads off, since no review can
 		// start; on and unknown keep it so the reviewed path never loses it.
 		const reviewContractPrompt =
-			isPrimarySession && nativeReviewCli !== null && !isRddStatusLineOff(rddStatusLine)
+			isPrimarySession && !isFleetController && nativeReviewCli !== null && !isRddStatusLineOff(rddStatusLine)
 				? (() => {
 					const fragment = loadReviewContractPromptFragment(ctx);
 					return fragment === null ? "" : `\n\n${fragment}`;

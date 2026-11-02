@@ -15,6 +15,7 @@ const sources = [
 	"status-timing-diagnostics",
 	"telemetry-trigger",
 	"child-package-injection",
+	"fleet-role",
 	"gentle-shell-launcher",
 	"gentle-shell-bundled",
 	"gentle-shell-startup-update",

@@ -45,9 +45,9 @@ Progress is published automatically from the todo list: never call `orchestrator
 
 | Action | Direct inline | Delegated direct worker |
 |--------|---------------|-------------------------|
-| Read to decide/verify within the evidence budget (one parallel batch: at most 3 calls, ~10k tokens) | ✅ | — |
+| Read to decide/verify within the cumulative evidence budget (one parallel batch: at most 3 calls, ~10k tokens) | ✅ | — |
 | Read to explore/understand beyond the evidence budget | — | ✅ one narrow explorer (handoff of at most ~2k tokens, `path:line` evidence) |
-| Read as preparation for writing | — | ✅ together with the write |
+| Read as preparation for writing | ✅ for understood inline work | ✅ together with the delegated write |
 | Write a small task (one understood change, any number of files) | ✅ | — |
 | Write a large task with no Writer rule reason | ✅ following the logbook | — |
 | Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
@@ -105,7 +105,7 @@ When the policy is on and `subagent_run` is available:
 
 Waiting on CI, a build, or a server is not delegation: use `bash_background` with the wait inside the command and end the turn. Never `sleep`, poll, or spend a subagent to wait.
 
-For generic mapping, follow the Evidence-budget rule under Pi Trigger Runtime Bindings.
+For generic mapping, follow the Evidence-budget rule in the delegation card.
 
 The canonical Writer rule under Delegation Triggers overrides the general runtime preference above.
 

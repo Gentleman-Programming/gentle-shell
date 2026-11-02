@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -286,23 +290,20 @@ jobs:
           New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
 
       - name: Run installer suites
-        run: node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
-
-      # The native tests skip off Windows; here every one must run and pass: exactly
-      # the 38 native tests (30 literal tests plus 8 process primitive modes) that
-      # tests/installer-windows-bootstrap.test.ts defines, with 0 skips.
-      - name: Require native Windows installer tests
-        if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          $output = & node --experimental-strip-types --test --test-reporter=tap --test-name-pattern "^native Windows" tests/installer-windows-bootstrap.test.ts 2>&1
-          $status = $LASTEXITCODE
-          $output | Write-Output
-          if ($status -ne 0) { exit $status }
-          $text = $output -join "`n"
-          $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
-          $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
-          if (!$passes.Success -or [int]$passes.Groups[1].Value -ne 38 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }
+          set +e
+          node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts | tee "$RUNNER_TEMP/installer.tap"
+          status=("${PIPESTATUS[@]}")
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            node scripts/verify-installer-tap.mjs < "$RUNNER_TEMP/installer.tap"
+            exit $?
+          fi
+
+      - name: Test installer TAP verifier
+        run: node --experimental-strip-types --test tests/verify-installer-tap.test.ts
 
       - name: Upload node.exe crash dumps (Windows, on failure)
         if: failure() && runner.os == 'Windows'

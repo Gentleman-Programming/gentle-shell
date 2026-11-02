@@ -20,6 +20,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
@@ -410,7 +411,11 @@ function routingConsumerFixture(t: test.TestContext, agents = ["worker"]) {
 	process.env.USERPROFILE = isolatedHome;
 	process.env.GENTLE_PI_CONFIG_HOME = configHome;
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	// Every fixture models the same session id, so a profile frozen by one test
+	// must not become the next test's session profile.
+	resetFrozenInheritedProfilesForTesting();
 	t.after(() => {
+		resetFrozenInheritedProfilesForTesting();
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
 		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
@@ -1380,7 +1385,7 @@ test("models screen shows profiles as tabs with their scope, the orchestrator fi
 	assert.match(plain[3] ?? "", /current\s+Used in this session\. Default for new sessions\./);
 	assert.match(plain[5] ?? "", /▸ Orchestrator\s+openai-codex\/gpt-6\.1-sol\s+max/);
 	assert.match(plain.join("\n"), /Agent\s+Model ▾\s+Effort ▾\s+set every agent/);
-	assert.match(plain.join("\n"), /\[ Use in this session \]  \[ Make default \]  \[ Save \]\s+Saved/);
+	assert.match(plain.join("\n"), /\[ u · Use in this session \]  \[ d · Make default \]  \[ s · Save \]\s+Saved/);
 	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}s save {2}u use {2}d default {2}n new {2}m menu {2}esc close/);
 	assert.doesNotMatch(plain.join("\n"), /⋯/, "no ellipsis-like glyph: it reads as cut text");
 });
@@ -1438,8 +1443,8 @@ test("models screen pointer: hover uses selectedBg, and one click runs exactly o
 	assert.ok(!outside.some((line) => line.includes("Model for")), "a click outside a card closes it");
 
 	const results: Array<{ type: string; name?: string; saveFirst?: AgentModelConfig }> = [];
-	renderScreen([], [{ type: "click", ...screenAt(base, "[ Use in this session ]") }], results);
-	renderScreen([], [{ type: "click", ...screenAt(base, "[ Make default ]") }], results);
+	renderScreen([], [{ type: "click", ...screenAt(base, "[ u · Use in this session ]") }], results);
+	renderScreen([], [{ type: "click", ...screenAt(base, "[ d · Make default ]") }], results);
 	renderScreen([], [{ type: "click", ...screenAt(base, " nan ") }], results);
 	assert.deepEqual(results.map((result) => result.type), ["use-session", "apply-global", "load"]);
 
@@ -1515,7 +1520,7 @@ test("models screen fits narrow terminals without cutting text", () => {
 		}
 	}
 	const narrow = renderScreen([], [], [], { width: 60 }).map(stripAnsi).join("\n");
-	assert.match(narrow, /\[ Use here \]  \[ Default \]  \[ Save \]/, "short labels when the full ones do not fit");
+	assert.match(narrow, /\[ u · Use here \]  \[ d · Default \]  \[ s · Save \]/, "short labels when the full ones do not fit");
 });
 
 test("models screen offers only the effort levels each model supports and shows where Pi lands the rest", async () => {
@@ -3140,7 +3145,8 @@ test("From what's running now creates a profile from the routing in effect witho
 		worker: readFileSync(workerPath, "utf8"),
 		settings: readFileSync(settingsPath, "utf8"),
 	};
-	writeStore({ "a-target": {}, "z-active": { worker: { model: "openai/beta" } } }, "z-active");
+	// No default profile: the session resolves none, so launches use the global routing.
+	writeStore({ "a-target": {}, "z-active": { worker: { model: "openai/beta" } } }, undefined);
 	const reopened = await runProfilesNameAction(fixture, SCREEN_KEYS.newFromLive, "captured");
 
 	const store = JSON.parse(readFileSync(join(fixture.configHome, "profiles.json"), "utf8"));
@@ -3150,7 +3156,7 @@ test("From what's running now creates a profile from the routing in effect witho
 	});
 	assert.deepEqual(store.profiles["a-target"], {}, "no existing profile is overwritten");
 	assert.deepEqual(store.profiles["z-active"], { worker: { model: "openai/beta" } });
-	assert.equal(store.active, "z-active");
+	assert.equal(store.active, undefined);
 	assert.equal(readFileSync(fixture.globalPath, "utf8"), before.models);
 	assert.equal(readFileSync(subagentsPath, "utf8"), before.subagents);
 	assert.equal(readFileSync(workerPath, "utf8"), before.worker);
@@ -3573,7 +3579,8 @@ test("at 60 columns the unmatched-key notice wraps instead of being cut", async 
 // a suggestion is left to the launch warning.
 test("the models screen names subagents.json keys that match no agent and suggest none", async (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, "team");
+	// No default profile, so the session resolves none and subagents.json routes its launches.
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } } }, undefined);
 	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({
 		model_profiles: {
 			worker: { model: "openai/alpha" },
@@ -3786,9 +3793,10 @@ test("Use in this repo pins the shown profile for the clone without touching the
 	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "a pin stores a name, never routing");
 	assert.match(fixture.notifications.at(-1)?.message ?? "", /pinned profile "team" for this clone in /);
 	assert.ok(firstPanel);
-	// The reopened screen marks the profile used in this repo (⌂) and says so.
+	// The reopened screen marks the profile used in this repo (⌂) and says so;
+	// ◉ stays on it because the session froze it as the default at startup.
 	assert.ok(reopenedPanel);
-	assert.match(stripAnsi(renderComponent(reopenedPanel)), /team ★⌂/);
+	assert.match(stripAnsi(renderComponent(reopenedPanel)), /team ◉★⌂/);
 	assert.match(stripAnsi(renderComponent(reopenedPanel)), /Used in this repo\./);
 	// Rendering an existing screen must not resolve Git or read the pin again.
 	setProfilePinWorktreeResolverForTesting(() => { throw new Error("unexpected pin read during render"); });
@@ -3927,7 +3935,7 @@ test("the tab of the pinned profile carries ⌂ and the screen opens on it", asy
 	});
 	await fixture.run("gentle:profiles");
 	const tabLine = (rendered ?? "").split("\n")[1] ?? "";
-	assert.match(tabLine, /other ⌂/);
+	assert.match(tabLine, /other ◉⌂/, "the pin present at startup is also the session's profile");
 	assert.doesNotMatch(tabLine, /team ★⌂/);
 	assert.equal(selectedProfileTitle(rendered ?? ""), "other", "a winning pin is the profile the screen opens on");
 });
@@ -4670,6 +4678,188 @@ test("Enter without a parent session id fails loud and writes nothing", async (t
 	assert.equal(existsSync(fixture.globalPath), false);
 	assert.equal(notifications.at(-1)?.severity, "warning");
 	resetSessionProfileBindingsForTesting();
+});
+
+// gentle-shell#1064 slice 3c: the routing screen shows the profile this session launches with.
+function freezeScreenSession(fixture: ReturnType<typeof routingConsumerFixture>): void {
+	freezeSessionProfileAtStartup({ sessionId: "session-panel", cwd: fixture.root, configHome: fixture.configHome });
+}
+
+/** The first screen bare `/gentle:profiles` opens, as text, closed right after. */
+async function openedScreen(fixture: ReturnType<typeof routingConsumerFixture>, width = 120): Promise<string> {
+	let rendered: string | undefined;
+	fixture.onInput((panel) => {
+		rendered ??= stripAnsi(panel.render(width).join("\n"));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	return rendered ?? "";
+}
+
+const screenTabLine = (rendered: string) => rendered.split("\n")[1] ?? "";
+const screenWorkerRow = (rendered: string) => rendered.split("\n").find((line) => /│\s*worker\s/.test(line)) ?? "";
+const flatScreen = (rendered: string) => rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " ");
+const savedRoutingNotice = (rendered: string, name: string) =>
+	flatScreen(rendered).includes(`Saved "${name}" differs from this session's launches; Use in this session adopts it.`);
+const authorityNotice = "Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.";
+
+/** A real session frozen on "team"; `unreadable` appends a session profile record it cannot read. */
+function frozenRealSession(fixture: ReturnType<typeof routingConsumerFixture>, unreadable: boolean): void {
+	const manager = profileActionManager(fixture.root);
+	freezeSessionProfileAtStartup({ sessionId: manager.getSessionId(), cwd: fixture.root, configHome: fixture.configHome });
+	if (unreadable) manager.appendCustomEntry("gentle-pi.session-profile/v99", { invalid: true });
+	fixture.useSessionManager(manager);
+}
+
+test("a frozen profile is not marked as used while session profile authority is unavailable", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, "team");
+	frozenRealSession(fixture, false);
+	const available = await openedScreen(fixture);
+	assert.match(screenTabLine(available), /team ◉/);
+	assert.doesNotMatch(flatScreen(available), /authority is unavailable/);
+
+	frozenRealSession(fixture, true);
+	const rendered = await openedScreen(fixture, 40);
+	assert.doesNotMatch(rendered, /◉|Used in this session\./);
+	assert.ok(flatScreen(rendered).includes(authorityNotice), "the whole notice fits at 40 columns");
+
+	t.after(() => resetSessionProfileBindingsForTesting());
+	actOnProfile(fixture, "u", "team");
+	await fixture.run("gentle:profiles");
+	const recovered = fixture.panels.at(-1) ?? "";
+	assert.match(screenTabLine(recovered), /team ◉/, "Use in this session recovers");
+	assert.doesNotMatch(flatScreen(recovered), /authority is unavailable/);
+});
+
+test("From what's running now refuses while session profile authority is unavailable", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	frozenRealSession(fixture, true);
+	const before = readFileSync(storePath, "utf8");
+	const reopened = await runProfilesNameAction(fixture, SCREEN_KEYS.newFromLive);
+	assert.equal(fixture.inputPrompts.length, 0, "no name is asked for");
+	assert.match(profilesPanelFooter(reopened), /Session profile authority is unavailable; affected launches are blocked\. No profile created\./);
+	assert.equal(readFileSync(storePath, "utf8"), before);
+});
+
+test("a profile frozen at startup carries ◉ and opens first after the default changes", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	const profiles = { team: { worker: { model: "openai/alpha" } }, other: { worker: { model: "openai/beta" } } };
+	writeStore(profiles, "team");
+	freezeScreenSession(fixture);
+	writeStore(profiles, "other");
+	const before = readFileSync(storePath, "utf8");
+	const rendered = await openedScreen(fixture);
+	assert.match(screenTabLine(rendered), /team ◉(\s|$)/);
+	assert.match(screenTabLine(rendered), /other ★(\s|$)/);
+	assert.equal(selectedProfileTitle(rendered), "team");
+	assert.match(screenWorkerRow(rendered), /openai\/alpha/);
+	assert.match(rendered, /Used in this session\./);
+	assert.equal(savedRoutingNotice(rendered, "team"), false, "the saved routing matches the launch routing");
+	assert.doesNotMatch(flatScreen(rendered), /authority is unavailable/);
+	assert.equal(readFileSync(storePath, "utf8"), before);
+});
+
+test("a session profile edited in profiles.json after the freeze or the binding says its launches keep the older routing", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	freezeScreenSession(fixture);
+	writeStore({ team: { worker: { model: "openai/beta" } } }, "team");
+	const frozen = await openedScreen(fixture);
+	assert.match(screenWorkerRow(frozen), /openai\/beta/);
+	assert.equal(savedRoutingNotice(frozen, "team"), true);
+	assert.equal(savedRoutingNotice(await openedScreen(fixture, 40), "team"), true, "the whole notice fits at 40 columns");
+
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
+	assert.equal(savedRoutingNotice(await openedScreen(fixture), "team"), true);
+});
+
+test("an Enter binding opens on its profile while another is the default (#2451)", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: { worker: { model: "openai/beta" } } }, "other");
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("session-panel", "team", { worker: { model: "openai/alpha" } });
+	const rendered = await openedScreen(fixture);
+	assert.match(screenTabLine(rendered), /team ◉(\s|$)/);
+	assert.match(screenTabLine(rendered), /other ★(\s|$)/);
+	assert.equal(selectedProfileTitle(rendered), "team");
+	assert.match(screenWorkerRow(rendered), /openai\/alpha/);
+	assert.doesNotMatch(screenWorkerRow(rendered), /openai\/beta/);
+});
+
+test("a pin present at startup is the session profile: ◉ and ⌂ on it, rows show its models (#2276)", async (t) => {
+	const { fixture, writeStore, writePin, localPinPath } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: { worker: { model: "openai/beta" } } }, "team");
+	writePin(localPinPath, "other");
+	freezeScreenSession(fixture);
+	const rendered = await openedScreen(fixture);
+	assert.match(screenTabLine(rendered), /other ◉⌂/);
+	assert.match(screenTabLine(rendered), /team ★(\s|$)/);
+	assert.equal(selectedProfileTitle(rendered), "other");
+	assert.match(screenWorkerRow(rendered), /openai\/beta/);
+});
+
+test("a session without a profile marks no tab with ◉", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, undefined);
+	freezeScreenSession(fixture);
+	const rendered = await openedScreen(fixture);
+	assert.doesNotMatch(rendered, /◉|Used in this session/);
+	assert.equal(selectedProfileTitle(rendered), "team");
+});
+
+test("a frozen profile deleted from profiles.json is named, and no tab carries ◉", async (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, other: {} }, "team");
+	freezeScreenSession(fixture);
+	writeStore({ other: {} }, undefined);
+	const rendered = await openedScreen(fixture);
+	assert.doesNotMatch(rendered, /◉/);
+	assert.match(
+		rendered.replace(/\s*│\s*/g, " ").replace(/\s+/g, " "),
+		/This session launches with "team", which is no longer in profiles\.json; its launches keep that routing\./,
+	);
+});
+
+test("From what's running now in a frozen session saves the frozen routing, not the global one or a later pin", async (t) => {
+	const { fixture, storePath, settingsPath, writeStore, writeSettings, writePin, localPinPath } = profilesStoreFixture(t);
+	writeSettings();
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, `${JSON.stringify({ worker: { model: "openai/gamma" } }, null, 2)}\n`);
+	writeStore({ team: { worker: { model: "openai/alpha", thinking: "high" } }, other: { worker: { model: "openai/beta" } } }, "team");
+	freezeScreenSession(fixture);
+	writePin(localPinPath, "other");
+	const before = { models: readFileSync(fixture.globalPath, "utf8"), pin: readFileSync(localPinPath, "utf8"), settings: readFileSync(settingsPath, "utf8") };
+	await runProfilesNameAction(fixture, SCREEN_KEYS.newFromLive, "captured");
+	const store = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(store.profiles, {
+		team: { worker: { model: "openai/alpha", thinking: "high" } },
+		other: { worker: { model: "openai/beta" } },
+		captured: { worker: { model: "openai/alpha", thinking: "high" }, orchestrator: { model: "nan/deepseek-v4-flash", thinking: "high" } },
+	});
+	assert.equal(store.active, "team");
+	assert.deepEqual({ models: readFileSync(fixture.globalPath, "utf8"), pin: readFileSync(localPinPath, "utf8"), settings: readFileSync(settingsPath, "utf8") }, before);
+});
+
+test("the subagents.json notice follows whether the session resolves a profile, not the pin", async (t) => {
+	const { fixture, writeStore, writePin, localPinPath } = profilesStoreFixture(t);
+	writeFileSync(join(fixture.root, ".pi", "subagents.json"), `${JSON.stringify({ model_profiles: { explor: { model: "openai/beta" } } }, null, 2)}\n`);
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, "team");
+	freezeScreenSession(fixture);
+	const frozen = await openedScreen(fixture);
+	assert.match(frozen, /Used in this session\./);
+	assert.doesNotMatch(frozen, /subagents\.json routes/, "the frozen profile replaces those keys");
+
+	resetFrozenInheritedProfilesForTesting();
+	writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	freezeScreenSession(fixture);
+	writePin(localPinPath, "team");
+	const unfrozen = await openedScreen(fixture);
+	assert.match(unfrozen, /Used in this repo\./);
+	assert.match(unfrozen, /subagents\.json routes "explor", which no agent matches, so it is ignored\./, "a pin written after the freeze does not replace them");
 });
 
 test("file operations are subcommands: profiles restore-routing, export and import, and usage for anything else", async (t) => {

@@ -2,6 +2,7 @@ import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type K
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
+import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
@@ -575,10 +576,16 @@ export class GentlePromptEditor extends CustomEditor {
 		// segment; if a future Pi drops the method, chips degrade to plain text.
 		const host = this as unknown as {
 			segment?: (text: string, mode?: string) => Iterable<{ segment: string; index: number; input: string }>;
+			handlePaste?: (text: string) => void;
 			submitValue?: () => void;
 		};
 		const segment = host.segment;
 		if (typeof segment === "function") host.segment = (text, mode) => attachments.segment(text, segment.call(this, text, mode));
+		// SAFETY: Pi hands a complete bracketed paste to its private handlePaste().
+		// Wrapping it only turns a paste made of image paths into chips; if a future
+		// Pi drops the method, such a paste inserts its paths as text as before.
+		const handlePaste = host.handlePaste;
+		if (typeof handlePaste === "function") host.handlePaste = (text) => { if (!this.pasteImagePaths(attachments, text)) handlePaste.call(this, text); };
 		// SAFETY: Pi empties the draft in its private submitValue() before onSubmit.
 		// Counting here only marks the draft boundary; if a future Pi drops the
 		// method, a late read falls back to landing in the next draft.
@@ -626,17 +633,40 @@ export class GentlePromptEditor extends CustomEditor {
 		}
 		try {
 			if (!image) { this.piPasteImage?.(); return; }
-			const { token } = attachments.add(image);
-			const cursor = this.getCursor();
-			const line = this.getLines()[cursor.line] ?? "";
-			const before = cursor.col > 0 && !/\s/.test(line[cursor.col - 1] ?? "") ? " " : "";
-			const after = cursor.col < line.length && !/\s/.test(line[cursor.col] ?? "") ? " " : "";
-			this.insertTextAtCursor(`${before}${token}${after}`);
-			this.deps.requestRender();
+			this.insertChip(attachments, image);
 		} catch (error) {
 			// Never let a paste reject unhandled: Node 24 ends the process on it.
 			this.deps.notifyCompatibility?.(`Image paste failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
+	}
+
+	/** One `[Image#N]` at the cursor, spaced from adjacent text. */
+	private insertChip(attachments: ImageAttachments, image: ClipboardImage): void {
+		const { token } = attachments.add(image);
+		const cursor = this.getCursor();
+		const line = this.getLines()[cursor.line] ?? "";
+		const before = cursor.col > 0 && !/\s/.test(line[cursor.col - 1] ?? "") ? " " : "";
+		const after = cursor.col < line.length && !/\s/.test(line[cursor.col] ?? "") ? " " : "";
+		this.insertTextAtCursor(`${before}${token}${after}`);
+		this.deps.requestRender();
+	}
+
+	/**
+	 * Herdr (desktop app, `--remote`, drops) and file managers paste an image as
+	 * a path. Read those synchronously and insert chips; false means the paste is
+	 * not only image paths and Pi handles it.
+	 */
+	private pasteImagePaths(attachments: ImageAttachments, text: string): boolean {
+		if (this.disposed || !text) return false;
+		let images: ClipboardImage[];
+		try { images = readPastedImagePaths(text); } catch { return false; }
+		if (images.length === 0) return false;
+		try {
+			for (const image of images) this.insertChip(attachments, image);
+		} catch (error) {
+			this.deps.notifyCompatibility?.(`Image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return true;
 	}
 
 	setAnimationPolicy(policy: AnimationPolicy): void {

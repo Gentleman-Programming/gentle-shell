@@ -7,6 +7,9 @@ import type { ClipboardImage } from "../lib/clipboard-image.ts";
 import { ImageAttachments } from "../lib/image-attachments.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
 import { createRequire } from "node:module";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const INSTALLED_PI = (createRequire(import.meta.url)("@earendil-works/pi-tui/package.json") as { version: string }).version;
 
@@ -233,4 +236,43 @@ test("models without declared input capabilities are treated as image-capable", 
 	assert.equal(modelAcceptsImages({}), true);
 	assert.equal(modelAcceptsImages({ input: ["text", "image"] }), true);
 	assert.equal(modelAcceptsImages({ input: ["text"] }), false);
+});
+
+// Herdr hands an image to a terminal on another machine (desktop app, --remote)
+// as a temp-file path, and drops or file-manager copies arrive as quoted paths.
+// A paste made only of image paths becomes chips; any other paste stays Pi's.
+
+function imagePaste(text: string) {
+	return `\x1b[200~${text}\x1b[201~`;
+}
+
+function temporaryImage(name = "herdr-paste-1.png"): string {
+	const directory = mkdtempSync(join(tmpdir(), "gentle-paste-"));
+	const path = join(directory, name);
+	writeFileSync(path, PNG_2X1);
+	return path;
+}
+
+test("a pasted image path becomes a chip instead of text", () => {
+	const { editor, attachments } = chipEditor(async () => png());
+	editor.setText("look");
+	editor.handleInput(imagePaste(`${temporaryImage()}\n`));
+	assert.equal(editor.getText(), "look [Image#1]");
+	assert.equal(attachments.size, 1);
+});
+
+test("several quoted image paths from a drop become one chip each", () => {
+	const first = temporaryImage("a.png");
+	const second = temporaryImage("b.png");
+	const { editor, attachments } = chipEditor(async () => png());
+	editor.handleInput(imagePaste(`'${first}' '${second}' `));
+	assert.equal(editor.getText(), "[Image#1] [Image#2]");
+	assert.equal(attachments.size, 2);
+});
+
+test("a paste that is not only image paths stays Pi's normal text paste", () => {
+	const path = temporaryImage();
+	const { editor } = chipEditor(async () => png());
+	editor.handleInput(imagePaste(`look at ${path}`));
+	assert.equal(editor.getText(), `look at ${path}`);
 });

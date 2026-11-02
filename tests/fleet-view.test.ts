@@ -226,3 +226,9 @@ test("alt+1-4 pick the four lenses from anywhere", () => {
 	const scope = (key: string) => FLEET_VIEW_KEYS.filter((binding) => binding.keys.includes(key)).map((binding) => `${binding.action}@${binding.scope}`);
 	for (const [index, lens] of FLEET_LENSES.entries()) assert.deepEqual(scope(`alt+${index + 1}`), [`lens.${lens}@global`]);
 });
+
+// U3 verifier advisory: the Flows lens must not advertise a key that does nothing.
+test("the flows lens summary never advertises enter on a member", () => {
+	const view = lensRows("flows", "light", inkwellFleet());
+	assert.equal(JSON.stringify(view).includes("enter on a member"), false);
+});

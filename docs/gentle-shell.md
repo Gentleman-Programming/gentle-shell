@@ -58,7 +58,7 @@ Keys. There are no function keys. Letters never act in the input, so a message t
 | Key | Where | Action |
 |---|---|---|
 | `alt+1`-`alt+4` | anywhere | Flows, Map, Costs, Log lens |
-| `alt+z` | anywhere | Zoom the current lens to a full-screen overlay, or close it. On WSL, where Pi binds `alt+z` to undo, the fleet controller takes it over |
+| `alt+z` | anywhere | Zoom the current lens into a centered overlay, or close it. On WSL, where Pi binds `alt+z` to undo, the fleet controller takes it over |
 | `alt+m` | anywhere | Density light → normal → power (power is the 01 command deck) |
 | `tab` | empty input, a focal item exists | Move to the focal bar; `tab` or `esc` goes back. With a draft, or nothing to decide, `tab` stays Pi's tab and autocomplete |
 | `1`-`4` | focal bar | Answer the focal item; a number past its options, or any other key, goes back to the input and types there |

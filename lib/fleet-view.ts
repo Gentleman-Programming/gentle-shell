@@ -363,7 +363,7 @@ function heads(lens: FleetLens, density: FleetDensity, snapshot: FleetViewSnapsh
 		return [
 			"what each member is doing, attention first",
 			`${count("needs-you")} needs you · ${count("blocked")} blocked · ${count("working")} working · ${count("waiting")} waiting · ${count("done")} done`,
-			`${live} of ${snapshot.members.length} live · enter on a member looks closer`,
+			`${live} of ${snapshot.members.length} live`,
 		];
 	}
 	if (lens === "map") {

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { isWsl, readClipboardImage, sniffImageMimeType, type ClipboardCommandRunner } from "../lib/clipboard-image.ts";
 
@@ -10,14 +14,14 @@ const PNG_2X1 = new Uint8Array([
 	0x08, 0x06, 0x00, 0x00, 0x00,
 ]);
 
-type Call = { command: string; args: readonly string[] };
+type Call = { command: string; args: readonly string[]; env?: Record<string, string> | undefined };
 type Reply = Buffer | undefined | ((call: Call) => Buffer | undefined);
 
 // Scripted backends keyed by `command firstArg`; anything unscripted is "not installed".
 function runner(replies: Record<string, Reply>): { run: ClipboardCommandRunner; calls: Call[] } {
 	const calls: Call[] = [];
-	const run: ClipboardCommandRunner = async (command, args) => {
-		const call = { command, args };
+	const run: ClipboardCommandRunner = async (command, args, options) => {
+		const call = { command, args, env: options?.env };
 		calls.push(call);
 		const reply = replies[`${command} ${args[0] ?? ""}`.trim()] ?? replies[command];
 		return typeof reply === "function" ? reply(call) : reply;
@@ -27,6 +31,28 @@ function runner(replies: Record<string, Reply>): { run: ClipboardCommandRunner; 
 
 const BMP = new Uint8Array([0x42, 0x4d, 0x00, 0x00]);
 const noProc = () => undefined;
+
+// Real sockets named like a compositor's, so the reader must both find one and
+// hand its name to wl-paste. A terminal started by a service (systemd unit,
+// tmux server, or a multiplexer's daemon) inherits no WAYLAND_DISPLAY, and
+// wl-paste then guesses wayland-0: on a compositor that took wayland-1 every
+// clipboard read fails and images never attach.
+async function runtimeDirWithSockets(names: readonly string[]): Promise<{ dir: string; close: () => Promise<void> }> {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-clipboard-"));
+	const servers: Server[] = [];
+	for (const name of names) {
+		const server = createServer();
+		await new Promise<void>((resolve) => server.listen(join(dir, name), resolve));
+		servers.push(server);
+	}
+	return {
+		dir,
+		close: async () => {
+			for (const server of servers) await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		},
+	};
+}
 
 test("WSL reads a Windows screenshot through PowerShell when the Linux clipboard has none", async () => {
 	const { run, calls } = runner({
@@ -97,6 +123,58 @@ test("files copied in a Linux file manager stay Pi's even when an image is offer
 	const native = () => ({ getText: async () => null, getImage: async () => PNG_2X1, getFilePaths: async () => ["/home/me/shot.png"] });
 	assert.equal(await readClipboardImage({ env: { WAYLAND_DISPLAY: "wayland-0" }, platform: "linux", run, native, procVersion: noProc }), null);
 	assert.equal(calls.length, 0);
+});
+
+test("a terminal that inherited no WAYLAND_DISPLAY still reads the compositor's socket", async () => {
+	const runtime = await runtimeDirWithSockets(["wayland-1"]);
+	try {
+		// A stale lock file must not be mistaken for a socket.
+		writeFileSync(join(runtime.dir, "wayland-0.lock"), "");
+		const { run, calls } = runner({
+			"wl-paste --list-types": Buffer.from("image/png\n"),
+			"wl-paste --type": Buffer.from(PNG_2X1),
+		});
+		const image = await readClipboardImage({ env: { XDG_RUNTIME_DIR: runtime.dir }, platform: "linux", run, native: () => undefined, procVersion: noProc });
+		assert.equal(image?.mimeType, "image/png");
+		assert.deepEqual(calls.map((call) => [call.command, call.args[0], call.env]), [
+			["wl-paste", "--list-types", { WAYLAND_DISPLAY: "wayland-1" }],
+			["wl-paste", "--type", { WAYLAND_DISPLAY: "wayland-1" }],
+		]);
+	} finally {
+		await runtime.close();
+	}
+});
+
+test("an explicit WAYLAND_DISPLAY wins over a socket found in the runtime directory", async () => {
+	const runtime = await runtimeDirWithSockets(["wayland-1"]);
+	try {
+		const { run, calls } = runner({
+			"wl-paste --list-types": Buffer.from("image/png\n"),
+			"wl-paste --type": Buffer.from(PNG_2X1),
+		});
+		const image = await readClipboardImage({ env: { WAYLAND_DISPLAY: "wayland-9", XDG_RUNTIME_DIR: runtime.dir }, platform: "linux", run, native: () => undefined, procVersion: noProc });
+		assert.equal(image?.mimeType, "image/png");
+		// Either the override or the inherited environment names the explicit
+		// display; the discovered socket is never used.
+		assert.deepEqual(calls.map((call) => call.command), ["wl-paste", "wl-paste"]);
+		assert.ok(calls.every((call) => (call.env?.WAYLAND_DISPLAY ?? "wayland-9") === "wayland-9"));
+	} finally {
+		await runtime.close();
+	}
+});
+
+test("no compositor socket and no Wayland session keeps X11 in charge", async () => {
+	const runtime = await runtimeDirWithSockets([]);
+	try {
+		const { run, calls } = runner({
+			"xclip -selection": (call) => call.args.includes("TARGETS") ? Buffer.from("image/png\n") : Buffer.from(PNG_2X1),
+		});
+		const image = await readClipboardImage({ env: { XDG_RUNTIME_DIR: runtime.dir, DISPLAY: ":0" }, platform: "linux", run, native: () => undefined, procVersion: noProc });
+		assert.equal(image?.mimeType, "image/png");
+		assert.deepEqual(calls.map((call) => call.command), ["xclip", "xclip"]);
+	} finally {
+		await runtime.close();
+	}
 });
 
 test("image formats are identified by signature", () => {

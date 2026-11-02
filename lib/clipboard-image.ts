@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { getNativeClipboard, type NativeClipboard } from "@earendil-works/pi-tui";
 
 // Clipboard image reader for the prompt's attachment chips (gentle-shell#2464).
@@ -14,7 +15,7 @@ export interface ClipboardImage {
 }
 
 /** Resolves to stdout, or undefined when the command is missing, fails, or times out. */
-export type ClipboardCommandRunner = (command: string, args: readonly string[], options?: { timeoutMs?: number }) => Promise<Buffer | undefined>;
+export type ClipboardCommandRunner = (command: string, args: readonly string[], options?: { timeoutMs?: number; env?: Record<string, string> }) => Promise<Buffer | undefined>;
 
 export interface ClipboardImageOptions {
 	env?: NodeJS.ProcessEnv;
@@ -22,6 +23,8 @@ export interface ClipboardImageOptions {
 	run?: ClipboardCommandRunner;
 	native?: () => NativeClipboard | undefined;
 	procVersion?: () => string | undefined;
+	/** Wayland sockets in the runtime directory; tests inject a fixed listing. */
+	waylandSockets?: (runtimeDir: string) => readonly string[];
 }
 
 export const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
@@ -43,7 +46,10 @@ const POWERSHELL_SCRIPT = [
 ].join("; ");
 
 export const runClipboardCommand: ClipboardCommandRunner = (command, args, options) => new Promise((resolve) => {
-	execFile(command, [...args], { encoding: "buffer", timeout: options?.timeoutMs ?? READ_TIMEOUT_MS, maxBuffer: MAX_CLIPBOARD_BYTES, windowsHide: true }, (error, stdout) => {
+	// An override travels only to this child, so a discovered socket never leaks
+	// into the rest of the process' environment.
+	const env = options?.env ? { ...process.env, ...options.env } : undefined;
+	execFile(command, [...args], { encoding: "buffer", timeout: options?.timeoutMs ?? READ_TIMEOUT_MS, maxBuffer: MAX_CLIPBOARD_BYTES, windowsHide: true, env }, (error, stdout) => {
 		resolve(error ? undefined : stdout);
 	});
 });
@@ -84,12 +90,13 @@ function preferredImageType(listing: Buffer): string | undefined {
 }
 
 // undefined: backend unavailable, try the next one. null: backend answered, no usable image.
-async function viaWlPaste(run: ClipboardCommandRunner): Promise<ClipboardImage | null | undefined> {
-	const listing = await run("wl-paste", ["--list-types"], { timeoutMs: LIST_TIMEOUT_MS });
+async function viaWlPaste(run: ClipboardCommandRunner, display?: string): Promise<ClipboardImage | null | undefined> {
+	const env = display ? { WAYLAND_DISPLAY: display } : undefined;
+	const listing = await run("wl-paste", ["--list-types"], { timeoutMs: LIST_TIMEOUT_MS, env });
 	if (listing === undefined) return undefined;
 	const type = preferredImageType(listing);
 	if (!type) return null;
-	return supportedRead(await run("wl-paste", ["--type", type, "--no-newline"]));
+	return supportedRead(await run("wl-paste", ["--type", type, "--no-newline"], { env }));
 }
 
 async function viaXclip(run: ClipboardCommandRunner): Promise<ClipboardImage | null | undefined> {
@@ -118,6 +125,30 @@ async function viaNative(native: NativeClipboard | undefined): Promise<Clipboard
 	return supported((await native.getImage().catch(() => undefined)) ?? null);
 }
 
+function readWaylandSockets(runtimeDir: string): readonly string[] {
+	try {
+		return readdirSync(runtimeDir)
+			.filter((entry) => /^wayland-\d+$/.test(entry))
+			.filter((entry) => { try { return statSync(join(runtimeDir, entry)).isSocket(); } catch { return false; } })
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * The Wayland socket names this process may talk to. A terminal started by a
+ * service — a systemd unit, a multiplexer's daemon, a tmux server — inherits no
+ * WAYLAND_DISPLAY, and wl-paste then guesses wayland-0: on a compositor that
+ * took wayland-1 every read fails and an image paste silently attaches
+ * nothing. The compositor's socket in the runtime directory is the fallback;
+ * an explicit WAYLAND_DISPLAY always wins and keeps Pi's own ordering.
+ */
+function waylandDisplayCandidates(env: NodeJS.ProcessEnv, sockets: readonly string[]): Array<string | undefined> {
+	if (env.WAYLAND_DISPLAY) return [env.WAYLAND_DISPLAY];
+	return sockets.length > 0 ? [...sockets] : [undefined];
+}
+
 /**
  * Read a supported image from the clipboard, mirroring Pi's backend order:
  * Wayland, then X11, then the Windows clipboard on WSL, then the native
@@ -134,8 +165,14 @@ export async function readClipboardImage(options: ClipboardImageOptions = {}): P
 		if (await hasCopiedFiles(nativeClipboard)) return null;
 		if (platform !== "linux") return await viaNative(nativeClipboard);
 		const wsl = isWsl(env, options.procVersion);
+		const sockets = env.WAYLAND_DISPLAY || !env.XDG_RUNTIME_DIR ? [] : (options.waylandSockets ?? readWaylandSockets)(env.XDG_RUNTIME_DIR);
 		let image: ClipboardImage | null | undefined;
-		if (env.WAYLAND_DISPLAY || env.XDG_SESSION_TYPE === "wayland" || wsl) image = await viaWlPaste(run);
+		if (env.WAYLAND_DISPLAY || env.XDG_SESSION_TYPE === "wayland" || wsl || sockets.length > 0) {
+			for (const display of waylandDisplayCandidates(env, sockets)) {
+				image = await viaWlPaste(run, display);
+				if (image !== undefined) break;
+			}
+		}
 		if (image === undefined) image = await viaXclip(run);
 		// The Linux clipboard never receives Windows screenshots (Win+Shift+S).
 		if (!image && wsl) image = (await viaPowerShell(run)) ?? image;

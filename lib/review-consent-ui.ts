@@ -20,6 +20,37 @@ export interface ReviewConsentUiModel {
 	readonly content: ReviewConsentContent;
 }
 
+export const REVIEW_CONSENT_SELECT_SCHEMA = "gentle-pi.review-consent/v1";
+
+const SELECT_STRING_LIMIT = 2000;
+const SELECT_EVIDENCE_LIMIT = 20;
+
+export interface ReviewConsentSelectAction {
+	readonly answer: "granted" | "declined" | "host-session";
+	readonly label: string;
+	readonly effect: string;
+}
+
+export interface ReviewConsentSelectEnvelope {
+	readonly schema: typeof REVIEW_CONSENT_SELECT_SCHEMA;
+	readonly headline: string;
+	readonly reason: string;
+	readonly value: string;
+	readonly riskLevel: ReviewConsentV3["riskLevel"];
+	readonly changedFiles: number;
+	readonly changedLines: number;
+	readonly targetIdentity: string;
+	readonly projection: string;
+	readonly riskEvidence: readonly string[];
+	readonly offPath: { readonly note: string; readonly command: string };
+	readonly actions: readonly [ReviewConsentSelectAction, ReviewConsentSelectAction, ReviewConsentSelectAction];
+}
+
+export interface ReviewConsentSelectPayload {
+	readonly title: string;
+	readonly options: readonly [string, string, string];
+}
+
 export function isPiConsentV3(consent: ReviewConsentEnvelope): consent is ReviewConsentV3 {
 	return consent.schema === "gentle-ai.review-integration.consent/v3" && consent.agent === "pi";
 }
@@ -70,6 +101,41 @@ export function formatReviewConsentUi(consent: ReviewConsentV3): ReviewConsentUi
 	};
 }
 
+function boundedSelectText(value: string): string {
+	return value.slice(0, SELECT_STRING_LIMIT);
+}
+
+// Pi 1.4.0's RPC select carries only title/options/timeout, so the machine
+// channel rides the title's second line and options stay the human strings.
+export function formatReviewConsentSelectPayload(
+	consent: ReviewConsentV3,
+	model: ReviewConsentUiModel,
+): ReviewConsentSelectPayload {
+	const headline = boundedSelectText(consent.headline.trim());
+	const envelope: ReviewConsentSelectEnvelope = {
+		schema: REVIEW_CONSENT_SELECT_SCHEMA,
+		headline,
+		reason: boundedSelectText(consent.reason),
+		value: boundedSelectText(consent.value),
+		riskLevel: consent.riskLevel,
+		changedFiles: consent.changedFiles,
+		changedLines: consent.changedLines,
+		targetIdentity: boundedSelectText(consent.targetIdentity),
+		projection: boundedSelectText(model.content.projection),
+		riskEvidence: consent.riskEvidence.slice(0, SELECT_EVIDENCE_LIMIT).map(boundedSelectText),
+		offPath: {
+			note: boundedSelectText(consent.offPath.note),
+			command: boundedSelectText(consent.offPath.command),
+		},
+		actions: [
+			{ answer: consent.choices[0].answer, label: boundedSelectText(consent.choices[0].label), effect: boundedSelectText(consent.choices[0].effect) },
+			{ answer: consent.choices[1].answer, label: boundedSelectText(consent.choices[1].label), effect: boundedSelectText(consent.choices[1].effect) },
+			{ answer: "host-session", label: HOST_REVIEW_SESSION_PERMISSION_LABEL, effect: HOST_REVIEW_SESSION_PERMISSION_EFFECT },
+		],
+	};
+	return { title: `${headline}\n${JSON.stringify(envelope)}`, options: model.options };
+}
+
 export async function presentReviewConsentUi(
 	context: ExtensionContext,
 	consent: ReviewConsentEnvelope,
@@ -99,7 +165,8 @@ export async function presentReviewConsentUi(
 				};
 			});
 		}
-		const selected = await context.ui.select(model.title, [...model.options]);
+		const payload = formatReviewConsentSelectPayload(consent, model);
+		const selected = await context.ui.select(payload.title, [...payload.options], { signal: context.signal });
 		if (selected === model.options[0]) return { kind: "provider", answer: "granted" };
 		if (selected === model.options[1]) return { kind: "provider", answer: "declined" };
 		if (selected === model.options[2]) return { kind: "host-session" };

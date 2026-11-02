@@ -166,14 +166,15 @@ test("T16: the verify handoff names probe command forms and the scratch location
 	], "verify handoff");
 });
 
-// T17b (L42): after4 B x5 read two files, then the core Evidence-budget rule
-// fired and delegated a 1.5 min exploration on a small task the parent then
-// implemented inline. The trigger itself must exclude reading for an inline write.
-test("T17b: the core Evidence-budget rule never fires to prepare an inline write", () => {
+// T17b (L42): preparation for an understood inline write stays inline, but
+// discovery cannot evade the evidence budget merely because a write is planned.
+test("T17b: inline-write preparation is distinct from discovery", () => {
 	const core = read("assets/orchestrator.md");
 	const rule = core.split("\n").find((line) => line.includes("**Evidence-budget rule**"));
 	assert.ok(rule, "Evidence-budget rule is missing");
-	assert.ok(rule.includes("never for reading before an inline write"), "Evidence-budget rule must exclude reading for an inline write");
+	assert.match(rule, /Exempt only preparation for an understood inline write, not discovery/);
+	assert.match(rule, /cumulative discovery each batch, never reset/);
+	assert.match(core, /No explore, worker, or verifier unless a trigger fires/);
 });
 
 test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {

@@ -956,3 +956,25 @@ test("release fast path remote head recheck detects an advanced or unresolvable 
 	});
 	assert.deepEqual(missing, { advanced: true, remote_head: null });
 });
+
+// gentle-shell#2552 review: an environment-injected GIT_CONFIG_GLOBAL carrying
+// url.insteadOf must not redirect the publication destination probe; the probe
+// strips the key so Git reads the default config paths, never env overrides.
+test("push destination probe ignores environment-injected url.insteadOf rewrites", (t) => {
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-probe-redirect-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+	git("init", "-b", "main");
+	git("remote", "add", "origin", "https://example.invalid/owner/repo.git");
+	const hostile = join(cwd, "hostile.gitconfig");
+	writeFileSync(hostile, '[url "https://redirect.invalid/"]\n\tinsteadOf = https://example.invalid/\n');
+	const prior = process.env.GIT_CONFIG_GLOBAL;
+	try {
+		process.env.GIT_CONFIG_GLOBAL = hostile;
+		const destination = resolveConfiguredPushDestinationV1(cwd, "origin");
+		assert.equal(destination.url, "https://example.invalid/owner/repo.git");
+	} finally {
+		if (prior === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+		else process.env.GIT_CONFIG_GLOBAL = prior;
+	}
+});

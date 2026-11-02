@@ -99,9 +99,9 @@ test("review Git environment tolerates inherited config-file keys and still pins
 });
 
 // gentle-shell#2552: deleting the config-file keys makes the probe fall back to
-// the host's default config paths, so inherited pins must survive while every
-// routing override is still dropped.
-test("publication probe keeps inherited config-file pins and drops routing overrides", () => {
+// the host's default config paths, which are not environment-injectable; the
+// unit-stage runner redirects HOME instead of relying on preserved pins.
+test("publication probe drops inherited config-file keys and routing overrides", () => {
 	const prior = { GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_DIR: process.env.GIT_DIR, GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 };
 	try {
 		process.env.GIT_CONFIG_GLOBAL = "/pinned/global.gitconfig";
@@ -112,9 +112,9 @@ test("publication probe keeps inherited config-file pins and drops routing overr
 		process.env.GIT_CONFIG_KEY_0 = "user.name";
 		process.env.GIT_CONFIG_VALUE_0 = "injected";
 		const environment = publicationProbeGitEnvironment();
-		assert.equal(environment.GIT_CONFIG_GLOBAL, "/pinned/global.gitconfig");
-		assert.equal(environment.GIT_CONFIG_SYSTEM, "/pinned/system.gitconfig");
-		assert.equal(environment.GIT_CONFIG_NOSYSTEM, "1");
+		assert.equal(environment.GIT_CONFIG_GLOBAL, undefined);
+		assert.equal(environment.GIT_CONFIG_SYSTEM, undefined);
+		assert.equal(environment.GIT_CONFIG_NOSYSTEM, undefined);
 		assert.equal(environment.GIT_DIR, undefined);
 		assert.equal(environment.GIT_CONFIG_COUNT, undefined);
 		assert.equal(environment.GIT_CONFIG_KEY_0, undefined);

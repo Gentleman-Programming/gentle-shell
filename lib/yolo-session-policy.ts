@@ -3,9 +3,12 @@ import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./ap
 import { sameReviewSessionIdentity, resolveCanonicalGitRepositoryIdentity, type ReviewSessionIdentity } from "./review-session-standing-permission.ts";
 import { realpath } from "node:fs/promises";
 import { gentlePiConfigHome } from "./agent-home.ts";
+import { fleetRole } from "./fleet-role.ts";
 import { isPermissionMode, resolvePermissionModePolicy, writePermissionModePolicy, type PermissionMode } from "./permission-mode-policy.ts";
 export type { PermissionMode } from "./permission-mode-policy.ts";
 export const MODE_STATUS_KEY = "gentle:mode";
+/** A fleet member's dialogs reach its fleet controller, which relays protected ones to the human. */
+export const FLEET_MEMBER_MODE_NOTICE = "Fleet members always run with NORMAL permissions; the fleet controller relays permission prompts to the human.";
 export const AUTO_MODE_NOTICE = "Auto uses additional model calls with separate usage accounting; hard safety and independent consent remain.";
 
 export const YOLO_STATUS_KEY = "gentle:yolo";
@@ -131,6 +134,9 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	// Rendered strings last published for each context; identical repaints are skipped.
 	const published = new WeakMap<ExtensionContext, { yolo: string | undefined; modeText: string }>();
 	const primary = () => env.GENTLE_PI_AGENTS_CHILD !== "1";
+	// odd/tasks/fleet-orchestrator.md T3: a fleet member is a primary session
+	// but never inherits the human's saved elevated default nor raises its own.
+	const fleetMember = fleetRole(env) === "member";
 	const interactive = (ctx: ExtensionContext): boolean => {
 		if (!primary() || !ctx.hasUI) return false;
 		const mode = (ctx as ExtensionContext & { mode?: string }).mode;
@@ -193,6 +199,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	};
 	const defaultMode = (): PermissionMode => resolvePermissionModePolicy(store).mode;
 	const mode = async (ctx: ExtensionContext, admission?: { toolCallId: string }): Promise<PermissionMode> => {
+		if (fleetMember) return "normal";
 		const scope = session(ctx);
 		const admissionId = admission?.toolCallId;
 		let identity: ModeIdentity | undefined;
@@ -232,6 +239,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		changed(ctx); observers.clear();
 	};
 	const setMode = async (requested: PermissionMode, ctx: ExtensionContext, lifetime = () => true): Promise<boolean> => {
+		if (fleetMember) { notify(ctx, FLEET_MEMBER_MODE_NOTICE, true); return false; }
 		if (!isPermissionMode(requested) || !interactive(ctx) || !lifetime()) return false;
 		const current = bindCurrent(ctx, () => !lifetime());
 		// Revoke immediately, including off versus a pending activation race.
@@ -245,6 +253,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 		return true;
 	};
 	const saveDefault = async (requested: PermissionMode, ctx: ExtensionContext, lifetime = () => true): Promise<boolean> => {
+		if (fleetMember) { notify(ctx, FLEET_MEMBER_MODE_NOTICE, true); return false; }
 		if (!isPermissionMode(requested) || !interactive(ctx) || !lifetime()) return false;
 		const current = bindCurrent(ctx, () => !lifetime()), epoch = generation;
 		const identity = await capture(ctx);
@@ -264,6 +273,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	};
 	const humanAction = async (action: HumanAction, ctx: ExtensionContext, current = () => true): Promise<boolean> => {
 		if (!current()) return false;
+		if (fleetMember) { notify(ctx, FLEET_MEMBER_MODE_NOTICE, true); return true; }
 		const enable = action === HUMAN_ACTION.on || (action === HUMAN_ACTION.toggle && liveMode !== "yolo" && liveMode !== "super-yolo");
 		const pending = setMode(enable ? "yolo" : "normal", ctx, current);
 		const epoch = generation; // setMode revokes synchronously, then publishes once on success.
@@ -323,7 +333,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			}
 			if (words.length === 1 && isPermissionMode(words[0])) {
 				if (await setMode(words[0], ctx)) notify(ctx, `Permissions: ${words[0].toUpperCase()}`);
-				else notify(ctx, "Mode unchanged — interactive primary session required or the session changed.", true);
+				else if (!fleetMember) notify(ctx, "Mode unchanged — interactive primary session required or the session changed.", true);
 				return;
 			}
 				notify(ctx, "Use /gentle:mode normal|auto|yolo|super-yolo|status or /gentle:mode default normal|auto|yolo|super-yolo. State unchanged.", true);

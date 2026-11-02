@@ -67,7 +67,15 @@ async function appendedPrompt(role: string | undefined): Promise<string> {
 
 test("the fleet prompt asset stays lean and states the fleet rules", () => {
 	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") < 1700, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
-	for (const rule of [/never edit code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
+	for (const rule of [/do not write code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
+});
+
+// T3 (S2, L17): the fleet answers members itself and escalates only the
+// accepted classes; its job is orchestration, never code or delegation.
+test("the fleet prompt states the accepted authority boundary and the fleet's own job", () => {
+	for (const rule of [/fleet_answer/, /provider consent/i, /credentials/i, /destructive/i, /publishing/i, /grant/i, /fleet_grant/, /relayed (to the human )?by code/i, /ask_user_question|ask_user_choice/, /you do not write code/i]) assert.match(FLEET_PROMPT, rule);
+	assert.doesNotMatch(FLEET_PROMPT, /Relay every member question/i, "the F0 relay-everything rule is superseded");
+	assert.doesNotMatch(FLEET_PROMPT, /subagent|delegat/i, "the fleet orchestrator knows nothing about delegation");
 });
 
 test("the fleet controller gets the fleet prompt instead of the ODD orchestrator prompt", async () => {

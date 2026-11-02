@@ -12,6 +12,8 @@ import { runGit } from "../lib/fleet-worktree.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
+import type { PermissionMode } from "../lib/permission-mode-policy.ts";
+import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -25,7 +27,7 @@ type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 // Tools other extensions and Pi register in a full session, besides the fleet's.
 const OTHER_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "codemode", "orchestrator_session_id", "ask_user_question", "ask_user_choice", "mem_search", "mem_save", "subagent_run", "hidden_mem_tool"];
 
-function fakePi() {
+function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown[]): unknown } = { on: () => () => {}, emit() {} }) {
 	const tools = new Map<string, Tool>();
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
@@ -40,7 +42,8 @@ function fakePi() {
 			active.push(tool.name);
 		},
 		sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => sent.push({ message, options }),
-		events: { on: () => () => {}, emit() {} },
+		registerCommand() {},
+		events,
 		getAllTools: () => registered.map(name => ({ name, exposure: name === "hidden_mem_tool" ? "hidden" : "direct" })),
 		getActiveTools: () => [...active],
 		setActiveTools: (names: string[]) => {
@@ -72,9 +75,16 @@ function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 
 let harnesses = 0;
 
-function harness(env: NodeJS.ProcessEnv = controllerEnv, options: { fleetConfig?: Record<string, unknown> | string } = {}) {
+type HarnessOptions = {
+	fleetConfig?: Record<string, unknown> | string;
+	/** The controller's live permission mode; null reads it through the real yolo channel. */
+	permissionMode?: (() => Promise<PermissionMode>) | null;
+	events?: Parameters<typeof fakePi>[0];
+};
+
+function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions = {}) {
 	harnesses += 1;
-	const h = fakePi();
+	const h = fakePi(options.events);
 	const agentHome = join(scratch, `agent-${harnesses}`);
 	// Never the user's config home: each harness owns its fleet.json.
 	const configHome = join(scratch, `config-${harnesses}`);
@@ -114,6 +124,7 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv, options: { fleetConfig?
 			gitCalls.push(args);
 			return runGit(args, cwd);
 		},
+		permissionMode: options.permissionMode === null ? undefined : options.permissionMode ?? (async () => "normal"),
 	};
 	gentleFleet(h.pi, env, deps);
 	const runTimers = () => {
@@ -133,7 +144,7 @@ test("the fleet extension registers nothing unless this session is the fleet con
 		assert.equal(h.tools.size, 0, JSON.stringify(env));
 		assert.equal(h.handlers.size, 0, JSON.stringify(env));
 	}
-	assert.deepEqual([...harness().tools.keys()].sort(), ["fleet_inspect", "fleet_objective", "fleet_send", "fleet_spawn", "fleet_status", "fleet_stop"]);
+	assert.deepEqual([...harness().tools.keys()].sort(), ["fleet_answer", "fleet_grant", "fleet_inspect", "fleet_objective", "fleet_revoke", "fleet_send", "fleet_spawn", "fleet_status", "fleet_stop"]);
 });
 
 test("fleet_spawn launches a member session under the fleet session dir and sends the objective first", async () => {
@@ -347,7 +358,7 @@ test("the controller session keeps only the fleet, read-only and memory tools ac
 	const h = harness();
 	const { ctx } = fakeContext();
 	await h.fire("session_start", ctx);
-	const allowed = ["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice", "mem_search", "mem_save", "fleet_spawn", "fleet_send", "fleet_status", "fleet_stop", "fleet_objective", "fleet_inspect"];
+	const allowed = ["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice", "mem_search", "mem_save", "fleet_spawn", "fleet_send", "fleet_status", "fleet_stop", "fleet_objective", "fleet_inspect", "fleet_answer", "fleet_grant", "fleet_revoke"];
 	assert.deepEqual(h.activeTools().sort(), [...allowed].sort());
 	assert.equal(h.activeSets.length, 1);
 	await h.fire("before_agent_start", ctx, { prompt: "hi" });
@@ -642,4 +653,297 @@ test("a fleet member session never starts the peer session transport", async () 
 test("a normal session and the fleet controller still start the peer session transport", async () => {
 	assert.equal(await agentsHarness(undefined).start(), 1);
 	assert.equal(await agentsHarness("controller").start(), 1);
+});
+
+// T3 (S2): the fleet answers member dialogs on the human's behalf; protected
+// classes reach the human through the controller's own UI, by code.
+
+type UiCall = { method: string; title: string; detail?: string; options?: string[] };
+type UiScript = { select?: string; confirm?: boolean; input?: string; editor?: string };
+
+function dialogContext(script: UiScript = {}, overrides: Record<string, unknown> = {}) {
+	const base = fakeContext();
+	const calls: UiCall[] = [];
+	const ui = base.ctx.ui as unknown as Record<string, unknown>;
+	ui.select = async (title: string, options: string[]) => { calls.push({ method: "select", title, options }); return script.select; };
+	ui.confirm = async (title: string, detail: string) => { calls.push({ method: "confirm", title, detail }); return script.confirm ?? false; };
+	ui.input = async (title: string, detail?: string) => { calls.push({ method: "input", title, detail }); return script.input; };
+	ui.editor = async (title: string, detail?: string) => { calls.push({ method: "editor", title, detail }); return script.editor; };
+	Object.assign(base.ctx, overrides);
+	return { ...base, calls };
+}
+
+async function fleetWithMember(options: HarnessOptions & { script?: UiScript; ctx?: Record<string, unknown>; env?: NodeJS.ProcessEnv } = {}) {
+	const h = harness(options.env ?? controllerEnv, options);
+	const slug = `relay-${harnesses}`;
+	const view = dialogContext(options.script, options.ctx);
+	await h.fire("session_start", view.ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: slug, objective: "Ship it." }, undefined, undefined, view.ctx);
+	await spawnMember(h, view.ctx, "web", { worktree: false });
+	await tick();
+	const child = h.children[0];
+	const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
+	const answer = (params: Record<string, unknown>) => h.tools.get("fleet_answer")!.execute("a", { name: "web", ...params }, undefined, undefined, view.ctx);
+	const document = () => {
+		h.runTimers();
+		return readFileSync(join(mainCwd, "odd", "fleet", `${slug}.md`), "utf8");
+	};
+	const responses = () => child.written.filter(command => command.type === "extension_ui_response");
+	const lastDigest = () => {
+		h.runTimers();
+		return String(h.sent.at(-1)?.message.content ?? "");
+	};
+	return { h, ...view, child, settle, answer, document, responses, lastDigest };
+}
+
+const DATA_LOSS = { method: "confirm", title: "Allow recognized data-loss command?", message: "rm build" };
+const GUARDED = { method: "confirm", title: "Allow guarded git push?", message: "git push origin main" };
+const MESSAGING = { method: "select", title: "Authorize cross-orchestrator message to peer?\nReason: sync", options: ["Allow once", "Allow for this session", "Deny"] };
+const FOREIGN = { method: "confirm", title: "Authorize foreign clone subagent", message: "Launch a subagent in /other?" };
+const REVIEW_CONSENT = { method: "select", title: "Review this change?\nOwnership: ...", options: ["1. Run review\nEffect: a", "2. Skip review\nEffect: b", "3. Review and allow this session\nEffect: c"] };
+const MODEL_COST = { method: "select", title: "Model-cost permission only: one direct model run", options: ["Allow once", "Decline"] };
+
+test("fleet_answer writes the member's RPC response, clears the blocker and logs that the fleet answered", async () => {
+	const f = await fleetWithMember();
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Pick a database", options: ["postgres", "sqlite"] });
+	await f.settle();
+	const before = f.document();
+	assert.match(before.slice(before.indexOf("## Blockers")), /- web: question — Pick a database/);
+	const result = await f.answer({ answer: "2" });
+	assert.equal(result.content[0].text, `Answered web's select "Pick a database" with "sqlite".`);
+	await f.settle();
+	assert.deepEqual(f.responses(), [{ id: "q1", type: "extension_ui_response", value: "sqlite" }]);
+	const doc = f.document();
+	assert.doesNotMatch(doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Grants")), /Pick a database/);
+	assert.match(doc, /· answer · web — fleet answered "Pick a database": sqlite$/m);
+});
+
+test("fleet_answer refuses an invalid answer, a missing dialog and an empty call, writing nothing", async () => {
+	const f = await fleetWithMember();
+	assert.equal((await f.answer({ answer: "x" })).content[0].text, "Error: no pending dialog for web.");
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Use the cache?" });
+	await f.settle();
+	assert.match((await f.answer({ answer: "maybe" })).content[0].text, /^Error: .*yes or no/);
+	assert.equal((await f.answer({})).content[0].text, "Error: give an answer or cancel: true.");
+	await f.settle();
+	assert.deepEqual(f.responses(), []);
+	assert.equal((await f.answer({ cancel: true })).content[0].text, `Answered web's confirm "Use the cache?" with cancel.`);
+	await f.settle();
+	assert.deepEqual(f.responses(), [{ id: "q1", type: "extension_ui_response", cancelled: true }]);
+});
+
+test("the wake digest carries each pending dialog's id, method, title, message and numbered options, bounded", async () => {
+	const f = await fleetWithMember();
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Pick a database", message: "for the billing tables", options: ["postgres", "sqlite", "o".repeat(200)] });
+	await f.settle();
+	const digest = f.lastDigest();
+	assert.match(digest, /^ {2}question q1 \(select\) for the fleet: Pick a database — for the billing tables \[1\. postgres \| 2\. sqlite \| 3\. o+…\] → fleet_answer$/m);
+	assert.ok(digest.split("\n").every(line => line.length <= 700), "digest lines are bounded");
+});
+
+test("previous behavior: a dialog still surfaces in the digest and the member stays pending until answered", async () => {
+	const f = await fleetWithMember();
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "input", title: "Release name" });
+	await f.settle();
+	assert.match(f.lastDigest(), /web \[waiting-question\]/);
+	const status = () => f.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, f.ctx);
+	assert.match((await status()).content[0].text, /web \[waiting-question\].*question: Release name/);
+	await f.answer({ answer: "v2" });
+	assert.match((await status()).content[0].text, /web \[working\]/);
+});
+
+const PROTECTED_CASES: Array<{ label: string; request: Record<string, unknown>; script: UiScript; response: Record<string, unknown> }> = [
+	{ label: "review consent", request: REVIEW_CONSENT, script: { select: "2. Skip review\nEffect: b" }, response: { value: "2. Skip review\nEffect: b" } },
+	{ label: "data-loss command", request: DATA_LOSS, script: { confirm: true }, response: { confirmed: true } },
+	{ label: "guarded command", request: GUARDED, script: { confirm: false }, response: { confirmed: false } },
+	{ label: "messaging grant", request: MESSAGING, script: { select: "Deny" }, response: { value: "Deny" } },
+	{ label: "foreign clone grant", request: FOREIGN, script: { confirm: true }, response: { confirmed: true } },
+	{ label: "model-cost permission", request: MODEL_COST, script: {}, response: { cancelled: true } },
+];
+
+for (const item of PROTECTED_CASES) {
+	test(`a protected ${item.label} dialog is relayed by code to the human, refused to fleet_answer, and the human's answer is forwarded`, async () => {
+		const f = await fleetWithMember({ script: item.script });
+		f.child.emit({ type: "extension_ui_request", id: "p1", ...item.request });
+		await f.settle();
+		assert.equal(f.calls.length, 1, "the human saw the dialog once");
+		assert.equal(f.calls[0].method, item.request.method);
+		assert.equal(f.calls[0].title, `Fleet member "web": ${item.request.title}`);
+		if (item.request.options) assert.deepEqual(f.calls[0].options, item.request.options);
+		if (item.request.message) assert.equal(f.calls[0].detail, item.request.message);
+		assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", ...item.response }]);
+		assert.match((await f.answer({ answer: "1", dialog: "p1" })).content[0].text, /^Error: /, "answered dialogs are gone");
+		assert.match(f.document(), /· answer · web — human answered \(relayed by the fleet\) /);
+	});
+}
+
+test("fleet_answer refuses a protected dialog while the human still decides, and the digest says it was relayed", async () => {
+	let release!: (value: boolean) => void;
+	const f = await fleetWithMember();
+	(f.ctx.ui as unknown as Record<string, unknown>).confirm = (title: string) => { f.calls.push({ method: "confirm", title }); return new Promise<boolean>(resolve => { release = resolve; }); };
+	f.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
+	await f.settle();
+	const refused = await f.answer({ answer: "yes" });
+	assert.equal(refused.content[0].text, `Error: dialog p1 ("Allow recognized data-loss command?") is relayed to the human; you cannot answer it.`);
+	assert.match(f.lastDigest(), /^ {2}protected question p1 \(confirm\) relayed to the human by code: Allow recognized data-loss command\?/m);
+	assert.deepEqual(f.responses(), []);
+	release(true);
+	await f.settle();
+	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: true }]);
+});
+
+for (const [label, ctx] of [
+	["no UI", { hasUI: false }],
+	["print mode", { hasUI: false, mode: "print" }],
+	["rpc without an interactive host", { mode: "rpc" }],
+] as const) {
+	test(`with ${label} a protected dialog is cancelled for the member and recorded as a blocker, never approved`, async () => {
+		const f = await fleetWithMember({ ctx: { ...ctx } });
+		f.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
+		await f.settle();
+		assert.deepEqual(f.calls, [], "nobody was asked");
+		assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", cancelled: true }]);
+		const doc = f.document();
+		assert.match(doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Grants")), /^- web: protected question cancelled — Allow recognized data-loss command\? \(no interactive UI to relay it to the human\)$/m);
+		assert.match(f.lastDigest(), /protected question p1 \(confirm\) cancelled by code: no interactive UI to relay it to the human/);
+	});
+}
+
+test("an rpc controller with the interactive host signal relays protected dialogs to its UI", async () => {
+	const f = await fleetWithMember({ ctx: { mode: "rpc" }, env: { ...controllerEnv, GENTLE_SHELL_INTERACTIVE_HOST: "1" }, script: { confirm: true } });
+	f.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
+	await f.settle();
+	assert.equal(f.calls.length, 1);
+	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: true }]);
+});
+
+test("an unknown dialog stays model-answerable and never reaches the human's UI", async () => {
+	const f = await fleetWithMember({ script: { confirm: true } });
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Delete the old table?", message: "irreversible" });
+	await f.settle();
+	assert.deepEqual(f.calls, []);
+	assert.deepEqual(f.responses(), []);
+	assert.match((await f.answer({ answer: "no" })).content[0].text, /^Answered/);
+});
+
+// Super YOLO in the controller (user, T3 scope addition): code approves the
+// guard, permission and access classes for every member and audits each one.
+const AUTO_CASES: Array<{ label: string; request: Record<string, unknown>; response: Record<string, unknown>; shown: string }> = [
+	{ label: "data-loss command", request: DATA_LOSS, response: { confirmed: true }, shown: "yes" },
+	{ label: "guarded command", request: GUARDED, response: { confirmed: true }, shown: "yes" },
+	{ label: "messaging grant", request: MESSAGING, response: { value: "Allow once" }, shown: "Allow once" },
+	{ label: "foreign clone grant", request: FOREIGN, response: { confirmed: true }, shown: "yes" },
+];
+
+for (const item of AUTO_CASES) {
+	test(`under the controller's Super YOLO a ${item.label} dialog is auto-approved by code and audited`, async () => {
+		const f = await fleetWithMember({ permissionMode: async () => "super-yolo" });
+		f.child.emit({ type: "extension_ui_request", id: "p1", ...item.request });
+		await f.settle();
+		assert.deepEqual(f.calls, [], "the human was not asked");
+		assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", ...item.response }]);
+		const doc = f.document();
+		const audit = doc.slice(doc.indexOf("## Auto-approvals"), doc.indexOf("## Log"));
+		const title = String(item.request.title).split("\n")[0];
+		assert.ok(audit.split("\n").some(line => line.startsWith(`- 2026-11-02T12:00:00.000Z · web — ${title}`) && line.endsWith(` → ${item.shown}`)), audit);
+		const saved = readLedger(f.h);
+		assert.equal(saved.autoApprovals.length, 1);
+		assert.equal(saved.autoApprovals[0].member, "web");
+		assert.equal(saved.autoApprovals[0].answer, item.shown);
+		assert.match(f.lastDigest(), /protected question p1 \(\w+\) auto-approved by code under the controller's Super YOLO/);
+	});
+}
+
+test("under Super YOLO provider consent and anything touching secrets still go to the human", async () => {
+	const f = await fleetWithMember({ permissionMode: async () => "super-yolo", script: { select: "2. Skip review\nEffect: b", confirm: false } });
+	const requests = [
+		{ id: "r1", ...REVIEW_CONSENT },
+		{ id: "m1", ...MODEL_COST },
+		{ id: "s1", ...DATA_LOSS, message: "rm ~/.ssh/old_key" },
+		{ id: "s2", ...GUARDED, message: "cp .env.production out" },
+		{ id: "s3", ...FOREIGN, message: "Launch a subagent in /home/me/.aws?" },
+	];
+	for (const request of requests) {
+		f.child.emit({ type: "extension_ui_request", ...request });
+		await f.settle();
+	}
+	assert.deepEqual(f.calls.map(call => call.method), ["select", "select", "confirm", "confirm", "confirm"], "every one reached the human");
+	assert.deepEqual(f.responses().map(response => response.id), ["r1", "m1", "s1", "s2", "s3"]);
+	f.document();
+	assert.deepEqual(readLedger(f.h).autoApprovals, []);
+});
+
+test("in any other controller mode protected dialogs are relayed, and switching Super YOLO off stops auto-approval at the next dialog", async () => {
+	let mode: PermissionMode = "yolo";
+	const f = await fleetWithMember({ permissionMode: async () => mode, script: { confirm: false } });
+	for (const [id, next] of [["p1", "super-yolo"], ["p2", "normal"], ["p3", "auto"], ["p4", "auto"]] as const) {
+		f.child.emit({ type: "extension_ui_request", id, ...DATA_LOSS });
+		await f.settle();
+		mode = next;
+	}
+	assert.equal(f.calls.length, 3, "yolo, normal and auto asked the human");
+	assert.deepEqual(f.responses().map(response => response.confirmed), [false, true, false, false]);
+	f.document();
+	assert.equal(readLedger(f.h).autoApprovals.length, 1);
+});
+
+test("the controller's live mode is read through the real yolo host channel", async () => {
+	const listeners = new Map<string, Array<(payload: unknown) => void>>();
+	const events = {
+		on: (name: string, listener: (payload: unknown) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), listener]); return () => {}; },
+		emit: (name: string, payload: unknown) => { for (const listener of listeners.get(name) ?? []) listener(payload); },
+	};
+	const yolo = registerYoloSessionPolicy({ registerCommand() {}, events } as unknown as ExtensionAPI, { ...controllerEnv, GENTLE_PI_CONFIG_HOME: join(scratch, "yolo-config") }, { resolveIdentity: async () => undefined });
+	const f = await fleetWithMember({ permissionMode: null, events, script: { confirm: false } });
+	assert.equal(await yolo.setMode("super-yolo", f.ctx), true);
+	f.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
+	await f.settle();
+	assert.deepEqual(f.calls, []);
+	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: true }]);
+	assert.equal(await yolo.setMode("normal", f.ctx), true);
+	f.child.emit({ type: "extension_ui_request", id: "p2", ...DATA_LOSS });
+	await f.settle();
+	assert.equal(f.calls.length, 1, "after switching off the human is asked again");
+});
+
+test("fleet_grant and fleet_revoke need the human's confirmation and edit the Grants section", async () => {
+	const f = await fleetWithMember({ script: { confirm: true } });
+	const grant = await f.h.tools.get("fleet_grant")!.execute("g", { scope: "publish:social", description: "Publish scheduled posts on X and LinkedIn from the content calendar" }, undefined, undefined, f.ctx);
+	assert.match(grant.content[0].text, /^Recorded standing permission g1 for publish:social\./);
+	assert.equal(f.calls[0].method, "confirm");
+	assert.match(String(f.calls[0].detail), /Publish scheduled posts on X and LinkedIn/);
+	assert.match(String(f.calls[0].detail), /never cover/);
+	assert.match(f.document().slice(f.document().indexOf("## Grants")), /^- g1 · `publish:social` — Publish scheduled posts/m);
+	assert.match((await f.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, f.ctx)).content[0].text, /Standing permissions: g1 publish:social/);
+	const revoke = (id: string) => f.h.tools.get("fleet_revoke")!.execute("r", { id }, undefined, undefined, f.ctx);
+	(f.ctx.ui as unknown as Record<string, unknown>).confirm = async () => false;
+	assert.match((await revoke("g1")).content[0].text, /declined/);
+	assert.match(f.document(), /- g1 ·/, "a declined revoke keeps the grant");
+	(f.ctx.ui as unknown as Record<string, unknown>).confirm = async () => true;
+	assert.match((await revoke("g1")).content[0].text, /^Revoked standing permission g1/);
+	assert.doesNotMatch(f.document(), /- g1 ·/);
+	assert.match((await revoke("g9")).content[0].text, /^Error: no standing permission g9/);
+});
+
+test("fleet_grant is refused when the human declines or there is no interactive UI", async () => {
+	const declined = await fleetWithMember({ script: { confirm: false } });
+	assert.match((await declined.h.tools.get("fleet_grant")!.execute("g", { scope: "publish:x", description: "Post on X" }, undefined, undefined, declined.ctx)).content[0].text, /declined; nothing was recorded/);
+	assert.doesNotMatch(declined.document(), /publish:x/);
+	const headless = await fleetWithMember({ ctx: { hasUI: false } });
+	assert.match((await headless.h.tools.get("fleet_grant")!.execute("g", { scope: "publish:x", description: "Post on X" }, undefined, undefined, headless.ctx)).content[0].text, /^Error: fleet_grant needs the human's confirmation/);
+	assert.deepEqual(headless.calls, []);
+	assert.doesNotMatch(headless.document(), /publish:x/);
+});
+
+test("a grant never lets the fleet answer a protected dialog", async () => {
+	const f = await fleetWithMember({ script: { confirm: true } });
+	await f.h.tools.get("fleet_grant")!.execute("g", { scope: "publish:all", description: "Push and publish anything" }, undefined, undefined, f.ctx);
+	let release!: (value: boolean) => void;
+	(f.ctx.ui as unknown as Record<string, unknown>).confirm = () => new Promise<boolean>(resolve => { release = resolve; });
+	f.child.emit({ type: "extension_ui_request", id: "p1", ...GUARDED });
+	await f.settle();
+	assert.match((await f.answer({ answer: "yes" })).content[0].text, /relayed to the human/);
+	release(false);
+	await f.settle();
+	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: false }]);
 });

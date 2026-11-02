@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { JsonLines, piCommand, type ChildLike, type PiCommand, type ProcessControl, type Spawn } from "./agents-runner.ts";
 import { childPackageExtensionArgs, parseChildPackageInjection } from "./child-package-injection.ts";
+import { classifyDialog, dialogResponse, type DialogResponse, type FleetDialogAnswer, type ProtectedDialog } from "./fleet-dialogs.ts";
 import { FLEET_ROLE_ENV } from "./fleet-role.ts";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.ts";
 import { TODO_DETAILS_KEY, TODO_TOOL_NAME, todoProgress, type TodoState } from "./shell-todo.ts";
@@ -12,9 +13,15 @@ import { TODO_DETAILS_KEY, TODO_TOOL_NAME, todoProgress, type TodoState } from "
 
 // Subagent-child markers: a member is a primary session, not a delegated child.
 const CHILD_ONLY_ENV = ["GENTLE_PI_AGENTS_CHILD", "GENTLE_PI_AGENTS_OWNED_IPC", "GENTLE_PI_AGENTS_REQUESTED_TOOLS", "GENTLE_PI_AGENTS_PARENT_PERMISSION_FD"];
+// Standing permissions are never inherited (S2): the env-forced autonomous
+// guardrails (extensions/gentle-ai.ts:1770). The saved permission-mode default
+// is not env-based; lib/yolo-session-policy.ts keeps every member in NORMAL.
+const PERMISSION_STATE_ENV = ["GENTLE_PI_AUTONOMOUS_MODE"];
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const LAST_TEXT_MAX = 400;
 const DETAIL_FIELD_MAX = 300;
+// A protected dialog reaches the human with its full text (consent content).
+const RELAY_FIELD_MAX = 8000;
 const STOP_GRACE_MS = 5000;
 // After the process exits, its last stdout lines may still be in the pipe.
 const STDOUT_DRAIN_MS = 2000;
@@ -47,7 +54,7 @@ export function buildMemberLaunch(input: MemberLaunchInput): MemberLaunch {
 	// The interactive-host signal routes the member's own questions through RPC
 	// dialogs, so they reach the controller instead of failing headless.
 	const env: NodeJS.ProcessEnv = { ...input.env, [FLEET_ROLE_ENV]: "member", [INTERACTIVE_HOST_ENV]: "1" };
-	for (const key of CHILD_ONLY_ENV) delete env[key];
+	for (const key of [...CHILD_ONLY_ENV, ...PERMISSION_STATE_ENV]) delete env[key];
 	return { command: pi.command, args, env, cwd: input.cwd };
 }
 
@@ -59,7 +66,13 @@ export interface FleetMemberDialog {
 	title: string;
 	message?: string;
 	options?: string[];
+	/** Set for a protected class: code relays it to the human; the fleet model cannot answer it. */
+	protected?: ProtectedDialog;
+	/** Full text of a protected dialog for the human relay. */
+	relay?: { title: string; message?: string; placeholder?: string; prefill?: string };
 }
+
+export type FleetAnswerResult = { ok: true; dialog: FleetMemberDialog; response: DialogResponse } | { ok: false; error: string };
 
 export type FleetMemberEvent =
 	| { kind: "settled" }
@@ -235,9 +248,38 @@ export class FleetMember {
 		if (this.todo) parts.push(`todo ${this.todo.done}/${this.todo.total}${this.todo.current ? ` "${oneLine(this.todo.current, 60)}"` : ""}`);
 		if (this.lastTool) parts.push(`last tool ${this.lastTool}`);
 		parts.push(`${tokens(this.usage.totalTokens)} tok`, `$${this.usage.cost.toFixed(2)}`);
-		if (this.dialogs.length > 0) parts.push(`question: ${oneLine(this.dialogs[0].title, 80)}`);
+		if (this.dialogs.length > 0) parts.push(`question${this.dialogs[0].protected ? " (relayed to the human)" : ""}: ${oneLine(this.dialogs[0].title, 80)}`);
 		if (this.lastError) parts.push(`error: ${oneLine(this.lastError, 80)}`);
 		return parts.join(" · ");
+	}
+
+	/**
+	 * The fleet model's answer to a pending dialog (default: the oldest). Refused,
+	 * with nothing written, for a protected dialog or an answer that does not fit.
+	 */
+	answer(answer: FleetDialogAnswer, dialogId?: string): FleetAnswerResult {
+		const dialog = dialogId === undefined ? this.dialogs[0] : this.dialogs.find(entry => entry.id === dialogId);
+		if (!dialog) return { ok: false, error: dialogId === undefined ? `no pending dialog for ${this.name}.` : `no pending dialog "${dialogId}" for ${this.name}.` };
+		if (dialog.protected) return { ok: false, error: `dialog ${dialog.id} ("${oneLine(dialog.title, 80)}") is relayed to the human; you cannot answer it.` };
+		const built = dialogResponse(dialog, answer);
+		if ("error" in built) return { ok: false, error: built.error };
+		if (!this.respond(dialog.id, built.response)) return { ok: false, error: `${this.name} is stopping or gone; nothing was written.` };
+		return { ok: true, dialog, response: built.response };
+	}
+
+	/** Code path: writes the response for a pending dialog and clears it. */
+	respond(dialogId: string, response: DialogResponse): boolean {
+		if (!this.dialogs.some(dialog => dialog.id === dialogId)) return false;
+		if (!this.write({ type: "extension_ui_response", id: dialogId, ...response })) return false;
+		this.dialogs = this.dialogs.filter(dialog => dialog.id !== dialogId);
+		this.note(`answered ${dialogId}`);
+		if (this.dialogs.length === 0 && this.status === "waiting-question") this.setStatus("working");
+		else this.options.onChange?.(this);
+		return true;
+	}
+
+	hasDialog(dialogId: string): boolean {
+		return this.dialogs.some(dialog => dialog.id === dialogId);
 	}
 
 	/** Bounded detail for an explicit request; still no transcript. */
@@ -335,6 +377,16 @@ export class FleetMember {
 				const dialog: FleetMemberDialog = { id: String(event.id ?? ""), method: String(event.method), title: oneLine(event.title, DETAIL_FIELD_MAX) };
 				if (typeof event.message === "string") dialog.message = oneLine(event.message, DETAIL_FIELD_MAX);
 				if (Array.isArray(event.options)) dialog.options = event.options.filter((option): option is string => typeof option === "string");
+				// Classified on the raw text: a bounded title could cut its marker.
+				const raw = { method: dialog.method, title: typeof event.title === "string" ? event.title : "", message: typeof event.message === "string" ? event.message : undefined, options: dialog.options };
+				const protectedClass = classifyDialog(raw);
+				if (protectedClass) {
+					dialog.protected = protectedClass;
+					dialog.relay = { title: raw.title.slice(0, RELAY_FIELD_MAX) };
+					if (raw.message !== undefined) dialog.relay.message = raw.message.slice(0, RELAY_FIELD_MAX);
+					if (typeof event.placeholder === "string") dialog.relay.placeholder = event.placeholder.slice(0, RELAY_FIELD_MAX);
+					if (typeof event.prefill === "string") dialog.relay.prefill = event.prefill.slice(0, RELAY_FIELD_MAX);
+				}
 				this.dialogs.push(dialog);
 				this.note(`question (${dialog.method}): ${dialog.title}${dialog.options?.length ? ` [${dialog.options.join(" | ")}]` : ""}`);
 				this.setStatus("waiting-question");

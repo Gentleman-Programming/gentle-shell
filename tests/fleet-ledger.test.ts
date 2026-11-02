@@ -193,3 +193,33 @@ test("a budget warning becomes a Blockers entry and a budget log entry", () => {
 	assert.deepEqual([...log.matchAll(/^- \S+ · (\w+) · (\S+)/gm)].map(match => `${match[1]}:${match[2]}`), ["spawn:api", "budget:api", "budget:fleet"]);
 	assert.deepEqual(h.readLedger().budgetWarnings.map(entry => [entry.member, entry.text]), [["api", "member api spent $0.80 of its $1.00 budget (80%)"], [null, "fleet spent $5.00 of its $5.00 budget (100%)"]]);
 });
+
+// T3 (S2): standing permissions the human confirmed live in a Grants section;
+// a protected dialog the fleet could not relay is a Blocker naming the member.
+test("grants and relay blockers render in the document and persist in the ledger", () => {
+	const h = harness();
+	const path = h.ledger.setObjective("Channel", "Run the channel.");
+	h.ledger.flush();
+	assert.match(readFileSync(path, "utf8"), /^## Grants\n\nNone\.$/m);
+	const first = h.ledger.grant("publish:social", "Publish scheduled posts on X and LinkedIn from the content calendar");
+	const second = h.ledger.grant("publish:youtube", "Upload scheduled videos | shorts");
+	assert.deepEqual([first.id, second.id], ["g1", "g2"]);
+	h.ledger.blocker("web", "protected question cancelled — Allow recognized data-loss command? (no interactive UI to relay it)");
+	h.ledger.flush();
+	let doc = readFileSync(path, "utf8");
+	const grants = doc.slice(doc.indexOf("## Grants"), doc.indexOf("## Log"));
+	assert.match(grants, /^- g1 · `publish:social` — Publish scheduled posts on X and LinkedIn from the content calendar \(granted 2026-11-02T10:00:\d\d\.000Z\)$/m);
+	assert.match(grants, /^- g2 · `publish:youtube` — Upload scheduled videos \| shorts/m);
+	assert.match(doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Grants")), /^- web: protected question cancelled — Allow recognized data-loss command\? \(no interactive UI to relay it\)$/m);
+	assert.deepEqual(h.ledger.grants.map(grant => grant.id), ["g1", "g2"]);
+	assert.equal(h.ledger.revoke("g1")?.scope, "publish:social");
+	assert.equal(h.ledger.revoke("g1"), undefined, "a revoked grant is gone");
+	assert.equal(h.ledger.grant("publish:x", "Post on X").id, "g3", "grant ids are never reused");
+	h.ledger.flush();
+	doc = readFileSync(path, "utf8");
+	assert.doesNotMatch(doc, /g1 ·/);
+	const saved = h.readLedger();
+	assert.deepEqual(saved.grants.map(grant => [grant.id, grant.scope]), [["g2", "publish:youtube"], ["g3", "publish:x"]]);
+	assert.equal(saved.blockers.length, 1);
+	assert.deepEqual(saved.log.filter(entry => entry.kind === "grant" || entry.kind === "revoke").map(entry => `${entry.kind}:${entry.text}`), ["grant:g1 publish:social", "grant:g2 publish:youtube", "revoke:g1 publish:social", "grant:g3 publish:x"]);
+});

@@ -29,7 +29,7 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 | `upstream` remote missing | Add `https://github.com/Gentleman-Programming/gentle-shell.git` as `upstream` |
 | `HEAD..upstream/main` is empty | Report "up to date", push only if `origin/main` is behind, stop |
 | Conflict whose intent on either side is unclear | Ask one focused question naming the file and both intents |
-| `package.json` or `pnpm-lock.yaml` changed in the merge | Run `pnpm install`, then commit any lockfile drift |
+| `package.json` or `pnpm-lock.yaml` changed in the merge | Run `npx -y pnpm@11.1.1 install`, then commit any lockfile drift |
 | A test fails after the merge | Fix it when the fork/upstream interaction causes it; otherwise stop and report it with its output |
 | RDD stop hook flags the merge | Run `gentle_review` assess; inspect only if `reviewDue` is true |
 
@@ -46,8 +46,10 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 5. `git merge --no-ff upstream/main -m "merge: integrate upstream/main"`.
 6. For each conflict: read both sides and the fork commit that introduced the local side (`git log upstream/main..ORIG_HEAD -- <file>`), merge the intents, `git add`, then `git commit --no-edit`.
 7. Preservation check: for every file in the fork-only commits, `git diff <fork-commit> HEAD -- <file>` must still show the fork's added lines.
-8. Dependencies: if `git diff --name-only ORIG_HEAD HEAD` lists `package.json` or `pnpm-lock.yaml`, run `pnpm install`.
-9. Verify: `pnpm run typecheck` then `pnpm test`. Use background execution; the suite takes about a minute.
+8. Dependencies: if `git diff --name-only ORIG_HEAD HEAD` lists `package.json` or `pnpm-lock.yaml`, run `npx -y pnpm@11.1.1 install`.
+9. Verify: `npx -y pnpm@11.1.1 run typecheck` then `npx -y pnpm@11.1.1 test`. Use background execution; the suite takes about three minutes.
+
+Never call bare `pnpm` here: a machine whose global pnpm wrapper lost its `@pnpm/exe` engine fails the whole flow with `the installed pnpm wrapper is missing`. The `npx -y pnpm@<version>` invocation pins the version from `package.json`'s `packageManager` and works regardless of the local wrapper, which is also what `gsm-u` does.
 10. `git push origin main`. Then `git branch -D backup/main-pre-upstream-sync`, unless anything needed manual resolution; in that case keep it and say so.
 
 ## Output Contract

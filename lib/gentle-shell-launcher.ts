@@ -1102,8 +1102,9 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	}
 
 	// The fleet controller never edits code, so it skips the coding context
-	// files (AGENTS.md is ~30% of a full session prefix); members load them.
-	if (input.fleet === true) args.push("--no-context-files");
+	// files (AGENTS.md is ~30% of a full session prefix) and the skills catalog
+	// (over half of its instructions); members load both.
+	if (input.fleet === true) args.push("--no-context-files", "--no-skills");
 	args.push(...input.passthrough);
 
 	const env: Record<string, string | undefined> = {

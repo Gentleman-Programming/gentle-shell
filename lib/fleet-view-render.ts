@@ -158,8 +158,8 @@ export function renderHintLine(context: FleetHintContext, queue: AttentionQueue,
 	const more = key("alt+m", `${density === "power" ? "less" : "more"} detail: ${next}, ${DENSITY_GIVES[density]}`);
 	const options = Math.min(OPTION_KEYS_MAX, queue.focal.options.length) || 1;
 	const parts = {
-		input: [...(queue.focal.kind === "nothing" ? [] : [key("tab", queue.focal.tag.toLowerCase())]), key("enter", "send"), key("@name", "talk to one member"), key("F1-F4", "lenses"), more, key("?", "help")],
-		focal: [key(`1-${options}`, "choose"), key("tab", "back to the conversation")],
+		input: [...(queue.focal.kind === "nothing" ? [] : [key("tab", queue.focal.tag.toLowerCase())]), key("enter", "send"), key("F1-F4", "lenses"), key("F5", "zoom"), more, key("@name", "talk to one member")],
+		focal: [key(`1-${options}`, "choose"), key("tab", "back to the conversation"), key("f m $ l", "lenses"), key("z", "zoom"), key("?", "help")],
 		lens: [key("f m $ l", "switch lens"), key("z", "zoom"), more],
 		zoom: [key("z", "back to the conversation"), key("f m $ l", "switch lens")],
 	}[context];

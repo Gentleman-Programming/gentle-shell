@@ -1184,3 +1184,25 @@ test("rail scrollbar stays hidden when the rail does not overflow", (t) => {
 	scroll.scrollBy(1);
 	assert.equal(scroll.isScrollbarVisible, false);
 });
+
+// Fleet deck (odd/tasks/fleet-orchestrator.md T5): the rail is shared by every
+// session, so one without a "fleet" part must paint exactly what it did before.
+function railSections(withFleet: boolean) {
+	const f = fixture();
+	if (withFleet) sidebarPart(f.tui, "fleet", { render: () => ["fleet"], invalidate() {} }, { digest: () => "fleet", render: () => ["Fleet lens"], invalidate() {} });
+	for (const key of ["jobs", "agents", "todo"]) sidebarPart(f.tui, key, { render: () => [key], invalidate() {} }, { digest: () => key, render: () => [`${key} card`], invalidate() {} });
+	return f;
+}
+
+test("a session without a fleet part paints the same rail as before the fleet section existed", (t) => {
+	const f = railSections(false);
+	t.after(installSidebar(f.tui, theme));
+	assert.deepEqual(rail(f).render(50).map((line) => line.trimEnd()), ["                 ✿ Gentle Shell ✿", "", " Status", "", " jobs card", "", " agents card", "", " todo card"]);
+});
+
+test("a registered fleet part paints in the rail right after Status", (t) => {
+	const f = railSections(true);
+	t.after(installSidebar(f.tui, theme));
+	const lines = rail(f).render(50).map((line) => line.trim()).filter(Boolean);
+	assert.deepEqual(lines.slice(1), ["Status", "Fleet lens", "jobs card", "agents card", "todo card"]);
+});

@@ -37,14 +37,33 @@ The controller has nine tools:
 
 - `fleet_objective` names the fleet with a short title and states its objective. The prompt asks the controller to call it first; it returns the path of the fleet document.
 - `fleet_spawn` starts a member with a name, an objective, an optional working directory (default: the session's), an optional model and an optional `worktree` flag (see **Worktrees**). A spawn costs a full session prefix, so the fleet prefers reusing members. A spawn beyond the live-member limit, or after the fleet budget is spent, is refused with the limit and the config file it comes from.
-- `fleet_send` sends a member a new prompt (queued as a follow-up while it works) or, with mode `steer`, redirects its current run.
+- `fleet_send` sends a member a new prompt (queued as a follow-up while it works) or, with mode `steer`, redirects its current run. It refuses a message whose first non-space character is `/` ("fleet_send sends instructions, not slash commands"): a member slash command such as `/gentle:review-mode disable` could change the member's settings without any dialog.
 - `fleet_status` returns one code-built digest line per member (status, todo progress, last tool, tokens and cost); with a name, it returns that member's bounded detail.
 - `fleet_inspect` returns a member's bounded detail, its working directory, plus its recent activity (tool names, reply excerpts, questions; 40 lines by default, at most 200) and the path of the member's own ODD feature document when its tools or todo name one. It never returns a transcript.
 - `fleet_stop` stops a member; its session file stays under `<agent home>/gentle-fleet/sessions/<fleet session>/<member>`.
 - `fleet_answer` answers a member's pending question on your behalf (default: its oldest; or a question id from the digest). See **Member questions**.
 - `fleet_grant` and `fleet_revoke` record and remove a standing permission. See **Grants**.
 
-The controller wakes only when a member settles, asks a question or exits, with one coalesced digest, never per tool call. A widget lists every member's digest line. Members stop when the controller session ends, and a new session (new, resume, fork) stops and forgets the previous session's members.
+The controller wakes only when a member settles, asks a question or exits, with one coalesced digest, never per tool call. In the terminal UI the fleet deck shows the fleet (see **Fleet deck**); in RPC and print mode a widget lists every member's digest line instead. Members stop when the controller session ends, and a new session (new, resume, fork) stops and forgets the previous session's members.
+
+**Fleet deck.** In the terminal UI the controller shows a calm view centered on the objective (the chosen `design/fleet-tui/05-calm-deck.html`):
+
+- Above the input, the objective strip (title, plan progress, fronts done, next step) and the focal bar: the one item that needs you now, ranked decision (a relayed protected question or a question the fleet escalated) > blocked member > branches ready for review, oldest first, with its options as `[1]` to `[4]` and "then: N more". With nothing to decide it says "Nothing needs you".
+- The lens panel, in the fullscreen sidebar rail when the terminal is wide enough, otherwise above the input (at most eight lines; zoom shows the rest). The lenses are views over the same member rows in the same order: Flows (what each member is doing, attention first), Map (one station per todo), Costs (spend, budget, tokens, cache share; costs show only here and in power density) and Log (the fleet document's blockers and each member's last event).
+- Below the input, one status line (live members, what needs you, lens and density) and one hint line for the keys of the place you are in.
+
+Keys. Letters never act in the input, so a message that starts with `f`, `m`, `l`, `z`, `$` or `?` keeps every character.
+
+| Key | Where | Action |
+|---|---|---|
+| `F1`-`F4` | anywhere | Flows, Map, Costs, Log lens |
+| `F5` | anywhere | Zoom the current lens to a full-screen overlay, or close it |
+| `alt+m` | anywhere | Density light → normal → power (power is the 01 command deck) |
+| `tab` | empty input, a focal item exists | Move to the focal bar; `tab` again goes back. With a draft, or nothing to decide, `tab` stays Pi's tab and autocomplete |
+| `1`-`4` | focal bar | Answer the focal item |
+| `f` `m` `$` `l`, `z`, `?` | focal bar or zoom | Lens, close the zoom, list the keys |
+
+Answering the focal item. A relayed protected question is answered through the same relay as its dialog: the human queue stays serialized (one question at a time), the choice goes to the member, the open dialog closes, and the log records that you answered it; questions that need typed text are answered in their dialog. A member question the fleet brought to you with `fleet_answer` `escalate: true` sends your choice to the controller as a user message, and the controller answers the member with `fleet_answer`; for a question without options, `1` puts a reply prefix in the input. A blocked member's or review item's choice goes to the controller the same way. Escalations are listed under the fleet document's Blockers until answered; without the deck (RPC or print mode) `fleet_answer` refuses `escalate` and the fleet asks you with `ask_user_question` or `ask_user_choice`. The deck refreshes from the ledger's and members' change notifications and rebuilds once per frame, never per event. "Ready for review" stays empty for now: no member signal names a reviewable branch or PR reliably yet.
 
 **Member questions.** The fleet decides alone what serves the objective (choices between options, scope clarifications, plan approvals, next steps) and always escalates to you three classes: provider consent, credentials and security permissions; destructive or irreversible actions; and external publishing (posts, emails or DMs, merges, releases) unless a grant covers it. A member's question reaches the controller as a digest line with its id, method, title, message and numbered options. `fleet_answer` sends the member the matching RPC response: for `select`, one of the offered options or its 1-based number; for `confirm`, yes or no; for `input` and `editor`, the text; with `cancel: true`, a dismissal. An answer that does not fit is refused and nothing is sent. The answered question leaves the member's pending list and the fleet document's Blockers, and the log records that the fleet answered it.
 
@@ -75,7 +94,7 @@ The controller wakes only when a member settles, asks a question or exits, with 
 
 **Fleet memory.** Engram resolves a session's project from its working directory, and a fleet may lead members in several projects. The prompt therefore routes memory explicitly: the fleet's own memory always uses the Engram project `gentle-fleet` with topic keys `fleet/<slug>/...`; for a member's project the controller calls `mem_current_project` with the member's working directory from `fleet_inspect` and passes that project (or saves with that `cwd`), and it never searches all projects. Members keep their own per-directory project. The installed Engram integration has no per-process project setting, so this routing is a prompt rule, not code.
 
-**Controller tool allowlist.** The controller only coordinates, reads and remembers, so its session keeps just the `fleet_*` tools, `read`, `grep`, `find`, `ls`, `ask_user_question`, `ask_user_choice` and five Engram tools (`mem_search`, `mem_context`, `mem_get_observation`, `mem_save`, `mem_current_project`) active. A tool another extension activates later is dropped again before the next request. Members and normal sessions keep every tool.
+**Controller tool allowlist.** The controller only coordinates, reads and remembers, so its session keeps just the `fleet_*` tools, `read`, `grep`, `find`, `ls`, `ask_user_question`, `ask_user_choice` and five Engram tools (`mem_search`, `mem_context`, `mem_get_observation`, `mem_save`, `mem_current_project`) active. A tool another extension activates later is dropped again before the next request. The launch passes `--no-skills`, but Pi still lists the skills of the gentle-pi package the launcher loads with `-e`; the controller drops that list from its prompt. Members and normal sessions keep every tool and their skills.
 
 ## v2.6.0 workspace updates
 

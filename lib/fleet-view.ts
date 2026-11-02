@@ -69,6 +69,10 @@ export interface FleetViewEscalation {
 	title: string;
 	message?: string;
 	options?: string[];
+	/** The member dialog's method; a confirm offers Yes and No. */
+	method?: string;
+	/** The member dialog the fleet brought to the human. */
+	dialogId?: string;
 	at: string;
 }
 
@@ -166,7 +170,7 @@ export interface FocalItem {
 	options: string[];
 	members: string[];
 	at: string | null;
-	/** The member dialog a decision answers, when it came from one. */
+	/** The member dialog a decision answers: a relayed one, or one the fleet escalated. */
 	dialogId?: string;
 }
 
@@ -200,7 +204,7 @@ export function attentionQueue(snapshot: FleetViewSnapshot): AttentionQueue {
 	for (const m of snapshot.members) {
 		for (const dialog of relayedDialogs(m)) decision(m, dialog, `decision:${m.name}:${dialog.id}`, "Only you can answer this one; the fleet cannot.", dialog.id);
 		(snapshot.escalations ?? []).forEach((entry, index) => {
-			if (entry.member === m.name) decision(m, entry, `decision:${m.name}:escalation-${index}`, "The fleet brought this to you; it is outside its authority.");
+			if (entry.member === m.name) decision(m, entry, `decision:${m.name}:escalation-${index}`, "The fleet brought this to you; it is outside its authority.", entry.dialogId);
 		});
 	}
 	for (const m of snapshot.members) {
@@ -435,6 +439,8 @@ export interface FleetViewKey {
 // Keys from 05-calm-deck and design/system.md, in Pi's keybindings.json
 // spelling. None takes a Pi default except tab, which Pi uses for autocomplete
 // (docs/keybindings.md `tui.input.tab`); the fleet takes it only as stated.
+// Letters never act in the input (a message may start with them): from the
+// input, F1-F4 pick a lens, F5 zooms and alt+m changes the density.
 export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
 	{ keys: ["f1"], action: "lens.flows", scope: "global" },
 	{ keys: ["f2"], action: "lens.map", scope: "global" },
@@ -447,6 +453,7 @@ export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
 	{ keys: ["alt+m"], action: "density.next", scope: "global" },
 	{ keys: ["tab"], action: "focal.toggle", scope: "input", sharesPiAction: "tui.input.tab", when: "a focal item exists and no autocomplete is open; otherwise Pi's tab runs" },
 	{ keys: ["1", "2", "3", "4"], action: "focal.answer", scope: "focal-bar" },
+	{ keys: ["f5"], action: "zoom.toggle", scope: "global" },
 	{ keys: ["z"], action: "zoom.toggle", scope: "outside-input" },
 	{ keys: ["?"], action: "help", scope: "outside-input" },
 ];

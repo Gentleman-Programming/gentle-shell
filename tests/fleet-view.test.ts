@@ -197,5 +197,22 @@ test("fleet keys never take one of Pi's default bindings, except the declared ta
 	}
 	assert.deepEqual([...new Set(shares)], ["tab"]);
 	const all = FLEET_VIEW_KEYS.flatMap((binding) => binding.keys);
-	for (const key of ["f1", "f2", "f3", "f4", "f", "m", "$", "l", "alt+m", "tab", "1", "2", "3", "4", "z", "?"]) assert.ok(all.includes(key), key);
+	for (const key of ["f1", "f2", "f3", "f4", "f5", "f", "m", "$", "l", "alt+m", "tab", "1", "2", "3", "4", "z", "?"]) assert.ok(all.includes(key), key);
+});
+
+test("letters act only outside the input; from the input F1-F5 and alt+m reach the lenses, the zoom and the density", () => {
+	const scope = (key: string) => FLEET_VIEW_KEYS.filter((binding) => binding.keys.includes(key)).map((binding) => `${binding.action}@${binding.scope}`);
+	for (const key of ["f", "m", "$", "l", "z", "?"]) assert.ok(scope(key).every((entry) => entry.endsWith("@outside-input")), `${key}: ${scope(key)}`);
+	assert.deepEqual(scope("f5"), ["zoom.toggle@global"]);
+	assert.deepEqual(scope("alt+m"), ["density.next@global"]);
+	assert.deepEqual(["f1", "f2", "f3", "f4"].map((key) => scope(key)[0]), ["lens.flows@global", "lens.map@global", "lens.costs@global", "lens.log@global"]);
+});
+
+test("an escalated confirm offers Yes and No, and an escalation keeps its member dialog id", () => {
+	const snapshot = inkwellFleet();
+	snapshot.escalations = [{ member: "web-invite-flow", title: "Ship the dialog today?", method: "confirm", dialogId: "q7", at: at(18) }];
+	snapshot.members[0].dialogs = [];
+	const { focal } = attentionQueue(snapshot);
+	assert.deepEqual(focal.options, ["Yes", "No"]);
+	assert.equal(focal.dialogId, "q7");
 });

@@ -8,10 +8,12 @@ import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
 import { readFleetConfig } from "../lib/fleet-config.ts";
+import { buildFleetSnapshot, DECK_WIDGET_KEY, FleetDeck } from "../lib/fleet-deck.ts";
 import { autoApproval, describeResponse, type DialogResponse } from "../lib/fleet-dialogs.ts";
 import { FleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
 import { buildMemberLaunch, FleetMember, type FleetMemberDialog, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
+import type { FocalItem } from "../lib/fleet-view.ts";
 import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
@@ -28,10 +30,12 @@ import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 // classes (lib/fleet-dialogs.ts) go by code to the human through this
 // session's own UI, fail closed without one, and under the controller's
 // Super YOLO code approves the guard, permission and access classes, audited.
+// F4 (S4, S7): in the TUI the calm deck (lib/fleet-deck.ts) shows the fleet;
+// rpc and print keep the one-line digest widget.
 
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
-const WIDGET_KEY = "gentle-fleet";
+const WIDGET_KEY = DECK_WIDGET_KEY;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const FLEET_INSPECT_LINES = 40;
 const INSPECT_LINES_MAX = 200;
@@ -87,6 +91,28 @@ const defaultDeps = (): FleetDeps => ({
 
 function text(value: string, details: Record<string, unknown> = {}) {
 	return { content: [{ type: "text" as const, text: value }], details: { gentleFleet: details } };
+}
+
+/** The deck's 1-4 on a relayed dialog: only offered options and yes/no are answerable there. */
+function deckResponse(dialog: FleetMemberDialog, option: number): DialogResponse | undefined {
+	if (dialog.method === "confirm") return option <= 1 ? { confirmed: option === 0 } : undefined;
+	const value = dialog.method === "select" ? dialog.options?.[option] : undefined;
+	return value === undefined ? undefined : { value };
+}
+
+/** Tokens and spend of this controller session's own requests. */
+function controllerUsage(ctx: ExtensionContext): { tokens: number; cost: number } | undefined {
+	try {
+		let tokens = 0, cost = 0;
+		for (const entry of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: { role?: string; usage?: { totalTokens?: number; cost?: { total?: number } } } }>) {
+			if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+			tokens += entry.message.usage?.totalTokens ?? 0;
+			cost += entry.message.usage?.cost?.total ?? 0;
+		}
+		return { tokens, cost };
+	} catch {
+		return undefined;
+	}
 }
 
 function oneLine(value: string, max: number): string {
@@ -153,6 +179,11 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const relayNotes = new WeakMap<FleetMemberDialog, string>();
 	// The human answers one relayed dialog at a time.
 	let humanQueue: Promise<void> = Promise.resolve();
+	// The relayed dialog the human is answering now; the deck's 1-4 can answer it too.
+	let activeRelay: { member: FleetMember; dialog: FleetMemberDialog; answer(response: DialogResponse): void } | undefined;
+	const dialogArrivals = new WeakMap<FleetMemberDialog, string>();
+	let deck: FleetDeck | undefined;
+	let unmountDeck: (() => void) | undefined;
 	const readPermissionMode = deps.permissionMode ?? (async (ctx: ExtensionContext): Promise<PermissionMode> => {
 		const adapter = await discoverYoloUiAdapter(pi, ctx);
 		if (!adapter) return "normal";
@@ -166,6 +197,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		schedule: deps.schedule,
 		now: deps.now,
 		write: deps.writeFile,
+		// Only the deck: in rpc every setWidget is an RPC event, and member changes already refresh it.
+		onChange: () => deck?.invalidate(),
 		onError: error => {
 			if (reportedWriteError) return;
 			reportedWriteError = true;
@@ -192,6 +225,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const track = (member: FleetMember) => {
 		if (!isCurrent(member)) return;
 		ledger?.update(member.name, ledgerFields(member));
+		ledger?.keepEscalations(member.name, member.dialogs.map(dialog => dialog.id));
 		checkBudgets(member);
 	};
 
@@ -209,18 +243,18 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// Print mode, no UI, or rpc without the interactive host signal: nobody to ask.
 	const canAskHuman = (ctx: ExtensionContext | undefined): ctx is ExtensionContext => ctx?.hasUI === true && isInteractiveMode(ctx.mode, env);
 
-	const askHuman = async (ctx: ExtensionContext, member: FleetMember, dialog: FleetMemberDialog): Promise<DialogResponse> => {
+	const askDialog = async (ctx: ExtensionContext, member: FleetMember, dialog: FleetMemberDialog, signal: AbortSignal): Promise<DialogResponse> => {
 		const title = `Fleet member "${member.name}": ${dialog.relay?.title ?? dialog.title}`;
 		switch (dialog.method) {
 			case "select": {
 				const options = dialog.options ?? [];
-				const value = await ctx.ui.select(title, options);
+				const value = await ctx.ui.select(title, options, { signal });
 				return value !== undefined && options.includes(value) ? { value } : { cancelled: true };
 			}
 			case "confirm":
-				return { confirmed: (await ctx.ui.confirm(title, dialog.relay?.message ?? "")) === true };
+				return { confirmed: (await ctx.ui.confirm(title, dialog.relay?.message ?? "", { signal })) === true };
 			case "input": {
-				const value = await ctx.ui.input(title, dialog.relay?.placeholder);
+				const value = await ctx.ui.input(title, dialog.relay?.placeholder, { signal });
 				return value === undefined ? { cancelled: true } : { value };
 			}
 			case "editor": {
@@ -229,6 +263,21 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			default:
 				return { cancelled: true };
+		}
+	};
+
+	// The human answers in the dialog or with the deck's 1-4, whichever comes
+	// first; the other is dismissed. Both feed the same relay step below.
+	const askHuman = async (ctx: ExtensionContext, member: FleetMember, dialog: FleetMemberDialog): Promise<DialogResponse> => {
+		const dismiss = new AbortController();
+		const fromDeck = new Promise<DialogResponse>(resolve => {
+			activeRelay = { member, dialog, answer: resolve };
+		});
+		refreshWidget();
+		try { return await Promise.race([askDialog(ctx, member, dialog, dismiss.signal), fromDeck]); }
+		finally {
+			activeRelay = undefined;
+			dismiss.abort();
 		}
 	};
 
@@ -285,9 +334,71 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		: fleetQuestionLine(dialog);
 
 	const refreshWidget = () => {
+		if (deck) {
+			deck.invalidate();
+			return;
+		}
 		const ui = ctxRef?.hasUI ? ctxRef.ui : undefined;
 		if (!ui) return;
 		ui.setWidget(WIDGET_KEY, members.size === 0 ? undefined : [...members.values()].map(member => member.digest()));
+	};
+
+	// The fleet model reads the human's deck choices as their own words.
+	const tellFleet = (message: string) => {
+		try { void Promise.resolve(pi.sendUserMessage(message, ctxRef?.isIdle?.() === false ? { deliverAs: "followUp" } : undefined)).catch(() => {}); }
+		catch { /* a closed session takes no message */ }
+	};
+
+	const answerFocal = (item: FocalItem, option: number): string | undefined => {
+		const choice = item.options[option];
+		const name = item.members[0];
+		if (!item.dialogId) {
+			tellFleet(`The human chose "${choice}" for: ${item.ask}`);
+			return undefined;
+		}
+		const member = members.get(name);
+		const dialog = member?.dialogs.find(entry => entry.id === item.dialogId);
+		if (!member || !dialog) return "That question is no longer open.";
+		if (dialog.protected) {
+			// Only through the relay, and only the dialog it is asking now.
+			if (activeRelay?.member !== member || activeRelay.dialog !== dialog) return "Answer the open question first: the fleet asks you one at a time.";
+			const response = deckResponse(dialog, option);
+			if (!response) return "This question needs a typed answer: answer it in its dialog.";
+			activeRelay.answer(response);
+			return undefined;
+		}
+		const escalation = ledger?.current.escalations.find(entry => entry.member === name && entry.dialogId === dialog.id);
+		if (!escalation) return "The fleet handles that question; it is not waiting on you.";
+		if (!dialog.options?.length && dialog.method !== "confirm") {
+			ctxRef?.ui.setEditorText(`Answer for ${name}'s question ${dialog.id} ("${oneLine(dialog.title, LOG_TEXT_MAX)}"): `);
+			return undefined;
+		}
+		ledger!.resolveEscalation(name, dialog.id);
+		ledger!.log("answer", name, `human answered escalated "${oneLine(dialog.title, LOG_TEXT_MAX)}": ${choice} (sent to the fleet)`);
+		tellFleet(`The human answered ${name}'s escalated question ${dialog.id} ("${oneLine(dialog.title, LOG_TEXT_MAX)}"): ${choice}. Answer the member with fleet_answer.`);
+		return undefined;
+	};
+
+	const deckSnapshot = () => buildFleetSnapshot({
+		ledger: ensureLedger(ctxRef?.cwd ?? process.cwd()).current,
+		live: name => members.get(name),
+		arrivedAt: dialog => dialogArrivals.get(dialog as FleetMemberDialog),
+		budgets: { fleetUsd: config.fleetBudgetUsd, memberUsd: config.memberBudgetUsd },
+		controller: ctxRef ? controllerUsage(ctxRef) : undefined,
+	});
+
+	// The deck needs Pi's terminal UI; rpc and print keep the digest widget.
+	const mountDeck = (ctx: ExtensionContext) => {
+		unmountDeck?.();
+		unmountDeck = undefined;
+		deck = undefined;
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		deck = new FleetDeck({
+			snapshot: deckSnapshot,
+			answer: answerFocal,
+			relayOpen: () => activeRelay !== undefined && (activeRelay.dialog.method === "select" || activeRelay.dialog.method === "confirm"),
+		});
+		unmountDeck = deck.mount(ctx.ui);
 	};
 
 	const flushWake = () => {
@@ -313,7 +424,10 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!isCurrent(member)) return;
 		track(member);
 		if (event.kind === "settled") ledger?.log("settle", member.name, member.digest());
-		if (event.kind === "dialog") ledger?.log("question", member.name, questionLine(event.dialog));
+		if (event.kind === "dialog") {
+			dialogArrivals.set(event.dialog, (deps.now?.() ?? new Date()).toISOString());
+			ledger?.log("question", member.name, questionLine(event.dialog));
+		}
 		if (event.kind === "exit") ledger?.exited(member.name, event.code, event.signal);
 		if (closed) return;
 		pending.set(member.name, [...(pending.get(member.name) ?? []), event]);
@@ -352,18 +466,30 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		fleetSessionId = ctx.sessionManager.getSessionId() || fleetSessionId;
 		ensureLedger(ctx.cwd);
 		restrictTools();
+		mountDeck(ctx);
 		refreshWidget();
 	});
 
 	// Tools registered or activated after session start (late extensions, MCP)
 	// are dropped again before the next request; an unchanged set is left alone.
-	pi.on("before_agent_start", () => {
+	// The launch passes --no-skills, but Pi still lists the skills of the
+	// gentle-pi package the launcher loads with -e (docs/cli.md: explicit paths
+	// still load); the controller never uses them (L35).
+	pi.on("before_agent_start", event => {
 		restrictTools();
+		const options = (event as { systemPromptOptions?: { skills?: unknown[] } } | undefined)?.systemPromptOptions;
+		if (options && Array.isArray(options.skills) && options.skills.length > 0) options.skills = [];
 	});
+
+	// The controller's own spend shows in the Costs lens.
+	pi.on("turn_end", () => deck?.invalidate());
 
 	pi.on("session_shutdown", () => {
 		closed = true;
 		stopAll();
+		unmountDeck?.();
+		unmountDeck = undefined;
+		deck = undefined;
 	});
 
 	pi.registerTool({
@@ -448,7 +574,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerTool({
 		name: "fleet_send",
 		label: "Fleet send",
-		description: "Send work to a live member. mode prompt (default) queues a new request; mode steer redirects the current run.",
+		description: "Send an instruction to a live member; never a slash command. mode prompt (default) queues a new request; mode steer redirects the current run.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Member name." }),
 			message: Type.String({ description: "The instruction for the member." }),
@@ -456,6 +582,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}),
 		async execute(_id, params) {
 			const { name, message, mode } = params as { name: string; message: string; mode?: "prompt" | "steer" };
+			// A member slash command could change its settings without any dialog (L37 A5).
+			if (/^\s*\//.test(message ?? "")) return text("Error: fleet_send sends instructions, not slash commands.", { error: "slash command" });
 			const member = memberOrError(name);
 			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
 			if (!member.live) return text(`Error: member "${name}" has exited.`, { error: "exited" });
@@ -518,17 +646,29 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerTool({
 		name: "fleet_answer",
 		label: "Fleet answer",
-		description: "Answer a member's pending question on the human's behalf (default: its oldest). select: an offered option or its number; confirm: yes or no; input/editor: the text; cancel: true dismisses it. Protected questions are relayed to the human by code and refused here.",
+		description: "Answer a member's pending question on the human's behalf (default: its oldest). select: an offered option or its number; confirm: yes or no; input/editor: the text; cancel: true dismisses it; escalate: true brings it to the human instead, whose answer arrives as a user message. Protected questions are relayed to the human by code and refused here.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Member name." }),
 			answer: Type.Optional(Type.String({ description: "The answer." })),
 			dialog: Type.Optional(Type.String({ description: "Question id from the digest; defaults to the oldest pending one." })),
 			cancel: Type.Optional(Type.Boolean({ description: "Dismiss the question instead of answering it." })),
+			escalate: Type.Optional(Type.Boolean({ description: "Bring the question to the human: it is outside your authority." })),
 		}),
 		async execute(_id, params) {
-			const { name, answer, dialog, cancel } = params as { name: string; answer?: string; dialog?: string; cancel?: boolean };
+			const { name, answer, dialog, cancel, escalate } = params as { name: string; answer?: string; dialog?: string; cancel?: boolean; escalate?: boolean };
 			const member = memberOrError(name);
 			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
+			if (escalate === true) {
+				// The deck is where the human answers it; rpc and print have none.
+				if (!deck) return text("Error: the human has no fleet deck in this mode; ask them with ask_user_question or ask_user_choice.", { error: "no deck" });
+				const pending = dialog === undefined ? member.dialogs[0] : member.dialogs.find(entry => entry.id === dialog);
+				if (!pending) return text(`Error: no pending dialog${dialog === undefined ? "" : ` "${dialog}"`} for ${name}.`, { error: "answer refused" });
+				const title = oneLine(pending.title, LOG_TEXT_MAX);
+				if (pending.protected) return text(`Error: dialog ${pending.id} ("${title}") is relayed to the human by code already.`, { error: "answer refused" });
+				if (ledger?.current.escalations.some(entry => entry.member === name && entry.dialogId === pending.id)) return text(`Error: ${name}'s question ${pending.id} is already with the human.`, { error: "answer refused" });
+				ensureLedger(ctxRef?.cwd ?? process.cwd()).escalate(name, { dialogId: pending.id, method: pending.method, title: pending.title, ...(pending.message ? { message: pending.message } : {}), ...(pending.options ? { options: pending.options } : {}) });
+				return text(`Brought ${name}'s ${pending.method} "${title}" to the human; their answer arrives as a user message. Then answer it with fleet_answer.`, { name, dialog: pending.id });
+			}
 			if (cancel !== true && typeof answer !== "string") return text("Error: give an answer or cancel: true.", { error: "missing answer" });
 			const result = member.answer(cancel === true ? { cancel: true } : { answer: answer! }, dialog);
 			if ("error" in result) return text(`Error: ${result.error}`, { error: "answer refused" });

@@ -12,7 +12,7 @@ import { FLEET_LOG_MAX, FleetLedger, fleetSlug, type FleetLedgerState } from "..
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-fleet-ledger-")));
 let counter = 0;
 
-function harness(options: { write?: (path: string, text: string) => void } = {}) {
+function harness(options: { write?: (path: string, text: string) => void; onChange?: () => void } = {}) {
 	counter += 1;
 	const root = join(scratch, `case-${counter}`);
 	const cwd = join(root, "project");
@@ -33,6 +33,7 @@ function harness(options: { write?: (path: string, text: string) => void } = {})
 		},
 		write: options.write ? (path, text) => { writes.push(path); options.write!(path, text); } : undefined,
 		onError: error => errors.push(error),
+		onChange: options.onChange,
 	});
 	const runTimers = () => {
 		for (const timer of timers.splice(0)) if (!timer.cancelled) timer.fn();
@@ -222,4 +223,37 @@ test("grants and relay blockers render in the document and persist in the ledger
 	assert.deepEqual(saved.grants.map(grant => [grant.id, grant.scope]), [["g2", "publish:youtube"], ["g3", "publish:x"]]);
 	assert.equal(saved.blockers.length, 1);
 	assert.deepEqual(saved.log.filter(entry => entry.kind === "grant" || entry.kind === "revoke").map(entry => `${entry.kind}:${entry.text}`), ["grant:g1 publish:social", "grant:g2 publish:youtube", "revoke:g1 publish:social", "grant:g3 publish:x"]);
+});
+
+test("an escalated member question is a Blockers entry until it is resolved or its dialog is gone", () => {
+	const h = harness();
+	const path = h.ledger.setObjective("Escalations", "Ship it.");
+	h.ledger.spawned("web", "Own the web front", "/work/web");
+	h.ledger.escalate("web", { dialogId: "q1", method: "select", title: "Invite links expire after?", message: "copy and API must match", options: ["7 days", "30 days"] });
+	h.ledger.escalate("web", { dialogId: "q2", method: "confirm", title: "Ship today?" });
+	h.ledger.flush();
+	const blockers = () => { const doc = readFileSync(path, "utf8"); return doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Grants")); };
+	assert.match(blockers(), /^- web: escalated to the human — Invite links expire after\?$/m);
+	assert.deepEqual(h.ledger.current.escalations.map(entry => [entry.member, entry.dialogId, entry.method]), [["web", "q1", "select"], ["web", "q2", "confirm"]]);
+	assert.match(h.ledger.current.escalations[0].at, /^2026-11-02T10:00:\d\d\.000Z$/);
+	assert.equal(h.ledger.resolveEscalation("web", "q1")?.title, "Invite links expire after?");
+	assert.equal(h.ledger.resolveEscalation("web", "q1"), undefined, "resolved once");
+	// The member answered or dropped q2 (settle, exit, fleet_answer): it leaves too.
+	h.ledger.keepEscalations("web", []);
+	h.ledger.flush();
+	assert.doesNotMatch(blockers(), /escalated/);
+	assert.deepEqual(h.readLedger().escalations, []);
+	assert.deepEqual(h.ledger.current.log.filter(entry => entry.kind === "escalate").map(entry => entry.text), ["Invite links expire after?", "Ship today?"]);
+});
+
+test("every ledger change notifies the listener once, and keeping unchanged escalations notifies nothing", () => {
+	let changes = 0;
+	const h = harness({ onChange: () => { changes += 1; } });
+	h.ledger.spawned("api", "Own the API", "/work/api");
+	h.ledger.update("api", { status: "working", todo: null, tokens: 1, cost: 0, question: null, lastError: null });
+	h.ledger.log("send", "api", "prompt: add tests");
+	assert.equal(changes, 3);
+	h.ledger.keepEscalations("api", []);
+	assert.equal(changes, 3);
+	assert.equal(h.ledger.current.members[0].status, "working");
 });

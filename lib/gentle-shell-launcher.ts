@@ -179,6 +179,8 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 
 	if (error === undefined && fleet && piSubcommand !== undefined) {
 		error = `orchestrator cannot be combined with the pi subcommand '${piSubcommand}'`;
+	} else if (error === undefined && fleet && command !== undefined) {
+		error = `orchestrator cannot be combined with the '${command}' command`;
 	}
 
 	if (error === undefined) {

@@ -76,3 +76,13 @@ test("fleetRole reads only the two known roles", () => {
 	assert.equal(fleetRole({ [FLEET_ROLE_ENV]: "boss" }), undefined);
 	assert.equal(fleetRole({}), undefined);
 });
+
+test("orchestrator refuses a launcher command after it", () => {
+	assert.equal(parseLauncherArgs(["orchestrator", "setup"]).error, "orchestrator cannot be combined with the 'setup' command");
+	assert.equal(parseLauncherArgs(["orchestrator", "home", "import-pi"]).error, "orchestrator cannot be combined with the 'home' command");
+});
+
+test("a subagent child of the controller never holds a fleet role", () => {
+	assert.equal(fleetRole({ [FLEET_ROLE_ENV]: "controller", GENTLE_PI_AGENTS_CHILD: "1" }), undefined);
+	assert.equal(fleetRole({ [FLEET_ROLE_ENV]: "member", GENTLE_PI_AGENTS_CHILD: "1" }), undefined);
+});

@@ -191,3 +191,30 @@ test("stop on Windows kills the child handle only", async () => {
 	assert.deepEqual(h.groupKills, []);
 	assert.deepEqual(h.children[0].killed, ["SIGTERM"]);
 });
+
+// Verifier B1: a member pipe error must never crash the controller.
+test("a stdin pipe error is recorded instead of crashing the controller", async () => {
+	const h = harness();
+	h.member.start();
+	assert.doesNotThrow(() => h.children[0].child.stdin!.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" })));
+	assert.match(h.member.digest(), /error: write EPIPE/);
+});
+
+test("a stopping member refuses new commands and a second stop starts no second escalation", async () => {
+	const h = harness({ pid: 4242 });
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	h.member.stop();
+	assert.equal(h.member.stopping, true);
+	assert.equal(h.member.prompt("more"), false);
+	assert.equal(h.member.steer("more"), false);
+	await tick();
+	assert.deepEqual(h.children[0].written.map(command => command.type), ["prompt"]);
+	const timers = h.timers.length;
+	h.member.stop();
+	assert.equal(h.timers.length, timers, "no second escalation chain");
+	h.timers.at(-1)!.fn();
+	h.timers.at(-1)!.fn();
+	assert.deepEqual(h.groupKills, [[-4242, "SIGTERM"], [-4242, "SIGKILL"]]);
+});

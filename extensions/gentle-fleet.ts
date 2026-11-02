@@ -157,8 +157,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const member = memberOrError(name);
 			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
 			if (!member.live) return text(`Error: member "${name}" has exited.`, { error: "exited" });
-			if (mode === "steer") member.steer(message);
-			else member.prompt(message);
+			const sent = mode === "steer" ? member.steer(message) : member.prompt(message);
+			if (!sent) return text(`Error: member "${name}" is stopping and takes no new messages.`, { error: "stopping" });
 			return text(`Sent to "${name}" (${mode ?? "prompt"}).`, { name });
 		},
 	});

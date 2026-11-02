@@ -119,6 +119,7 @@ export class FleetMember {
 	private processGroup: number | undefined;
 	private nextId = 0;
 	private cancelStop: () => void = () => {};
+	private stopRequested = false;
 
 	constructor(options: FleetMemberOptions) {
 		this.options = options;
@@ -129,6 +130,11 @@ export class FleetMember {
 
 	get live(): boolean {
 		return this.status !== "exited";
+	}
+
+	/** A stop was requested: the member takes no new commands. */
+	get stopping(): boolean {
+		return this.stopRequested;
 	}
 
 	start(): void {
@@ -148,6 +154,9 @@ export class FleetMember {
 		const lines = new JsonLines(value => this.handle(value));
 		child.stdout?.setEncoding?.("utf8");
 		child.stdout?.on("data", (chunk: string | Buffer) => lines.push(String(chunk)));
+		// EPIPE and write-after-end arrive as stream errors, not throws: without a
+		// listener they would crash the controller (same guard as agents-runner).
+		child.stdin?.on("error", error => { this.lastError = error.message; this.options.onChange?.(this); });
 		// Drain stderr so a chatty member never blocks on a full pipe.
 		child.stderr?.resume?.();
 		child.on("error", error => {
@@ -157,16 +166,18 @@ export class FleetMember {
 		child.on("exit", (code, signal) => this.exited(code, signal));
 	}
 
-	prompt(message: string): void {
+	/** Returns false when the member is stopping or gone and nothing was sent. */
+	prompt(message: string): boolean {
 		const working = this.status === "working" || this.status === "waiting-question";
-		this.write({ type: "prompt", message, ...(working ? { streamingBehavior: "followUp" } : {}) });
+		if (!this.write({ type: "prompt", message, ...(working ? { streamingBehavior: "followUp" } : {}) })) return false;
 		if (!working) this.setStatus("working");
+		return true;
 	}
 
 	/** Steering only reaches a running member; an idle one gets a new prompt. */
-	steer(message: string): void {
-		if (this.status === "working" || this.status === "waiting-question") this.write({ type: "steer", message });
-		else this.prompt(message);
+	steer(message: string): boolean {
+		if (this.status === "working" || this.status === "waiting-question") return this.write({ type: "steer", message });
+		return this.prompt(message);
 	}
 
 	abort(): void {
@@ -180,7 +191,8 @@ export class FleetMember {
 	/** Close stdin for an orderly shutdown, then escalate after the grace period. */
 	stop(): void {
 		const child = this.child;
-		if (!child || !this.live) return;
+		if (!child || !this.live || this.stopRequested) return;
+		this.stopRequested = true;
 		try { child.stdin?.end(); } catch { this.signal("SIGTERM"); }
 		const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
 		this.cancelStop = this.options.schedule(() => {
@@ -214,12 +226,13 @@ export class FleetMember {
 		return lines.join("\n");
 	}
 
-	private write(command: Raw): void {
+	private write(command: Raw): boolean {
 		const stdin = this.child?.stdin;
-		if (!stdin || !this.live) return;
+		if (!stdin || !this.live || this.stopRequested || stdin.writableEnded) return false;
 		this.nextId += 1;
 		try { stdin.write(`${JSON.stringify({ id: `${this.name}-${this.nextId}`, ...command })}\n`); }
-		catch (error) { this.lastError = error instanceof Error ? error.message : String(error); }
+		catch (error) { this.lastError = error instanceof Error ? error.message : String(error); return false; }
+		return true;
 	}
 
 	private setStatus(status: FleetMemberStatus): void {

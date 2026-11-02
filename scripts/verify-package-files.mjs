@@ -107,6 +107,7 @@ export const requiredPaths = [
   // Fleet orchestrator controller and its lean prompt (odd/tasks/fleet-orchestrator.md).
   "extensions/gentle-fleet.ts",
   "lib/fleet-member.ts",
+  "lib/fleet-ledger.ts",
   "assets/fleet-orchestrator.md",
   "extensions/resume-hint.ts",
   "extensions/session-scratch.ts",

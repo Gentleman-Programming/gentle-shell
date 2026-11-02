@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parsePathTokens, readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 
 // Herdr hands a clipboard image to a terminal on another machine as a temp-file
@@ -102,4 +105,14 @@ test("token parsing handles single quotes, double quotes, escapes and newlines",
 	assert.deepEqual(parsePathTokens("'a b.png' \"c d.png\" e\\ f.png"), ["a b.png", "c d.png", "e f.png"]);
 	assert.deepEqual(parsePathTokens("\n/tmp/a.png\n\n/tmp/b.png\r\n"), ["/tmp/a.png", "/tmp/b.png"]);
 	assert.deepEqual(parsePathTokens("'/tmp/it'\\''s.png'"), ["/tmp/it's.png"]);
+});
+
+test("an oversized file is rejected before its bytes are read", () => {
+	// A sparse file keeps this cheap while still exceeding the 64 MiB cap.
+	const directory = mkdtempSync(join(tmpdir(), "gentle-pasted-path-"));
+	const path = join(directory, "huge.png");
+	writeFileSync(path, PNG_2X1);
+	truncateSync(path, 64 * 1024 * 1024 + 1);
+	assert.deepEqual(readPastedImagePaths(path, {}), []);
+	rmSync(directory, { recursive: true, force: true });
 });

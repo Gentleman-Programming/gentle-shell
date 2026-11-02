@@ -91,7 +91,10 @@ export function readPastedImagePaths(text: string, options: PastedImagePathOptio
 	const home = options.home ?? homedir();
 	const readFile = options.readFile ?? ((path: string) => readFileSync(path));
 	const isFile = options.isFile ?? ((path: string) => {
-		try { return statSync(path).isFile(); } catch { return false; }
+		try {
+			const stat = statSync(path);
+			return stat.isFile() && stat.size > 0 && stat.size <= MAX_PASTED_BYTES;
+		} catch { return false; }
 	});
 	const images: ClipboardImage[] = [];
 	for (const token of tokens) {

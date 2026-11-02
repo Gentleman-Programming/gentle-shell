@@ -146,7 +146,7 @@ Terminal artboards use no shadows inside the screen.
 
 **Design rules (proposed for fleet designs, values from the themes above):**
 
-- Every state carries a glyph and a text label, never color alone: `◌ starting`, `● working` (`accent`), `◆ waiting on you` (`warning`), `◇ idle` (readable secondary text), `✕ exited` (`error`); todo items `● done`, `◐ current`, `○ pending`.
-- Member hues (one per member, distinct from `accent`, which marks the fleet orchestrator): Gentle `#E0C15A`, `#B99BF2`, `#A4DAA7`; Cute `#A9C7EE`, `#E0C27A`, `#B4E7C7`; Sexy `#A9C7EE`, `#E0C27A`, `#C49BFF`.
+- Every state carries a glyph and a text label, never color alone: `◌ starting`, `● working` (`accent`), `◆ waiting on you` (`warning`), `◇ idle` (readable secondary text), `✕ exited` with an error (`error`), `✓ done` (exited cleanly, `success`); todo items `● done`, `◐ current`, `○ pending`.
+- Member hues (distinct from `accent`, which marks the fleet orchestrator): Gentle `#E0C15A`, `#B99BF2`, `#A4DAA7`; Cute `#A9C7EE`, `#E0C27A`, `#B4E7C7`; Sexy `#A9C7EE`, `#E0C27A`, `#C49BFF`. With three members, one hue each; with more, the hue marks the front (`api`, `web`, `docs` name prefixes) and members of any other front use `text`, so the name, never the hue, identifies a member.
 - Thinking text is prefixed `∴` and uses the theme's `thinkingText`, with the Gentle AA substitution from 1.3.
 - Focus ring: `2px solid` `borderAccent`.

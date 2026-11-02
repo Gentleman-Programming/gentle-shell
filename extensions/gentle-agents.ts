@@ -1957,7 +1957,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// An explicit target is validated before any queue or session-dir writes.
 		const parentIdentity = deps.resolveWorktree(parentCwd, parentCwd);
 		if (repositoryRoot !== undefined && workspaceRoot !== undefined) throw new Error("repository_root and workspace_root are mutually exclusive.");
-		if (repositoryRoot !== undefined && (deps.env.GENTLE_PI_AGENTS_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session.");
+		// A fleet member (fleet-orchestrator T8) is an interactive RPC host: its
+		// foreign clone consent below travels to the fleet, which relays it to the human.
+		const interactiveParent = ctx.mode === "tui" || (fleetRole(deps.env) === "member" && isInteractiveRpcHost(ctx.mode, deps.env));
+		if (repositoryRoot !== undefined && (deps.env.GENTLE_PI_AGENTS_CHILD === "1" || !interactiveParent || !ctx.hasUI)) throw new Error("Foreign repository launch requires an interactive parent session.");
 		const selectedRoot = repositoryRoot ?? workspaceRoot;
 		// Preserve ordinary non-Git continuation, without admitting any new root.
 		const sameNonGitContinuation = resume !== undefined && repositoryRoot === undefined && selectedRoot === parentCwd && !parentIdentity;

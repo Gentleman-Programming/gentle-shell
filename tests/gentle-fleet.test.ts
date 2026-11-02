@@ -64,6 +64,10 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 }
 
 const mainCwd = join(scratch, "main");
+// T8: fleet_spawn needs an existing project directory (or create: true).
+const webCwd = join(scratch, "web");
+mkdirSync(mainCwd, { recursive: true });
+mkdirSync(webCwd, { recursive: true });
 
 // A plain theme: every role paints its text unchanged.
 const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text, bg: (_role: string, text: string) => text };
@@ -207,7 +211,8 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions
 }
 
 async function spawnMember(h: ReturnType<typeof harness>, ctx: ExtensionContext, name: string, extra: Record<string, unknown> = {}) {
-	return h.tools.get("fleet_spawn")!.execute(`spawn-${name}`, { name, objective: `Own the ${name} front`, ...extra }, undefined, undefined, ctx);
+	// T8: cwd is required; these tests pass the controller's own cwd unless they choose one.
+	return h.tools.get("fleet_spawn")!.execute(`spawn-${name}`, { name, objective: `Own the ${name} front`, cwd: ctx.cwd, ...extra }, undefined, undefined, ctx);
 }
 
 test("the fleet extension registers nothing unless this session is the fleet controller", () => {
@@ -228,14 +233,14 @@ test("fleet_spawn launches a member session under the fleet session dir and send
 	assert.match(result.content[0].text, /api/);
 	assert.equal(h.spawned.length, 1);
 	const launch = h.spawned[0];
-	assert.equal(launch.cwd, mainCwd, "cwd defaults to the controller session cwd");
+	assert.equal(launch.cwd, mainCwd);
 	assert.equal(launch.env[FLEET_ROLE_ENV], "member");
 	const dir = launch.args[launch.args.indexOf("--session-dir") + 1];
 	assert.equal(dir, join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-1", "api"));
 	assert.deepEqual(launch.args.slice(-2), ["--model", "anthropic/claude-sonnet-5-5"]);
 	assert.deepEqual(h.children[0].written[0], { id: "api-1", type: "prompt", message: "Own the api front" });
-	await spawnMember(h, ctx, "web", { cwd: "/work/web" });
-	assert.equal(h.spawned[1].cwd, "/work/web");
+	await spawnMember(h, ctx, "web", { cwd: webCwd });
+	assert.equal(h.spawned[1].cwd, webCwd);
 });
 
 test(`with no fleet.json fleet_spawn caps live members at ${DEFAULT_MAX_LIVE_MEMBERS} and rejects a duplicate live name`, async () => {
@@ -362,7 +367,7 @@ test("member spawn, settle, question, send, stop and exit land in the ledger and
 	await h.fire("session_start", ctx);
 	await h.tools.get("fleet_objective")!.execute("o1", { title: "Billing", objective: "Ship billing." }, undefined, undefined, ctx);
 	await spawnMember(h, ctx, "api");
-	await spawnMember(h, ctx, "web", { cwd: "/work/web" });
+	await spawnMember(h, ctx, "web", { cwd: webCwd });
 	await tick();
 	const [api, web] = h.children;
 	api.emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "todo", isError: false, result: { content: [], details: { gentleTodo: { tasks: [{ id: 1, title: "Design", status: "done" }, { id: 2, title: "Routes", status: "in_progress" }], nextId: 3, updatedTurn: 1 } } } });
@@ -380,7 +385,7 @@ test("member spawn, settle, question, send, stop and exit land in the ledger and
 	const log = doc.slice(doc.indexOf("## Log"));
 	assert.deepEqual([...log.matchAll(/^- \S+ · (\w+) · (\S+)/gm)].map(match => `${match[1]}:${match[2]}`), ["objective:fleet", "spawn:api", "spawn:web", "settle:api", "question:web", "send:api", "stop:web", "exit:web"]);
 	const saved = readLedger(h);
-	assert.deepEqual(saved.members.map(member => [member.name, member.cwd, member.status]), [["api", mainCwd, "working"], ["web", "/work/web", "exited"]]);
+	assert.deepEqual(saved.members.map(member => [member.name, member.cwd, member.status]), [["api", mainCwd, "working"], ["web", webCwd, "exited"]]);
 	assert.equal(saved.members[1].exitCode, 0);
 	assert.equal(saved.members[1].exitedAt, "2026-11-02T12:00:00.000Z");
 	assert.equal(saved.log.find(entry => entry.kind === "question")?.text, "Pick a database [postgres | sqlite]");
@@ -692,6 +697,119 @@ test("outside a git repository a member runs in place and git is only asked wher
 	assert.equal(h.gitCalls.length, 1, "worktree: false never calls git");
 	h.runTimers();
 	assert.deepEqual(readLedger(h).members.map(member => [member.name, member.worktree, member.branch]), [["pub", null, null], ["posts", null, null]]);
+});
+
+// --- T8 (L54): every member runs in its own project directory, given as cwd.
+// The first real fleet spawned a member without cwd: it ran in a worktree of
+// the controller's repository while its objective was another project.
+
+const spawnTool = (h: ReturnType<typeof harness>) => h.tools.get("fleet_spawn") as unknown as { description: string; parameters: { required?: string[]; properties: Record<string, { description?: string }> } };
+const sessionDirOf = (h: ReturnType<typeof harness>, name: string) => join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-1", name);
+
+test("T8: fleet_spawn requires cwd, described as the member's own project directory, and spawns nothing without it", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const tool = spawnTool(h);
+	assert.ok(tool.parameters.required?.includes("cwd"), "cwd is a required parameter");
+	assert.equal(tool.parameters.required?.includes("create"), false);
+	assert.match(String(tool.parameters.properties.cwd.description), /^The member's own project directory/);
+	assert.match(String(tool.parameters.properties.create.description), /mkdir -p/);
+	assert.match(tool.description, /project directory as cwd/);
+	for (const cwd of [undefined, "", "  "]) {
+		const result = await spawnMember(h, ctx, "api", { cwd });
+		assert.equal(result.content[0].text, "Error: cwd is required: pass the member's own project directory (create: true for a new project).", String(cwd));
+	}
+	assert.equal(h.spawned.length, 0);
+	assert.equal(existsSync(sessionDirOf(h, "api")), false);
+	assert.deepEqual(h.gitCalls, []);
+});
+
+test("T8: a missing project directory is refused without create, naming create: true, and nothing is created", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const parent = join(scratch, "t8-missing");
+	const missing = join(parent, "github-swipe");
+	for (const extra of [{}, { create: false }]) {
+		const result = await spawnMember(h, ctx, "swipe", { cwd: missing, ...extra });
+		assert.equal(result.content[0].text, `Error: ${missing} does not exist. Pass the member's existing project directory as cwd, or create: true to start a new project there.`);
+	}
+	const file = join(scratch, "t8-a-file");
+	writeFileSync(file, "x");
+	assert.equal((await spawnMember(h, ctx, "swipe", { cwd: file, create: true })).content[0].text, `Error: ${file} is not a directory.`);
+	assert.equal(h.spawned.length, 0);
+	assert.equal(existsSync(parent), false);
+	assert.equal(existsSync(sessionDirOf(h, "swipe")), false);
+	assert.deepEqual(h.gitCalls, []);
+});
+
+test("T8: create: true makes the directory with its parents and nothing else, then runs the member there", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const target = join(scratch, "t8-create", "projects", "github-swipe");
+	const result = await spawnMember(h, ctx, "swipe", { cwd: target, create: true });
+	assert.equal(result.content[0].text, `Spawned fleet member "swipe" in ${target} (new project directory). Its digest arrives when it settles, asks a question or exits.`);
+	assert.equal(h.spawned[0].cwd, target);
+	assert.deepEqual(readdirSync(target), [], "no git init, no files");
+	assert.deepEqual(h.gitCalls.map(args => args.slice(0, 2)), [["rev-parse", "--show-toplevel"]], "git is only asked whether it is a repository");
+	// Relative to the controller's cwd; an existing directory with create: true runs in place.
+	await spawnMember(h, ctx, "notes", { cwd: join("t8-rel", "notes"), create: true });
+	assert.equal(h.spawned[1].cwd, join(mainCwd, "t8-rel", "notes"));
+	assert.match((await spawnMember(h, ctx, "web", { cwd: webCwd, create: true })).content[0].text, new RegExp(`in ${webCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. Its digest`));
+	h.runTimers();
+	assert.deepEqual(readLedger(h).members.map(member => [member.name, member.cwd]), [["swipe", target], ["notes", join(mainCwd, "t8-rel", "notes")], ["web", webCwd]]);
+});
+
+test("T8: a member never falls back to the controller's repository: its own non-git project runs in place", async () => {
+	const h = harness();
+	const { repo, root, branches, worktrees } = scratchRepo();
+	const { ctx } = fakeContext("fleet-session-1", repo);
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Swipe", objective: "Build the swipe app." }, undefined, undefined, ctx);
+	const project = join(scratch, "t8-elsewhere", "github-swipe");
+	mkdirSync(project, { recursive: true });
+	await spawnMember(h, ctx, "swipe", { cwd: project });
+	assert.equal(h.spawned[0].cwd, project);
+	assert.deepEqual([branches(), worktrees()], [["main"], [repo]], "no worktree or branch in the controller's repository");
+	assert.deepEqual(readdirSync(root), ["app"]);
+});
+
+test("T8: an explicit cwd keeps the T4 worktree rules: a git project gets a worktree beside it, a plain directory runs in place", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Billing", objective: "Ship billing." }, undefined, undefined, ctx);
+	const { root, repo, branches, worktrees } = scratchRepo();
+	const path = join(root, "app.fleet", "billing", "api");
+	const result = await spawnMember(h, ctx, "api", { cwd: repo });
+	assert.equal(result.content[0].text, `Spawned fleet member "api" in ${path} on new branch fleet/billing/api (worktree of ${repo}). Its digest arrives when it settles, asks a question or exits.`);
+	assert.equal(h.spawned[0].cwd, path);
+	assert.deepEqual([branches(), worktrees()], [["fleet/billing/api", "main"], [repo, path]]);
+	await spawnMember(h, ctx, "pub", { cwd: webCwd });
+	assert.equal(h.spawned[1].cwd, webCwd);
+});
+
+test("T8: digests and fleet_status show new tokens and cost; the ledger keeps new and cached; fleet_inspect the breakdown", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await spawnMember(h, ctx, "swipe");
+	await tick();
+	const [swipe] = h.children;
+	swipe.emit({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 20000, output: 2000, cacheRead: 0, cacheWrite: 0, totalTokens: 22000, cost: { total: 1 } } } });
+	swipe.emit({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 1000, output: 3000, cacheRead: 880000, cacheWrite: 25000, totalTokens: 909000, cost: { total: 0.65 } } } });
+	swipe.emit({ type: "agent_settled", aborted: false });
+	await tick();
+	h.runTimers();
+	const digest = String(h.sent.at(-1)?.message.content);
+	assert.match(digest, /swipe \[idle\] · 51\.0k new tok · \$1\.65/);
+	assert.doesNotMatch(digest, /931\.0k/);
+	assert.match((await h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, ctx)).content[0].text, /51\.0k new tok · \$1\.65/);
+	assert.match((await h.tools.get("fleet_inspect")!.execute("i", { name: "swipe" }, undefined, undefined, ctx)).content[0].text, /^tokens: 51\.0k new \(input 21\.0k, output 5\.0k, cache write 25\.0k\) · 880\.0k cached · 931\.0k with cache$/m);
+	const saved = readLedger(h).members[0];
+	assert.deepEqual([saved.tokens, saved.newTokens, saved.cacheRead], [931000, 51000, 880000]);
 });
 
 // --- gentle-agents: members talk only through their controller (star topology).
@@ -1498,7 +1616,7 @@ test("[1] resumes each member with its own session file in its existing worktree
 	assert.ok(r.h.gitCalls.every(args => args[0] === "rev-parse"), JSON.stringify(r.h.gitCalls));
 	assert.deepEqual(r.h.children.map(child => child.written.filter(command => command.type === "prompt")), [[], []], "each continues its own conversation");
 	const status = (await r.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, r.ctx)).content[0].text.split("\n");
-	assert.deepEqual(status.slice(0, 2), ["api [starting] · 110 tok · $0.85", "pub [starting] · 110 tok · $0.30"], "a resumed member keeps counting from its earlier spend");
+	assert.deepEqual(status.slice(0, 2), ["api [starting] · 110 new tok · $0.85", "pub [starting] · 110 new tok · $0.30"], "a resumed member keeps counting from its earlier spend");
 	assert.match(String(r.h.sent.at(-1)?.message.content), /resumed api, pub/);
 	assert.doesNotMatch(r.focal(), /Resume/);
 	const saved = r.ledger();

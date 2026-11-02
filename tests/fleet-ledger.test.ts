@@ -70,7 +70,7 @@ test("the ledger renders the general fleet document and persists the ledger JSON
 	assert.match(doc, /^Fleet session: `fleet-1`$/m);
 	assert.match(doc, /^Updated: 2026-11-02T10:00:\d\d\.000Z$/m);
 	assert.match(doc, /^## Members$/m);
-	assert.match(doc, /^\| Member \| Owns \| Status \| Progress \| Current task \| Tokens \/ cost \| Waiting on \| Branch \| Worktree \|$/m);
+	assert.match(doc, /^\| Member \| Owns \| Status \| Progress \| Current task \| New tokens \/ cost \| Waiting on \| Branch \| Worktree \|$/m);
 	assert.match(doc, /^\| api \| Own the API \\\| routes and tests \| working \| 1\/3 \| Write routes \| 12\.3k \/ \$0\.46 \| — \| — \| — \|$/m, "pipes in cells are escaped");
 	assert.match(doc, /^\| web \| Own the web front \| waiting-question \| — \| — \| 900 \/ \$0\.01 \| Pick a database \[postgres \\\| sqlite\] \| — \| — \|$/m);
 	const blockers = doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Log"));
@@ -305,4 +305,20 @@ test("a ledger written before resume support loads with empty resume fields, and
 	assert.deepEqual([loaded?.retiredCost, loaded?.interrupted], [0, []]);
 	writeFileSync(h.ledgerPath, "{oops");
 	assert.equal(loadFleetLedger(h.ledgerPath, "fleet-1"), undefined);
+});
+
+// T8 (L54): the document shows new tokens and cost, not cache-inclusive totals.
+test("the fleet document's members table and totals show new tokens and cost", () => {
+	const h = harness();
+	const path = h.ledger.setObjective("Swipe", "Build the swipe app.");
+	h.ledger.spawned("swipe", "Own the app", "/work/swipe");
+	h.ledger.update("swipe", { status: "exited", todo: { done: 0, total: 3, current: null }, tokens: 933200, newTokens: 51000, cacheRead: 882200, cost: 1.65, question: null, lastError: null });
+	h.ledger.flush();
+	const doc = readFileSync(path, "utf8");
+	assert.match(doc, /^\| Member \| Owns \| Status \| Progress \| Current task \| New tokens \/ cost \| Waiting on \| Branch \| Worktree \|$/m);
+	assert.match(doc, /^\| swipe \| Own the app \| exited \| 0\/3 \| — \| 51\.0k \/ \$1\.65 \| — \| — \| — \|$/m);
+	assert.match(doc, /^Totals: 1 members \(0 live\) · 51\.0k new tok · \$1\.65$/m);
+	assert.doesNotMatch(doc, /933\.2k/);
+	const saved = h.readLedger().members[0];
+	assert.deepEqual([saved.newTokens, saved.cacheRead], [51000, 882200], "the breakdown is kept in the ledger");
 });

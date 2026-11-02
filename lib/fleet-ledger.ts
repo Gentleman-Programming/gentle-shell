@@ -23,7 +23,11 @@ export interface FleetLedgerMember {
 	cwd: string;
 	status: string;
 	todo: { done: number; total: number; current: string | null } | null;
+	/** Every token of the member's requests, cache reads included. */
 	tokens: number;
+	/** Input, output and cache-write tokens: what the document shows (T8, L54). Absent in older ledgers. */
+	newTokens?: number;
+	cacheRead?: number;
 	cost: number;
 	/** Pending question, one line with its options. */
 	question: string | null;
@@ -37,7 +41,7 @@ export interface FleetLedgerMember {
 	exitedAt: string | null;
 }
 
-export type FleetMemberFields = Pick<FleetLedgerMember, "status" | "todo" | "tokens" | "cost" | "question" | "lastError">;
+export type FleetMemberFields = Pick<FleetLedgerMember, "status" | "todo" | "tokens" | "newTokens" | "cacheRead" | "cost" | "question" | "lastError">;
 
 export interface FleetLogEntry {
 	at: string;
@@ -153,6 +157,9 @@ function tokens(value: number): string {
 	return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
 }
 
+// A ledger written before T8 kept only the cache-inclusive total.
+const newTokensOf = (member: FleetLedgerMember) => member.newTokens ?? member.tokens;
+
 /** Kebab-case and filename-safe; "fleet" when nothing usable remains. */
 export function fleetSlug(text: string): string {
 	const slug = text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -161,7 +168,7 @@ export function fleetSlug(text: string): string {
 
 export function renderFleetDocument(state: FleetLedgerState): string {
 	const live = state.members.filter(member => member.status !== "exited").length;
-	const totalTokens = state.members.reduce((sum, member) => sum + member.tokens, 0);
+	const totalTokens = state.members.reduce((sum, member) => sum + newTokensOf(member), 0);
 	const totalCost = state.members.reduce((sum, member) => sum + member.cost, 0);
 	const lines = [
 		`# Fleet: ${state.title ?? "untitled"}`,
@@ -169,7 +176,7 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 		`Objective: ${state.objective ?? "not set yet (fleet_objective)"}`,
 		`Fleet session: \`${state.fleetSessionId}\``,
 		`Updated: ${state.updatedAt}`,
-		`Totals: ${state.members.length} members (${live} live) · ${tokens(totalTokens)} tok · $${totalCost.toFixed(2)}`,
+		`Totals: ${state.members.length} members (${live} live) · ${tokens(totalTokens)} new tok · $${totalCost.toFixed(2)}`,
 		"",
 		"<!-- Written by the gentle-fleet controller from its ledger; manual edits are overwritten. -->",
 		"",
@@ -178,10 +185,10 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 	];
 	if (state.members.length === 0) lines.push("No members yet.");
 	else {
-		lines.push("| Member | Owns | Status | Progress | Current task | Tokens / cost | Waiting on | Branch | Worktree |", "|---|---|---|---|---|---|---|---|---|");
+		lines.push("| Member | Owns | Status | Progress | Current task | New tokens / cost | Waiting on | Branch | Worktree |", "|---|---|---|---|---|---|---|---|---|");
 		for (const member of state.members) {
 			const progress = member.todo ? `${member.todo.done}/${member.todo.total}` : null;
-			lines.push(`| ${cell(member.name)} | ${cell(member.objective)} | ${cell(member.status)} | ${cell(progress)} | ${cell(member.todo?.current)} | ${tokens(member.tokens)} / $${member.cost.toFixed(2)} | ${cell(member.question)} | ${code(member.branch)} | ${code(member.worktree)} |`);
+			lines.push(`| ${cell(member.name)} | ${cell(member.objective)} | ${cell(member.status)} | ${cell(progress)} | ${cell(member.todo?.current)} | ${tokens(newTokensOf(member))} / $${member.cost.toFixed(2)} | ${cell(member.question)} | ${code(member.branch)} | ${code(member.worktree)} |`);
 		}
 	}
 	const blockers: string[] = [];

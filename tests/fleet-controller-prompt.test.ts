@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createGentleAiExtension, FLEET_MEMBER_PROMPT } from "../extensions/gentle-ai.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 
 // odd/tasks/fleet-orchestrator.md T1: the fleet controller gets the lean fleet
@@ -70,7 +70,7 @@ async function appendedPrompt(role: string | undefined, cwd = fixtureCwd): Promi
 }
 
 test("the fleet prompt asset stays lean and states the fleet rules", () => {
-	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") <= 2700, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
+	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") <= 2800, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
 	for (const rule of [/do not write or review code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
 });
 
@@ -121,13 +121,32 @@ test("the fleet controller keeps the selected persona without identity, ODD or d
 	}
 });
 
-test("members and ordinary sessions get the same prompt as before for both personas", async () => {
+// T8 (L54): a member did not know it was a fleet member and told the human
+// to open another session. A member gets the normal prompt plus one short
+// member block; ordinary sessions are unchanged.
+test("a member gets exactly the ordinary prompt plus the member block, for both personas", async () => {
 	for (const cwd of [fixtureCwd, neutralCwd]) {
 		const member = await appendedPrompt("member", cwd);
-		assert.equal(member, await appendedPrompt(undefined, cwd));
+		const normal = await appendedPrompt(undefined, cwd);
+		assert.equal(member, `${normal}\n\n${FLEET_MEMBER_PROMPT}`);
+		assert.equal(normal.includes(FLEET_MEMBER_PROMPT), false);
+		assert.equal(await appendedPrompt("other", cwd), normal, "an unknown role is an ordinary session");
 		assert.match(member, /## el Gentleman Identity and Harness/);
 		assert.match(member, /Translate relayed subagent findings/);
 	}
+});
+
+test("the member block says the fleet relays its questions, never to open another session, and stays short", () => {
+	assert.ok(Buffer.byteLength(FLEET_MEMBER_PROMPT, "utf8") <= 600, `member block is ${Buffer.byteLength(FLEET_MEMBER_PROMPT, "utf8")} bytes`);
+	for (const rule of [/member of a Gentle Shell fleet/, /fleet orchestrator/, /ask_user_question/, /ask_user_choice/, /permission/i, /relays? them to the human/, /blocked/i, /never tell the human to open another session or terminal/i, /cwd/]) assert.match(FLEET_MEMBER_PROMPT, rule);
+});
+
+test("the controller never gets the member block", async () => {
+	assert.equal((await appendedPrompt("controller")).includes(FLEET_MEMBER_PROMPT), false);
+});
+
+test("the fleet prompt tells the fleet to pass each member's project directory as cwd", () => {
+	assert.match(FLEET_PROMPT, /Always pass each member's project directory as `cwd`; for a new project use `create: true`/);
 });
 
 test("the fleet controller gets the fleet prompt instead of the ODD orchestrator prompt", async () => {

@@ -35,7 +35,10 @@ export interface FleetViewMember {
 	cwd?: string;
 	status: string;
 	todo: { done: number; total: number; current: string | null } | null;
+	/** Cache reads included. */
 	tokens: number;
+	/** Input, output and cache write (T8): what the deck shows as tokens. */
+	newTokens?: number;
 	cost: number;
 	question: string | null;
 	lastError: string | null;
@@ -83,7 +86,7 @@ export interface FleetViewSnapshot {
 	log: FleetViewLogEntry[];
 	escalations?: FleetViewEscalation[];
 	budgets?: { fleetUsd?: number | null; memberUsd?: number | null };
-	controller?: { tokens: number; cost: number };
+	controller?: { tokens: number; cost: number; newTokens?: number; cacheRead?: number };
 	documentPath?: string;
 	/** The controller's own next step; otherwise the first working member's current todo. */
 	nextStep?: string;
@@ -120,6 +123,9 @@ export const FLEET_FRONT_HUES = 3;
 const relayedDialogs = (m: FleetViewMember) => (m.dialogs ?? []).filter((dialog) => dialog.relayed);
 const frontOf = (m: FleetViewMember) => m.front ?? m.name.split("-")[0];
 const percent = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+// T8 (L54): a long session rereads its cached prefix every turn, so the
+// cache-inclusive total is not spend; without a count, total minus cache reads.
+const newTokensOf = (usage: { tokens: number; newTokens?: number; cacheRead?: number }) => usage.newTokens ?? Math.max(0, usage.tokens - (usage.cacheRead ?? 0));
 const oneLine = (text: string, max = NAME_TEXT_MAX) => {
 	const line = text.replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
@@ -341,8 +347,8 @@ function cells(lens: FleetLens, density: FleetDensity, m: FleetViewMember, state
 	if (lens === "costs") {
 		return [
 			{ key: "cost", text: usd(m.cost), width: 7 },
-			{ key: "tokens", text: formatTokens(m.tokens), width: 6 },
-			{ key: "cached", text: m.cacheRead !== undefined && m.tokens > 0 ? `${percent(m.cacheRead, m.tokens)}%` : "–", role: "muted", width: 5 },
+			{ key: "new", text: formatTokens(newTokensOf(m)), width: 6 },
+			{ key: "cached", text: m.cacheRead !== undefined ? formatTokens(m.cacheRead) : "–", role: "muted", width: 6 },
 			{ key: "share", text: "", gauge: percent(m.cost, maxCost) },
 		];
 	}
@@ -390,11 +396,14 @@ function heads(lens: FleetLens, density: FleetDensity, snapshot: FleetViewSnapsh
 		const budget = status.budgetUsd
 			? `budget ${renderGauge(percent(status.spentUsd, status.budgetUsd))} $${status.spentUsd.toFixed(2)} of $${status.budgetUsd.toFixed(2)} · ${percent(status.spentUsd, status.budgetUsd)}% · $${Math.max(0, status.budgetUsd - status.spentUsd).toFixed(2)} left`
 			: `spent $${status.spentUsd.toFixed(2)} · no fleet budget set`;
-		const tokens = snapshot.members.reduce((sum, m) => sum + m.tokens, snapshot.controller?.tokens ?? 0);
-		const known = snapshot.members.filter((m) => m.cacheRead !== undefined);
-		const cached = known.length ? ` · ${percent(known.reduce((sum, m) => sum + m.cacheRead, 0), known.reduce((sum, m) => sum + m.tokens, 0))}% cached` : "";
+		const usages = snapshot.controller ? [...snapshot.members, snapshot.controller] : snapshot.members;
+		const fresh = usages.reduce((sum, usage) => sum + newTokensOf(usage), 0);
+		const known = usages.filter((usage) => usage.cacheRead !== undefined);
+		const cached = known.length ? ` · ${formatTokens(known.reduce((sum, usage) => sum + usage.cacheRead, 0))} cached` : "";
+		const prefixes = snapshot.members.filter((m) => m.prefixTokens !== undefined);
+		const prefix = prefixes.length ? ` · prefix ${formatTokens(prefixes.reduce((sum, m) => sum + m.prefixTokens, 0))}` : "";
 		const fronts = [...new Set(snapshot.members.map(frontOf))].map((front) => `${front} ${snapshot.members.filter((m) => frontOf(m) === front).reduce((sum, m) => sum + m.cost, 0).toFixed(2)}`);
-		return [budget, `tokens ${formatTokens(tokens)}${cached}`, `fronts $ ${fronts.join(" · ")}`];
+		return [budget, `tokens ${formatTokens(fresh)} new${cached}${prefix}`, `fronts $ ${fronts.join(" · ")}`];
 	}
 	const blockers = rows.filter((entry) => entry.state === "blocked").map((entry) => entry.member.name);
 	return [

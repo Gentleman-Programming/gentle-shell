@@ -112,7 +112,7 @@ export interface FleetMemberOptions {
 	/** The member's own worktree and branch when it works in a git repository. */
 	worktree?: { path: string; branch: string };
 	/** A resumed member's earlier tokens and cost: its counts continue from them. */
-	usage?: { totalTokens: number; cost: number };
+	usage?: { totalTokens: number; cost: number; newTokens?: number; cacheRead?: number };
 	spawn: Spawn;
 	schedule(fn: () => void, ms: number): () => void;
 	process?: ProcessControl;
@@ -150,6 +150,8 @@ export class FleetMember {
 	todo: { done: number; total: number; current: string | null } | undefined;
 	lastTool: string | undefined;
 	usage: FleetMemberUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
+	/** New tokens a resumed member counted before this process. */
+	private readonly earlierNewTokens: number;
 	/** Tokens of the first assistant request: the member's session prefix. */
 	prefixTokens: number | undefined;
 	lastText = "";
@@ -177,7 +179,17 @@ export class FleetMember {
 		this.name = options.name;
 		this.objective = options.objective ?? "";
 		this.processControl = options.process ?? hostProcess;
-		if (options.usage) this.usage = { ...this.usage, totalTokens: options.usage.totalTokens, cost: options.usage.cost };
+		if (options.usage) this.usage = { ...this.usage, totalTokens: options.usage.totalTokens, cost: options.usage.cost, cacheRead: options.usage.cacheRead ?? 0 };
+		this.earlierNewTokens = options.usage?.newTokens ?? 0;
+	}
+
+	/**
+	 * Tokens the member's requests added (input, output, cache write). Cache
+	 * reads are left out: a long session rereads its prefix on every turn, so a
+	 * cache-inclusive total reads as spend that never happened (T8, L54).
+	 */
+	get newTokens(): number {
+		return this.earlierNewTokens + this.usage.input + this.usage.output + this.usage.cacheWrite;
 	}
 
 	get live(): boolean {
@@ -267,7 +279,7 @@ export class FleetMember {
 		const parts = [`${this.name} [${this.status}]`];
 		if (this.todo) parts.push(`todo ${this.todo.done}/${this.todo.total}${this.todo.current ? ` "${oneLine(this.todo.current, 60)}"` : ""}`);
 		if (this.lastTool) parts.push(`last tool ${this.lastTool}`);
-		parts.push(`${tokens(this.usage.totalTokens)} tok`, `$${this.usage.cost.toFixed(2)}`);
+		parts.push(`${tokens(this.newTokens)} new tok`, `$${this.usage.cost.toFixed(2)}`);
 		if (this.dialogs.length > 0) parts.push(`question${this.dialogs[0].protected ? " (relayed to the human)" : ""}: ${oneLine(this.dialogs[0].title, 80)}`);
 		if (this.lastError) parts.push(`error: ${oneLine(this.lastError, 80)}`);
 		return parts.join(" · ");
@@ -308,6 +320,9 @@ export class FleetMember {
 		if (this.objective) lines.push(`objective: ${oneLine(this.objective, DETAIL_FIELD_MAX)}`);
 		const worktree = this.options.worktree;
 		if (worktree) lines.push(`worktree: ${worktree.path} (branch ${worktree.branch})`);
+		const { input, output, cacheWrite, cacheRead, totalTokens } = this.usage;
+		const earlier = this.earlierNewTokens > 0 ? `earlier ${tokens(this.earlierNewTokens)}, ` : "";
+		lines.push(`tokens: ${tokens(this.newTokens)} new (${earlier}input ${tokens(input)}, output ${tokens(output)}, cache write ${tokens(cacheWrite)}) · ${tokens(cacheRead)} cached · ${tokens(totalTokens)} with cache`);
 		if (this.prefixTokens !== undefined) lines.push(`prefix ${tokens(this.prefixTokens)} tok`);
 		for (const dialog of this.dialogs) {
 			const choices = dialog.options?.length ? ` [${dialog.options.map(option => oneLine(option, 40)).join(" | ")}]` : "";

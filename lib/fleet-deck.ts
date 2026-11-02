@@ -46,7 +46,7 @@ export interface FleetSnapshotInput {
 	/** When code saw the dialog arrive. */
 	arrivedAt(dialog: DeckLiveMember["dialogs"][number]): string | undefined;
 	budgets: { fleetUsd?: number; memberUsd?: number };
-	controller?: { tokens: number; cost: number };
+	controller?: { tokens: number; cost: number; newTokens?: number; cacheRead?: number };
 	/** The controller's live permission mode. */
 	permission?: string;
 	/** Members waiting on the resume question of a reopened fleet. */
@@ -65,7 +65,7 @@ export function buildFleetSnapshot(input: FleetSnapshotInput): FleetViewSnapshot
 				id: dialog.id, method: dialog.method, title: dialog.title, message: dialog.message, options: dialog.options,
 				relayed: Boolean(dialog.protected), at: input.arrivedAt(dialog),
 			}));
-			return { ...record, lastTool: live?.lastTool, prefixTokens: live?.prefixTokens, cacheRead: live?.usage.cacheRead, dialogs };
+			return { ...record, lastTool: live?.lastTool, prefixTokens: live?.prefixTokens, cacheRead: live?.usage.cacheRead ?? record.cacheRead, dialogs };
 		}),
 		log: ledger.log,
 		escalations: ledger.escalations.map(entry => ({ member: entry.member, title: entry.title, message: entry.message, options: entry.options, method: entry.method, dialogId: entry.dialogId, at: entry.at })),

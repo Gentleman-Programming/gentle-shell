@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import os from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -103,16 +103,19 @@ function deckResponse(dialog: FleetMemberDialog, option: number): DialogResponse
 	return value === undefined ? undefined : { value };
 }
 
-/** Tokens and spend of this controller session's own requests. */
-function controllerUsage(ctx: ExtensionContext): { tokens: number; cost: number } | undefined {
+/** Tokens and spend of this controller session's own requests; new tokens leave cache reads out (T8). */
+function controllerUsage(ctx: ExtensionContext): { tokens: number; cost: number; newTokens: number; cacheRead: number } | undefined {
 	try {
-		let tokens = 0, cost = 0;
-		for (const entry of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: { role?: string; usage?: { totalTokens?: number; cost?: { total?: number } } } }>) {
+		let tokens = 0, cost = 0, newTokens = 0, cacheRead = 0;
+		for (const entry of ctx.sessionManager.getEntries() as Array<{ type?: string; message?: { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number; cost?: { total?: number } } } }>) {
 			if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
-			tokens += entry.message.usage?.totalTokens ?? 0;
-			cost += entry.message.usage?.cost?.total ?? 0;
+			const usage = entry.message.usage;
+			tokens += usage?.totalTokens ?? 0;
+			cost += usage?.cost?.total ?? 0;
+			newTokens += (usage?.input ?? 0) + (usage?.output ?? 0) + (usage?.cacheWrite ?? 0);
+			cacheRead += usage?.cacheRead ?? 0;
 		}
-		return { tokens, cost };
+		return { tokens, cost, newTokens, cacheRead };
 	} catch {
 		return undefined;
 	}
@@ -150,6 +153,8 @@ function ledgerFields(member: FleetMember): FleetMemberFields {
 		status: member.status,
 		todo: member.todo ?? null,
 		tokens: member.usage.totalTokens,
+		newTokens: member.newTokens,
+		cacheRead: member.usage.cacheRead,
 		cost: member.usage.cost,
 		question: member.dialogs[0] ? questionLine(member.dialogs[0]) : null,
 		lastError: member.lastError ?? null,
@@ -503,7 +508,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 
 	const liveCount = () => [...members.values()].filter(member => member.live).length;
 
-	const startMember = (name: string, objective: string, launch: ReturnType<typeof buildMemberLaunch>, extra: { worktree?: { path: string; branch: string }; usage?: { totalTokens: number; cost: number } } = {}) => {
+	const startMember = (name: string, objective: string, launch: ReturnType<typeof buildMemberLaunch>, extra: { worktree?: { path: string; branch: string }; usage?: { totalTokens: number; cost: number; newTokens?: number; cacheRead?: number } } = {}) => {
 		const member = new FleetMember({
 			name,
 			objective,
@@ -550,7 +555,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			const member = startMember(name, record.objective, buildMemberLaunch({ env, cwd: record.cwd, sessionDir, sessionFile, pi: deps.pi }), {
 				...(record.worktree && record.branch ? { worktree: { path: record.worktree, branch: record.branch } } : {}),
-				usage: { totalTokens: record.tokens, cost: record.cost },
+				// A ledger from before T8 kept only the cache-inclusive total (same fallback as the document).
+				usage: { totalTokens: record.tokens, cost: record.cost, newTokens: record.newTokens ?? record.tokens, cacheRead: record.cacheRead ?? 0 },
 			});
 			memberThresholds.set(member, warnedThresholds(name, record.spawnedAt));
 			fleetLedger.resumed(name);
@@ -662,21 +668,24 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.registerTool({
 		name: "fleet_spawn",
 		label: "Fleet spawn",
-		description: `Start a new full Gentle Shell member session for one long, independent front and send it its objective. Costs a full session prefix (~124k tokens); prefer fleet_send to an existing member. At most ${config.maxLiveMembers} live members (maxLiveMembers in the human's fleet.json). Refused once the fleet budget is spent.`,
+		description: `Start a new full Gentle Shell member session for one long, independent front and send it its objective. Always pass the member's own project directory as cwd (create: true for a new project). Costs a full session prefix (~124k tokens); prefer fleet_send to an existing member. At most ${config.maxLiveMembers} live members (maxLiveMembers in the human's fleet.json). Refused once the fleet budget is spent.`,
 		parameters: Type.Object({
 			name: Type.String({ description: "Short member name: lowercase letters, digits and dashes." }),
 			objective: Type.String({ description: "The member's objective with scope, acceptance criteria and non-goals." }),
-			cwd: Type.Optional(Type.String({ description: "Working directory; defaults to this session's cwd." })),
+			cwd: Type.String({ description: "The member's own project directory: absolute, or relative to this session's cwd. The member works there, never in this session's directory." }),
+			create: Type.Optional(Type.Boolean({ description: "true for a new project: when cwd does not exist, create it (mkdir -p only, no git init) and run the member there." })),
 			model: Type.Optional(Type.String({ description: "Optional provider/model for the member." })),
 			worktree: Type.Optional(Type.Boolean({ description: "Inside a git repository the member works in its own new worktree on branch fleet/<fleet>/<member> by default; false runs it in the cwd." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			ctxRef = ctx;
-			const { name, objective, cwd, model, worktree } = params as { name: string; objective: string; cwd?: string; model?: string; worktree?: boolean };
+			const { name, objective, cwd, create, model, worktree } = params as { name: string; objective: string; cwd?: string; create?: boolean; model?: string; worktree?: boolean };
 			if (!NAME_PATTERN.test(name)) return text(`Error: member name "${name}" must match ${NAME_PATTERN.source}.`, { error: "invalid name" });
 			if (!objective?.trim()) return text("Error: objective is required.", { error: "missing objective" });
 			// The member reads its objective as its first prompt: a leading "/" would run as a command.
 			if (/^\s*\//.test(objective)) return text("Error: fleet_spawn sends instructions, not slash commands.", { error: "slash command" });
+			// T8 (L54): a member without its own directory ran in the controller's repository.
+			if (typeof cwd !== "string" || !cwd.trim()) return text("Error: cwd is required: pass the member's own project directory (create: true for a new project).", { error: "missing cwd" });
 			if (members.get(name)?.live) return text(`Error: member "${name}" is already live; use fleet_send.`, { error: "duplicate" });
 			config = readFleetConfig(configHome);
 			if (liveCount() >= config.maxLiveMembers) return text(`Error: the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path}). Send the work to an existing member or stop one first.`, { error: "cap" });
@@ -684,9 +693,16 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd) {
 				return text(`Error: the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget (fleetBudgetUsd in ${config.path}). Existing members keep working: send them work with fleet_send, or ask the human to raise the budget.`, { error: "fleet budget" });
 			}
-			const requestedCwd = cwd ? (isAbsolute(cwd) ? cwd : resolve(ctx.cwd, cwd)) : ctx.cwd;
+			const requestedCwd = isAbsolute(cwd) ? cwd : resolve(ctx.cwd, cwd);
+			const exists = existsSync(requestedCwd);
+			if (exists && !statSync(requestedCwd).isDirectory()) return text(`Error: ${requestedCwd} is not a directory.`, { error: "cwd" });
+			if (!exists && create !== true) return text(`Error: ${requestedCwd} does not exist. Pass the member's existing project directory as cwd, or create: true to start a new project there.`, { error: "missing directory" });
 			const fleetLedger = ensureLedger(ctx.cwd);
-			// Refusals happen before any side effect; a created worktree is never removed.
+			// Refusals happen before any side effect; a created directory or worktree is never removed.
+			if (!exists) {
+				try { mkdirSync(requestedCwd, { recursive: true }); }
+				catch (error) { return text(`Error: could not create ${requestedCwd}: ${error instanceof Error ? error.message : String(error)}`, { error: "cwd" }); }
+			}
 			const prepared = worktree === false ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git });
 			if (prepared?.kind === "refused") return text(`Error: could not give member "${name}" its own worktree: ${prepared.message}`, { error: "worktree" });
 			const created = prepared?.kind === "created" ? prepared.worktree : undefined;
@@ -707,7 +723,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			member.prompt(objective);
 			track(member);
 			refreshWidget();
-			const where = created ? `${memberCwd} on new branch ${created.branch} (worktree of ${created.repo})` : memberCwd;
+			const where = created ? `${memberCwd} on new branch ${created.branch} (worktree of ${created.repo})` : exists ? memberCwd : `${memberCwd} (new project directory)`;
 			return text(`Spawned fleet member "${name}" in ${where}. Its digest arrives when it settles, asks a question or exits.`, { name, cwd: memberCwd, ...(memberWorktree ? { worktree: memberWorktree.path, branch: memberWorktree.branch } : {}) });
 		},
 	});

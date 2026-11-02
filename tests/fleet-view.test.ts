@@ -13,6 +13,8 @@ import {
 	type FleetViewSnapshot,
 } from "../lib/fleet-view.ts";
 import { EXPIRY, EXPIRY_OPTIONS, at, inkwellFleet, member } from "./support/fleet-view-fixture.ts";
+import { buildFleetSnapshot } from "../lib/fleet-deck.ts";
+import type { FleetLedgerState } from "../lib/fleet-ledger.ts";
 
 
 const rowsOf = (snapshot: FleetViewSnapshot, lens: (typeof FLEET_LENSES)[number], density: (typeof FLEET_DENSITIES)[number]) =>
@@ -139,7 +141,7 @@ test("density picks the fields per row as 05 describes", () => {
 	assert.deepEqual(keys("map", "light", "api-migration"), ["track", "progress"]);
 	assert.deepEqual(keys("map", "normal", "api-migration"), ["track", "progress", "station"]);
 	for (const density of FLEET_DENSITIES) {
-		assert.deepEqual(keys("costs", density, "api-migration"), ["cost", "tokens", "cached", "share"]);
+		assert.deepEqual(keys("costs", density, "api-migration"), ["cost", "new", "cached", "share"]);
 		assert.deepEqual(keys("log", density, "api-migration"), ["time", "event"]);
 	}
 	assert.equal(rowsOf(snapshot, "flows", "normal").find((row) => row.name === "api-migration").cells[0].text, "Add invite token table migration");
@@ -157,7 +159,7 @@ test("density picks the fields per row as 05 describes", () => {
 
 test("costs appear only in the costs lens and in power density", () => {
 	const snapshot = inkwellFleet();
-	const COST_KEYS = new Set(["cost", "tokens", "cached", "share"]);
+	const COST_KEYS = new Set(["cost", "new", "cached", "share"]);
 	for (const lens of FLEET_LENSES) for (const density of FLEET_DENSITIES) {
 		const view = lensRows(lens, density, snapshot);
 		const texts = [...view.head, ...view.groups.map((group) => group.summary ?? ""), ...view.groups.flatMap((group) => group.rows.flatMap((row) => row.cells.map((cell) => cell.text)))];
@@ -246,4 +248,34 @@ test("a pending resume question is the focal item ahead of older decisions, with
 	assert.equal(queue.more, attentionQueue(inkwellFleet()).items.length);
 	assert.equal(attentionQueue({ ...inkwellFleet(), resume: { members: [] } }).focal.id, attentionQueue(inkwellFleet()).focal.id);
 	assert.equal(attentionQueue({ ...snapshot, resume: { members: ["api-roles"] } }).focal.title, "Resume 1 member?");
+});
+
+// T8 (L54): a member's 933k "tokens" were ~95% cache reads. The costs lens
+// shows new tokens (input + output + cache write) and cached tokens apart,
+// plus the members' first-request prefixes; never one cache-inclusive total.
+test("the costs lens shows new and cached tokens apart and the prefixes, never a cache-inclusive total", () => {
+	const base = inkwellFleet();
+	const swipe = { ...base.members[0], name: "github-swipe", tokens: 933_200, newTokens: 51_000, cacheRead: 882_200, prefixTokens: 45_000, cost: 1.65 };
+	const snapshot: FleetViewSnapshot = { ...base, members: [swipe], escalations: [], controller: { tokens: 41_000, newTokens: 6_000, cacheRead: 35_000, cost: 0.34 } };
+	for (const density of FLEET_DENSITIES) {
+		const view = lensRows("costs", density, snapshot);
+		const row = view.groups.flatMap((group) => group.rows).find((entry) => entry.name === "github-swipe");
+		assert.deepEqual(row.cells.filter((cell) => cell.gauge === undefined).map((cell) => [cell.key, cell.text]), [["cost", "$1.65"], ["new", "51k"], ["cached", "882k"]]);
+		assert.equal(view.head[1], "tokens 57k new · 917k cached · prefix 45k");
+		const texts = [...view.head, ...view.groups.flatMap((group) => group.rows.flatMap((entry) => entry.cells.map((cell) => cell.text)))];
+		assert.ok(texts.every((text) => !/933k|974k/.test(text)), "no cache-inclusive total");
+	}
+	// A member the ledger counted before T8 (no newTokens): new = total minus cache reads.
+	const older = { ...swipe, newTokens: undefined };
+	const cells = lensRows("costs", "normal", { ...snapshot, members: [older] }).groups.flatMap((group) => group.rows)[0].cells;
+	assert.equal(cells.find((cell) => cell.key === "new").text, "51k");
+});
+
+test("the deck snapshot carries the ledger's new and cached tokens, also for a member that is not live", () => {
+	const record = { ...inkwellFleet().members[0], name: "github-swipe", status: "exited", tokens: 933_200, newTokens: 51_000, cacheRead: 882_200, cost: 1.65 };
+	const ledger = { title: "Swipe", objective: "Build it", members: [record], log: [], escalations: [], documentPath: "/w/odd/fleet/swipe.md" } as unknown as FleetLedgerState;
+	const snapshot = buildFleetSnapshot({ ledger, live: () => undefined, arrivedAt: () => undefined, budgets: {} });
+	assert.deepEqual([snapshot.members[0].newTokens, snapshot.members[0].cacheRead], [51_000, 882_200]);
+	const cells = lensRows("costs", "normal", snapshot).groups.flatMap((group) => group.rows)[0].cells;
+	assert.deepEqual(cells.filter((cell) => cell.gauge === undefined).map((cell) => cell.text), ["$1.65", "51k", "882k"]);
 });

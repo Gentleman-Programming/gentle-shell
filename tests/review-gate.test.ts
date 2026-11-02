@@ -963,7 +963,9 @@ test("release fast path remote head recheck detects an advanced or unresolvable 
 test("push destination probe ignores environment-injected url.insteadOf rewrites", (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-probe-redirect-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
-	const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
+	// A hostile inherited GIT_DIR would point `git init` away from the fixture.
+	const fixtureEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
+	const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: fixtureEnvironment });
 	git("init", "-b", "main");
 	git("remote", "add", "origin", "https://example.invalid/owner/repo.git");
 	const hostile = join(cwd, "hostile.gitconfig");

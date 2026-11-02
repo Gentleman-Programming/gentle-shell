@@ -341,6 +341,26 @@ test("the controller session keeps only the fleet, read-only and memory tools ac
 	assert.deepEqual(h.activeTools().sort(), [...allowed].sort());
 });
 
+// Verifier T2 B1: outside the TUI ask-user-choice deactivates ask_user_choice;
+// the allowlist only removes tools, so it never brings a disabled one back.
+test("the controller allowlist never re-activates a tool another extension disabled", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	const disableChoice = () => h.pi.setActiveTools(h.activeTools().filter(name => name !== "ask_user_choice"));
+	disableChoice();
+	await h.fire("session_start", ctx);
+	assert.equal(h.activeTools().includes("ask_user_choice"), false);
+	assert.ok(h.activeTools().includes("fleet_spawn") && h.activeTools().includes("read"));
+	assert.equal(h.activeTools().includes("bash"), false);
+	const sets = h.activeSets.length;
+	for (let turn = 0; turn < 2; turn += 1) {
+		disableChoice();
+		await h.fire("before_agent_start", ctx, { prompt: "hi" });
+		assert.equal(h.activeTools().includes("ask_user_choice"), false);
+	}
+	assert.equal(h.activeSets.length, sets + 2, "only the other extension sets tools on later turns");
+});
+
 test("a normal session and a fleet member keep every tool", async () => {
 	for (const env of [{ PATH: "/bin" }, { PATH: "/bin", [FLEET_ROLE_ENV]: "member" }]) {
 		const h = harness(env);

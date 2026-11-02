@@ -112,11 +112,15 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (isCurrent(member)) ledger?.update(member.name, ledgerFields(member));
 	};
 
+	// Only ever removes tools: another extension may have disabled one of the
+	// allowed tools on purpose (ask_user_choice outside the TUI), and the
+	// allowlist must not bring it back.
 	const restrictTools = () => {
-		const allowed = pi.getAllTools().filter(tool => tool.exposure !== "hidden" && isControllerTool(tool.name)).map(tool => tool.name);
+		const allowed = new Set(pi.getAllTools().filter(tool => tool.exposure !== "hidden" && isControllerTool(tool.name)).map(tool => tool.name));
 		const active = pi.getActiveTools();
-		if (active.length === allowed.length && active.every(name => allowed.includes(name))) return;
-		pi.setActiveTools(allowed);
+		const next = active.filter(name => allowed.has(name));
+		if (next.length === active.length) return;
+		pi.setActiveTools(next);
 	};
 
 	const refreshWidget = () => {

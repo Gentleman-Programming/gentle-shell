@@ -31,7 +31,7 @@ gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi
 
 ## Fleet orchestrator (experimental)
 
-`gentle-shell orchestrator` opens a session whose agent is a fleet orchestrator: you talk to it, and it leads several member sessions toward your objective (at most eight live at once by default; see **Limits and budgets**). Each member is a full, headless Gentle Shell session (`pi --mode rpc`) with its own ODD orchestrator, subagents and todo list. The controller never edits code itself and gets a lean fleet prompt instead of the ODD orchestrator prompt, followed by your selected persona (`gentleman` or `neutral`) and its language rules, without the coding identity, ODD, continuity or delegation sections; it also gets no todo rules. Members keep the normal prompt and do not join the peer session transport, so they only talk through their controller.
+`gentle-shell fleet` opens a session whose agent is a fleet orchestrator: you talk to it, and it leads several member sessions toward your objective (at most eight live at once by default; see **Limits and budgets**). Each member is a full, headless Gentle Shell session (`pi --mode rpc`) with its own ODD orchestrator, subagents and todo list. The controller never edits code itself and gets a lean fleet prompt instead of the ODD orchestrator prompt, followed by your selected persona (`gentleman` or `neutral`) and its language rules, without the coding identity, ODD, continuity or delegation sections; it also gets no todo rules. Members keep the normal prompt and do not join the peer session transport, so they only talk through their controller.
 
 The controller has nine tools:
 

@@ -20,7 +20,7 @@ import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 
 // Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1, F3). Active
-// only in the session `gentle-shell orchestrator` starts: it spawns full
+// only in the session `gentle-shell fleet` starts: it spawns full
 // headless Gentle Shell members (each git member in its own worktree), tracks
 // them in code, keeps the fleet ledger and its general document current by
 // code, and wakes the controller model with one coalesced digest when a member

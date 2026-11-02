@@ -166,9 +166,9 @@ export function parseLauncherArgs(argv          )                     {
 			commandArgs = argv.slice(i + 1);
 			break;
 		}
-		// Like `setup`, `orchestrator` is only the first non-flag token, after
+		// Like `setup`, `fleet` is only the first non-flag token, after
 		// optional home selectors; the rest stays Pi's own arguments.
-		if (arg === "orchestrator" && !fleet && command === undefined && passthrough.length === 0) {
+		if (arg === "fleet" && !fleet && command === undefined && passthrough.length === 0) {
 			fleet = true;
 			continue;
 		}
@@ -179,9 +179,9 @@ export function parseLauncherArgs(argv          )                     {
 	}
 
 	if (error === undefined && fleet && piSubcommand !== undefined) {
-		error = `orchestrator cannot be combined with the pi subcommand '${piSubcommand}'`;
+		error = `fleet cannot be combined with the pi subcommand '${piSubcommand}'`;
 	} else if (error === undefined && fleet && command !== undefined) {
-		error = `orchestrator cannot be combined with the '${command}' command`;
+		error = `fleet cannot be combined with the '${command}' command`;
 	}
 
 	if (error === undefined) {
@@ -1327,7 +1327,7 @@ export function helpText()         {
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
-		"       gentle-shell [home selectors] orchestrator [pi-args...]",
+		"       gentle-shell [home selectors] fleet [pi-args...]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
@@ -1347,7 +1347,7 @@ export function helpText()         {
 		"  --version        Show gentle-shell, pi, and home version information.",
 		"",
 		"Commands:",
-		"  orchestrator     Open the fleet orchestrator: one agent you talk to, which leads several",
+		"  fleet            Open the fleet orchestrator: one agent you talk to, which leads several",
 		"                   headless Gentle Shell sessions toward your objective (experimental).",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
 		"  home import-pi   Copy your pi sign-ins (auth.json) and MCP servers (mcp.json) into the",

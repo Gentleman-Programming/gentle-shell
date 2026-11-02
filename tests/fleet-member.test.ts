@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PassThrough } from "node:stream";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
-import { buildMemberLaunch, FleetMember, type FleetMemberEvent } from "../lib/fleet-member.ts";
+import { buildMemberLaunch, FleetMember, latestMemberSessionFile, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -385,4 +388,38 @@ test("buildMemberLaunch strips the parent's autonomy override so a member never 
 	const launch = buildMemberLaunch({ env: { PATH: "/bin", GENTLE_PI_AUTONOMOUS_MODE: "1", GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" }, cwd: "/w", sessionDir: "/s", pi: { command: "pi", args: [] } });
 	for (const key of ["GENTLE_PI_AUTONOMOUS_MODE", "GENTLE_PI_AGENTS_PARENT_PERMISSION_FD"]) assert.equal(key in launch.env, false, key);
 	assert.equal(launch.env.PATH, "/bin");
+});
+
+// T6 (S2, S3): a resumed member continues its own session file in its session dir.
+test("buildMemberLaunch with a session file reopens that session in the member's session dir", () => {
+	const launch = buildMemberLaunch({ env: {}, cwd: "/w", sessionDir: "/s", sessionFile: "/s/2026-11-02T12-00-00-000Z_abc.jsonl", pi: { command: "pi", args: [] } });
+	assert.deepEqual(launch.args, ["--mode", "rpc", "--session-dir", "/s", "--session", "/s/2026-11-02T12-00-00-000Z_abc.jsonl"]);
+});
+
+test("latestMemberSessionFile picks the newest .jsonl of a member's session dir, or none", () => {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-fleet-member-sessions-"));
+	assert.equal(latestMemberSessionFile(join(dir, "missing")), undefined);
+	assert.equal(latestMemberSessionFile(dir), undefined);
+	writeFileSync(join(dir, "notes.txt"), "x");
+	writeFileSync(join(dir, "2026-11-02T10-00-00-000Z_old.jsonl"), "{}\n");
+	writeFileSync(join(dir, "2026-11-02T11-00-00-000Z_new.jsonl"), "{}\n");
+	utimesSync(join(dir, "2026-11-02T10-00-00-000Z_old.jsonl"), new Date("2026-11-02T10:00:00Z"), new Date("2026-11-02T10:00:00Z"));
+	utimesSync(join(dir, "2026-11-02T11-00-00-000Z_new.jsonl"), new Date("2026-11-02T11:00:00Z"), new Date("2026-11-02T11:00:00Z"));
+	assert.equal(latestMemberSessionFile(dir), join(dir, "2026-11-02T11-00-00-000Z_new.jsonl"));
+});
+
+test("a resumed member keeps counting from its earlier tokens and cost", async () => {
+	const fake = fakeChild();
+	const member = new FleetMember({
+		name: "api",
+		launch: { command: "pi", args: [], env: {}, cwd: "/w" },
+		usage: { totalTokens: 1200, cost: 0.5 },
+		spawn: () => fake.child,
+		schedule: () => () => {},
+	});
+	member.start();
+	assert.deepEqual([member.usage.totalTokens, member.usage.cost], [1200, 0.5]);
+	fake.emit(assistantEnd({ input: 10, output: 5, totalTokens: 15, costTotal: 0.25 }));
+	await tick();
+	assert.deepEqual([member.usage.totalTokens, member.usage.cost], [1215, 0.75]);
 });

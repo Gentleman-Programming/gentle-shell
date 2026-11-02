@@ -64,3 +64,16 @@ export function createMemberWorktree(input: MemberWorktreeInput): MemberWorktree
 	const cwd = existsSync(inside) ? inside : path;
 	return { kind: "created", worktree: { repo, path, branch, cwd } };
 }
+
+/**
+ * Why a resumed member cannot go back to its own worktree, or undefined when it
+ * still exists as the top of a git worktree. Read-only: nothing is created,
+ * repaired or removed.
+ */
+export function reattachMemberWorktree(input: { path: string; git: GitExec }): string | undefined {
+	if (!existsSync(input.path)) return `worktree ${input.path} is missing`;
+	const top = input.git(["rev-parse", "--show-toplevel"], input.path);
+	let same = false;
+	try { same = top.status === 0 && realpathSync(top.stdout.trim()) === realpathSync(input.path); } catch { /* not comparable */ }
+	return same ? undefined : `${input.path} is no longer a git worktree`;
+}

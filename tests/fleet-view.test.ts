@@ -232,3 +232,18 @@ test("the flows lens summary never advertises enter on a member", () => {
 	const view = lensRows("flows", "light", inkwellFleet());
 	assert.equal(JSON.stringify(view).includes("enter on a member"), false);
 });
+
+// T6 (S2): reopening a stopped fleet asks once whether to resume its members, before anything else.
+test("a pending resume question is the focal item ahead of older decisions, with its two choices", () => {
+	const snapshot = { ...inkwellFleet(), resume: { members: ["api-roles", "web-switcher"] } };
+	const queue = attentionQueue(snapshot);
+	assert.equal(queue.focal.id, "resume");
+	assert.equal(queue.focal.kind, "decision");
+	assert.equal(queue.focal.title, "Resume 2 members?");
+	assert.deepEqual(queue.focal.options, ["Resume all", "Keep them stopped"]);
+	assert.deepEqual(queue.focal.members, ["api-roles", "web-switcher"]);
+	assert.equal(queue.items.filter((item) => item.id === "resume").length, 1);
+	assert.equal(queue.more, attentionQueue(inkwellFleet()).items.length);
+	assert.equal(attentionQueue({ ...inkwellFleet(), resume: { members: [] } }).focal.id, attentionQueue(inkwellFleet()).focal.id);
+	assert.equal(attentionQueue({ ...snapshot, resume: { members: ["api-roles"] } }).focal.title, "Resume 1 member?");
+});

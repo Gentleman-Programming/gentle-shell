@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -10,11 +10,11 @@ import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
 import { readFleetConfig } from "../lib/fleet-config.ts";
 import { buildFleetSnapshot, DECK_WIDGET_KEY, FleetDeck } from "../lib/fleet-deck.ts";
 import { autoApproval, describeResponse, type DialogResponse } from "../lib/fleet-dialogs.ts";
-import { FleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
-import { buildMemberLaunch, FleetMember, type FleetMemberDialog, type FleetMemberEvent } from "../lib/fleet-member.ts";
+import { FleetLedger, loadFleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
+import { buildMemberLaunch, FleetMember, latestMemberSessionFile, type FleetMemberDialog, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
 import type { FocalItem } from "../lib/fleet-view.ts";
-import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
+import { createMemberWorktree, reattachMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
@@ -32,6 +32,9 @@ import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 // Super YOLO code approves the guard, permission and access classes, audited.
 // F4 (S4, S7): in the TUI the calm deck (lib/fleet-deck.ts) shows the fleet;
 // rpc and print keep the one-line digest widget.
+// F5 (T6): reopening the controller session (Pi's --continue, --resume or
+// --session) loads its ledger; members that stopped with it resume only when
+// the human says so on the deck, in their own session file and worktree.
 
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
@@ -163,15 +166,16 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let config = readFleetConfig(configHome);
 	const members = new Map<string, FleetMember>();
 	let ctxRef: ExtensionContext | undefined;
+	// Members of a reopened fleet waiting on the human's resume answer.
+	let pendingResume: string[] = [];
 	let fleetSessionId = "unknown";
 	const pending = new Map<string, FleetMemberEvent[]>();
 	let cancelWake: (() => void) | undefined;
 	let closed = false;
 	let ledger: FleetLedger | undefined;
 	let reportedWriteError = false;
-	// Budget state of this fleet session: spend of members replaced by a
-	// respawn, thresholds already warned, warnings waiting for the next digest.
-	let retiredCost = 0;
+	// Budget state of this fleet session: thresholds already warned, warnings
+	// waiting for the next digest. Spend, retired spend included, is the ledger's.
 	const fleetThresholds = new Set<number>();
 	const memberThresholds = new WeakMap<FleetMember, Set<number>>();
 	const pendingBudget: string[] = [];
@@ -194,10 +198,13 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		try { return (await adapter.readMode?.()) ?? "normal"; } finally { adapter.dispose(); }
 	});
 
+	const sessionPath = (...parts: string[]) => join(agentHome, "gentle-fleet", "sessions", fleetSessionId, ...parts);
+	// The same fleet session id finds its saved ledger: a reopened fleet continues from it.
 	const ensureLedger = (cwd: string) => ledger ??= new FleetLedger({
 		fleetSessionId,
 		cwd,
-		ledgerPath: join(agentHome, "gentle-fleet", "sessions", fleetSessionId, "ledger.json"),
+		ledgerPath: sessionPath("ledger.json"),
+		restored: loadFleetLedger(sessionPath("ledger.json"), fleetSessionId),
 		schedule: deps.schedule,
 		now: deps.now,
 		write: deps.writeFile,
@@ -211,20 +218,28 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 
 	const isCurrent = (member: FleetMember) => members.get(member.name) === member;
-	const fleetSpend = () => [...members.values()].reduce((sum, member) => sum + member.usage.cost, retiredCost);
-	const warnBudget = (member: string | null, text: string) => {
-		pendingBudget.push(text);
-		ledger?.budgetWarning(member, text);
+	const fleetSpend = () => {
+		const state = ledger?.current;
+		return state ? state.members.reduce((sum, member) => sum + member.cost, state.retiredCost) : 0;
 	};
+	const warnBudget = (member: string | null, text: string, threshold: number) => {
+		pendingBudget.push(text);
+		ledger?.budgetWarning(member, text, threshold);
+	};
+	// Thresholds the ledger already warned for the fleet (null) or one member since its spawn.
+	const warnedThresholds = (member: string | null, since?: string) => new Set((ledger?.current.budgetWarnings ?? [])
+		.filter(warning => warning.member === member && (since === undefined || warning.at >= since))
+		.map(warning => warning.threshold ?? Number(/\((\d+)%\)/.exec(warning.text)?.[1]))
+		.filter(threshold => BUDGET_THRESHOLDS.includes(threshold)));
 	// Cost is information (L15): a crossed threshold is reported once, nothing stops.
 	const checkBudgets = (member: FleetMember) => {
 		const seen = memberThresholds.get(member) ?? new Set<number>();
 		memberThresholds.set(member, seen);
 		const memberHit = crossedThreshold(member.usage.cost, config.memberBudgetUsd, seen);
-		if (memberHit !== undefined) warnBudget(member.name, `member ${member.name} spent $${member.usage.cost.toFixed(2)} of its $${config.memberBudgetUsd!.toFixed(2)} budget (${memberHit}%)${memberHit === 100 ? "; it keeps working" : ""}`);
+		if (memberHit !== undefined) warnBudget(member.name, `member ${member.name} spent $${member.usage.cost.toFixed(2)} of its $${config.memberBudgetUsd!.toFixed(2)} budget (${memberHit}%)${memberHit === 100 ? "; it keeps working" : ""}`, memberHit);
 		const spent = fleetSpend();
 		const fleetHit = crossedThreshold(spent, config.fleetBudgetUsd, fleetThresholds);
-		if (fleetHit !== undefined) warnBudget(null, `fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd!.toFixed(2)} budget (${fleetHit}%)${fleetHit === 100 ? "; fleet_spawn refuses new members" : ""}`);
+		if (fleetHit !== undefined) warnBudget(null, `fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd!.toFixed(2)} budget (${fleetHit}%)${fleetHit === 100 ? "; fleet_spawn refuses new members" : ""}`, fleetHit);
 	};
 	const track = (member: FleetMember) => {
 		if (!isCurrent(member)) return;
@@ -360,12 +375,31 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const answerFocal = (item: FocalItem, option: number): string | undefined => {
 		const choice = item.options[option];
 		const name = item.members[0];
+		if (item.id === "resume") {
+			if (pendingResume.length === 0) return "Nothing waits to resume.";
+			if (option === 0) resumeMembers();
+			else keepStopped();
+			return undefined;
+		}
 		if (!item.dialogId) {
 			tellFleet(`The human chose "${choice}" for: ${item.ask}`);
 			return undefined;
 		}
 		const member = members.get(name);
 		const dialog = member?.dialogs.find(entry => entry.id === item.dialogId);
+		// Asked before the fleet stopped: the dialog closed with that process, the fleet relays the answer.
+		const earlier = ledger?.current.escalations.find(entry => entry.member === name && entry.dialogId === item.dialogId && entry.stale);
+		if (earlier && !dialog) {
+			const title = oneLine(earlier.title, LOG_TEXT_MAX);
+			ledger!.resolveEscalation(name, earlier.dialogId);
+			if (!earlier.options?.length && earlier.method !== "confirm") {
+				ctxRef?.ui.setEditorText(`Answer for ${name}'s earlier question "${title}": `);
+				return undefined;
+			}
+			ledger!.log("answer", name, `human answered escalated "${title}": ${choice} (sent to the fleet; asked before the fleet stopped)`);
+			tellFleet(`The human answered ${name}'s escalated question ${earlier.dialogId} ("${title}") from before the fleet stopped: ${choice}. That dialog closed with the member's process; send the answer with fleet_send when ${name} runs.`);
+			return undefined;
+		}
 		if (!member || !dialog) return "That question is no longer open.";
 		if (dialog.protected) {
 			// Only through the relay, and only the dialog it is asking now.
@@ -394,6 +428,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		budgets: { fleetUsd: config.fleetBudgetUsd, memberUsd: config.memberBudgetUsd },
 		controller: ctxRef ? controllerUsage(ctxRef) : undefined,
 		permission,
+		resume: pendingResume,
 	});
 
 	const refreshPermission = async (ctx: ExtensionContext) => {
@@ -467,6 +502,75 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 
 	const liveCount = () => [...members.values()].filter(member => member.live).length;
+
+	const startMember = (name: string, objective: string, launch: ReturnType<typeof buildMemberLaunch>, extra: { worktree?: { path: string; branch: string }; usage?: { totalTokens: number; cost: number } } = {}) => {
+		const member = new FleetMember({
+			name,
+			objective,
+			launch,
+			...extra,
+			spawn: deps.spawn,
+			schedule: deps.schedule,
+			process: deps.process,
+			onEvent: onMemberEvent,
+			onChange: changed => {
+				refreshWidget();
+				track(changed);
+			},
+		});
+		members.set(name, member);
+		return member;
+	};
+
+	// The human's [1] on the resume question: each member reattaches to its own
+	// worktree and session file, within the member limit and the fleet budget.
+	// A missing worktree or session file is a blocker; nothing is created.
+	const resumeMembers = () => {
+		const fleetLedger = ledger;
+		if (!fleetLedger) return;
+		config = readFleetConfig(configHome);
+		const resumed: string[] = [];
+		const refused: string[] = [];
+		for (const name of pendingResume.splice(0)) {
+			const record = fleetLedger.current.members.find(member => member.name === name);
+			if (!record || members.get(name)?.live) continue;
+			const sessionDir = sessionPath(name);
+			const sessionFile = latestMemberSessionFile(sessionDir);
+			const spent = fleetSpend();
+			const reason = (record.worktree ? reattachMemberWorktree({ path: record.worktree, git: deps.git }) : undefined)
+				?? (!existsSync(record.cwd) ? `working directory ${record.cwd} is missing`
+				: !sessionFile ? `no session file in ${sessionDir}`
+				: liveCount() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
+				: config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd ? `the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget`
+				: undefined);
+			if (reason || !sessionFile) {
+				fleetLedger.notResumed(name, `not resumed: ${reason}`);
+				refused.push(`${name} (${reason})`);
+				continue;
+			}
+			const member = startMember(name, record.objective, buildMemberLaunch({ env, cwd: record.cwd, sessionDir, sessionFile, pi: deps.pi }), {
+				...(record.worktree && record.branch ? { worktree: { path: record.worktree, branch: record.branch } } : {}),
+				usage: { totalTokens: record.tokens, cost: record.cost },
+			});
+			memberThresholds.set(member, warnedThresholds(name, record.spawnedAt));
+			fleetLedger.resumed(name);
+			member.start();
+			track(member);
+			resumed.push(name);
+		}
+		refreshWidget();
+		if (resumed.length === 0 && refused.length === 0) return;
+		const lines = ["Fleet resumed (code-built):"];
+		if (resumed.length > 0) lines.push(`- resumed ${resumed.join(", ")}: each continues its own session and waits; send it work with fleet_send.`);
+		if (refused.length > 0) lines.push(`- not resumed: ${refused.join("; ")}.`);
+		pi.sendMessage({ customType: FLEET_DIGEST_MESSAGE_TYPE, content: lines.join("\n"), display: true, details: { gentleFleet: { resumed, members: [...members.keys()] } } }, { deliverAs: "followUp", triggerTurn: true });
+	};
+
+	// The human's [2]: the members stay stopped and the ledger says so.
+	const keepStopped = () => {
+		for (const name of pendingResume.splice(0)) ledger?.notResumed(name);
+		refreshWidget();
+	};
 	const memberOrError = (name: unknown) => {
 		const member = typeof name === "string" ? members.get(name) : undefined;
 		return member ?? `No fleet member named "${String(name)}". Members: ${[...members.keys()].join(", ") || "none"}.`;
@@ -476,6 +580,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		cancelWake?.();
 		cancelWake = undefined;
 		pending.clear();
+		// A reopened fleet asks before resuming these; members stopped on purpose stay stopped.
+		ledger?.interrupt([...members.values()].filter(member => member.live && !member.stopping).map(member => member.name));
 		for (const member of members.values()) member.stop();
 		ledger?.flush();
 	};
@@ -483,11 +589,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", (_event, ctx) => {
 		// A new session (new, resume, fork) starts its own fleet: the previous
 		// session's members are stopped and forgotten so they cannot wake it.
+		// A session with a saved ledger is that fleet reopened.
 		stopAll();
 		members.clear();
 		ledger = undefined;
+		pendingResume = [];
 		reportedWriteError = false;
-		retiredCost = 0;
 		fleetThresholds.clear();
 		pendingBudget.length = 0;
 		ctxRef = ctx;
@@ -495,7 +602,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (config.ignored.length > 0) ctx.ui.notify(`Gentle Fleet ignored invalid values in ${config.path} and uses the defaults for: ${config.ignored.join(", ")}.`, "warning");
 		closed = false;
 		fleetSessionId = ctx.sessionManager.getSessionId() || fleetSessionId;
-		ensureLedger(ctx.cwd);
+		const fleetLedger = ensureLedger(ctx.cwd);
+		for (const threshold of warnedThresholds(null)) fleetThresholds.add(threshold);
+		// Live when the controller stopped: interrupted on purpose, or still live after a crash.
+		const { members: saved, interrupted } = fleetLedger.current;
+		pendingResume = saved.filter(member => interrupted.includes(member.name) || member.status !== "exited").map(member => member.name);
+		if (pendingResume.length > 0) fleetLedger.awaitResume(pendingResume);
 		restrictTools();
 		mountDeck(ctx);
 		refreshWidget();
@@ -583,22 +695,13 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const sessionDir = join(agentHome, "gentle-fleet", "sessions", fleetSessionId, name);
 			try { mkdirSync(sessionDir, { recursive: true }); }
 			catch (error) { return text(`Error: could not create ${sessionDir}: ${error instanceof Error ? error.message : String(error)}`, { error: "session dir" }); }
-			const member = new FleetMember({
-				name,
-				objective,
-				launch: buildMemberLaunch({ env, cwd: memberCwd, sessionDir, model, pi: deps.pi }),
-				worktree: memberWorktree,
-				spawn: deps.spawn,
-				schedule: deps.schedule,
-				process: deps.process,
-				onEvent: onMemberEvent,
-				onChange: changed => {
-					refreshWidget();
-					track(changed);
-				},
-			});
-			retiredCost += members.get(name)?.usage.cost ?? 0;
-			members.set(name, member);
+			// A respawned name, or one still waiting on the resume question, keeps its spend in the fleet's.
+			fleetLedger.retire(fleetLedger.current.members.find(record => record.name === name)?.cost ?? 0);
+			if (pendingResume.includes(name)) {
+				pendingResume = pendingResume.filter(entry => entry !== name);
+				fleetLedger.settleResume(name);
+			}
+			const member = startMember(name, objective, buildMemberLaunch({ env, cwd: memberCwd, sessionDir, model, pi: deps.pi }), memberWorktree ? { worktree: memberWorktree } : {});
 			fleetLedger.spawned(name, objective, memberCwd, memberWorktree);
 			member.start();
 			member.prompt(objective);

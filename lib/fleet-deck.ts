@@ -49,6 +49,8 @@ export interface FleetSnapshotInput {
 	controller?: { tokens: number; cost: number };
 	/** The controller's live permission mode. */
 	permission?: string;
+	/** Members waiting on the resume question of a reopened fleet. */
+	resume?: readonly string[];
 }
 
 /** The view model's snapshot: the ledger plus the live extras the ledger does not keep. */
@@ -70,6 +72,7 @@ export function buildFleetSnapshot(input: FleetSnapshotInput): FleetViewSnapshot
 		budgets: { fleetUsd: input.budgets.fleetUsd ?? null, memberUsd: input.budgets.memberUsd ?? null },
 		...(input.controller ? { controller: input.controller } : {}),
 		...(input.permission ? { permission: input.permission } : {}),
+		...(input.resume?.length ? { resume: { members: [...input.resume] } } : {}),
 		documentPath: ledger.documentPath,
 	};
 }

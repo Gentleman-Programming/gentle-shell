@@ -1446,6 +1446,28 @@ const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Push back when the user asks for code without enough context or understanding.
 - Correct errors directly, explain why, and show the better path.`;
 
+function personaLanguageBoundary(persona: PersonaMode): string {
+	return persona === "neutral"
+		? "Language: neutral/professional Spanish when the user writes Spanish. Do NOT use voseo or Rioplatense regional expressions."
+		: "Language: natural Rioplatense Spanish with voseo when the user writes Spanish.";
+}
+
+// odd/tasks/fleet-orchestrator.md T2b (L28): the fleet controller keeps the
+// human's persona and language rules, but not the coding identity, ODD,
+// continuity or delegation sections. It hears from members, not subagents.
+function buildFleetPersonaPrompt(persona: PersonaMode): string {
+	const personaPrompt = (persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT)
+		.replace("subagent completion and progress notifications", "fleet digests and member notifications")
+		.replace("Translate relayed subagent findings", "Translate relayed member findings");
+	return `## Persona
+
+Current persona mode: ${persona}
+
+${personaPrompt}
+
+${personaLanguageBoundary(persona)}`;
+}
+
 function buildGentlePrompt(
 	persona: PersonaMode,
 	cwd: string = process.cwd(),
@@ -1455,10 +1477,7 @@ function buildGentlePrompt(
 ): string {
 	const personaPrompt =
 		persona === "neutral" ? NEUTRAL_PERSONA_PROMPT : GENTLEMAN_PERSONA_PROMPT;
-	const languageBoundary =
-		persona === "neutral"
-			? "Language: neutral/professional Spanish when the user writes Spanish. Do NOT use voseo or Rioplatense regional expressions."
-			: "Language: natural Rioplatense Spanish with voseo when the user writes Spanish.";
+	const languageBoundary = personaLanguageBoundary(persona);
 	return `## el Gentleman Identity and Harness
 
 Current persona mode: ${persona}
@@ -11384,7 +11403,7 @@ function createGentleAiExtensionForTesting(
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
 		const isFleetController = isPrimarySession && fleetRole(permissionEnvironment) === "controller";
 		const gentlePrompt = isFleetController
-			? `\n\n${getFleetOrchestratorPrompt()}`
+			? `\n\n${getFleetOrchestratorPrompt()}\n\n${buildFleetPersonaPrompt(readPersonaMode(ctx.cwd))}`
 			: rddStatusLine === undefined
 			? ""
 			: `\n\n${buildGentlePrompt(

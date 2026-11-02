@@ -510,6 +510,24 @@ test("the todo block exempts small tasks before the tracking rules", async () =>
 	assert.ok(event.systemPromptOptions.appendSystemPrompt.startsWith("## Todo list\nA small task (Task Size) uses no todo list: do it and report. For tracked or multi-step work, keep it current with the `todo` tool: mark a task in_progress before starting it,"));
 });
 
+// odd/tasks/fleet-orchestrator.md T2b: the fleet controller has no todo tool
+// active, so it gets no todo rules; members and normal sessions keep them.
+test("the fleet controller gets no todo block while members and normal sessions keep the same one", async () => {
+	const prompts = new Map<string, string>();
+	for (const [label, env] of [["normal", {}], ["member", { GENTLE_SHELL_FLEET_ROLE: "member" }], ["controller", { GENTLE_SHELL_FLEET_ROLE: "controller" }]] as const) {
+		const { pi, fire } = fakePi();
+		gentleTodo(pi, env);
+		const { ctx } = fakeContext();
+		await fire("session_start", ctx);
+		const event = promptEvent();
+		await fire("before_agent_start", ctx, event);
+		prompts.set(label, event.systemPromptOptions.appendSystemPrompt);
+	}
+	assert.equal(prompts.get("controller"), "");
+	assert.match(prompts.get("normal")!, /^## Todo list/);
+	assert.equal(prompts.get("member"), prompts.get("normal"));
+});
+
 /**
  * Drives the extension the way Pi's agent loop does (#2195): every model request
  * runs the context handlers over the persisted transcript, and a custom message

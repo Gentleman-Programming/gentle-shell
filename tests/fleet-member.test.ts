@@ -279,6 +279,8 @@ test("inspect returns the detail plus a bounded activity tail and the member's O
 	await tick();
 	const inspected = h.member.inspect(5);
 	assert.ok(inspected.startsWith(h.member.detail()), "starts with the detail");
+	// T2b (L32): the cwd resolves the member's own Engram project.
+	assert.match(inspected, /^cwd: \/work\/api$/m);
 	assert.match(inspected, /^feature document: \/work\/api\/odd\/tasks\/billing-api\.md$/m);
 	const tail = inspected.slice(inspected.indexOf("recent activity")).split("\n");
 	assert.equal(tail.length, 6);

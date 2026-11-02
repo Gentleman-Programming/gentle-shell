@@ -46,11 +46,15 @@ const BUDGET_THRESHOLDS = [100, 80];
 
 // Live E2E (L8): the controller prefix is mostly tool schemas, and peer/session
 // tools invited needless calls. The controller only coordinates, reads and
-// remembers; members and normal sessions keep every tool.
-const CONTROLLER_TOOLS = new Set(["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice"]);
+// remembers; members and normal sessions keep every tool. Memory is narrowed
+// to recall and record (T2b, L27): the 24 memory schemas were ~14k chars.
+const CONTROLLER_TOOLS = new Set([
+	"read", "grep", "find", "ls", "ask_user_question", "ask_user_choice",
+	"mem_search", "mem_context", "mem_get_observation", "mem_save", "mem_current_project",
+]);
 
 export function isControllerTool(name: string): boolean {
-	return name.startsWith("fleet_") || name.startsWith("mem_") || CONTROLLER_TOOLS.has(name);
+	return name.startsWith("fleet_") || CONTROLLER_TOOLS.has(name);
 }
 
 export interface FleetDeps {

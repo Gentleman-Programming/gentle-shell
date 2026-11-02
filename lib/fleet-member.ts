@@ -297,9 +297,10 @@ export class FleetMember {
 		return lines.join("\n");
 	}
 
-	/** Detail plus the last `count` activity lines and the feature document. */
+	/** Detail plus the cwd, the last `count` activity lines and the feature document. */
 	inspect(count: number): string {
-		const lines = [this.detail()];
+		// The cwd resolves the member's own Engram project (T2b, L32).
+		const lines = [this.detail(), `cwd: ${this.cwd}`];
 		if (this.featureDoc) lines.push(`feature document: ${this.featureDoc}`);
 		const take = Math.max(1, Math.min(INSPECT_LINES_MAX, Math.floor(count) || 1));
 		const tail = this.activity.slice(-take);

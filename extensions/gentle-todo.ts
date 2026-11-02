@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { fleetRole } from "../lib/fleet-role.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
@@ -110,6 +111,9 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 	if (!todoEnabled(env)) return;
 	const sessions = new Map<string, TodoSession>();
 	const collapseKey = todoCollapseKey(env);
+	// The fleet controller keeps no todo list (its allowlist drops the tool), so
+	// its prompt carries no todo rules (odd/tasks/fleet-orchestrator.md T2b).
+	const isFleetController = fleetRole(env) === "controller";
 
 	const session = (ctx: ExtensionContext): TodoSession => {
 		const key = sessionKey(ctx);
@@ -347,7 +351,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
 		// systemPrompt, so the rules block goes through appendSystemPrompt. It is
 		// the same bytes on every turn, list or no list (gentle-shell#1662).
-		appendSystemPromptOnce(event.systemPromptOptions, todoPromptBlock());
+		if (!isFleetController) appendSystemPromptOnce(event.systemPromptOptions, todoPromptBlock());
 		return undefined;
 	});
 

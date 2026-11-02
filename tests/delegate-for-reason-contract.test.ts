@@ -38,15 +38,16 @@ test("AC1: the core writer rule fires on named reasons, never on size or file co
 	for (const clause of [
 		"never by file count or a large task alone",
 		"`orchestrator-writer.md`",
-		"2+ independent units of behavior (separate features or fixes that do not depend on each other), each heavier than a subagent start",
-		"a unit qualifies only when it needs several minutes of work: several files or roughly 100+ changed lines",
-		"a small change to one module or one command is done inline even when several such changes are independent",
+		"2+ independent units of behavior",
+		"each heavier than a subagent start",
+		"several minutes of work: several files or roughly 100+ changed lines",
 		"Tests, docs, and code of the same behavior are one unit, never separate writers",
-		"a delivery that depends on an earlier one is not independent",
 		"Context backstop",
 	]) {
 		assert.ok(coreWriter.includes(clause), `core Writer rule is missing: ${clause}`);
 	}
+	assert.match(coreWriter, /(?:a small change to one module or one command is done inline even when several such changes are independent|Small module or command changes stay inline, even when independent)/);
+	assert.match(coreWriter, /(?:a delivery that depends on an earlier one is not independent|dependent deliveries are not independent)/);
 	assert.ok(!core.includes("large task → one bounded `gentle-ai-worker` per task"), "core keeps the size-based writer rule");
 	assert.ok(
 		core.includes("large tasks get ODD tracking and workers only by the Writer rule, else inline"),

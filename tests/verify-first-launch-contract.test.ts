@@ -23,6 +23,56 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 	for (const clause of clauses) assert.ok(text.includes(clause), `${label} is missing: ${clause}`);
 }
 
+// Issue #1494: these pin prompt policy, not a runtime-enforced limit or model compliance.
+test("S1: verifier makes one isolated preparation attempt before checks", () => {
+	containsAll(verify, [
+		"Make one isolated preparation attempt",
+		"If preparation succeeds, run the authorized checks and independent spec-derived probes",
+	], "preparation bound");
+});
+
+test("S2: preparation failure reports a concrete blocker and exact unrun checks", () => {
+	containsAll(verify, [
+		"At the first inability to prepare a required copy, environment, dependency, or helper, stop setup",
+		"report one concrete setup blocker and the exact checks left unrun as unverified, not passed",
+		"list every scratch directory you created by exact path",
+	], "setup failure");
+});
+
+test("S3: setup failures do not trigger repair loops or automatic relaunch", () => {
+	containsAll(verify, ["Do not retry setup or enter repair-helper loops"], "verifier setup");
+	containsAll(verification, [
+		"Do not automatically relaunch the verifier for the same missing prerequisite",
+		"Distinguish setup or infrastructure failure from genuine code findings",
+		"stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks",
+		"Do not keep repairing helpers",
+		"Auxiliary tooling defects remain subject to the existing correction bound",
+	], "parent setup");
+});
+
+test("S5: documentation identifies the instruction as policy rather than runtime enforcement", () => {
+	const docs = read("docs/delegated-verification.md");
+	containsAll(docs, [
+		"one isolated preparation attempt",
+		"prompt policy, not a runtime-enforced limit",
+		"unverified, not passed",
+	], "delegated verification documentation");
+});
+
+test("S4: successful setup retains independent probes, isolation, consent and finding correction", () => {
+	containsAll(verify, [
+		"independent probes required by the risk tier",
+		"never `git worktree`, `git stash`, or a symlink into the workspace",
+		"No network, no installs, no writes outside the scratch directory",
+		"one correction batch and one recheck limited to the reported blockers",
+	], "verification safeguards");
+	containsAll(verification, [
+		"one separate `gentle-ai-verify` run",
+		"one correction batch that fixes every reported blocker",
+	], "parent safeguards");
+	assert.ok(read("docs/delegated-verification.md").includes("human consent for native review"));
+});
+
 test("T16: read-only means no repository or git-state edits", () => {
 	containsAll(verify, [
 		"read-only technical verifier for generic ODD work",
@@ -116,14 +166,15 @@ test("T16: the verify handoff names probe command forms and the scratch location
 	], "verify handoff");
 });
 
-// T17b (L42): after4 B x5 read two files, then the core Evidence-budget rule
-// fired and delegated a 1.5 min exploration on a small task the parent then
-// implemented inline. The trigger itself must exclude reading for an inline write.
-test("T17b: the core Evidence-budget rule never fires to prepare an inline write", () => {
+// T17b (L42): preparation for an understood inline write stays inline, but
+// discovery cannot evade the evidence budget merely because a write is planned.
+test("T17b: inline-write preparation is distinct from discovery", () => {
 	const core = read("assets/orchestrator.md");
 	const rule = core.split("\n").find((line) => line.includes("**Evidence-budget rule**"));
 	assert.ok(rule, "Evidence-budget rule is missing");
-	assert.ok(rule.includes("never for reading before an inline write"), "Evidence-budget rule must exclude reading for an inline write");
+	assert.match(rule, /Exempt only preparation for an understood inline write, not discovery/);
+	assert.match(rule, /cumulative discovery each batch, never reset/);
+	assert.match(core, /No explore, worker, or verifier unless a trigger fires/);
 });
 
 test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {

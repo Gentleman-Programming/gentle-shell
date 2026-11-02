@@ -5522,6 +5522,41 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 	assert.doesNotMatch(renderFooter(ui), /codex/);
 });
 
+test("gentleShell files header usage under the provider that served the response", async () => {
+	// pi-claude-bridge forwards Claude Code's usage as the Anthropic unified
+	// headers, so the headers alone name `anthropic` while the session runs on
+	// `claude-bridge`.
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { model: { provider: string } }).model.provider = "claude-bridge";
+	await fire(handlers, "session_start", ctx);
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.25", "anthropic-ratelimit-unified-7d-utilization": "0.9" } }, ctx);
+	}
+	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25% · week 90%/);
+
+	const opened = commands.get("gentle:usage")!.handler("", ctx);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const plain = ui.overlayView!.render(90).map(stripAnsi).join("\n");
+	assert.match(plain, /✿ claude-bridge ·/);
+	assert.doesNotMatch(plain, /no subscription usage for this provider/);
+	ui.closeOverlay?.();
+	await opened;
+});
+
+test("gentleShell keeps the header provider when no model served the response", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx, ui } = fakeContext();
+	(ctx as unknown as { model: { provider: string } }).model.provider = "anthropic";
+	await fire(handlers, "session_start", ctx);
+	for (const handler of handlers.get("after_provider_response") ?? []) {
+		handler({ status: 200, headers: { "anthropic-ratelimit-unified-5h-utilization": "0.25" } }, { ...ctx, model: undefined });
+	}
+	assert.match(renderFooter(ui), /claude 5h ▰▰▱▱▱▱▱▱ 25%/);
+});
+
 test("gentleShell ignores incomplete Codex headers and retains the last real quota without assuming 5h", async () => {
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });

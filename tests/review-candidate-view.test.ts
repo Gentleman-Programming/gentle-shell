@@ -732,6 +732,31 @@ test("owner preparation failure names the transient cause code in the wrapper me
 	);
 });
 
+test("owner preparation failure surfaces a denial code and omits a code outside the bounded set", (t) => {
+	const cwd = repository(t);
+	let code = "EACCES";
+	t.mock.method(fs, "fsyncSync", () => {
+		const error = new Error("fixture denial") as NodeJS.ErrnoException;
+		error.code = code;
+		throw error;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const messageFor = (): string => {
+		try {
+			new CandidateViewRegistry().create({ contributorRoot: cwd });
+		} catch (error) {
+			assert.ok(error instanceof CandidateViewError);
+			assert.equal(error.reason, "candidate-owner-preparation-failed");
+			return error.message;
+		}
+		throw new Error("owner preparation was expected to fail");
+	};
+	assert.equal(messageFor(), "candidate view owner preparation failed (EACCES)");
+	code = "ENOSPC";
+	assert.equal(messageFor(), "candidate view owner preparation failed");
+});
+
 test("ordinary cleanup preserves mismatched owner and cleanupAll continues other records", (t) => {
 	const cwd = repository(t);
 	const registry = new CandidateViewRegistry();
@@ -1894,15 +1919,41 @@ test("candidate view accepts internal relative symlink targets and rejects unsaf
 		accepted.cleanup();
 	}
 
+	// Issue #1811: symlink targets with a single trailing slash pointing to directories are valid POSIX paths
+	const trailingSlashRoot = repository(t);
+	const trailingSlashTarget = "../../.agents/skills/example/";
+	const trailingSlashLink = join(trailingSlashRoot, ".agent", "skills", "example");
+	mkdirSync(join(trailingSlashRoot, ".agents", "skills", "example"), { recursive: true });
+	mkdirSync(join(trailingSlashRoot, ".agent", "skills"), { recursive: true });
+	writeFileSync(join(trailingSlashRoot, ".agents", "skills", "example", "SKILL.md"), "example\n");
+	try {
+		symlinkSync(trailingSlashTarget, trailingSlashLink);
+	} catch {
+		t.skip("platform does not support symlinks");
+		return;
+	}
+	const trailingAccepted = createCandidateView({ contributorRoot: trailingSlashRoot });
+	try {
+		assert.equal(lstatSync(trailingSlashLink).isSymbolicLink(), true);
+		assert.equal(readFileSync(join(trailingAccepted.root, ".agent", "skills", "example", "SKILL.md"), "utf8"), "example\n");
+		trailingAccepted.verify();
+	} finally {
+		trailingAccepted.cleanup();
+	}
+
 	for (const [name, target] of [
 		["escape", "../escape"],
+		["escape with trailing slash", "../escape/"],
 		["absolute", "/absolute-target"],
 		["Windows drive absolute", "C:/absolute-target"],
 		["lowercase Windows drive absolute", "c:/absolute-target"],
 		["metadata", ".git"],
+		["metadata with trailing slash", ".git/"],
 		["control", "unsafe\ntarget"],
 		["backslash", "unsafe\\target"],
 		["empty segment", "unsafe//target"],
+		["multiple trailing slashes", "unsafe//"],
+		["current directory with trailing slash", "./"],
 	] as const) {
 		const contributorRoot = repository(t);
 		try {

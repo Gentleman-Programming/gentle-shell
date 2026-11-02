@@ -7,6 +7,7 @@ import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
+import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
@@ -22,13 +23,18 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
+	accessSync,
+	constants as fsConstants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -39,7 +45,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -121,6 +127,7 @@ import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/se
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -174,7 +181,8 @@ import {
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, candidateOwnerPreparationError, CandidateViewError, CandidateViewRegistry, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { assertCandidateOwnerParent } from "../lib/review-candidate-view-owner.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -1411,7 +1419,7 @@ const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
-- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
@@ -1420,7 +1428,7 @@ const GENTLEMAN_PERSONA_PROMPT = `Persona:
 
 const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Be direct, technical, concise, warm, and professional.
-- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - Do not use slang or regional expressions.
 - When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations, regular or irregular: use tú or usted forms, never vos forms (tienes, not tenés; ajustas, not ajustás; vives, not vivís; mira, not mirá; haz, not hacé).
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
@@ -1467,6 +1475,10 @@ Interpret short replies such as "yes", "go ahead", or "eso mismo" against the im
 Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision.
 
 Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
+
+Before a terminal bounded-stop outcome, distinguish a recoverable technical or harness failure from genuinely inaccessible required proof. A failed test or harness check may be corrected and rerun without another authorization only within the authorized scope and existing correction budget, subject to every applicable limit. Honor explicit one run, no retries, or diagnostic-only limits; stop for permission denial, required new consent, or exhausted budget. Do not propose diagnostic-only or single-attempt authorization unless the human requested it. Respect terminal review and verification outcomes and existing bounded-stop rules: never reset budgets, add retry allowances, weaken checks, or override final outcomes. An unavailable verifier remains unavailable; do not retry or escalate it.
+
+For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
 
 For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue", poll, or claim completion while checks remain pending.
 
@@ -1784,7 +1796,12 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
-const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit"]);
+// Tools whose `path` input names the file or directory they reach. The guard
+// sees only that input: a search scoped to a directory (grep over ".", with or
+// without a glob) still reads whatever the directory contains, and bash is not
+// covered here. Keeping secret bytes out of those results is a separate design
+// (gentle-shell#2349).
+const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
 	"paths",
@@ -2507,6 +2524,44 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return effective;
 }
 
+/**
+ * The profile this session's launches resolve (gentle-shell#1064 slice 3c): the
+ * Enter binding, then the profile frozen at startup, through the same rule the
+ * launcher reads. It resolves from the session's directory, as the freeze and
+ * the launcher do. `undefined` means the session resolves no profile, so
+ * launches keep the global routing; a pin the session did not freeze never
+ * reaches them and is not read here. Without session profile authority the
+ * launches are blocked, so no profile is theirs.
+ */
+function sessionLaunchProfile(ctx: ExtensionContext, authorityAvailable: boolean): { name: string; modelProfiles: AgentModelConfig } | undefined {
+	if (!authorityAvailable) return undefined;
+	const resolution = resolveSessionProfile({
+		sessionId: ctx.sessionManager?.getSessionId?.(),
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		configHome: gentleAiConfigHome(),
+	});
+	const name = resolution.kind === "explicit" ? resolution.name : resolution.profile?.name;
+	const routing = sessionProfileModelProfiles(resolution);
+	return name === undefined || routing === undefined ? undefined : { name, modelProfiles: cloneModelConfig(routing) };
+}
+
+/**
+ * Whether this session's launches may run, read as the launcher reads it (and,
+ * like it, clearing a binding it cannot corroborate). A manager without a
+ * branch has no session profile record to distrust.
+ */
+function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
+	const manager = ctx.sessionManager;
+	if (typeof manager?.getSessionId !== "function" || typeof manager.getBranch !== "function") return true;
+	return readSessionProfileAuthority(manager).available;
+}
+
+/** The routing this session's launches use: its profile, or the global effective routing. */
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext, authorityAvailable: boolean): Promise<AgentModelConfig> {
+	return sessionLaunchProfile(ctx, authorityAvailable)?.modelProfiles
+		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
+}
+
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
 	const pinned = pinnedEffectiveModelConfig(cwd);
 	if (pinned) return pinned;
@@ -2878,8 +2933,6 @@ function isValidJsonObjectFileOrMissing(path: string): boolean {
 		return false;
 	}
 }
-
-const PROVIDER_REVIEW_ROLES = ["review-refuter", "review-validator"] as const;
 
 function isProviderReviewRole(name: string): boolean {
 	return PROVIDER_REVIEW_ROLES.some((role) => role === name);
@@ -4055,8 +4108,9 @@ class RoutingTablePanel implements OverlayComponent {
 		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
 		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
 			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
-		const fullLabel = (id: RoutingTableButton) => ROUTING_TABLE_BUTTONS[id];
-		const shortLabel = (id: RoutingTableButton) => ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id];
+		const keyed = (id: RoutingTableButton, text: string) => `${id === "use" ? "u" : id === "default" ? "d" : "s"} · ${text}`;
+		const fullLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_BUTTONS[id]);
+		const shortLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id]);
 		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
 		let footer = "";
 		let footerColumn = 0;
@@ -4502,14 +4556,28 @@ function routingScreenNotices(
 	file: AgentProfilesFile,
 	shownName: string,
 	sessionBoundName: string | undefined,
+	launchRouting?: AgentModelConfig,
+	authorityAvailable = true,
 ): string[] {
 	const notices: string[] = [];
+	if (!authorityAvailable) notices.push("Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.");
 	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
 	for (const issue of pins.invalid) {
 		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
 	}
 	for (const issue of pins.stale) {
 		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
+	}
+	if (sessionBoundName !== undefined && !hasOwnProfile(file.profiles, sessionBoundName)) {
+		notices.push(`This session launches with "${sessionBoundName}", which is no longer in profiles.json; its launches keep that routing.`);
+	}
+	// The table shows the saved profile; the session's launches keep the routing
+	// they took at the freeze or the binding. Both sides compare role routes only.
+	const roleRoutes = (config: unknown) => JSON.stringify(Object.entries(normalizeModelConfig(config) ?? {})
+		.filter(([key]) => !isProfileOrchestratorKey(key)).sort(([a], [b]) => a.localeCompare(b)));
+	if (shownName === sessionBoundName && launchRouting !== undefined && hasOwnProfile(file.profiles, shownName)
+		&& roleRoutes(file.profiles[shownName]) !== roleRoutes(launchRouting)) {
+		notices.push(`Saved "${shownName}" differs from this session's launches; Use in this session adopts it.`);
 	}
 	const roots = {
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
@@ -4537,9 +4605,10 @@ function routingScreenNotices(
 		if (entry.suggestion !== undefined) notices.push(`Profile key "${entry.key}" matches no agent configured in gentle-shell; did you mean ${entry.suggestion}?`);
 	}
 	// Issue #2400: model_profiles keys in subagents.json that match nothing and
-	// suggest nothing. A session binding or a winning pin replaces those launches'
-	// routing, so the file's keys do not apply there.
-	if (sessionBoundName === undefined && pinnedEffectiveModelConfig(ctx.cwd) === undefined) {
+	// suggest nothing. When the session resolves a profile (its binding or the one
+	// frozen at startup), that profile replaces those launches' routing, so the
+	// file's keys do not apply there; a pin the session did not freeze does not.
+	if (sessionBoundName === undefined) {
 		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
 			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
 			.map((entry) => entry.key);
@@ -4615,7 +4684,12 @@ async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promi
 		: read.status === "missing"
 			? ({ name: "current", source: "active" } as CurrentProfileTarget)
 			: undefined;
-	await openProfilesPanelLoop(ctx, live, target?.name);
+	// The screen opens on the profile this session launches with while the store
+	// still has it (gentle-shell#1064 slice 3c).
+	const authorityAvailable = sessionProfileAuthorityAvailable(ctx);
+	const launchName = sessionLaunchProfile(ctx, authorityAvailable)?.name;
+	const opensOnLaunch = read.status === "valid" && launchName !== undefined && hasOwnProfile(read.file.profiles, launchName);
+	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name, authorityAvailable);
 }
 
 /** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
@@ -5618,18 +5692,20 @@ async function openProfilesPanelLoop(
 	ctx: ExtensionContext,
 	live: LiveSession,
 	initialSelectedName?: string,
+	openingAuthority?: boolean,
 ): Promise<void> {
 	const store = await loadProfilesStore(ctx);
 	if (!store) return;
 	const { path } = store;
 	let file = store.file;
-	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
 	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
 	let selectedName = initialSelectedName
 		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
 		?? Object.keys(file.profiles)[0];
 	let feedback: string | undefined;
 	let draftOverride: AgentModelConfig | undefined;
+	// Read once per visit: the opening read serves the first one.
+	let authorityAvailable = true;
 	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
 		try {
 			const next = hasOwnProfile(file.profiles, name)
@@ -5651,12 +5727,13 @@ async function openProfilesPanelLoop(
 			return { error };
 		}
 		selectedName = name;
-		const boundName = sessionBoundName();
+		// The profile this session launches with, bound or frozen: the tab marked ◉.
+		const launch = sessionLaunchProfile(ctx, authorityAvailable);
 		return {
 			file,
-			sessionBoundName: boundName,
+			sessionBoundName: launch?.name,
 			pinWinner: pinWinner(),
-			notices: routingScreenNotices(ctx, file, name, boundName),
+			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
 		};
 	};
@@ -5696,15 +5773,17 @@ async function openProfilesPanelLoop(
 			}
 			const shown = selectedName;
 			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
-			const boundName = sessionBoundName();
+			authorityAvailable = openingAuthority ?? sessionProfileAuthorityAvailable(ctx);
+			openingAuthority = undefined;
+			const launch = sessionLaunchProfile(ctx, authorityAvailable);
 			const result = await step(() => showRoutingTablePanel(ctx, {
 				name: shown,
 				config: draftOverride ?? stored,
 				file,
-				sessionBoundName: boundName,
+				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
-				notices: routingScreenNotices(ctx, file, shown, boundName),
+				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
 			}));
 			draftOverride = undefined;
@@ -5778,6 +5857,10 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "create-live": {
+					if (!authorityAvailable) {
+						feedback = `${savedNote}Session profile authority is unavailable; affected launches are blocked. No profile created.`;
+						continue;
+					}
 					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
 					const name = answer?.trim() ?? "";
 					if (name === "") {
@@ -5787,8 +5870,7 @@ async function openProfilesPanelLoop(
 					// Captures the routing this session's launches resolve and the
 					// orchestrator it actually runs, the way the old snapshot did.
 					const snapshot = profileSnapshotFrom(
-						readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-							?? await step(() => readEffectiveModelConfigAsync(ctx.cwd)),
+						await step(() => readSessionLaunchModelConfigAsync(ctx, authorityAvailable)),
 						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 					);
 					try {
@@ -7797,7 +7879,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
 	const preservesAnswerConsentStartDiagnostic = operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT && nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.START;
 	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && value.candidateViewPreNative === true
-		? error.diagnostics ?? { code: error.reason, message: "candidate view rejected before native START" }
+		? error.diagnostics ?? { code: error.reason, message: error.message }
 		: error instanceof CandidateViewError
 			? { code: error.reason, message: error.message }
 			: nativeDiagnostics?.operation === `review/${operation}` || preservesNativeTargetStatusDiagnostic || preservesAnswerConsentStartDiagnostic
@@ -8013,6 +8095,167 @@ function nativePreLineageCandidateIdentity(
 	return isCanonicalProcessString(status.targetIdentity) && isCanonicalProcessString(candidateTree)
 		? { targetIdentity: status.targetIdentity, candidateTree }
 		: undefined;
+}
+
+// gentle-ai#2196: inspect must not advertise a START whose candidate-view
+// materialization is already known to fail. START materializes the frozen
+// view and then verifies cheap non-mutating invariants; when one is
+// deterministically false (the POSIX candidate owner parent is not private,
+// or the frozen tree tracks symlinks this process cannot create natively),
+// inspect runs the same non-persistent checks first and withholds the ready
+// advertisement with the exact typed diagnostics the START refusal would
+// carry, so STATUS and START stop disagreeing about operations that cannot
+// begin. The Windows owner boundary keeps its START-time DACL validation for
+// now; this preflight only answers questions a non-persistent check settles
+// (the capability probe creates and removes a temporary directory). The
+// symlink scan never claims a confirmed symlink-free tree from an incomplete
+// listing (timeout, output limit, unreadable tree), and the capability probe
+// samples the filesystem that will hold the candidate view — when that
+// filesystem cannot be probed, the capability stays unconfirmed and the
+// advertisement is withheld instead of guessing from another filesystem.
+let candidateViewSymlinkProbe: ((probeRoot: string) => void) | undefined;
+
+function setCandidateViewSymlinkProbeForTesting(probe: ((probeRoot: string) => void) | undefined): void {
+	candidateViewSymlinkProbe = probe;
+}
+
+// Thrown when no existing directory of the candidate-view filesystem can host
+// the probe: the capability stays unconfirmed instead of being reported as
+// incapable, so an unverifiable filesystem never masquerades as a pass.
+class CandidateViewSymlinkProbeUnavailableError extends Error {}
+
+function defaultCandidateViewSymlinkProbe(probeRoot: string): void {
+	let directory: string;
+	try {
+		directory = mkdtempSync(join(probeRoot, "gentle-symlink-probe-"));
+	} catch (error) {
+		throw new CandidateViewSymlinkProbeUnavailableError("cannot create a probe directory on the candidate-view filesystem", { cause: error });
+	}
+	try {
+		symlinkSync("probe-target", join(directory, "probe"), process.platform === "win32" ? "file" : undefined);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+// The deepest existing ancestor of the candidate-view parent: probing there
+// samples the filesystem that will actually hold the candidate view. Before
+// the first START only the Git common directory exists; after one, the probe
+// lands inside the real candidate-views parent.
+function nearestExistingAncestorDirectory(path: string): string | undefined {
+	let current = path;
+	for (;;) {
+		try {
+			if (statSync(current).isDirectory()) return current;
+		} catch {
+			// Missing or unreadable: keep walking up.
+		}
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+}
+
+type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unconfirmed";
+
+function scanCandidateTreeForSymlinks(cwd: string, candidateTree: string): CandidateTreeSymlinkScan {
+	// Discovery must describe the selected directory, never an ambient Git
+	// override pointing at a different repository or worktree.
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	try {
+		const listing = execFileSync("git", ["ls-tree", "-r", "--full-tree", candidateTree], {
+			cwd,
+			env,
+			encoding: "utf8",
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			// Same bounds the candidate-view materialization uses: a bounded
+			// child that cannot hang the event loop, and a listing past the
+			// output limit is an incomplete scan, never a symlink-free verdict.
+			timeout: resolveCandidateGitTimeoutMs(),
+			maxBuffer: CANDIDATE_GIT_MAX_BUFFER_BYTES,
+		});
+		return listing.split("\n").some((line) => line.startsWith("120000 ")) ? "tracks-symlinks" : "no-symlinks";
+	} catch {
+		// A timed-out, over-limit, or otherwise unreadable tree is an
+		// incomplete scan, not a deterministic materialization failure;
+		// START owns reporting unreadable trees.
+		return "unconfirmed";
+	}
+}
+
+type CandidateViewSymlinkCapability = "capable" | "incapable" | "unconfirmed";
+
+function candidateViewSymlinkCapability(commonDir: string | undefined): CandidateViewSymlinkCapability {
+	if (commonDir === undefined) return "unconfirmed";
+	const probeRoot = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+	if (probeRoot === undefined) return "unconfirmed";
+	try {
+		(candidateViewSymlinkProbe ?? defaultCandidateViewSymlinkProbe)(probeRoot);
+	} catch (error) {
+		return error instanceof CandidateViewSymlinkProbeUnavailableError ? "unconfirmed" : "incapable";
+	}
+	return "capable";
+}
+
+function candidateViewPreflightRejection(status: ReviewStatusV3, diagnostics: Record<string, string>): Record<string, unknown> {
+	// The native body carries the executable START transition; consumers read the
+	// nested result.next_transition, so a blocked inspect must not forward it.
+	const { next_transition: _withheldTransition, ...blockedResult } = status.raw;
+	return {
+		operation: REVIEW_CONTROLLER_OPERATION.INSPECT,
+		status: "blocked",
+		outcome: "candidate-view-preflight-blocked",
+		result: blockedResult,
+		diagnostics,
+		mutation_performed: false,
+		mutation_outcome: "none",
+		lineage_created: false,
+		next_action: "resolve-native-operation-failure",
+	};
+}
+
+function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: string, commonDir: string | undefined, platform: NodeJS.Platform = process.platform): Record<string, unknown> | undefined {
+	if (status.action !== "start") return undefined;
+	if (platform !== "win32" && commonDir !== undefined) {
+		try {
+			assertCandidateOwnerParent(commonDir, platform);
+		} catch (error) {
+			// A missing parent is not a deterministic failure while START's prepare
+			// can still create it private under the nearest existing ancestor. Every
+			// other owner failure makes START refuse too, so withhold the
+			// advertisement with the owner-preparation classification.
+			let failureCause: unknown = error;
+			if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+				failureCause = undefined;
+				const ancestor = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+				try {
+					if (ancestor !== undefined) accessSync(ancestor, fsConstants.W_OK | fsConstants.X_OK);
+				} catch (accessError) {
+					failureCause = accessError;
+				}
+			}
+			if (failureCause !== undefined) {
+				const failure = candidateOwnerPreparationError(failureCause);
+				const typed = failure.diagnostics !== undefined && "code" in failure.diagnostics ? failure.diagnostics : undefined;
+				return candidateViewPreflightRejection(status, typed ?? { code: failure.reason, message: failure.message });
+			}
+		}
+	}
+	const candidateTree = status.projection.currentCandidateTree;
+	if (isCanonicalProcessString(candidateTree) && scanCandidateTreeForSymlinks(cwd, candidateTree) === "tracks-symlinks") {
+		const capability = candidateViewSymlinkCapability(commonDir);
+		if (capability === "unconfirmed") {
+			// The tree needs native symlinks and the target filesystem could not
+			// be probed: advertising START would only move the same uncertainty
+			// into a materialization refusal (gentle-ai#2196).
+			return candidateViewPreflightRejection(status, { code: "symlink-capability-unconfirmed" as const, message: CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE });
+		}
+		if (capability === "incapable") {
+			return candidateViewPreflightRejection(status, { code: "symlink-materialization-failed" as const, message: CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE });
+		}
+	}
+	return undefined;
 }
 
 function readRetainedPreLineageNativeUntrackedSelection(
@@ -8838,13 +9081,21 @@ function selectExactReviewCapture(
 	const inputTargetIdentity = exactCollectArgument(input, "target");
 	// Go's targeted-validator vector binds its capture target to the correction
 	// target from the provider-owned validation request, rather than STATUS's
-	// current candidate identity. All other captures remain bound to STATUS.
-	const expectedInputTargetIdentity = input.validationRequest?.correctionTargetIdentity ?? statusTargetIdentity;
+	// current candidate identity. All other captures are bound to STATUS's live
+	// target, except correction plans: gentle-ai's reviewAuthorityTargetIdentity
+	// binds them to the frozen authority target (authority_target_identity)
+	// once the candidate drifts.
+	const validationTarget = input.validationRequest?.correctionTargetIdentity;
+	const expectedInputTargetIdentities = validationTarget !== undefined
+		? [validationTarget]
+		: input.captureOperation === "review.capture-correction-plan"
+			? [statusTargetIdentity, status.authorityTargetIdentity]
+			: [statusTargetIdentity];
 	if (
 		!isCanonicalProcessString(inputLineageId) ||
 		!isCanonicalProcessString(inputTargetIdentity) ||
 		inputLineageId !== lineageId ||
-		inputTargetIdentity !== expectedInputTargetIdentity
+		!expectedInputTargetIdentities.includes(inputTargetIdentity)
 	) {
 		return captureBindingRejected("collectBinding does not carry one non-empty matching provider lineage and target token");
 	}
@@ -9100,7 +9351,10 @@ async function executeReviewCaptureOperation(
 				cwd,
 				...(signal === undefined ? {} : { signal }),
 			});
-			return withCorrectionTarget(mapAndClearLastEventClosure(closure, selected.binding, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
+			// The provider echoes the target the plan was captured for (the frozen
+			// authority target after drift); reconciliation stays on STATUS's target.
+			const capturedTarget = exactCollectArgument(selected.input, "target") ?? selected.binding.targetIdentity;
+			return withCorrectionTarget(mapAndClearLastEventClosure(closure, { ...selected.binding, targetIdentity: capturedTarget }, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
 		} catch (error) {
 			return await reconcileUnknownReviewCaptureFailure(error, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route);
 		}
@@ -9348,7 +9602,7 @@ async function executeReviewControllerOperation(
 		parameters.operation === REVIEW_CONTROLLER_OPERATION.INSPECT &&
 		nativeReviewCli !== null
 	) {
-		const rawInspect = parameters.input === undefined
+		const rawInspect = parameters.input === undefined || parameters.input.trim() === ""
 			? undefined
 			: parseControllerJson(parameters.input, REVIEW_CONTROLLER_OPERATION.INSPECT);
 		const unknownField = rawInspect === undefined
@@ -9358,7 +9612,7 @@ async function executeReviewControllerOperation(
 		const baseRef = rawInspect?.baseRef;
 		if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeInspectInputRejection("base-ref-invalid");
 		if (baseRef !== undefined && rawInspect?.committedOnly !== true) return nativeInspectInputRejection("committed-only-required");
-		if (rawInspect !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
+		if (rawInspect?.committedOnly !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
 		let canonicalBaseRef: string | undefined;
 		if (typeof baseRef === "string") {
 			try {
@@ -9418,6 +9672,12 @@ async function executeReviewControllerOperation(
 							retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ ...readyCandidateIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
 						}
 					}
+					// gentle-ai#2196: a ready advertisement must survive the same cheap
+					// candidate-view invariants START verifies, or be withheld.
+					if (plainMapped.status === "ready") {
+						const preflightBlocked = inspectCandidateViewPreflightBlocked(status, defaultCwd, workspaceResolution.identity?.commonDir);
+						if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
 						...plainMapped,
@@ -9428,12 +9688,18 @@ async function executeReviewControllerOperation(
 					};
 				}
 				const input = reviewIntendedUntrackedInput(status);
-				if (input === undefined)
+				if (input === undefined) {
+					// gentle-ai#2196: same ready-advertisement preflight as the plain path.
+					if (plainMapped.status === "ready") {
+						const preflightBlocked = inspectCandidateViewPreflightBlocked(status, defaultCwd, workspaceResolution.identity?.commonDir);
+						if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+					}
 					return {
 						...plainMapped,
 						untracked_selection: "not-required",
 						...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}),
 					};
+				}
 				const eligibleJson = exactCollectArgument(input, "eligible_paths_json"),
 					inventory = exactCollectArgument(input, "expected_untracked_inventory");
 				let eligible: unknown;
@@ -9517,6 +9783,12 @@ async function executeReviewControllerOperation(
 					undefined,
 					includeWorkspaceRoot ? defaultCwd : undefined,
 				);
+				// gentle-ai#2196: the resolved selection path advertises START under the
+				// same cheap candidate-view invariants as the plain path.
+				if (resolvedMapped.status === "ready") {
+					const preflightBlocked = inspectCandidateViewPreflightBlocked(resolvedStatus, defaultCwd, workspaceResolution.identity?.commonDir);
+					if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+				}
 				return {
 					...resolvedMapped,
 					...("selectionBinding" in resolvedMapped
@@ -10325,6 +10597,9 @@ async function executeReviewControllerOperation(
 
 /** @internal */
 export const __testing = {
+	setCandidateViewSymlinkProbeForTesting,
+	CandidateViewSymlinkProbeUnavailableError,
+	scanCandidateTreeForSymlinks,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
@@ -10457,6 +10732,7 @@ function createGentleAiExtensionForTesting(
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
 	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
+	const explorationBudget = createExplorationBudget();
 	// Named-agent or child runs started and not yet settled, per session. Such a run never records verifier attempts (its
 	// tool calls are not primary), so its settle checks must not remind. Each one pairs off at its own `agent_settled`,
 	// nested runs included: Pi may check settlement again after a continuation without a new `before_agent_start`, and
@@ -11047,6 +11323,7 @@ function createGentleAiExtensionForTesting(
 		const isChildSession = permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1";
 		const isPrimarySession = !isNamedAgent && !isChildSession;
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		if (isPrimarySession && !ctx.signal?.aborted) explorationBudget.start(subagentDepthKey);
 		if (isNamedAgent || isChildSession) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
 		} else {
@@ -11202,6 +11479,7 @@ function createGentleAiExtensionForTesting(
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const namedRuns = verifierSettleNamedRuns.get(sessionKey) ?? 0;
 		if (namedRuns > 0) verifierSettleNamedRuns.set(sessionKey, namedRuns - 1);
+		else explorationBudget.settle(sessionKey);
 	});
 
 	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
@@ -11233,6 +11511,12 @@ function createGentleAiExtensionForTesting(
 		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true);
+		// Keep discovery payloads intact. Steer only an already-active run so the
+		// next model step sees the notice without starting a new run while idle.
+		if (explorationNotice && typeof ctx.isIdle === "function" && !ctx.isIdle()) {
+			try { pi.sendMessage({ customType: "gentle-pi.exploration-budget", content: explorationNotice, details: explorationBudget.facts(sessionKey), display: true }, { deliverAs: "steer", triggerTurn: true }); } catch { /* Advisory only. */ }
+		}
 		let notice: string | undefined;
 		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.())) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
@@ -11253,6 +11537,7 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		if (primaryToolCall && !ctx.signal?.aborted) explorationBudget.call(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolCallId, event.toolName, event.parentToolCallId);
 		// #2652: count a verifier launch attempt before any admission check can reject it.
 		if (primaryToolCall) verifierSettleReminders.toolCall(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolName, event.input);
 		// One early mode read settles the session binding (and its one-time epoch

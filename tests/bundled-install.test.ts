@@ -1179,9 +1179,8 @@ posixTest("writeNpmrcAuth writes the filtered npmrc 0600 inside the prefix; user
 });
 
 test("pnpmEnvironment keeps the variables the prefix npmrc references and still drops npm settings", () => {
-	const user = home();
-	const layout = prefixLayout({ platform: "linux", env: {}, home: user });
-	mkdirSync(join(layout.root, "pnpm", "config"), { recursive: true });
+	const config = join(home(), "npmrc");
+	const layout = { ...prefixLayout({ platform: "linux", env: {}, home: "/home/me" }), npmrc: config };
 	writeFileSync(layout.npmrc, "//npm.acme.dev/:_authToken=${NPM_TOKEN}\n//h/:_auth=${npm_config_x}\n");
 	const env = pnpmEnvironment(layout, { platform: "linux", env: { PATH: "/usr/bin", NPM_TOKEN: "secret", NPM_OTHER: "o", npm_config_x: "x",
 		npm_config_cache: "/home/me/.npm" } });

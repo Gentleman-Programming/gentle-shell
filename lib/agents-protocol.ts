@@ -59,11 +59,28 @@ export interface ToolStartEvent { type: typeof TASK_EVENT.TOOL_START; callId: st
 export interface ToolUpdateEvent { type: typeof TASK_EVENT.TOOL_UPDATE; callId: string; output: string }
 export interface ToolEndEvent { type: typeof TASK_EVENT.TOOL_END; callId: string; output: string; isError: boolean }
 export interface TurnEndEvent { type: typeof TASK_EVENT.TURN_END }
+/** Closed terminal-error vocabulary (#2322). A category, never provider text. */
+export const TERMINAL_ERROR_CATEGORY = {
+	AUTH: "auth",
+	RATE_LIMIT: "rate_limit",
+	QUOTA: "quota",
+	CONTEXT_LENGTH: "context_length",
+	TIMEOUT: "timeout",
+	NETWORK: "network",
+	PROVIDER_UNAVAILABLE: "provider_unavailable",
+	INVALID_REQUEST: "invalid_request",
+	UNAVAILABLE: "unavailable",
+} as const;
+
+export type TerminalErrorCategory = (typeof TERMINAL_ERROR_CATEGORY)[keyof typeof TERMINAL_ERROR_CATEGORY];
+
 export interface AgentEndEvent {
 	type: typeof TASK_EVENT.AGENT_END;
 	text: string;
 	outcome: "success" | "error" | "aborted" | "empty";
 	diagnostic?: string;
+	/** Present only when outcome is "error". */
+	errorCategory?: TerminalErrorCategory;
 }
 export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
@@ -194,15 +211,67 @@ function keepTail(text: string, max: number): string {
 	return text.length <= max ? text : `${ELLIPSIS}${text.slice(text.length - max + 1)}`;
 }
 
+const ERROR_SCAN_MAX = 4096;
+const ERROR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+// First match wins: specific causes before the generic statuses they share
+// (quota and context errors often arrive as 429 or 400).
+const ERROR_KEYWORDS: ReadonlyArray<readonly [TerminalErrorCategory, RegExp]> = [
+	[TERMINAL_ERROR_CATEGORY.CONTEXT_LENGTH, /context.?length|context.?window|maximum context|prompt is too long|too many tokens/i],
+	[TERMINAL_ERROR_CATEGORY.QUOTA, /quota|billing|out of budget|usage.?limit|credit balance/i],
+	[TERMINAL_ERROR_CATEGORY.AUTH, /unauthori[sz]ed|forbidden|authenticat|api.?key|permission.?denied/i],
+	[TERMINAL_ERROR_CATEGORY.RATE_LIMIT, /rate.?limit|too many requests/i],
+	[TERMINAL_ERROR_CATEGORY.TIMEOUT, /time.?out|timed out|deadline exceeded/i],
+	[TERMINAL_ERROR_CATEGORY.NETWORK, /network|connection|websocket|ECONN(?:RESET|REFUSED|ABORTED)|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|other side closed/i],
+	[TERMINAL_ERROR_CATEGORY.PROVIDER_UNAVAILABLE, /overloaded|unavailable|server.?error|internal.?error|server_busy|capacity|high demand/i],
+	[TERMINAL_ERROR_CATEGORY.INVALID_REQUEST, /invalid.?request|bad request/i],
+];
+// Only a status in a status position: leading ("429: ...", "429 {...}"),
+// parenthesized ("Provider (403): ...") or labeled ("status 503", "HTTP 502").
+const HTTP_STATUS = /(?:^\s*|\(|\b(?:status(?:\s+code)?|http)\s*:?\s*)([45]\d\d)(?=[\s):,{]|$)/i;
+
+function statusCategory(status: number): TerminalErrorCategory {
+	if (status === 401 || status === 403) return TERMINAL_ERROR_CATEGORY.AUTH;
+	if (status === 429) return TERMINAL_ERROR_CATEGORY.RATE_LIMIT;
+	if (status === 408 || status === 504) return TERMINAL_ERROR_CATEGORY.TIMEOUT;
+	if (status >= 500) return TERMINAL_ERROR_CATEGORY.PROVIDER_UNAVAILABLE;
+	return TERMINAL_ERROR_CATEGORY.INVALID_REQUEST;
+}
+
+function diagnosticCodes(diagnostics: unknown): string[] {
+	if (!Array.isArray(diagnostics)) return [];
+	return diagnostics.slice(0, 8).map((entry) => {
+		const code = (entry as { error?: { code?: unknown } } | null)?.error?.code;
+		return typeof code === "number" ? String(code) : typeof code === "string" && ERROR_IDENTIFIER.test(code) ? code : "";
+	});
+}
+
+/** Scans bounded structured signals; the scanned text itself is never retained. */
+function terminalErrorCategory(message: { errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown }): TerminalErrorCategory {
+	const signals = [
+		typeof message.errorMessage === "string" ? message.errorMessage.slice(0, ERROR_SCAN_MAX) : "",
+		typeof message.rawStopReason === "string" && ERROR_IDENTIFIER.test(message.rawStopReason) ? message.rawStopReason : "",
+		...diagnosticCodes(message.diagnostics),
+	].filter((signal) => signal.length > 0);
+	for (const [category, pattern] of ERROR_KEYWORDS) if (signals.some((signal) => pattern.test(signal))) return category;
+	for (const signal of signals) {
+		const status = HTTP_STATUS.exec(signal)?.[1];
+		if (status) return statusCategory(Number(status));
+	}
+	return TERMINAL_ERROR_CATEGORY.UNAVAILABLE;
+}
+
 function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 	if (!Array.isArray(messages)) return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown };
+		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown };
 		if (message?.role !== "assistant") continue;
 		const stopReason = clean(message.stopReason).toLowerCase();
-		// Do not preserve unbounded provider error payloads. The terminal reason is
-		// enough for an operator to distinguish failure from an empty report.
-		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: "assistant reported an error" };
+		// Do not preserve unbounded provider error payloads. Only a category from
+		// the closed vocabulary leaves this function, never the scanned text.
+		if (stopReason === "error") {
+			const errorCategory = terminalErrorCategory(message);
+			return { text: "", outcome: "error", diagnostic: `assistant reported an error (${errorCategory})`, errorCategory };
+		}
 		if (stopReason === "aborted") return { text: "", outcome: "aborted", diagnostic: "assistant aborted" };
 		const text = contentText(message.content);
 		return text.length > 0

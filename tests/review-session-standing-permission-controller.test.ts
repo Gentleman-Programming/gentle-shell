@@ -136,17 +136,64 @@ test("selection maps only exact displayed actions and cancellation or UI failure
 test("non-TUI selection preserves the existing action and cancellation mapping", async () => {
 	const envelope = consent();
 	const model = formatReviewConsentUi(envelope);
-	const selections = [model.options[0], model.options[1], model.options[2], undefined] as const;
+	const selections = [model.options[0], model.options[1], model.options[2], "4. Unknown action", undefined] as const;
 	const expected = [
 		{ kind: "provider", answer: "granted" },
 		{ kind: "provider", answer: "declined" },
 		{ kind: "host-session" },
 		undefined,
+		undefined,
 	];
+	const controller = new AbortController();
+	const rendered: Array<{ title: string; options: readonly string[]; signal: AbortSignal | undefined }> = [];
 	for (let index = 0; index < selections.length; index += 1) {
-		const ctx = { mode: "rpc", ui: { select: async () => selections[index] } } as unknown as ExtensionContext;
+		const ctx = {
+			mode: "rpc",
+			signal: controller.signal,
+			ui: {
+				select: async (title: string, options: string[], opts?: { signal?: AbortSignal }) => {
+					rendered.push({ title, options, signal: opts?.signal });
+					return selections[index];
+				},
+			},
+		} as unknown as ExtensionContext;
 		assert.deepEqual(await presentReviewConsentUi(ctx, envelope), expected[index]);
 	}
+	for (const { signal } of rendered) assert.equal(signal, controller.signal, "the dialog carries only the abort signal option");
+	assert.equal(new Set(rendered.map(({ title }) => title)).size, 1, "each attempt renders the same payload");
+	for (const { options } of rendered) {
+		assert.deepEqual(options, [...model.options], "options stay the unchanged readable strings, in order");
+		for (const [index, option] of options.entries()) {
+			assert.ok(option.startsWith(`${index + 1}. `), `option ${index + 1} keeps its readable numbering`);
+			assert.ok(option.includes("\nEffect: "), `option ${index + 1} keeps its printed effect`);
+		}
+	}
+	const lines = rendered[0].title.split("\n");
+	assert.equal(lines.length, 2, "the title is the headline line plus one machine line");
+	assert.equal(lines[0], envelope.headline, "the first title line is the consent headline, not the long prose block");
+	const payload = JSON.parse(lines[1]) as Record<string, unknown>;
+	assert.equal(payload.schema, "gentle-pi.review-consent/v1", "the machine line declares its versioned marker");
+	const actions = payload.actions as Array<{ answer: string; label: string; effect: string }>;
+	assert.deepEqual(actions.map(({ answer }) => answer), ["granted", "declined", "host-session"], "exactly three actions in display order");
+	for (const [index, action] of actions.entries()) {
+		assert.ok(action.label.length > 0, `action ${index + 1} has a label`);
+		assert.ok(action.effect.length > 0, `action ${index + 1} has an effect`);
+		assert.ok(model.options[index].includes(action.label), `action ${index + 1} describes its rendered option label`);
+		assert.ok(model.options[index].includes(action.effect), `action ${index + 1} describes its rendered option effect`);
+	}
+	assert.equal(actions[0].label, envelope.choices[0].label);
+	assert.equal(actions[1].label, envelope.choices[1].label);
+	assert.equal(actions[2].label, HOST_REVIEW_SESSION_PERMISSION_LABEL);
+	assert.deepEqual(payload.riskEvidence, envelope.riskEvidence, "the risk evidence survives into the payload");
+	assert.deepEqual(payload.offPath, envelope.offPath, "the off-path note and command survive into the payload");
+	assert.equal(payload.headline, envelope.headline);
+	assert.equal(payload.reason, envelope.reason);
+	assert.equal(payload.value, envelope.value);
+	assert.equal(payload.riskLevel, envelope.riskLevel);
+	assert.equal(payload.changedFiles, envelope.changedFiles);
+	assert.equal(payload.changedLines, envelope.changedLines);
+	assert.equal(payload.targetIdentity, envelope.targetIdentity);
+	assert.equal(payload.projection, model.content.projection);
 });
 
 interface RegisteredTool {

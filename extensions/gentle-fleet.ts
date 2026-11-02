@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import os from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -697,13 +697,23 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const exists = existsSync(requestedCwd);
 			if (exists && !statSync(requestedCwd).isDirectory()) return text(`Error: ${requestedCwd} is not a directory.`, { error: "cwd" });
 			if (!exists && create !== true) return text(`Error: ${requestedCwd} does not exist. Pass the member's existing project directory as cwd, or create: true to start a new project there.`, { error: "missing directory" });
+			if (!exists) {
+				// T8 (verifier B1): a new project inside an existing repository would run in
+				// a worktree of that repository, the L54 failure again. It must live outside.
+				let probe = dirname(requestedCwd);
+				while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
+				const top = deps.git(["rev-parse", "--show-toplevel"], probe);
+				const repo = top.status === 0 ? top.stdout.trim() : "";
+				if (repo) return text(`Error: ${requestedCwd} is inside the git repository ${repo}; a new project needs its own directory outside it (for example ${join(dirname(repo), basename(requestedCwd))}).`, { error: "inside repository" });
+			}
 			const fleetLedger = ensureLedger(ctx.cwd);
 			// Refusals happen before any side effect; a created directory or worktree is never removed.
 			if (!exists) {
 				try { mkdirSync(requestedCwd, { recursive: true }); }
 				catch (error) { return text(`Error: could not create ${requestedCwd}: ${error instanceof Error ? error.message : String(error)}`, { error: "cwd" }); }
 			}
-			const prepared = worktree === false ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git });
+			// A directory created above is outside any repository: it runs in place.
+			const prepared = worktree === false || !exists ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git });
 			if (prepared?.kind === "refused") return text(`Error: could not give member "${name}" its own worktree: ${prepared.message}`, { error: "worktree" });
 			const created = prepared?.kind === "created" ? prepared.worktree : undefined;
 			const memberWorktree = created ? { path: created.path, branch: created.branch } : undefined;

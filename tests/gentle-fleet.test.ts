@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import type { PassThrough } from "node:stream";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1730,4 +1730,23 @@ test("alt+1-4 switch the lens from the input and every typed character still rea
 	assert.ok(d.type("1 fix map 2 costs").every(consumed => !consumed));
 	assert.match(d.status(), /lens flows/);
 	assert.match(d.status(), /alt\+1-4 lenses/);
+});
+
+// T8 verifier B1: create: true inside an existing repository repeated L54 (a
+// worktree of the controller's repository). A new project must live outside it.
+test("T8: create: true inside an existing git repository is refused and creates nothing", async () => {
+	const h = harness();
+	const { repo, root, branches, worktrees } = scratchRepo();
+	const { ctx } = fakeContext("fleet-session-1", repo);
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Swipe", objective: "Build the swipe app." }, undefined, undefined, ctx);
+	for (const cwd of ["github-swipe", join(repo, "nested", "github-swipe")]) {
+		const target = isAbsolute(cwd) ? cwd : join(repo, cwd);
+		const result = await spawnMember(h, ctx, "swipe", { cwd, create: true });
+		assert.equal(result.content[0].text, `Error: ${target} is inside the git repository ${repo}; a new project needs its own directory outside it (for example ${join(dirname(repo), basename(target))}).`, cwd);
+		assert.equal(existsSync(target), false, "nothing created");
+	}
+	assert.deepEqual(h.spawned, []);
+	assert.deepEqual([branches(), worktrees()], [["main"], [repo]]);
+	assert.deepEqual(readdirSync(root), ["app"]);
 });

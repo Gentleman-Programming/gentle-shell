@@ -511,6 +511,27 @@ test("an agent that fell back to another model says so on its row", () => {
 	const moved = task({ id: "m", status: TASK_STATUS.RUNNING, startedAt: 1_000, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5", tokens: 1200 });
 	const stayed = task({ id: "s", status: TASK_STATUS.RUNNING, startedAt: 2_000, model: "anthropic/claude-opus-5-5", tokens: 800 });
 	const rows = renderAgentsSection([moved, stayed], theme as never, 60, now, { collapsed: false }).map((row) => row.trimEnd());
-	assert.ok(rows.some((row) => /↪ gpt-5\.5 · 1\.2k/.test(row)), rows.join("\n"));
+	assert.ok(rows.some((row) => /↪ gpt-5\.5 · /.test(row)), rows.join("\n"));
 	assert.equal(rows.filter((row) => row.includes("↪")).length, 1, "only the agent that moved");
+});
+
+test("a moved agent's ↪ mark never changes the other rows, at any rail width", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const now = 70_000;
+	const others = [
+		task({ id: "w", status: TASK_STATUS.WAITING, startedAt: 1_000, prompt: "grep the repo", agent: "sdd-explore" }),
+		task({ id: "f", status: TASK_STATUS.FAILED, startedAt: 2_000, endedAt: 59_000, prompt: "verify the change", agent: "gentle-ai-verify" }),
+	];
+	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", agent: "gentle-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5" });
+	for (const width of [46, 30, 20]) {
+		const plain = renderAgentsSection([...others, running], theme as never, width, now, { collapsed: false });
+		const moved = renderAgentsSection([...others, { ...running, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5" }], theme as never, width, now, { collapsed: false });
+		const movedRow = moved.findIndex((row) => /34k/.test(row));
+		moved.forEach((row, index) => {
+			if (index !== movedRow) assert.equal(row, plain[index], `row ${index} is untouched at ${width}`);
+			assert.ok(visibleWidth(row) <= width);
+		});
+		if (width >= 46) assert.match(moved[movedRow]!, /↪ gpt-5\.5/, `the model shows at ${width}`);
+		else if (width >= 30) assert.match(moved[movedRow]!, /↪/, `the mark shows at ${width}`);
+	}
 });

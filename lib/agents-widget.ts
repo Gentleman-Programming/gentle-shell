@@ -357,9 +357,7 @@ function sectionRight(task: TaskRecord, now: number): string {
 	if (task.status === TASK_STATUS.QUEUED) return "queued";
 	if (task.status === TASK_STATUS.FAILED) return `failed ${elapsed(task, now)}`;
 	if (task.status === TASK_STATUS.TIMED_OUT) return `timed out ${elapsed(task, now)}`;
-	// A run that moved to a fallback model names the model it runs on now.
-	const moved = task.fallbackFrom ? `↪ ${task.model.slice(task.model.lastIndexOf("/") + 1)} · ` : "";
-	return moved + [task.tokens > 0 ? formatTokens(task.tokens) : "", elapsed(task, now)].filter(Boolean).join(" ");
+	return [task.tokens > 0 ? formatTokens(task.tokens) : "", elapsed(task, now)].filter(Boolean).join(" ");
 }
 
 function sectionCount(shown: readonly TaskRecord[]): string {
@@ -388,7 +386,10 @@ export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardThe
 	const taskWidth = Math.max(1, width - PANEL_ROW_INDENT - 2 - 1 - kindWidth - 1 - rightWidth);
 	const rows = listed.map((task) => {
 		const look = LOOK[task.status];
-		const text = clip(taskText(task), taskWidth);
+		// A run that moved to a fallback model names it in its own task column,
+		// the flexible one, so the shared kind and right columns never change.
+		const moved = task.fallbackFrom ? `↪ ${task.model.slice(task.model.lastIndexOf("/") + 1)} · ` : "";
+		const text = clip(moved + taskText(task), taskWidth);
 		const kind = clip(agentKind(task.agent), kindWidth);
 		const left = `${theme.fg(look.role, look.glyph)} ${theme.fg(SECTION_TEXT_ROLE[task.status] ?? NAME_ROLE, text)}${" ".repeat(taskWidth - visibleWidth(text))} ${theme.fg(TASK_ROLE, kind)}`;
 		return renderPanelRow(width, left, theme.fg(META_ROLE, sectionRight(task, now).padStart(rightWidth)));

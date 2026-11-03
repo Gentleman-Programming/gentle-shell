@@ -27,16 +27,23 @@ export function shouldFallBack(category: TerminalErrorCategory | undefined): boo
 
 export class ModelCooldown {
 	private readonly until = new Map<string, number>();
+	private readonly why = new Map<string, TerminalErrorCategory>();
 	mark(model: string, category: TerminalErrorCategory, now: number): void {
 		if (!shouldFallBack(category)) return;
 		const until = now + (EXHAUSTED.has(category) ? COOLDOWN_MS.exhausted : COOLDOWN_MS.transient);
+		if (until >= (this.until.get(model) ?? 0)) this.why.set(model, category);
 		this.until.set(model, Math.max(this.until.get(model) ?? 0, until));
+	}
+	/** Why a model is cooling down, while it is. */
+	reason(model: string, now: number): TerminalErrorCategory | undefined {
+		return this.available(model, now) ? undefined : this.why.get(model);
 	}
 	available(model: string, now: number): boolean {
 		const until = this.until.get(model);
 		if (until === undefined) return true;
 		if (now < until) return false;
 		this.until.delete(model);
+		this.why.delete(model);
 		return true;
 	}
 }

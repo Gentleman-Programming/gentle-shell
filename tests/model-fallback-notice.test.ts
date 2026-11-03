@@ -38,3 +38,8 @@ test("the chain comes from the launch's profile, else the active profile; a brok
 		rmSync(home, { recursive: true, force: true });
 	}
 });
+
+test("a launch that starts on a fallback says the primary is still cooling down", () => {
+	assert.equal(fallbackNotice({ agent: "explore", from: "a/cheap", to: "b/pricey", category: C.QUOTA, launch: true }, lookup),
+		"explore: a/cheap is still cooling down after its usage limit; starting on b/pricey (5.0x the price).");
+});

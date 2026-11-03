@@ -126,7 +126,7 @@ export interface RunnerHooks {
 	// Parent-only observation of a paired successful filesystem tool, not prose.
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
 	/** The child moved to the next model of its fallback chain and keeps going. */
-	onFallback?(task: TaskRecord, change: { from: string; to: string; category: TerminalErrorCategory }): void;
+	onFallback?(task: TaskRecord, change: { from: string; to: string; category: TerminalErrorCategory; launch?: boolean }): void;
 }
 
 export interface TaskRequest {
@@ -742,10 +742,16 @@ export class AgentRunner {
 	private launchRequest(id: string, request: TaskRequest): TaskRequest {
 		const chain = request.fallbacks ?? [];
 		if (!chain.length || !request.model) return request;
-		const pick = pickModel(formatModelRef(request.model), chain, { cooldown: this.deps.cooldown ?? sharedCooldown(), now: this.deps.now() });
+		const cooldown = this.deps.cooldown ?? sharedCooldown();
+		const now = this.deps.now();
+		const primary = formatModelRef(request.model);
+		const pick = pickModel(primary, chain, { cooldown, now });
 		const model = pick?.fallback && pick.model ? parseModelRef(pick.model) : undefined;
-		if (!model?.provider || !pick) return request;
-		this.store.update(id, { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+		if (!model?.provider || !pick?.model) return request;
+		const updated = this.store.update(id, { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+		const category = cooldown.reason(primary, now);
+		try { if (updated && category) this.hooks.onFallback?.(updated, { from: primary, to: pick.model, category, launch: true }); }
+		catch { /* A notice failure must not stop the launch. */ }
 		return { ...request, model, thinking: pick.thinking ?? request.thinking };
 	}
 
@@ -768,28 +774,43 @@ export class AgentRunner {
 			tried.add(current);
 			cooldown.mark(current, category!, now);
 		}
-		let pick = pickModel(current, chain, { cooldown, now, tried });
-		// A step without a provider cannot be selected over RPC; skip it.
-		while (pick?.fallback && pick.model && !parseModelRef(pick.model)?.provider) {
-			tried.add(pick.model);
-			pick = pickModel(current, chain, { cooldown, now, tried });
-		}
-		if (!pick?.fallback || !pick.model) return false;
-		const target = parseModelRef(pick.model)!;
-		const to = pick.model;
-		tried.add(to);
+		// The next selectable step: one with a provider, untried and not cooling down.
+		const next = () => {
+			for (;;) {
+				const pick = pickModel(current, chain, { cooldown, now: this.deps.now(), tried });
+				if (!pick?.fallback || !pick.model) return undefined;
+				tried.add(pick.model);
+				if (parseModelRef(pick.model)?.provider) return pick;
+			}
+		};
+		let pick = next();
+		if (!pick) return false;
 		live.errorCategory = undefined;
-		const updated = this.store.update(id, { error: null, result: null, model: to, ...(pick.thinking ? { thinking: pick.thinking } : {}), lastStep: `↪ ${to}` });
-		try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
-		catch { /* A notice failure must not stop the switch. */ }
-		const fail = (reason: string) => { if (this.live.get(id) === live && !live.terminal) this.settleOrderly(id, TASK_STATUS.FAILED, reason); };
+		this.store.update(id, { error: null, result: null, lastStep: `↪ ${pick.model}` });
+		const alive = () => this.live.get(id) === live && !live.terminal;
+		const fail = (reason: string) => { if (alive()) this.settleOrderly(id, TASK_STATUS.FAILED, reason); };
 		void (async () => {
-			const switched = await this.send(id, { type: "set_model", provider: target.provider, modelId: target.id });
-			if (switched.success === false) return fail(`could not switch to ${to}: ${String(switched.error ?? "rejected")}`);
+			// Pi may refuse a step (no key, unknown model): the next one gets its turn.
+			for (;;) {
+				const target = parseModelRef(pick.model!)!;
+				const switched = await this.send(id, { type: "set_model", provider: target.provider, modelId: target.id });
+				if (!alive()) return;
+				if (switched.success !== false) break;
+				const refused = `could not switch to ${pick.model}: ${String(switched.error ?? "rejected")}`;
+				const following = next();
+				if (!following) return fail(refused);
+				pick = following;
+				this.store.update(id, { lastStep: `↪ ${pick.model}` });
+			}
+			const to = pick.model!;
 			if (pick.thinking) await this.send(id, { type: "set_thinking_level", level: pick.thinking });
+			if (!alive()) return;
+			const updated = this.store.update(id, { model: to, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+			try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
+			catch { /* A notice failure must not stop the switch. */ }
 			const resumed = await this.send(id, { type: "prompt", message: fallbackContinuePrompt(current, to, category!) });
 			if (resumed.success === false) fail(`could not continue on ${to}: ${String(resumed.error ?? "prompt rejected")}`);
-		})().catch((error) => fail(`could not continue on ${to}: ${error instanceof Error ? error.message : String(error)}`));
+		})().catch((error) => fail(`could not continue: ${error instanceof Error ? error.message : String(error)}`));
 		return true;
 	}
 

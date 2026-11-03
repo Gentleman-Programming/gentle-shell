@@ -108,6 +108,12 @@ const READ_ONLY_GIT = new Set(["status", "log", "diff", "show", "rev-parse", "re
 const LITERAL_GIT = new Set(["push", "rebase"]);
 const READ_ONLY_GH = new Map([["pr", ["view", "list", "checks", "diff", "status"]], ["issue", ["view", "list", "status"]], ["run", ["view", "list"]]]);
 
+/**
+ * True when the segment at `cursor` is a top-level, literal `git` or `gh`
+ * command that reads only (or a literal push/rebase the YOLO waiver already
+ * judges on its own), so it cannot turn a sibling data argument into an action.
+ * Piped-into, nested or `$`-bearing segments are never eligible.
+ */
 function readOnlyVcsSegment(segment: readonly Token[], cursor: number, pipedInto: boolean, literal: boolean): boolean {
 	if (pipedInto || !literal || cursor !== 0) return false;
 	const name = segment[0].value;

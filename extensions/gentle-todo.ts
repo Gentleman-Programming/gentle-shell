@@ -12,6 +12,7 @@ import {
 	renderTodoCard,
 	renderTodoSection,
 	todoCollapseKey,
+	todoWorkSummary,
 	replayTodo,
 	staleTurns,
 	TODO_DETAILS_KEY,
@@ -135,7 +136,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.host?.requestRender();
 	};
 
-	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void; surface?: "panel" } => {
+	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void; surface?: "panel"; summary?(): ReturnType<typeof todoWorkSummary> } => {
 		let hovered = false;
 		let body: string[] = [];
 		let collapsed = current.collapsed;
@@ -233,7 +234,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			scrollBy,
 			// Sidebar caches must observe height-only resizes and local viewport
 			// changes, even when terminal width and task content stay the same.
-			...(spacer ? {} : { surface: "panel" as const }),
+			...(spacer ? {} : { surface: "panel" as const, summary: () => todoWorkSummary(current.state, theme) }),
 			digest: () => JSON.stringify([current.tui?.terminal?.rows, current.collapsed, current.turn, hovered, scroll.scrollTop]),
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),

@@ -410,3 +410,17 @@ export function renderAgentsAlert(tasks: readonly TaskRecord[], theme: CardTheme
 	const right = theme.fg(META_ROLE, `${waiting.length > 1 ? `+${waiting.length - 1} more · ` : ""}${AGENTS_VIEW}`);
 	return [paintSurfaceRow(` ${fitPanelLine(left, right, Math.max(0, target - 2))} `, surfaceOpener(theme, ALERT_SURFACE_ROLE))];
 }
+
+/** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
+export function agentsSummary(tasks: readonly TaskRecord[], theme: CardTheme, now: number): { left: string; priority: number } | undefined {
+	const shown = widgetTasks(tasks, now);
+	const live = shown.filter((task) => !isFinished(task.status)).length;
+	const waiting = shown.filter((task) => task.status === TASK_STATUS.WAITING).length;
+	const failed = shown.filter((task) => task.status === TASK_STATUS.FAILED || task.status === TASK_STATUS.TIMED_OUT).length;
+	const parts = [
+		live ? `${theme.fg("accent", LOOK[TASK_STATUS.RUNNING].glyph)} ${theme.fg("accent", `${live} ${live === 1 ? "agent" : "agents"}`)}` : "",
+		waiting ? theme.fg("warning", `? ${waiting} waiting`) : "",
+		failed ? theme.fg("error", `✗ ${failed}`) : "",
+	].filter(Boolean);
+	return live || failed ? { left: parts.join(theme.fg(META_ROLE, " · ")), priority: 1 } : undefined;
+}

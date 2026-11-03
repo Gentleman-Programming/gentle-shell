@@ -3,7 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
-import { fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -263,12 +263,15 @@ const STATUS_BAR_DIVIDER = "│";
 const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, surfaceOpener(theme, PANEL_SURFACE_ROLE));
 
 /** `✿ name  path` left, the session name and profile right; the path gives way first, so the profile always shows. */
-export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number): string {
+export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {
 	const target = Math.max(0, Math.floor(width));
 	const name = model.cwd.split("/").filter((part) => part.length > 0).pop() ?? model.cwd;
 	const left = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}  ${theme.fg(ROLE.PATH, model.cwd)}`;
-	const right = [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
-		.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
+	// Mobile: the narrow status bar leaves the model out, so the title row carries it.
+	const right = options.model
+		? executionSegment(model.modelId, model.effort, theme)
+		: [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
+			.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
 	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
 }
 
@@ -278,14 +281,17 @@ export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, 
  * way first (gauges, secondary windows, the segment), then the model; the
  * usage segment stays the click target that opens the usage view.
  */
-export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint): ShellHeaderChrome {
+export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
 	const target = Math.max(0, Math.floor(width));
 	const divider = ` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `;
 	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
 	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
 	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
 	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(sanitizeStatus(model.permission.mode))) : "";
-	const left = join([branch, mode]);
+	// Without a rail (mobile) the running jobs keep their compact count here.
+	const runningJobs = extras.jobs ? (model.jobs?.filter((job) => job.status === undefined).length ?? 0) : 0;
+	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
+	const left = join([branch, tail]);
 	const showCounters = presentation?.visibility.usageCost !== false;
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
 	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
@@ -301,7 +307,19 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 		const usageSpan = usage ? { start: target - 1 - visibleWidth(usage), end: target - 1 } : undefined;
 		return { rows: [paintChromeRow(theme, row)], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
 	}
-	return { rows: [paintChromeRow(theme, ` ${fitPanelLine(left, "", Math.max(0, target - 2))} `)], headerRow: 0 };
+	// Still too wide (a phone, a long branch): the branch gives way before the
+	// context and cost, which give way last, context after cost.
+	const room = Math.max(0, target - 2);
+	const tailWidth = tail ? visibleWidth(tail) + (branch ? visibleWidth(divider) : 0) : 0;
+	for (const right of [join(counters), counters[0] ?? "", ""]) {
+		const leftRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0);
+		const branchRoom = leftRoom - tailWidth;
+		if (branch && branchRoom < 4 && right) continue;
+		const fitted = join([branch ? clipPanelText(branch, Math.max(1, branchRoom)) : "", tail]);
+		if (visibleWidth(fitted) > leftRoom && right) continue;
+		return { rows: [paintChromeRow(theme, ` ${fitPanelLine(fitted, right, room)} `)], headerRow: 0 };
+	}
+	return { rows: [paintChromeRow(theme, ` ${fitPanelLine(left, "", room)} `)], headerRow: 0 };
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";

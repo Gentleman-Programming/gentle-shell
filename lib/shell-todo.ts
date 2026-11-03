@@ -2,7 +2,7 @@ import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
-import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow, type PanelSummary } from "./shell-panel.ts";
 
 // Gentle Todo: the task list the model keeps while it works. Everything here
 // is pure. The state lives in the session branch (every tool result carries
@@ -446,4 +446,16 @@ export function renderTodoSection(state: TodoState, theme: TodoTheme, width: num
 	}
 	for (const task of open) body.push(...sectionTaskRows(task, theme, width));
 	return { header, body };
+}
+
+/** The mobile work row's digest of the list: the task in progress (or next), and `done/planned`. */
+export function todoWorkSummary(state: TodoState, theme: TodoTheme): PanelSummary | undefined {
+	if (state.tasks.length === 0) return undefined;
+	const { done, total } = todoSummary(state);
+	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
+	const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.PENDING, TODO_STATUS.BLOCKED].map((status) => state.tasks.find((task) => task.status === status)).find(Boolean);
+	const left = current
+		? `${theme.fg(GLYPH_ROLE[current.status], STATUS_GLYPH[current.status])} ${theme.fg(STATUS_ROLE[current.status], current.title)}`
+		: `${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`;
+	return { left, right: `${done}/${planned}`, rightLabel: "todos" };
 }

@@ -1,6 +1,6 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, Image, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
@@ -124,6 +124,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
+import { renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
@@ -1691,6 +1692,9 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true,
 }
 
 const USAGE_COMMAND_NAME = "gentle:usage";
+const PANEL_COMMAND_NAME = "gentle:panel";
+/** The mobile work row above the editor: live work folded into one row below the rail breakpoint. */
+const WORK_ROW_WIDGET_KEY = "gentle-shell-work-row";
 const USAGE_SHORTCUT_DEFAULT = "alt+u";
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
@@ -2015,6 +2019,48 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
+	// Which IDE chrome the fullscreen shell draws: "wide" while the rail owns the
+	// host, "narrow" (mobile) below the rail breakpoint, undefined for the
+	// below-input header, a hidden Status, and regular mode.
+	const chromeMode = (tui: TUI): "wide" | "narrow" | undefined => {
+		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
+		const state = sidebarState(tui);
+		if (state.active && state.ownsHost?.()) return "wide";
+		const placement = visualSettings.statusPlacement;
+		return tui.terminal.columns < SIDEBAR_BREAKPOINT && (placement === "auto" || placement === "right") ? "narrow" : undefined;
+	};
+	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
+	const openPanelSheet = (ctx: ExtensionContext) =>
+		ctx.ui.custom<null>(
+			(tui, theme, _keybindings, done) => {
+				const close = withOverlayRepaint(tui, done);
+				let scrollTop = 0;
+				let maxScroll = 0;
+				return {
+					render(width: number) {
+						const rows = Math.max(4, (tui.terminal?.rows ?? 24) - 2);
+						// The sections live on the shell's sidebar terminal, the one its footer drew on.
+						const sheet = renderPanelSheet(sidebarState((sidebarTui ?? tui) as TUI).parts, theme, width, { rows, scrollTop });
+						maxScroll = sheet.maxScroll;
+						scrollTop = Math.min(scrollTop, maxScroll);
+						return sheet.lines;
+					},
+					handleInput(data: string) {
+						if (matchesKey(data, Key.escape) || data === "q") { close(null); return; }
+						if (matchesKey(data, Key.down) || data === "j") scrollTop = Math.min(maxScroll, scrollTop + 1);
+						else if (matchesKey(data, Key.up) || data === "k") scrollTop = Math.max(0, scrollTop - 1);
+						else return;
+						tui.requestRender();
+					},
+					invalidate() {},
+				};
+			},
+			{ overlay: true, overlayOptions: { width: "100%", anchor: "center" } },
+		);
+	pi.registerCommand(PANEL_COMMAND_NAME, {
+		description: "Show the sidebar panel (todos, jobs, agents, changes, review, integrations) as a full-width sheet.",
+		handler: async (_args, ctx) => openPanelSheet(ctx),
+	});
 	const openUsage = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
@@ -2329,13 +2375,20 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// IDE: a title row with the project identity above, and a status bar
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
 			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
-			const statusBarChrome = (width: number) => renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
+			// same split stays, with the model in the title row and live work folded
+			// into one row above the editor.
+			const narrowChrome = () => chromeMode(tui) === "narrow";
+			if (tui.terminal) sidebarState(tui).compactWork = narrowChrome;
+			const statusBarChrome = (width: number) => narrowChrome()
+				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
+				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : headerBar(width).rows,
+				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
-					if (ideChrome() || event.type !== "click" || event.button !== "left") return undefined;
+					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(headerBar(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
@@ -2343,10 +2396,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? statusBarChrome(width).rows : [],
+				render: (width) => ideChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
 				invalidate() {},
 				handleMouse(event) {
-					if (!ideChrome() || event.type !== "click" || event.button !== "left") return undefined;
+					if (!(ideChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
@@ -2356,6 +2409,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
+			ctx.ui.setWidget(WORK_ROW_WIDGET_KEY, () => ({
+				render(width: number) {
+					if (!narrowChrome()) return [];
+					const parts = sidebarState(tui).parts;
+					const summaries = ["agents", "todo"].map((key) => parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
+					const row = renderWorkRow(summaries, theme, width);
+					return row ? [row] : [];
+				},
+				invalidate() {},
+				handleMouse(event) {
+					if (!narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
+					void openPanelSheet(ctx);
+					return { handled: true, render: true };
+				},
+			}));
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
@@ -2382,7 +2450,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); ctx.ui.setWidget(WORK_ROW_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2395,7 +2463,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
-				panelChrome: (tui) => { const state = sidebarState(tui); return Boolean(state.active && state.ownsHost?.()) && visualSettings.headerPlacement === "top"; } },
+				panelChrome: (tui) => chromeMode(tui) !== undefined },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt

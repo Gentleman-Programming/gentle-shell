@@ -636,7 +636,18 @@ for (const [os, arch, platform, architecture] of [["Darwin", "arm64", "darwin", 
 		try {
 			f.addPnpm(); f.wizard();
 			const hash = artifactFor("node", platform, architecture).integrity.slice(7);
-			assert.equal(f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash }).status, 0);
+			const result = f.run({ FAKE_OS: os, FAKE_ARCH: arch, FAKE_HASH: hash });
+			assert.equal(result.status, 0, JSON.stringify({
+				status: result.status,
+				signal: result.signal,
+				error: result.error ? {
+					name: result.error.name,
+					message: result.error.message,
+					code: "code" in result.error ? result.error.code : null,
+				} : null,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			}));
 		} finally { f.cleanup(); }
 	});
 }
@@ -1242,9 +1253,11 @@ test("the CI native Windows gate requires exactly the native tests the Windows b
 	const modes = /^const probeModes = \[([^\]]*)\] as const;$/m.exec(source)?.[1].split(",").filter((mode) => mode.trim().length > 0).length ?? 0;
 	assert.ok(/^for \(const mode of probeModes\) \{\n\ttest\(`native Windows: /m.test(source.slice(source.indexOf("const probeModes"))));
 	const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-	const gate = /\[int\]\$passes\.Groups\[1\]\.Value -ne (\d+) -or/.exec(ci);
-	assert.ok(gate, "the gate compares the passed count exactly");
-	assert.ok(/\[int\]\$skips\.Groups\[1\]\.Value -ne 0/.test(ci), "0 skips stays required");
 	assert.equal(literal + modes, 38);
-	assert.equal(Number(gate[1]), literal + modes);
+	const installerJob = ci.slice(ci.indexOf("\n  installer:"));
+	assert.equal((installerJob.match(/node --experimental-strip-types --test --test-reporter=tap /g) ?? []).length, 1);
+	assert.match(installerJob, /status=\("\$\{PIPESTATUS\[@\]\}"\)/);
+	assert.match(installerJob, /if \[ "\$\{status\[0\]\}" -ne 0 \]; then exit "\$\{status\[0\]\}"; fi/);
+	assert.match(installerJob, /if \[ "\$RUNNER_OS" = Windows \]; then\n\s+node scripts\/verify-installer-tap\.mjs < "\$RUNNER_TEMP\/installer\.tap"/);
+	assert.doesNotMatch(installerJob, /--test-name-pattern "\^native Windows"/);
 });

@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import {
 	framePromptLines,
+	resolvePromptLayout,
 	scanWorkingText,
 	PROMPT_STATE,
 	petalGlyph,
@@ -283,4 +284,27 @@ test("T2 float prompt rearms real SGR resets without altering inversion or marke
 		const rows = framePromptLines(["──", native, "──"], 30, options({ style: "float", bg: (_r, t) => `${open}${t}\x1b[49m`, fg: (_c, t) => t }));
 		assert.ok(rows[1].includes(`${marker}\x1b[7mx\x1b[0m${open}Y\x1b[0;7m${open}Z\x1b[27m`));
 	}
+});
+
+// The wide IDE chrome's editor (design/shell-rework/02-proposal.html): a titled
+// rule carrying the agent state and the vim mode, the input behind a `›`
+// prompt, no side rules, and the same row count as the framed editor.
+test("the panel prompt layout gives the input a two-column prompt and no right border", () => {
+	const layout = resolvePromptLayout(60, "float", (_color, text) => `\x1b[44m${text}\x1b[49m`, true);
+	assert.deepEqual({ width: layout.width, nativeWidth: layout.nativeWidth, prefixWidth: layout.prefixWidth, background: layout.background, panel: layout.panel }, { width: 60, nativeWidth: 58, prefixWidth: 2, background: "", panel: true });
+});
+
+test("the panel prompt frame titles its rule with state and mode and keeps the row count", () => {
+	const plain = (_color: string, text: string) => text;
+	const layout = resolvePromptLayout(40, "neon", undefined, true);
+	const lines = framePromptLines(editorLines(40, ["first line", "second line"]), 40, options({ fg: plain, escHint: "INSERT" }), layout).map(stripAnsi);
+	assert.equal(lines.length, 4, "rule, two input rows, closing row");
+	for (const line of lines) assert.equal(visibleWidth(line), 40);
+	assert.match(lines[0]!, /^─ ✿ waiting for input ─+ INSERT ─$/);
+	assert.equal(lines[1], "› first line".padEnd(40));
+	assert.equal(lines[2], "  second line".padEnd(40));
+	assert.equal(lines[3], " ".repeat(40));
+	const working = framePromptLines(editorLines(40), 40, options({ fg: plain, state: PROMPT_STATE.WORKING, workingLabel: "exploring…" }), layout).map(stripAnsi);
+	assert.match(working[0]!, /^─ \S exploring… ─+─$/);
+	assert.doesNotMatch(lines.join("\n"), /[╭╮╰╯│▎]/u);
 });

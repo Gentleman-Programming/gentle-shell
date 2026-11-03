@@ -1,4 +1,6 @@
+import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
@@ -7,6 +9,7 @@ import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
+import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
@@ -45,7 +48,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -127,6 +130,7 @@ import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/se
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -1475,6 +1479,10 @@ Resolving an incident or subdecision does not complete or cancel the original au
 
 Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
 
+Before a terminal bounded-stop outcome, distinguish a recoverable technical or harness failure from genuinely inaccessible required proof. A failed test or harness check may be corrected and rerun without another authorization only within the authorized scope and existing correction budget, subject to every applicable limit. Honor explicit one run, no retries, or diagnostic-only limits; stop for permission denial, required new consent, or exhausted budget. Do not propose diagnostic-only or single-attempt authorization unless the human requested it. Respect terminal review and verification outcomes and existing bounded-stop rules: never reset budgets, add retry allowances, weaken checks, or override final outcomes. An unavailable verifier remains unavailable; do not retry or escalate it.
+
+For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
+
 For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue", poll, or claim completion while checks remain pending.
 
 Default workflow: Organic Driven Development (MANDATORY)
@@ -2624,6 +2632,44 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return effective;
 }
 
+/**
+ * The profile this session's launches resolve (gentle-shell#1064 slice 3c): the
+ * Enter binding, then the profile frozen at startup, through the same rule the
+ * launcher reads. It resolves from the session's directory, as the freeze and
+ * the launcher do. `undefined` means the session resolves no profile, so
+ * launches keep the global routing; a pin the session did not freeze never
+ * reaches them and is not read here. Without session profile authority the
+ * launches are blocked, so no profile is theirs.
+ */
+function sessionLaunchProfile(ctx: ExtensionContext, authorityAvailable: boolean): { name: string; modelProfiles: AgentModelConfig } | undefined {
+	if (!authorityAvailable) return undefined;
+	const resolution = resolveSessionProfile({
+		sessionId: ctx.sessionManager?.getSessionId?.(),
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		configHome: gentleAiConfigHome(),
+	});
+	const name = resolution.kind === "explicit" ? resolution.name : resolution.profile?.name;
+	const routing = sessionProfileModelProfiles(resolution);
+	return name === undefined || routing === undefined ? undefined : { name, modelProfiles: cloneModelConfig(routing) };
+}
+
+/**
+ * Whether this session's launches may run, read as the launcher reads it (and,
+ * like it, clearing a binding it cannot corroborate). A manager without a
+ * branch has no session profile record to distrust.
+ */
+function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
+	const manager = ctx.sessionManager;
+	if (typeof manager?.getSessionId !== "function" || typeof manager.getBranch !== "function") return true;
+	return readSessionProfileAuthority(manager).available;
+}
+
+/** The routing this session's launches use: its profile, or the global effective routing. */
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext, authorityAvailable: boolean): Promise<AgentModelConfig> {
+	return sessionLaunchProfile(ctx, authorityAvailable)?.modelProfiles
+		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
+}
+
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
 	const pinned = pinnedEffectiveModelConfig(cwd);
 	if (pinned) return pinned;
@@ -2996,8 +3042,6 @@ function isValidJsonObjectFileOrMissing(path: string): boolean {
 	}
 }
 
-const PROVIDER_REVIEW_ROLES = ["review-refuter", "review-validator"] as const;
-
 function isProviderReviewRole(name: string): boolean {
 	return PROVIDER_REVIEW_ROLES.some((role) => role === name);
 }
@@ -3338,6 +3382,8 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "↑↓ agent", keep: 6 },
 	{ text: "enter model", keep: 1 },
 	{ text: "e effort", keep: 2 },
+	{ text: "f fallbacks", keep: 6.5 },
+	{ text: "t tier", keep: 6.25 },
 	{ text: "s save", keep: 3 },
 	{ text: "u use", keep: 7 },
 	{ text: "d default", keep: 8 },
@@ -3396,6 +3442,7 @@ type RoutingTableMouseAction =
 	| { kind: "new" }
 	| { kind: "row"; row: string }
 	| { kind: "effort"; row: string }
+	| { kind: "tier"; row: string }
 	| { kind: "model-option"; index: number }
 	| { kind: "effort-option"; index: number }
 	| { kind: "menu-item"; id: string }
@@ -3424,8 +3471,47 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
  * Model and effort changes happen in small cards over the still-visible table.
  * Keyboard and pointer reach the same actions, and each key means one thing.
  */
+/** Reads and writes the profile's fallback chains; `save` returns an error message when it refuses. */
+interface RoutingFallbacks {
+	chain(profile: string, key: string): readonly FallbackStep[];
+	save(profile: string, key: string, chain: readonly FallbackStep[]): string | undefined;
+}
+
+/** The panel's view of profile-fallbacks.json: read once, re-read after each save; a broken file is never overwritten. */
+function fileRoutingFallbacks(configHome: string): RoutingFallbacks {
+	const path = fallbacksFilePath(configHome);
+	let read = readFallbacksFile(path);
+	return {
+		chain: (profile, key) => (read.status === "valid" ? read.file.profiles[profile]?.[key] ?? [] : []),
+		save: (profile, key, chain) => {
+			// Chains belong to saved profiles; a draft would leave them orphaned.
+			const profiles = readProfilesFileResult(profilesFilePath(configHome));
+			if (profiles.status !== "valid" || !hasOwnProfile(profiles.file.profiles, profile)) return `Save the profile first (s), then add its fallbacks.`;
+			read = readFallbacksFile(path);
+			if (read.status === "invalid") return `${path} is malformed; fix or remove it first.`;
+			try {
+				writeFallbacksFile(path, setChain(read.status === "valid" ? read.file : emptyFallbacksFile(), profile, key, chain));
+			} catch (error) {
+				return `Fallbacks not saved: ${error instanceof Error ? error.message : String(error)}`;
+			} finally {
+				read = readFallbacksFile(path);
+			}
+			return undefined;
+		},
+	};
+}
+
+/** A renamed or deleted profile takes its fallback chains along; a failure leaves the chains where they were. */
+function followProfileFallbacks(profilesPath: string, from: string, to: string | undefined): void {
+	try { followProfileRename(dirname(profilesPath), from, to); } catch { /* The profile change already succeeded. */ }
+}
+
 class RoutingTablePanel implements OverlayComponent {
-	private overlay: "model" | "effort" | "menu" | "new" | "switch" | undefined;
+	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | undefined;
+	/** The model and effort cards are picking a fallback step, not the row's own model. */
+	private pickingFallback = false;
+	private fallbackCursor = 0;
+	private readonly fallbacks: RoutingFallbacks | undefined;
 	private target: string = PROFILE_ORCHESTRATOR_KEY;
 	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
@@ -3453,6 +3539,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private sessionBoundName: string | undefined;
 	private pinWinner: string | undefined;
 	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
+	private readonly fastModels: ReadonlySet<string>;
 	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
 	private notices: string[];
 	private readonly switchProfile: RoutingProfileSwitcher | undefined;
@@ -3471,12 +3558,16 @@ class RoutingTablePanel implements OverlayComponent {
 			pinWinner?: string;
 			feedback?: string;
 			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+			fastModels?: string[];
 			notices?: string[];
 			switchProfile?: RoutingProfileSwitcher;
+			fallbacks?: RoutingFallbacks;
 		} = {},
 	) {
 		this.switchProfile = options.switchProfile;
+		this.fallbacks = options.fallbacks;
 		this.thinkingSupport = options.thinkingSupport ?? {};
+		this.fastModels = new Set(options.fastModels ?? []);
 		this.notices = options.notices ?? [];
 		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
 		const names = Object.keys(this.file.profiles);
@@ -3511,11 +3602,12 @@ class RoutingTablePanel implements OverlayComponent {
 		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
 			if (this.isEdited(key, "model")) count += 1;
 			if (this.isEdited(key, "thinking")) count += 1;
+			if (this.isEdited(key, "tier")) count += 1;
 		}
 		return count;
 	}
 
-	private isEdited(key: string, field: "model" | "thinking"): boolean {
+	private isEdited(key: string, field: "model" | "thinking" | "tier"): boolean {
 		return (this.draft[key]?.[field] ?? undefined) !== (this.stored[key]?.[field] ?? undefined);
 	}
 
@@ -3578,7 +3670,8 @@ class RoutingTablePanel implements OverlayComponent {
 
 	/** The effort card's choices: inherit, then the supported levels, or every level when unknown. */
 	private effortOptions(): Array<ThinkingLevel | typeof INHERIT_THINKING> {
-		const supported = this.supportedLevels(this.target);
+		const step = this.pickingFallback ? this.chain()[this.fallbackCursor] : undefined;
+		const supported = step ? this.thinkingSupport[step.model] : this.supportedLevels(this.target);
 		return [INHERIT_THINKING, ...THINKING_LEVELS.filter((level) => !supported || supported.includes(level))];
 	}
 
@@ -3599,6 +3692,12 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private modelOptions(): string[] {
 		const query = this.query.trim().toLowerCase();
+		if (this.pickingFallback) {
+			// Only real models, never the row's own one or one already in the chain.
+			const taken = new Set([...this.chain().map((step) => step.model), ...this.targetKeys().map((key) => this.draft[key]?.model)]);
+			const offered = this.catalog.filter((option) => !taken.has(option));
+			return query ? offered.filter((option) => option.toLowerCase().includes(query)) : offered;
+		}
 		const all = [this.inheritLabel(this.target), ...this.catalog];
 		const matches = query ? all.filter((option) => option.toLowerCase().includes(query)) : all;
 		return [...matches, ROUTING_CUSTOM_MODEL];
@@ -3660,9 +3759,104 @@ class RoutingTablePanel implements OverlayComponent {
 	}
 
 	private closeOverlay(): void {
-		this.overlay = undefined;
+		this.overlay = this.pickingFallback ? "fallbacks" : undefined;
+		this.pickingFallback = false;
 		this.pending = undefined;
 		this.query = "";
+	}
+
+	// -- fallback chains --------------------------------------------------------
+
+	/** The chain key of a row: the every-agent row edits the profile's `*` chain. */
+	private chainKey(row: string): string {
+		return row === ROUTING_ALL_ROW ? "*" : row;
+	}
+
+	private chain(row = this.target): FallbackStep[] {
+		return [...(this.fallbacks?.chain(this.profileName, this.chainKey(row)) ?? [])].map((step) => ({ ...step }));
+	}
+
+	private saveChain(chain: FallbackStep[], message: string): boolean {
+		const error = this.fallbacks?.save(this.profileName, this.chainKey(this.target), chain);
+		if (error) {
+			this.say(error);
+			return false;
+		}
+		this.say(message);
+		return true;
+	}
+
+	private openFallbacks(row: string): void {
+		if (!this.fallbacks) return this.say("Fallback chains are unavailable here.");
+		this.target = row;
+		this.overlay = "fallbacks";
+		this.fallbackCursor = 0;
+	}
+
+	private handleFallbacksKey(data: string): void {
+		const chain = this.chain();
+		const label = this.rowLabel(this.target);
+		if (matchesKey(data, "escape")) {
+			this.overlay = undefined;
+			return;
+		}
+		if (matchesKey(data, "shift+up") || matchesKey(data, "shift+down")) {
+			const to = this.fallbackCursor + (matchesKey(data, "shift+up") ? -1 : 1);
+			if (to < 0 || to >= chain.length) return;
+			const [step] = chain.splice(this.fallbackCursor, 1);
+			chain.splice(to, 0, step!);
+			if (this.saveChain(chain, `${label}: ${step!.model} is fallback ${to + 1}.`)) this.fallbackCursor = to;
+			return;
+		}
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+			this.fallbackCursor = Math.max(0, this.fallbackCursor - 1);
+			return;
+		}
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
+			this.fallbackCursor = Math.min(Math.max(0, chain.length - 1), this.fallbackCursor + 1);
+			return;
+		}
+		if (matchesKey(data, "f") || matchesKey(data, "a") || matchesKey(data, "return")) {
+			this.pickingFallback = true;
+			this.overlay = "model";
+			this.query = "";
+			this.modelCursor = 0;
+			if (this.modelOptions().length === 0) {
+				this.closeOverlay();
+				this.say(`${label}: every model is already in its chain.`);
+			}
+			return;
+		}
+		if (matchesKey(data, "e") && chain[this.fallbackCursor]) {
+			this.pickingFallback = true;
+			this.overlay = "effort";
+			const current = chain[this.fallbackCursor]!.thinking;
+			this.effortCursor = Math.max(0, current === undefined ? 0 : this.effortOptions().indexOf(current));
+			return;
+		}
+		if ((matchesKey(data, "x") || matchesKey(data, "delete")) && chain[this.fallbackCursor]) {
+			const [removed] = chain.splice(this.fallbackCursor, 1);
+			if (this.saveChain(chain, `${label}: removed fallback ${removed!.model}.`)) this.fallbackCursor = Math.max(0, Math.min(this.fallbackCursor, chain.length - 1));
+		}
+	}
+
+	private fallbacksCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(60, inner - 4);
+		const content = width - 4;
+		const chain = this.chain();
+		const lines: string[] = [];
+		lines.push(this.renderText("Fallbacks for ", "muted") + this.renderText(this.target === ROUTING_ALL_ROW ? "every agent" : this.rowLabel(this.target), "title"));
+		lines.push(this.renderText(truncateToWidth("Used in order when the model runs out or keeps failing.", content, "…"), "dim"));
+		lines.push(this.renderText("─".repeat(content), "border"));
+		if (chain.length === 0) lines.push(this.renderText(this.target === ROUTING_ALL_ROW ? "No fallbacks. f adds one for every agent without its own." : "No fallbacks. f adds one.", "dim"));
+		chain.forEach((step, index) => {
+			const focused = index === this.fallbackCursor;
+			const text = truncateToWidth(`${index + 1}. ${sanitizeTerminalText(step.model)}${step.thinking ? ` · ${step.thinking}` : ""}`, content - 2, "…");
+			lines.push(this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(text, focused ? "title" : "text"));
+		});
+		lines.push("");
+		lines.push(this.renderText(truncateToWidth("f add · e effort · shift+↑↓ move · x remove · esc back", content, "…"), "dim"));
+		return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
 	}
 
 	/** Leaving this profile with unsaved edits asks first; nothing is lost in silence. */
@@ -3709,6 +3903,16 @@ class RoutingTablePanel implements OverlayComponent {
 		this.effortCursor = Math.max(0, landed === undefined ? 0 : this.effortOptions().indexOf(landed));
 	}
 
+	private toggleTier(key: string): void {
+		const entry = this.draft[key];
+		if (!entry?.model || !this.fastModels.has(entry.model)) {
+			this.say("Standard/Fast is available only for compatible OpenAI models.");
+			return;
+		}
+		entry.tier = entry.tier === "fast" ? "standard" : "fast";
+		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
+	}
+
 	private openMenu(kind: "menu" | "new"): void {
 		this.overlay = kind;
 		this.menuCursor = 0;
@@ -3716,6 +3920,12 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private pickModel(option: string | undefined): void {
 		if (option === undefined) return;
+		if (this.pickingFallback) {
+			const chain = [...this.chain(), { model: option }];
+			if (this.saveChain(chain, `${this.rowLabel(this.target)}: fallback ${chain.length} is ${option}.`)) this.fallbackCursor = chain.length - 1;
+			this.closeOverlay();
+			return;
+		}
 		if (option === ROUTING_CUSTOM_MODEL) {
 			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft) });
 			return;
@@ -3730,6 +3940,16 @@ class RoutingTablePanel implements OverlayComponent {
 		const option = this.effortOptions()[index];
 		if (option === undefined) return;
 		const thinking = option === INHERIT_THINKING ? undefined : (option as ThinkingLevel);
+		if (this.pickingFallback) {
+			const chain = this.chain();
+			const step = chain[this.fallbackCursor];
+			if (step) {
+				chain[this.fallbackCursor] = thinking ? { model: step.model, thinking } : { model: step.model };
+				this.saveChain(chain, `${this.rowLabel(this.target)}: ${step.model} effort ${thinking ?? "inherit"}.`);
+			}
+			this.closeOverlay();
+			return;
+		}
 		for (const key of this.targetKeys()) this.setThinking(key, thinking);
 		this.say(`${this.rowLabel(this.target)}: effort ${thinking ?? "inherit"}. Save keeps it in ${this.profileName}.`);
 		this.closeOverlay();
@@ -3745,6 +3965,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		const entry = { ...(this.draft[key] ?? {}) };
+		if (model !== entry.model) delete entry.tier;
 		if (model === undefined) delete entry.model;
 		else entry.model = model;
 		this.draft[key] = entry.model || entry.thinking ? entry : {};
@@ -3837,6 +4058,9 @@ class RoutingTablePanel implements OverlayComponent {
 			case "switch":
 				this.handleSwitchKey(data);
 				return;
+			case "fallbacks":
+				this.handleFallbacksKey(data);
+				return;
 			default:
 				this.handleTableKey(data);
 		}
@@ -3865,6 +4089,8 @@ class RoutingTablePanel implements OverlayComponent {
 		}
 		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
 		if (matchesKey(data, "d")) return this.pressButton("default");
@@ -3983,6 +4209,7 @@ class RoutingTablePanel implements OverlayComponent {
 		switch (action.kind) {
 			case "row":
 			case "effort":
+			case "tier":
 				return `row:${action.row}`;
 			case "tab":
 				return `tab:${action.name}`;
@@ -4016,6 +4243,10 @@ class RoutingTablePanel implements OverlayComponent {
 			case "effort":
 				this.cursor = Math.max(0, this.rows.indexOf(action.row));
 				this.openEffort(action.row);
+				return;
+			case "tier":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.toggleTier(action.row);
 				return;
 			case "model-option":
 				this.pickModel(this.modelOptions()[action.index]);
@@ -4117,22 +4348,30 @@ class RoutingTablePanel implements OverlayComponent {
 			const safe = truncateToWidth(sanitizeTerminalText(text), agentCol - 1, "…");
 			return safe + " ".repeat(Math.max(0, agentCol - visibleWidth(safe)));
 		};
-		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12));
+		const tierRoom = Object.values(this.draft).some((entry) => entry.model && this.fastModels.has(entry.model)) ? 12 : 0;
+		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12 - tierRoom));
 		const effortStart = 2 + agentCol + modelCol;
 		const row = (key: string, label: string, labelTone: PanelTone) => {
 			const focused = this.rows[this.cursor] === key;
 			const model = this.modelValue(key);
 			const effort = this.effortValue(key);
+			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
-			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}`;
+			const chain = this.fallbacks ? this.chain(key) : [];
+			const room = inner - effortStart - visibleWidth(effort + tier) - 3;
+			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
 				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
-				+ this.renderText(effort, effortTone);
+				+ this.renderText(effort, effortTone)
+				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
+				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
+			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
 			region({ kind: "row", row: key }, 0, inner);
 			lines.push(this.hoverWrap(`row:${key}`, styled, plain, inner));
@@ -4172,8 +4411,9 @@ class RoutingTablePanel implements OverlayComponent {
 		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
 		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
 			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
-		const fullLabel = (id: RoutingTableButton) => ROUTING_TABLE_BUTTONS[id];
-		const shortLabel = (id: RoutingTableButton) => ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id];
+		const keyed = (id: RoutingTableButton, text: string) => `${id === "use" ? "u" : id === "default" ? "d" : "s"} · ${text}`;
+		const fullLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_BUTTONS[id]);
+		const shortLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id]);
 		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
 		let footer = "";
 		let footerColumn = 0;
@@ -4324,6 +4564,8 @@ class RoutingTablePanel implements OverlayComponent {
 				return this.menuCard(inner, this.activeTabColumn);
 			case "new":
 				return this.menuCard(inner, this.newColumn);
+			case "fallbacks":
+				return this.fallbacksCard(inner);
 			default:
 				return this.switchCard(inner);
 		}
@@ -4557,7 +4799,9 @@ function renderRoutingTableForTesting(
 		profileName?: string;
 		feedback?: string;
 		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+		fastModels?: string[];
 		notices?: string[];
+		fallbacks?: RoutingFallbacks;
 	} = {},
 ): string[] {
 	const panel = new RoutingTablePanel(
@@ -4619,14 +4863,28 @@ function routingScreenNotices(
 	file: AgentProfilesFile,
 	shownName: string,
 	sessionBoundName: string | undefined,
+	launchRouting?: AgentModelConfig,
+	authorityAvailable = true,
 ): string[] {
 	const notices: string[] = [];
+	if (!authorityAvailable) notices.push("Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.");
 	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
 	for (const issue of pins.invalid) {
 		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
 	}
 	for (const issue of pins.stale) {
 		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
+	}
+	if (sessionBoundName !== undefined && !hasOwnProfile(file.profiles, sessionBoundName)) {
+		notices.push(`This session launches with "${sessionBoundName}", which is no longer in profiles.json; its launches keep that routing.`);
+	}
+	// The table shows the saved profile; the session's launches keep the routing
+	// they took at the freeze or the binding. Both sides compare role routes only.
+	const roleRoutes = (config: unknown) => JSON.stringify(Object.entries(normalizeModelConfig(config) ?? {})
+		.filter(([key]) => !isProfileOrchestratorKey(key)).sort(([a], [b]) => a.localeCompare(b)));
+	if (shownName === sessionBoundName && launchRouting !== undefined && hasOwnProfile(file.profiles, shownName)
+		&& roleRoutes(file.profiles[shownName]) !== roleRoutes(launchRouting)) {
+		notices.push(`Saved "${shownName}" differs from this session's launches; Use in this session adopts it.`);
 	}
 	const roots = {
 		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
@@ -4654,9 +4912,10 @@ function routingScreenNotices(
 		if (entry.suggestion !== undefined) notices.push(`Profile key "${entry.key}" matches no agent configured in gentle-shell; did you mean ${entry.suggestion}?`);
 	}
 	// Issue #2400: model_profiles keys in subagents.json that match nothing and
-	// suggest nothing. A session binding or a winning pin replaces those launches'
-	// routing, so the file's keys do not apply there.
-	if (sessionBoundName === undefined && pinnedEffectiveModelConfig(ctx.cwd) === undefined) {
+	// suggest nothing. When the session resolves a profile (its binding or the one
+	// frozen at startup), that profile replaces those launches' routing, so the
+	// file's keys do not apply there; a pin the session did not freeze does not.
+	if (sessionBoundName === undefined) {
 		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
 			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
 			.map((entry) => entry.key);
@@ -4673,6 +4932,10 @@ async function showRoutingTablePanel(
 ): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const thinkingSupport = await getPiThinkingSupport(ctx);
+	let fastModels: string[] = [];
+	try {
+		fastModels = (await ctx.modelRegistry.getAvailable()).filter(supportsOpenAIFast).map((model) => `${model.provider}/${model.id}`);
+	} catch { /* Unknown catalog entries do not claim Fast compatibility. */ }
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<RoutingTableResult>(
 		(tui, theme, _keybindings, done) => {
@@ -4690,8 +4953,10 @@ async function showRoutingTablePanel(
 					pinWinner: request.pinWinner,
 					feedback: request.feedback,
 					thinkingSupport,
+					fastModels,
 					notices: request.notices,
 					switchProfile: request.switchProfile,
+					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -4732,7 +4997,12 @@ async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promi
 		: read.status === "missing"
 			? ({ name: "current", source: "active" } as CurrentProfileTarget)
 			: undefined;
-	await openProfilesPanelLoop(ctx, live, target?.name);
+	// The screen opens on the profile this session launches with while the store
+	// still has it (gentle-shell#1064 slice 3c).
+	const authorityAvailable = sessionProfileAuthorityAvailable(ctx);
+	const launchName = sessionLaunchProfile(ctx, authorityAvailable)?.name;
+	const opensOnLaunch = read.status === "valid" && launchName !== undefined && hasOwnProfile(read.file.profiles, launchName);
+	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name, authorityAvailable);
 }
 
 /** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
@@ -4971,7 +5241,7 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 }
 
 /** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel"> & Partial<Pick<ExtensionAPI, "events">>;
 
 /**
  * Switch the running session to the profile's orchestrator. `settings.json`
@@ -4981,7 +5251,7 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThin
  * keep the current live model and report what happened; callers retain their
  * routing snapshot or persisted default independently.
  */
-async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
+async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry, current: () => boolean = () => true, onSuccess?: () => void): Promise<string> {
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
@@ -5001,6 +5271,9 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
 	}
 	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
+	if (!current()) return "";
+	onSuccess?.();
+	live.events?.emit(PROFILE_TIER_EVENT, { sessionId: ctx.sessionManager?.getSessionId?.(), tier: supportsOpenAIFast(model) ? entry.tier : undefined, model: `${model.provider}/${model.id}` });
 	if (entry.thinking === undefined) return `\nThis session now runs on ${label}.`;
 	try {
 		live.setThinkingLevel(entry.thinking);
@@ -5096,7 +5369,9 @@ async function runProfilesPanelAction(
 					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
 					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
 					getThinkingLevel: () => live.getThinkingLevel(),
-				}, orchestrator);
+					events: live.events,
+				}, orchestrator, current);
+				if (orchestrator?.model === undefined && current()) live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
 				if (current()) {
 					const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
 					report.status = `This session now uses "${snapshot.name}" (${persistence}). Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
@@ -5120,6 +5395,9 @@ async function runProfilesPanelAction(
 		}
 		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			const manager = ctx.sessionManager;
+			const sessionId = manager?.getSessionId?.();
+			const current = () => isCommandContextActive(ctx) && ctx.sessionManager === manager && manager?.getSessionId?.() === sessionId;
 			// A pinned repository resolves its subagent routing from the profile at launch,
 			// so a global apply would move global state this repository never reads. When a
 			// pin wins, applying is repo-scoped: re-pin this clone and write no global
@@ -5181,7 +5459,7 @@ async function runProfilesPanelAction(
 					clearedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → inherit (cleared)`);
 				} else if (from === undefined) {
 					addedRoutes.push(`${name}: ${formatOrchestratorSelection(to)} (added)`);
-				} else if (from.model !== to.model || from.thinking !== to.thinking) {
+				} else if (from.model !== to.model || from.thinking !== to.thinking || from.tier !== to.tier) {
 					replacedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → ${formatOrchestratorSelection(to)}`);
 				}
 			}
@@ -5244,6 +5522,7 @@ async function runProfilesPanelAction(
 					return current.status === "valid" && current.entry !== undefined
 						&& current.entry.model === orchestratorEntry.model
 						&& current.entry.thinking === orchestratorEntry.thinking
+						&& (savedRouting.status === "valid" ? savedRouting.config[PROFILE_ORCHESTRATOR_KEY]?.tier : undefined) === orchestratorEntry.tier
 						&& liveOrchestrator !== undefined
 						&& liveOrchestrator.model === orchestratorEntry.model
 						&& liveOrchestrator.thinking === orchestratorEntry.thinking;
@@ -5379,7 +5658,16 @@ async function runProfilesPanelAction(
 				// settings.json only governs future sessions. The session the user is
 				// sitting in keeps its model until told otherwise, which made a profile
 				// look applied while the orchestrator kept answering with the old one.
-				orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry);
+				if (current()) {
+					if (orchestratorEntry.model) orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry, current, () => setFrozenDefaultOrchestrator(sessionId, orchestratorEntry));
+					else {
+						setFrozenDefaultOrchestrator(sessionId, undefined);
+						live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
+					}
+				}
+			} else if (current()) {
+				setFrozenDefaultOrchestrator(sessionId, undefined);
+				live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
 			}
 			// A pin that does not resolve changes nothing at launch, so the global apply
 			// above is what governs this repository. Saying so keeps a broken pin from
@@ -5457,6 +5745,7 @@ async function runProfilesPanelAction(
 			try {
 				const next = renameProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
+				followProfileFallbacks(path, result.name, name);
 				// A pin stores a name, so a rename that did not follow it would leave every
 				// pinned repository with a name the store no longer defines, which silently
 				// returns those repositories to the global routing.
@@ -5509,6 +5798,7 @@ async function runProfilesPanelAction(
 			try {
 				const next = deleteProfile(file, result.name);
 				writeProfilesFileSync(path, next);
+				followProfileFallbacks(path, result.name, undefined);
 				return next;
 			} catch (error) {
 				ctx.ui.notify(`Profile not deleted: ${profilesErrorMessage(error)}`, "warning");
@@ -5735,18 +6025,20 @@ async function openProfilesPanelLoop(
 	ctx: ExtensionContext,
 	live: LiveSession,
 	initialSelectedName?: string,
+	openingAuthority?: boolean,
 ): Promise<void> {
 	const store = await loadProfilesStore(ctx);
 	if (!store) return;
 	const { path } = store;
 	let file = store.file;
-	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
 	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
 	let selectedName = initialSelectedName
 		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
 		?? Object.keys(file.profiles)[0];
 	let feedback: string | undefined;
 	let draftOverride: AgentModelConfig | undefined;
+	// Read once per visit: the opening read serves the first one.
+	let authorityAvailable = true;
 	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
 		try {
 			const next = hasOwnProfile(file.profiles, name)
@@ -5768,12 +6060,13 @@ async function openProfilesPanelLoop(
 			return { error };
 		}
 		selectedName = name;
-		const boundName = sessionBoundName();
+		// The profile this session launches with, bound or frozen: the tab marked ◉.
+		const launch = sessionLaunchProfile(ctx, authorityAvailable);
 		return {
 			file,
-			sessionBoundName: boundName,
+			sessionBoundName: launch?.name,
 			pinWinner: pinWinner(),
-			notices: routingScreenNotices(ctx, file, name, boundName),
+			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
 		};
 	};
@@ -5813,15 +6106,17 @@ async function openProfilesPanelLoop(
 			}
 			const shown = selectedName;
 			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
-			const boundName = sessionBoundName();
+			authorityAvailable = openingAuthority ?? sessionProfileAuthorityAvailable(ctx);
+			openingAuthority = undefined;
+			const launch = sessionLaunchProfile(ctx, authorityAvailable);
 			const result = await step(() => showRoutingTablePanel(ctx, {
 				name: shown,
 				config: draftOverride ?? stored,
 				file,
-				sessionBoundName: boundName,
+				sessionBoundName: launch?.name,
 				pinWinner: pinWinner(),
 				feedback,
-				notices: routingScreenNotices(ctx, file, shown, boundName),
+				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
 			}));
 			draftOverride = undefined;
@@ -5895,6 +6190,10 @@ async function openProfilesPanelLoop(
 					continue;
 				}
 				case "create-live": {
+					if (!authorityAvailable) {
+						feedback = `${savedNote}Session profile authority is unavailable; affected launches are blocked. No profile created.`;
+						continue;
+					}
 					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
 					const name = answer?.trim() ?? "";
 					if (name === "") {
@@ -5904,8 +6203,7 @@ async function openProfilesPanelLoop(
 					// Captures the routing this session's launches resolve and the
 					// orchestrator it actually runs, the way the old snapshot did.
 					const snapshot = profileSnapshotFrom(
-						readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-							?? await step(() => readEffectiveModelConfigAsync(ctx.cwd)),
+						await step(() => readSessionLaunchModelConfigAsync(ctx, authorityAvailable)),
 						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
 					);
 					try {
@@ -8445,7 +8743,7 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // never carry them. For those two keys only, a snapshot with no model falls
 // back to Pi's persisted default model and effort, the default the routing
 // panel already labels them with. Lens keys keep the fail-closed rule.
-function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; routingKey: string } {
+function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; tier?: AgentRoutingEntry["tier"]; routingKey: string } {
 	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = config[routingKey];
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
@@ -8460,6 +8758,7 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 	return {
 		...(model === undefined ? {} : { selection: model }),
 		...(thinking === undefined ? {} : { thinking }),
+		...(entry?.tier === undefined ? {} : { tier: entry.tier }),
 		routingKey,
 	};
 }
@@ -10670,6 +10969,7 @@ export const __testing = {
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
 	routingTablePanel: renderRoutingTableForTesting,
+	fileRoutingFallbacks,
 	piThinkingSupport: getPiThinkingSupport,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
@@ -10768,6 +11068,7 @@ function createGentleAiExtensionForTesting(
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
 	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
+	const explorationBudget = createExplorationBudget();
 	// Named-agent or child runs started and not yet settled, per session. Such a run never records verifier attempts (its
 	// tool calls are not primary), so its settle checks must not remind. Each one pairs off at its own `agent_settled`,
 	// nested runs included: Pi may check settlement again after a continuation without a new `before_agent_start`, and
@@ -11358,6 +11659,7 @@ function createGentleAiExtensionForTesting(
 		const isChildSession = permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1";
 		const isPrimarySession = !isNamedAgent && !isChildSession;
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		if (isPrimarySession && !ctx.signal?.aborted) explorationBudget.start(subagentDepthKey);
 		if (isNamedAgent || isChildSession) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
 		} else {
@@ -11513,6 +11815,7 @@ function createGentleAiExtensionForTesting(
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const namedRuns = verifierSettleNamedRuns.get(sessionKey) ?? 0;
 		if (namedRuns > 0) verifierSettleNamedRuns.set(sessionKey, namedRuns - 1);
+		else explorationBudget.settle(sessionKey);
 	});
 
 	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
@@ -11544,6 +11847,12 @@ function createGentleAiExtensionForTesting(
 		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true);
+		// Keep discovery payloads intact. Steer only an already-active run so the
+		// next model step sees the notice without starting a new run while idle.
+		if (explorationNotice && typeof ctx.isIdle === "function" && !ctx.isIdle()) {
+			try { pi.sendMessage({ customType: "gentle-pi.exploration-budget", content: explorationNotice, details: explorationBudget.facts(sessionKey), display: true }, { deliverAs: "steer", triggerTurn: true }); } catch { /* Advisory only. */ }
+		}
 		let notice: string | undefined;
 		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.())) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
@@ -11564,6 +11873,7 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
+		if (primaryToolCall && !ctx.signal?.aborted) explorationBudget.call(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolCallId, event.toolName, event.parentToolCallId);
 		// #2652: count a verifier launch attempt before any admission check can reject it.
 		if (primaryToolCall) verifierSettleReminders.toolCall(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolName, event.input);
 		// One early mode read settles the session binding (and its one-time epoch

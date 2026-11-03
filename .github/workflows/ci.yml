@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -123,12 +127,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve checkout parents' }
           $prHead = [string]$event.pull_request.head.sha
           $prBase = [string]$event.pull_request.base.sha
+          $runMerge = [string]$env:GITHUB_SHA
           $nodeVersion = & node --version
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Node version' }
           $pnpmVersion = & pnpm --version
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve pnpm version' }
-          Evidence "checkout=$head parents=$($parents -join ' ') prHead=$prHead prBase=$prBase node=$nodeVersion pnpm=$pnpmVersion"
-          if ($parents.Count -ne 3 -or $parents[0] -ne $head -or $parents[1] -ne $prBase -or $parents[2] -ne $prHead) {
+          Evidence "checkout=$head parents=$($parents -join ' ') prHead=$prHead prBase=$prBase runMerge=$runMerge node=$nodeVersion pnpm=$pnpmVersion"
+          # GITHUB_SHA independently binds this run's tree and both merge parents.
+          # Event base is provenance from a separate snapshot, not the expected run parent.
+          if ($prBase -notmatch '^[0-9a-f]{40}$' -or $head -ne $runMerge -or $parents.Count -ne 3 -or $parents[0] -ne $runMerge -or $parents[2] -ne $prHead) {
             throw 'Checkout is not the declared PR synthetic merge of base and head'
           }
           $names = @(
@@ -187,6 +194,10 @@ jobs:
             throw 'Unexpected executed top-level cases or failing/TODO results'
           }
           Evidence 'Unselected skips are not coverage. Completion is not child-termination or unasserted cleanup proof.'
+
+      - name: Test immutable checkout identity
+        shell: pwsh
+        run: node --experimental-strip-types --test tests/ci-merge-base-identity.test.ts
 
       - name: Upload focused Windows routing log
         if: always()
@@ -279,23 +290,20 @@ jobs:
           New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 1 -Force | Out-Null
 
       - name: Run installer suites
-        run: node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts
-
-      # The native tests skip off Windows; here every one must run and pass: exactly
-      # the 38 native tests (30 literal tests plus 8 process primitive modes) that
-      # tests/installer-windows-bootstrap.test.ts defines, with 0 skips.
-      - name: Require native Windows installer tests
-        if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          $output = & node --experimental-strip-types --test --test-reporter=tap --test-name-pattern "^native Windows" tests/installer-windows-bootstrap.test.ts 2>&1
-          $status = $LASTEXITCODE
-          $output | Write-Output
-          if ($status -ne 0) { exit $status }
-          $text = $output -join "`n"
-          $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
-          $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
-          if (!$passes.Success -or [int]$passes.Groups[1].Value -ne 38 -or !$skips.Success -or [int]$skips.Groups[1].Value -ne 0) { throw "Native Windows installer tests were skipped or not selected" }
+          set +e
+          node --experimental-strip-types --test --test-reporter=tap tests/install-wizard.test.ts tests/installer-server.test.ts tests/verify-package-files.test.ts tests/installer-probes.test.ts tests/installer-runner.test.ts tests/installer-preflight.test.ts tests/installer-posix-bootstrap.test.ts tests/installer-windows-bootstrap.test.ts | tee "$RUNNER_TEMP/installer.tap"
+          status=("${PIPESTATUS[@]}")
+          if [ "${status[0]}" -ne 0 ]; then exit "${status[0]}"; fi
+          if [ "${status[1]}" -ne 0 ]; then exit "${status[1]}"; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            node scripts/verify-installer-tap.mjs < "$RUNNER_TEMP/installer.tap"
+            exit $?
+          fi
+
+      - name: Test installer TAP verifier
+        run: node --experimental-strip-types --test tests/verify-installer-tap.test.ts
 
       - name: Upload node.exe crash dumps (Windows, on failure)
         if: failure() && runner.os == 'Windows'

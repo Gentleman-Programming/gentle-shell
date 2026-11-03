@@ -4,6 +4,7 @@ import { isValidProfileName } from "./agent-profiles.ts";
 import {
 	isSafeAgentName,
 	isThinkingLevel,
+	isServiceTier,
 	normalizeModelId,
 	normalizeRoutingEntry,
 	type AgentModelConfig,
@@ -89,7 +90,7 @@ function readRoute(
 		? Object.fromEntries(
 				Object.entries(value).filter(
 					([key, field]) =>
-						!((key === "model" || key === "thinking") && field === undefined),
+						!((key === "model" || key === "thinking" || key === "tier") && field === undefined),
 				),
 			)
 		: value;
@@ -99,10 +100,12 @@ function readRoute(
 		return undefined;
 	if (hasOwn(route, "effort") && !isThinkingLevel(route.effort))
 		return undefined;
+	if (hasOwn(route, "tier") && !isServiceTier(route.tier))
+		return undefined;
 	// Project only own known fields. Unknown extras, even an unknown-only route,
 	// carry no routing meaning. Thinking wins over legacy effort as elsewhere.
 	const known = Object.fromEntries(
-		["model", "thinking", "effort"]
+		["model", "thinking", "effort", "tier"]
 			.filter((key) => hasOwn(route, key))
 			.map((key) => [key, route[key]]),
 	);

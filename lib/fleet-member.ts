@@ -1,11 +1,14 @@
 import { readdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { emptyThread, TASK_STATUS, THREAD_ITEM, type TaskRecord, type TaskStatus, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
+import { ACTIVITY_SCHEMA, ACTIVITY_WIDGET_KEY } from "./agents-rpc-publisher.ts";
 import { JsonLines, piCommand, type ChildLike, type PiCommand, type ProcessControl, type Spawn } from "./agents-runner.ts";
 import { childPackageExtensionArgs, parseChildPackageInjection } from "./child-package-injection.ts";
 import { classifyDialog, dialogResponse, type DialogResponse, type FleetDialogAnswer, type ProtectedDialog } from "./fleet-dialogs.ts";
 import { FLEET_ROLE_ENV } from "./fleet-role.ts";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.ts";
 import { TODO_DETAILS_KEY, TODO_TOOL_NAME, todoProgress, type TodoState } from "./shell-todo.ts";
+import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Fleet member (odd/tasks/fleet-orchestrator.md): one full, headless Gentle
 // Shell session (`pi --mode rpc`) led by the fleet controller. Everything the
@@ -29,6 +32,14 @@ const STDOUT_DRAIN_MS = 2000;
 const ACTIVITY_MAX = 200;
 const ACTIVITY_TEXT_MAX = 160;
 const INSPECT_LINES_MAX = 200;
+// A member's subagents (T10): the publisher's own bounds, enforced again here.
+const ACTIVITY_LINE_MAX = 512 * 1024;
+const SUBAGENTS_MAX = 50;
+const SUBAGENT_ITEMS_MAX = 40;
+const SUBAGENT_FIELD_MAX = 300;
+const SUBAGENT_TEXT_MAX = 2000;
+const SUBAGENT_OUTPUT_MAX = 500;
+const TASK_STATUSES = new Set<string>(Object.values(TASK_STATUS));
 const FEATURE_DOC_PATTERN = /(?:[\w.~\/-]*\/)?odd\/tasks\/[\w.-]+\.md/g;
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
@@ -122,6 +133,14 @@ export interface FleetMemberOptions {
 	onEvent?(member: FleetMember, event: FleetMemberEvent): void;
 	/** Any tracked state change, for the user-facing status line. */
 	onChange?(member: FleetMember): void;
+	/** The member's subagents changed: presentation only, never a wake or a digest. */
+	onSubagents?(member: FleetMember): void;
+}
+
+/** One of a member's own subagents, as its gentle-agents activity widget last showed it. */
+export interface FleetMemberSubagent {
+	task: TaskRecord;
+	thread: TaskThread;
 }
 
 type Raw = Record<string, unknown>;
@@ -141,6 +160,69 @@ function oneLine(value: unknown, max: number): string {
 
 function tokens(value: number): string {
 	return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+}
+
+function displayLine(value: unknown, max: number): string {
+	return oneLine(typeof value === "string" ? sanitizeTerminalText(value) : "", max);
+}
+
+// Thread text keeps its line breaks for renderThreadItem.
+function displayBlock(value: unknown, max: number): string {
+	const text = typeof value === "string" ? sanitizeTerminalText(value) : "";
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function time(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function subagentItem(value: unknown, index: number): ThreadItem | undefined {
+	const item = record(value);
+	if (item?.kind === THREAD_ITEM.TOOL) {
+		return { kind: THREAD_ITEM.TOOL, callId: String(index), name: displayLine(item.name, 80), args: {}, output: displayBlock(item.output, SUBAGENT_OUTPUT_MAX), running: item.running === true, isError: item.isError === true };
+	}
+	if (item?.kind === THREAD_ITEM.TEXT || item?.kind === THREAD_ITEM.THINKING || item?.kind === THREAD_ITEM.NOTE) return { kind: item.kind, text: displayBlock(item.text, SUBAGENT_TEXT_MAX) };
+	return undefined;
+}
+
+// The same synthetic, read-only TaskRecord shape AgentsView builds for remote peers.
+function subagent(value: unknown): FleetMemberSubagent | undefined {
+	const entry = record(value);
+	const summary = record(entry?.summary);
+	const id = displayLine(summary?.id, 120);
+	if (!summary || !id || !TASK_STATUSES.has(String(summary.status))) return undefined;
+	const createdAt = time(summary.createdAt) ?? 0;
+	const task: TaskRecord = {
+		id, agent: displayLine(summary.agent, 80), label: displayLine(summary.label, SUBAGENT_FIELD_MAX), status: summary.status as TaskStatus,
+		createdAt, startedAt: time(summary.startedAt), endedAt: time(summary.endedAt), lastActivityAt: time(summary.lastActivityAt) ?? createdAt,
+		lastStep: displayLine(summary.lastStep, SUBAGENT_FIELD_MAX), error: typeof summary.error === "string" ? displayLine(summary.error, SUBAGENT_FIELD_MAX) : null,
+		turns: num(summary.turns), toolCalls: num(summary.toolCalls), mode: "background", prompt: "", cwd: "", parentSessionId: "",
+		model: "", thinking: undefined, sessionPath: null, result: null, tokens: 0, cost: 0,
+	};
+	const thread = record(entry?.thread);
+	const raw = Array.isArray(thread?.items) ? thread.items : [];
+	const kept = raw.slice(-SUBAGENT_ITEMS_MAX);
+	const items = kept.map(subagentItem).filter((item): item is ThreadItem => item !== undefined);
+	return { task, thread: { ...emptyThread(), items, dropped: num(thread?.dropped) + raw.length - kept.length } };
+}
+
+/**
+ * A member's subagents from its `gentle-agents` activity widget lines
+ * (lib/agents-rpc-publisher.ts, one JSON line), or undefined when the payload
+ * is not one. Defensive and bounded: entries that do not fit are skipped.
+ */
+export function parseMemberSubagents(lines: unknown): FleetMemberSubagent[] | undefined {
+	if (!Array.isArray(lines) || lines.length !== 1 || typeof lines[0] !== "string" || lines[0].length > ACTIVITY_LINE_MAX) return undefined;
+	let activity: Raw | undefined;
+	try { activity = record(JSON.parse(lines[0])); } catch { return undefined; }
+	if (activity?.schema !== ACTIVITY_SCHEMA || !Array.isArray(activity.tasks)) return undefined;
+	const subagents: FleetMemberSubagent[] = [];
+	for (const entry of activity.tasks) {
+		const parsed = subagent(entry);
+		if (parsed) subagents.push(parsed);
+		if (subagents.length === SUBAGENTS_MAX) break;
+	}
+	return subagents;
 }
 
 export class FleetMember {
@@ -173,6 +255,7 @@ export class FleetMember {
 	private stopRequested = false;
 	private processExit: { code: number | null; signal: string | null } | undefined;
 	private stdoutClosed = false;
+	private subagentList: FleetMemberSubagent[] = [];
 
 	constructor(options: FleetMemberOptions) {
 		this.options = options;
@@ -310,6 +393,11 @@ export class FleetMember {
 		return true;
 	}
 
+	/** The member's own subagents and what they are doing, for the human's view only. */
+	subagents(): readonly FleetMemberSubagent[] {
+		return this.subagentList;
+	}
+
 	hasDialog(dialogId: string): boolean {
 		return this.dialogs.some(dialog => dialog.id === dialogId);
 	}
@@ -409,6 +497,10 @@ export class FleetMember {
 				this.assistantEnd(record(event.message));
 				return;
 			case "extension_ui_request": {
+				if (event.method === "setWidget" && event.widgetKey === ACTIVITY_WIDGET_KEY) {
+					this.keepSubagents(event.widgetLines);
+					return;
+				}
 				if (!DIALOG_METHODS.has(String(event.method))) return;
 				const dialog: FleetMemberDialog = { id: String(event.id ?? ""), method: String(event.method), title: oneLine(event.title, DETAIL_FIELD_MAX) };
 				if (typeof event.message === "string") dialog.message = oneLine(event.message, DETAIL_FIELD_MAX);
@@ -439,6 +531,15 @@ export class FleetMember {
 			default:
 				return;
 		}
+	}
+
+	// Presentation only: no status, digest, activity line or wake changes. A
+	// cleared widget (no lines) clears the list; a malformed one keeps the last.
+	private keepSubagents(lines: unknown): void {
+		const next = lines === undefined ? [] : parseMemberSubagents(lines);
+		if (!next) return;
+		this.subagentList = next;
+		this.options.onSubagents?.(this);
 	}
 
 	private assistantEnd(message: Raw | undefined): void {
@@ -490,11 +591,14 @@ export class FleetMember {
 		this.cancelStop();
 		this.cancelDrain();
 		this.dialogs = [];
+		const hadSubagents = this.subagentList.length > 0;
+		this.subagentList = [];
 		this.exitCode = code;
 		this.exitSignal = signal;
 		this.note(`exited (code ${code ?? "none"}${signal ? `, ${signal}` : ""})`);
 		this.status = "exited";
 		this.options.onChange?.(this);
+		if (hadSubagents) this.options.onSubagents?.(this);
 		this.options.onEvent?.(this, { kind: "exit", code, signal });
 	}
 

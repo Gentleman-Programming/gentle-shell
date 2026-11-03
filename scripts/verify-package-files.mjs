@@ -121,6 +121,7 @@ export const requiredPaths = [
   "lib/fleet-view.ts",
   "lib/fleet-view-render.ts",
   "lib/fleet-deck.ts",
+  "lib/fleet-agents-view.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
   "lib/gentle-shell-bundled.ts",

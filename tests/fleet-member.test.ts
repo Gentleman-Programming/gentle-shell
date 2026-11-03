@@ -17,6 +17,7 @@ function harness(options: { platform?: NodeJS.Platform; pid?: number; closeStdou
 	const events: FleetMemberEvent[] = [];
 	const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
 	const groupKills: Array<[number, string]> = [];
+	const counts = { changes: 0, subagents: 0 };
 	const member = new FleetMember({
 		name: "api",
 		objective: "Build the API",
@@ -37,8 +38,10 @@ function harness(options: { platform?: NodeJS.Platform; pid?: number; closeStdou
 		},
 		process: { platform: options.platform ?? "darwin", kill: (pid, signal) => { groupKills.push([pid, String(signal)]); } },
 		onEvent: (_member, event) => events.push(event),
+		onChange: () => { counts.changes += 1; },
+		onSubagents: () => { counts.subagents += 1; },
 	});
-	return { member, children, spawned, events, timers, groupKills };
+	return { member, children, spawned, events, timers, groupKills, counts };
 }
 
 function assistantEnd(usage: Record<string, number>, text = "") {
@@ -461,4 +464,132 @@ test("a resumed member keeps counting its new and cached tokens", async () => {
 	await tick();
 	assert.deepEqual([member.newTokens, member.usage.cacheRead, member.usage.totalTokens], [8015, 42100, 50115]);
 	assert.match(member.digest(), /8\.0k new tok · \$0\.75/);
+});
+
+// --- T10 (S9): a member's own subagents, from the gentle-agents activity
+// widget it already pushes over RPC (lib/agents-rpc-publisher.ts).
+
+function activityTask(id: string, overrides: Record<string, unknown> = {}, items: unknown[] = []) {
+	return {
+		summary: { id, agent: "sdd-apply", label: "Write the invite routes", prompt: "p", status: "running", createdAt: 1000, startedAt: 2000, endedAt: null, lastStep: "tool edit", lastActivityAt: 3000, turns: 2, toolCalls: 3, error: null, ...overrides },
+		thread: { version: 4, dropped: 0, items },
+	};
+}
+
+function activityWidget(tasks: unknown[], extra: Record<string, unknown> = {}) {
+	const activity = { schema: "gentle-agents.activity/v1", summary: { running: tasks.length, queued: 0, waiting: 0, finished: 0 }, tasks, ...extra };
+	return { type: "extension_ui_request", id: "w1", method: "setWidget", widgetKey: "gentle-agents", widgetLines: [JSON.stringify(activity)] };
+}
+
+async function startedMember() {
+	const h = harness();
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	return { ...h, child: h.children[0] };
+}
+
+test("a member keeps its latest gentle-agents activity as its subagents, without waking the controller or changing its digest", async () => {
+	const h = await startedMember();
+	const digest = h.member.digest();
+	const changes = h.counts.changes;
+	assert.deepEqual(h.member.subagents(), []);
+	h.child.emit(activityWidget([activityTask("t1", {}, [
+		{ kind: "text", text: "Reading the routes\nnext line" },
+		{ kind: "tool", name: "edit", args: "{\"path\":\"a.ts\"}", running: true, isError: false, output: "patched" },
+	])]));
+	await tick();
+	const [subagent] = h.member.subagents();
+	assert.equal(h.member.subagents().length, 1);
+	assert.deepEqual(
+		[subagent.task.id, subagent.task.agent, subagent.task.label, subagent.task.status, subagent.task.lastStep, subagent.task.startedAt, subagent.task.endedAt],
+		["t1", "sdd-apply", "Write the invite routes", "running", "tool edit", 2000, null],
+	);
+	assert.deepEqual(subagent.thread.items, [
+		{ kind: "text", text: "Reading the routes\nnext line" },
+		{ kind: "tool", callId: "1", name: "edit", args: {}, running: true, isError: false, output: "patched" },
+	]);
+	assert.equal(h.counts.subagents, 1, "the modal hears about it");
+	assert.equal(h.counts.changes, changes, "no member change: no ledger, widget or digest refresh");
+	assert.deepEqual(h.events, [], "never a wake");
+	assert.equal(h.member.digest(), digest);
+	assert.deepEqual(h.member.dialogs, []);
+	assert.equal(h.member.status, "working");
+	// The next push replaces the previous one.
+	h.child.emit(activityWidget([activityTask("t2", { status: "completed", endedAt: 5000 })]));
+	await tick();
+	assert.deepEqual(h.member.subagents().map(entry => [entry.task.id, entry.task.status]), [["t2", "completed"]]);
+});
+
+test("a malformed or foreign activity payload is ignored and the last good one is kept; a cleared widget clears it", async () => {
+	const h = await startedMember();
+	h.child.emit(activityWidget([activityTask("t1")]));
+	await tick();
+	const bad = [
+		{ ...activityWidget([activityTask("x")]), widgetLines: ["not json"] },
+		{ ...activityWidget([activityTask("x")]), widgetLines: [JSON.stringify({ schema: "other/v1", tasks: [] })] },
+		{ ...activityWidget([activityTask("x")]), widgetLines: [JSON.stringify({ schema: "gentle-agents.activity/v1", tasks: "nope" })] },
+		{ ...activityWidget([activityTask("x")]), widgetLines: "a string" },
+		{ ...activityWidget([activityTask("x")]), widgetLines: [42] },
+		{ ...activityWidget([activityTask("x")]), widgetLines: [`${JSON.stringify({ schema: "gentle-agents.activity/v1", tasks: [] })}${" ".repeat(600 * 1024)}`] },
+	];
+	for (const event of bad) h.child.emit(event);
+	await tick();
+	assert.deepEqual(h.member.subagents().map(entry => entry.task.id), ["t1"]);
+	assert.equal(h.counts.subagents, 1);
+	// Entries that do not fit are skipped one by one.
+	h.child.emit(activityWidget([activityTask("t3"), activityTask("", {}), activityTask("t4", { status: "dancing" }), { summary: null }, "x", activityTask("t5", {}, [{ kind: "image", data: "z" }, { kind: "text", text: 7 }])]));
+	await tick();
+	assert.deepEqual(h.member.subagents().map(entry => entry.task.id), ["t3", "t5"]);
+	assert.deepEqual(h.member.subagents()[1].thread.items, [{ kind: "text", text: "" }]);
+	h.child.emit({ type: "extension_ui_request", id: "w9", method: "setWidget", widgetKey: "gentle-agents" });
+	await tick();
+	assert.deepEqual(h.member.subagents(), []);
+});
+
+test("member subagents are bounded and stripped of terminal control sequences", async () => {
+	const h = await startedMember();
+	const items = Array.from({ length: 90 }, (_, index) => ({ kind: "note", text: `n${index}` }));
+	const tasks = Array.from({ length: 80 }, (_, index) => activityTask(`t${index}`, index === 0 ? { label: `\x1b[31mred\x1b[0m ${"l".repeat(900)}`, agent: "a\u0007b" } : {}, index === 0 ? items : []));
+	h.child.emit(activityWidget(tasks));
+	await tick();
+	const subagents = h.member.subagents();
+	assert.equal(subagents.length, 50);
+	const first = subagents[0];
+	assert.equal(first.task.agent, "ab");
+	assert.ok(first.task.label.startsWith("red l") && first.task.label.length <= 300, first.task.label.slice(0, 20));
+	assert.equal(first.thread.items.length, 40);
+	assert.deepEqual([first.thread.items[0], first.thread.dropped], [{ kind: "note", text: "n50" }, 50]);
+});
+
+test("an exited member keeps no subagents: its process group took them down", async () => {
+	const h = await startedMember();
+	h.child.emit(activityWidget([activityTask("t1")]));
+	await tick();
+	h.child.exit(0, null);
+	await tick();
+	assert.equal(h.member.status, "exited");
+	assert.deepEqual(h.member.subagents(), []);
+	assert.equal(h.counts.subagents, 2);
+});
+
+// Pinned (T10): every other non-dialog UI request is still dropped.
+test("other non-dialog UI requests are still dropped: no subagents, dialog, wake or digest change", async () => {
+	const h = await startedMember();
+	const digest = h.member.digest();
+	const changes = h.counts.changes;
+	for (const event of [
+		{ type: "extension_ui_request", id: "u1", method: "setWidget", widgetKey: "gentle-todo", widgetLines: [JSON.stringify({ schema: "gentle-agents.activity/v1", summary: {}, tasks: [activityTask("t1")] })] },
+		{ type: "extension_ui_request", id: "u2", method: "notify", message: "hello", notifyType: "info" },
+		{ type: "extension_ui_request", id: "u3", method: "setStatus", statusKey: "k", statusText: "busy" },
+		{ type: "extension_ui_request", id: "u4", method: "setTitle", title: "pi" },
+		{ type: "extension_ui_request", id: "u5", method: "set_editor_text", text: "x" },
+	]) h.child.emit(event);
+	await tick();
+	assert.deepEqual(h.member.subagents(), []);
+	assert.deepEqual(h.member.dialogs, []);
+	assert.deepEqual(h.events, []);
+	assert.deepEqual([h.counts.changes, h.counts.subagents], [changes, 0]);
+	assert.equal(h.member.digest(), digest);
+	assert.deepEqual(h.children[0].written.filter(command => command.type === "extension_ui_response"), []);
 });

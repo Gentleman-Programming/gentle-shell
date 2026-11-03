@@ -488,9 +488,11 @@ export interface FleetViewKey {
 // spelling. None takes a Pi default except tab, which Pi uses for autocomplete
 // (docs/keybindings.md `tui.input.tab`); the fleet takes it only as stated.
 // Letters never act in the input (a message may start with them): from the
-// input, alt+1-4 pick a lens, alt+z zooms and alt+m changes the density. No
-// function keys: they need fn on most Mac keyboards (user, T5-U3). Pi binds
-// alt+z to undo only on WSL (docs/keybindings.md `tui.editor.undo`).
+// input, alt+1-4 pick a lens, alt+z zooms, alt+m changes the density and
+// alt+w opens the members' agents (T10; alt+a stays the controller's own
+// /gentle:agents). No function keys: they need fn on most Mac keyboards
+// (user, T5-U3). Pi binds alt+z to undo only on WSL (docs/keybindings.md
+// `tui.editor.undo`).
 export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
 	{ keys: ["alt+1"], action: "lens.flows", scope: "global" },
 	{ keys: ["alt+2"], action: "lens.map", scope: "global" },
@@ -505,5 +507,7 @@ export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
 	{ keys: ["1", "2", "3", "4"], action: "focal.answer", scope: "focal-bar" },
 	{ keys: ["alt+z"], action: "zoom.toggle", scope: "global", sharesPiAction: "tui.editor.undo", when: "always in the fleet controller; Pi binds alt+z to undo only on WSL, where the deck takes it over" },
 	{ keys: ["z"], action: "zoom.toggle", scope: "outside-input" },
+	{ keys: ["alt+w"], action: "agents.toggle", scope: "global", when: "opens from the input, the focal bar or the zoom, never over another dialog" },
+	{ keys: ["w"], action: "agents.toggle", scope: "outside-input" },
 	{ keys: ["?"], action: "help", scope: "outside-input" },
 ];

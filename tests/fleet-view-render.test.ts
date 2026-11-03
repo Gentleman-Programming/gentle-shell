@@ -251,3 +251,15 @@ test("before the objective, a welcome card offers the first message: a sentence,
 		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${stripAnsi(line)}`);
 	}
 });
+
+// T10 (S9): the hints and the welcome card list the members' agents modal key.
+test("the hints and the welcome card offer alt+w from the input and w in the focal bar and the zoom", () => {
+	const queue = attentionQueue(inkwellFleet());
+	const hint = (context: (typeof FLEET_HINT_CONTEXTS)[number]) => stripAnsi(renderHintLine(context, queue, "light", 180, theme)[0]);
+	assert.match(hint("input"), /alt\+m detail .*alt\+w agents .*@name talk to one member/);
+	assert.match(hint("focal"), /z zoom .*w agents .*\? help/);
+	assert.match(hint("zoom"), /f m \$ l switch lens .*w agents/);
+	assert.doesNotMatch(hint("input"), /(^|\s)w agents/, "no bare letter from the input");
+	const welcome = renderWelcomeCard(120, theme).map(stripAnsi).join(" ").replace(/[│╭╮╰╯─]/g, " ").replace(/\s+/g, " ");
+	assert.match(welcome, /alt\+m detail · alt\+w agents/);
+});

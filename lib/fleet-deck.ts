@@ -1,5 +1,6 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
+import { FleetAgentsView, type FleetAgentsMember } from "./fleet-agents-view.ts";
 import type { FleetLedgerState } from "./fleet-ledger.ts";
 import { attentionQueue, fleetStatus, lensRows, nextDensity, objectiveProgress, type AttentionQueue, type FleetDensity, type FleetLens, type FleetViewDialog, type FleetViewSnapshot, type FocalItem } from "./fleet-view.ts";
 import { renderFleetColumn, renderFocalBar, renderHintLine, renderLensBar, renderLensPanel, renderObjectiveStrip, renderStatusLine, renderWelcomeCard, type FleetHintContext, type FleetViewTheme } from "./fleet-view-render.ts";
@@ -12,9 +13,9 @@ import { sidebarPart, type SidebarRail } from "./shell-sidebar.ts";
 // the conversation column while the fullscreen rail paints, else above the
 // input), the focal bar above the input, the fleet column as the "fleet" part
 // (the whole rail when it fits, else the lens panel above the input), status
-// and hint lines below the input, the zoom as a full-screen overlay, and the
-// keys through one raw terminal input listener. It renders from the first
-// frame, empty fleet included. The view model and renderers are
+// and hint lines below the input, the zoom and the members' agents modal (T10)
+// as full-screen overlays, and the keys through one raw terminal input
+// listener. It renders from the first frame, empty fleet included. The view model and renderers are
 // lib/fleet-view*.ts; this file only wires them.
 
 export const DECK_WIDGET_KEY = "gentle-fleet";
@@ -30,7 +31,7 @@ const DIGITS = ["1", "2", "3", "4"] as const;
 // From anywhere (lib/fleet-view.ts FLEET_VIEW_KEYS); no function keys.
 const GLOBAL_LENSES = [["alt+1", "flows"], ["alt+2", "map"], ["alt+3", "costs"], ["alt+4", "log"]] as const;
 const LETTER_LENSES = [["f", "flows"], ["m", "map"], ["$", "costs"], ["l", "log"]] as const;
-const HELP = "Fleet deck keys: alt+1-4 lenses, alt+z zoom, alt+m density, tab the focal bar (empty input), then 1-4 choose, f m $ l lenses, z zoom, ? help, tab or esc back.";
+const HELP = "Fleet deck keys: alt+1-4 lenses, alt+z zoom, alt+m density, alt+w members and their agents, tab the focal bar (empty input), then 1-4 choose, f m $ l lenses, z zoom, w agents, ? help, tab or esc back.";
 
 /** What the controller tracks live per member, beyond the ledger record. */
 export interface DeckLiveMember {
@@ -86,6 +87,9 @@ export interface FleetDeckOptions {
 	 * undefined. With that dialog focused, tab and 1-4 still reach the deck.
 	 */
 	relayDialog(): unknown;
+	/** The members and their own subagents for the alt+w modal (T10); none when absent. */
+	memberAgents?(): readonly FleetAgentsMember[];
+	now?(): number;
 }
 
 type DeckUi = Pick<ExtensionUIContext, "setWidget" | "onTerminalInput" | "getEditorText" | "custom" | "notify">;
@@ -111,6 +115,8 @@ export class FleetDeck {
 	private focalOwner: unknown;
 	private closeZoom: (() => void) | undefined;
 	private zoom: Component | undefined;
+	private closeAgents: (() => void) | undefined;
+	private agents: { view: Component; repaint(): void } | undefined;
 	private revision = 0;
 	private built: { revision: number; snapshot: FleetViewSnapshot; queue: AttentionQueue } | undefined;
 	// Blocker and review choices go to the fleet; they leave the queue at once.
@@ -127,6 +133,11 @@ export class FleetDeck {
 	invalidate(): void {
 		this.revision += 1;
 		this.tui?.requestRender();
+	}
+
+	/** A member's subagents changed: repaint the open agents modal, if any. */
+	refreshAgents(): void {
+		this.agents?.repaint();
 	}
 
 	/** The component that has the keys now. */
@@ -165,6 +176,7 @@ export class FleetDeck {
 		return () => {
 			stopInput();
 			this.closeZoom?.();
+			this.closeAgents?.();
 			for (const key of [DECK_TOP_WIDGET_KEY, DECK_LENS_WIDGET_KEY, DECK_WIDGET_KEY, DECK_STATUS_WIDGET_KEY]) ui.setWidget(key, undefined);
 			this.ui = undefined;
 			this.tui = undefined;
@@ -267,6 +279,45 @@ export class FleetDeck {
 		return CONSUMED;
 	}
 
+	// Read-only, like the zoom a full-screen overlay; it gives way to nothing
+	// else, so the zoom and the focal bar close first.
+	private toggleAgents(): Consumed {
+		if (this.closeAgents) {
+			this.closeAgents();
+			return CONSUMED;
+		}
+		const ui = this.ui;
+		if (!ui) return undefined;
+		if (this.focal) this.leaveFocal();
+		this.closeZoom?.();
+		let mine: (() => void) | undefined;
+		void ui.custom<undefined>((tui, theme, _keybindings, done) => {
+			const close = withOverlayRepaint(tui, done);
+			mine = this.closeAgents = () => {
+				this.closeAgents = undefined;
+				this.agents = undefined;
+				close(undefined);
+				this.invalidate();
+			};
+			const view = new FleetAgentsView({
+				theme: theme as never,
+				rows: () => Math.max(3, tui.terminal?.rows ?? 40),
+				members: () => this.options.memberAgents?.() ?? [],
+				now: () => this.options.now?.() ?? Date.now(),
+				onClose: () => this.closeAgents?.(),
+				requestRender: () => tui.requestRender(),
+			});
+			this.agents = { view, repaint: () => tui.requestRender() };
+			return view;
+		}, ZOOM_OVERLAY).catch(() => {}).finally(() => {
+			if (mine && this.closeAgents === mine) {
+				this.closeAgents = undefined;
+				this.agents = undefined;
+			}
+		});
+		return CONSUMED;
+	}
+
 	private leaveFocal(): void {
 		this.focal = false;
 		this.focalOwner = undefined;
@@ -285,6 +336,11 @@ export class FleetDeck {
 	/** Raw terminal input, before the focused component sees it. */
 	handleInput(data: string): Consumed {
 		if (isKeyRelease(data)) return undefined;
+		// The open agents modal has every key but its own toggle.
+		if (this.closeAgents) {
+			if (matchesKey(data, "alt+w")) return this.toggleAgents();
+			if (this.agents && this.focused() === this.agents.view) return undefined;
+		}
 		const lens = GLOBAL_LENSES.find(([key]) => matchesKey(data, key));
 		if (lens) return this.setLens(lens[1]);
 		if (matchesKey(data, "alt+m")) {
@@ -303,10 +359,14 @@ export class FleetDeck {
 		}
 		// Letters act only outside the input: in the focused zoom or the focal bar.
 		const zoomFocused = this.closeZoom !== undefined && this.zoom !== undefined && focused === this.zoom;
+		// Never over another dialog: only from the input (the focal bar too) or the zoom.
+		const canOpenAgents = isEditor(focused) || zoomFocused;
+		if (matchesKey(data, "alt+w")) return canOpenAgents ? this.toggleAgents() : undefined;
 		if (zoomFocused || this.focal) {
 			const letter = LETTER_LENSES.find(([key]) => matchesKey(data, key));
 			if (letter) return this.setLens(letter[1]);
 			if (matchesKey(data, "z")) return this.toggleZoom();
+			if (matchesKey(data, "w") && canOpenAgents) return this.toggleAgents();
 			if (matchesKey(data, "?")) {
 				this.ui?.notify(HELP, "info");
 				return CONSUMED;

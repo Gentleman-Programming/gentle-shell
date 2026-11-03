@@ -1882,6 +1882,19 @@ test("an adopted session respawns headless on its own session file only after it
 	assert.match(status, /^blog-posts \[starting\]/);
 });
 
+test("a pending adoption holds its member slot: fleet_spawn waits for it and the adopted session still joins", async () => {
+	const a = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/work/blog" }], { fleetConfig: { maxLiveMembers: 1 } });
+	await a.adopt();
+	const spawn = await a.h.tools.get("fleet_spawn")!.execute("s", { name: "web2", objective: "Own the web front.", cwd: webCwd }, undefined, undefined, a.ctx);
+	assert.match(spawn.content[0].text, /^Error: the fleet runs at most 1 live members/);
+	assert.equal(a.h.spawned.length, 0, "the model's spawn never takes the adopted session's slot");
+	a.ready();
+	a.alive.delete(ADOPT_PID);
+	a.poll();
+	assert.equal(a.h.spawned.length, 1, "the adopted session joins");
+	assert.match(String(a.h.sent.at(-1)?.message.content), /adopted blog-posts/);
+});
+
 test("a refused, silent or vanished adoption leaves one Blockers entry and a notice, and spawns nothing", async () => {
 	const refused = await adoptHarness([{ sessionId: "peer-rpc-00001", label: "Desktop", workspace: "/w", refuse: "this is not an interactive terminal session (rpc mode)" }]);
 	await refused.adopt();

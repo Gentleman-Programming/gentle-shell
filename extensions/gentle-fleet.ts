@@ -520,6 +520,9 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 
 	const liveCount = () => [...members.values()].filter(member => member.live).length;
+	// Live members plus pending adoptions: an accepted adoption's window is already
+	// closing, so spawn, resume and adopt never take its slot (T9 verifier B1).
+	const heldSlots = () => liveCount() + adoptions.size;
 
 	const startMember = (name: string, objective: string, launch: ReturnType<typeof buildMemberLaunch>, extra: { worktree?: { path: string; branch: string }; usage?: { totalTokens: number; cost: number; newTokens?: number; cacheRead?: number } } = {}) => {
 		const member = new FleetMember({
@@ -559,7 +562,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const reason = (record.worktree ? reattachMemberWorktree({ path: record.worktree, git: deps.git }) : undefined)
 				?? (!existsSync(record.cwd) ? `working directory ${record.cwd} is missing`
 				: !sessionFile ? (record.sessionFile ? `session file ${record.sessionFile} is missing` : `no session file in ${sessionDir}`)
-				: liveCount() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
+				: heldSlots() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
 				: config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd ? `the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget`
 				: undefined);
 			if (reason || !sessionFile) {
@@ -612,7 +615,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// holds its slot) and the fleet budget, worded like spawn and resume refusals.
 	const adoptLimit = () => {
 		const spent = fleetSpend();
-		return liveCount() + adoptions.size >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
+		return heldSlots() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
 			: config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd ? `the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget (fleetBudgetUsd in ${config.path})`
 			: undefined;
 	};
@@ -814,7 +817,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (typeof cwd !== "string" || !cwd.trim()) return text("Error: cwd is required: pass the member's own project directory (create: true for a new project).", { error: "missing cwd" });
 			if (members.get(name)?.live) return text(`Error: member "${name}" is already live; use fleet_send.`, { error: "duplicate" });
 			config = readFleetConfig(configHome);
-			if (liveCount() >= config.maxLiveMembers) return text(`Error: the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path}). Send the work to an existing member or stop one first.`, { error: "cap" });
+			if (heldSlots() >= config.maxLiveMembers) return text(`Error: the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path}). Send the work to an existing member or stop one first.`, { error: "cap" });
 			const spent = fleetSpend();
 			if (config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd) {
 				return text(`Error: the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget (fleetBudgetUsd in ${config.path}). Existing members keep working: send them work with fleet_send, or ask the human to raise the budget.`, { error: "fleet budget" });

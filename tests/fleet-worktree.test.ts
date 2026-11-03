@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
+import { createMemberWorktree, reattachMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
 
 // odd/tasks/fleet-orchestrator.md T4 (L15): a member that works in a git
 // repository gets its own worktree and branch; anything else runs in place.
@@ -118,4 +118,21 @@ test("a git failure while adding the worktree is reported as a refusal", () => {
 	assert.equal(result.kind, "refused", "a repository without commits has no HEAD to branch from");
 	if (result.kind !== "refused") return;
 	assert.match(result.message, /git worktree add failed/);
+});
+
+// T6 (S2): a resumed member reattaches to its own worktree; nothing is created or removed.
+test("reattaching a member worktree checks it is still a worktree and changes no git state", () => {
+	const { root, repo, exec, calls } = setup();
+	const created = createMemberWorktree({ cwd: repo, fleetSlug: "billing", member: "api", git: exec });
+	assert.equal(created.kind, "created");
+	if (created.kind !== "created") return;
+	const before = [branches(repo), worktrees(repo)];
+	calls.length = 0;
+	assert.equal(reattachMemberWorktree({ path: created.worktree.path, git: exec }), undefined);
+	const plain = join(root, "plain");
+	mkdirSync(plain);
+	assert.match(reattachMemberWorktree({ path: plain, git: exec }) ?? "", /is no longer a git worktree/);
+	assert.match(reattachMemberWorktree({ path: join(root, "app.fleet", "billing", "gone"), git: exec }) ?? "", /worktree .*gone is missing/);
+	assert.deepEqual([branches(repo), worktrees(repo)], before);
+	assert.ok(calls.every(args => args[0] === "rev-parse"), JSON.stringify(calls));
 });

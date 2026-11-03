@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PassThrough } from "node:stream";
@@ -150,12 +150,14 @@ type HarnessOptions = {
 	/** The controller's live permission mode; null reads it through the real yolo channel. */
 	permissionMode?: (() => Promise<PermissionMode>) | null;
 	events?: Parameters<typeof fakePi>[0];
+	/** Another controller process over the same agent home (a reopened fleet). */
+	agentHome?: string;
 };
 
 function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions = {}) {
 	harnesses += 1;
 	const h = fakePi(options.events);
-	const agentHome = join(scratch, `agent-${harnesses}`);
+	const agentHome = options.agentHome ?? join(scratch, `agent-${harnesses}`);
 	// Never the user's config home: each harness owns its fleet.json.
 	const configHome = join(scratch, `config-${harnesses}`);
 	if (options.fleetConfig !== undefined) {
@@ -1373,6 +1375,231 @@ test("advisory 3: escape leaves focal mode and never reaches the editor as Pi's 
 	assert.deepEqual(d.press("\x1b"), [true]);
 	assert.match(d.status(), /tab your call .*enter send/);
 	assert.deepEqual(d.press("\x1b"), [false], "outside focal mode escape is Pi's");
+});
+
+// --- T6 (S2, S3, S5): reopening a fleet controller session (Pi's --continue,
+// --resume or --session) resumes its fleet from the ledger.
+
+const RESUME_SESSION = "fleet-resume";
+const ticks = async () => { for (let i = 0; i < 5; i++) await tick(); };
+
+/** A fleet that ran and stopped with its controller: two live members, one stopped by the fleet after a respawn. */
+async function stoppedFleet(options: { sessionFiles?: string[] } = {}) {
+	const config = { memberBudgetUsd: 1, fleetBudgetUsd: 1.5 };
+	const first = harness(controllerEnv, { fleetConfig: config, permissionMode: async () => "super-yolo" });
+	const repo = scratchRepo();
+	const view = fakeContext(RESUME_SESSION, repo.repo);
+	(view.ctx.ui as unknown as Record<string, unknown>).confirm = async () => true;
+	await first.fire("session_start", view.ctx, { reason: "startup" });
+	const tool = (name: string, params: Record<string, unknown>) => first.tools.get(name)!.execute(name, params, undefined, undefined, view.ctx);
+	await tool("fleet_objective", { title: "Resume me", objective: "Ship the resume flow." });
+	await spawnMember(first, view.ctx, "api");
+	await spawnMember(first, view.ctx, "pub", { worktree: false });
+	await spawnMember(first, view.ctx, "old", { worktree: false });
+	await tick();
+	const [api, pub, old] = first.children;
+	old.emit(usage(0.2));
+	await tool("fleet_stop", { name: "old" });
+	await ticks();
+	await spawnMember(first, view.ctx, "old", { worktree: false });
+	await tool("fleet_stop", { name: "old" });
+	api.emit(usage(0.85));
+	pub.emit(usage(0.3));
+	api.emit({ type: "extension_ui_request", id: "p1", ...GUARDED });
+	pub.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Pick a channel", options: ["X", "LinkedIn"] });
+	await ticks();
+	await tool("fleet_answer", { name: "pub", escalate: true });
+	await tool("fleet_grant", { scope: "publish:social", description: "Publish scheduled posts" });
+	await first.fire("session_shutdown", view.ctx, { reason: "quit" });
+	await ticks();
+	first.runTimers();
+	const sessionDir = (name: string) => join(first.agentHome, "gentle-fleet", "sessions", RESUME_SESSION, name);
+	const sessionFile = (name: string) => join(sessionDir(name), "2026-11-02T12-00-00-000Z_member.jsonl");
+	for (const name of options.sessionFiles ?? ["api", "pub"]) writeFileSync(sessionFile(name), "{}\n");
+	return { first, repo, config, sessionDir, sessionFile, saved: readLedger(first, RESUME_SESSION), document: join(repo.repo, "odd", "fleet", "resume-me.md"), apiWorktree: join(repo.root, "app.fleet", "resume-me", "api") };
+}
+
+/** The human reopens the controller session: a new controller process over the same agent home. */
+async function reopen(fleet: Awaited<ReturnType<typeof stoppedFleet>>, options: { fleetConfig?: Record<string, unknown>; sessionId?: string; mode?: string } = {}) {
+	const h = harness(controllerEnv, { agentHome: fleet.first.agentHome, fleetConfig: options.fleetConfig ?? fleet.config });
+	const view = fakeContext(options.sessionId ?? RESUME_SESSION, fleet.repo.repo);
+	if (options.mode) Object.assign(view.ctx, { mode: options.mode });
+	await h.fire("session_start", view.ctx, { reason: "startup" });
+	await ticks();
+	const ledger = () => {
+		h.runTimers();
+		return readLedger(h, options.sessionId ?? RESUME_SESSION);
+	};
+	const choose = async (key: string) => {
+		const consumed = view.press(TAB, key);
+		await ticks();
+		return consumed;
+	};
+	return { h, ...view, ledger, choose, focal: () => view.render("gentle-fleet").join("\n") };
+}
+
+const settleAndDigest = async (h: ReturnType<typeof harness>, child: FakeChild, cost: number) => {
+	child.emit(usage(cost));
+	child.emit({ type: "agent_settled", aborted: false });
+	await ticks();
+	h.runTimers();
+	return budgetLines(String(h.sent.at(-1)?.message.content ?? ""));
+};
+
+test("a reopened fleet session loads its ledger: objective, document, grants, auto-approvals, budget warnings, retired cost, escalations and log", async () => {
+	const fleet = await stoppedFleet();
+	assert.deepEqual([...fleet.saved.interrupted].sort(), ["api", "pub"], "shutdown records the members it stopped");
+	const r = await reopen(fleet);
+	assert.equal(r.h.spawned.length, 0, "nothing restarts before the human chooses");
+	const saved = r.ledger();
+	assert.deepEqual([saved.title, saved.objective, saved.slug, saved.documentPath], ["Resume me", "Ship the resume flow.", "resume-me", fleet.document]);
+	assert.deepEqual(saved.grants.map(grant => [grant.id, grant.scope]), [["g1", "publish:social"]]);
+	assert.deepEqual(saved.autoApprovals, fleet.saved.autoApprovals);
+	assert.equal(saved.autoApprovals.length, 1);
+	assert.deepEqual(saved.budgetWarnings, fleet.saved.budgetWarnings);
+	assert.deepEqual(saved.budgetWarnings.map(warning => [warning.member, warning.threshold]), [["api", 80], [null, 80]]);
+	assert.equal(saved.retiredCost, 0.2);
+	assert.deepEqual(saved.escalations.map(entry => [entry.member, entry.dialogId, entry.title]), [["pub", "q1", "Pick a channel"]]);
+	assert.deepEqual(saved.log.slice(0, fleet.saved.log.length), fleet.saved.log);
+	assert.ok(saved.log.some(entry => entry.kind === "resume" && /api, pub/.test(entry.text)), JSON.stringify(saved.log.slice(-3)));
+	assert.deepEqual(saved.members.map(member => [member.name, member.status]), [["api", "stopped"], ["pub", "stopped"], ["old", "exited"]]);
+	const document = readFileSync(fleet.document, "utf8");
+	assert.match(document, /^# Fleet: Resume me$/m);
+	assert.match(document, /^- g1 · `publish:social`/m);
+	// Resumed members continue their spend: thresholds already warned stay quiet.
+	await r.choose("1");
+	const api = r.h.children[0];
+	assert.deepEqual(await settleAndDigest(r.h, api, 0.05), [], "no 80% warning repeats");
+	assert.deepEqual(await settleAndDigest(r.h, api, 0.2), ["budget: member api spent $1.10 of its $1.00 budget (100%); it keeps working", "budget: fleet spent $1.60 of its $1.50 budget (100%); fleet_spawn refuses new members"]);
+});
+
+test("the resume question is the deck's one focal item, asked once, without a dialog or a wake", async () => {
+	const r = await reopen(await stoppedFleet());
+	const focal = r.focal();
+	assert.match(focal, /Your call → Resume 2 members\?/);
+	assert.match(focal, /\[1\] Resume all {3}\[2\] Keep them stopped/);
+	assert.equal(focal.match(/Your call/g)?.length, 1);
+	assert.deepEqual(r.h.sent, [], "the fleet model is not woken before the human chooses");
+	assert.deepEqual(r.h.userMessages, []);
+	assert.deepEqual(r.notices, []);
+});
+
+test("[1] resumes each member with its own session file in its existing worktree, creating no worktree", async () => {
+	const fleet = await stoppedFleet();
+	const before = [fleet.repo.branches(), fleet.repo.worktrees()];
+	const r = await reopen(fleet);
+	assert.deepEqual(await r.choose("1"), [true, true]);
+	const sessionArgs = (args: string[]) => args.slice(args.indexOf("--session-dir"), args.indexOf("--session-dir") + 4);
+	assert.deepEqual(r.h.spawned.map(launch => [launch.cwd, sessionArgs(launch.args)]), [
+		[fleet.apiWorktree, ["--session-dir", fleet.sessionDir("api"), "--session", fleet.sessionFile("api")]],
+		[fleet.repo.repo, ["--session-dir", fleet.sessionDir("pub"), "--session", fleet.sessionFile("pub")]],
+	]);
+	assert.deepEqual([fleet.repo.branches(), fleet.repo.worktrees()], before);
+	assert.ok(r.h.gitCalls.every(args => args[0] === "rev-parse"), JSON.stringify(r.h.gitCalls));
+	assert.deepEqual(r.h.children.map(child => child.written.filter(command => command.type === "prompt")), [[], []], "each continues its own conversation");
+	const status = (await r.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, r.ctx)).content[0].text.split("\n");
+	assert.deepEqual(status.slice(0, 2), ["api [starting] · 110 tok · $0.85", "pub [starting] · 110 tok · $0.30"], "a resumed member keeps counting from its earlier spend");
+	assert.match(String(r.h.sent.at(-1)?.message.content), /resumed api, pub/);
+	assert.doesNotMatch(r.focal(), /Resume/);
+	const saved = r.ledger();
+	assert.deepEqual(saved.interrupted, []);
+	assert.deepEqual(saved.members.map(member => [member.name, member.status]), [["api", "starting"], ["pub", "starting"], ["old", "exited"]]);
+});
+
+test("[2] keeps the members stopped: marked exited, and the next reopen asks nothing", async () => {
+	const fleet = await stoppedFleet();
+	const r = await reopen(fleet);
+	await r.choose("2");
+	assert.equal(r.h.spawned.length, 0);
+	const saved = r.ledger();
+	assert.deepEqual(saved.members.map(member => [member.name, member.status]), [["api", "exited"], ["pub", "exited"], ["old", "exited"]]);
+	assert.deepEqual(saved.interrupted, []);
+	assert.ok(saved.log.some(entry => entry.kind === "stop" && entry.member === "api" && /kept stopped/.test(entry.text)));
+	assert.doesNotMatch(r.focal(), /Resume|api stopped|pub stopped/);
+	// The escalation from before the stop is still the human's: the answer goes to the fleet.
+	assert.match(r.focal(), /Your call → Pick a channel/);
+	await r.choose("2");
+	assert.match(String(r.h.userMessages.at(-1)?.content), /^The human answered pub's escalated question q1 \("Pick a channel"\) from before the fleet stopped: LinkedIn\./);
+	assert.deepEqual(r.ledger().escalations, []);
+	await r.h.fire("session_shutdown", r.ctx, { reason: "quit" });
+	const again = await reopen(fleet);
+	assert.doesNotMatch(again.focal(), /Resume/);
+	assert.equal(again.h.spawned.length, 0);
+});
+
+test("a member whose worktree or session file is missing gets a Blocker and is not resumed", async () => {
+	const fleet = await stoppedFleet({ sessionFiles: ["api"] });
+	renameSync(fleet.apiWorktree, `${fleet.apiWorktree}-moved`);
+	const r = await reopen(fleet);
+	await r.choose("1");
+	assert.equal(r.h.spawned.length, 0);
+	const saved = r.ledger();
+	assert.deepEqual(saved.blockers.map(note => note.member), ["api", "pub"]);
+	assert.match(saved.blockers[0].text, /not resumed: worktree .*resume-me\/api is missing/);
+	assert.match(saved.blockers[1].text, /not resumed: no session file in /);
+	assert.deepEqual(saved.members.map(member => member.status), ["exited", "exited", "exited"]);
+	assert.match(r.focal(), /Your call → Pick a channel .*then: 1 more/, "the restored escalation first, then api's blocker");
+	assert.match(readFileSync(fleet.document, "utf8"), /^- api: not resumed: worktree .* is missing$/m);
+	assert.ok(r.h.gitCalls.every(args => args[0] === "rev-parse"), JSON.stringify(r.h.gitCalls));
+});
+
+test("the member limit and the fleet budget apply to resumes like spawns", async () => {
+	const limited = await reopen(await stoppedFleet(), { fleetConfig: { memberBudgetUsd: 1, fleetBudgetUsd: 1.5, maxLiveMembers: 1 } });
+	await limited.choose("1");
+	assert.deepEqual(limited.h.spawned.map(launch => launch.args[launch.args.indexOf("--session-dir") + 1].split("/").at(-1)), ["api"]);
+	assert.match(limited.ledger().blockers.map(note => `${note.member}: ${note.text}`).join("\n"), /^pub: not resumed: the fleet runs at most 1 live members/m);
+	const spent = await reopen(await stoppedFleet(), { fleetConfig: { fleetBudgetUsd: 1.3 } });
+	await spent.choose("1");
+	assert.equal(spent.h.spawned.length, 0);
+	assert.deepEqual(spent.ledger().blockers.map(note => note.text.replace(/\$[\d.]+/g, "$")), ["not resumed: the fleet spent $ of its $ budget", "not resumed: the fleet spent $ of its $ budget"]);
+});
+
+test("without the deck (rpc) the stopped members wait for a terminal reopen: nothing restarts, nothing is decided", async () => {
+	const fleet = await stoppedFleet();
+	const r = await reopen(fleet, { mode: "rpc" });
+	assert.equal(r.h.spawned.length, 0);
+	assert.deepEqual([...r.ledger().interrupted].sort(), ["api", "pub"]);
+	await r.h.fire("session_shutdown", r.ctx, { reason: "quit" });
+	assert.match((await reopen(fleet)).focal(), /Resume 2 members\?/);
+});
+
+test("switching sessions in one controller process and back (Pi's /resume) asks to resume the members the switch stopped", async () => {
+	const h = harness();
+	const first = fakeContext("fleet-a");
+	await h.fire("session_start", first.ctx, { reason: "startup" });
+	await spawnMember(h, first.ctx, "api", { worktree: false });
+	await tick();
+	const other = fakeContext("fleet-b");
+	await h.fire("session_start", other.ctx, { reason: "resume" });
+	await ticks();
+	h.runTimers();
+	assert.equal(other.render("gentle-fleet").join("\n"), "", "the other fleet has nothing to resume");
+	const back = fakeContext("fleet-a");
+	await h.fire("session_start", back.ctx, { reason: "resume" });
+	assert.match(back.render("gentle-fleet").join("\n"), /Your call → Resume 1 member\?/);
+	assert.equal(h.spawned.length, 1, "nothing restarted by itself");
+});
+
+test("a fresh fleet session over the same agent home starts empty: no restored state, no resume question", async () => {
+	const fleet = await stoppedFleet();
+	const r = await reopen(fleet, { sessionId: "fleet-fresh" });
+	assert.equal(r.focal(), "");
+	assert.equal((await r.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, r.ctx)).content[0].text, "No fleet members.");
+	await r.h.tools.get("fleet_objective")!.execute("o", { title: "Fresh", objective: "Start over." }, undefined, undefined, r.ctx);
+	const saved = readLedger(r.h, "fleet-fresh");
+	assert.deepEqual([saved.members, saved.grants, saved.budgetWarnings, saved.escalations, saved.autoApprovals, saved.retiredCost, saved.interrupted], [[], [], [], [], [], 0, []]);
+	assert.deepEqual(saved.log.map(entry => entry.kind), ["objective"]);
+});
+
+test("previous behavior: a new fleet session writes a new ledger and asks no resume question", async () => {
+	const h = harness();
+	const { ctx, render } = fakeContext("fleet-brand-new");
+	await h.fire("session_start", ctx, { reason: "startup" });
+	await h.tools.get("fleet_objective")!.execute("o", { title: "Brand new", objective: "Start clean." }, undefined, undefined, ctx);
+	const saved = readLedger(h, "fleet-brand-new");
+	assert.deepEqual(saved.log.map(entry => entry.kind), ["objective"]);
+	assert.deepEqual(render("gentle-fleet"), []);
+	assert.equal(h.spawned.length, 0);
 });
 
 test("alt+1-4 switch the lens from the input and every typed character still reaches the editor", async () => {

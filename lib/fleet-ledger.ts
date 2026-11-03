@@ -1,4 +1,4 @@
-import { renameSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonFileAtomicallySync } from "./agent-profiles.ts";
 
@@ -13,7 +13,7 @@ const TEXT_MAX = 160;
 const CELL_MAX = 80;
 const SLUG_MAX = 60;
 
-export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve" | "escalate";
+export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve" | "escalate" | "resume";
 export const FLEET_AUTO_APPROVALS_MAX = 200;
 const GRANT_TEXT_MAX = 300;
 
@@ -51,6 +51,8 @@ export interface FleetBudgetWarning {
 	/** null for the fleet budget. */
 	member: string | null;
 	text: string;
+	/** The crossed threshold in percent; a resumed fleet never warns it again. */
+	threshold?: number;
 }
 
 /** A standing permission the human confirmed (S2): it covers model-answerable questions only. */
@@ -77,6 +79,8 @@ export interface FleetEscalation {
 	title: string;
 	message?: string;
 	options?: string[];
+	/** Asked by a member process that stopped with the fleet: its dialog is closed, the question is not. */
+	stale?: boolean;
 }
 
 /** One protected dialog code approved under the controller's Super YOLO. */
@@ -107,6 +111,10 @@ export interface FleetLedgerState {
 	/** Member questions waiting on the human, oldest first. */
 	escalations: FleetEscalation[];
 	log: FleetLogEntry[];
+	/** Spend of members a respawn replaced; the fleet budget keeps counting it. */
+	retiredCost: number;
+	/** Members that were live when their controller stopped: a reopened fleet asks before resuming them. */
+	interrupted: string[];
 }
 
 export interface FleetLedgerOptions {
@@ -122,6 +130,8 @@ export interface FleetLedgerOptions {
 	onError?(error: unknown): void;
 	/** Any state change, before the write window: the fleet deck refreshes from it. */
 	onChange?(): void;
+	/** A saved ledger of this fleet session (loadFleetLedger): the fleet continues from it. */
+	restored?: FleetLedgerState;
 }
 
 function oneLine(value: string, max: number): string {
@@ -195,6 +205,25 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 	return `${lines.join("\n")}\n`;
 }
 
+const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
+
+/**
+ * The saved ledger of one fleet session, or undefined when there is none or it
+ * is unreadable. Fields added after a ledger was written get empty values.
+ */
+export function loadFleetLedger(path: string, fleetSessionId: string): FleetLedgerState | undefined {
+	let state: FleetLedgerState;
+	try { state = JSON.parse(readFileSync(path, "utf8")) as FleetLedgerState; } catch { return undefined; }
+	if (state?.version !== 1 || state.fleetSessionId !== fleetSessionId || typeof state.slug !== "string" || typeof state.documentPath !== "string") return undefined;
+	if (![state.members, state.budgetWarnings, state.blockers, state.grants, state.autoApprovals, state.escalations, state.log].every(isArray)) return undefined;
+	return {
+		...state,
+		retiredCost: typeof state.retiredCost === "number" && Number.isFinite(state.retiredCost) ? state.retiredCost : 0,
+		interrupted: isArray(state.interrupted) ? state.interrupted.filter((name): name is string => typeof name === "string") : [],
+		escalations: state.escalations.map(entry => ({ ...entry, stale: true })),
+	};
+}
+
 export class FleetLedger {
 	private readonly options: FleetLedgerOptions;
 	private readonly state: FleetLedgerState;
@@ -203,6 +232,12 @@ export class FleetLedger {
 
 	constructor(options: FleetLedgerOptions) {
 		this.options = options;
+		if (options.restored) {
+			this.state = options.restored;
+			// The document stays where it was; naming the fleet later moves it.
+			this.writtenDocument = options.restored.documentPath;
+			return;
+		}
 		const slug = fleetSlug(`fleet-${options.fleetSessionId}`);
 		this.state = {
 			version: 1,
@@ -220,6 +255,8 @@ export class FleetLedger {
 			autoApprovals: [],
 			escalations: [],
 			log: [],
+			retiredCost: 0,
+			interrupted: [],
 		};
 	}
 
@@ -277,9 +314,57 @@ export class FleetLedger {
 	}
 
 	/** A crossed budget threshold: a Blockers entry and a log entry. */
-	budgetWarning(member: string | null, text: string): void {
-		this.state.budgetWarnings.push({ at: this.now(), member, text: oneLine(text, TEXT_MAX) });
+	budgetWarning(member: string | null, text: string, threshold?: number): void {
+		this.state.budgetWarnings.push({ at: this.now(), member, text: oneLine(text, TEXT_MAX), ...(threshold === undefined ? {} : { threshold }) });
 		this.log("budget", member, text);
+	}
+
+	/** A respawn replaced a member: its spend stays in the fleet's. */
+	retire(cost: number): void {
+		if (cost <= 0) return;
+		this.state.retiredCost += cost;
+		this.changed();
+	}
+
+	/**
+	 * The controller stopped these live members (session end or switch). Their
+	 * escalations outlive the closed dialogs: the human can still answer them.
+	 */
+	interrupt(names: readonly string[]): void {
+		if (names.length === 0) return;
+		this.state.interrupted = [...new Set([...this.state.interrupted, ...names])];
+		for (const entry of this.state.escalations) if (names.includes(entry.member)) entry.stale = true;
+		this.changed();
+	}
+
+	/** A reopened fleet waits for the human: these members show as stopped, nothing restarts. */
+	awaitResume(names: readonly string[]): void {
+		this.state.interrupted = [...names];
+		for (const member of this.state.members) if (names.includes(member.name)) Object.assign(member, { status: "stopped", question: null });
+		this.log("resume", null, `fleet reopened; ${names.length} member${names.length === 1 ? " was" : "s were"} live: ${names.join(", ")}`);
+	}
+
+	/** The resume question is settled for this member (resumed, kept stopped or refused). */
+	settleResume(name: string): void {
+		this.state.interrupted = this.state.interrupted.filter(entry => entry !== name);
+		this.changed();
+	}
+
+	/** A member continues its own session in a new process. */
+	resumed(name: string): void {
+		const member = this.state.members.find(entry => entry.name === name);
+		if (member) Object.assign(member, { status: "starting", question: null, lastError: null, exitCode: null, exitSignal: null, exitedAt: null });
+		this.settleResume(name);
+		this.log("resume", name, "resumed in its own session");
+	}
+
+	/** Not resumed: kept stopped by the human (a fleet stop), or refused with a reason (a blocker). */
+	notResumed(name: string, reason?: string): void {
+		const member = this.state.members.find(entry => entry.name === name);
+		if (member) Object.assign(member, { status: "exited", question: null, exitedAt: member.exitedAt ?? this.now(), ...(reason ? { lastError: reason } : {}) });
+		this.settleResume(name);
+		if (reason) this.blocker(name, reason);
+		else this.log("stop", name, "kept stopped by the human when the fleet reopened");
 	}
 
 	/** Records a standing permission; call only after the human confirmed it. */
@@ -326,7 +411,7 @@ export class FleetLedger {
 
 	/** Drops a member's escalations whose dialog is no longer pending. */
 	keepEscalations(member: string, pendingDialogIds: readonly string[]): void {
-		const kept = this.state.escalations.filter(entry => entry.member !== member || pendingDialogIds.includes(entry.dialogId));
+		const kept = this.state.escalations.filter(entry => entry.member !== member || entry.stale || pendingDialogIds.includes(entry.dialogId));
 		if (kept.length === this.state.escalations.length) return;
 		this.state.escalations = kept;
 		this.changed();

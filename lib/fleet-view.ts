@@ -91,6 +91,8 @@ export interface FleetViewSnapshot {
 	nextUpdate?: string;
 	/** The controller's live permission mode (lib/permission-mode-policy.ts). */
 	permission?: string;
+	/** A reopened fleet asks once whether to resume the members that stopped with it. */
+	resume?: { members: string[] };
 }
 
 export type FleetMemberViewState = "needs-you" | "blocked" | "working" | "waiting" | "done";
@@ -237,6 +239,16 @@ export function attentionQueue(snapshot: FleetViewSnapshot): AttentionQueue {
 	const ranked = items.map((item, index) => ({ item, index }))
 		.sort((a, b) => RANK[a.item.kind] - RANK[b.item.kind] || byTime(a.item.at, b.item.at) || a.index - b.index)
 		.map((entry) => entry.item);
+	// Nothing restarts silently: the resume question comes before anything else.
+	const resume = snapshot.resume?.members ?? [];
+	if (resume.length > 0) {
+		const count = `${resume.length} member${resume.length === 1 ? "" : "s"}`;
+		ranked.unshift({
+			id: "resume", kind: "decision", tag: "Your call", title: `Resume ${count}?`,
+			ask: `The fleet stopped with ${oneLine(resume.join(", "))} live. Resume ${resume.length === 1 ? "it" : "them"} in ${resume.length === 1 ? "its" : "their"} own session and worktree?`,
+			why: "Nothing restarts until you choose.", options: ["Resume all", "Keep them stopped"], members: resume, at: null,
+		});
+	}
 	const idle = snapshot.members.length === 0;
 	const nothing: FocalItem = {
 		id: "nothing", kind: "nothing", tag: "Nothing needs you", title: idle ? "Nothing needs you yet" : "Nothing needs you",

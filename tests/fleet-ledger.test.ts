@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { FLEET_LOG_MAX, FleetLedger, fleetSlug, type FleetLedgerState } from "../lib/fleet-ledger.ts";
+import { FLEET_LOG_MAX, FleetLedger, fleetSlug, loadFleetLedger, type FleetLedgerState } from "../lib/fleet-ledger.ts";
 
 // odd/tasks/fleet-orchestrator.md S5: the fleet ledger lives in code and is
 // rendered by code into one general ODD-style document; no model tokens.
@@ -256,4 +256,53 @@ test("every ledger change notifies the listener once, and keeping unchanged esca
 	h.ledger.keepEscalations("api", []);
 	assert.equal(changes, 3);
 	assert.equal(h.ledger.current.members[0].status, "working");
+});
+
+// T6 (S2, S3, S5): a reopened fleet session loads its ledger instead of starting empty.
+test("a saved ledger loads back whole and the restored ledger keeps writing the same document", () => {
+	const h = harness();
+	const document = h.ledger.setObjective("Billing API", "Ship billing.");
+	h.ledger.spawned("api", "Own the API", "/work/api", { path: "/work/app.fleet/billing-api/api", branch: "fleet/billing-api/api" });
+	h.ledger.update("api", { status: "working", todo: null, tokens: 900, cost: 0.85, question: null, lastError: null });
+	h.ledger.budgetWarning("api", "member api spent $0.85 of its $1.00 budget (80%)", 80);
+	h.ledger.retire(0.2);
+	h.ledger.grant("publish:social", "Publish scheduled posts");
+	h.ledger.autoApproved("api", "Allow guarded git push?", "yes");
+	h.ledger.escalate("api", { dialogId: "q1", method: "select", title: "Pick a channel", options: ["X", "LinkedIn"] });
+	h.ledger.interrupt(["api"]);
+	h.ledger.flush();
+	const saved = h.readLedger();
+	assert.deepEqual(saved.interrupted, ["api"]);
+	assert.equal(saved.retiredCost, 0.2);
+	assert.equal(saved.budgetWarnings[0].threshold, 80);
+
+	const loaded = loadFleetLedger(h.ledgerPath, "fleet-1");
+	assert.ok(loaded);
+	assert.deepEqual({ ...loaded, escalations: [] }, { ...saved, escalations: [] });
+	assert.deepEqual(loaded.escalations, saved.escalations.map(entry => ({ ...entry, stale: true })), "a restored escalation's dialog closed with its member process");
+	assert.equal(loadFleetLedger(h.ledgerPath, "other-session"), undefined, "another fleet session's ledger never loads");
+	assert.equal(loadFleetLedger(join(h.root, "missing.json"), "fleet-1"), undefined);
+
+	const writes: string[] = [];
+	const restored = new FleetLedger({ fleetSessionId: "fleet-1", cwd: join(h.root, "elsewhere"), ledgerPath: h.ledgerPath, restored: loaded, schedule: () => () => {}, write: (path, text) => { writes.push(path); writeFileSync(path, text); } });
+	assert.equal(restored.documentPath, document);
+	assert.equal(restored.slug, "billing-api");
+	restored.log("resume", null, "fleet reopened");
+	restored.flush();
+	assert.deepEqual(writes, [h.ledgerPath, document]);
+	assert.match(readFileSync(document, "utf8"), /^- g1 · `publish:social`/m);
+	restored.keepEscalations("api", []);
+	assert.equal(restored.current.escalations.length, 1, "a member's new process never drops a restored escalation");
+});
+
+test("a ledger written before resume support loads with empty resume fields, and a corrupt one does not load", () => {
+	const h = harness();
+	h.ledger.spawned("api", "Own the API", "/work/api");
+	h.ledger.flush();
+	const { retiredCost: _retired, interrupted: _interrupted, ...older } = h.readLedger();
+	writeFileSync(h.ledgerPath, JSON.stringify(older));
+	const loaded = loadFleetLedger(h.ledgerPath, "fleet-1");
+	assert.deepEqual([loaded?.retiredCost, loaded?.interrupted], [0, []]);
+	writeFileSync(h.ledgerPath, "{oops");
+	assert.equal(loadFleetLedger(h.ledgerPath, "fleet-1"), undefined);
 });

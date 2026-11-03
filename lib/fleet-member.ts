@@ -1,4 +1,5 @@
-import { isAbsolute, resolve } from "node:path";
+import { readdirSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { JsonLines, piCommand, type ChildLike, type PiCommand, type ProcessControl, type Spawn } from "./agents-runner.ts";
 import { childPackageExtensionArgs, parseChildPackageInjection } from "./child-package-injection.ts";
 import { classifyDialog, dialogResponse, type DialogResponse, type FleetDialogAnswer, type ProtectedDialog } from "./fleet-dialogs.ts";
@@ -35,6 +36,8 @@ export interface MemberLaunchInput {
 	env: NodeJS.ProcessEnv;
 	cwd: string;
 	sessionDir: string;
+	/** A resumed member reopens its own session file (Pi docs/cli.md: `--session <path|id>` "Opens by file path"). */
+	sessionFile?: string;
 	model?: string;
 	pi?: PiCommand;
 }
@@ -49,13 +52,27 @@ export interface MemberLaunch {
 export function buildMemberLaunch(input: MemberLaunchInput): MemberLaunch {
 	const pi = input.pi ?? piCommand();
 	const injection = parseChildPackageInjection(input.env) ?? { noExtensions: false, extensionPaths: [] };
-	const args = [...pi.args, "--mode", "rpc", "--session-dir", input.sessionDir, ...childPackageExtensionArgs(injection)];
+	const args = [...pi.args, "--mode", "rpc", "--session-dir", input.sessionDir, ...(input.sessionFile ? ["--session", input.sessionFile] : []), ...childPackageExtensionArgs(injection)];
 	if (input.model) args.push("--model", input.model);
 	// The interactive-host signal routes the member's own questions through RPC
 	// dialogs, so they reach the controller instead of failing headless.
 	const env: NodeJS.ProcessEnv = { ...input.env, [FLEET_ROLE_ENV]: "member", [INTERACTIVE_HOST_ENV]: "1" };
 	for (const key of [...CHILD_ONLY_ENV, ...PERMISSION_STATE_ENV]) delete env[key];
 	return { command: pi.command, args, env, cwd: input.cwd };
+}
+
+/** The newest Pi session file (`<timestamp>_<id>.jsonl`) in a member's session dir, if any. */
+export function latestMemberSessionFile(sessionDir: string): string | undefined {
+	let newest: { path: string; mtime: number } | undefined;
+	let names: string[];
+	try { names = readdirSync(sessionDir); } catch { return undefined; }
+	for (const name of names.filter(entry => entry.endsWith(".jsonl")).sort()) {
+		const path = join(sessionDir, name);
+		let mtime: number;
+		try { mtime = statSync(path).mtimeMs; } catch { continue; }
+		if (!newest || mtime >= newest.mtime) newest = { path, mtime };
+	}
+	return newest?.path;
 }
 
 export type FleetMemberStatus = "starting" | "working" | "idle" | "waiting-question" | "exited";
@@ -94,6 +111,8 @@ export interface FleetMemberOptions {
 	launch: MemberLaunch;
 	/** The member's own worktree and branch when it works in a git repository. */
 	worktree?: { path: string; branch: string };
+	/** A resumed member's earlier tokens and cost: its counts continue from them. */
+	usage?: { totalTokens: number; cost: number };
 	spawn: Spawn;
 	schedule(fn: () => void, ms: number): () => void;
 	process?: ProcessControl;
@@ -158,6 +177,7 @@ export class FleetMember {
 		this.name = options.name;
 		this.objective = options.objective ?? "";
 		this.processControl = options.process ?? hostProcess;
+		if (options.usage) this.usage = { ...this.usage, totalTokens: options.usage.totalTokens, cost: options.usage.cost };
 	}
 
 	get live(): boolean {

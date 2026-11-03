@@ -1668,11 +1668,11 @@ function hostView(component: any, width: number) {
 	};
 }
 
-function hostRow(definition: any, args: Record<string, unknown>, result: any, options: { width?: number; live?: boolean } = {}) {
+function hostRow(definition: any, args: Record<string, unknown>, result: any, options: { width?: number; live?: boolean; isError?: boolean } = {}) {
 	const width = options.width ?? 120;
 	const component: any = new (ToolExecutionComponent as any)(definition.name, `call-${definition.name}`, args, {}, definition, hostUi, "/repo");
 	if (options.live !== false) component.markExecutionStarted();
-	component.updateResult(result, false);
+	component.updateResult(result, options.isError === true);
 	return hostView(component, width);
 }
 
@@ -2348,4 +2348,194 @@ test("elapsed time stays on the bash card and leaves the other quiet cards uncha
 
 	const bash = renderToolResult(tools.get("bash"), textResult("clean"), { expanded: false, isPartial: false }, context({ command: "git status" }));
 	assert.match(closed(bash), /─+ 1\.2s ╯$/);
+});
+
+// The versioning card previews the output its own family prints instead of the
+// tail of whatever it printed: a commit's summary and diffstat rather than its
+// file list, nothing at all for a silent add, and the raw rows for a sentence or
+// a stack the card refuses to read. Everything the preview leaves out stays one
+// expansion away, and a failure keeps its own cause.
+test("a versioning card previews its own family's output and expands to the whole result", () => {
+	const bash = registeredQuietTools().get("bash");
+	const output = [
+		"[main 1a2b3c4] feat: add the thing",
+		" 2 files changed, 5 insertions(+), 1 deletion(-)",
+		" create mode 100644 src/a.ts",
+		" create mode 100644 src/b.ts",
+	].join("\n");
+	const row = hostRow(bash, { command: "git commit -m 'feat: add the thing'" }, textResult(output));
+
+	const collapsed = row.rows().join("\n");
+	assert.match(collapsed, /\[main 1a2b3c4\] feat: add the thing/);
+	assert.match(collapsed, /2 files changed, 5 insertions\(\+\), 1 deletion\(-\)/);
+	assert.doesNotMatch(collapsed, /create mode/, "the file list stays behind the key");
+	assert.match(collapsed, /to expand/, "the card says more is there");
+
+	row.component.setExpanded(true);
+	const expanded = row.rows().join("\n");
+	for (const line of output.split("\n")) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
+});
+
+test("a versioning card offers no key when its result is already whole", () => {
+	const bash = registeredQuietTools().get("bash");
+	// A rebase prints one sentence; expanding it would draw the same row again.
+	const rebase = hostRow(bash, { command: "git rebase main" }, textResult("Successfully rebased and updated refs/heads/main.\n")).rows().join("\n");
+	assert.match(rebase, /Successfully rebased and updated refs\/heads\/main\./);
+	assert.doesNotMatch(rebase, /to expand/, "one row of output has nothing to expand");
+
+	// A silent add prints nothing, so the card claims nothing: no rows, no key.
+	for (const output of ["", "\n"]) {
+		const add = hostRow(bash, { command: "git add -A" }, textResult(output)).rows().join("\n");
+		assert.doesNotMatch(add, /to expand/, JSON.stringify(output));
+		assert.doesNotMatch(add, /staged|added|created|files? changed/i, `a silent add claims nothing: ${JSON.stringify(output)}`);
+	}
+});
+
+test("a versioning card's failure keeps its cause and claims no success", () => {
+	const bash = registeredQuietTools().get("bash");
+	const output = [
+		"[main 1a2b3c4] feat: add the thing",
+		" create mode 100644 src/a.ts",
+		"",
+		"error: pre-commit hook exited with code 1",
+	].join("\n");
+	const failed = hostRow(bash, { command: "git commit -m x" }, textResult(output), { isError: true }).rows().join("\n");
+	assert.match(failed, /pre-commit hook exited with code 1/);
+	assert.doesNotMatch(failed, /2 files changed|insertions\(\+\)/, "a failed commit claims no summary");
+});
+
+test("a failed versioning card states its cause and exit status ahead of the advice", () => {
+	const bash = registeredQuietTools().get("bash");
+	// A conflict prints the cause, then a translated advice block, then the exit
+	// status the host appended. The collapsed card must not spend its three rows on
+	// advice and leave a reader without the cause; expanding still shows every row.
+	const output = [
+		"Auto-merging src/a.ts",
+		"CONFLICT (content): Merge conflict in src/a.ts",
+		"error: could not apply 1a2b3c4... feat: x",
+		"hint: After resolving the conflicts, mark them with",
+		'hint: "git add/rm <pathspec>", then run',
+		'hint: run "git cherry-pick --abort".',
+		"",
+		"Command exited with code 1",
+	].join("\n");
+	// `isError` on the result marks the finished call failed; the helper's option of
+	// the same name marks a *partial* one, which is a different card path.
+	const row = hostRow(bash, { command: "git cherry-pick 1a2b3c4" }, { ...textResult(output), isError: true });
+
+	const collapsed = row.rows().join("\n");
+	assert.match(collapsed, /could not apply 1a2b3c4/, "the cause is the point of the preview");
+	assert.match(collapsed, /Command exited with code 1/, "and the exit status is named");
+	assert.match(collapsed, /to expand/, "the advice rows are still one expansion away");
+
+	row.component.setExpanded(true);
+	const expanded = row.rows().join("\n");
+	for (const line of output.split("\n")) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
+});
+
+test("a failed versioning card keeps its cause visible when the rows wrap", () => {
+	const bash = registeredQuietTools().get("bash");
+	// A conflict wraps: the file name and the cause are longer than a narrow card's
+	// inner width while the advice rows and the host's status row are short. Keeping
+	// the tail of the wrapped rows would spend all three on advice and the status, so
+	// the collapsed preview must lead with the cause at every width.
+	const output = [
+		"Auto-merging src/a.ts",
+		"CONFLICT (content): Merge conflict in src/a.ts",
+		"error: could not apply 1a2b3c4... feat: x",
+		"hint: After resolving the conflicts, mark them with",
+		'hint: "git add/rm <pathspec>", then run',
+		'hint: run "git cherry-pick --abort".',
+		"",
+		"Command exited with code 1",
+	].join("\n");
+	const result = { ...textResult(output), isError: true };
+	// A row that carries preview text: a wrapped continuation carries no marker of its
+	// own, so both sides of the content rows are matched by the words they hold.
+	const drawn = /error:|hint:|CONFLICT|Auto-merging|could not apply|resolving the conflicts|<pathspec>|cherry-pick --abort/;
+	// The expanded card wraps too, so a logical row is compared as the words it holds
+	// once the card's rail and padding are taken out of the way — both the float
+	// panel's left bar and a bordered style's two rails, whichever the file's earlier
+	// tests left selected.
+	const flatten = (rows: string[]) => rows.map((line) => stripAnsi(line).replace(/^\s*[\u258E\u2502]?\s?/, "").replace(/\s*\u2502\s*$/, "")).join(" ").replace(/\s+/gu, " ");
+	for (const width of [40, 44, 50, 120]) {
+		const row = hostRow(bash, { command: "git cherry-pick 1a2b3c4" }, result, { width });
+		const rows = row.rows().map((line) => stripAnsi(line));
+		const collapsed = rows.join("\n");
+		assert.match(collapsed, /could not apply 1a2b3c4/, `width ${width}: the cause stays visible`);
+		assert.match(collapsed, /to expand/, `width ${width}: the rest stays one key away`);
+		const previewRows = rows.filter((line) => drawn.test(line));
+		assert.match(previewRows[0] ?? "", /could not apply 1a2b3c4/, `width ${width}: the cause leads, never a hint`);
+		assert.ok(previewRows.length <= 3, `width ${width}: at most three preview rows, got ${JSON.stringify(previewRows)}`);
+
+		row.component.setExpanded(true);
+		const expanded = flatten(row.rows());
+		for (const line of output.split("\n")) assert.ok(expanded.includes(line), `width ${width}: expanding keeps "${line}"`);
+	}
+});
+
+test("a failed versioning card spends nothing on advice when the cause fills the rows", () => {
+	const bash = registeredQuietTools().get("bash");
+	// The cause itself wraps past the three preview rows, so no advice row may be drawn
+	// beside it: the key is what says more remains.
+	const output = [
+		"error: could not apply 1a2b3c4... feat: a subject long enough that the cause alone wraps across more than the three preview rows of a narrow card",
+		"hint: After resolving the conflicts, mark them with",
+		'hint: run "git cherry-pick --abort".',
+		"",
+		"Command exited with code 1",
+	].join("\n");
+	const row = hostRow(bash, { command: "git cherry-pick 1a2b3c4" }, { ...textResult(output), isError: true }, { width: 40 });
+	const collapsed = row.rows().map((line) => stripAnsi(line)).join("\n");
+	assert.match(collapsed, /could not apply 1a2b3c4/);
+	assert.doesNotMatch(collapsed, /hint:/, "no advice row fits beside a cause this long");
+	assert.match(collapsed, /to expand/);
+
+	row.component.setExpanded(true);
+	const expanded = row.rows().map((line) => stripAnsi(line).replace(/^\s*[\u258E\u2502]?\s?/, "").replace(/\s*\u2502\s*$/, "")).join(" ").replace(/\s+/gu, " ");
+	for (const line of output.split("\n")) assert.ok(expanded.includes(line), `expanding keeps "${line}"`);
+});
+
+test("a long versioning command keeps its complete input behind the key", () => {
+	const bash = registeredQuietTools().get("bash");
+	const command = `git add ${Array.from({ length: 12 }, (_, index) => `src/module-${index}.ts`).join(" ")}`;
+	const row = hostRow(bash, { command }, textResult(""));
+
+	const collapsed = row.rows();
+	const heading = collapsed.find((line) => /versioning/.test(line)) ?? "";
+	assert.match(heading, /⎇ versioning · git add src\/module-0\.ts/);
+	assert.match(heading, /…/, "an over-wide input ends in an ellipsis");
+	assert.match(collapsed.join("\n"), /to expand/, "the key advertises the complete command");
+
+	row.component.setExpanded(true);
+	assert.match(row.rows().join("\n"), /src\/module-11\.ts/, "expanding restores every pathspec");
+});
+
+test("a versioning card whose whole result only overflows by wrapping keeps the key", () => {
+	const bash = registeredQuietTools().get("bash");
+	// The preview reads this output whole — the summary and the diffstat are every
+	// row it printed — so nothing is left behind textually. At a narrow width those
+	// two rows wrap past the three-row preview, and only expanding draws the rest,
+	// so the card must still offer the key instead of hiding rows behind none.
+	const output = [
+		"[main 1a2b3c4] feat: a subject long enough that the summary row wraps over more than the three preview rows at a narrow width",
+		" 1 file changed, 1 insertion(+)",
+	].join("\n");
+	const row = hostRow(bash, { command: "git commit -m x" }, textResult(output), { width: 44 });
+
+	const collapsed = row.rows().join("\n");
+	assert.match(collapsed, /to expand/, "wrapping hides rows, so the card says they are there");
+	assert.doesNotMatch(collapsed, /1 file changed/, "the wrapped tail is what the key reveals");
+
+	row.component.setExpanded(true);
+	assert.match(row.rows().join("\n"), /1 file changed, 1 insertion\(\+\)/);
+});
+
+test("the minimal Card content keeps a versioning heading and withholds its preview", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git commit -m x" }, textResult("[main 1a2b3c4] feat: x\n 1 file changed, 1 insertion(+)")).rows().join("\n");
+	assert.match(row, /⎇ versioning · git commit -m x/);
+	assert.doesNotMatch(row, /1 file changed/);
+	assert.match(row, /to expand/, "the key still reveals the withheld preview");
 });

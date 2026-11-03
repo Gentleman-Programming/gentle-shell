@@ -16,6 +16,7 @@ import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { inferOddPhase, inferShellActivity, SHELL_ACTIVITY_IDENTITY } from "../lib/odd-phase-inference.ts";
 import type { OddPhase } from "../lib/odd-phase.ts";
+import { versioningCardPreview } from "../lib/versioning-card-preview.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
@@ -480,6 +481,64 @@ export function formatToolResultOutput(
 	return "";
 }
 
+/** One expansion level's rows, as the card draws them. */
+interface QuietResultRows {
+	/** The rows the card draws. */
+	text: string;
+	/** Whether the preview keeps the tail of its text (a log's last rows) rather than its head (a summary). */
+	tail: boolean;
+	/** Set when the preview knows its own shape; otherwise the card compares its two levels itself. */
+	reveals?: boolean;
+}
+
+/** What one shared command preview draws: the rows, which end they lead from, and whether expanding shows more. */
+type CommandPreview = { text: string; tail: boolean; reveals: boolean };
+
+interface CommandPreviewInput {
+	command: string;
+	output: string;
+	failed: boolean;
+	limit?: number;
+}
+
+// The shared previews, in the order a card tries them: local history
+// (lib/versioning-card-preview.ts). A shared preview owns one command family and
+// answers nothing for another, so the card wires it once.
+const COMMAND_PREVIEWS: ReadonlyArray<(input: CommandPreviewInput) => CommandPreview | undefined> = [
+	versioningCardPreview,
+];
+
+// pi re-renders every visible card each frame, so a shared preview is parsed once
+// per retained result: the command and the output of one call never change, and
+// only the drawn rows are kept, never a copy of the output.
+const commandPreviewCache = new WeakMap<object, { key: string; preview: CommandPreview | undefined }>();
+
+/**
+ * The preview a shared helper draws for this result, or undefined when the call is
+ * none of theirs (inspection, a check and every other write keep the card's own
+ * bounded preview).
+ */
+function commandPreviewRows(
+	result: AgentToolResult<unknown>,
+	text: string,
+	args: Record<string, unknown> | undefined,
+	failed: boolean,
+): QuietResultRows | undefined {
+	const command = typeof args?.command === "string" ? args.command : "";
+	if (command.length === 0) return undefined;
+	const cacheKey = typeof result === "object" && result !== null ? result : undefined;
+	const key = `${failed ? 1 : 0}\u0000${PREVIEW_LINE_LIMIT}\u0000${command}`;
+	const cached = cacheKey === undefined ? undefined : commandPreviewCache.get(cacheKey);
+	let preview: CommandPreview | undefined;
+	if (cached !== undefined && cached.key === key) {
+		preview = cached.preview;
+	} else {
+		preview = COMMAND_PREVIEWS.reduce<CommandPreview | undefined>((found, helper) => found ?? helper({ command, output: text, failed, limit: PREVIEW_LINE_LIMIT }), undefined);
+		if (cacheKey !== undefined) commandPreviewCache.set(cacheKey, { key, preview });
+	}
+	return preview === undefined ? undefined : { text: preview.text, tail: preview.tail, reveals: preview.reveals };
+}
+
 /**
  * The visible rows of one quiet result at one expansion level, before the card
  * paints them. Both levels are computed for every result, so a card can tell
@@ -490,9 +549,16 @@ function quietResultRows(
 	result: AgentToolResult<unknown>,
 	text: string,
 	options: { expanded: boolean; isError: boolean; args?: Record<string, unknown>; withheld: boolean },
-): string {
+): QuietResultRows {
 	const { expanded, isError, args, withheld } = options;
-	if (!expanded && withheld) return "";
+	if (!expanded && withheld) return { text: "", tail: false };
+	// A versioning call previews the shape its own command named instead of the tail
+	// of whatever it printed: a commit's summary and diffstat, nothing for a silent
+	// add, and the raw rows for a shape the shared helper refuses to read.
+	if (!expanded) {
+		const preview = commandPreviewRows(result, text, args, isError);
+		if (preview !== undefined) return preview;
+	}
 	let output = formatToolResultOutput(toolName, result, { expanded, isError, args });
 	// Counts alone hide the result: retain their useful totals alongside actual rows.
 	if (!expanded && !isError && output && COLLAPSED_COUNT_LABELS[toolName]) {
@@ -502,7 +568,7 @@ function quietResultRows(
 		const diff = detailsRecord(result).diff;
 		if (typeof diff === "string") output += `\n${firstLines(safeText(diff).split("\n").filter((line) => /^[+-]/.test(line)).join("\n"), PREVIEW_LINE_LIMIT - 1)}`;
 	}
-	return output.replace(/^\n/, "");
+	return { text: output.replace(/^\n/, ""), tail: !expanded && shouldRenderPreviewTail(toolName, text, isError, args) };
 }
 
 function lineRangeSuffix(args: Record<string, unknown>, theme: ThemeLike): string {
@@ -1068,7 +1134,16 @@ export function createQuietToolRenderer(
 			// the rows are drawn (wrapping at a narrow width hides rows too).
 			const collapsedRows = quietResultRows(toolName, safeResult, text, { expanded: false, isError, args: renderContext?.args, withheld });
 			const expandedRows = quietResultRows(toolName, safeResult, text, { expanded: true, isError, args: renderContext?.args, withheld });
-			if (reveal) reveal.body = (rowWidth) => collapsedRows !== expandedRows || contentRows(collapsedRows, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+			// A versioning preview judges its own text, so its `reveals` is authoritative
+			// there; every other preview is compared level against level. Either way the
+			// rows are measured where they are drawn, because wrapping at a narrow width
+			// hides rows too: a preview whose text is the whole output still leaves rows
+			// behind the key once those rows no longer fit, and expanding draws them.
+			if (reveal) reveal.body = (rowWidth) => {
+				const overflows = contentRows(collapsedRows.text, cardInnerWidth(rowWidth)) > PREVIEW_LINE_LIMIT;
+				if (collapsedRows.reveals !== undefined) return collapsedRows.reveals || overflows;
+				return collapsedRows.text !== expandedRows.text || overflows;
+			};
 			if (!expanded && withheld) return carded(() => new Text("", 0, 0));
 			if (options.isPartial) {
 				const label = partialLabel(toolName, text);
@@ -1089,11 +1164,10 @@ export function createQuietToolRenderer(
 				), false);
 			}
 			const color = isError ? "error" : expanded ? "toolOutput" : "muted";
-			if (expanded) return carded(() => new Text(expandedRows ? theme.fg(color, expandedRows) : "", 0, 0));
-			if (collapsedRows) {
-				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
+			if (expanded) return carded(() => new Text(expandedRows.text ? theme.fg(color, expandedRows.text) : "", 0, 0));
+			if (collapsedRows.text) {
 				return carded(() => new BoundedRows([
-					{ text: theme.fg(color, collapsedRows), rows: PREVIEW_LINE_LIMIT, tail },
+					{ text: theme.fg(color, collapsedRows.text), rows: PREVIEW_LINE_LIMIT, tail: collapsedRows.tail },
 				], cacheKey));
 			}
 			// The card top rule carries the expand key, so an empty result only closes the frame.

@@ -29,6 +29,19 @@ gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi
 
 `ERR_PNPM_INVALID_VERSION_UNION` during `update` usually means more than one pnpm is installed: an older pnpm on `PATH` cannot read the `allowBuilds` key a newer pnpm wrote to the global `pnpm-workspace.yaml`. Keep a single standalone pnpm.
 
+## Fleet orchestrator (experimental)
+
+`gentle-shell orchestrator` opens a session whose agent is a fleet orchestrator: you talk to it, and it leads up to three member sessions toward your objective. Each member is a full, headless Gentle Shell session (`pi --mode rpc`) with its own ODD orchestrator, subagents and todo list. The controller never edits code itself and gets a lean fleet prompt instead of the ODD orchestrator prompt; members keep the normal prompt and do not join the peer session transport, so they only talk through their controller.
+
+The controller has four tools:
+
+- `fleet_spawn` starts a member with a name, an objective, an optional working directory (default: the session's) and an optional model. A spawn costs a full session prefix, so the fleet prefers reusing members. A fourth live member is refused.
+- `fleet_send` sends a member a new prompt (queued as a follow-up while it works) or, with mode `steer`, redirects its current run.
+- `fleet_status` returns one code-built digest line per member (status, todo progress, last tool, tokens and cost); with a name, it returns that member's bounded detail.
+- `fleet_stop` stops a member; its session file stays under `<agent home>/gentle-fleet/sessions/<fleet session>/<member>`.
+
+The controller wakes only when a member settles, asks a question or exits, with one coalesced digest, never per tool call. A widget lists every member's digest line. In this first slice member questions are only surfaced to you through that digest; answering them from the fleet is not wired yet, so a member waiting on a question without a timeout stays blocked until you stop it. Members stop when the controller session ends.
+
 ## v2.6.0 workspace updates
 
 The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases/tag/v2.6.0) makes the workspace state more durable and inspectable:

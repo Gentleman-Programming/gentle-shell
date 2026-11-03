@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, type ChildPackageInjection } from "./child-package-injection.ts";
 import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
+import { FLEET_ROLE_ENV } from "./fleet-role.ts";
 
 // The gentle-shell launcher: pure, side-effect-free functions over injected
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
@@ -34,6 +35,10 @@ export interface ParsedLauncherArgs {
 	// field only tells buildPiInvocation to skip its extension injection, so
 	// pi sees the bare subcommand it expects as argv[0].
 	piSubcommand?: PiSubcommand;
+	// Set only by `gentle-shell [home selectors] orchestrator`: the launch
+	// opens the fleet controller (odd/tasks/fleet-orchestrator.md). Absent on
+	// every other launch, so existing parse results keep their shape.
+	fleet?: true;
 	error?: string;
 }
 
@@ -68,6 +73,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 	let command: LauncherCommand | undefined;
 	let commandArgs: string[] = [];
 	let piSubcommand: PiSubcommand | undefined;
+	let fleet = false;
 	const passthrough: string[] = [];
 
 	for (let i = 0; i < argv.length; i += 1) {
@@ -159,10 +165,22 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 			commandArgs = argv.slice(i + 1);
 			break;
 		}
+		// Like `setup`, `orchestrator` is only the first non-flag token, after
+		// optional home selectors; the rest stays Pi's own arguments.
+		if (arg === "orchestrator" && !fleet && command === undefined && passthrough.length === 0) {
+			fleet = true;
+			continue;
+		}
 		if (passthrough.length === 0 && isPiSubcommand(arg)) {
 			piSubcommand = arg;
 		}
 		passthrough.push(arg);
+	}
+
+	if (error === undefined && fleet && piSubcommand !== undefined) {
+		error = `orchestrator cannot be combined with the pi subcommand '${piSubcommand}'`;
+	} else if (error === undefined && fleet && command !== undefined) {
+		error = `orchestrator cannot be combined with the '${command}' command`;
 	}
 
 	if (error === undefined) {
@@ -175,7 +193,7 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, ...(fleet ? { fleet: true as const } : {}), error };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -987,6 +1005,8 @@ export interface BuildPiInvocationInput {
 	// config/auth/mcp on argv[0] before its own flag parsing, so none of the
 	// gentle-pi extension injection below may precede it.
 	piSubcommand?: PiSubcommand;
+	// `gentle-shell orchestrator`: mark this Pi as the fleet controller.
+	fleet?: boolean;
 	baseEnv: Record<string, string | undefined>;
 	// A bundled launch: its gentle-pi keeps its config in the prefix, so Pi gets
 	// no standalone config marker (standaloneConfigHome).
@@ -1081,6 +1101,9 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 		childInjection = { noExtensions: false, extensionPaths: [absoluteExtensionPath(input.packageRoot, input.cwd)] };
 	}
 
+	// The fleet controller never edits code, so it skips the coding context
+	// files (AGENTS.md is ~30% of a full session prefix); members load them.
+	if (input.fleet === true) args.push("--no-context-files");
 	args.push(...input.passthrough);
 
 	const env: Record<string, string | undefined> = {
@@ -1098,6 +1121,8 @@ export function buildPiInvocation(input: BuildPiInvocationInput): PiInvocation {
 	else env[GENTLE_SHELL_CONFIG_HOME_ENV] = configHome;
 	if (childInjection === undefined) delete env[CHILD_PACKAGE_INJECTION_ENV];
 	else env[CHILD_PACKAGE_INJECTION_ENV] = encodeChildPackageInjection(childInjection);
+	if (input.fleet === true) env[FLEET_ROLE_ENV] = "controller";
+	else delete env[FLEET_ROLE_ENV];
 
 	return { command: input.runtime.command, args, env };
 }
@@ -1300,6 +1325,7 @@ export function helpText(): string {
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell [home selectors] orchestrator [pi-args...]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
@@ -1319,6 +1345,8 @@ export function helpText(): string {
 		"  --version        Show gentle-shell, pi, and home version information.",
 		"",
 		"Commands:",
+		"  orchestrator     Open the fleet orchestrator: one agent you talk to, which leads several",
+		"                   headless Gentle Shell sessions toward your objective (experimental).",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
 		"  home import-pi   Copy your pi sign-ins (auth.json) and MCP servers (mcp.json) into the",
 		"                   resolved separate home, plus your default provider, model and thinking",

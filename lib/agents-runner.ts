@@ -748,7 +748,7 @@ export class AgentRunner {
 		const pick = pickModel(primary, chain, { cooldown, now });
 		const model = pick?.fallback && pick.model ? parseModelRef(pick.model) : undefined;
 		if (!model?.provider || !pick?.model) return request;
-		const updated = this.store.update(id, { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+		const updated = this.store.update(id, { model: pick.model, fallbackFrom: primary, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
 		const category = cooldown.reason(primary, now);
 		try { if (updated && category) this.hooks.onFallback?.(updated, { from: primary, to: pick.model, category, launch: true }); }
 		catch { /* A notice failure must not stop the launch. */ }
@@ -805,7 +805,7 @@ export class AgentRunner {
 			const to = pick.model!;
 			if (pick.thinking) await this.send(id, { type: "set_thinking_level", level: pick.thinking });
 			if (!alive()) return;
-			const updated = this.store.update(id, { model: to, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+			const updated = this.store.update(id, { model: to, fallbackFrom: this.store.get(id)?.fallbackFrom ?? current ?? "default", ...(pick.thinking ? { thinking: pick.thinking } : {}) });
 			try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
 			catch { /* A notice failure must not stop the switch. */ }
 			const resumed = await this.send(id, { type: "prompt", message: fallbackContinuePrompt(current, to, category!) });

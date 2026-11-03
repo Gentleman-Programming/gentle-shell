@@ -386,7 +386,10 @@ export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardThe
 	const taskWidth = Math.max(1, width - PANEL_ROW_INDENT - 2 - 1 - kindWidth - 1 - rightWidth);
 	const rows = listed.map((task) => {
 		const look = LOOK[task.status];
-		const text = clip(taskText(task), taskWidth);
+		// A run that moved to a fallback model names it in its own task column,
+		// the flexible one, so the shared kind and right columns never change.
+		const moved = task.fallbackFrom ? `↪ ${task.model.slice(task.model.lastIndexOf("/") + 1)} · ` : "";
+		const text = clip(moved + taskText(task), taskWidth);
 		const kind = clip(agentKind(task.agent), kindWidth);
 		const left = `${theme.fg(look.role, look.glyph)} ${theme.fg(SECTION_TEXT_ROLE[task.status] ?? NAME_ROLE, text)}${" ".repeat(taskWidth - visibleWidth(text))} ${theme.fg(TASK_ROLE, kind)}`;
 		return renderPanelRow(width, left, theme.fg(META_ROLE, sectionRight(task, now).padStart(rightWidth)));
@@ -411,7 +414,6 @@ export function renderAgentsAlert(tasks: readonly TaskRecord[], theme: CardTheme
 	return [paintSurfaceRow(` ${fitPanelLine(left, right, Math.max(0, target - 2))} `, surfaceOpener(theme, ALERT_SURFACE_ROLE))];
 }
 
-/** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
 /** What started subagents spent, for the Stats section; undefined before the first one starts. */
 export function agentsSpend(tasks: readonly TaskRecord[]): { runs: number; tokens: number; cost: number } | undefined {
 	const started = tasks.filter((task) => task.status !== TASK_STATUS.QUEUED);
@@ -423,6 +425,7 @@ export function agentsSpend(tasks: readonly TaskRecord[]): { runs: number; token
 	};
 }
 
+/** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
 export function agentsSummary(tasks: readonly TaskRecord[], theme: CardTheme, now: number): { left: string; priority: number } | undefined {
 	const shown = widgetTasks(tasks, now);
 	const live = shown.filter((task) => !isFinished(task.status)).length;

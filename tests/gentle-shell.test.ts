@@ -6993,3 +6993,25 @@ test("alt+l cycles the visual presets Light → Neutral → Power user → Light
 	gentleShell(moved.pi, { GENTLE_PI_SHELL_PRESET_KEY: "alt+o" });
 	assert.ok(moved.shortcuts.has("alt+o"));
 });
+
+test("compact density (Power user) adds the Stats section to the rail; comfortable leaves it out", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const render = async (density: "compact" | "comfortable") => {
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, density: density === "compact" ? DENSITY.COMPACT : DENSITY.COMFORTABLE }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+		const { ctx, ui } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 }), assistantEntry({ input: 500, output: 100, cost: 0.25 })] });
+		await fire(handlers, "session_start", ctx);
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+		const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		try {
+			return sidebarState(tui as unknown as TUI).parts.get("footer")!.render(46).map((line) => stripAnsi(line).trimEnd()).join("\n");
+		} finally {
+			footer.dispose();
+		}
+	};
+	const power = await render("compact");
+	assert.match(power, /▾ STATS\s+\$0\.750 sub/, "a subscription marks the cost like the status bar");
+	assert.match(power, /spent\s+\$0\.750 sub\s+2 turns/);
+	assert.doesNotMatch(await render("comfortable"), /STATS/);
+});

@@ -47,7 +47,7 @@ Branch: `feat/shell-ide-rework` (separate worktree, base `origin/main` 813ec1106
 | T15 | S15 | inline | done | same branch: rail surface to the bottom |
 | T16 | S16 | inline | blocked | resize freeze: not reproduced yet (tmux probes on rework and main), waiting for the user's scenario |
 | T17 | S17 | inline | done | preset cycle shortcut `alt+l` |
-| T18 | S18 | inline | blocked | light themes: waiting for the user to say what fails |
+| T18 | S18 | inline | done | light themes: page paint (`lib/shell-page.ts`) |
 | T19 | S19 | inline | pending | Power user session stats |
 
 Risk notes: T7 changes the persisted visual settings format (Risk item 1 and 3: older files must keep loading, older binaries must not reset newer files). T1-T3 change shared rail rendering (item 3 for existing sections). These get their own commits.
@@ -87,3 +87,6 @@ Risk notes: T7 changes the persisted visual settings format (Risk item 1 and 3: 
 - L31 (user, 2026-11-03): S16–S19 verbatim above.
 - L32 (T16 evidence): two tmux probes on a forked real session, 120 resizes from 20×6 to 200×60, with SGR mouse motion between resizes and `/gentle:panel` open at small sizes: the shell stayed responsive at 0% CPU on the rework and on origin/main. Not reproduced; need the user's terminal and what was on screen.
 - L33 (T17 evidence): `alt+l` (`GENTLE_PI_SHELL_PRESET_KEY`, `off` drops it) cycles Light → Neutral → Power user; a hand-tuned mix starts on Neutral; it reuses `applyVisualPreset`, `refreshVisual` and `VISUAL_SETTINGS_CHANGED` like the customize menu. RED "alt+l not registered", GREEN; area 737/737, typecheck 0. The label stays "Neutral" to match /gentle:customize.
+- L34 (user, 2026-11-03): "no lo puedo reproducir ahora" / "estaba usando ghostty". T16 stays blocked until it recurs; capture plan: from another tab, `top -pid` on the shell's node process and `sample <pid> 5` to tell a busy loop in the shell from a hung terminal.
+- L35 (user, 2026-11-03): "lo del tema claro, el centro que tiene fondo oscuro es justo el problema, son los backgrounds de lsa cards del chat" / "mira que el input ni se lee" / "fijate que todo el chat esta oscuro, luego la barra de abajo no va hasta el fondo tambien".
+- L36 (T18 evidence): root cause — Pi leaves prose and gaps on the terminal's default colors (dark background, light text), so a light theme on a dark terminal shows dark cells and light-on-light input text. `installPagePaint` wraps the alt-screen TUI's `doRender`/`applyLineResets` (final pass, after overlays and selection) and, only while `theme.appearance === "light"` in fullscreen, paints each row on paper (`#f3f2f1`, 256-color 255) with the theme's `text` color, re-arming only what each reset clears so cards keep their surface; the scrollback document dump stays unpainted; dark themes are untouched. RED (module missing) → GREEN 3/3; area 786/786; typecheck 0. Live tmux probe at 120×30 with `--use-theme light`: 0 of 3600 cells on the terminal default background; control with the dark theme: 1571. The strip under the status bar and at the right edge is Ghostty window padding: `window-padding-color = extend` (documented).

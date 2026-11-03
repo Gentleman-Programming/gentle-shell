@@ -125,6 +125,7 @@ import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { panelSheetBackHit, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
@@ -2543,6 +2544,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 			});
 			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
+			// A light theme paints the whole fullscreen frame (prose, gaps, the
+			// column beside the rail) instead of leaving the terminal's dark cells.
+			const unpaintPage = installPagePaint(tui as never, () => ((tui as TUI & { mode?: string }).mode === "fullscreen" ? ctx.ui.theme as PageTheme : {}));
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
@@ -2572,7 +2576,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); statusRegion.dispose(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); statusRegion.dispose(); uninstall(); unpaintPage(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(

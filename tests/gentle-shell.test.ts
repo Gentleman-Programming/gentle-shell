@@ -2114,7 +2114,7 @@ test("visual customization and Vim register once and remain independently discov
 	await commands.get("gentle:vim")!.handler("enable", ctx);
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
-	assert.ok(ui.overlayView!.render(90).some((row) => row.includes("Animations: quality")));
+	assert.ok(ui.overlayView!.render(90).some((row) => /Animations\s+● quality/.test(row)));
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 	assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "on");
@@ -3137,6 +3137,13 @@ function scopedDoubleEscCancelConfigHome(t: { after(callback: () => void): void 
 
 function findCustomizeRow(ui: FakeUi, label: string, width = 90): boolean {
 	const view = ui.overlayView!;
+	// Choices of a setting apply on ←/→, so walking to one would apply it: focus selects without applying.
+	const focus = (view as unknown as { focus?(label: string): boolean }).focus;
+	if (typeof focus === "function") {
+		const found = focus.call(view, label);
+		view.render(width);
+		return found;
+	}
 	view.handleInput("\x1b[D");
 	for (let category = 0; category < 11; category++) {
 		view.handleInput("\x1b[C");
@@ -3269,9 +3276,10 @@ test("customize Cards rows persist the card style and switch live conversation c
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Card style: float (current)"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 2\/4/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Cards · 1\/2/, "Card style and Card content are one line each");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Card style\s+○ neon\s+● float/);
 	assert.ok(findCustomizeRow(ui, "Card style: neon"));
-	assert.ok(!ui.overlayView!.render(90).some((line) => line.includes("▸ Card style: neon (current)")), "neon is not current without a saved preference");
+	assert.ok(ui.overlayView!.render(90).some((line) => /Card style\s+› neon\s+● float/.test(line)), "the cursor is on neon, but float stays current without a saved preference");
 	assert.equal(existsSync(join(home, "card-style.json")), false, "highlighting never applies");
 	const requestRender = fakeTui.requestRender;
 	let renders = 0;
@@ -3612,10 +3620,10 @@ test("customize command updates displayed settings and applies layout immediatel
 	const { ctx, ui, overlayReady } = fakeContext();
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
-	assert.match(ui.overlayView!.render(90).join("\n"), /Animations: quality.*current/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Animations\s+● quality/);
 	await customizeAction(ui, "Animations: performance");
 	assert.equal(resolveAnimationPolicy({ gentlePiConfigHome: home }).policy, "performance");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Animations: performance.*current/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Animations\s+○ quality\s+● performance/);
 	assert.match(ui.notices.at(-1)!, /Prompt applies now.*banner.*next startup/i);
 	await customizeAction(ui, "Banner rose");
 	assert.equal((await readBannerConfig(home)).showRose, false);
@@ -3623,7 +3631,7 @@ test("customize command updates displayed settings and applies layout immediatel
 	assert.match(ui.notices.at(-1)!, /next startup/i);
 	await customizeAction(ui, "Status placement: hidden");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.statusPlacement, "hidden");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Status placement: hidden.*current/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Status\s+○ auto\s+○ right\s+○ bottom\s+● hidden/);
 	assert.match(ui.notices.at(-1)!, /saved and applied/);
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
@@ -6722,7 +6730,7 @@ test("customize presets set density and visibility together, mark the current on
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	await customizeAction(ui, "Header placement: below-input");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "the default density and visibility are the Neutral preset");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral\s+○ Power user/, "the default density and visibility are the Neutral preset");
 	await customizeAction(ui, "Preset: Light");
 	const light = resolveVisualSettings({ gentlePiConfigHome: home }).settings;
 	assert.equal(light.density, "minimal");
@@ -6730,16 +6738,16 @@ test("customize presets set density and visibility together, mark the current on
 	assert.equal(light.visibility.changes, false);
 	assert.equal(light.headerPlacement, "below-input", "the preset keeps the chosen header placement");
 	assert.equal(light.statusPlacement, "bottom", "Light is the minimal edition without the rail");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Light.*current/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+● Light/);
 	await customizeAction(ui, "Preset: Power user");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "comfortable", "Power user keeps Neutral's spacing");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.stats, true, "and adds Stats");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Power user.*current/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+○ Neutral\s+● Power user/);
 	await customizeAction(ui, "Section stats: shown");
 	assert.ok(findCustomizeRow(ui, "Preset: Neutral"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "Power user without Stats is Neutral again");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral/, "Power user without Stats is Neutral again");
 	await customizeAction(ui, "Density: minimal");
-	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Preset: [^\n]*current/, "a hand-tuned mix matches no preset");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+○ Neutral\s+○ Power user/, "a hand-tuned mix matches no preset");
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 });

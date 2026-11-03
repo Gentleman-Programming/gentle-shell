@@ -775,3 +775,105 @@ test("the audio footer drops f WAV when the selected row has no keyhint and adve
 	const advanced = view.render(80).join("\n");
 	assert.match(advanced, /Tab panes · Enter change · f WAV · p test · Esc close/, "a row with a keyhint advertises the WAV key");
 });
+
+function settingsView(applied: string[] = []) {
+	const state = { density: "comfortable", status: "auto" };
+	const choice = (setting: string, key: "density" | "status", value: string, hint: string): CustomizeRow => ({
+		category: "Layout",
+		label: () => `${setting}: ${value}${state[key] === value ? " (current)" : ""}`,
+		choice: { setting, value, current: () => state[key] === value, hint },
+		preview: () => ({ title: `${setting} · ${value}`, sample: `line one ${value}\nline two` }),
+		action: () => { state[key] = value; applied.push(`${setting}=${value}`); },
+	});
+	const rows: CustomizeRow[] = [
+		...["auto", "right", "bottom"].map((value) => choice("Status placement", "status", value, "Where Status lives")),
+		...["comfortable", "compact", "minimal"].map((value) => choice("Density", "density", value, "Space between sections")),
+		{ category: "Layout", label: "Reset layout", action: () => { applied.push("reset"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+	// The user sees the card before the first key.
+	view.render(100);
+	view.handleInput("\x1b[C");
+	return { view, state, applied };
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("choices of one setting share a line: the current one is marked, without repeating the setting name", () => {
+	const { view } = settingsView();
+	const lines = view.render(100);
+	const status = lines.filter((line) => line.includes("Status placement") && /[●○]/.test(line));
+	assert.equal(status.length, 1, "one line for the setting");
+	assert.match(status[0]!, /▸ Status placement\s+● auto\s+○ right\s+○ bottom/);
+	assert.match(lines.find((line) => line.includes("Density"))!, /Density\s+● comfortable\s+○ compact\s+○ minimal/);
+	assert.ok(lines.some((line) => line.includes("Reset layout")), "plain rows stay rows");
+	assert.ok(!lines.join("\n").includes("(current)"), "no (current) suffix");
+	assert.ok(lines.some((line) => line.includes("Layout · 1/3")), "the position counts settings, not choices");
+	assert.ok(lines.some((line) => line.includes("Status placement — Where Status lives")), "the focused setting is described");
+	assert.ok(lines.some((line) => line.includes("line one auto")) && lines.some((line) => line.includes("line two")), "multi-line previews keep every line");
+	for (const line of lines) assert.equal(visibleWidth(line), 100);
+});
+
+test("↑/↓ move between settings; ←/→ change the value and apply it at once; ← on the first choice returns to the categories", async () => {
+	const { view, state, applied } = settingsView();
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.equal(state.status, "right");
+	assert.deepEqual(applied, ["Status placement=right"]);
+	view.handleInput("\x1b[C");
+	await settle();
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.equal(state.status, "bottom", "→ stops at the last choice");
+	assert.equal(applied.length, 2);
+	view.handleInput("\x1b[B");
+	assert.match(view.render(100).find((line) => line.includes("Density"))!, /▸ Density/, "↓ goes to the next setting, not the next choice");
+	view.handleInput("\x1b[D");
+	await settle();
+	assert.equal(state.density, "comfortable", "← on the first choice applies nothing");
+	assert.ok(view.render(100).some((line) => /▸ Layout/.test(line)), "and returns focus to the categories");
+	view.handleInput("\x1b[C");
+	view.handleInput("\x1b[B");
+	view.handleInput("\r");
+	await settle();
+	assert.equal(applied.at(-1), "reset", "plain rows still apply on Enter");
+});
+
+test("focus() selects a row by label without applying it", () => {
+	const { view, applied } = settingsView();
+	assert.equal(view.focus("Density: minimal"), true);
+	assert.deepEqual(applied, []);
+	assert.match(view.render(100).find((line) => line.includes("Density") && /[●○›]/.test(line))!, /▸ Density\s+● comfortable\s+○ compact\s+› minimal/, "the cursor shows where it is when it is not on the current value");
+	assert.equal(view.focus("No such row"), false);
+});
+
+test("a setting too wide for the pane shows only the selected choice with arrows", () => {
+	const { view } = settingsView();
+	const line = view.render(44).find((row) => row.includes("Status placement"))!;
+	assert.match(line, /‹ auto › 1\/3/);
+	assert.equal(visibleWidth(line), 44);
+});
+
+test("arrows never apply a setting while the card is too small to show its controls", async () => {
+	const applied: string[] = [];
+	let rows = 3;
+	const view = new VisualCustomizeView({
+		rows: [
+			{ category: "Layout", label: "Status: auto", choice: { setting: "Status", value: "auto", current: () => true }, action: () => { applied.push("auto"); } },
+			{ category: "Layout", label: "Status: right", choice: { setting: "Status", value: "right", current: () => false }, action: () => { applied.push("right"); } },
+		],
+		theme, requestRender() {}, rowsAvailable: () => rows, onClose() {},
+	});
+	view.handleInput("\x1b[C");
+	assert.deepEqual(view.render(90), ["Customization", "Enlarge terminal"]);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, [], "→ applies nothing behind 'Enlarge terminal'");
+	rows = 24;
+	view.render(90);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, ["right"], "once the controls show, → applies");
+	view.handleInput("\t");
+	assert.match(view.render(90).join("\n"), /↑\/↓ categories|→ open|Tab panes/, "the categories pane does not advertise setting keys");
+	assert.doesNotMatch(view.render(90).join("\n"), /←\/→ change/);
+});

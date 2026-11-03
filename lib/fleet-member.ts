@@ -291,15 +291,16 @@ export class FleetMember {
 		if (this.prefixTokens !== undefined) lines.push(`prefix ${tokens(this.prefixTokens)} tok`);
 		for (const dialog of this.dialogs) {
 			const choices = dialog.options?.length ? ` [${dialog.options.map(option => oneLine(option, 40)).join(" | ")}]` : "";
-			lines.push(`question (${dialog.method}): ${oneLine(dialog.title, 120)}${dialog.message ? ` — ${oneLine(dialog.message, 120)}` : ""}${choices}`);
+			lines.push(`${dialog.protected ? "protected question, relayed to the human" : "question"} (${dialog.method}): ${oneLine(dialog.title, 120)}${dialog.message ? ` — ${oneLine(dialog.message, 120)}` : ""}${choices}`);
 		}
 		if (this.lastText) lines.push(`last reply: ${this.lastText}`);
 		return lines.join("\n");
 	}
 
-	/** Detail plus the last `count` activity lines and the feature document. */
+	/** Detail plus the cwd, the last `count` activity lines and the feature document. */
 	inspect(count: number): string {
-		const lines = [this.detail()];
+		// The cwd resolves the member's own Engram project (T2b, L32).
+		const lines = [this.detail(), `cwd: ${this.cwd}`];
 		if (this.featureDoc) lines.push(`feature document: ${this.featureDoc}`);
 		const take = Math.max(1, Math.min(INSPECT_LINES_MAX, Math.floor(count) || 1));
 		const tail = this.activity.slice(-take);

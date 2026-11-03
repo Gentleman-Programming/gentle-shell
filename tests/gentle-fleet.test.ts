@@ -25,7 +25,8 @@ type Tool = { name: string; execute(id: string, params: unknown, signal: unknown
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 // Tools other extensions and Pi register in a full session, besides the fleet's.
-const OTHER_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "codemode", "orchestrator_session_id", "ask_user_question", "ask_user_choice", "mem_search", "mem_save", "subagent_run", "hidden_mem_tool"];
+const MEMORY_TOOLS = ["mem_search", "mem_save", "mem_context", "mem_get_observation", "mem_current_project", "mem_update", "mem_delete", "mem_session_summary", "mem_judge", "mem_timeline", "mem_stats"];
+const OTHER_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "codemode", "orchestrator_session_id", "ask_user_question", "ask_user_choice", ...MEMORY_TOOLS, "subagent_run", "hidden_mem_tool"];
 
 function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown[]): unknown } = { on: () => () => {}, emit() {} }) {
 	const tools = new Map<string, Tool>();
@@ -354,11 +355,13 @@ test("fleet_inspect returns a member's bounded detail and activity tail, never a
 	assert.match(missing.content[0].text, /No fleet member named "nope"/);
 });
 
-test("the controller session keeps only the fleet, read-only and memory tools active", async () => {
+// T2b (L27): the controller recalls and records its own memory; memory
+// maintenance, session and judgment tools belong to the members.
+test("the controller session keeps only the fleet, read-only and five memory tools active", async () => {
 	const h = harness();
 	const { ctx } = fakeContext();
 	await h.fire("session_start", ctx);
-	const allowed = ["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice", "mem_search", "mem_save", "fleet_spawn", "fleet_send", "fleet_status", "fleet_stop", "fleet_objective", "fleet_inspect", "fleet_answer", "fleet_grant", "fleet_revoke"];
+	const allowed = ["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice", "mem_search", "mem_context", "mem_get_observation", "mem_save", "mem_current_project", "fleet_spawn", "fleet_send", "fleet_status", "fleet_stop", "fleet_objective", "fleet_inspect", "fleet_answer", "fleet_grant", "fleet_revoke"];
 	assert.deepEqual(h.activeTools().sort(), [...allowed].sort());
 	assert.equal(h.activeSets.length, 1);
 	await h.fire("before_agent_start", ctx, { prompt: "hi" });

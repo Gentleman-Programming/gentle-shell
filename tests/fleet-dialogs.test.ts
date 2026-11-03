@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AGENTS_GLYPH } from "../lib/agents-widget.ts";
-import { classifyDialog, dialogResponse } from "../lib/fleet-dialogs.ts";
+import { autoApproval, classifyDialog, dialogResponse } from "../lib/fleet-dialogs.ts";
 import { ForeignTargetGrants } from "../lib/foreign-target-grants.ts";
 import type { ReviewConsentV3 } from "../lib/review-integration-v2.ts";
 import { formatReviewConsentUi } from "../lib/review-consent-ui.ts";
@@ -115,4 +115,28 @@ test("dialogResponse refuses answers that do not fit the dialog", () => {
 	assert.equal(confirm.ok, false);
 	if (!confirm.ok) assert.match(confirm.error, /yes or no/);
 	assert.equal(dialogResponse({ method: "notify" }, { answer: "x" }).ok, false);
+});
+
+// Verifier T3 B1: dialogs that overwrite the human's model routing or profiles
+// are destructive and stay with the human, even under Super YOLO.
+test("model routing restore and profile replace or apply dialogs are pinned to their producers, protected and never auto-approved", () => {
+	const gentleAi = source("extensions/gentle-ai.ts");
+	for (const literal of ["\"Restore saved model routing?\"", "\"Replace existing profile?\"", "\"Apply orchestrator-only profile?\"", "\"Apply empty profile?\"", "`Apply profile \"${result.name}\"?`"]) {
+		assert.ok(gentleAi.includes(literal), `extensions/gentle-ai.ts still produces ${literal}`);
+	}
+	const cases: Array<[Captured, string]> = [
+		[{ method: "confirm", title: "Restore saved model routing?" }, "model routing restore"],
+		[{ method: "confirm", title: "Replace existing profile?" }, "profile overwrite"],
+		[{ method: "confirm", title: "Apply orchestrator-only profile?" }, "profile overwrite"],
+		[{ method: "confirm", title: "Apply empty profile?" }, "profile overwrite"],
+		[{ method: "confirm", title: "Apply profile \"fast\"?" }, "profile overwrite"],
+	];
+	for (const [dialog, marker] of cases) {
+		assert.deepEqual(classifyDialog(dialog), { class: "destructive", marker }, dialog.title);
+		assert.equal(autoApproval(dialog), undefined, dialog.title);
+	}
+});
+
+test("protected markers ignore letter case so a recased title is still protected", () => {
+	assert.deepEqual(classifyDialog({ method: "confirm", title: "allow RECOGNIZED data-loss COMMAND?" }), { class: "destructive", marker: "data-loss command" });
 });

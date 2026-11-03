@@ -34,7 +34,8 @@ interface Marker extends ProtectedDialog {
 	approve?(dialog: DialogShape): DialogResponse | undefined;
 }
 
-const inTitle = (text: string) => (dialog: DialogShape) => dialog.title.includes(text);
+// Case-insensitive, so a recased title cannot slip out of its class.
+const inTitle = (text: string) => (dialog: DialogShape) => dialog.title.toLowerCase().includes(text.toLowerCase());
 const confirmYes = (dialog: DialogShape): DialogResponse | undefined => dialog.method === "confirm" ? { confirmed: true } : undefined;
 
 const MARKERS: Marker[] = [
@@ -58,6 +59,10 @@ const MARKERS: Marker[] = [
 	{ class: "destructive", marker: "scratch removal", matches: dialog => /Remove \d+ recorded clones?\/worktrees?\?/.test(dialog.title) },
 	// extensions/gentle-ai.ts:5472
 	{ class: "destructive", marker: "profile deletion", matches: inTitle("Delete profile?") },
+	// extensions/gentle-ai.ts: these overwrite the human's models.json or profiles,
+	// which the model cannot write in any mode; the confirm is the human's barrier.
+	{ class: "destructive", marker: "model routing restore", matches: inTitle("Restore saved model routing?") },
+	{ class: "destructive", marker: "profile overwrite", matches: dialog => inTitle("Replace existing profile?")(dialog) || /^(?:\S+\s+)?apply (?:orchestrator-only |empty )?profile\b.*\?$/i.test(dialog.title.trim()) },
 ];
 
 // Private material is never approved by code, whatever the mode: the same

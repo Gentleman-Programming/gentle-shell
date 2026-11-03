@@ -32,8 +32,8 @@ Branch: `feat/profile-model-fallback` (from `origin/main` 813ec1106). Delivery: 
 | T4 | S3, S5 | inline | done | `lib/orchestrator-fallback.ts` (episode until a turn succeeds; skips models outside Pi's catalog or refused by `setModel`), wired on gentle-agents `agent_end` (never in children, `GENTLE_PI_AGENTS_CHILD=1`), `pi.setModel` + `setThinkingLevel` + follow-up resume; `assistantErrorCategory` exported from agents-protocol; shared `announceFallback`; RED 4 unit + 1 integration → GREEN |
 | T5 | S6 | inline | done | `RoutingTablePanel` fallbacks card (`f` opens; `f` add, `e` effort, shift+↑↓ move, `x` remove, esc back), rows show `↪ first +N`, `*` on the every-agent row, saved at once via `fileRoutingFallbacks` (never overwrites a broken file), rename/delete follow (`followProfileRename`); hint `f fallbacks` takes priority over `n new`/`m menu` at 100 cols (both stay visible as tabs). RED 2 panel → GREEN; `followProfileRename` test written with its code (no RED observed); gentle-ai 166/166; typecheck 0 |
 | T6 | S4 | inline | done | `syncUsageCooldown` marks a provider until its earliest full window resets (exhausted wait when no reset), room releases it, a model's own failure stays; `ModelCooldown.markProvider`; `UsageStore(onRecord)` wired in gentle-shell. Applies at subagent launch; the orchestrator still switches on failure. RED 2 → GREEN; gentle-shell 336/336; typecheck 0 |
-| T7 | S5 | inline | pending | agent row `↪ model` (after the shell rework lands on main) |
-| T8 | S1–S6 | inline | pending | README and docs |
+| T7 | S5 | inline | blocked | agent row `↪ model`: waits for the shell rework chain (#2774–#2790, tracker #2791) to land on main |
+| T8 | S1–S6 | inline | done | README profiles section points to `docs/readme-reference.md#model-fallback-chains` (format, triggers, cooldown, usage skip, `/gentle:profiles` keys) |
 
 ## Log
 

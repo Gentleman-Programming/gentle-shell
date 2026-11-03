@@ -204,6 +204,8 @@ Delegating work should not mean losing it. Every subagent runs as its own proces
 
 Model, effort, and who does what should be choices, not accidents. Named profiles route the orchestrator atomically and independently from packaged and review roles; a repository can pin its profile so its subagents stop following the globally active one, and the panel always shows the routing the runtime actually uses.
 
+Each profile can also give every agent, the orchestrator included, an ordered list of fallback models (`f` on its row in `/gentle:profiles`). When a model hits its usage limit, an auth error, or provider trouble Pi already retried, the run switches to the next model you listed and continues the same conversation; a model that ran out is skipped by every agent for a while, and a full `/gentle:usage` window skips its provider before anything fails. Each switch warns you, with a price note when the next model costs more. See [Model fallback chains](docs/readme-reference.md#model-fallback-chains).
+
 **[Docs →](docs/readme-reference.md#agent-model-profiles)**
 
 ---

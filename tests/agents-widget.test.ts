@@ -504,3 +504,13 @@ test("agentsSpend totals every started subagent's tokens and cost for the Stats 
 	assert.equal(spend.tokens, 3500);
 	assert.equal(Math.round(spend.cost * 100), 20);
 });
+
+test("an agent that fell back to another model says so on its row", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const now = 10_000;
+	const moved = task({ id: "m", status: TASK_STATUS.RUNNING, startedAt: 1_000, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5", tokens: 1200 });
+	const stayed = task({ id: "s", status: TASK_STATUS.RUNNING, startedAt: 2_000, model: "anthropic/claude-opus-5-5", tokens: 800 });
+	const rows = renderAgentsSection([moved, stayed], theme as never, 60, now, { collapsed: false }).map((row) => row.trimEnd());
+	assert.ok(rows.some((row) => /↪ gpt-5\.5 · 1\.2k/.test(row)), rows.join("\n"));
+	assert.equal(rows.filter((row) => row.includes("↪")).length, 1, "only the agent that moved");
+});

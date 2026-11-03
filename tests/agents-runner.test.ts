@@ -2366,3 +2366,14 @@ test("starting on a fallback because the primary is cooling down is announced li
 	await tick();
 	assert.deepEqual(announced, [{ from: "fb-p/cool", to: "fb-q/warm", category: "quota", launch: true }]);
 });
+
+test("the task record remembers the model a fallback moved away from", async () => {
+	const h = harness({ state: {} });
+	const task = h.runner.run(request({ model: { provider: "fb-r", id: "one" }, fallbacks: [{ model: "fb-s/two" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	for (let i = 0; i < 4; i++) await tick();
+	assert.equal(h.store.get(task.id)?.fallbackFrom, "fb-r/one");
+	assert.equal(h.store.get(task.id)?.model, "fb-s/two");
+});

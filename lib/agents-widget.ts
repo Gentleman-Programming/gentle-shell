@@ -357,7 +357,9 @@ function sectionRight(task: TaskRecord, now: number): string {
 	if (task.status === TASK_STATUS.QUEUED) return "queued";
 	if (task.status === TASK_STATUS.FAILED) return `failed ${elapsed(task, now)}`;
 	if (task.status === TASK_STATUS.TIMED_OUT) return `timed out ${elapsed(task, now)}`;
-	return [task.tokens > 0 ? formatTokens(task.tokens) : "", elapsed(task, now)].filter(Boolean).join(" ");
+	// A run that moved to a fallback model names the model it runs on now.
+	const moved = task.fallbackFrom ? `↪ ${task.model.slice(task.model.lastIndexOf("/") + 1)} · ` : "";
+	return moved + [task.tokens > 0 ? formatTokens(task.tokens) : "", elapsed(task, now)].filter(Boolean).join(" ");
 }
 
 function sectionCount(shown: readonly TaskRecord[]): string {
@@ -411,7 +413,6 @@ export function renderAgentsAlert(tasks: readonly TaskRecord[], theme: CardTheme
 	return [paintSurfaceRow(` ${fitPanelLine(left, right, Math.max(0, target - 2))} `, surfaceOpener(theme, ALERT_SURFACE_ROLE))];
 }
 
-/** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
 /** What started subagents spent, for the Stats section; undefined before the first one starts. */
 export function agentsSpend(tasks: readonly TaskRecord[]): { runs: number; tokens: number; cost: number } | undefined {
 	const started = tasks.filter((task) => task.status !== TASK_STATUS.QUEUED);
@@ -423,6 +424,7 @@ export function agentsSpend(tasks: readonly TaskRecord[]): { runs: number; token
 	};
 }
 
+/** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
 export function agentsSummary(tasks: readonly TaskRecord[], theme: CardTheme, now: number): { left: string; priority: number } | undefined {
 	const shown = widgetTasks(tasks, now);
 	const live = shown.filter((task) => !isFinished(task.status)).length;

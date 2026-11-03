@@ -147,6 +147,8 @@ export interface TaskRecord {
 	/** Launch-layer token recorded next to `model` (#2180): which profile layer won.
 	 * Host-computed at the launch seam; absent for requests and records that never named one. */
 	modelSource?: string;
+	/** Set when the run moved to a fallback model: the model it moved away from first. */
+	fallbackFrom?: string;
 	thinking: string | undefined;
 	sessionPath: string | null;
 	error: string | null;

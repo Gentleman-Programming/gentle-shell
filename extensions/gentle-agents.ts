@@ -105,6 +105,8 @@ const CLOCK_TICK_MS = 1000;
 const TOOL_PREFIX = "subagent_";
 // Wakes an idle parent after child content was stored as a custom message.
 // It names itself as automated so the model never attributes it to the human.
+// Persisted Bridge identities embed this exact text, so changing it would
+// unhide the wakes of existing sessions.
 const PARENT_WAKE_TEXT = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
 const PARENT_WAKE_TYPE = "gentle-agents.wake";
 const BRIDGE_WAKE_IDENTITY_TYPE = "gentle-agents.wake-identity";
@@ -114,7 +116,10 @@ interface BridgeWakeIdentity {
 	text: string;
 }
 const bridgeWakeText = (nonce: string): string => `${PARENT_WAKE_TEXT} [gentle-agents wake: ${nonce}]`;
-const NATIVE_PARENT_WAKE_TEXT = "Review the delivered subagent output and continue.";
+// Pi gives the hidden native wake to the model with the user role, so an
+// unlabeled English wake read as an English human turn and switched the reply
+// language. It disowns authorship and pins the human's language.
+const NATIVE_PARENT_WAKE_TEXT = `${PARENT_WAKE_TEXT} Reply in the language of the human's own last message, not the language of this notification or of the subagent output.`;
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;

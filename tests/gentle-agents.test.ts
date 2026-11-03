@@ -7380,7 +7380,7 @@ test("a matched model_profiles key routes the task request model end to end", as
 	assert.equal(captures[0]!.request.modelSource, "profile");
 });
 
-test("an agent asking the user gets a row above the editor only while the rail owns the host", async () => {
+test("an agent asking the user gets a row above the editor while the rail or the mobile work row hides the card", async () => {
 	const { pi, tools, fire } = fakePi();
 	const harness = deps();
 	gentleAgents(pi, {}, harness.deps);
@@ -7402,4 +7402,7 @@ test("an agent asking the user gets a row above the editor only while the rail o
 	state.ownsHost = () => true;
 	assert.match(alert()[0]!, /^ \? explore asked: Which file\? +\/gentle:agents $/);
 	state.active = false;
+	state.compactWork = () => true;
+	assert.match(alert()[0]!, /^ \? explore asked: Which file\?/, "the mobile work row folds the card, so the question keeps its row");
+	state.compactWork = undefined;
 });

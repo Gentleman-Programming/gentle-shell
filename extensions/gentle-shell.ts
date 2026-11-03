@@ -1693,6 +1693,8 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true,
 
 const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
+/** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
+const SHEET_RESERVED_ROWS = 6;
 /** The mobile work row above the editor: live work folded into one row below the rail breakpoint. */
 const WORK_ROW_WIDGET_KEY = "gentle-shell-work-row";
 const USAGE_SHORTCUT_DEFAULT = "alt+u";
@@ -2038,9 +2040,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				let maxScroll = 0;
 				return {
 					render(width: number) {
-						const rows = Math.max(4, (tui.terminal?.rows ?? 24) - 2);
-						// The sections live on the shell's sidebar terminal, the one its footer drew on.
-						const sheet = renderPanelSheet(sidebarState((sidebarTui ?? tui) as TUI).parts, theme, width, { rows, scrollTop });
+						// Hang from the top and leave the bottom rows to the work row, the
+						// editor and the status bar, so the input stays visible.
+						// The sections live on the shell's sidebar terminal, the one its footer drew on,
+						// and a section the rail hides (the Todos switch) stays hidden here too.
+						const host = (sidebarTui ?? tui) as TUI;
+						const rows = Math.max(4, (host.terminal?.rows ?? 24) - SHEET_RESERVED_ROWS);
+						const state = sidebarState(host);
+						const parts = new Map([...state.parts].filter(([key]) => key !== "todo" || state.visibility?.todo !== false));
+						const sheet = renderPanelSheet(parts, theme, width, { rows, scrollTop });
 						maxScroll = sheet.maxScroll;
 						scrollTop = Math.min(scrollTop, maxScroll);
 						return sheet.lines;
@@ -2055,7 +2063,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					invalidate() {},
 				};
 			},
-			{ overlay: true, overlayOptions: { width: "100%", anchor: "center" } },
+			{ overlay: true, overlayOptions: { width: "100%", anchor: "top-center" } },
 		);
 	pi.registerCommand(PANEL_COMMAND_NAME, {
 		description: "Show the sidebar panel (todos, jobs, agents, changes, review, integrations) as a full-width sheet.",
@@ -2300,7 +2308,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const part = sidebarPart(tui, "footer", bottomBar, {
 				surface: "panel",
 				digest: () => footerStatus.key(),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings, railHints),
+				// The rail drops what the wide chrome's title row and status bar show
+				// (session, permission mode) only while that chrome actually draws.
+				render: (width) => statusCardVisible() && visualSettings.headerPlacement === "top"
+					? renderShellSidebarBar(footerModel(), theme, width, visualSettings, railHints)
+					: renderShellSidebarBar({ ...footerModel(), integrations: undefined, permission: undefined }, theme, width, visualSettings, railHints, { session: true }),
 				invalidate() {},
 			});
 			// The Jobs card: its own rail section, like Agents and Todos, fed by the
@@ -2412,8 +2424,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			ctx.ui.setWidget(WORK_ROW_WIDGET_KEY, () => ({
 				render(width: number) {
 					if (!narrowChrome()) return [];
-					const parts = sidebarState(tui).parts;
-					const summaries = ["agents", "todo"].map((key) => parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
+					const state = sidebarState(tui);
+					const summaries = ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => state.parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
 					const row = renderWorkRow(summaries, theme, width);
 					return row ? [row] : [];
 				},

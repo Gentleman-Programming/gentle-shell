@@ -1842,14 +1842,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
 		});
-		// While the rail owns the host the above-editor card steps aside, so an
-		// agent waiting for a reply gets its own row right above the editor.
-		// Narrower terminals keep the card, which already lists the waiting row.
+		// While the rail owns the host, or the mobile work row folds the card, the
+		// above-editor card steps aside, so an agent asking the user gets its own
+		// row right above the editor. Otherwise the card lists the waiting row.
 		ui?.setWidget(AGENTS_ALERT_WIDGET_KEY, (tui, theme) => ({
 			render(width: number) {
 				if (!agentsVisible) return [];
 				const state = sidebarState(tui);
-				return state.active && state.ownsHost?.() ? renderAgentsAlert(visibleTasks(), theme, width) : [];
+				return (state.active && state.ownsHost?.()) || state.compactWork?.() ? renderAgentsAlert(visibleTasks(), theme, width) : [];
 			},
 			invalidate() {},
 		}));

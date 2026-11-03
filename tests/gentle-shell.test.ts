@@ -6719,3 +6719,61 @@ test("customize presets set density and visibility together, mark the current on
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 });
+
+// Verification blockers (odd/tasks/shell-ide-rework.md L22).
+test("without the top-header IDE chrome the rail keeps the permission mode and the session name", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const statuses = new Map([["gentle:mode", "Permissions: AUTO"], ["mcp", "MCP: 3 servers"]]);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		// No layout owns the host here, so no title row or status bar draws: the rail must say it all.
+		const rail = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(46).join("\n"));
+		assert.match(rail, /Permissions: AUTO/, "the permission mode stays visible when no status bar shows it");
+		assert.match(rail, /▾ SESSION[\s\S]*Release notes/, "the session name stays visible when no title row shows it");
+		assert.match(rail, /MCP: 3 servers/);
+	} finally {
+		footer.dispose();
+	}
+});
+
+test("a hidden Todos section stays hidden in the mobile work row and the panel sheet, and the sheet leaves the editor visible", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 34, columns: 56 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const state = sidebarState(tui as unknown as TUI);
+	const todo = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => ["TODO CARD"], invalidate() {}, dispose() {} }, {
+		render: (width: number) => ["▾ TODOS".padEnd(width), ...Array.from({ length: 40 }, (_, i) => `  ○ task ${i}`.padEnd(width))],
+		summary: () => ({ left: "◐ Secret plan task", right: "1/3", rightLabel: "todos" }),
+		invalidate() {},
+	});
+	try {
+		const workRow = (ui.widgets.get("gentle-shell-work-row") as () => { render(width: number): string[] })();
+		assert.match(stripAnsi(workRow.render(56)[0]!), /Secret plan task/);
+		void commands.get("gentle:panel")!.handler("", ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		const sheet = ui.overlayView!.render(56);
+		const options = ui.customOptions!.at(-1) as { overlayOptions?: { anchor?: string } };
+		assert.equal(options.overlayOptions?.anchor, "top-center", "the sheet hangs from the top");
+		assert.ok(sheet.length <= 34 - 6, `the editor, the work row and the status bar keep their rows: ${sheet.length}`);
+		(ui.overlayView as unknown as { handleInput(data: string): void }).handleInput("\x1b");
+		state.visibility = { todo: false };
+		assert.deepEqual(workRow.render(56), [], "the work row honors the Todos switch");
+		void commands.get("gentle:panel")!.handler("", ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.doesNotMatch(stripAnsi(ui.overlayView!.render(56).join("\n")), /TODOS|Secret plan/, "the sheet honors the Todos switch");
+		(ui.overlayView as unknown as { handleInput(data: string): void }).handleInput("\x1b");
+	} finally {
+		state.visibility = undefined;
+		todo.dispose();
+		footer.dispose();
+	}
+});

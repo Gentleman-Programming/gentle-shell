@@ -51,3 +51,21 @@ test("a full /gentle:usage window cools a whole provider until it resets, and a 
 	syncUsageCooldown({ provider: "openai", limits: [] }, cooldown, 3_000);
 	assert.equal(cooldown.available("openai/gpt-5.5", 3_000), false, "usage never clears a model's own failure");
 });
+
+test("a provider that reports one limit per model only cools the exhausted model; the provider waits only when every limit is spent", () => {
+	const cooldown = new ModelCooldown();
+	const limit = (name: string, usedPercent: number, reached: boolean, resetAt: number | null) => ({ name, limitReached: reached, windows: [{ usedPercent, resetAt }] });
+	syncUsageCooldown({ provider: "nan", limits: [limit("glm5.2", 100, true, 90_000), limit("deepseek-v4-flash", 10, false, 90_000)] }, cooldown, 1_000);
+	assert.equal(cooldown.available("nan/glm5.2", 2_000), false, "the spent model waits");
+	assert.equal(cooldown.available("nan/deepseek-v4-flash", 2_000), true, "its siblings keep working");
+	assert.equal(cooldown.available("nan/glm5.2", 90_000), true, "until its own window resets");
+	syncUsageCooldown({ provider: "nan", limits: [limit("glm5.2", 100, true, 50_000), limit("deepseek-v4-flash", 100, true, 60_000)] }, cooldown, 1_000);
+	assert.equal(cooldown.available("nan/other", 49_999), false, "every limit spent: the whole provider waits");
+	assert.equal(cooldown.available("nan/other", 50_000), true, "until the earliest reset");
+});
+
+test("a full window whose reset already passed is a stale reading and blocks nothing", () => {
+	const cooldown = new ModelCooldown();
+	syncUsageCooldown({ provider: "anthropic", limits: [{ name: "plan", limitReached: false, windows: [{ usedPercent: 100, resetAt: 500 }] }] }, cooldown, 1_000);
+	assert.equal(cooldown.available("anthropic/claude-opus-5-5", 1_000), true);
+});

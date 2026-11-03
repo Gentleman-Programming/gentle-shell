@@ -7452,11 +7452,16 @@ test("the orchestrator's usage limit moves the session to the profile's orchestr
 		await fake.fire("session_start", ctx);
 		await fake.fire("agent_end", ctx, { type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "insufficient_quota: monthly usage limit reached" }] });
 		await tick(); await tick();
+		// Pi fires agent_end on every failed attempt and only then decides to retry: nothing moves yet.
+		const beforeSettle = selected.length;
+		await fake.fire("agent_settled", ctx, { type: "agent_settled", aborted: false });
+		await tick(); await tick();
 		await fake.fire("session_shutdown", ctx);
 		await tick();
-		return { selected, levels, dialogs, entries: fake.entries, userMessages: fake.userMessages };
+		return { selected, levels, dialogs, entries: fake.entries, userMessages: fake.userMessages, beforeSettle };
 	};
 	const parent = await run({});
+	assert.equal(parent.beforeSettle, 0, "the switch waits for the run to settle, after Pi's own retries");
 	assert.deepEqual(parent.selected, ["orx/backup"]);
 	assert.deepEqual(parent.levels, ["high"]);
 	assert.ok(parent.dialogs.some((line) => /orchestrator: orx\/main hit its usage limit; continuing on orx\/backup \(3\.0x the price\)/.test(line)), parent.dialogs.join("\n"));

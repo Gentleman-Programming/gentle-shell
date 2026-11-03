@@ -53,6 +53,12 @@ export class ModelCooldown {
 		this.until.set(model, Math.max(this.until.get(model) ?? 0, until));
 	}
 	/** Why a model is cooling down, while it is. */
+	/** A model whose own usage limit is spent waits until that limit resets. */
+	markModelUntil(model: string, until: number): void {
+		if (until <= (this.until.get(model) ?? 0)) return;
+		this.until.set(model, until);
+		this.why.set(model, TERMINAL_ERROR_CATEGORY.QUOTA);
+	}
 	reason(model: string, now: number): TerminalErrorCategory | undefined {
 		if (this.available(model, now)) return undefined;
 		return this.why.get(model) ?? TERMINAL_ERROR_CATEGORY.QUOTA;
@@ -74,18 +80,34 @@ type UsageLike = {
 };
 
 /**
- * Mirrors a /gentle:usage reading into the cooldown: a reached limit or a
- * full window makes every model of the provider wait until the earliest of
- * those windows resets (the usual exhausted wait when no reset is known);
- * a reading with room releases the provider. A model's own failures stay.
+ * Mirrors a /gentle:usage reading into the cooldown. Providers that report
+ * one limit per model (NaN, Codex extras) name the limit after the model:
+ * a spent limit makes only `provider/name` wait until it resets. The whole
+ * provider waits only when every limit is spent, until the earliest reset;
+ * a reading with room releases it. A full window whose reset already passed
+ * is a stale reading and blocks nothing; a spent limit with no reset time at
+ * all waits the usual exhausted time. A model's own failures stay.
  */
 export function syncUsageCooldown(usage: UsageLike, cooldown: ModelCooldown, now: number): void {
-	const full = usage.limits.flatMap((limit) => limit.windows.filter((window) => limit.limitReached || window.usedPercent >= 100));
-	const exhausted = usage.limits.some((limit) => limit.limitReached) || full.length > 0;
-	if (!exhausted) return cooldown.clearProvider(usage.provider);
-	const resets = full.map((window) => window.resetAt).filter((reset): reset is number => typeof reset === "number" && reset > now);
-	cooldown.markProvider(usage.provider, resets.length ? Math.min(...resets) : now + COOLDOWN_MS.exhausted);
+	const spentUntil = (limit: UsageLike["limits"][number]): number | undefined => {
+		const full = limit.windows.filter((window) => limit.limitReached || window.usedPercent >= 100);
+		if (!limit.limitReached && full.length === 0) return undefined;
+		const resets = full.map((window) => window.resetAt).filter((reset): reset is number => typeof reset === "number");
+		if (resets.length === 0) return now + COOLDOWN_MS.exhausted;
+		const future = resets.filter((reset) => reset > now);
+		return future.length ? Math.min(...future) : undefined;
+	};
+	const spent = usage.limits.map(spentUntil);
+	const all = spent.length > 0 && spent.every((until) => until !== undefined);
+	if (all) cooldown.markProvider(usage.provider, Math.min(...(spent as number[])));
+	else cooldown.clearProvider(usage.provider);
+	usage.limits.forEach((limit, index) => {
+		const until = spent[index];
+		if (until !== undefined && limit.name && SAFE_MODEL_NAME.test(limit.name)) cooldown.markModelUntil(`${usage.provider}/${limit.name}`, until);
+	});
 }
+
+const SAFE_MODEL_NAME = /^[A-Za-z0-9._~:@+%-]+$/;
 
 const SHARED = Symbol.for("gentle-pi.model-fallback.cooldown");
 /** One registry per process: the orchestrator and the agents runner share what ran out. */

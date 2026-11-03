@@ -1512,16 +1512,22 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		deliveryRetries = 0;
 		endPromptStart();
 	});
-	pi.on("agent_end", (event, ctx) => {
+	// The last attempt's messages, kept until the run settles: Pi fires agent_end
+	// on every failed attempt and decides on a retry afterwards.
+	let lastRunMessages: readonly unknown[] = [];
+	pi.on("agent_end", (event) => {
 		activeAgentRuns = Math.max(0, activeAgentRuns - 1);
 		flushAll();
-		// A child's own failures are handled by the parent's runner, never by the child.
-		if (deps.env.GENTLE_PI_AGENTS_CHILD !== "1" && ctx) void orchestratorFallbackFor(ctx).onAgentEnd(event?.messages ?? []).catch((error: unknown) => ui?.notify(`Model fallback failed: ${error instanceof Error ? error.message : String(error)}`, "error"));
+		lastRunMessages = event?.messages ?? [];
 	});
-	pi.on("agent_settled", () => {
+	pi.on("agent_settled", (event, ctx) => {
 		parentRunActive = false;
 		endPromptStart();
 		flushAll();
+		const messages = lastRunMessages;
+		lastRunMessages = [];
+		// A child's own failures are handled by the parent's runner, never by the child.
+		if (deps.env.GENTLE_PI_AGENTS_CHILD !== "1" && ctx) void orchestratorFallbackFor(ctx).onSettled(messages, { aborted: event?.aborted === true }).catch((error: unknown) => ui?.notify(`Model fallback failed: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
 	pi.on("turn_end", () => flushAll());
 	pi.on("session_compact", scheduleBoundaryFlush);

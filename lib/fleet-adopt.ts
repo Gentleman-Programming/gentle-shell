@@ -18,7 +18,9 @@ import { WindowsActiveSessionClient, WindowsSessionPresenceRegistry } from "./wi
 // The request carries only an opaque token: the target derives the hand-off
 // path under its own agent home, so a peer can never choose where it writes.
 // The hand-off goes through three states: accepted (with the target's pid,
-// before the ack), refused (with a reason), ready (after the turn).
+// before the ack), refused (with a reason), ready (after the turn). The fleet
+// writes a fourth, abandoned, when it stops waiting (S10 R4): the target reads
+// it right before it would close and stays open instead.
 
 export const ADOPT_POLL_MS = 500;
 export const ADOPT_TURN_TIMEOUT_MS = 30 * 60_000;
@@ -30,6 +32,7 @@ const REASON_MAX = 300;
 export type AdoptHandoff =
 	| { state: "accepted"; pid: number; label: string }
 	| { state: "refused"; reason: string }
+	| { state: "abandoned"; reason: string }
 	| { state: "ready"; pid: number; label: string; sessionFile: string; sessionDir: string; cwd: string };
 export type ReadyHandoff = Extract<AdoptHandoff, { state: "ready" }>;
 
@@ -78,13 +81,18 @@ export function readAdoptHandoff(agentHome: string, token: string): AdoptHandoff
 		value = JSON.parse(readFileSync(path, "utf8"));
 	} catch { return undefined; }
 	if (!value || typeof value !== "object") return undefined;
-	if (value.state === "refused" && isText(value.reason)) return { state: "refused", reason: value.reason };
+	if ((value.state === "refused" || value.state === "abandoned") && isText(value.reason)) return { state: value.state, reason: value.reason };
 	if (value.state === "accepted" && positivePid(value.pid) && isText(value.label)) return { state: "accepted", pid: value.pid, label: value.label };
 	if (value.state === "ready" && positivePid(value.pid) && isText(value.label) && isText(value.sessionFile) && isAbsolute(value.sessionFile)
 		&& isText(value.sessionDir) && isText(value.cwd) && isAbsolute(value.cwd)) {
 		return { state: "ready", pid: value.pid, label: value.label, sessionFile: value.sessionFile, sessionDir: value.sessionDir, cwd: value.cwd };
 	}
 	return undefined;
+}
+
+/** The fleet stopped waiting: a target that has not closed yet stays open. Same write rules as the target's. */
+export function abandonAdoption(agentHome: string, token: string, reason: string): boolean {
+	return writeAdoptHandoff(agentHome, token, { state: "abandoned", reason: reason.slice(0, REASON_MAX) });
 }
 
 /** Why this session cannot become a fleet member, or undefined when it can. */
@@ -98,7 +106,7 @@ export function adoptRefusal(session: { mode: string; hasUI: boolean; env: Recor
 	return undefined;
 }
 
-type TargetContext = Pick<ExtensionContext, "mode" | "hasUI" | "isIdle" | "shutdown"> & {
+type TargetContext = Pick<ExtensionContext, "mode" | "hasUI" | "isIdle" | "hasPendingMessages" | "shutdown"> & {
 	ui: Pick<ExtensionContext["ui"], "notify">;
 	sessionManager: Pick<ExtensionContext["sessionManager"], "getSessionFile" | "getSessionDir" | "getCwd"> & { getSessionName?(): string | undefined };
 };
@@ -126,6 +134,8 @@ export class AdoptionTarget {
 
 	accept(request: AdoptRequest, ctx: TargetContext | undefined): boolean {
 		if (!ADOPT_TOKEN.test(request.token) || !ADOPT_SLUG.test(request.fleetSlug)) return false;
+		// The fleet gave up before this request arrived: its answer stays.
+		if (readAdoptHandoff(this.options.agentHome, request.token)?.state === "abandoned") return false;
 		const refuse = (reason: string) => { writeAdoptHandoff(this.options.agentHome, request.token, { state: "refused", reason }); return false; };
 		if (!ctx) return refuse("this session is not ready");
 		if (this.pending) return refuse("another fleet is adopting this session");
@@ -167,7 +177,8 @@ export class AdoptionTarget {
 		if (this.pending !== pending) return;
 		pending.cancelTimer = undefined;
 		let idle: boolean;
-		try { idle = pending.ctx.isIdle(); } catch { this.cancel("the session closed before the hand-off"); return; }
+		// Queued messages are part of the turn: they run here before the window closes.
+		try { idle = pending.ctx.isIdle() && pending.ctx.hasPendingMessages?.() !== true; } catch { this.cancel("the session closed before the hand-off"); return; }
 		if (!idle) { this.arm(); return; }
 		const manager = pending.ctx.sessionManager;
 		let handoff: AdoptHandoff;
@@ -176,14 +187,26 @@ export class AdoptionTarget {
 			if (!sessionFile) { this.cancel("the session lost its session file before the hand-off"); return; }
 			handoff = { state: "ready", pid: this.pid, label: pending.label, sessionFile, sessionDir: manager.getSessionDir(), cwd: manager.getCwd() };
 		} catch { this.cancel("the session closed before the hand-off"); return; }
+		// Read before and after the ready write: the fleet may stop waiting at any time.
+		if (this.abandoned(pending)) return;
 		if (!writeAdoptHandoff(this.options.agentHome, pending.token, handoff)) {
 			this.cancel("the hand-off could not be written");
 			try { pending.ctx.ui.notify("Gentle Fleet adoption failed: the hand-off could not be written; this window stays open.", "error"); } catch { /* cosmetic */ }
 			return;
 		}
+		if (this.abandoned(pending)) return;
 		// Finished: this session's own shutdown must not overwrite the hand-off.
 		this.pending = undefined;
 		pending.ctx.shutdown();
+	}
+
+	/** True, with the adoption dropped and the human told, when the fleet stopped waiting. */
+	private abandoned(pending: NonNullable<AdoptionTarget["pending"]>): boolean {
+		const handoff = readAdoptHandoff(this.options.agentHome, pending.token);
+		if (handoff?.state !== "abandoned") return false;
+		this.pending = undefined;
+		try { pending.ctx.ui.notify(`Gentle Fleet stopped waiting for this window (${handoff.reason}): it stays open.`, "warning"); } catch { /* cosmetic */ }
+		return true;
 	}
 }
 
@@ -217,9 +240,10 @@ export interface WatchAdoptionOptions {
 /**
  * The fleet side: one bounded poll timer at a time until the hand-off is ready
  * and the target process is gone. Exactly one of onReady/onFailed runs, unless
- * the returned cancel runs first.
+ * the returned cancel runs first. Giving up (a timeout, a foreign pid, the
+ * cancel) marks the hand-off abandoned so a target still open stays open.
  */
-export function watchAdoption(options: WatchAdoptionOptions): () => void {
+export function watchAdoption(options: WatchAdoptionOptions): (reason?: string) => void {
 	const alive = options.alive ?? isProcessAlive;
 	const now = options.now ?? Date.now;
 	const turnTimeout = options.turnTimeoutMs ?? ADOPT_TURN_TIMEOUT_MS;
@@ -233,31 +257,37 @@ export function watchAdoption(options: WatchAdoptionOptions): () => void {
 		cancelTimer = undefined;
 		outcome();
 	};
+	const giveUp = (reason: string) => finish(() => {
+		abandonAdoption(options.agentHome, options.token, reason);
+		options.onFailed(reason);
+	});
 	const tick = () => {
 		cancelTimer = undefined;
 		if (done) return;
 		const handoff = readAdoptHandoff(options.agentHome, options.token);
 		if (handoff?.state === "refused") return finish(() => options.onFailed(handoff.reason));
 		if (handoff?.state === "ready") {
-			if (handoff.pid !== options.pid) return finish(() => options.onFailed("the hand-off names another process"));
+			if (handoff.pid !== options.pid) return giveUp("the hand-off names another process");
 			if (!alive(handoff.pid)) return finish(() => options.onReady(handoff));
 			readyAt ??= now();
-			if (now() - readyAt > exitTimeout) return finish(() => options.onFailed(`the session wrote its hand-off but did not exit within ${duration(exitTimeout)}`));
+			if (now() - readyAt > exitTimeout) return giveUp(`the session wrote its hand-off but did not exit within ${duration(exitTimeout)}`);
 		} else if (!alive(options.pid)) {
 			// It may have written the hand-off right before exiting.
 			const last = readAdoptHandoff(options.agentHome, options.token);
 			if (last?.state === "ready" && last.pid === options.pid) return finish(() => options.onReady(last));
 			return finish(() => options.onFailed(last?.state === "refused" ? last.reason : "the session closed without a hand-off"));
 		} else if (now() - started > turnTimeout) {
-			return finish(() => options.onFailed(`the session did not finish its turn within ${duration(turnTimeout)}`));
+			return giveUp(`the session did not finish its turn within ${duration(turnTimeout)}`);
 		}
 		cancelTimer = options.schedule(tick, options.pollMs ?? ADOPT_POLL_MS);
 	};
 	cancelTimer = options.schedule(tick, options.pollMs ?? ADOPT_POLL_MS);
-	return () => {
-		done = true;
+	return (reason = "the fleet stopped waiting") => {
 		cancelTimer?.();
 		cancelTimer = undefined;
+		if (done) return;
+		done = true;
+		abandonAdoption(options.agentHome, options.token, reason);
 	};
 }
 

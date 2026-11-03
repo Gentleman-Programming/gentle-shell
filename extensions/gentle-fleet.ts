@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
-import { adoptedMemberName, createAdoptTransport, readAdoptHandoff, watchAdoption, type AdoptCandidate, type AdoptTransport, type ReadyHandoff } from "../lib/fleet-adopt.ts";
+import { abandonAdoption, adoptedMemberName, createAdoptTransport, isProcessAlive, readAdoptHandoff, watchAdoption, type AdoptCandidate, type AdoptTransport, type ReadyHandoff } from "../lib/fleet-adopt.ts";
 import { readFleetConfig } from "../lib/fleet-config.ts";
 import { buildFleetSnapshot, DECK_WIDGET_KEY, FleetDeck } from "../lib/fleet-deck.ts";
 import { autoApproval, describeResponse, type DialogResponse } from "../lib/fleet-dialogs.ts";
@@ -16,7 +17,7 @@ import { FleetLedger, loadFleetLedger, type FleetMemberFields } from "../lib/fle
 import { buildMemberLaunch, FleetMember, latestMemberSessionFile, type FleetMemberDialog, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
 import type { FocalItem } from "../lib/fleet-view.ts";
-import { createMemberWorktree, reattachMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
+import { createMemberWorktree, gitTimeout, reattachMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
@@ -86,8 +87,10 @@ export interface FleetDeps {
 	permissionMode?(ctx: ExtensionContext): Promise<PermissionMode>;
 	/** Open sessions and the adopt request (S8); default: the session transport of this agent home. */
 	adoptTransport?: AdoptTransport;
-	/** Whether the adopted window's process still runs; default: process.kill(pid, 0). */
+	/** Whether a process still runs (an adopted window, an owner controller, a member); default: process.kill(pid, 0). */
 	isProcessAlive?(pid: number): boolean;
+	/** This controller's process id, the owner of its fleet session (S10 R5); default: process.pid. */
+	pid?: number;
 }
 
 const defaultDeps = (): FleetDeps => ({
@@ -203,8 +206,9 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const dialogArrivals = new WeakMap<FleetMemberDialog, string>();
 	let deck: FleetDeck | undefined;
 	let unmountDeck: (() => void) | undefined;
-	// Adoptions waiting for their window to hand off and exit: each cancels its own poll.
-	const adoptions = new Set<() => void>();
+	// Adoptions waiting for their window to hand off and exit: each cancels its own
+	// poll and marks its hand-off abandoned, so that window stays open (S10 R4).
+	const adoptions = new Set<(reason: string) => void>();
 	let defaultAdoptTransport: AdoptTransport | undefined;
 	const adoptTransport = () => deps.adoptTransport ?? (defaultAdoptTransport ??= createAdoptTransport(agentHome));
 	// The controller's live permission mode, for the deck's status line.
@@ -217,6 +221,32 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 
 	const sessionPath = (...parts: string[]) => join(agentHome, "gentle-fleet", "sessions", fleetSessionId, ...parts);
+	// One live controller owns a fleet session (S10 R5): another one opened on it
+	// (gentle-shell fleet -c in a second pane) resumes nothing.
+	const ownPid = deps.pid ?? process.pid;
+	const alive = deps.isProcessAlive ?? isProcessAlive;
+	let ownsSession = false;
+	const ownerPid = (): number | undefined => {
+		try {
+			const pid = (JSON.parse(readFileSync(sessionPath("owner.json"), "utf8")) as { pid?: unknown }).pid;
+			return Number.isSafeInteger(pid) && (pid as number) > 0 ? pid as number : undefined;
+		} catch { return undefined; }
+	};
+	/** The other live owner's pid, or undefined once this controller owns the session; a dead owner's lock is taken over. */
+	const claimSession = (): number | undefined => {
+		const owner = ownerPid();
+		if (owner !== undefined && owner !== ownPid && alive(owner)) return owner;
+		try {
+			writeJsonFileAtomicallySync(sessionPath("owner.json"), `${JSON.stringify({ pid: ownPid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() })}\n`);
+			ownsSession = true;
+		} catch { /* unowned: resume still checks each member's own process */ }
+		return undefined;
+	};
+	const releaseSession = () => {
+		if (!ownsSession) return;
+		ownsSession = false;
+		try { if (ownerPid() === ownPid) unlinkSync(sessionPath("owner.json")); } catch { /* already gone */ }
+	};
 	// The same fleet session id finds its saved ledger: a reopened fleet continues from it.
 	const ensureLedger = (cwd: string) => ledger ??= new FleetLedger({
 		fleetSessionId,
@@ -533,7 +563,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			objective,
 			launch,
 			...extra,
-			spawn: deps.spawn,
+			// Each process is recorded: a reopened fleet never starts a second one for it (S10 R5).
+			spawn: (command, args, options) => {
+				const child = deps.spawn(command, args, options);
+				if (typeof child.pid === "number" && child.pid > 0) ledger?.processStarted(name, child.pid);
+				return child;
+			},
 			schedule: deps.schedule,
 			process: deps.process,
 			onEvent: onMemberEvent,
@@ -564,7 +599,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const sessionDir = record.sessionFile ? dirname(record.sessionFile) : sessionPath(name);
 			const sessionFile = record.sessionFile ? (existsSync(record.sessionFile) ? record.sessionFile : undefined) : latestMemberSessionFile(sessionDir);
 			const spent = fleetSpend();
-			const reason = (record.worktree ? reattachMemberWorktree({ path: record.worktree, git: deps.git }) : undefined)
+			const reason = (record.pid && alive(record.pid) ? `its process ${record.pid} still runs` : undefined)
+				?? (record.worktree ? reattachMemberWorktree({ path: record.worktree, git: deps.git }) : undefined)
 				?? (!existsSync(record.cwd) ? `working directory ${record.cwd} is missing`
 				: !sessionFile ? (record.sessionFile ? `session file ${record.sessionFile} is missing` : `no session file in ${sessionDir}`)
 				: heldSlots() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
@@ -604,10 +640,10 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return member ?? `No fleet member named "${String(name)}". Members: ${[...members.keys()].join(", ") || "none"}.`;
 	};
 
-	const stopAll = () => {
+	const stopAll = (reason: string) => {
 		cancelWake?.();
 		cancelWake = undefined;
-		for (const cancel of adoptions) cancel();
+		for (const cancel of adoptions) cancel(reason);
 		adoptions.clear();
 		pending.clear();
 		// A reopened fleet asks before resuming these; members stopped on purpose stay stopped.
@@ -693,11 +729,17 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const label = candidate.label || candidate.sessionId.slice(0, 8);
 		const name = adoptedMemberName(label, memberNames());
 		const token = randomBytes(18).toString("base64url");
-		let accepted = false;
-		try { accepted = await adoptTransport().send(fleetSessionId, candidate.sessionId, { fleetSlug: fleetLedger.slug, token }); } catch { /* unreachable: not accepted */ }
+		try { await adoptTransport().send(fleetSessionId, candidate.sessionId, { fleetSlug: fleetLedger.slug, token }); } catch { /* the hand-off below decides */ }
+		// The hand-off is the truth, not the ack (S10 R4): a fast target is ready
+		// already, and a lost or late ack still closes its window.
 		const answer = readAdoptHandoff(agentHome, token);
-		if (!accepted || answer?.state !== "accepted") {
-			adoptFailed(ctx, label, name, answer?.state === "refused" ? answer.reason : "it did not accept the adopt request (an older Gentle Shell, or its window closed)");
+		const pid = answer?.state === "accepted" || answer?.state === "ready" ? answer.pid : undefined;
+		const gone = closed || ctxRef !== ctx;
+		if (gone || pid === undefined) {
+			const reason = gone ? "the fleet session closed" : "it did not accept the adopt request (an older Gentle Shell, or its window closed)";
+			// A late acceptance then finds the fleet's answer and keeps its window.
+			if (answer?.state !== "refused") abandonAdoption(agentHome, token, reason);
+			if (!gone) adoptFailed(ctx, label, name, answer?.state === "refused" ? answer.reason : reason);
 			return;
 		}
 		ctx.ui.notify(`Adopting "${label}": it finishes its current turn, closes its window and joins the fleet.`, "info");
@@ -705,7 +747,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const cancel = watchAdoption({
 			agentHome,
 			token,
-			pid: answer.pid,
+			pid,
 			schedule: deps.schedule,
 			alive: deps.isProcessAlive,
 			onReady: handoff => {
@@ -724,7 +766,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// A new session (new, resume, fork) starts its own fleet: the previous
 		// session's members are stopped and forgotten so they cannot wake it.
 		// A session with a saved ledger is that fleet reopened.
-		stopAll();
+		stopAll("the fleet session changed");
+		releaseSession();
 		members.clear();
 		ledger = undefined;
 		pendingResume = [];
@@ -740,8 +783,16 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		for (const threshold of warnedThresholds(null)) fleetThresholds.add(threshold);
 		// Live when the controller stopped: interrupted on purpose, or still live after a crash.
 		const { members: saved, interrupted } = fleetLedger.current;
-		pendingResume = saved.filter(member => interrupted.includes(member.name) || member.status !== "exited").map(member => member.name);
-		if (pendingResume.length > 0) fleetLedger.awaitResume(pendingResume);
+		const stopped = saved.filter(member => interrupted.includes(member.name) || member.status !== "exited").map(member => member.name);
+		const owner = claimSession();
+		if (owner !== undefined) {
+			// They run under that controller: never marked stopped here, never resumed.
+			for (const name of stopped) fleetLedger.blocker(name, `not resumed: this fleet session is open in another controller (pid ${owner})`);
+			ctx.ui.notify(`Gentle Fleet: this fleet session is open in another controller (pid ${owner}); its members are not resumed here. Close that controller, then reopen this fleet.`, "warning");
+		} else {
+			pendingResume = stopped;
+			if (pendingResume.length > 0) fleetLedger.awaitResume(pendingResume);
+		}
 		restrictTools();
 		mountDeck(ctx);
 		refreshWidget();
@@ -766,7 +817,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 
 	pi.on("session_shutdown", () => {
 		closed = true;
-		stopAll();
+		stopAll("the fleet controller closed");
+		releaseSession();
 		unmountDeck?.();
 		unmountDeck = undefined;
 		stopObservingMode?.();
@@ -837,6 +889,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				let probe = dirname(requestedCwd);
 				while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
 				const top = deps.git(["rev-parse", "--show-toplevel"], probe);
+				const timedOut = gitTimeout(top, "rev-parse", probe);
+				if (timedOut) return text(`Error: could not check whether ${requestedCwd} is inside a git repository: ${timedOut}`, { error: "git timeout" });
 				const repo = top.status === 0 ? top.stdout.trim() : "";
 				if (repo) return text(`Error: ${requestedCwd} is inside the git repository ${repo}; a new project needs its own directory outside it (for example ${join(dirname(repo), basename(requestedCwd))}).`, { error: "inside repository" });
 			}
@@ -846,15 +900,22 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				try { mkdirSync(requestedCwd, { recursive: true }); }
 				catch (error) { return text(`Error: could not create ${requestedCwd}: ${error instanceof Error ? error.message : String(error)}`, { error: "cwd" }); }
 			}
+			const sessionDir = join(agentHome, "gentle-fleet", "sessions", fleetSessionId, name);
+			const createSessionDir = () => {
+				try { mkdirSync(sessionDir, { recursive: true }); return undefined; }
+				catch (error) { return `could not create ${sessionDir}: ${error instanceof Error ? error.message : String(error)}`; }
+			};
+			// The session dir comes right before `git worktree add` (S10 R6): a failed
+			// mkdir leaves no branch or worktree behind; the checks before it create nothing.
+			let sessionDirError: string | undefined;
 			// A directory created above is outside any repository: it runs in place.
-			const prepared = worktree === false || !exists ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git });
+			const prepared = worktree === false || !exists ? undefined : createMemberWorktree({ cwd: requestedCwd, fleetSlug: fleetLedger.slug, member: name, git: deps.git, beforeAdd: () => sessionDirError = createSessionDir() });
+			sessionDirError ??= prepared?.kind === "refused" ? undefined : createSessionDir();
+			if (sessionDirError) return text(`Error: ${sessionDirError}`, { error: "session dir" });
 			if (prepared?.kind === "refused") return text(`Error: could not give member "${name}" its own worktree: ${prepared.message}`, { error: "worktree" });
 			const created = prepared?.kind === "created" ? prepared.worktree : undefined;
 			const memberWorktree = created ? { path: created.path, branch: created.branch } : undefined;
 			const memberCwd = created?.cwd ?? requestedCwd;
-			const sessionDir = join(agentHome, "gentle-fleet", "sessions", fleetSessionId, name);
-			try { mkdirSync(sessionDir, { recursive: true }); }
-			catch (error) { return text(`Error: could not create ${sessionDir}: ${error instanceof Error ? error.message : String(error)}`, { error: "session dir" }); }
 			// A respawned name, or one still waiting on the resume question, keeps its spend in the fleet's.
 			fleetLedger.retire(fleetLedger.current.members.find(record => record.name === name)?.cost ?? 0);
 			if (pendingResume.includes(name)) {

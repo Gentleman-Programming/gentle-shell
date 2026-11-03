@@ -20,7 +20,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
-import { ADOPT_POLL_MS, readAdoptHandoff } from "../lib/fleet-adopt.ts";
+import { abandonAdoption, ADOPT_POLL_MS, readAdoptHandoff } from "../lib/fleet-adopt.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
@@ -7513,6 +7513,27 @@ test("a fleet controller session refuses an adopt request by its own role, and a
 	s.timers.run(ADOPT_POLL_MS);
 	assert.equal(s.shutdowns(), 0);
 	await s.h.fire("session_shutdown", s.ctx, { reason: "quit" });
+});
+
+// S10 R4: the window waits for its queued messages, and a fleet that stopped waiting leaves it open.
+test("an adopted window waits for queued messages and stays open, with a notice, when the fleet stopped waiting", async () => {
+	const s = await adoptableSession();
+	let queued = true;
+	Object.assign(s.ctx, { hasPendingMessages: () => queued });
+	s.h.setIdle(true);
+	assert.equal(await s.captured.adopt!({ id: "adopt-1", senderSessionId: "fleet-1", fleetSlug: "ship-it", token: ADOPT_TOKEN }), true);
+	assert.equal(s.timers.run(ADOPT_POLL_MS), 1);
+	assert.equal(readAdoptHandoff(s.agentHome, ADOPT_TOKEN)?.state, "accepted", "a queued message is still part of the turn");
+	assert.equal(s.shutdowns(), 0);
+	assert.equal(abandonAdoption(s.agentHome, ADOPT_TOKEN, "the fleet controller closed"), true);
+	queued = false;
+	assert.equal(s.timers.run(ADOPT_POLL_MS), 1);
+	assert.equal(s.shutdowns(), 0, "nobody would respawn it: the window stays");
+	assert.deepEqual(readAdoptHandoff(s.agentHome, ADOPT_TOKEN), { state: "abandoned", reason: "the fleet controller closed" });
+	assert.ok(s.dialogs.includes("notify:Gentle Fleet stopped waiting for this window (the fleet controller closed): it stays open."), JSON.stringify(s.dialogs));
+	assert.equal(s.timers.run(ADOPT_POLL_MS), 0, "no poll outlives the adoption");
+	await s.h.fire("session_shutdown", s.ctx, { reason: "quit" });
+	assert.equal(readAdoptHandoff(s.agentHome, ADOPT_TOKEN)?.state, "abandoned");
 });
 
 test("previous behavior: a transport notification becomes one follow-up session message for the model", async () => {

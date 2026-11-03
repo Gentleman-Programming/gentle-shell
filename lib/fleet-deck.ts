@@ -113,6 +113,12 @@ export class FleetDeck {
 	// relay dialog). Any other focus at a keystroke ends focal mode: a dialog
 	// opened on top gets every key, never a deck answer.
 	private focalOwner: unknown;
+	// The focal item (id@arrival) the human saw when focal mode began: a digit
+	// answers only that one.
+	private focalPin: string | undefined;
+	// The component focused when each deck overlay opened (Pi focuses the
+	// overlay a microtask later); focus anywhere else means a dialog took it.
+	private readonly overlayOpeners = new WeakMap<object, unknown>();
 	private closeZoom: (() => void) | undefined;
 	private zoom: Component | undefined;
 	private closeAgents: (() => void) | undefined;
@@ -248,6 +254,7 @@ export class FleetDeck {
 		const ui = this.ui;
 		if (!ui) return undefined;
 		let mine: (() => void) | undefined;
+		const opener = this.focused();
 		void ui.custom<undefined>((tui, theme, _keybindings, done) => {
 			const close = withOverlayRepaint(tui, done);
 			mine = this.closeZoom = () => {
@@ -259,6 +266,7 @@ export class FleetDeck {
 			this.invalidate();
 			const zoom: Component = {
 				render: width => {
+					this.yieldLater();
 					const rows = Math.max(3, tui.terminal?.rows ?? 40);
 					const lines = [...this.panel(width, theme as never), "", ...this.statusLines(width, theme as never)];
 					return lines.length <= rows ? lines : [...lines.slice(0, rows - 1), theme.fg("muted", `… ${lines.length - rows + 1} more lines`)];
@@ -268,6 +276,7 @@ export class FleetDeck {
 				handleInput: data => { if (matchesKey(data, "escape")) this.closeZoom?.(); },
 			};
 			this.zoom = zoom;
+			this.overlayOpeners.set(zoom, opener);
 			return zoom;
 		}, ZOOM_OVERLAY).catch(() => {}).finally(() => {
 			// Closed some other way (session switch): forget it.
@@ -291,6 +300,7 @@ export class FleetDeck {
 		if (this.focal) this.leaveFocal();
 		this.closeZoom?.();
 		let mine: (() => void) | undefined;
+		const opener = this.focused();
 		void ui.custom<undefined>((tui, theme, _keybindings, done) => {
 			const close = withOverlayRepaint(tui, done);
 			mine = this.closeAgents = () => {
@@ -307,8 +317,17 @@ export class FleetDeck {
 				onClose: () => this.closeAgents?.(),
 				requestRender: () => tui.requestRender(),
 			});
-			this.agents = { view, repaint: () => tui.requestRender() };
-			return view;
+			const shown: Component = {
+				render: width => {
+					this.yieldLater();
+					return view.render(width);
+				},
+				handleInput: data => view.handleInput(data),
+				invalidate: () => view.invalidate(),
+			};
+			this.agents = { view: shown, repaint: () => tui.requestRender() };
+			this.overlayOpeners.set(shown, opener);
+			return shown;
 		}, ZOOM_OVERLAY).catch(() => {}).finally(() => {
 			if (mine && this.closeAgents === mine) {
 				this.closeAgents = undefined;
@@ -318,15 +337,39 @@ export class FleetDeck {
 		return CONSUMED;
 	}
 
+	// Pi mounts a select/confirm dialog in the editor slot and gives it the
+	// focus while a full-screen overlay stays painted on top: keys would answer
+	// a dialog the human cannot see. A deck overlay whose keys went to another
+	// component (neither it nor its opener) closes; true when one did.
+	private yieldOverlay(): boolean {
+		const focused = this.focused();
+		let closed = false;
+		for (const [component, close] of [[this.zoom, this.closeZoom], [this.agents?.view, this.closeAgents]] as const) {
+			if (!component || !close || focused === component || focused === this.overlayOpeners.get(component)) continue;
+			close();
+			closed = true;
+		}
+		return closed;
+	}
+
+	// From an overlay's frame: never close it in the middle of Pi's render.
+	private yieldLater(): void {
+		queueMicrotask(() => {
+			try { this.yieldOverlay(); } catch { /* a dead terminal never breaks a frame */ }
+		});
+	}
+
 	private leaveFocal(): void {
 		this.focal = false;
 		this.focalOwner = undefined;
+		this.focalPin = undefined;
 		this.invalidate();
 	}
 
 	private choose(item: FocalItem, option: number): void {
 		this.focal = false;
 		this.focalOwner = undefined;
+		this.focalPin = undefined;
 		const notice = this.options.answer(item, option);
 		if (notice) this.ui?.notify(notice, "warning");
 		else if (!item.dialogId) this.chosen.add(chosenKey(item));
@@ -336,6 +379,8 @@ export class FleetDeck {
 	/** Raw terminal input, before the focused component sees it. */
 	handleInput(data: string): Consumed {
 		if (isKeyRelease(data)) return undefined;
+		// Typed before the overlay's next frame gave way: the dialog was hidden.
+		if (this.yieldOverlay()) return CONSUMED;
 		// The open agents modal has every key but its own toggle.
 		if (this.closeAgents) {
 			if (matchesKey(data, "alt+w")) return this.toggleAgents();
@@ -376,6 +421,12 @@ export class FleetDeck {
 		const { focal } = this.view().queue;
 		if (this.focal) {
 			const digit = DIGITS.findIndex(key => matchesKey(data, key));
+			// Another item (or the same one arrived again) took the focal bar since
+			// the human looked: the digit was meant for something else.
+			if (digit >= 0 && chosenKey(focal) !== this.focalPin) {
+				this.leaveFocal();
+				return CONSUMED;
+			}
 			if (focal.kind !== "nothing" && digit >= 0 && digit < focal.options.length) {
 				this.choose(focal, digit);
 				return CONSUMED;
@@ -391,6 +442,7 @@ export class FleetDeck {
 		if (matchesKey(data, "tab") && focal.kind !== "nothing" && this.ui?.getEditorText() === "" && (isEditor(focused) || (relay !== undefined && focused === relay))) {
 			this.focal = true;
 			this.focalOwner = focused;
+			this.focalPin = chosenKey(focal);
 			this.invalidate();
 			return CONSUMED;
 		}

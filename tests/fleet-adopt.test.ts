@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import nodeTest from "node:test";
 import { ActiveSessionListener, SessionPresenceRegistry, type ReceivedAdopt } from "../lib/agents-session-transport.ts";
-import { AdoptionTarget, adoptedMemberName, adoptHandoffPath, adoptRefusal, createAdoptTransport, isProcessAlive, readAdoptHandoff, watchAdoption, writeAdoptHandoff, type AdoptHandoff } from "../lib/fleet-adopt.ts";
+import { abandonAdoption, AdoptionTarget, adoptedMemberName, adoptHandoffPath, adoptRefusal, createAdoptTransport, isProcessAlive, readAdoptHandoff, watchAdoption, writeAdoptHandoff, type AdoptHandoff } from "../lib/fleet-adopt.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 
 const posixTest = process.platform === "win32" ? nodeTest.skip : nodeTest;
@@ -90,18 +90,20 @@ function targetContext(options: { mode?: string; sessionFile?: string } = {}) {
 	const sessionFile = options.sessionFile ?? join(scratch, `target-${++homes}.jsonl`);
 	if (!options.sessionFile) writeFileSync(sessionFile, "{}\n");
 	let idle = false;
+	let queued = false;
 	const notices: string[] = [];
 	const calls = { shutdown: 0, abort: 0 };
 	const ctx = {
 		mode: options.mode ?? "tui",
 		hasUI: true,
 		isIdle: () => idle,
+		hasPendingMessages: () => queued,
 		abort: () => { calls.abort += 1; },
 		shutdown: () => { calls.shutdown += 1; },
 		ui: { notify: (message: string) => notices.push(message) },
 		sessionManager: { getSessionFile: () => sessionFile, getSessionDir: () => join(scratch, "sessions"), getCwd: () => join(scratch, "work", "blog"), getSessionName: () => "Blog \u001b[31mposts" },
 	};
-	return { ctx, notices, calls, sessionFile, setIdle: (value: boolean) => { idle = value; } };
+	return { ctx, notices, calls, sessionFile, setIdle: (value: boolean) => { idle = value; }, setQueued: (value: boolean) => { queued = value; } };
 }
 
 function manualTimers() {
@@ -168,6 +170,68 @@ test("a second request while one adoption is pending is refused, and a cancelled
 	timers.run();
 	assert.equal(session.calls.shutdown, 0);
 	assert.equal(timers.live(), 0);
+});
+
+// S10 R4: when the fleet gives up it marks the hand-off abandoned; the target
+// reads it right before it would close and stays open instead.
+test("an abandoned hand-off keeps the target open with a notice, at idle and after it wrote ready", () => {
+	const home = agentHome();
+	const timers = manualTimers();
+	const target = new AdoptionTarget({ agentHome: home, env: {}, pid: 4242, schedule: timers.schedule });
+	const session = targetContext();
+	assert.equal(target.accept({ fleetSlug: "ship-it", token: TOKEN }, session.ctx as never), true);
+	assert.equal(abandonAdoption(home, TOKEN, "the fleet controller closed"), true);
+	session.setIdle(true);
+	timers.run();
+	assert.deepEqual(session.calls, { shutdown: 0, abort: 0 });
+	assert.deepEqual(readAdoptHandoff(home, TOKEN), { state: "abandoned", reason: "the fleet controller closed" }, "the fleet's answer is kept");
+	assert.deepEqual(session.notices.at(-1), "Gentle Fleet stopped waiting for this window (the fleet controller closed): it stays open.");
+	assert.equal(timers.live(), 0);
+	assert.equal(target.accept({ fleetSlug: "other", token: "Next-token-123" }, session.ctx as never), true, "the window can be adopted again");
+	// The fleet gives up while the target builds its ready hand-off.
+	const late = agentHome();
+	const lateTimers = manualTimers();
+	const lateSession = targetContext();
+	const racing = new AdoptionTarget({ agentHome: late, env: {}, pid: 4242, schedule: lateTimers.schedule });
+	assert.equal(racing.accept({ fleetSlug: "ship-it", token: TOKEN }, lateSession.ctx as never), true);
+	lateSession.setIdle(true);
+	const notify = lateSession.ctx.ui.notify;
+	lateSession.ctx.sessionManager.getCwd = () => { abandonAdoption(late, TOKEN, "the fleet stopped waiting"); return join(scratch, "work", "blog"); };
+	lateTimers.run();
+	assert.equal(lateSession.calls.shutdown, 0, "a hand-off the fleet abandoned before the shutdown keeps the window");
+	assert.equal(lateSession.ctx.ui.notify, notify);
+	assert.equal(readAdoptHandoff(late, TOKEN)?.state, "abandoned", "the ready write never overwrites the fleet's answer");
+	assert.match(String(lateSession.notices.at(-1)), /stopped waiting for this window \(the fleet stopped waiting\): it stays open/);
+});
+
+test("a target with queued messages waits for them before it hands off", () => {
+	const home = agentHome();
+	const timers = manualTimers();
+	const target = new AdoptionTarget({ agentHome: home, env: {}, pid: 4242, schedule: timers.schedule });
+	const session = targetContext();
+	assert.equal(target.accept({ fleetSlug: "ship-it", token: TOKEN }, session.ctx as never), true);
+	session.setIdle(true);
+	session.setQueued(true);
+	timers.run();
+	timers.run();
+	assert.equal(session.calls.shutdown, 0);
+	assert.equal(readAdoptHandoff(home, TOKEN)?.state, "accepted");
+	session.setQueued(false);
+	timers.run();
+	assert.equal(readAdoptHandoff(home, TOKEN)?.state, "ready");
+	assert.equal(session.calls.shutdown, 1);
+});
+
+test("a request whose hand-off the fleet already abandoned is refused with nothing overwritten", () => {
+	const home = agentHome();
+	const timers = manualTimers();
+	assert.equal(abandonAdoption(home, TOKEN, "it did not accept the adopt request"), true);
+	const session = targetContext();
+	const target = new AdoptionTarget({ agentHome: home, env: {}, pid: 4242, schedule: timers.schedule });
+	assert.equal(target.accept({ fleetSlug: "ship-it", token: TOKEN }, session.ctx as never), false);
+	assert.deepEqual(readAdoptHandoff(home, TOKEN), { state: "abandoned", reason: "it did not accept the adopt request" });
+	assert.deepEqual([session.notices, timers.live()], [[], 0]);
+	assert.equal(abandonAdoption(home, "../escape-it", "x"), false, "the same safe write rules: derived path only");
 });
 
 test("adopted member names come from the label and stay unique", () => {
@@ -244,6 +308,42 @@ test("a process that exits without a hand-off, a refusal or a timeout fails the 
 	watchAdoption({ agentHome: agentHome(), token: TOKEN, pid: alive.pid, schedule: timers.schedule, pollMs: 10, turnTimeoutMs: 1000, now: () => (now += 400), onReady: () => slow.push("ready"), onFailed: reason => slow.push(reason) });
 	await until("timeout", () => slow.length > 0);
 	assert.deepEqual(slow, ["the session did not finish its turn within 1 s"]);
+	await alive.stop();
+	await tick();
+	assert.equal(timers.live.size, 0);
+});
+
+test("a watch that gives up marks the hand-off abandoned; one that ended on the target's answer does not", async (t) => {
+	const timers = realTimers();
+	const alive = await liveProcess();
+	t.after(alive.stop);
+	let now = 0;
+	const slow: string[] = [];
+	const turnHome = agentHome();
+	writeAdoptHandoff(turnHome, TOKEN, { state: "accepted", pid: alive.pid, label: "blog" });
+	watchAdoption({ agentHome: turnHome, token: TOKEN, pid: alive.pid, schedule: timers.schedule, pollMs: 10, turnTimeoutMs: 1000, now: () => (now += 400), onReady: () => slow.push("ready"), onFailed: reason => slow.push(reason) });
+	await until("turn timeout", () => slow.length > 0);
+	assert.deepEqual(readAdoptHandoff(turnHome, TOKEN), { state: "abandoned", reason: "the session did not finish its turn within 1 s" });
+	const exitHome = agentHome();
+	const ready = { state: "ready" as const, pid: alive.pid, label: "blog", sessionFile: "/s/x.jsonl", sessionDir: "/s", cwd: "/w" };
+	writeAdoptHandoff(exitHome, TOKEN, ready);
+	let later = 0;
+	const stuck: string[] = [];
+	watchAdoption({ agentHome: exitHome, token: TOKEN, pid: alive.pid, schedule: timers.schedule, pollMs: 10, exitTimeoutMs: 1000, now: () => (later += 400), onReady: () => stuck.push("ready"), onFailed: reason => stuck.push(reason) });
+	await until("exit timeout", () => stuck.length > 0);
+	assert.deepEqual(readAdoptHandoff(exitHome, TOKEN), { state: "abandoned", reason: "the session wrote its hand-off but did not exit within 1 s" });
+	const cancelHome = agentHome();
+	writeAdoptHandoff(cancelHome, TOKEN, { state: "accepted", pid: alive.pid, label: "blog" });
+	const cancel = watchAdoption({ agentHome: cancelHome, token: TOKEN, pid: alive.pid, schedule: timers.schedule, pollMs: 10, onReady: () => {}, onFailed: () => {} });
+	cancel("the fleet controller closed");
+	assert.deepEqual(readAdoptHandoff(cancelHome, TOKEN), { state: "abandoned", reason: "the fleet controller closed" });
+	const refusedHome = agentHome();
+	writeAdoptHandoff(refusedHome, TOKEN, { state: "refused", reason: "the session changed before the hand-off" });
+	const refused: string[] = [];
+	const cancelRefused = watchAdoption({ agentHome: refusedHome, token: TOKEN, pid: alive.pid, schedule: timers.schedule, pollMs: 10, onReady: () => {}, onFailed: reason => refused.push(reason) });
+	await until("refusal", () => refused.length > 0);
+	cancelRefused("too late");
+	assert.deepEqual(readAdoptHandoff(refusedHome, TOKEN), { state: "refused", reason: "the session changed before the hand-off" }, "the target's own answer is kept");
 	await alive.stop();
 	await tick();
 	assert.equal(timers.live.size, 0);

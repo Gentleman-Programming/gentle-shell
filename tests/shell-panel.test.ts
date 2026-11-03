@@ -6,6 +6,7 @@ import { renderTodoSection, type TodoState } from "../lib/shell-todo.ts";
 import { renderJobsSection } from "../lib/jobs-widget.ts";
 import { JOB_GLYPH } from "../lib/background-jobs-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 
 // The fullscreen rail draws its sections as one panel (design/shell-rework/02-proposal.html):
 // a one-row header `▾ NAME … count` and dense rows, no card chrome.
@@ -100,4 +101,46 @@ test("the Jobs section lists each job with its id, label and elapsed time", () =
 	const collapsed = renderJobsSection(jobs as never, plain, 40, 30_000, { collapsed: true }).map(shape);
 	assert.deepEqual(collapsed, ["▸ JOBS | 1 running · 1 finished", `  ${JOB_GLYPH} job-1 pnpm test | 30s`, "  … 1 more"]);
 	assert.match(stripAnsi(renderJobsSection(jobs as never, plain, 40, 123_000, { collapsed: false })[1]!), /2m 3s$/, "a running job keeps ticking past the finished TTL");
+});
+
+/** `left` and `right` on one row of `width` columns, the way a panel row aligns them. */
+const edge = (left: string, right: string, width: number) => left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
+
+test("the rail Status draws Changes, Review and Integrations as panel sections and never repeats the header", () => {
+	const model = {
+		cwd: "/project", branch: "main", dirty: 2, sessionName: "session", profile: "claude (session)",
+		modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
+		costTotal: 1, subscription: false, usage: undefined,
+		changes: { files: 22, added: 802, deleted: 352 },
+		review: { state: "consent" as const, scope: "app.ts +2 files" },
+		statuses: ["🧠 gentle-pi · ready", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"],
+	};
+	const lines = renderShellSidebarBar(model, plain as never, 48, { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } }, "ctrl+shift+t todos · alt+u usage");
+	for (const line of lines) assert.equal(visibleWidth(line), 48, `row fills the rail: ${line}`);
+	const rows = lines.map((line) => line.trimEnd());
+	assert.deepEqual(rows, [
+		edge("▾ CHANGES", "22 files", 48),
+		edge("  +802 −352", "/gentle:changes", 48),
+		"",
+		edge("▾ REVIEW", "needs you", 48),
+		"  Needs your consent",
+		"  app.ts +2 files",
+		"",
+		edge("▾ INTEGRATIONS", "2", 48),
+		"  🧠 gentle-pi · ready",
+		"  💥 SUPER YOLO ON — no permission prompts;",
+		"  private paths stay blocked",
+		"",
+		"  ctrl+shift+t todos · alt+u usage",
+	]);
+	assert.doesNotMatch(rows.join("\n"), /project|Branch|Profile|session/, "location and profile live in the header, once");
+});
+
+test("the rail Status keeps an empty Changes row, hides Review without evidence and honors its toggles", () => {
+	const base = { cwd: "/p", branch: null, dirty: undefined, sessionName: undefined, modelId: "m", effort: undefined, contextPercent: null, contextWindow: 0, costTotal: 0, subscription: false, usage: undefined, statuses: [] };
+	const visibility = { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true };
+	const rows = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility }).map((line) => line.trimEnd());
+	assert.deepEqual(rows, [edge("▾ CHANGES", "clean", 40), edge("  no captured changes", "/gentle:changes", 40), edge("▾ INTEGRATIONS", "none", 40), "  no status reported"]);
+	const hidden = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility: { ...visibility, changes: false } }).map((line) => line.trimEnd());
+	assert.doesNotMatch(hidden.join("\n"), /CHANGES/);
 });

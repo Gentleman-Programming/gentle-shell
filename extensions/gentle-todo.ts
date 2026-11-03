@@ -11,6 +11,7 @@ import {
 	emptyTodo,
 	renderTodoCard,
 	renderTodoSection,
+	todoCollapseKey,
 	replayTodo,
 	staleTurns,
 	TODO_DETAILS_KEY,
@@ -40,7 +41,6 @@ import {
 
 const WIDGET_KEY = "gentle-todo";
 const STATUS_ENUM = ["pending", "in_progress", "blocked", "done", "dropped"];
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
 const REMIND_AFTER_TOOL_TURNS = 4;
 const TODO_REMINDER = "The todo plan has not been reviewed during several tool-use turns. Check whether it still matches the work performed and update tasks where needed. Do not mark work done without verification.";
 const TOOL_PARAMETERS = {
@@ -77,11 +77,8 @@ export function todoEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return !(value === "0" || value === "false" || value === "off");
 }
 
-export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_TODO_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
+// The collapse key moved to lib/shell-todo.ts so the rail's key hints can read it.
+export { todoCollapseKey } from "../lib/shell-todo.ts";
 
 interface TodoSession {
 	state: TodoState;

@@ -256,7 +256,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
-			const sections = ["footer", "jobs", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
+			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);

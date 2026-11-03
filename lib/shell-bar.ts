@@ -3,6 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { CARD_TONE, floatRows, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -211,60 +212,38 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
-export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
-	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
+// The fullscreen rail's Status, drawn as panel sections (design/shell-rework/02-proposal.html):
+// Changes, Review (only with current-session RDD evidence) and Integrations.
+// Location, model and profile live in the header row, so they never repeat
+// here. Opaque integration statuses wrap so none of their meaning is clipped,
+// and the optional key hints close the rail.
+export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string): string[] {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
-	const changes = model.changes;
-	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
-	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
-	// the same inset without consuming the card's right border.
-	const innerWidth = panelInnerWidth(theme, width);
-	const inset = Math.min(1, innerWidth - 1);
-	// Model, effort, context, cost, and the per-model usage table now live in
-	// the always-visible header row (and /gentle:usage for the full table);
-	// this event-driven card keeps only what a footer/model-switch event does
-	// not already refresh every frame.
-	const groups: Array<{ title: string; lines: string[] }> = [
-		{
-			title: "Project",
-			lines: [
-				value(model.cwd),
-				...(branch ? [branch] : []),
-				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
-			],
-		},
-		...(presentation?.visibility.changes === false ? [] : [{
-			title: "Changes",
-			lines: [
-				changes?.files
-					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
-					: label("No captured changes"),
-				label("/gentle:changes"),
-			],
-		}]),
-		...(model.review && presentation?.visibility.rdd !== false ? [{
-			title: "🌹 RDD",
-			lines: [
-				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
-				// Unknown scope is an internal sentinel, not something the user acts on.
-				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
-			],
-		}] : []),
-		// Running jobs live in their own sidebar card (extensions/gentle-shell.ts
-		// registers the "jobs" rail part); the compact bar keeps the count.
-		{ title: "Integrations", lines: model.statuses.length
-			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
-			: [label("No status reported")] },
-	];
-	// Wrap and indent every group line before it reaches the card, so Unicode and
-	// ANSI continuation lines keep the same inset without consuming the right border.
-	const body = groups.flatMap((group, index) => [
-		...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
-		...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
+	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
+	const sections: string[][] = [];
+	if (presentation?.visibility.changes !== false) {
+		const changes = model.changes;
+		sections.push([
+			renderPanelHeader(theme, width, { title: "Changes", count: changes?.files ? `${changes.files} ${changes.files === 1 ? "file" : "files"}` : "clean", open: true }),
+			renderPanelRow(width, changes?.files ? `${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}` : label("no captured changes"), label("/gentle:changes")),
+		]);
+	}
+	if (model.review && presentation?.visibility.rdd !== false) {
+		const needsYou = model.review.state === "consent";
+		sections.push([
+			renderPanelHeader(theme, width, { title: "Review", count: needsYou ? "needs you" : undefined, countRole: "warning", open: true }),
+			...wrapped(REVIEW_SIDEBAR_LABELS[model.review.state], needsYou ? "warning" : ROLE.VALUE),
+			// Unknown scope is an internal sentinel, not something the user acts on.
+			...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
+		]);
+	}
+	sections.push([
+		renderPanelHeader(theme, width, { title: "Integrations", count: model.statuses.length ? String(model.statuses.length) : "none", open: true }),
+		...(model.statuses.length ? model.statuses.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : [renderPanelRow(width, label("no status reported"))]),
 	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true, panel: true });
+	if (hints) sections.push([renderPanelRow(width, label(hints))]);
+	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
+	return sections.flatMap((rows, index) => [...(index ? gap : []), ...rows]);
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";

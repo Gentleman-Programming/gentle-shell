@@ -5801,7 +5801,9 @@ for (const provider of ["openai", "anthropic", "custom-extension", undefined, "c
 				assert.deepEqual(h.sent[1]!.options, { deliverAs: "steer", triggerTurn: true });
 				assert.equal(h.sent[1]!.message.display, false);
 				assert.equal(h.sent[1]!.message.customType, "gentle-agents.wake");
-				assert.equal(h.sent[1]!.message.content, "Review the delivered subagent output and continue.");
+				// Pi hands custom messages to the model with the user role, so the wake
+				// must disown authorship and keep the human's reply language.
+				assert.equal(h.sent[1]!.message.content, "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue. Reply in the language of the human's own last message, not the language of this notification or of the subagent output.");
 				assert.deepEqual(h.delivery, [`custom:gentle-agents.${kind === "query" ? "message" : "result"}`, "custom:gentle-agents.wake"]);
 			}
 			await h.fire("session_shutdown", ctx);

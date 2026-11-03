@@ -421,7 +421,7 @@ The canvas server binds `127.0.0.1` on a random port and needs a random per-serv
 
 ### Bridge providers
 
-Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake.
+Idle Claude Bridge continuation uses the normal user-prompt lifecycle so prompt preparation and tool declarations are retained. Gentle Agents hides only its exact, uniquely generated reserved wake in Pi's interactive transcript; child result and query cards remain visible. Native providers keep their hidden `display: false` custom wake. Pi gives custom messages to the model with the user role, so the native wake carries the same "not written by the user" label as the Bridge wake and asks for a reply in the language of the human's own last message, never the language of the notification or of the subagent output. The Bridge wake text is unchanged because persisted wake identities embed it.
 
 The reserved identity is stored once per session as a non-context custom entry and reconstructed on reload/resume, including identities on abandoned branches. It is session-owned: switching sessions releases the previous identity. Ordinary text quoting the old notification, prefixes, substrings, and whitespace variations is not hidden. Pi's transformer exposes no author/message ID, so an exact copy of the current reserved identity is indistinguishable from its generated wake.
 

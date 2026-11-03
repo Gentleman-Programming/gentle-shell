@@ -302,6 +302,20 @@ test("staleRoutingKeys excludes exact matches and near-miss suggestions", () => 
 	}, agents), ["review_risk"]);
 });
 
+test("staleRoutingKeys protects reserved routing targets without discovered definitions", () => {
+	const config = {
+		"review-refuter": { model: "refuter" },
+		"review-validator": { model: "validator" },
+		orchestrator: { model: "main" },
+		abandoned: { model: "old" },
+	};
+	const before = structuredClone(config);
+	for (const agents of [[], [{ name: "unrelated" }]]) {
+		assert.deepEqual(staleRoutingKeys(config, agents), ["abandoned"]);
+		assert.deepEqual(config, before);
+	}
+});
+
 test("staleRoutingKeys protects provider review roles supplied by the caller", () => {
 	assert.deepEqual(staleRoutingKeys({
 		"review-refuter": {}, "review-validator": {}, abandoned: {},

@@ -352,7 +352,10 @@ export function unmatchedProfileKeys(
 		.map((key) => ({ key, suggestion: suggestionFor(key) }));
 }
 
-/** Removable keys exclude exact matches and likely typos in the caller's full agent list. */
+// Live routing targets without agent definition files; keep local to avoid a runtime import cycle.
+const RESERVED_ROUTING_KEYS = new Set(["review-refuter", "review-validator", "orchestrator"]);
+
+/** Removable keys exclude reserved targets, exact matches, and likely typos in the caller's full agent list. */
 export function staleRoutingKeys(
 	config: Record<string, { model?: unknown; thinking?: unknown }>,
 	agents: ReadonlyArray<{ name: string }>,
@@ -362,7 +365,7 @@ export function staleRoutingKeys(
 		Object.keys(config).map((key) => [key, { model: undefined, thinking: undefined }]),
 	);
 	return unmatchedProfileKeys(profiles, agents)
-		.filter(({ suggestion }) => suggestion === undefined)
+		.filter(({ key, suggestion }) => suggestion === undefined && !RESERVED_ROUTING_KEYS.has(key))
 		.map(({ key }) => key)
 		.sort();
 }

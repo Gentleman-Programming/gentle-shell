@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TERMINAL_ERROR_CATEGORY as C } from "../lib/agents-protocol.ts";
-import { COOLDOWN_MS, ModelCooldown, pickModel, sharedCooldown, shouldFallBack } from "../lib/model-fallback-policy.ts";
+import { COOLDOWN_MS, ModelCooldown, pickModel, sharedCooldown, shouldFallBack, syncUsageCooldown } from "../lib/model-fallback-policy.ts";
 
 test("only quota, auth and spent transient errors move a run to its next model", () => {
 	for (const category of [C.QUOTA, C.AUTH, C.RATE_LIMIT, C.PROVIDER_UNAVAILABLE, C.TIMEOUT, C.NETWORK]) assert.equal(shouldFallBack(category), true, category);
@@ -33,4 +33,21 @@ test("pickModel keeps the primary while it works, then walks the chain skipping 
 	assert.equal(pickModel("anthropic/opus", chain, { cooldown, now: 2, tried: new Set(["openai/gpt-5.5"]) }), undefined, "nothing left");
 	assert.deepEqual(pickModel(undefined, chain, { cooldown: new ModelCooldown(), now: 0 }), { model: undefined, fallback: false }, "an inheriting agent keeps inheriting while it works");
 	assert.deepEqual(pickModel("anthropic/opus", chain, { cooldown: new ModelCooldown(), now: 0, tried: new Set(["anthropic/opus"]) }), { model: "openai/gpt-5.5", thinking: "high", fallback: true }, "a primary that just failed is tried");
+});
+
+test("a full /gentle:usage window cools a whole provider until it resets, and a later fetch with room releases it", () => {
+	const cooldown = new ModelCooldown();
+	const window = (usedPercent: number, resetAt: number | null) => ({ label: "5h", usedPercent, windowSeconds: 18_000, resetAt });
+	syncUsageCooldown({ provider: "anthropic", limits: [{ name: "plan", limitReached: false, windows: [window(100, 50_000), window(40, 90_000)] }] }, cooldown, 1_000);
+	assert.equal(cooldown.available("anthropic/claude-opus-5-5", 49_999), false, "every model of the provider waits");
+	assert.equal(cooldown.reason("anthropic/claude-sonnet-5-5", 2_000), C.QUOTA);
+	assert.equal(cooldown.available("anthropic/claude-opus-5-5", 50_000), true, "until the full window resets");
+	assert.equal(cooldown.available("openai/gpt-5.5", 2_000), true, "other providers are untouched");
+	syncUsageCooldown({ provider: "openai", limits: [{ name: "plan", limitReached: true, windows: [window(80, null)] }] }, cooldown, 1_000);
+	assert.equal(cooldown.available("openai/gpt-5.5", 1_000 + COOLDOWN_MS.exhausted - 1), false, "a reached limit without a reset time waits the usual time");
+	syncUsageCooldown({ provider: "openai", limits: [{ name: "plan", limitReached: false, windows: [window(10, null)] }] }, cooldown, 2_000);
+	assert.equal(cooldown.available("openai/gpt-5.5", 2_000), true, "room again releases the provider");
+	cooldown.mark("openai/gpt-5.5", C.QUOTA, 2_000);
+	syncUsageCooldown({ provider: "openai", limits: [] }, cooldown, 3_000);
+	assert.equal(cooldown.available("openai/gpt-5.5", 3_000), false, "usage never clears a model's own failure");
 });

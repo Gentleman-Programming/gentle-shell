@@ -575,6 +575,42 @@ test("the overview fits again when the window settles at another size, until you
 	assert.equal(canvas.zoomLevel.textContent, "5%");
 });
 
+test("the overview fits again when the review panel opens or closes, also where ResizeObserver is missing", async () => {
+	const canvas = await loadCanvas();
+	Object.defineProperty(canvas.world, "offsetWidth", { get: () => 9000 });
+	Object.defineProperty(canvas.world, "offsetHeight", { get: () => 1000 });
+	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
+	canvas.document.getElementById("gd-fit").dispatch("click");
+	assert.equal(canvas.zoomLevel.textContent, "5%");
+	// Closing the panel gives the viewport its width; no window resize event fires.
+	canvas.viewport.rect = { left: 0, top: 50, width: 1800, height: 900 };
+	canvas.document.getElementById("gd-panel-toggle").dispatch("click");
+	assert.equal(canvas.zoomLevel.textContent, "19%");
+});
+
+test("a comment being written keeps its element and view when the panel toggles on a fitted overview", async () => {
+	const canvas = await loadCanvas();
+	const [first] = canvas.boards;
+	Object.defineProperty(canvas.world, "offsetWidth", { get: () => 9000 });
+	Object.defineProperty(canvas.world, "offsetHeight", { get: () => 1000 });
+	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
+	canvas.document.getElementById("gd-fit").dispatch("click");
+	canvas.document.getElementById("gd-comment").dispatch("click");
+	canvas.message(first.frame.contentWindow, { type: "gd:pick", selector: "#cta", excerpt: "Buy now", rect: { x: 4, y: 8, width: 60, height: 20 } });
+	const popover = canvas.document.getElementById("gd-popover");
+	assert.equal(popover.hidden, false);
+	const view = canvas.world.style.transform;
+	canvas.viewport.rect = { left: 0, top: 50, width: 1800, height: 900 };
+	canvas.document.getElementById("gd-panel-toggle").dispatch("click");
+	assert.equal(popover.hidden, false, "the comment box stays open");
+	assert.equal(canvas.document.getElementById("gd-popover-target").textContent, "01-a.html · #cta");
+	assert.equal(canvas.world.style.transform, view, "the view waits until the comment box closes");
+	// Once it closes, the next size change fits again.
+	canvas.document.getElementById("gd-popover-cancel").dispatch("click");
+	canvas.windowEvent("resize");
+	assert.equal(canvas.zoomLevel.textContent, "19%");
+});
+
 // S14: `open` while a canvas page is connected sends it a show event instead of opening a tab.
 
 test("a show event for the same design re-fetches its manifest and reloads its artboards, keeping zoom, pan and focus", async () => {

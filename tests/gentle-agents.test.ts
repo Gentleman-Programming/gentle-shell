@@ -3951,6 +3951,10 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	assert.ok(rail, "Agents claims the rail slot, so a wide fullscreen terminal shows it at the right");
 	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 2, "the rail lists every task");
 	assert.ok(rail.digest?.(), "the rail declares a digest so its clock and counters repaint");
+	assert.equal((rail as { surface?: string }).surface, "panel", "the rail draws Agents as a panel section");
+	const railRows = rail.render(46).map((line) => stripAnsi(line).trimEnd());
+	assert.match(railRows[0]!, /^▾ AGENTS +2 running$/, "the panel header is row 0 with the live count");
+	assert.match(railRows[1]!, /^ {2}◐ map lib modules +explore +\S/, "the task leads each row, the agent kind follows");
 
 	// While the fullscreen sidebar owns the host, the bottom copy steps aside.
 	state.active = true;
@@ -3969,6 +3973,10 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	assert.match(collapsed[0]!, /Agents ▸ Expand/);
 	assert.doesNotMatch(collapsed.join("\n"), /map test suites/, "the collapsed card keeps one row");
 	assert.equal(rail.render(46).filter((line) => /explore/.test(stripAnsi(line))).length, 1, "both surfaces share the collapsed state");
+	assert.match(stripAnsi(rail.render(46)[0]!), /^▸ AGENTS/);
+	const railClick = { type: "click" as const, button: "left" as const, x: 1, y: 0, screenX: 1, screenY: 0, width: 46, height: 2, shift: false, alt: false, ctrl: false };
+	assert.equal(rail.handleMouse?.(railClick)?.handled, true, "the rail header row 0 is the collapse control");
+	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/);
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
-import { formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { formatElapsed, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { formatTokens } from "../lib/shell-bar.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -410,4 +411,59 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
 	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
 	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
+});
+
+// The fullscreen rail draws Agents as a panel section (design/shell-rework/06-many-agents.html):
+// one row per agent, the task first, then the agent kind and its tokens and
+// time, ordered by what needs you; finished work folds into one row.
+
+test("the Agents section orders rows by what needs you and aligns kind and time columns", () => {
+	const now = 400_000;
+	const tasks = [
+		task({ id: "done", agent: "gentle-ai-verify", label: "verify T1 title row", status: TASK_STATUS.COMPLETED, startedAt: 0, endedAt: 380_000 }),
+		task({ id: "worker", agent: "gentle-ai-worker", label: "T3 rail panel sections", startedAt: 28_000, tokens: 2_100_000 }),
+		task({ id: "asks", agent: "gentle-ai-explore", label: "map sidebar render paths", lastStep: "Which base branch should the chain use?", status: TASK_STATUS.WAITING, startedAt: 10_000 }),
+		task({ id: "queued", agent: "gentle-ai-worker", label: "T5 mobile work row", status: TASK_STATUS.QUEUED, startedAt: null, createdAt: 50_000, tokens: 0 }),
+		task({ id: "failed", agent: "gentle-ai-worker", label: "T6 customize presets", status: TASK_STATUS.FAILED, error: "T6 customize presets", startedAt: 300_000, endedAt: 370_000 }),
+		task({ id: "verify", agent: "gentle-ai-verify", label: "verify T2 editor rule", startedAt: 277_000, tokens: 800_000 }),
+	];
+	const lines = renderAgentsSection(tasks, plainTheme, 50, now, { collapsed: false });
+	for (const line of lines) assert.equal(visibleWidth(line), 50, `row fills the section: ${line}`);
+	const rows = lines.map((line) => line.trimEnd());
+	assert.match(rows[0]!, /^▾ AGENTS +2 running · 1 waiting$/);
+	const worker = `${formatTokens(2_100_000)} ${formatElapsed(372_000)}`;
+	const verify = `${formatTokens(800_000)} ${formatElapsed(123_000)}`;
+	assert.deepEqual(rows.slice(1).map((row) => row.replace(/\s{2,}/g, " | ")), [
+		" | ? Which base branch should… explore | asks you",
+		` | ◐ T3 rail panel sections | worker | ${worker}`,
+		` | ◐ verify T2 editor rule | verify | ${verify}`,
+		" | ○ T5 mobile work row | worker | queued",
+		` | ✗ T6 customize presets | worker | failed ${formatElapsed(70_000)}`,
+		" | ✓ 1 done · /gentle:agents",
+	]);
+	const kindColumn = rows.slice(1, 6).map((row) => [...row.matchAll(/(explore|worker|verify)(?= )/g)].at(-1)!.index);
+	assert.equal(new Set(kindColumn).size, 1, `agent kinds line up in one column: ${kindColumn}`);
+});
+
+test("an idle Agents section keeps one muted row pointing at /gentle:agents", () => {
+	const lines = renderAgentsSection([], plainTheme, 50, 0, { collapsed: false }).map((line) => line.trimEnd());
+	assert.deepEqual(lines.map((row) => row.replace(/\s{2,}/g, " | ")), ["▾ AGENTS | idle", " | none running · /gentle:agents"]);
+});
+
+test("a collapsed Agents section keeps the row that needs you most", () => {
+	const tasks = [task({ id: "run", label: "running one" }), task({ id: "ask", label: "asking", lastStep: "Pick one?", status: TASK_STATUS.WAITING })];
+	const lines = renderAgentsSection(tasks, plainTheme, 50, 10_000, { collapsed: true }).map((line) => line.trimEnd());
+	assert.equal(lines.length, 2);
+	assert.match(lines[0]!, /^▸ AGENTS/);
+	assert.match(lines[1]!, /^ {2}\? Pick one\?/);
+});
+
+test("more agents than the section's rows keep waiting and running rows and count the rest", () => {
+	const tasks = Array.from({ length: 12 }, (_, index) => task({ id: `q${index}`, label: `queued ${index}`, status: TASK_STATUS.QUEUED, startedAt: null, createdAt: index }))
+		.concat(task({ id: "run", label: "the running one", createdAt: 100 }), task({ id: "ask", label: "asking", lastStep: "Need you?", status: TASK_STATUS.WAITING, createdAt: 101 }));
+	const rows = renderAgentsSection(tasks, plainTheme, 50, 10_000, { collapsed: false }).map((line) => line.trim());
+	assert.match(rows[1]!, /^\? Need you\?/);
+	assert.match(rows[2]!, /^◐ the running one/);
+	assert.equal(rows.length, 1 + 8, "eight rows, the last one counting the rest");
+	assert.match(rows.at(-1)!, /^… 7 more · \/gentle:agents$/);
 });

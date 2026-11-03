@@ -33,14 +33,20 @@ gentle-shell update: pnpm (/usr/local/bin/pnpm) could not install /Users/you/.pi
 
 `gentle-shell orchestrator` opens a session whose agent is a fleet orchestrator: you talk to it, and it leads up to three member sessions toward your objective. Each member is a full, headless Gentle Shell session (`pi --mode rpc`) with its own ODD orchestrator, subagents and todo list. The controller never edits code itself and gets a lean fleet prompt instead of the ODD orchestrator prompt; members keep the normal prompt and do not join the peer session transport, so they only talk through their controller.
 
-The controller has four tools:
+The controller has six tools:
 
+- `fleet_objective` names the fleet with a short title and states its objective. The prompt asks the controller to call it first; it returns the path of the fleet document.
 - `fleet_spawn` starts a member with a name, an objective, an optional working directory (default: the session's) and an optional model. A spawn costs a full session prefix, so the fleet prefers reusing members. A fourth live member is refused.
 - `fleet_send` sends a member a new prompt (queued as a follow-up while it works) or, with mode `steer`, redirects its current run.
 - `fleet_status` returns one code-built digest line per member (status, todo progress, last tool, tokens and cost); with a name, it returns that member's bounded detail.
+- `fleet_inspect` returns a member's bounded detail plus its recent activity (tool names, reply excerpts, questions; 40 lines by default, at most 200) and the path of the member's own ODD feature document when its tools or todo name one. It never returns a transcript.
 - `fleet_stop` stops a member; its session file stays under `<agent home>/gentle-fleet/sessions/<fleet session>/<member>`.
 
-The controller wakes only when a member settles, asks a question or exits, with one coalesced digest, never per tool call. A widget lists every member's digest line. In this first slice member questions are only surfaced to you through that digest; answering them from the fleet is not wired yet, so a member waiting on a question without a timeout stays blocked until you stop it. Members stop when the controller session ends.
+The controller wakes only when a member settles, asks a question or exits, with one coalesced digest, never per tool call. A widget lists every member's digest line. In this first slice member questions are only surfaced to you through that digest; answering them from the fleet is not wired yet, so a member waiting on a question without a timeout stays blocked until you stop it. Members stop when the controller session ends, and a new session (new, resume, fork) stops and forgets the previous session's members.
+
+**Fleet document.** The controller keeps a ledger in code (objective, members with their objective, working directory, status, todo progress, tokens and cost, pending question, last error, spawn and exit times, and the last 200 spawn, send, settle, question, stop and exit events) at `<agent home>/gentle-fleet/sessions/<fleet session>/ledger.json`. Code renders it, without model tokens, into a general ODD-style document at `odd/fleet/<slug>.md` under the controller's working directory: objective, a members table (what each owns, status, progress, current task, tokens and cost, what it waits on), blockers (pending questions, errors, non-zero exits) and the log, newest last. The slug comes from the `fleet_objective` title; before that, it is `fleet-<fleet session>`, and naming the fleet moves the document. Writes are atomic (temp file and rename), a burst of events writes once per second, and the session end flushes the last change. Manual edits to the document are overwritten.
+
+**Controller tool allowlist.** The controller only coordinates, reads and remembers, so its session keeps just the `fleet_*` tools, `read`, `grep`, `find`, `ls`, `ask_user_question`, `ask_user_choice` and the Engram `mem_*` tools active. A tool another extension activates later is dropped again before the next request. Members and normal sessions keep every tool.
 
 ## v2.6.0 workspace updates
 

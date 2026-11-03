@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { PassThrough } from "node:stream";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
@@ -7,7 +8,7 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
-function harness(options: { platform?: NodeJS.Platform; pid?: number } = {}) {
+function harness(options: { platform?: NodeJS.Platform; pid?: number; closeStdoutOnExit?: boolean } = {}) {
 	const children: FakeChild[] = [];
 	const spawned: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
 	const events: FleetMemberEvent[] = [];
@@ -17,9 +18,12 @@ function harness(options: { platform?: NodeJS.Platform; pid?: number } = {}) {
 		name: "api",
 		objective: "Build the API",
 		launch: { command: "pi", args: ["--mode", "rpc"], env: { PATH: "/bin" }, cwd: "/work/api" },
+		stdoutDrainMs: 2000,
 		spawn: (command, args, spawnOptions) => {
 			spawned.push({ command, args, options: spawnOptions as unknown as Record<string, unknown> });
 			const child = fakeChild({ pid: options.pid, exitOnStdinEnd: false, exitOnKill: false });
+			// A real process closes its stdout when it exits; the fake does not.
+			if (options.closeStdoutOnExit !== false) child.child.on("exit", () => (child.child.stdout as PassThrough | null)?.end());
 			children.push(child);
 			return child.child;
 		},
@@ -217,4 +221,76 @@ test("a stopping member refuses new commands and a second stop starts no second 
 	h.timers.at(-1)!.fn();
 	h.timers.at(-1)!.fn();
 	assert.deepEqual(h.groupKills, [[-4242, "SIGTERM"], [-4242, "SIGKILL"]]);
+});
+
+// Verifier L10 advisory 2: lines the member wrote before exiting still count.
+test("stdout lines that arrive after the process exit are still counted before the member exits", async () => {
+	const h = harness({ closeStdoutOnExit: false });
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	const child = h.children[0];
+	// The process exit event can beat the last lines still in the stdout pipe.
+	child.exit(0, null);
+	child.emit(assistantEnd({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, costTotal: 0.25 }, "final answer"));
+	child.emit({ type: "agent_settled", aborted: false });
+	(child.child.stdout as PassThrough).end();
+	await tick();
+	assert.equal(h.member.status, "exited");
+	assert.ok(h.timers.every(timer => timer.cancelled), "the stdout close finished the member, not the drain fallback");
+	assert.equal(h.member.usage.totalTokens, 120, "the final message_end is counted");
+	assert.ok(Math.abs(h.member.usage.cost - 0.25) < 1e-9);
+	assert.equal(h.member.lastText, "final answer");
+	assert.deepEqual(h.events.map(event => event.kind), ["settled", "exit"], "exit is reported last, once");
+	assert.match(h.member.digest(), /120 tok · \$0\.25/);
+});
+
+test("a member whose stdout never closes still exits after the bounded drain and refuses commands meanwhile", async () => {
+	const h = harness({ closeStdoutOnExit: false });
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	const child = h.children[0];
+	child.exit(0, null);
+	await tick();
+	assert.equal(h.member.prompt("more"), false, "an exited process takes no commands");
+	child.emit(assistantEnd({ input: 5, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 10, costTotal: 0 }));
+	await tick();
+	assert.equal(h.member.usage.totalTokens, 10, "late lines count while draining");
+	assert.deepEqual(h.events, []);
+	const drain = h.timers.at(-1)!;
+	assert.equal(drain.ms, 2000);
+	drain.fn();
+	assert.equal(h.member.status, "exited");
+	assert.deepEqual(h.events, [{ kind: "exit", code: 0, signal: null }]);
+	assert.equal(h.member.exitCode, 0);
+});
+
+test("inspect returns the detail plus a bounded activity tail and the member's ODD feature document", async () => {
+	const h = harness();
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	const child = h.children[0];
+	for (let i = 0; i < 60; i++) child.emit({ type: "tool_execution_start", toolCallId: `r${i}`, toolName: i % 2 ? "read" : "grep", args: {} });
+	child.emit({ type: "tool_execution_start", toolCallId: "e1", toolName: "edit", args: { path: "odd/tasks/billing-api.md", edits: [] } });
+	child.emit(assistantEnd({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, costTotal: 0 }, `working on routes ${"z".repeat(3000)}`));
+	child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Pick a database", options: ["postgres", "sqlite"] });
+	await tick();
+	const inspected = h.member.inspect(5);
+	assert.ok(inspected.startsWith(h.member.detail()), "starts with the detail");
+	assert.match(inspected, /^feature document: \/work\/api\/odd\/tasks\/billing-api\.md$/m);
+	const tail = inspected.slice(inspected.indexOf("recent activity")).split("\n");
+	assert.equal(tail.length, 6);
+	assert.equal(tail[0], "recent activity (last 5 of 63):");
+	assert.deepEqual(tail.slice(1, 4), ["- tool grep", "- tool read", "- tool edit"]);
+	assert.match(tail[4], /^- reply: working on routes z+…$/);
+	assert.ok(tail[4].length <= 170, `a reply entry is bounded (${tail[4].length})`);
+	assert.equal(tail[5], "- question (select): Pick a database [postgres | sqlite]");
+	assert.ok(inspected.length < 2500, `inspect is bounded (${inspected.length})`);
+	assert.equal(h.member.inspect(1000).split("\n").filter(line => line.startsWith("- ")).length, 63, "the tail holds every entry under its cap");
+	const plain = harness();
+	plain.member.start();
+	await tick();
+	assert.doesNotMatch(plain.member.inspect(40), /feature document/, "no document line when none appeared");
 });

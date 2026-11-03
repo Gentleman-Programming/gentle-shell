@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import { JsonLines, piCommand, type ChildLike, type PiCommand, type ProcessControl, type Spawn } from "./agents-runner.ts";
 import { childPackageExtensionArgs, parseChildPackageInjection } from "./child-package-injection.ts";
 import { FLEET_ROLE_ENV } from "./fleet-role.ts";
@@ -15,6 +16,12 @@ const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const LAST_TEXT_MAX = 400;
 const DETAIL_FIELD_MAX = 300;
 const STOP_GRACE_MS = 5000;
+// After the process exits, its last stdout lines may still be in the pipe.
+const STDOUT_DRAIN_MS = 2000;
+const ACTIVITY_MAX = 200;
+const ACTIVITY_TEXT_MAX = 160;
+const INSPECT_LINES_MAX = 200;
+const FEATURE_DOC_PATTERN = /(?:[\w.~\/-]*\/)?odd\/tasks\/[\w.-]+\.md/g;
 const hostProcess: ProcessControl = { platform: process.platform, kill: (pid, signal) => process.kill(pid, signal) };
 
 export interface MemberLaunchInput {
@@ -76,6 +83,7 @@ export interface FleetMemberOptions {
 	schedule(fn: () => void, ms: number): () => void;
 	process?: ProcessControl;
 	stopGraceMs?: number;
+	stdoutDrainMs?: number;
 	/** Wake-worthy moments only: settle, question, exit. */
 	onEvent?(member: FleetMember, event: FleetMemberEvent): void;
 	/** Any tracked state change, for the user-facing status line. */
@@ -113,13 +121,22 @@ export class FleetMember {
 	lastText = "";
 	lastError: string | undefined;
 	dialogs: FleetMemberDialog[] = [];
+	exitCode: number | null = null;
+	exitSignal: string | null = null;
+	/** The member's own ODD feature document, when its tools or todo name one. */
+	featureDoc: string | undefined;
+	/** Bounded one-line activity log for explicit inspection; never a transcript. */
+	readonly activity: string[] = [];
 	private readonly options: FleetMemberOptions;
 	private readonly processControl: ProcessControl;
 	private child: ChildLike | undefined;
 	private processGroup: number | undefined;
 	private nextId = 0;
 	private cancelStop: () => void = () => {};
+	private cancelDrain: () => void = () => {};
 	private stopRequested = false;
+	private processExit: { code: number | null; signal: string | null } | undefined;
+	private stdoutClosed = false;
 
 	constructor(options: FleetMemberOptions) {
 		this.options = options;
@@ -130,6 +147,10 @@ export class FleetMember {
 
 	get live(): boolean {
 		return this.status !== "exited";
+	}
+
+	get cwd(): string {
+		return this.options.launch.cwd;
 	}
 
 	/** A stop was requested: the member takes no new commands. */
@@ -154,6 +175,10 @@ export class FleetMember {
 		const lines = new JsonLines(value => this.handle(value));
 		child.stdout?.setEncoding?.("utf8");
 		child.stdout?.on("data", (chunk: string | Buffer) => lines.push(String(chunk)));
+		// The member finishes when its stdout closes, so lines still in the pipe at
+		// process exit (the final message_end, agent_settled) are counted.
+		child.stdout?.on("end", () => { lines.push("\n"); this.stdoutDone(); });
+		child.stdout?.on("close", () => this.stdoutDone());
 		// EPIPE and write-after-end arrive as stream errors, not throws: without a
 		// listener they would crash the controller (same guard as agents-runner).
 		child.stdin?.on("error", error => { this.lastError = error.message; this.options.onChange?.(this); });
@@ -163,7 +188,7 @@ export class FleetMember {
 			this.lastError = error.message;
 			this.exited(null, null);
 		});
-		child.on("exit", (code, signal) => this.exited(code, signal));
+		child.on("exit", (code, signal) => this.processExited(code, signal));
 	}
 
 	/** Returns false when the member is stopping or gone and nothing was sent. */
@@ -191,7 +216,7 @@ export class FleetMember {
 	/** Close stdin for an orderly shutdown, then escalate after the grace period. */
 	stop(): void {
 		const child = this.child;
-		if (!child || !this.live || this.stopRequested) return;
+		if (!child || !this.live || this.stopRequested || this.processExit) return;
 		this.stopRequested = true;
 		try { child.stdin?.end(); } catch { this.signal("SIGTERM"); }
 		const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
@@ -226,13 +251,35 @@ export class FleetMember {
 		return lines.join("\n");
 	}
 
+	/** Detail plus the last `count` activity lines and the feature document. */
+	inspect(count: number): string {
+		const lines = [this.detail()];
+		if (this.featureDoc) lines.push(`feature document: ${this.featureDoc}`);
+		const take = Math.max(1, Math.min(INSPECT_LINES_MAX, Math.floor(count) || 1));
+		const tail = this.activity.slice(-take);
+		lines.push(tail.length === 0 ? "recent activity: none" : `recent activity (last ${tail.length} of ${this.activity.length}):`, ...tail.map(entry => `- ${entry}`));
+		return lines.join("\n");
+	}
+
 	private write(command: Raw): boolean {
 		const stdin = this.child?.stdin;
-		if (!stdin || !this.live || this.stopRequested || stdin.writableEnded) return false;
+		if (!stdin || !this.live || this.stopRequested || this.processExit || stdin.writableEnded) return false;
 		this.nextId += 1;
 		try { stdin.write(`${JSON.stringify({ id: `${this.name}-${this.nextId}`, ...command })}\n`); }
 		catch (error) { this.lastError = error instanceof Error ? error.message : String(error); return false; }
 		return true;
+	}
+
+	private note(entry: string): void {
+		this.activity.push(oneLine(entry, ACTIVITY_TEXT_MAX));
+		if (this.activity.length > ACTIVITY_MAX) this.activity.splice(0, this.activity.length - ACTIVITY_MAX);
+	}
+
+	private findFeatureDoc(value: unknown): void {
+		let text: string;
+		try { text = typeof value === "string" ? value : JSON.stringify(value) ?? ""; } catch { return; }
+		const found = text.slice(0, 4000).match(FEATURE_DOC_PATTERN)?.at(-1);
+		if (found) this.featureDoc = isAbsolute(found) ? found : resolve(this.cwd, found);
 	}
 
 	private setStatus(status: FleetMemberStatus): void {
@@ -248,6 +295,7 @@ export class FleetMember {
 			case "response":
 				if (event.success === false) {
 					this.lastError = oneLine(event.error, DETAIL_FIELD_MAX) || "command failed";
+					this.note(`error: ${this.lastError}`);
 					if (event.command === "prompt" && this.status === "working") {
 						this.setStatus("idle");
 						this.options.onEvent?.(this, { kind: "settled" });
@@ -260,6 +308,8 @@ export class FleetMember {
 				return;
 			case "tool_execution_start":
 				this.lastTool = oneLine(event.toolName, 40) || this.lastTool;
+				this.note(`tool ${this.lastTool ?? "?"}`);
+				this.findFeatureDoc(event.args);
 				this.options.onChange?.(this);
 				return;
 			case "tool_execution_end": {
@@ -268,6 +318,7 @@ export class FleetMember {
 				if (event.toolName === TODO_TOOL_NAME && record(state) && Array.isArray((state as Raw).tasks)) {
 					const { done, total, current } = todoProgress(state as unknown as TodoState, "");
 					this.todo = { done, total, current };
+					this.findFeatureDoc((state as unknown as TodoState).tasks.map(task => `${task.title} ${task.note ?? ""}`).join(" "));
 				}
 				this.options.onChange?.(this);
 				return;
@@ -281,6 +332,7 @@ export class FleetMember {
 				if (typeof event.message === "string") dialog.message = oneLine(event.message, DETAIL_FIELD_MAX);
 				if (Array.isArray(event.options)) dialog.options = event.options.filter((option): option is string => typeof option === "string");
 				this.dialogs.push(dialog);
+				this.note(`question (${dialog.method}): ${dialog.title}${dialog.options?.length ? ` [${dialog.options.join(" | ")}]` : ""}`);
 				this.setStatus("waiting-question");
 				this.options.onEvent?.(this, { kind: "dialog", dialog });
 				return;
@@ -288,6 +340,7 @@ export class FleetMember {
 			case "agent_settled":
 				// A settled run waits on nothing: its dialogs resolved or timed out.
 				this.dialogs = [];
+				this.note("settled");
 				this.setStatus("idle");
 				this.options.onEvent?.(this, { kind: "settled" });
 				return;
@@ -314,14 +367,40 @@ export class FleetMember {
 		const text = Array.isArray(message.content)
 			? message.content.map(part => record(part)?.type === "text" ? String(record(part)?.text ?? "") : "").join("").replace(/\s+/g, " ").trim()
 			: "";
-		if (text) this.lastText = text.length > LAST_TEXT_MAX ? `…${text.slice(-(LAST_TEXT_MAX - 1))}` : text;
+		if (text) {
+			this.lastText = text.length > LAST_TEXT_MAX ? `…${text.slice(-(LAST_TEXT_MAX - 1))}` : text;
+			this.note(`reply: ${text}`);
+		}
 		this.options.onChange?.(this);
+	}
+
+	// The process is gone: stop escalating and take no commands, but keep reading
+	// stdout until it closes, with a bounded fallback for a pipe left open.
+	private processExited(code: number | null, signal: string | null): void {
+		if (!this.live || this.processExit) return;
+		this.processExit = { code, signal };
+		this.cancelStop();
+		const stdout = this.child?.stdout;
+		if (!stdout || this.stdoutClosed || stdout.readableEnded) {
+			this.exited(code, signal);
+			return;
+		}
+		this.cancelDrain = this.options.schedule(() => this.exited(code, signal), this.options.stdoutDrainMs ?? STDOUT_DRAIN_MS);
+	}
+
+	private stdoutDone(): void {
+		this.stdoutClosed = true;
+		if (this.processExit) this.exited(this.processExit.code, this.processExit.signal);
 	}
 
 	private exited(code: number | null, signal: string | null): void {
 		if (!this.live) return;
 		this.cancelStop();
+		this.cancelDrain();
 		this.dialogs = [];
+		this.exitCode = code;
+		this.exitSignal = signal;
+		this.note(`exited (code ${code ?? "none"}${signal ? `, ${signal}` : ""})`);
 		this.status = "exited";
 		this.options.onChange?.(this);
 		this.options.onEvent?.(this, { kind: "exit", code, signal });

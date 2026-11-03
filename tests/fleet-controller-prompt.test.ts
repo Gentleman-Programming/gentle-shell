@@ -66,8 +66,8 @@ async function appendedPrompt(role: string | undefined): Promise<string> {
 }
 
 test("the fleet prompt asset stays lean and states the fleet rules", () => {
-	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") < 2048, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
-	for (const rule of [/never edit code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i]) assert.match(FLEET_PROMPT, rule);
+	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") < 1700, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
+	for (const rule of [/never edit code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
 });
 
 test("the fleet controller gets the fleet prompt instead of the ODD orchestrator prompt", async () => {

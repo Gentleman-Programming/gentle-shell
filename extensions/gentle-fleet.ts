@@ -6,19 +6,33 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
+import { FleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
 import { buildMemberLaunch, FleetMember, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
 
-// Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0). Active only
+// Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1). Active only
 // in the session `gentle-shell orchestrator` starts: it spawns full headless
-// Gentle Shell members, tracks them in code, and wakes the controller model
-// with one coalesced digest when a member settles, asks or exits.
+// Gentle Shell members, tracks them in code, keeps the fleet ledger and its
+// general document current by code, and wakes the controller model with one
+// coalesced digest when a member settles, asks or exits.
 
 export const FLEET_MEMBER_CAP = 3;
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
 const WIDGET_KEY = "gentle-fleet";
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const FLEET_INSPECT_LINES = 40;
+const INSPECT_LINES_MAX = 200;
+const LOG_TEXT_MAX = 120;
+
+// Live E2E (L8): the controller prefix is mostly tool schemas, and peer/session
+// tools invited needless calls. The controller only coordinates, reads and
+// remembers; members and normal sessions keep every tool.
+const CONTROLLER_TOOLS = new Set(["read", "grep", "find", "ls", "ask_user_question", "ask_user_choice"]);
+
+export function isControllerTool(name: string): boolean {
+	return name.startsWith("fleet_") || name.startsWith("mem_") || CONTROLLER_TOOLS.has(name);
+}
 
 export interface FleetDeps {
 	spawn: Spawn;
@@ -27,6 +41,9 @@ export interface FleetDeps {
 	home: string;
 	agentHome?: string;
 	process?: ProcessControl;
+	now?(): Date;
+	/** Atomic text write for the ledger and the fleet document. */
+	writeFile?(path: string, text: string): void;
 }
 
 const defaultDeps = (): FleetDeps => ({
@@ -43,6 +60,26 @@ function text(value: string, details: Record<string, unknown> = {}) {
 	return { content: [{ type: "text" as const, text: value }], details: { gentleFleet: details } };
 }
 
+function oneLine(value: string, max: number): string {
+	const line = value.replace(/\s+/g, " ").trim();
+	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function questionLine(dialog: { title: string; options?: string[] }): string {
+	return `${dialog.title}${dialog.options?.length ? ` [${dialog.options.join(" | ")}]` : ""}`;
+}
+
+function ledgerFields(member: FleetMember): FleetMemberFields {
+	return {
+		status: member.status,
+		todo: member.todo ?? null,
+		tokens: member.usage.totalTokens,
+		cost: member.usage.cost,
+		question: member.dialogs[0] ? questionLine(member.dialogs[0]) : null,
+		lastError: member.lastError ?? null,
+	};
+}
+
 export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<FleetDeps> = {}): void {
 	if (fleetRole(env) !== "controller") return;
 	const deps: FleetDeps = { ...defaultDeps(), ...overrides };
@@ -53,6 +90,38 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const pending = new Map<string, FleetMemberEvent[]>();
 	let cancelWake: (() => void) | undefined;
 	let closed = false;
+	let ledger: FleetLedger | undefined;
+	let reportedWriteError = false;
+
+	const ensureLedger = (cwd: string) => ledger ??= new FleetLedger({
+		fleetSessionId,
+		cwd,
+		ledgerPath: join(agentHome, "gentle-fleet", "sessions", fleetSessionId, "ledger.json"),
+		schedule: deps.schedule,
+		now: deps.now,
+		write: deps.writeFile,
+		onError: error => {
+			if (reportedWriteError) return;
+			reportedWriteError = true;
+			ctxRef?.ui.notify(`Gentle Fleet could not write its ledger or fleet document: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		},
+	});
+
+	const isCurrent = (member: FleetMember) => members.get(member.name) === member;
+	const track = (member: FleetMember) => {
+		if (isCurrent(member)) ledger?.update(member.name, ledgerFields(member));
+	};
+
+	// Only ever removes tools: another extension may have disabled one of the
+	// allowed tools on purpose (ask_user_choice outside the TUI), and the
+	// allowlist must not bring it back.
+	const restrictTools = () => {
+		const allowed = new Set(pi.getAllTools().filter(tool => tool.exposure !== "hidden" && isControllerTool(tool.name)).map(tool => tool.name));
+		const active = pi.getActiveTools();
+		const next = active.filter(name => allowed.has(name));
+		if (next.length === active.length) return;
+		pi.setActiveTools(next);
+	};
 
 	const refreshWidget = () => {
 		const ui = ctxRef?.hasUI ? ctxRef.ui : undefined;
@@ -78,7 +147,13 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 
 	const onMemberEvent = (member: FleetMember, event: FleetMemberEvent) => {
-		if (closed || members.get(member.name) !== member) return;
+		// A member from a previous session is forgotten and wakes nothing.
+		if (!isCurrent(member)) return;
+		track(member);
+		if (event.kind === "settled") ledger?.log("settle", member.name, member.digest());
+		if (event.kind === "dialog") ledger?.log("question", member.name, questionLine(event.dialog));
+		if (event.kind === "exit") ledger?.exited(member.name, event.code, event.signal);
+		if (closed) return;
 		pending.set(member.name, [...(pending.get(member.name) ?? []), event]);
 		cancelWake ??= deps.schedule(flushWake, FLEET_WAKE_WINDOW_MS);
 	};
@@ -89,19 +164,57 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return member ?? `No fleet member named "${String(name)}". Members: ${[...members.keys()].join(", ") || "none"}.`;
 	};
 
-	pi.on("session_start", (_event, ctx) => {
-		ctxRef = ctx;
-		closed = false;
-		fleetSessionId = ctx.sessionManager.getSessionId() || fleetSessionId;
-		refreshWidget();
-	});
-
-	pi.on("session_shutdown", () => {
-		closed = true;
+	const stopAll = () => {
 		cancelWake?.();
 		cancelWake = undefined;
 		pending.clear();
 		for (const member of members.values()) member.stop();
+		ledger?.flush();
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		// A new session (new, resume, fork) starts its own fleet: the previous
+		// session's members are stopped and forgotten so they cannot wake it.
+		stopAll();
+		members.clear();
+		ledger = undefined;
+		reportedWriteError = false;
+		ctxRef = ctx;
+		closed = false;
+		fleetSessionId = ctx.sessionManager.getSessionId() || fleetSessionId;
+		ensureLedger(ctx.cwd);
+		restrictTools();
+		refreshWidget();
+	});
+
+	// Tools registered or activated after session start (late extensions, MCP)
+	// are dropped again before the next request; an unchanged set is left alone.
+	pi.on("before_agent_start", () => {
+		restrictTools();
+	});
+
+	pi.on("session_shutdown", () => {
+		closed = true;
+		stopAll();
+	});
+
+	pi.registerTool({
+		name: "fleet_objective",
+		label: "Fleet objective",
+		description: "Name the fleet and state its objective. Call it first. Returns the path of the fleet document, which code keeps current.",
+		parameters: Type.Object({
+			title: Type.String({ description: "Short fleet title; it names the fleet document." }),
+			objective: Type.String({ description: "The fleet objective with scope and acceptance criteria." }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			ctxRef = ctx;
+			const { title, objective } = params as { title: string; objective: string };
+			if (!title?.trim() || !objective?.trim()) return text("Error: title and objective are required.", { error: "missing objective" });
+			const fleetLedger = ensureLedger(ctx.cwd);
+			const documentPath = fleetLedger.setObjective(title, objective);
+			fleetLedger.flush();
+			return text(`Fleet objective set. Fleet document: ${documentPath}`, { documentPath });
+		},
 	});
 
 	pi.registerTool({
@@ -133,11 +246,16 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				schedule: deps.schedule,
 				process: deps.process,
 				onEvent: onMemberEvent,
-				onChange: refreshWidget,
+				onChange: changed => {
+					refreshWidget();
+					track(changed);
+				},
 			});
 			members.set(name, member);
+			ensureLedger(ctx.cwd).spawned(name, objective, memberCwd);
 			member.start();
 			member.prompt(objective);
+			track(member);
 			refreshWidget();
 			return text(`Spawned fleet member "${name}" in ${memberCwd}. Its digest arrives when it settles, asks a question or exits.`, { name, cwd: memberCwd });
 		},
@@ -159,6 +277,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (!member.live) return text(`Error: member "${name}" has exited.`, { error: "exited" });
 			const sent = mode === "steer" ? member.steer(message) : member.prompt(message);
 			if (!sent) return text(`Error: member "${name}" is stopping and takes no new messages.`, { error: "stopping" });
+			ledger?.log("send", name, `${mode ?? "prompt"}: ${oneLine(message, LOG_TEXT_MAX)}`);
 			return text(`Sent to "${name}" (${mode ?? "prompt"}).`, { name });
 		},
 	});
@@ -187,8 +306,26 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const { name } = params as { name: string };
 			const member = memberOrError(name);
 			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
+			if (member.live && !member.stopping) ledger?.log("stop", name, "stop requested");
 			member.stop();
 			return text(`Stopping "${name}".`, { name });
+		},
+	});
+
+	pi.registerTool({
+		name: "fleet_inspect",
+		label: "Fleet inspect",
+		description: `A member's bounded detail plus its recent activity (tools, replies, questions) and its ODD feature document path. No transcript. lines defaults to ${FLEET_INSPECT_LINES}, at most ${INSPECT_LINES_MAX}.`,
+		parameters: Type.Object({
+			name: Type.String({ description: "Member name." }),
+			lines: Type.Optional(Type.Integer({ minimum: 1, maximum: INSPECT_LINES_MAX, description: "Activity lines to return." })),
+		}),
+		async execute(_id, params) {
+			const { name, lines } = params as { name: string; lines?: number };
+			const member = memberOrError(name);
+			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
+			const count = Math.min(INSPECT_LINES_MAX, Math.max(1, Math.floor(lines ?? FLEET_INSPECT_LINES)));
+			return text(member.inspect(count), { name, ...(member.featureDoc ? { featureDoc: member.featureDoc } : {}) });
 		},
 	});
 }

@@ -32,6 +32,7 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 	const tools = new Map<string, Tool>();
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
+	const userMessages: Array<{ content: unknown; options: unknown }> = [];
 	const registered = [...OTHER_TOOLS];
 	let active = OTHER_TOOLS.filter(name => name !== "hidden_mem_tool");
 	const activeSets: string[][] = [];
@@ -43,6 +44,7 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 			active.push(tool.name);
 		},
 		sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => sent.push({ message, options }),
+		sendUserMessage: async (content: unknown, options: unknown) => { userMessages.push({ content, options }); },
 		registerCommand() {},
 		events,
 		getAllTools: () => registered.map(name => ({ name, exposure: name === "hidden_mem_tool" ? "hidden" : "direct" })),
@@ -56,22 +58,77 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 		for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
 	};
 	const activate = (name: string) => { registered.push(name); active.push(name); };
-	return { pi, tools, handlers, sent, fire, activeSets, activeTools: () => [...active], activate };
+	return { pi, tools, handlers, sent, userMessages, fire, activeSets, activeTools: () => [...active], activate };
 }
 
 const mainCwd = join(scratch, "main");
 
+// A plain theme: every role paints its text unchanged.
+const plainTheme = { fg: (_role: string, text: string) => text, bold: (text: string) => text, bg: (_role: string, text: string) => text };
+
 function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
-	const widgets = new Map<string, string[] | undefined>();
+	const widgets = new Map<string, unknown>();
+	const placements = new Map<string, unknown>();
 	const notices: Array<[string, string]> = [];
+	const inputs: Array<(data: string) => { consume?: boolean } | undefined> = [];
+	const overlays: Array<{ component: { render(width: number): string[]; handleInput?(data: string): void }; options: unknown; closed: boolean }> = [];
+	let editorText = "";
+	let entriesRead = 0;
+	let renders = 0;
+	// The prompt editor has the focus unless a test moves it to a dialog.
+	const editor = { getText: () => editorText, isShowingAutocomplete: () => false };
+	let focused: unknown = editor;
+	const tui = { requestRender: () => { renders += 1; }, getFocusedComponent: () => focused, terminal: { rows: 40, columns: 100 } };
 	const ctx = {
 		cwd,
 		hasUI: true,
 		mode: "tui",
-		ui: { setWidget: (key: string, lines: string[] | undefined) => widgets.set(key, lines), setStatus() {}, notify: (message: string, level: string) => notices.push([message, level]) },
-		sessionManager: { getSessionId: () => sessionId },
+		isIdle: () => true,
+		ui: {
+			setWidget: (key: string, content: unknown, options?: unknown) => { widgets.set(key, content); placements.set(key, options); },
+			setStatus() {},
+			notify: (message: string, level: string) => notices.push([message, level]),
+			onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
+				inputs.push(handler);
+				return () => { inputs.splice(inputs.indexOf(handler), 1); };
+			},
+			getEditorText: () => editorText,
+			setEditorText: (text: string) => { editorText = text; },
+			custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => unknown, options: unknown) => new Promise(resolve => {
+				const overlay = { component: undefined as never, options, closed: false };
+				overlay.component = factory(tui, plainTheme, {}, value => { overlay.closed = true; resolve(value); }) as never;
+				overlays.push(overlay);
+			}),
+		},
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getEntries: () => {
+				entriesRead += 1;
+				return [{ type: "message", message: { role: "assistant", usage: { totalTokens: 5758, cost: { total: 0.061 } } } }];
+			},
+		},
 	} as unknown as ExtensionContext;
-	return { ctx, widgets, notices };
+	/** Mounts a widget factory like Pi does and renders it. */
+	const render = (key: string, width = 100): string[] => {
+		const content = widgets.get(key);
+		if (typeof content !== "function") return (content as string[] | undefined) ?? [];
+		return (content(tui, plainTheme) as { render(width: number): string[] }).render(width);
+	};
+	/** Raw terminal input, through the listeners like Pi's TUI; true when one consumed it. */
+	const press = (...keys: string[]) => keys.map(key => inputs.some(handler => handler(key)?.consume === true));
+	const type = (text: string) => {
+		const consumed = press(...text.split(""));
+		editorText += text;
+		return consumed;
+	};
+	return {
+		ctx, widgets, placements, notices, inputs, overlays, render, press, type,
+		setEditor: (text: string) => { editorText = text; },
+		focusDialog: () => { focused = {}; },
+		focusEditor: () => { focused = editor; },
+		entriesRead: () => entriesRead,
+		renders: () => renders,
+	};
 }
 
 let harnesses = 0;
@@ -236,16 +293,18 @@ test("fleet_send prompts or steers a member and fleet_status returns code-built 
 	assert.match(detail.content[0].text, /Own the api front/);
 });
 
-test("the fleet widget shows one digest line per member", async () => {
+test("outside the TUI (rpc) the fleet widget keeps one digest line per member", async () => {
 	const h = harness();
 	const { ctx, widgets } = fakeContext();
+	Object.assign(ctx, { mode: "rpc" });
 	await h.fire("session_start", ctx);
 	await spawnMember(h, ctx, "api");
 	await tick();
 	h.children[0].emit({ type: "tool_execution_start", toolCallId: "1", toolName: "read", args: {} });
 	await tick();
-	const lines = widgets.get("gentle-fleet");
-	assert.ok(lines && lines.some(line => /api \[working\].*last tool read/.test(line)), JSON.stringify(lines));
+	const lines = widgets.get("gentle-fleet") as string[] | undefined;
+	assert.ok(Array.isArray(lines) && lines.some(line => /api \[working\].*last tool read/.test(line)), JSON.stringify(lines));
+	assert.deepEqual([...widgets.keys()], ["gentle-fleet"], "no deck widgets outside the TUI");
 });
 
 test("session shutdown stops every member", async () => {
@@ -949,4 +1008,200 @@ test("a grant never lets the fleet answer a protected dialog", async () => {
 	release(false);
 	await f.settle();
 	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: false }]);
+});
+
+// --- T5-U2 (S1, S4, S7): the calm deck in the controller TUI.
+
+const F1 = "\x1bOP", F2 = "\x1bOQ", F3 = "\x1bOR", F4 = "\x1bOS", F5 = "\x1b[15~", ALT_M = "\x1bm", TAB = "\t";
+
+async function deckFleet(options: HarnessOptions = {}) {
+	const h = harness(controllerEnv, options);
+	const view = fakeContext();
+	const asked: Array<{ title: string; options?: string[]; signal?: AbortSignal }> = [];
+	const ui = view.ctx.ui as unknown as Record<string, unknown>;
+	// The human has not answered the open dialog yet.
+	ui.select = (title: string, choices: string[], opts?: { signal?: AbortSignal }) => { asked.push({ title, options: choices, signal: opts?.signal }); return new Promise(() => {}); };
+	ui.confirm = (title: string, _message: string, opts?: { signal?: AbortSignal }) => { asked.push({ title, signal: opts?.signal }); return new Promise(() => {}); };
+	await h.fire("session_start", view.ctx);
+	await h.tools.get("fleet_objective")!.execute("o", { title: `deck-${harnesses}`, objective: "Ship team workspaces." }, undefined, undefined, view.ctx);
+	await spawnMember(h, view.ctx, "web-invites", { worktree: false });
+	await tick();
+	const child = h.children[0];
+	const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
+	const status = () => view.render("gentle-fleet-status").join("\n");
+	const responses = () => child.written.filter(command => command.type === "extension_ui_response");
+	return { h, ...view, asked, child, settle, status, responses };
+}
+
+test("in the TUI the deck replaces the one-line widget: strip and focal bar above the input, lens panel, status and hint below", async () => {
+	const d = await deckFleet();
+	assert.equal(typeof d.widgets.get("gentle-fleet"), "function", "a component, not digest lines");
+	assert.deepEqual(d.placements.get("gentle-fleet"), { placement: "aboveEditor" });
+	assert.deepEqual(d.placements.get("gentle-fleet-status"), { placement: "belowEditor" });
+	assert.match(d.render("gentle-fleet")[0], /◎ deck-\d+ · .* 0% of the plan · 0 of 1 fronts done/);
+	assert.match(d.render("gentle-fleet")[1], /Nothing needs you/);
+	const lens = d.render("gentle-fleet-lens").join("\n");
+	assert.match(lens, /lens: \[f\]lows \[m\]ap \[\$\]costs \[l\]og/);
+	assert.match(lens, /● web-invites/);
+	assert.match(d.status(), /1 of 1 members live · nothing needs you .*lens flows · density light/);
+	assert.match(d.status(), /enter send .*F1-F4 lenses .*F5 zoom .*alt\+m more detail/);
+});
+
+test("member changes refresh the deck coalesced: many events, one snapshot per render", async () => {
+	const d = await deckFleet();
+	d.render("gentle-fleet");
+	const reads = d.entriesRead();
+	const renders = d.renders();
+	for (let i = 0; i < 20; i++) d.child.emit({ type: "tool_execution_start", toolCallId: String(i), toolName: "read", args: {} });
+	await d.settle();
+	assert.ok(d.renders() > renders, "a change asks Pi for a render");
+	assert.equal(d.entriesRead(), reads, "nothing is rebuilt before Pi renders");
+	d.render("gentle-fleet");
+	d.render("gentle-fleet-lens");
+	d.render("gentle-fleet-status");
+	assert.equal(d.entriesRead(), reads + 1, "one snapshot serves every widget of the frame");
+	assert.match(d.status(), /1 of 1 members live/);
+});
+
+test("F1-F4 switch the lens, alt+m cycles the density, F5 zooms and z or F5 closes the zoom", async () => {
+	const d = await deckFleet();
+	assert.deepEqual(d.press(F2), [true]);
+	assert.match(d.status(), /lens map · density light/);
+	d.press(F3);
+	assert.match(d.render("gentle-fleet-lens").join("\n"), /\$0\.00/, "the costs lens shows spend");
+	d.press(F4, F1);
+	assert.match(d.status(), /lens flows/);
+	d.press(ALT_M);
+	assert.match(d.status(), /density normal/);
+	d.press(ALT_M, ALT_M);
+	assert.match(d.status(), /density light/, "power wraps back to light");
+	assert.deepEqual(d.press(F5), [true]);
+	assert.equal(d.overlays.length, 1);
+	assert.deepEqual(d.overlays[0].options, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } });
+	assert.match(d.overlays[0].component.render(100).join("\n"), /lens: \[f\]lows.*\n[\s\S]*web-invites/);
+	assert.match(d.status(), /z back to the conversation/);
+	// Inside the zoom, letters switch the lens.
+	assert.deepEqual(d.press("m"), [true]);
+	assert.match(d.status(), /lens map/);
+	assert.deepEqual(d.press("z"), [true]);
+	assert.equal(d.overlays[0].closed, true);
+	await d.settle();
+	d.press(F5);
+	d.press(F5);
+	assert.equal(d.overlays[1].closed, true, "the zoom key closes it too");
+});
+
+test("typing a message that starts with a lens letter keeps every character and switches nothing", async () => {
+	const d = await deckFleet();
+	for (const text of ["fix the login", "make it so", "listo", "zoom in", "$5 budget", "? what now"]) {
+		d.setEditor("");
+		assert.ok(d.type(text).every(consumed => !consumed), text);
+		assert.match(d.status(), /lens flows · density light/, text);
+	}
+	assert.equal(d.overlays.length, 0);
+});
+
+test("tab reaches the focal bar only from an empty input with a focal item", async () => {
+	const d = await deckFleet();
+	assert.deepEqual(d.press(TAB), [false], "nothing needs the human: Pi's tab");
+	d.child.emit({ type: "extension_ui_request", id: "p1", ...MESSAGING });
+	await d.settle();
+	d.setEditor("draft");
+	assert.deepEqual(d.press(TAB), [false], "a draft keeps Pi's tab (autocomplete)");
+	d.setEditor("");
+	assert.deepEqual(d.press(TAB), [true]);
+	assert.match(d.status(), /1-3 choose .*tab back to the conversation/);
+	assert.deepEqual(d.press(TAB), [true]);
+	assert.match(d.status(), /tab your call .*enter send/);
+});
+
+test("1-4 on a relayed dialog forward the human's choice through the relay, once, and close its open dialog", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "p1", ...MESSAGING });
+	await d.settle();
+	assert.equal(d.asked.length, 1, "the relay opened its one dialog");
+	// The relay dialog has the focus; tab and the digits still reach the deck.
+	d.focusDialog();
+	const focal = d.render("gentle-fleet").join("\n");
+	assert.match(focal, /Your call → Authorize cross-orchestrator message to peer\?/);
+	assert.match(focal, /\[1\] Allow once {3}\[2\] Allow for this session {3}\[3\] Deny/);
+	assert.deepEqual(d.press(TAB, "3"), [true, true]);
+	await d.settle();
+	assert.deepEqual(d.responses(), [{ id: "p1", type: "extension_ui_response", value: "Deny" }]);
+	assert.equal(d.asked[0].signal?.aborted, true, "the open dialog is dismissed");
+	d.h.runTimers();
+	const ledger = readLedger(d.h);
+	assert.ok(ledger.log.some(entry => entry.kind === "answer" && /human answered \(relayed by the fleet\) "Authorize cross-orchestrator message to peer\? Reason: sync": Deny/.test(entry.text)), JSON.stringify(ledger.log));
+	assert.match(d.render("gentle-fleet").join("\n"), /Nothing needs you/);
+	assert.deepEqual(d.h.userMessages, [], "a relayed answer never goes to the fleet model");
+});
+
+test("fleet_answer escalate brings a member question to the deck; the human's choice goes to the fleet as a user message", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "q1", method: "select", title: "Invite links expire after?", options: ["7 days", "30 days"] });
+	await d.settle();
+	const result = await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	assert.match(result.content[0].text, /^Brought web-invites's select "Invite links expire after\?" to the human/);
+	assert.match(d.render("gentle-fleet").join("\n"), /Your call → Invite links expire after\?[\s\S]*\[1\] 7 days {3}\[2\] 30 days/);
+	assert.match((await d.h.tools.get("fleet_answer")!.execute("e2", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx)).content[0].text, /^Error: .*already/);
+	assert.deepEqual(d.press(TAB, "2"), [true, true]);
+	await d.settle();
+	assert.equal(d.h.userMessages.length, 1);
+	assert.match(String(d.h.userMessages[0].content), /^The human answered web-invites's escalated question q1 \("Invite links expire after\?"\): 30 days\. Answer the member with fleet_answer\.$/);
+	assert.deepEqual(d.responses(), [], "the fleet, not the deck, answers the member");
+	assert.match(d.render("gentle-fleet").join("\n"), /Nothing needs you/);
+	await d.h.tools.get("fleet_answer")!.execute("a", { name: "web-invites", answer: "30 days" }, undefined, undefined, d.ctx);
+	d.h.runTimers();
+	assert.deepEqual(readLedger(d.h).escalations, []);
+});
+
+test("a protected dialog cannot be escalated: it already goes to the human", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
+	await d.settle();
+	const result = await d.h.tools.get("fleet_answer")!.execute("e", { name: "web-invites", escalate: true }, undefined, undefined, d.ctx);
+	assert.match(result.content[0].text, /^Error: dialog p1 .* is relayed to the human/);
+});
+
+test("previous behavior with the deck mounted: a settle still wakes the controller with one code-built digest", async () => {
+	const d = await deckFleet();
+	d.child.emit({ type: "agent_settled", aborted: false });
+	await d.settle();
+	assert.equal(d.h.wakeTimers().length, 1);
+	d.h.runTimers();
+	assert.equal(d.h.sent.length, 1);
+	assert.equal(d.h.sent[0].message.customType, FLEET_DIGEST_MESSAGE_TYPE);
+	assert.match(String(d.h.sent[0].message.content), /^Fleet update \(code-built digest\):\n- web-invites \[idle\]/);
+	assert.deepEqual(d.h.sent[0].options, { deliverAs: "followUp", triggerTurn: true });
+});
+
+test("fleet_send refuses a slash command and sends nothing", async () => {
+	const d = await deckFleet();
+	for (const message of ["/gentle:review-mode disable", "  /gentle:telemetry enable"]) {
+		const result = await d.h.tools.get("fleet_send")!.execute("s", { name: "web-invites", message }, undefined, undefined, d.ctx);
+		assert.equal(result.content[0].text, "Error: fleet_send sends instructions, not slash commands.");
+	}
+	assert.equal(d.child.written.length, 1, "only the objective prompt");
+	assert.match((await d.h.tools.get("fleet_send")!.execute("s", { name: "web-invites", message: "use the /api/invites route" }, undefined, undefined, d.ctx)).content[0].text, /^Sent/);
+});
+
+test("the controller drops the residual skills catalog from its prompt; members and normal sessions keep theirs", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const skills = [{ name: "branch-pr", description: "Create PRs", filePath: "/skills/branch-pr/SKILL.md" }];
+	const event = { systemPromptOptions: { skills: [...skills], appendSystemPrompt: "" } };
+	await h.fire("before_agent_start", ctx, event);
+	assert.deepEqual(event.systemPromptOptions.skills, []);
+	for (const env of [{}, { [FLEET_ROLE_ENV]: "member" }]) assert.equal(harness(env).handlers.get("before_agent_start"), undefined, JSON.stringify(env));
+});
+
+test("without the deck (rpc) fleet_answer escalate is refused and the question stays with the fleet", async () => {
+	const f = await fleetWithMember({ ctx: { mode: "rpc" } });
+	f.child.emit({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Ship today?" });
+	await f.settle();
+	const result = await f.answer({ escalate: true });
+	assert.equal(result.content[0].text, "Error: the human has no fleet deck in this mode; ask them with ask_user_question or ask_user_choice.");
+	assert.deepEqual(f.h.userMessages, []);
+	assert.match((await f.answer({ answer: "yes" })).content[0].text, /^Answered/);
 });

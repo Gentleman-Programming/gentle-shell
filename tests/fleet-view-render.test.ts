@@ -148,9 +148,11 @@ test("the status line counts live members and the queue; the budget shows only i
 test("the hint line teaches the next key for the focused place", () => {
 	const queue = attentionQueue(inkwellFleet());
 	const hint = (context: (typeof FLEET_HINT_CONTEXTS)[number], density: (typeof FLEET_DENSITIES)[number] = "light") => stripAnsi(renderHintLine(context, queue, density, 180, theme)[0]);
-	assert.match(hint("input"), /tab your call .*enter send .*F1-F4 lenses .*alt\+m more detail: normal/);
+	assert.match(hint("input"), /tab your call .*enter send .*F1-F4 lenses .*F5 zoom .*alt\+m more detail: normal/);
+	// Letter keys act only outside the input, so the input hint never offers them.
+	assert.doesNotMatch(hint("input"), /\? help|f m \$ l/);
 	assert.match(hint("input", "power"), /alt\+m less detail: light/);
-	assert.match(hint("focal"), /1-4 choose .*tab back to the conversation/);
+	assert.match(hint("focal"), /1-4 choose .*tab back to the conversation .*f m \$ l lenses .*z zoom .*\? help/);
 	assert.match(hint("lens"), /f m \$ l switch lens .*z zoom/);
 	assert.match(hint("zoom"), /z back to the conversation/);
 });

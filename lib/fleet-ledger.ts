@@ -13,7 +13,7 @@ const TEXT_MAX = 160;
 const CELL_MAX = 80;
 const SLUG_MAX = 60;
 
-export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve";
+export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve" | "escalate";
 export const FLEET_AUTO_APPROVALS_MAX = 200;
 const GRANT_TEXT_MAX = 300;
 
@@ -68,6 +68,17 @@ export interface FleetBlockerNote {
 	text: string;
 }
 
+/** A member question the fleet brought to the human (fleet_answer escalate); the human's answer goes to the fleet. */
+export interface FleetEscalation {
+	at: string;
+	member: string;
+	dialogId: string;
+	method: string;
+	title: string;
+	message?: string;
+	options?: string[];
+}
+
 /** One protected dialog code approved under the controller's Super YOLO. */
 export interface FleetAutoApproval {
 	at: string;
@@ -93,6 +104,8 @@ export interface FleetLedgerState {
 	nextGrantId: number;
 	/** Audit of code approvals under the controller's Super YOLO, newest last. */
 	autoApprovals: FleetAutoApproval[];
+	/** Member questions waiting on the human, oldest first. */
+	escalations: FleetEscalation[];
 	log: FleetLogEntry[];
 }
 
@@ -107,6 +120,8 @@ export interface FleetLedgerOptions {
 	write?(path: string, text: string): void;
 	windowMs?: number;
 	onError?(error: unknown): void;
+	/** Any state change, before the write window: the fleet deck refreshes from it. */
+	onChange?(): void;
 }
 
 function oneLine(value: string, max: number): string {
@@ -167,6 +182,7 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 	}
 	for (const warning of state.budgetWarnings) blockers.push(`- ${warning.member ?? "fleet"}: budget — ${oneLine(warning.text, TEXT_MAX)}`);
 	for (const note of state.blockers) blockers.push(`- ${note.member}: ${note.text}`);
+	for (const entry of state.escalations) blockers.push(`- ${entry.member}: escalated to the human — ${oneLine(entry.title, TEXT_MAX)}`);
 	const grants = state.grants.map(grant => `- ${grant.id} · ${code(grant.scope)} — ${grant.description} (granted ${grant.grantedAt})`);
 	lines.push("", "## Blockers", "", ...(blockers.length > 0 ? blockers : ["None."]), "", "## Grants", "", ...(grants.length > 0 ? grants : ["None."]));
 	if (state.autoApprovals.length > 0) {
@@ -202,12 +218,18 @@ export class FleetLedger {
 			grants: [],
 			nextGrantId: 1,
 			autoApprovals: [],
+			escalations: [],
 			log: [],
 		};
 	}
 
 	get documentPath(): string {
 		return this.state.documentPath;
+	}
+
+	/** The live state, read-only, for the fleet deck. */
+	get current(): Readonly<FleetLedgerState> {
+		return this.state;
 	}
 
 	get grants(): readonly FleetGrant[] {
@@ -288,6 +310,28 @@ export class FleetLedger {
 		this.log("auto-approve", member, `${oneLine(title, CELL_MAX)} → ${answer}`);
 	}
 
+	escalate(member: string, dialog: Omit<FleetEscalation, "at" | "member">): void {
+		this.state.escalations.push({ at: this.now(), member, ...dialog, title: oneLine(dialog.title, TEXT_MAX) });
+		this.log("escalate", member, dialog.title);
+	}
+
+	/** The human answered an escalation; it leaves the queue. */
+	resolveEscalation(member: string, dialogId: string): FleetEscalation | undefined {
+		const index = this.state.escalations.findIndex(entry => entry.member === member && entry.dialogId === dialogId);
+		if (index < 0) return undefined;
+		const [entry] = this.state.escalations.splice(index, 1);
+		this.changed();
+		return entry;
+	}
+
+	/** Drops a member's escalations whose dialog is no longer pending. */
+	keepEscalations(member: string, pendingDialogIds: readonly string[]): void {
+		const kept = this.state.escalations.filter(entry => entry.member !== member || pendingDialogIds.includes(entry.dialogId));
+		if (kept.length === this.state.escalations.length) return;
+		this.state.escalations = kept;
+		this.changed();
+	}
+
 	log(kind: FleetLogKind, member: string | null, text: string): void {
 		this.state.log.push({ at: this.now(), kind, member, text: oneLine(text, TEXT_MAX) });
 		if (this.state.log.length > FLEET_LOG_MAX) this.state.log.splice(0, this.state.log.length - FLEET_LOG_MAX);
@@ -304,6 +348,7 @@ export class FleetLedger {
 
 	// The first change opens one write window; later changes ride along.
 	private changed(): void {
+		this.options.onChange?.();
 		this.cancelWrite ??= this.options.schedule(() => {
 			this.cancelWrite = undefined;
 			this.writeNow();

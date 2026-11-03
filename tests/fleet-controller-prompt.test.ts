@@ -70,14 +70,14 @@ async function appendedPrompt(role: string | undefined, cwd = fixtureCwd): Promi
 }
 
 test("the fleet prompt asset stays lean and states the fleet rules", () => {
-	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") < 2600, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
-	for (const rule of [/do not write code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
+	assert.ok(Buffer.byteLength(FLEET_PROMPT, "utf8") <= 2700, `fleet prompt is ${Buffer.byteLength(FLEET_PROMPT, "utf8")} bytes`);
+	for (const rule of [/do not write or review code/i, /124k/, /steer/i, /digest/i, /human/i, /fleet_spawn/, /merge/i, /language/i, /fleet_objective/, /fleet_inspect/]) assert.match(FLEET_PROMPT, rule);
 });
 
 // T3 (S2, L17): the fleet answers members itself and escalates only the
 // accepted classes; its job is orchestration, never code or delegation.
 test("the fleet prompt states the accepted authority boundary and the fleet's own job", () => {
-	for (const rule of [/fleet_answer/, /provider consent/i, /credentials/i, /destructive/i, /publishing/i, /grant/i, /fleet_grant/, /relayed (to the human )?by code/i, /ask_user_question|ask_user_choice/, /you do not write code/i]) assert.match(FLEET_PROMPT, rule);
+	for (const rule of [/fleet_answer/, /provider consent/i, /credentials/i, /destructive/i, /publishing/i, /grant/i, /fleet_grant/, /relayed (to the human )?by code/i, /ask_user_question|ask_user_choice/, /you do not write or review code yourself/i]) assert.match(FLEET_PROMPT, rule);
 	assert.doesNotMatch(FLEET_PROMPT, /Relay every member question/i, "the F0 relay-everything rule is superseded");
 	assert.doesNotMatch(FLEET_PROMPT, /subagent|delegat/i, "the fleet orchestrator knows nothing about delegation");
 });
@@ -146,4 +146,11 @@ test("an ordinary session keeps the ODD orchestrator prompt", async () => {
 	const appended = await appendedPrompt(undefined);
 	assert.match(appended, ODD_MARKER);
 	assert.equal(appended.includes(FLEET_PROMPT), false);
+});
+
+// L35: the live controller described itself as a technical assistant that reviews code.
+test("the fleet prompt opens with its identity: the Gentle Shell fleet orchestrator leading members toward the objective", () => {
+	const intro = FLEET_PROMPT.split("\n").find(line => line.startsWith("You are"));
+	assert.match(String(intro), /^You are the Gentle Shell fleet orchestrator: you lead members toward the human's objective\. You do not write or review code yourself/);
+	assert.match(FLEET_PROMPT, /fleet_answer` with `escalate: true`/, "member questions outside its authority go to the deck");
 });

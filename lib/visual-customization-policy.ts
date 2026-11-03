@@ -33,6 +33,31 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	density: DENSITY.COMFORTABLE,
 	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true },
 };
+/**
+ * Presets bundle the density and visibility switches (design/shell-rework/inventory.md):
+ * Light keeps priority 1 (model, context, agent questions, review), Neutral is
+ * the default, Power user shows everything densely. They never change the
+ * placements and add no key to the file, so every binary keeps reading it;
+ * the active preset is whichever bundle the current settings match.
+ */
+export const VISUAL_PRESET = { LIGHT: "light", NEUTRAL: "neutral", POWER_USER: "power-user" } as const;
+export type VisualPreset = (typeof VISUAL_PRESET)[keyof typeof VISUAL_PRESET];
+const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "density" | "visibility">> = {
+	[VISUAL_PRESET.LIGHT]: { density: DENSITY.MINIMAL, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true } },
+	[VISUAL_PRESET.NEUTRAL]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility } },
+	[VISUAL_PRESET.POWER_USER]: { density: DENSITY.COMPACT, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } },
+};
+export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset): VisualSettings {
+	const bundle = PRESET_BUNDLES[preset];
+	return { ...settings, density: bundle.density, visibility: { ...bundle.visibility } };
+}
+/** The preset the settings match, or undefined for a hand-tuned mix. */
+export function visualPresetOf(settings: VisualSettings): VisualPreset | undefined {
+	return (Object.values(VISUAL_PRESET) as VisualPreset[]).find((preset) => {
+		const bundle = PRESET_BUNDLES[preset];
+		return bundle.density === settings.density && (Object.keys(bundle.visibility) as (keyof VisualVisibility)[]).every((key) => bundle.visibility[key] === settings.visibility[key]);
+	});
+}
 /** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */
 export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"] as const satisfies readonly (keyof VisualVisibility)[];
 /** Keys added after v1 shipped: stored settings may omit them together or one at a time, and they default to shown. */

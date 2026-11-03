@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
+import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, isVisualSettings, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, visualPresetOf, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
 
 test("missing settings use responsive defaults and return independent copies", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
@@ -136,4 +136,35 @@ test("atomic write round trips and invalid existing files fall back without over
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).malformed, true);
 		assert.equal(readFileSync(path, "utf8"), "broken");
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// Presets (/gentle:customize → Layout → Preset) bundle the existing density and
+// visibility switches; they never add a key, so every binary keeps reading the file.
+test("presets are valid settings that keep the file format and the chosen placements", () => {
+	assert.deepEqual(Object.values(VISUAL_PRESET), ["light", "neutral", "power-user"]);
+	const custom = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.RIGHT, headerPlacement: HEADER_PLACEMENT.BELOW_INPUT };
+	for (const preset of Object.values(VISUAL_PRESET)) {
+		const applied = applyVisualPreset(custom, preset);
+		assert.ok(isVisualSettings(applied), `${preset} is a valid settings object`);
+		assert.equal(applied.statusPlacement, STATUS_PLACEMENT.RIGHT, "a preset keeps the status placement");
+		assert.equal(applied.headerPlacement, HEADER_PLACEMENT.BELOW_INPUT, "a preset keeps the header placement");
+		assert.equal(visualPresetOf(applied), preset);
+	}
+	assert.deepEqual(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.NEUTRAL), DEFAULT_VISUAL_SETTINGS, "Neutral is today's default");
+	const light = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT);
+	assert.equal(light.density, DENSITY.MINIMAL);
+	assert.deepEqual({ changes: light.visibility.changes, todo: light.visibility.todo, agents: light.visibility.agents, modelDetails: light.visibility.modelDetails, usageCost: light.visibility.usageCost }, { changes: false, todo: false, agents: true, modelDetails: true, usageCost: true }, "Light keeps priority 1: model, context, agent questions");
+	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
+	assert.equal(power.density, DENSITY.COMPACT);
+	assert.ok(Object.values(power.visibility).every(Boolean), "Power user shows everything");
+	assert.equal(visualPresetOf({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }), undefined, "a hand-tuned mix is custom");
+	const home = mkdtempSync(join(tmpdir(), "visual-preset-"));
+	try {
+		writeVisualSettings(light, { gentlePiConfigHome: home });
+		const stored = JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8"));
+		assert.deepEqual(Object.keys(stored).sort(), ["density", "headerPlacement", "schema", "statusPlacement", "visibility"], "no preset key is stored");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, light);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 });

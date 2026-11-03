@@ -1601,6 +1601,12 @@ export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | 
 	return value === "" || value.toLowerCase() === "off" ? undefined : value;
 }
 
+export function presetShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env.GENTLE_PI_SHELL_PRESET_KEY?.trim();
+	if (value === undefined) return PRESET_SHORTCUT_DEFAULT;
+	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+}
+
 export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
 	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
@@ -1728,6 +1734,13 @@ const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
 const USAGE_SHORTCUT_DEFAULT = "alt+u";
+const PRESET_SHORTCUT_DEFAULT = "alt+l";
+const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
+/** The order the preset shortcut walks; a hand-tuned mix starts it on Neutral. */
+const PRESET_CYCLE: readonly VisualPreset[] = [VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL, VISUAL_PRESET.POWER_USER];
+export function nextVisualPreset(current: VisualPreset | undefined): VisualPreset {
+	return current === undefined ? VISUAL_PRESET.NEUTRAL : PRESET_CYCLE[(PRESET_CYCLE.indexOf(current) + 1) % PRESET_CYCLE.length]!;
+}
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
 const SHA_PREFIX_LENGTH = 16;
@@ -2696,6 +2709,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 		});
 	}
+	const presetKey = presetShortcut(env);
+	if (presetKey) {
+		pi.registerShortcut(presetKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Cycle the visual preset: Light, Neutral, Power user",
+			handler: async (ctx) => {
+				const current = resolveVisualSettings(animationOptions);
+				if (current.malformed || current.readError) {
+					ctx.ui.notify(`Cannot switch presets: unreadable or malformed visual settings (${current.globalFile}).`, "error");
+					return;
+				}
+				const next = nextVisualPreset(visualPresetOf(current.settings));
+				writeVisualSettings(applyVisualPreset(current.settings, next), animationOptions);
+				refreshVisual();
+				pi.events.emit(VISUAL_SETTINGS_CHANGED, { configHome: doubleEscCancelConfigHome });
+				ctx.ui.notify(`Preset: ${PRESET_LABEL[next]}`, "info");
+			},
+		});
+	}
 	pi.registerCommand("gentle:customize", {
 		description: "Configure appearance, audio notifications, Vim editing, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
@@ -2916,8 +2947,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			rows.push(...buildNotificationRows(ctx));
 			category = "Layout";
 			// Presets set density and visibility together and keep the placements; any switch below still overrides them.
-			const presetLabel: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
-			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${presetLabel[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)));
+			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)));
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }));

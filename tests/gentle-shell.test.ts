@@ -26,7 +26,7 @@ import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import { isJobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
-import { DEFAULT_VISUAL_SETTINGS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, resolveVisualSettings, visualPresetOf, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
@@ -6962,4 +6962,34 @@ test("a render of the Status part at another width never moves the rail's click 
 	} finally {
 		footer.dispose();
 	}
+});
+
+test("alt+l cycles the visual presets Light → Neutral → Power user → Light and saves each pick", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, handlers, shortcuts } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const shortcut = shortcuts.get("alt+l");
+	assert.ok(shortcut, "alt+l not registered");
+	const preset = () => visualPresetOf(resolveVisualSettings({ gentlePiConfigHome: home }).settings);
+	assert.equal(preset(), VISUAL_PRESET.NEUTRAL, "a fresh install starts on Neutral");
+	const seen: (string | undefined)[] = [];
+	for (let i = 0; i < 3; i++) {
+		await shortcut.handler(ctx);
+		seen.push(preset());
+	}
+	assert.deepEqual(seen, [VISUAL_PRESET.POWER_USER, VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL]);
+	assert.match(ui.notices.at(-1) ?? "", /Preset: Neutral/);
+	// A hand-tuned mix starts the cycle from Neutral.
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, density: DENSITY.MINIMAL }, { gentlePiConfigHome: home });
+	await shortcut.handler(ctx);
+	assert.equal(preset(), VISUAL_PRESET.NEUTRAL);
+
+	const silent = fakePi();
+	gentleShell(silent.pi, { GENTLE_PI_SHELL_PRESET_KEY: "off" });
+	assert.equal(silent.shortcuts.has("alt+l"), false, "GENTLE_PI_SHELL_PRESET_KEY=off drops the shortcut");
+	const moved = fakePi();
+	gentleShell(moved.pi, { GENTLE_PI_SHELL_PRESET_KEY: "alt+o" });
+	assert.ok(moved.shortcuts.has("alt+o"));
 });

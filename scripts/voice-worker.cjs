@@ -23,14 +23,20 @@ const { createHash } = require("node:crypto");
 const { createReadStream } = require("node:fs");
 const { lstat, readdir } = require("node:fs/promises");
 const path = require("node:path");
+const { release } = require("node:os");
 const { addAbortSignal } = require("node:stream");
 
 const SCHEMA = "gentle.voice/v1";
 const TARGETS = ["darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"];
 const MODEL_ROLES = ["encoder", "decoder", "joiner", "tokens"];
-// The only runtime files ever loaded; both must be listed as required files.
+// The only runtime files ever loaded; sherpa-onnx and the default capture
+// facade must be listed as required files, the PulseAudio facade is required
+// only where it is selected.
 const SHERPA_ENTRY = "node_modules/sherpa-onnx-node/non-streaming-asr.js";
 const CPAL_ENTRY = "node_modules/node-cpal/index.js";
+// The PulseAudio facade loads its own native file: bin/backend-pulseaudio/<target>/index.node.
+const PULSE_ENTRY = "node_modules/node-cpal/backend-pulseaudio.js";
+const pulseNative = (target) => `node_modules/node-cpal/bin/backend-pulseaudio/${target}/index.node`;
 const MAX_INPUT_LINE = 64 * 1024;
 const MAX_TREE_ENTRIES = 256;
 const MAX_TEXT = 16 * 1024;
@@ -127,9 +133,9 @@ function sha256(openRead, file, signal) {
 	});
 }
 
-async function validateRuntime(runtime, uid) {
+async function validateRuntime(runtime, uid, extraFiles = []) {
 	const files = await readTree(runtime.root, uid, "runtime-invalid");
-	for (const required of runtime.files) if (!files.has(required)) fail("runtime-invalid");
+	for (const required of [...runtime.files, ...extraFiles]) if (!files.has(required)) fail("runtime-invalid");
 }
 
 async function validateModel(model, uid, openRead, signal) {
@@ -271,13 +277,19 @@ class WorkerSession {
 		this.state = "loading";
 		const { io } = this;
 		if (request.target !== `${io.platform}-${io.arch}`) fail("runtime-invalid");
+		// WSLg exposes audio through a PulseAudio server, not an ALSA device, so a
+		// Microsoft kernel selects node-cpal's PulseAudio facade. That facade falls
+		// back to the default binary when its own native file is missing, so the
+		// facade and its native file are validated before anything is loaded.
+		const usePulse = io.platform === "linux" && /microsoft/i.test(io.kernelRelease ?? "");
+		const captureEntry = usePulse ? PULSE_ENTRY : CPAL_ENTRY;
 		// A cancel can arrive during any await; each step re-checks before going on.
-		await validateRuntime(request.runtime, io.uid);
+		await validateRuntime(request.runtime, io.uid, usePulse ? [PULSE_ENTRY, pulseNative(request.target)] : []);
 		if (this.state !== "loading") return;
 		this.request = request;
 		let cpal;
 		try {
-			cpal = io.loadModule(this.fromRuntime(CPAL_ENTRY));
+			cpal = io.loadModule(this.fromRuntime(captureEntry));
 		} catch {
 			fail("runtime-load");
 		}
@@ -464,6 +476,7 @@ if (require.main === module) {
 		exit: (code) => process.stdout.write("", () => process.exit(code)),
 		loadModule: (file) => require(file),
 		platform: process.platform,
+		kernelRelease: release(),
 		arch: process.arch,
 		nodeVersion: process.versions.node,
 		uid: typeof process.getuid === "function" ? process.getuid() : undefined,

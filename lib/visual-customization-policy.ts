@@ -52,8 +52,9 @@ export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset
 	const bundle = PRESET_BUNDLES[preset];
 	// Light is the minimal edition without the rail (Status at the bottom);
 	// leaving it brings the rail back, and the other presets keep any placement.
+	const leavingLight = visualPresetOf(settings) === VISUAL_PRESET.LIGHT;
 	const statusPlacement = preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM
-		: settings.statusPlacement === STATUS_PLACEMENT.BOTTOM ? STATUS_PLACEMENT.AUTO : settings.statusPlacement;
+		: leavingLight ? STATUS_PLACEMENT.AUTO : settings.statusPlacement;
 	return { ...settings, statusPlacement, density: bundle.density, visibility: { ...bundle.visibility } };
 }
 /** The preset the settings match, or undefined for a hand-tuned mix. */

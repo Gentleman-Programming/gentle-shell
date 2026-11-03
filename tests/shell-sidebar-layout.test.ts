@@ -1222,3 +1222,22 @@ test("below the rail breakpoint the status bar row stays only while its part pai
 	paints = false;
 	assert.doesNotMatch(renderLayoutFrame(f.root, 139, 6, () => {}).lines.join("\n"), /STATUS BAR/, "a part with nothing to show leaves the native layout");
 });
+
+test("the rail panel surface reaches the bottom of the viewport, not just the last section", (t) => {
+	const f = fixture("fullscreen", 160);
+	const painting = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;236m${text}\x1b[49m` };
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { surface: "panel", digest: () => "todo", render: (width: number) => ["TODOS".padEnd(width)], invalidate() {} });
+	// The shell's Status is a panel too, so the rail ends on the panel surface.
+	sidebarPart(f.tui, "footer", { render: () => ["Status"], invalidate() {} }, { surface: "panel", digest: () => "status", render: (width: number) => ["CHANGES".padEnd(width)], invalidate() {} });
+	const transcript = { render: () => ["CONVERSATION"], invalidate() {} };
+	f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
+	t.after(installSidebar(f.tui, painting));
+	renderLayoutFrame(f.root, 160, 12, () => {});
+	const frame = renderLayoutFrame(f.root, 160, 12, () => {});
+	const tinted = frame.lines.filter((line) => line.includes("\x1b[48;5;236m")).length;
+	assert.ok(frame.lines.at(-1)!.includes("\x1b[48;5;236m"), `the last screen row is still on the rail surface: ${JSON.stringify(frame.lines.at(-1))}`);
+	assert.ok(tinted >= 10, `the surface fills the rail column (${tinted} tinted rows)`);
+	assert.equal(rail(f).scrollTop, 0);
+	rail(f).scrollBy(5);
+	assert.equal(rail(f).scrollTop, 0, "the fill adds no scroll range");
+});

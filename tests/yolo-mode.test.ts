@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { captureReviewSessionIdentity, grantReviewSessionPermission, hasReviewSessionPermission, revokeReviewSessionPermission } from "../lib/review-session-standing-permission.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
+import { YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 
 const ON_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
@@ -317,4 +317,10 @@ test("monitor goes through the same command confirmation and YOLO waiver as bash
 	await h.command("enable");
 	assert.equal(await call("git push origin main"), undefined);
 	assert.ok(await call("git push origin main && rm -rf ./data"), "YOLO never waives a destructive command");
+});
+
+test("the YOLO banner stays a plain string widget outside the terminal UI, so RPC hosts still receive it", () => {
+	assert.deepEqual(yoloBannerContent("rpc", ON_TEXT), [ON_TEXT], "RPC forwards only string widgets");
+	assert.deepEqual(yoloBannerContent(undefined, ON_TEXT), [ON_TEXT]);
+	assert.equal(typeof yoloBannerContent("tui", ON_TEXT), "function", "the terminal UI gets the component that can step aside");
 });

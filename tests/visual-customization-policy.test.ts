@@ -152,6 +152,7 @@ test("presets are valid settings that keep the file format and the header placem
 	}
 	const fromLight = applyVisualPreset(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), VISUAL_PRESET.NEUTRAL);
 	assert.equal(fromLight.statusPlacement, STATUS_PLACEMENT.AUTO, "leaving Light brings the rail back");
+	assert.equal(applyVisualPreset({ ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.BOTTOM }, VISUAL_PRESET.NEUTRAL).statusPlacement, STATUS_PLACEMENT.BOTTOM, "a bottom placement chosen by hand stays");
 	assert.equal(visualPresetOf({ ...applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), statusPlacement: STATUS_PLACEMENT.AUTO }), undefined, "Light switches with a rail are a custom mix");
 	assert.deepEqual(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.NEUTRAL), DEFAULT_VISUAL_SETTINGS, "Neutral is today's default");
 	const light = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT);

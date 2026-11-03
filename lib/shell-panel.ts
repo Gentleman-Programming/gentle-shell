@@ -83,12 +83,13 @@ export interface PanelSummary {
 }
 
 /** ` ▸ <lead> … <count>`: the section that matters most, plus the todo count; undefined without live work. */
-export function renderWorkRow(summaries: readonly PanelSummary[], theme: PanelTheme, width: number): string | undefined {
+export function renderWorkRow(summaries: readonly PanelSummary[], theme: PanelTheme, width: number, hovered = false): string | undefined {
 	if (summaries.length === 0) return undefined;
 	const lead = [...summaries].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0]!;
 	const counted = lead.right ? lead : summaries.find((summary) => summary.right);
 	const right = !counted ? "" : counted === lead ? counted.right! : `${counted.right} ${counted.rightLabel ?? ""}`.trimEnd();
-	const row = fitPanelLine(`${theme.fg("muted", "▸")} ${lead.left}`, right ? theme.fg("muted", right) : "", Math.max(0, Math.floor(width) - 2));
+	// The ▸ is the row's tap affordance; hovering paints it like every other clickable surface.
+	const row = fitPanelLine(`${paintHoverable(theme, "▸", hovered, "muted")} ${lead.left}`, right ? theme.fg("muted", right) : "", Math.max(0, Math.floor(width) - 2));
 	return paintPanelSurface(theme, [` ${row} `])[0];
 }
 
@@ -105,10 +106,18 @@ const SHEET_ORDER = ["todo", "jobs", "agents", "footer"] as const;
  * ` ✿ Panel … esc back` row, then every section the rail would show, in rail
  * order, scrolled within `rows`. Rows hidden below say how many remain.
  */
-export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: number): string[] }>, theme: PanelTheme, width: number, view: { rows: number; scrollTop: number }): PanelSheet {
+const SHEET_BACK = "esc back";
+
+/** True when a click at (x, y) of a sheet `width` wide lands on its ` esc back ` control. */
+export function panelSheetBackHit(width: number, x: number, y: number): boolean {
+	const end = Math.max(0, Math.floor(width)) - 1;
+	return y === 0 && x >= end - SHEET_BACK.length - 1 && x < end + 1;
+}
+
+export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: number): string[] }>, theme: PanelTheme, width: number, view: { rows: number; scrollTop: number; backHovered?: boolean }): PanelSheet {
 	const target = Math.max(0, Math.floor(width));
 	const inner = Math.max(0, target - 2);
-	const title = ` ${fitPanelLine(`${theme.fg("accent", "✿")} ${theme.fg("text", theme.bold ? theme.bold("Panel") : "Panel")}`, theme.fg("muted", "esc back"), inner)} `;
+	const title = ` ${fitPanelLine(`${theme.fg("accent", "✿")} ${theme.fg("text", theme.bold ? theme.bold("Panel") : "Panel")}`, paintHoverable(theme, SHEET_BACK, view.backHovered ?? false, "muted"), inner)} `;
 	const content: string[] = [];
 	for (const key of SHEET_ORDER) {
 		const lines = [...(parts.get(key)?.render(inner) ?? [])];

@@ -76,14 +76,15 @@ export class ModelCooldown {
 
 type UsageLike = {
 	provider: string;
-	limits: ReadonlyArray<{ name?: string; limitReached: boolean; windows: ReadonlyArray<{ label?: string; windowSeconds?: number; usedPercent: number; resetAt: number | null }> }>;
+	limits: ReadonlyArray<{ name?: string; scope?: "provider"; limitReached: boolean; windows: ReadonlyArray<{ label?: string; windowSeconds?: number; usedPercent: number; resetAt: number | null }> }>;
 };
 
 /**
- * Mirrors a /gentle:usage reading into the cooldown. A spent limit named
- * like a model id (NaN reports one limit per model) makes only
- * `provider/name` wait until it resets; names that are not model ids, such
- * as Codex's `codex` and `codex_spark`, cool nothing on their own. The whole
+ * Mirrors a /gentle:usage reading into the cooldown. A spent limit that
+ * covers the whole provider (`scope: "provider"`, Codex's main limit), or
+ * every limit spent at once, makes the provider wait until the earliest
+ * reset. Any other spent limit names one model (NaN reports one per model,
+ * Codex extras use display names, matched in id form): only that model waits. The whole
  * provider waits only when every limit is spent, until the earliest reset;
  * a reading with room releases it. A full window whose reset already passed
  * is a stale reading and blocks nothing; a spent limit with no reset time at
@@ -99,12 +100,17 @@ export function syncUsageCooldown(usage: UsageLike, cooldown: ModelCooldown, now
 		return future.length ? Math.min(...future) : undefined;
 	};
 	const spent = usage.limits.map(spentUntil);
+	// The provider waits when a limit that covers all of it is spent, or when every limit is.
+	const covering = usage.limits.flatMap((limit, index) => (limit.scope === "provider" && spent[index] !== undefined ? [spent[index]!] : []));
 	const all = spent.length > 0 && spent.every((until) => until !== undefined);
-	if (all) cooldown.markProvider(usage.provider, Math.min(...(spent as number[])));
+	const providerUntil = covering.length ? Math.min(...covering) : all ? Math.min(...(spent as number[])) : undefined;
+	if (providerUntil !== undefined) cooldown.markProvider(usage.provider, providerUntil);
 	else cooldown.clearProvider(usage.provider);
 	usage.limits.forEach((limit, index) => {
 		const until = spent[index];
-		if (until !== undefined && limit.name && SAFE_MODEL_NAME.test(limit.name)) cooldown.markModelUntil(`${usage.provider}/${limit.name}`, until);
+		// Display names ("GPT-5.3 Codex_Spark") are matched in model-id form.
+		const id = limit.name?.trim().toLowerCase().replace(/[\s_]+/g, "-");
+		if (until !== undefined && limit.scope !== "provider" && id && SAFE_MODEL_NAME.test(id)) cooldown.markModelUntil(`${usage.provider}/${id}`, until);
 	});
 }
 

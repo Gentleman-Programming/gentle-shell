@@ -689,3 +689,8 @@ test("UsageStore hands every recorded reading to its onRecord hook (the fallback
 	assert.equal(store.get("anthropic")?.provider, "anthropic");
 	assert.doesNotThrow(() => new UsageStore().record({ provider: "openai", plan: undefined, limits: [], fetchedAt: 1 }));
 });
+
+test("Codex's main limit covers the whole provider; its extra limits cover one model each", () => {
+	const usage = parseCodexUsage(CODEX_PAYLOAD, NOW);
+	assert.deepEqual(usage.limits.map((limit) => [limit.name, limit.scope]), [["codex", "provider"], ["codex_spark", undefined]]);
+});

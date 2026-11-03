@@ -118,7 +118,7 @@ test("profile name submission never accepts a hidden field at heights 3–5, inc
 
 test("profile preview and cancel never apply; keyboard name and confirmations require deliberate input", async () => {
  const events: string[] = [];
- const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
+ const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
  const view = new VisualCustomizeView({ rows: [], theme, requestRender: () => {}, onClose: () => {}, profiles: {
   list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
  } });
@@ -147,7 +147,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
 
 test("profile confirmation stays visible at six rows for every destructive or applying action", async () => {
 	const events: string[] = [];
-	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
+	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
 	} });
@@ -165,7 +165,7 @@ test("profile confirmation stays visible at six rows for every destructive or ap
 
 test("profile confirmation captures selected name across catalog mutation and cancels vanished targets", async () => {
 	const events: string[] = [];
-	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
+	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	let catalog = [{ ...base, name: "Desk" }, { ...base, name: "Mobile" }];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => catalog, save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
@@ -190,7 +190,7 @@ test("profile confirmation captures selected name across catalog mutation and ca
 test("unrendered or clipped confirmations cannot be accepted", () => {
 	const events: string[] = [];
 	let height = 6;
-	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false } } };
+	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [base], save: () => {}, apply: () => {}, delete: () => { events.push("delete"); }, reset: () => { events.push("reset"); },
 	} });
@@ -204,7 +204,7 @@ test("unrendered or clipped confirmations cannot be accepted", () => {
 
 test("profile confirmations cannot execute after an unrendered resize hides full identity and yes", () => {
 	const name = "A".repeat(64);
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	for (const [key, action] of [["a", "apply"], ["d", "delete"], ["r", "replace"], ["z", "reset"]] as const) {
 		for (const width of [100, 36]) for (const shortHeight of [1, 2]) {
 			let height = 12;
@@ -226,7 +226,7 @@ test("profile confirmations cannot execute after an unrendered resize hides full
 });
 
 test("profile confirmation refuses a changed target identity without another render", () => {
-	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } }];
+	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } }];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {}, profiles: { list: () => catalog, save: () => {}, apply: name => { effects.push(name); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p"); view.handleInput("a");
@@ -263,7 +263,7 @@ test("main controls require a visible selected row at the last rendered width an
 });
 
 test("profile confirmation refuses same-name content drift for apply, replace and delete", () => {
-	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
+	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	for (const key of ["a", "r", "d"]) {
 		let catalog = [original];
 		const effects: string[] = [];
@@ -313,7 +313,7 @@ test("category panel renders bounded wide and narrow frames with independent nav
 test("long profile confirmation displays complete identity and yes instruction before accepting", async () => {
 	const name = "A".repeat(64);
 	const events: string[] = [];
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	let height = 8;
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [profile], save: () => {}, apply: value => { events.push(value); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p");
@@ -774,4 +774,106 @@ test("the audio footer drops f WAV when the selected row has no keyhint and adve
 	view.handleInput("\x1b[B");
 	const advanced = view.render(80).join("\n");
 	assert.match(advanced, /Tab panes · Enter change · f WAV · p test · Esc close/, "a row with a keyhint advertises the WAV key");
+});
+
+function settingsView(applied: string[] = []) {
+	const state = { density: "comfortable", status: "auto" };
+	const choice = (setting: string, key: "density" | "status", value: string, hint: string): CustomizeRow => ({
+		category: "Layout",
+		label: () => `${setting}: ${value}${state[key] === value ? " (current)" : ""}`,
+		choice: { setting, value, current: () => state[key] === value, hint },
+		preview: () => ({ title: `${setting} · ${value}`, sample: `line one ${value}\nline two` }),
+		action: () => { state[key] = value; applied.push(`${setting}=${value}`); },
+	});
+	const rows: CustomizeRow[] = [
+		...["auto", "right", "bottom"].map((value) => choice("Status placement", "status", value, "Where Status lives")),
+		...["comfortable", "compact", "minimal"].map((value) => choice("Density", "density", value, "Space between sections")),
+		{ category: "Layout", label: "Reset layout", action: () => { applied.push("reset"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+	// The user sees the card before the first key.
+	view.render(100);
+	view.handleInput("\x1b[C");
+	return { view, state, applied };
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("choices of one setting share a line: the current one is marked, without repeating the setting name", () => {
+	const { view } = settingsView();
+	const lines = view.render(100);
+	const status = lines.filter((line) => line.includes("Status placement") && /[●○]/.test(line));
+	assert.equal(status.length, 1, "one line for the setting");
+	assert.match(status[0]!, /▸ Status placement\s+● auto\s+○ right\s+○ bottom/);
+	assert.match(lines.find((line) => line.includes("Density"))!, /Density\s+● comfortable\s+○ compact\s+○ minimal/);
+	assert.ok(lines.some((line) => line.includes("Reset layout")), "plain rows stay rows");
+	assert.ok(!lines.join("\n").includes("(current)"), "no (current) suffix");
+	assert.ok(lines.some((line) => line.includes("Layout · 1/3")), "the position counts settings, not choices");
+	assert.ok(lines.some((line) => line.includes("Status placement — Where Status lives")), "the focused setting is described");
+	assert.ok(lines.some((line) => line.includes("line one auto")) && lines.some((line) => line.includes("line two")), "multi-line previews keep every line");
+	for (const line of lines) assert.equal(visibleWidth(line), 100);
+});
+
+test("↑/↓ move between settings; ←/→ change the value and apply it at once; ← on the first choice returns to the categories", async () => {
+	const { view, state, applied } = settingsView();
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.equal(state.status, "right");
+	assert.deepEqual(applied, ["Status placement=right"]);
+	view.handleInput("\x1b[C");
+	await settle();
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.equal(state.status, "bottom", "→ stops at the last choice");
+	assert.equal(applied.length, 2);
+	view.handleInput("\x1b[B");
+	assert.match(view.render(100).find((line) => line.includes("Density"))!, /▸ Density/, "↓ goes to the next setting, not the next choice");
+	view.handleInput("\x1b[D");
+	await settle();
+	assert.equal(state.density, "comfortable", "← on the first choice applies nothing");
+	assert.ok(view.render(100).some((line) => /▸ Layout/.test(line)), "and returns focus to the categories");
+	view.handleInput("\x1b[C");
+	view.handleInput("\x1b[B");
+	view.handleInput("\r");
+	await settle();
+	assert.equal(applied.at(-1), "reset", "plain rows still apply on Enter");
+});
+
+test("focus() selects a row by label without applying it", () => {
+	const { view, applied } = settingsView();
+	assert.equal(view.focus("Density: minimal"), true);
+	assert.deepEqual(applied, []);
+	assert.match(view.render(100).find((line) => line.includes("Density") && /[●○›]/.test(line))!, /▸ Density\s+● comfortable\s+○ compact\s+› minimal/, "the cursor shows where it is when it is not on the current value");
+	assert.equal(view.focus("No such row"), false);
+});
+
+test("a setting too wide for the pane shows only the selected choice with arrows", () => {
+	const { view } = settingsView();
+	const line = view.render(44).find((row) => row.includes("Status placement"))!;
+	assert.match(line, /‹ auto › 1\/3/);
+	assert.equal(visibleWidth(line), 44);
+});
+
+test("arrows never apply a setting while the card is too small to show its controls", async () => {
+	const applied: string[] = [];
+	let rows = 3;
+	const view = new VisualCustomizeView({
+		rows: [
+			{ category: "Layout", label: "Status: auto", choice: { setting: "Status", value: "auto", current: () => true }, action: () => { applied.push("auto"); } },
+			{ category: "Layout", label: "Status: right", choice: { setting: "Status", value: "right", current: () => false }, action: () => { applied.push("right"); } },
+		],
+		theme, requestRender() {}, rowsAvailable: () => rows, onClose() {},
+	});
+	view.handleInput("\x1b[C");
+	assert.deepEqual(view.render(90), ["Customization", "Enlarge terminal"]);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, [], "→ applies nothing behind 'Enlarge terminal'");
+	rows = 24;
+	view.render(90);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, ["right"], "once the controls show, → applies");
+	view.handleInput("\t");
+	assert.match(view.render(90).join("\n"), /↑\/↓ categories|→ open|Tab panes/, "the categories pane does not advertise setting keys");
+	assert.doesNotMatch(view.render(90).join("\n"), /←\/→ change/);
 });

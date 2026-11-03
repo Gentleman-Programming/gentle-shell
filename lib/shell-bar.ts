@@ -2,7 +2,10 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, floatRows, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
+import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
+import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
+import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -19,6 +22,8 @@ export { gaugeTone, renderGauge, type GaugeTone };
 // verified without a live TUI.
 
 export interface ShellBarModel {
+	/** Session statistics for the Power user rail; absent elsewhere. */
+	stats?: SessionStats;
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
@@ -35,6 +40,10 @@ export interface ShellBarModel {
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
+	/** The permission mode published under its own status key, shown once in the status bar. */
+	permission?: { mode: string; detail?: string };
+	/** Statuses for the rail's Integrations: `statuses` without the permission keys. */
+	integrations?: string[];
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -211,60 +220,155 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 
 // Sidebar groups use structured fields, never positional compact-bar segments
 // or inferred meanings from opaque extension status strings.
-export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation): string[] {
-	const value = (text: string) => theme.fg(ROLE.VALUE, theme.bold(text));
+// The fullscreen rail's Status, drawn as panel sections (design/shell-rework/02-proposal.html):
+// Changes, Review (only with current-session RDD evidence) and Integrations.
+// Location, model and profile live in the header row, so they never repeat
+// here. Opaque integration statuses wrap so none of their meaning is clipped,
+// and the optional key hints close the rail.
+export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): string[] {
+	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
+}
+
+export type StatusSection = "session" | "changes" | "review" | "stats" | "integrations";
+export type StatusTarget = { row: number; kind: "toggle"; section: StatusSection } | { row: number; kind: "open-changes" };
+export interface StatusSectionsOptions {
+	/** Keep the session name (no title row shows it). */
+	session?: boolean;
+	/** Sections folded to their header. */
+	collapsed?: ReadonlySet<StatusSection>;
+	/** The pointer is over this section's header, or over the Changes row. */
+	hovered?: StatusSection | "open-changes";
+}
+
+/** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
+export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
-	const changes = model.changes;
-	const branch = model.branch ? `${label("Branch")} ${value(model.branch)}` : "";
-	// Pre-wrap values before indenting so Unicode/ANSI continuation lines keep
-	// the same inset without consuming the card's right border.
-	const innerWidth = panelInnerWidth(theme, width);
-	const inset = Math.min(1, innerWidth - 1);
-	// Model, effort, context, cost, and the per-model usage table now live in
-	// the always-visible header row (and /gentle:usage for the full table);
-	// this event-driven card keeps only what a footer/model-switch event does
-	// not already refresh every frame.
-	const groups: Array<{ title: string; lines: string[] }> = [
-		{
-			title: "Project",
-			lines: [
-				value(model.cwd),
-				...(branch ? [branch] : []),
-				...(model.sessionName ? [`${label("Session")} ${value(model.sessionName)}`] : []),
-				...(model.profile ? [`${label("Profile")} ${value(sanitizeStatus(model.profile))}`] : []),
-			],
-		},
-		...(presentation?.visibility.changes === false ? [] : [{
-			title: "Changes",
-			lines: [
-				changes?.files
-					? `${changes.files} ${changes.files === 1 ? "file" : "files"} · ${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}`
-					: label("No captured changes"),
-				label("/gentle:changes"),
-			],
-		}]),
-		...(model.review && presentation?.visibility.rdd !== false ? [{
-			title: "🌹 RDD",
-			lines: [
-				value(REVIEW_SIDEBAR_LABELS[model.review.state]),
+	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
+	type Section = { key?: StatusSection; header?: string; rows: string[]; openChangesRow?: number };
+	const sections: Section[] = [];
+	const header = (key: StatusSection, title: string, count?: string, countRole?: string) => renderPanelHeader(theme, width, { title, count, countRole, open: !options.collapsed?.has(key), hovered: options.hovered === key });
+	// Without the top title row (header below the input) the session name has no
+	// other home, so the rail keeps it.
+	if (options.session && model.sessionName) {
+		sections.push({ key: "session", header: header("session", "Session"), rows: wrapped(sanitizeStatus(model.sessionName), ROLE.VALUE) });
+	}
+	if (presentation?.visibility.changes !== false) {
+		const changes = model.changes;
+		const command = options.hovered === "open-changes" ? theme.fg(HOVER_ROLE, "/gentle:changes") : label("/gentle:changes");
+		sections.push({
+			key: "changes",
+			header: header("changes", "Changes", changes?.files ? `${changes.files} ${changes.files === 1 ? "file" : "files"}` : "clean"),
+			rows: [renderPanelRow(width, changes?.files ? `${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}` : label("no captured changes"), command)],
+			openChangesRow: 0,
+		});
+	}
+	if (model.review && presentation?.visibility.rdd !== false) {
+		const needsYou = model.review.state === "consent";
+		sections.push({
+			key: "review",
+			header: header("review", "Review", needsYou ? "needs you" : undefined, "warning"),
+			rows: [
+				...wrapped(REVIEW_SIDEBAR_LABELS[model.review.state], needsYou ? "warning" : ROLE.VALUE),
 				// Unknown scope is an internal sentinel, not something the user acts on.
-				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? [label(sanitizeStatus(model.review.scope))] : []),
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
 			],
-		}] : []),
-		// Running jobs live in their own sidebar card (extensions/gentle-shell.ts
-		// registers the "jobs" rail part); the compact bar keeps the count.
-		{ title: "Integrations", lines: model.statuses.length
-			? model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)))
-			: [label("No status reported")] },
-	];
-	// Wrap and indent every group line before it reaches the card, so Unicode and
-	// ANSI continuation lines keep the same inset without consuming the right border.
-	const body = groups.flatMap((group, index) => [
-		...(index && (!presentation || presentation.density === "comfortable") ? [""] : []),
-		...(presentation?.density === "minimal" ? [] : [label(group.title)]),
-		...group.lines.flatMap((line) => wrapTextWithAnsi(line, innerWidth - inset).map((part) => " ".repeat(inset) + part)),
-	]);
-	return renderCard({ title: "Status", body, tone: CARD_TONE.INFO }, theme, width, { expanded: true, panel: true });
+		});
+	}
+	// Power user (compact density) adds what the session spent, per model.
+	if (model.stats) {
+		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: renderStatsRows(model.stats, theme, width, model.subscription) });
+	}
+	// The status bar shows the permission mode once; Integrations only says
+	// what it means, so neither the mode nor its banner repeats here.
+	const integrations = model.integrations ?? model.statuses;
+	const permission = model.permission?.detail ? wrapTextWithAnsi(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line)) : [];
+	const count = integrations.length + (permission.length ? 1 : 0);
+	sections.push({
+		key: "integrations",
+		header: header("integrations", "Integrations", count ? String(count) : "none"),
+		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+	});
+	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
+	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
+	const lines: string[] = [];
+	const targets: StatusTarget[] = [];
+	sections.forEach((section, index) => {
+		if (index) lines.push(...gap);
+		if (section.key && section.header) {
+			targets.push({ row: lines.length, kind: "toggle", section: section.key });
+			lines.push(section.header);
+			if (options.collapsed?.has(section.key)) return;
+		}
+		if (section.openChangesRow !== undefined) targets.push({ row: lines.length + section.openChangesRow, kind: "open-changes" });
+		lines.push(...section.rows);
+	});
+	return { lines, targets };
+}
+
+// The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
+// with the project identity above the transcript and the rail, and one status
+// bar row below them. Both sit on the rail's panel surface.
+const STATUS_BAR_DIVIDER = "│";
+const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, surfaceOpener(theme, PANEL_SURFACE_ROLE));
+
+/** `✿ name  path` left, the session name and profile right; the path gives way first, so the profile always shows. */
+export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {
+	const target = Math.max(0, Math.floor(width));
+	const name = model.cwd.split("/").filter((part) => part.length > 0).pop() ?? model.cwd;
+	const left = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}  ${theme.fg(ROLE.PATH, model.cwd)}`;
+	// Mobile: the narrow status bar leaves the model out, so the title row carries it.
+	const right = options.model
+		? executionSegment(model.modelId, model.effort, theme)
+		: [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
+			.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
+	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
+}
+
+/**
+ * The status bar: branch, dirty count and a non-default permission mode on
+ * the left; model · effort, context, cost and usage on the right. Usage gives
+ * way first (gauges, secondary windows, the segment), then the model; the
+ * usage segment stays the click target that opens the usage view.
+ */
+export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+	const target = Math.max(0, Math.floor(width));
+	const divider = ` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `;
+	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
+	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
+	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
+	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(sanitizeStatus(model.permission.mode))) : "";
+	// Without a rail (mobile) the running jobs keep their compact count here.
+	const runningJobs = extras.jobs ? (model.jobs?.filter((job) => job.status === undefined).length ?? 0) : 0;
+	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
+	const left = join([branch, tail]);
+	const showCounters = presentation?.visibility.usageCost !== false;
+	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
+	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
+	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
+	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
+	const attempts = [...stages.map((stage) => ({ stage, withExec: true })), { stage: undefined, withExec: false }];
+	for (const { stage, withExec } of attempts) {
+		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
+		const right = join([withExec ? exec : "", ...counters, usage]);
+		const room = target - 2;
+		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
+		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;
+		const usageSpan = usage ? { start: target - 1 - visibleWidth(usage), end: target - 1 } : undefined;
+		return { rows: [paintChromeRow(theme, row)], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
+	}
+	// Still too wide (a phone, a long branch): the branch gives way before the
+	// context and cost, which give way last, context after cost.
+	const room = Math.max(0, target - 2);
+	const tailWidth = tail ? visibleWidth(tail) + (branch ? visibleWidth(divider) : 0) : 0;
+	for (const right of [join(counters), counters[0] ?? "", ""]) {
+		const leftRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0);
+		const branchRoom = leftRoom - tailWidth;
+		if (branch && branchRoom < 4 && right) continue;
+		const fitted = join([branch ? clipPanelText(branch, Math.max(1, branchRoom)) : "", tail]);
+		if (visibleWidth(fitted) > leftRoom && right) continue;
+		return { rows: [paintChromeRow(theme, ` ${fitPanelLine(fitted, right, room)} `)], headerRow: 0 };
+	}
+	return { rows: [paintChromeRow(theme, ` ${fitPanelLine(left, "", room)} `)], headerRow: 0 };
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";

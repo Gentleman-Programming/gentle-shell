@@ -4,10 +4,12 @@ import { pickModel, shouldFallBack, type ModelCooldown } from "./model-fallback-
 import type { FallbackChain } from "./model-fallback-store.ts";
 import type { ThinkingLevel } from "./model-routing-authority.ts";
 
-// The main session's fallback. Pi ends a turn with an error only after its
-// own retries; then the `orchestrator` chain of the session's profile picks
-// the next model, the session switches to it and a message resumes the work.
-// An episode lasts until a turn succeeds, so a chain is walked at most once.
+// The main session's fallback. Pi fires agent_end on every failed attempt and
+// only then decides to retry, so the decision waits for agent_settled: the
+// run's last attempt failed after Pi's own retries. Then the `orchestrator`
+// chain of the session's profile picks the next model, the session switches
+// to it and a message resumes the work. An episode lasts until a turn
+// succeeds or the user aborts, so a chain is walked at most once.
 
 export interface OrchestratorFallbackDeps {
 	chain(): FallbackChain;
@@ -28,8 +30,13 @@ type AssistantLike = { role?: unknown; stopReason?: unknown; errorMessage?: unkn
 export function createOrchestratorFallback(deps: OrchestratorFallbackDeps) {
 	const tried = new Set<string>();
 	return {
-		/** Handles a finished agent run; true when the session moved to a fallback and resumed. */
-		async onAgentEnd(messages: readonly unknown[]): Promise<boolean> {
+		/** Handles a settled run (its last attempt's messages); true when the session moved to a fallback and resumed. */
+		async onSettled(messages: readonly unknown[], settled: { aborted?: boolean } = {}): Promise<boolean> {
+			if (settled.aborted) {
+				// The user stopped the run: never resume it on another model.
+				tried.clear();
+				return false;
+			}
 			const last = [...messages].reverse().find((message) => (message as AssistantLike)?.role === "assistant") as AssistantLike | undefined;
 			const category = assistantErrorCategory(last);
 			if (category === undefined) {
@@ -49,7 +56,10 @@ export function createOrchestratorFallback(deps: OrchestratorFallbackDeps) {
 				const pick = pickModel(current, chain, { cooldown: deps.cooldown, now, tried });
 				if (!pick?.fallback || !pick.model) return false;
 				tried.add(pick.model);
-				if (!deps.available(pick.model) || !(await deps.setModel(pick.model))) continue;
+				if (!deps.available(pick.model)) continue;
+				// Pi may refuse or throw (an expired login): the next step gets its turn.
+				const switched = await deps.setModel(pick.model).catch(() => false);
+				if (!switched) continue;
 				if (pick.thinking) deps.setThinking(pick.thinking);
 				deps.announce({ agent: "orchestrator", from: current ?? "default", to: pick.model, category });
 				deps.resume(fallbackContinuePrompt(current, pick.model, category));

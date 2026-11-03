@@ -50,7 +50,7 @@ Branch: `feat/shell-ide-rework` (separate worktree, base `origin/main` 813ec1106
 | T16 | S16 | inline | blocked | resize freeze: not reproduced yet (tmux probes on rework and main), waiting for the user's scenario |
 | T17 | S17 | inline | done | preset cycle shortcut `alt+l` |
 | T18 | S18 | inline | done | light themes: page paint (`lib/shell-page.ts`) |
-| T19 | S19 | inline | done | Power user Stats section (session entries); subagent totals pending |
+| T19 | S19 | inline | done | Power user Stats section (session entries + subagent spend) |
 | T20 | S20 | inline | done | `stats` visibility key; Power user = Neutral spacing + Stats; verifier advisories A1/A2/A4 |
 | T21 | S21 | inline | done | Customize: one line per setting, ←/→ apply, hint + layout schematic |
 
@@ -105,3 +105,4 @@ Risk notes: T7 changes the persisted visual settings format (Risk item 1 and 3: 
 - L45 (correction): arrows share Enter's `controlsShown()` guard (RED "→ applies nothing behind 'Enlarge terminal'" → GREEN); the setting footer and hint only show in the controls pane (A3); README states A1 and A2. View 48/48; area 898/898; typecheck 0.
 - L46 (user, 2026-11-03): "pr y merge cuando termines todo" / "agregas el framework para dar ojos y la skill en la pr ?".
 - L47 (user request L46): the eyes harness (`scripts/shell-snapshot.mjs`) is already in slice 01; the `tui-design` skill moves into the package as `skills/tui-design/` (name `gentle-ai-tui-design`, Apache-2.0 NOTICE for impeccable kept, no private paths); `scripts/verify-package-files.mjs` passes (236 files).
+- L48 (T19 remainder): subagent spend comes from the Agents rail section (`SidebarRail.spend()` → `agentsSpend(visibleTasks())`, started tasks' `tokens`/`cost`), not from `CHILD_METRICS_EVENT`, which is consent-gated local telemetry that must never reach output. Stats shows `agents N runs · tokens · cost`; the footer digest includes it. RED agentsSpend + stats row; the shell integration test was written after the wiring (no RED observed for it).

@@ -81,3 +81,10 @@ test("Stats rows keep the model name at narrow widths, strip escapes and ignore 
 	assert.match(text, /1 turn · 300 · \$0\.200/, "its numbers move to their own row");
 	assert.doesNotMatch(text, /\x1b|\x07/, "terminal escapes in a model id never reach the screen");
 });
+
+test("Stats adds what subagents spent when the Agents section reports it", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const rows = renderStatsRows({ ...collectSessionStats(entries), subagents: { runs: 3, tokens: 3500, cost: 0.2 } }, theme, 46).map((row) => row.trimEnd()).join("\n");
+	assert.match(rows, /agents\s+3 runs · 3\.5k · \$0\.200/);
+	assert.doesNotMatch(renderStatsRows(collectSessionStats(entries), theme, 46).join("\n"), /runs/, "no subagents, no row");
+});

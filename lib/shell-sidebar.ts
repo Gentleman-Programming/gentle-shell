@@ -49,6 +49,8 @@ export interface SidebarRail extends Component {
 	summary?(): PanelSummary | undefined;
 	/** "Needs you" rows the panel editor draws right above its rule (an agent asking the user); [] when none. */
 	alert?(width: number): string[];
+	/** What this section's work spent (the Agents section: started subagents), for the Stats section. */
+	spend?(): { runs: number; tokens: number; cost: number } | undefined;
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;

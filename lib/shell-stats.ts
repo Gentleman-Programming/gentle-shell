@@ -30,6 +30,8 @@ export interface SessionStats {
 	cacheHitRate: number | undefined;
 	/** Most expensive first; ties by tokens. */
 	models: ModelStats[];
+	/** What this session's subagents spent, when the Agents section reports it. */
+	subagents?: { runs: number; tokens: number; cost: number };
 }
 
 type StatsEntry = {
@@ -110,6 +112,7 @@ export function renderStatsRows(stats: SessionStats, theme: StatsTheme, width: n
 	if (stats.cacheHitRate !== undefined) rows.push(renderPanelRow(width, `${label("cache")}${value(`${Math.round(stats.cacheHitRate * 100)}% hit · ${formatTokens(stats.cacheRead)} read`)}`));
 	const failed = stats.toolErrors ? ` · ${theme.fg("warning", `${stats.toolErrors} failed`)}` : "";
 	rows.push(renderPanelRow(width, `${label("tools")}${value(plural(stats.toolCalls, "call"))}${failed}`));
+	if (stats.subagents) rows.push(renderPanelRow(width, `${label("agents")}${value(`${plural(stats.subagents.runs, "run")} · ${formatTokens(stats.subagents.tokens)} · ${formatCost(stats.subagents.cost, subscription)}`)}`));
 	for (const model of stats.models) {
 		const numbers = `${plural(model.turns, "turn")} · ${formatTokens(model.tokens)} · ${formatCost(model.cost, subscription)}`;
 		// A narrow rail keeps the name: the numbers move to their own row instead of clipping it away.

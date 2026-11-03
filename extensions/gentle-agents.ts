@@ -61,7 +61,7 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, agentsCardTone, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -1894,7 +1894,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		return {
 			// The panel editor draws the alert above its rule while the IDE chrome
 			// hides the above-editor card (rail or mobile work row).
-			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined), alert: (width: number) => (agentsVisible ? renderAgentsAlert(visibleTasks(), theme, width) : []) } : {}),
+			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined), alert: (width: number) => (agentsVisible ? renderAgentsAlert(visibleTasks(), theme, width) : []), spend: () => agentsSpend(visibleTasks()) } : {}),
 			// The rail memo repaints a part only when its digest moves: task
 			// state, the local controls, and the elapsed clock (to the second)
 			// only while a task is still running, so an idle or finished card

@@ -23,6 +23,10 @@ export interface SidebarState {
 	headerOwnsStatus?: () => boolean;
 	/** True while a narrow fullscreen terminal folds live work into the mobile work row: the Todos and Agents cards step aside. */
 	compactWork?: () => boolean;
+	/** True while the IDE chrome's status bar shows the permission mode: the above-editor YOLO banner steps aside. */
+	statusBarShowsMode?: () => boolean;
+	/** True while the fullscreen layout is installed on the host's root, so its title row and status bar can actually draw. */
+	layoutAttached?: () => boolean;
 	parts: Map<string, SidebarRail>;
 }
 
@@ -43,6 +47,8 @@ export interface SidebarRail extends Component {
 	surface?: "panel";
 	/** A one-row digest for the mobile work row; undefined when the section has nothing live. */
 	summary?(): PanelSummary | undefined;
+	/** "Needs you" rows the panel editor draws right above its rule (an agent asking the user); [] when none. */
+	alert?(width: number): string[];
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;
@@ -57,7 +63,7 @@ export function sidebarPart<T extends Component & { dispose?(): void }>(tui: TUI
 	state.parts.set(key, rail);
 	return {
 		...bottom,
-		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (key === "footer" && (state.statusHidden?.() || state.headerOwnsStatus?.())) || ((key === "todo" || key === "agents") && state.compactWork?.()) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
+		render: (width: number) => (key === "todo" && state.visibility?.todo === false) || (key === "footer" && (state.statusHidden?.() || state.headerOwnsStatus?.() || state.compactWork?.())) || ((key === "todo" || key === "agents") && state.compactWork?.()) || (state.active && state.ownsHost?.()) ? [] : bottom.render(width),
 		dispose() {
 			if (state.parts.get(key) === rail) state.parts.delete(key);
 			bottom.dispose?.();

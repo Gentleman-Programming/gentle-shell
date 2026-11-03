@@ -35,10 +35,11 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 };
 /**
  * Presets bundle the density and visibility switches (design/shell-rework/inventory.md):
- * Light keeps priority 1 (model, context, agent questions, review), Neutral is
- * the default, Power user shows everything densely. They never change the
- * placements and add no key to the file, so every binary keeps reading it;
- * the active preset is whichever bundle the current settings match.
+ * Light is the minimal edition: Status at the bottom (no rail) and priority 1
+ * only (model, context, agent questions, review); Neutral is the default;
+ * Power user shows everything densely. They keep the header placement and add
+ * no key to the file, so every binary keeps reading it; the active preset is
+ * whichever bundle the current settings match.
  */
 export const VISUAL_PRESET = { LIGHT: "light", NEUTRAL: "neutral", POWER_USER: "power-user" } as const;
 export type VisualPreset = (typeof VISUAL_PRESET)[keyof typeof VISUAL_PRESET];
@@ -49,12 +50,17 @@ const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "density" | "vis
 };
 export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset): VisualSettings {
 	const bundle = PRESET_BUNDLES[preset];
-	return { ...settings, density: bundle.density, visibility: { ...bundle.visibility } };
+	// Light is the minimal edition without the rail (Status at the bottom);
+	// leaving it brings the rail back, and the other presets keep any placement.
+	const statusPlacement = preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM
+		: settings.statusPlacement === STATUS_PLACEMENT.BOTTOM ? STATUS_PLACEMENT.AUTO : settings.statusPlacement;
+	return { ...settings, statusPlacement, density: bundle.density, visibility: { ...bundle.visibility } };
 }
 /** The preset the settings match, or undefined for a hand-tuned mix. */
 export function visualPresetOf(settings: VisualSettings): VisualPreset | undefined {
 	return (Object.values(VISUAL_PRESET) as VisualPreset[]).find((preset) => {
 		const bundle = PRESET_BUNDLES[preset];
+		if ((settings.statusPlacement === STATUS_PLACEMENT.BOTTOM) !== (preset === VISUAL_PRESET.LIGHT)) return false;
 		return bundle.density === settings.density && (Object.keys(bundle.visibility) as (keyof VisualVisibility)[]).every((key) => bundle.visibility[key] === settings.visibility[key]);
 	});
 }

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "05-calm-deck.html",
+  "handoffs": {
+    "05-calm-deck.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-02T18:33:54.078Z",
+      "startedAt": "2026-11-02T18:34:09.759Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/fleet-orchestrator.md",
+      "note": "Chosen by the user. T5 in odd/tasks/fleet-orchestrator.md: U1 view model + renderers (now), U2 wiring after T3/T2b."
+    }
+  }
+}

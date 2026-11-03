@@ -8,10 +8,14 @@ import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
 import { readFleetConfig } from "../lib/fleet-config.ts";
+import { autoApproval, describeResponse, type DialogResponse } from "../lib/fleet-dialogs.ts";
 import { FleetLedger, type FleetMemberFields } from "../lib/fleet-ledger.ts";
-import { buildMemberLaunch, FleetMember, type FleetMemberEvent } from "../lib/fleet-member.ts";
+import { buildMemberLaunch, FleetMember, type FleetMemberDialog, type FleetMemberEvent } from "../lib/fleet-member.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
 import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
+import type { PermissionMode } from "../lib/permission-mode-policy.ts";
+import { isInteractiveMode } from "../lib/rpc-host.ts";
+import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 
 // Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1, F3). Active
 // only in the session `gentle-shell orchestrator` starts: it spawns full
@@ -20,6 +24,10 @@ import { createMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktre
 // code, and wakes the controller model with one coalesced digest when a member
 // settles, asks or exits. The human's fleet.json sets the live-member limit
 // and optional budgets; crossed budget thresholds ride the next digest.
+// F2 (S2): the fleet answers member dialogs with fleet_answer; protected
+// classes (lib/fleet-dialogs.ts) go by code to the human through this
+// session's own UI, fail closed without one, and under the controller's
+// Super YOLO code approves the guard, permission and access classes, audited.
 
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
@@ -28,6 +36,11 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const FLEET_INSPECT_LINES = 40;
 const INSPECT_LINES_MAX = 200;
 const LOG_TEXT_MAX = 120;
+const DIGEST_TITLE_MAX = 120;
+const DIGEST_MESSAGE_MAX = 160;
+const DIGEST_OPTION_MAX = 40;
+const DIGEST_OPTIONS_SHOWN = 10;
+const DIGEST_LINE_MAX = 700;
 // Budget thresholds in percent, highest first: a jump past both warns once.
 const BUDGET_THRESHOLDS = [100, 80];
 
@@ -53,6 +66,8 @@ export interface FleetDeps {
 	/** gentle-pi config home holding the human's fleet.json. */
 	configHome?: string;
 	git: GitExec;
+	/** This controller session's live permission mode; default: the yolo host channel. */
+	permissionMode?(ctx: ExtensionContext): Promise<PermissionMode>;
 }
 
 const defaultDeps = (): FleetDeps => ({
@@ -77,6 +92,15 @@ function oneLine(value: string, max: number): string {
 
 function questionLine(dialog: { title: string; options?: string[] }): string {
 	return `${dialog.title}${dialog.options?.length ? ` [${dialog.options.join(" | ")}]` : ""}`;
+}
+
+/** Everything the controller needs to answer without an inspect call, bounded. */
+function fleetQuestionLine(dialog: FleetMemberDialog): string {
+	const options = dialog.options ?? [];
+	const shown = options.slice(0, DIGEST_OPTIONS_SHOWN).map((option, index) => `${index + 1}. ${oneLine(option, DIGEST_OPTION_MAX)}`);
+	if (options.length > shown.length) shown.push(`… ${options.length - shown.length} more`);
+	const line = `  question ${dialog.id} (${dialog.method}) for the fleet: ${oneLine(dialog.title, DIGEST_TITLE_MAX)}${dialog.message ? ` — ${oneLine(dialog.message, DIGEST_MESSAGE_MAX)}` : ""}${shown.length ? ` [${shown.join(" | ")}]` : ""} → fleet_answer`;
+	return line.length > DIGEST_LINE_MAX ? `${line.slice(0, DIGEST_LINE_MAX - 1)}…` : line;
 }
 
 /** The highest threshold `spent` newly reaches; marks it and every lower one seen. */
@@ -121,6 +145,15 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const fleetThresholds = new Set<number>();
 	const memberThresholds = new WeakMap<FleetMember, Set<number>>();
 	const pendingBudget: string[] = [];
+	// What code did with each protected dialog, for the digest line.
+	const relayNotes = new WeakMap<FleetMemberDialog, string>();
+	// The human answers one relayed dialog at a time.
+	let humanQueue: Promise<void> = Promise.resolve();
+	const readPermissionMode = deps.permissionMode ?? (async (ctx: ExtensionContext): Promise<PermissionMode> => {
+		const adapter = await discoverYoloUiAdapter(pi, ctx);
+		if (!adapter) return "normal";
+		try { return (await adapter.readMode?.()) ?? "normal"; } finally { adapter.dispose(); }
+	});
 
 	const ensureLedger = (cwd: string) => ledger ??= new FleetLedger({
 		fleetSessionId,
@@ -169,6 +202,84 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		pi.setActiveTools(next);
 	};
 
+	// Print mode, no UI, or rpc without the interactive host signal: nobody to ask.
+	const canAskHuman = (ctx: ExtensionContext | undefined): ctx is ExtensionContext => ctx?.hasUI === true && isInteractiveMode(ctx.mode, env);
+
+	const askHuman = async (ctx: ExtensionContext, member: FleetMember, dialog: FleetMemberDialog): Promise<DialogResponse> => {
+		const title = `Fleet member "${member.name}": ${dialog.relay?.title ?? dialog.title}`;
+		switch (dialog.method) {
+			case "select": {
+				const options = dialog.options ?? [];
+				const value = await ctx.ui.select(title, options);
+				return value !== undefined && options.includes(value) ? { value } : { cancelled: true };
+			}
+			case "confirm":
+				return { confirmed: (await ctx.ui.confirm(title, dialog.relay?.message ?? "")) === true };
+			case "input": {
+				const value = await ctx.ui.input(title, dialog.relay?.placeholder);
+				return value === undefined ? { cancelled: true } : { value };
+			}
+			case "editor": {
+				const value = await ctx.ui.editor(title, dialog.relay?.prefill);
+				return value === undefined ? { cancelled: true } : { value };
+			}
+			default:
+				return { cancelled: true };
+		}
+	};
+
+	const cancelProtected = (member: FleetMember, dialog: FleetMemberDialog, reason: string) => {
+		if (!member.respond(dialog.id, { cancelled: true })) return;
+		relayNotes.set(dialog, `cancelled by code: ${reason}`);
+		ledger?.blocker(member.name, `protected question cancelled — ${oneLine(dialog.title, LOG_TEXT_MAX)} (${reason})`);
+		track(member);
+	};
+
+	// The model never answers a protected dialog: code approves it under the
+	// controller's Super YOLO when its class allows, else asks the human, else
+	// cancels it. Never an approval without one of the two.
+	const handleProtected = async (member: FleetMember, dialog: FleetMemberDialog) => {
+		const ctx = ctxRef;
+		const approval = autoApproval({ method: dialog.method, title: dialog.relay?.title ?? dialog.title, message: dialog.relay?.message, options: dialog.options });
+		if (approval && ctx) {
+			let mode: PermissionMode = "normal";
+			try { mode = await readPermissionMode(ctx); } catch { /* unreadable mode is not Super YOLO */ }
+			if (mode === "super-yolo" && isCurrent(member) && member.respond(dialog.id, approval)) {
+				const answer = describeResponse(approval);
+				relayNotes.set(dialog, `auto-approved by code under the controller's Super YOLO with ${answer}`);
+				ledger?.autoApproved(member.name, dialog.title, answer);
+				track(member);
+				return;
+			}
+		}
+		if (!isCurrent(member) || !member.hasDialog(dialog.id)) return;
+		if (!canAskHuman(ctx)) {
+			cancelProtected(member, dialog, "no interactive UI to relay it to the human");
+			return;
+		}
+		humanQueue = humanQueue.then(async () => {
+			if (!isCurrent(member) || !member.hasDialog(dialog.id)) return;
+			let response: DialogResponse;
+			try { response = await askHuman(ctx, member, dialog); }
+			catch {
+				cancelProtected(member, dialog, "the relay to the human failed");
+				return;
+			}
+			const title = oneLine(dialog.title, LOG_TEXT_MAX);
+			if (!isCurrent(member) || !member.respond(dialog.id, response)) {
+				ledger?.log("relay", member.name, `the human's answer to "${title}" arrived after the dialog closed`);
+				return;
+			}
+			relayNotes.set(dialog, `answered by the human (relayed by code) with ${describeResponse(response)}`);
+			ledger?.log("answer", member.name, `human answered (relayed by the fleet) "${title}": ${describeResponse(response)}`);
+			track(member);
+		}).catch(() => {});
+	};
+
+	const dialogDigestLine = (dialog: FleetMemberDialog) => dialog.protected
+		? `  protected question ${dialog.id} (${dialog.method}) ${relayNotes.get(dialog) ?? "relayed to the human by code"}: ${oneLine(dialog.title, DIGEST_TITLE_MAX)}`
+		: fleetQuestionLine(dialog);
+
 	const refreshWidget = () => {
 		const ui = ctxRef?.hasUI ? ctxRef.ui : undefined;
 		if (!ui) return;
@@ -184,7 +295,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (!member) continue;
 			lines.push(`- ${member.digest()}`);
 			for (const event of events) {
-				if (event.kind === "dialog") lines.push(`  question for the human (${event.dialog.method}): ${event.dialog.title}${event.dialog.message ? ` — ${event.dialog.message}` : ""}${event.dialog.options?.length ? ` [${event.dialog.options.join(" | ")}]` : ""}`);
+				if (event.kind === "dialog") lines.push(dialogDigestLine(event.dialog));
 				if (event.kind === "exit") lines.push(`  exited (code ${event.code ?? "none"}${event.signal ? `, ${event.signal}` : ""})`);
 			}
 		}
@@ -203,6 +314,7 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (closed) return;
 		pending.set(member.name, [...(pending.get(member.name) ?? []), event]);
 		cancelWake ??= deps.schedule(flushWake, FLEET_WAKE_WINDOW_MS);
+		if (event.kind === "dialog" && event.dialog.protected) void handleProtected(member, event.dialog).catch(() => {});
 	};
 
 	const liveCount = () => [...members.values()].filter(member => member.live).length;
@@ -361,7 +473,10 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const member = memberOrError(name);
 				return typeof member === "string" ? text(`Error: ${member}`, { error: "unknown member" }) : text(member.detail(), { name });
 			}
-			return text(members.size === 0 ? "No fleet members." : [...members.values()].map(member => member.digest()).join("\n"));
+			const lines = members.size === 0 ? ["No fleet members."] : [...members.values()].map(member => member.digest());
+			const grants = ledger?.grants ?? [];
+			if (grants.length > 0) lines.push(`Standing permissions: ${grants.map(grant => `${grant.id} ${grant.scope} — ${oneLine(grant.description, 80)}`).join("; ")}`);
+			return text(lines.join("\n"));
 		},
 	});
 
@@ -394,6 +509,71 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
 			const count = Math.min(INSPECT_LINES_MAX, Math.max(1, Math.floor(lines ?? FLEET_INSPECT_LINES)));
 			return text(member.inspect(count), { name, ...(member.featureDoc ? { featureDoc: member.featureDoc } : {}) });
+		},
+	});
+	pi.registerTool({
+		name: "fleet_answer",
+		label: "Fleet answer",
+		description: "Answer a member's pending question on the human's behalf (default: its oldest). select: an offered option or its number; confirm: yes or no; input/editor: the text; cancel: true dismisses it. Protected questions are relayed to the human by code and refused here.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Member name." }),
+			answer: Type.Optional(Type.String({ description: "The answer." })),
+			dialog: Type.Optional(Type.String({ description: "Question id from the digest; defaults to the oldest pending one." })),
+			cancel: Type.Optional(Type.Boolean({ description: "Dismiss the question instead of answering it." })),
+		}),
+		async execute(_id, params) {
+			const { name, answer, dialog, cancel } = params as { name: string; answer?: string; dialog?: string; cancel?: boolean };
+			const member = memberOrError(name);
+			if (typeof member === "string") return text(`Error: ${member}`, { error: "unknown member" });
+			if (cancel !== true && typeof answer !== "string") return text("Error: give an answer or cancel: true.", { error: "missing answer" });
+			const result = member.answer(cancel === true ? { cancel: true } : { answer: answer! }, dialog);
+			if ("error" in result) return text(`Error: ${result.error}`, { error: "answer refused" });
+			const shown = describeResponse(result.response);
+			const title = oneLine(result.dialog.title, LOG_TEXT_MAX);
+			ledger?.log("answer", name, `fleet answered "${title}": ${shown}`);
+			track(member);
+			return text(`Answered ${name}'s ${result.dialog.method} "${title}" with ${"cancelled" in result.response ? "cancel" : `"${shown}"`}.`, { name, dialog: result.dialog.id });
+		},
+	});
+
+	pi.registerTool({
+		name: "fleet_grant",
+		label: "Fleet grant",
+		description: "Record a standing permission the human explicitly asked for (e.g. publishing scheduled posts) in the fleet document. The human confirms it in this session's UI. Grants never cover consent, credential, security or destructive prompts.",
+		parameters: Type.Object({
+			scope: Type.String({ description: "Short scope key, e.g. publish:social." }),
+			description: Type.String({ description: "What the fleet may do without asking, in the human's terms." }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			ctxRef = ctx;
+			const { scope, description } = params as { scope: string; description: string };
+			if (!scope?.trim() || !description?.trim()) return text("Error: scope and description are required.", { error: "missing grant" });
+			if (!canAskHuman(ctx)) return text("Error: fleet_grant needs the human's confirmation in an interactive fleet UI; nothing was recorded.", { error: "no ui" });
+			const confirmed = await ctx.ui.confirm(`Grant the fleet a standing permission for ${oneLine(scope, LOG_TEXT_MAX)}?`, `${description.trim()}\n\nThe fleet will act within this scope without asking you. Grants never cover consent, credential, security-permission or destructive prompts: those always reach you.`);
+			if (confirmed !== true) return text("The human declined; nothing was recorded.", { error: "declined" });
+			const fleetLedger = ensureLedger(ctx.cwd);
+			const grant = fleetLedger.grant(scope, description);
+			fleetLedger.flush();
+			return text(`Recorded standing permission ${grant.id} for ${grant.scope}. Fleet document: ${fleetLedger.documentPath}`, { grant: grant.id });
+		},
+	});
+
+	pi.registerTool({
+		name: "fleet_revoke",
+		label: "Fleet revoke",
+		description: "Remove a standing permission by id after the human confirms it in this session's UI.",
+		parameters: Type.Object({ id: Type.String({ description: "Grant id, e.g. g1." }) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			ctxRef = ctx;
+			const { id } = params as { id: string };
+			const grant = ledger?.grants.find(entry => entry.id === id);
+			if (!grant) return text(`Error: no standing permission ${id}. Grants: ${ledger?.grants.map(entry => entry.id).join(", ") || "none"}.`, { error: "unknown grant" });
+			if (!canAskHuman(ctx)) return text("Error: fleet_revoke needs the human's confirmation in an interactive fleet UI; the grant stays.", { error: "no ui" });
+			const confirmed = await ctx.ui.confirm(`Revoke standing permission ${grant.id}?`, `${grant.scope} — ${grant.description}`);
+			if (confirmed !== true) return text("The human declined; the grant stays.", { error: "declined" });
+			ledger!.revoke(grant.id);
+			ledger!.flush();
+			return text(`Revoked standing permission ${grant.id} (${grant.scope}).`, { grant: grant.id });
 		},
 	});
 }

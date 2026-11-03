@@ -13,7 +13,9 @@ const TEXT_MAX = 160;
 const CELL_MAX = 80;
 const SLUG_MAX = 60;
 
-export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget";
+export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve";
+export const FLEET_AUTO_APPROVALS_MAX = 200;
+const GRANT_TEXT_MAX = 300;
 
 export interface FleetLedgerMember {
 	name: string;
@@ -51,6 +53,29 @@ export interface FleetBudgetWarning {
 	text: string;
 }
 
+/** A standing permission the human confirmed (S2): it covers model-answerable questions only. */
+export interface FleetGrant {
+	id: string;
+	scope: string;
+	description: string;
+	grantedAt: string;
+}
+
+/** A Blockers entry for one member event, such as a protected dialog code could not relay. */
+export interface FleetBlockerNote {
+	at: string;
+	member: string;
+	text: string;
+}
+
+/** One protected dialog code approved under the controller's Super YOLO. */
+export interface FleetAutoApproval {
+	at: string;
+	member: string;
+	title: string;
+	answer: string;
+}
+
 export interface FleetLedgerState {
 	version: 1;
 	fleetSessionId: string;
@@ -62,6 +87,12 @@ export interface FleetLedgerState {
 	members: FleetLedgerMember[];
 	/** One entry per crossed budget threshold; shown under Blockers. */
 	budgetWarnings: FleetBudgetWarning[];
+	blockers: FleetBlockerNote[];
+	grants: FleetGrant[];
+	/** Grant ids are never reused, even after a revoke. */
+	nextGrantId: number;
+	/** Audit of code approvals under the controller's Super YOLO, newest last. */
+	autoApprovals: FleetAutoApproval[];
 	log: FleetLogEntry[];
 }
 
@@ -135,7 +166,14 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 		if (member.exitedAt && member.exitCode !== null && member.exitCode !== 0) blockers.push(`- ${member.name}: exited with code ${member.exitCode}`);
 	}
 	for (const warning of state.budgetWarnings) blockers.push(`- ${warning.member ?? "fleet"}: budget — ${oneLine(warning.text, TEXT_MAX)}`);
-	lines.push("", "## Blockers", "", ...(blockers.length > 0 ? blockers : ["None."]), "", "## Log", "");
+	for (const note of state.blockers) blockers.push(`- ${note.member}: ${note.text}`);
+	const grants = state.grants.map(grant => `- ${grant.id} · ${code(grant.scope)} — ${grant.description} (granted ${grant.grantedAt})`);
+	lines.push("", "## Blockers", "", ...(blockers.length > 0 ? blockers : ["None."]), "", "## Grants", "", ...(grants.length > 0 ? grants : ["None."]));
+	if (state.autoApprovals.length > 0) {
+		lines.push("", "## Auto-approvals", "", "Protected dialogs code approved under the controller's Super YOLO:", "");
+		for (const approval of state.autoApprovals) lines.push(`- ${approval.at} · ${approval.member} — ${approval.title} → ${approval.answer}`);
+	}
+	lines.push("", "## Log", "");
 	if (state.log.length === 0) lines.push("No entries yet.");
 	for (const entry of state.log) lines.push(`- ${entry.at} · ${entry.kind} · ${entry.member ?? "fleet"} — ${entry.text}`);
 	return `${lines.join("\n")}\n`;
@@ -160,12 +198,20 @@ export class FleetLedger {
 			updatedAt: this.now(),
 			members: [],
 			budgetWarnings: [],
+			blockers: [],
+			grants: [],
+			nextGrantId: 1,
+			autoApprovals: [],
 			log: [],
 		};
 	}
 
 	get documentPath(): string {
 		return this.state.documentPath;
+	}
+
+	get grants(): readonly FleetGrant[] {
+		return this.state.grants;
 	}
 
 	/** The fleet's slug; it names member branches and worktrees too. */
@@ -212,6 +258,34 @@ export class FleetLedger {
 	budgetWarning(member: string | null, text: string): void {
 		this.state.budgetWarnings.push({ at: this.now(), member, text: oneLine(text, TEXT_MAX) });
 		this.log("budget", member, text);
+	}
+
+	/** Records a standing permission; call only after the human confirmed it. */
+	grant(scope: string, description: string): FleetGrant {
+		const grant: FleetGrant = { id: `g${this.state.nextGrantId}`, scope: oneLine(scope, TEXT_MAX), description: oneLine(description, GRANT_TEXT_MAX), grantedAt: this.now() };
+		this.state.nextGrantId += 1;
+		this.state.grants.push(grant);
+		this.log("grant", null, `${grant.id} ${grant.scope}`);
+		return grant;
+	}
+
+	revoke(id: string): FleetGrant | undefined {
+		const index = this.state.grants.findIndex(grant => grant.id === id);
+		if (index < 0) return undefined;
+		const [grant] = this.state.grants.splice(index, 1);
+		this.log("revoke", null, `${grant.id} ${grant.scope}`);
+		return grant;
+	}
+
+	blocker(member: string, text: string): void {
+		this.state.blockers.push({ at: this.now(), member, text: oneLine(text, GRANT_TEXT_MAX) });
+		this.changed();
+	}
+
+	autoApproved(member: string, title: string, answer: string): void {
+		this.state.autoApprovals.push({ at: this.now(), member, title: oneLine(title, TEXT_MAX), answer: oneLine(answer, CELL_MAX) });
+		if (this.state.autoApprovals.length > FLEET_AUTO_APPROVALS_MAX) this.state.autoApprovals.splice(0, this.state.autoApprovals.length - FLEET_AUTO_APPROVALS_MAX);
+		this.log("auto-approve", member, `${oneLine(title, CELL_MAX)} → ${answer}`);
 	}
 
 	log(kind: FleetLogKind, member: string | null, text: string): void {

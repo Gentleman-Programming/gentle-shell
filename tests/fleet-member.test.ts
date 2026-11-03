@@ -294,3 +294,93 @@ test("inspect returns the detail plus a bounded activity tail and the member's O
 	await tick();
 	assert.doesNotMatch(plain.member.inspect(40), /feature document/, "no document line when none appeared");
 });
+
+// T3 (S2): the fleet answers member dialogs with the RPC response shapes of
+// pi-coding-agent docs/rpc-extension-ui.md:176-193; protected ones only by code.
+
+async function waitingMember() {
+	const h = harness();
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	return { h, child: h.children[0] };
+}
+
+const responses = (child: FakeChild) => child.written.filter(command => command.type === "extension_ui_response");
+
+test("answer writes the exact RPC response for each dialog method and clears the dialog", async () => {
+	const { h, child } = await waitingMember();
+	child.emit({ type: "extension_ui_request", id: "s1", method: "select", title: "Pick a database", options: ["postgres", "sqlite"] });
+	child.emit({ type: "extension_ui_request", id: "s2", method: "select", title: "Pick a region", options: ["eu", "us"] });
+	child.emit({ type: "extension_ui_request", id: "c1", method: "confirm", title: "Use the cache?" });
+	child.emit({ type: "extension_ui_request", id: "i1", method: "input", title: "Release name" });
+	child.emit({ type: "extension_ui_request", id: "e1", method: "editor", title: "Edit notes", prefill: "a" });
+	child.emit({ type: "extension_ui_request", id: "x1", method: "confirm", title: "Continue?" });
+	await tick();
+	assert.equal(h.member.answer({ answer: "sqlite" }).ok, true, "defaults to the oldest pending dialog");
+	assert.equal(h.member.answer({ answer: "2" }, "s2").ok, true);
+	assert.equal(h.member.answer({ answer: "no" }, "c1").ok, true);
+	assert.equal(h.member.answer({ answer: "v1.2" }, "i1").ok, true);
+	assert.equal(h.member.answer({ answer: "line 1\nline 2" }, "e1").ok, true);
+	assert.equal(h.member.status, "waiting-question", "one dialog is still pending");
+	assert.equal(h.member.answer({ cancel: true }).ok, true);
+	await tick();
+	assert.deepEqual(responses(child), [
+		{ id: "s1", type: "extension_ui_response", value: "sqlite" },
+		{ id: "s2", type: "extension_ui_response", value: "us" },
+		{ id: "c1", type: "extension_ui_response", confirmed: false },
+		{ id: "i1", type: "extension_ui_response", value: "v1.2" },
+		{ id: "e1", type: "extension_ui_response", value: "line 1\nline 2" },
+		{ id: "x1", type: "extension_ui_response", cancelled: true },
+	]);
+	assert.deepEqual(h.member.dialogs, []);
+	assert.equal(h.member.status, "working", "the answered member runs on");
+});
+
+test("an invalid or unknown answer is refused and nothing is written", async () => {
+	const { h, child } = await waitingMember();
+	child.emit({ type: "extension_ui_request", id: "s1", method: "select", title: "Pick a database", options: ["postgres", "sqlite"] });
+	await tick();
+	const wrong = h.member.answer({ answer: "mysql" });
+	assert.equal(wrong.ok, false);
+	if (!wrong.ok) assert.match(wrong.error, /not one of the offered options/);
+	const missing = h.member.answer({ answer: "sqlite" }, "nope");
+	assert.equal(missing.ok, false);
+	if (!missing.ok) assert.match(missing.error, /no pending dialog "nope"/);
+	await tick();
+	assert.deepEqual(responses(child), []);
+	assert.equal(h.member.dialogs.length, 1, "the dialog stays pending");
+	assert.equal(h.member.status, "waiting-question");
+});
+
+test("a protected dialog is marked, refused to the fleet's answer, and answered only through respond", async () => {
+	const { h, child } = await waitingMember();
+	child.emit({ type: "extension_ui_request", id: "g1", method: "confirm", title: "Allow recognized data-loss command?", message: "rm -rf build" });
+	await tick();
+	assert.deepEqual(h.member.dialogs[0].protected, { class: "destructive", marker: "data-loss command" });
+	const refused = h.member.answer({ answer: "yes" });
+	assert.equal(refused.ok, false);
+	if (!refused.ok) assert.match(refused.error, /relayed to the human/);
+	await tick();
+	assert.deepEqual(responses(child), []);
+	assert.equal(h.member.respond("g1", { confirmed: true }), true);
+	await tick();
+	assert.deepEqual(responses(child), [{ id: "g1", type: "extension_ui_response", confirmed: true }]);
+	assert.deepEqual(h.member.dialogs, []);
+});
+
+test("a protected dialog keeps its full text for the human relay while the digest stays bounded", async () => {
+	const { h, child } = await waitingMember();
+	const title = `Authorize cross-orchestrator message to peer?\nReason: ${"r".repeat(600)}`;
+	child.emit({ type: "extension_ui_request", id: "m1", method: "select", title, options: ["Allow once", "Allow for this session", "Deny"] });
+	await tick();
+	assert.equal(h.member.dialogs[0].relay?.title, title);
+	assert.ok(h.member.dialogs[0].title.length <= 300);
+	assert.match(h.member.digest(), /question \(relayed to the human\): Authorize cross-orchestrator/);
+});
+
+test("buildMemberLaunch strips the parent's autonomy override so a member never starts with standing permissions", () => {
+	const launch = buildMemberLaunch({ env: { PATH: "/bin", GENTLE_PI_AUTONOMOUS_MODE: "1", GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" }, cwd: "/w", sessionDir: "/s", pi: { command: "pi", args: [] } });
+	for (const key of ["GENTLE_PI_AUTONOMOUS_MODE", "GENTLE_PI_AGENTS_PARENT_PERMISSION_FD"]) assert.equal(key in launch.env, false, key);
+	assert.equal(launch.env.PATH, "/bin");
+});

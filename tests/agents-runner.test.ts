@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -54,6 +54,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 				fake.child.stdin.on("data", (chunk) => {
 					const command = JSON.parse(String(chunk));
 					fake.written.push(command);
+					if (options.hold?.(command)) return;
 					const rejected = options.reject?.(command) === true;
 					fake.emit({ type: "response", id: command.id, success: !rejected && (command.type !== "get_state" || options.stateSuccess !== false),
 						...(rejected ? { error: "No API key for provider" } : {}), data: command.type === "get_state" ? options.state : undefined });
@@ -2376,4 +2377,47 @@ test("the task record remembers the model a fallback moved away from", async () 
 	for (let i = 0; i < 4; i++) await tick();
 	assert.equal(h.store.get(task.id)?.fallbackFrom, "fb-r/one");
 	assert.equal(h.store.get(task.id)?.model, "fb-s/two");
+});
+
+test("a fallback step without its own effort runs at the agent's configured effort", async () => {
+	const h = harness({ state: {} });
+	h.runner.run(request({ model: { provider: "fb-u", id: "one" }, thinking: "high", fallbacks: [{ model: "fb-v/two", thinking: "low" }, { model: "fb-w/three" }] }));
+	await tick();
+	for (let round = 0; round < 2; round++) {
+		h.children[0].emit(quotaEnd);
+		h.children[0].emit({ type: "agent_settled" });
+		for (let i = 0; i < 6; i++) await tick();
+	}
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["low", "high"]);
+});
+
+test("a launch fallback is announced only once the child actually started", async () => {
+	const first = harness({ state: {} });
+	first.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await tick();
+	first.children[0].emit(quotaEnd);
+	first.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick();
+	const announced: string[] = [];
+	const failing = harness({ failStart: true, onFallback: (_task, change) => { announced.push(change.to); } });
+	const task = failing.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await failing.runner.waitFor(task.id);
+	assert.deepEqual(announced, [], "a spawn that failed announces nothing");
+	const starting = harness({ state: {}, onFallback: (_task, change) => { announced.push(change.to); } });
+	starting.runner.run(request({ model: { provider: "fb-x", id: "cool" }, fallbacks: [{ model: "fb-y/warm" }] }));
+	await tick();
+	assert.deepEqual(announced, ["fb-y/warm"]);
+});
+
+test("a task cancelled after Pi accepted the new model records that model", async () => {
+	const h = harness({ state: {}, hold: (command) => command.type === "set_thinking_level" });
+	const task = h.runner.run(request({ model: { provider: "fb-z", id: "one" }, fallbacks: [{ model: "fb-za/two", thinking: "low" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	for (let i = 0; i < 4; i++) await tick();
+	h.runner.cancel(task.id);
+	const done = await h.runner.waitFor(task.id);
+	assert.equal(done.model, "fb-za/two");
+	assert.equal(done.fallbackFrom, "fb-z/one");
 });

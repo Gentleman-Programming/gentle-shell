@@ -19,6 +19,8 @@ export interface OrchestratorFallbackDeps {
 	available(model: string): boolean;
 	setModel(model: string): Promise<boolean>;
 	setThinking(level: ThinkingLevel): void;
+	/** The session's effort when the episode began: a step without its own effort runs at it. */
+	thinking(): ThinkingLevel | undefined;
 	announce(change: FallbackChange): void;
 	resume(message: string): void;
 	cooldown: ModelCooldown;
@@ -29,6 +31,7 @@ type AssistantLike = { role?: unknown; stopReason?: unknown; errorMessage?: unkn
 
 export function createOrchestratorFallback(deps: OrchestratorFallbackDeps) {
 	const tried = new Set<string>();
+	let episodeThinking: ThinkingLevel | undefined;
 	return {
 		/** Handles a settled run (its last attempt's messages); true when the session moved to a fallback and resumed. */
 		async onSettled(messages: readonly unknown[], settled: { aborted?: boolean } = {}): Promise<boolean> {
@@ -48,6 +51,7 @@ export function createOrchestratorFallback(deps: OrchestratorFallbackDeps) {
 			if (!chain.length || !shouldFallBack(category)) return false;
 			const now = deps.now();
 			const current = deps.current();
+			if (tried.size === 0) episodeThinking = deps.thinking();
 			if (current) {
 				tried.add(current);
 				deps.cooldown.mark(current, category, now);
@@ -60,7 +64,8 @@ export function createOrchestratorFallback(deps: OrchestratorFallbackDeps) {
 				// Pi may refuse or throw (an expired login): the next step gets its turn.
 				const switched = await deps.setModel(pick.model).catch(() => false);
 				if (!switched) continue;
-				if (pick.thinking) deps.setThinking(pick.thinking);
+				const level = pick.thinking ?? episodeThinking;
+				if (level) deps.setThinking(level);
 				deps.announce({ agent: "orchestrator", from: current ?? "default", to: pick.model, category });
 				deps.resume(fallbackContinuePrompt(current, pick.model, category));
 				return true;

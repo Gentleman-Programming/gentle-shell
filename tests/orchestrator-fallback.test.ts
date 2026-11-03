@@ -23,6 +23,7 @@ function setup(options: { chain?: Array<{ model: string; thinking?: "low" | "hig
 		setThinking: (level) => log.push(`thinking ${level}`),
 		announce: (change) => log.push(`notice ${change.from}->${change.to} ${change.category}`),
 		resume: (message) => log.push(`resume ${/continue/i.test(message)}`),
+		thinking: () => "medium",
 		cooldown: new ModelCooldown(),
 		now: () => 1000,
 	});
@@ -71,4 +72,11 @@ test("an aborted run never resumes on a fallback, and a model Pi throws on gives
 	const throwing = setup({ throwing: ["orc/second"] });
 	assert.equal(await throwing.fallback.onSettled(failed("insufficient_quota")), true);
 	assert.equal(throwing.current(), "orc/third");
+});
+
+test("a fallback step without its own effort runs at the session's original effort, not the previous step's", async () => {
+	const { fallback, log } = setup({ chain: [{ model: "orc/second", thinking: "high" }, { model: "orc/third" }], refuse: [] });
+	await fallback.onSettled(failed("insufficient_quota"));
+	await fallback.onSettled(failed("insufficient_quota"));
+	assert.deepEqual(log.filter((line) => line.startsWith("thinking")), ["thinking high", "thinking medium"]);
 });

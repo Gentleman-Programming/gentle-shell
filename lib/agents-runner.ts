@@ -1,3 +1,5 @@
+import { pickModel, sharedCooldown, shouldFallBack, type ModelCooldown } from "./model-fallback-policy.ts";
+import type { FallbackChain } from "./model-fallback-store.ts";
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -9,10 +11,10 @@ import { withoutInteractiveHost } from "./rpc-host.ts";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
-import { AGENT_MODE, formatModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
+import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
 import { CHILD_QUERY_MAX_INFLIGHT, CHILD_QUERY_TIMEOUT_MS, parseChildFrame, validChildMessage, validChildQueryId } from "./agents-messaging.ts";
 import { ParentStandingReviewPermissionBroker } from "./review-session-standing-permission-ipc.ts";
-import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore } from "./agents-protocol.ts";
+import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
 
@@ -64,6 +66,8 @@ export interface RunnerDeps {
 	pi: PiCommand;
 	resolvePi?(): PiCommand;
 	process?: ProcessControl;
+	/** Models that recently ran out; the process-wide registry when absent. */
+	cooldown?: ModelCooldown;
 }
 
 export interface RunnerLimits {
@@ -120,6 +124,8 @@ export interface RunnerHooks {
 	onQuerySettled?(taskId: string, requestId: string, outcome: "replied" | "expired"): void;
 	// Parent-only observation of a paired successful filesystem tool, not prose.
 	onSuccessfulMutation?(task: TaskRecord, tool: { toolName: "write" | "edit"; toolCallId: string; path: string; evidence?: SessionChangeEvidence }): void | Promise<void>;
+	/** The child moved to the next model of its fallback chain and keeps going. */
+	onFallback?(task: TaskRecord, change: { from: string; to: string; category: TerminalErrorCategory }): void;
 }
 
 export interface TaskRequest {
@@ -132,6 +138,8 @@ export interface TaskRequest {
 	parentSessionId: string;
 	model: ModelRef | undefined;
 	thinking: string | undefined;
+	/** Ordered fallbacks for when `model` runs out or keeps failing; only models the user chose. */
+	fallbacks?: FallbackChain;
 	sessionDir: string;
 	resumeSessionPath: string | undefined;
 	env: NodeJS.ProcessEnv;
@@ -199,6 +207,10 @@ interface PendingReply {
 interface LiveTask {
 	child: ChildLike;
 	sawRunEvent: boolean;
+	/** The category of the last failed final response, for the fallback decision. */
+	errorCategory?: TerminalErrorCategory;
+	/** Models this run already used or tried, so a chain never loops. */
+	triedModels?: Set<string>;
 	observations?: ChildObservationBuffer;
 	observationGuard?: () => boolean;
 	observationPreparation?: () => boolean;
@@ -314,6 +326,11 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 		// Missing/incompatible package remains an observable child capability gap.
 		return [];
 	}
+}
+
+/** The message that resumes a child after its model changed. */
+export function fallbackContinuePrompt(from: string | undefined, to: string, category: TerminalErrorCategory): string {
+	return `The previous model${from ? ` (${from})` : ""} stopped with a provider error (${category}). You are now running on ${to}. Continue the task from where it stopped; do not repeat steps that already completed.`;
 }
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {
@@ -606,7 +623,7 @@ export class AgentRunner {
 		let child: ChildLike;
 		try {
 			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
-			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(request, instructionsTransportPath)], {
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(this.launchRequest(id, request), instructionsTransportPath)], {
 				cwd: request.cwd,
 				env,
 				detached,
@@ -723,6 +740,61 @@ export class AgentRunner {
 			}
 			else this.requestStop(id, TASK_STATUS.TIMED_OUT, `stalled for ${minutes} min with tool "${tool}" still running after: ${lastStep}${this.stderrSuffix(live)}`);
 		}, budget);
+	}
+
+	/** The request a child starts with: a primary model that is cooling down gives way to its first usable fallback. */
+	private launchRequest(id: string, request: TaskRequest): TaskRequest {
+		const chain = request.fallbacks ?? [];
+		if (!chain.length || !request.model) return request;
+		const pick = pickModel(formatModelRef(request.model), chain, { cooldown: this.deps.cooldown ?? sharedCooldown(), now: this.deps.now() });
+		const model = pick?.fallback && pick.model ? parseModelRef(pick.model) : undefined;
+		if (!model?.provider || !pick) return request;
+		this.store.update(id, { model: pick.model, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+		return { ...request, model, thinking: pick.thinking ?? request.thinking };
+	}
+
+	/**
+	 * After a failed final response, moves the live child to the next usable
+	 * model of its chain and asks it to continue the same conversation. False
+	 * when the error would repeat on any model or nothing is left: the caller
+	 * then fails the task as before.
+	 */
+	private fallBack(id: string, request: TaskRequest, live: LiveTask): boolean {
+		const chain = request.fallbacks ?? [];
+		const category = live.errorCategory;
+		if (!chain.length || live.terminal || !shouldFallBack(category)) return false;
+		const cooldown = this.deps.cooldown ?? sharedCooldown();
+		const now = this.deps.now();
+		const task = this.store.get(id);
+		const current = task?.model && task.model !== "default" ? task.model : request.model ? formatModelRef(request.model) : undefined;
+		const tried = (live.triedModels ??= new Set());
+		if (current) {
+			tried.add(current);
+			cooldown.mark(current, category!, now);
+		}
+		let pick = pickModel(current, chain, { cooldown, now, tried });
+		// A step without a provider cannot be selected over RPC; skip it.
+		while (pick?.fallback && pick.model && !parseModelRef(pick.model)?.provider) {
+			tried.add(pick.model);
+			pick = pickModel(current, chain, { cooldown, now, tried });
+		}
+		if (!pick?.fallback || !pick.model) return false;
+		const target = parseModelRef(pick.model)!;
+		const to = pick.model;
+		tried.add(to);
+		live.errorCategory = undefined;
+		const updated = this.store.update(id, { error: null, result: null, model: to, ...(pick.thinking ? { thinking: pick.thinking } : {}), lastStep: `↪ ${to}` });
+		try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
+		catch { /* A notice failure must not stop the switch. */ }
+		const fail = (reason: string) => { if (this.live.get(id) === live && !live.terminal) this.settleOrderly(id, TASK_STATUS.FAILED, reason); };
+		void (async () => {
+			const switched = await this.send(id, { type: "set_model", provider: target.provider, modelId: target.id });
+			if (switched.success === false) return fail(`could not switch to ${to}: ${String(switched.error ?? "rejected")}`);
+			if (pick.thinking) await this.send(id, { type: "set_thinking_level", level: pick.thinking });
+			const resumed = await this.send(id, { type: "prompt", message: fallbackContinuePrompt(current, to, category!) });
+			if (resumed.success === false) fail(`could not continue on ${to}: ${String(resumed.error ?? "prompt rejected")}`);
+		})().catch((error) => fail(`could not continue on ${to}: ${error instanceof Error ? error.message : String(error)}`));
+		return true;
 	}
 
 	private send(id: string, command: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -894,6 +966,7 @@ export class AgentRunner {
 				continue; // Separate from store persistence, UI totals and notifications.
 			}
 			live.sawRunEvent = true;
+			if (event.type === TASK_EVENT.AGENT_END) live.errorCategory = event.outcome === "error" ? event.errorCategory : undefined;
 			this.store.apply(id, event, this.deps.now());
 			if (event.type === TASK_EVENT.TOOL_START && event.callId) {
 				live.inFlightTools.set(event.callId, event.name);
@@ -920,7 +993,8 @@ export class AgentRunner {
 			if (event.type === TASK_EVENT.AGENT_SETTLED) {
 				if (live.observations) live.observations.agentSettled = true;
 				const terminal = this.store.get(id);
-				if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
+				if (terminal?.error && this.fallBack(id, request, live)) { /* The child keeps going on its next model. */ }
+				else if (terminal?.error) this.settleOrderly(id, TASK_STATUS.FAILED, terminal.error);
 				else if (terminal?.result) this.settleOrderly(id, TASK_STATUS.COMPLETED, null);
 				else this.settleOrderly(id, TASK_STATUS.FAILED, "assistant settled without a final report");
 			}

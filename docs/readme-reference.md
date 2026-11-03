@@ -1163,6 +1163,33 @@ The `profiles` values use the same per-agent shape as `models.json`. Profile nam
 
 The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. **Make default** writes `profiles.json` first and then materializes routing; if materialization fails, the previous active marker is restored, and the previous routing is restored when a profile was active before. With no previously active profile there is no routing to restore: `models.json` keeps the new routing and the warning says so. Anything that could not be restored is named in the warning.
 
+### Model fallback chains
+
+Each profile can give every agent an ordered list of fallback models, kept in `profile-fallbacks.json` next to `profiles.json` (older versions keep reading `profiles.json` and simply never fall back):
+
+```json
+{
+  "kind": "gentle-pi.profile_model_fallbacks",
+  "version": 1,
+  "profiles": {
+    "work": {
+      "orchestrator": [{ "model": "openai/gpt-5.5", "thinking": "high" }],
+      "*": [{ "model": "anthropic/claude-sonnet-5-5" }, { "model": "qwen/qwen3.8" }]
+    }
+  }
+}
+```
+
+An agent without its own chain uses the profile's `*` chain. A chain holds at most eight unique `provider/model` ids, each with an optional effort. A launch uses the chain of the profile it resolved (a session binding, a frozen or pinned profile), else the active profile's.
+
+When a run's final response fails, its error category decides:
+
+- `quota` (usage limit, billing) and `auth` move on at once.
+- `rate_limit`, `provider_unavailable`, `timeout` and `network` move on too. Pi already retried them on the same model before the run failed.
+- `context_length`, `invalid_request`, unknown errors and aborts never move on, because another model would fail the same way.
+
+A subagent switches its live child to the next model (`set_model`, plus the step's effort) and is asked to continue the same conversation, so finished steps are not repeated. A model that failed is skipped by every agent of the session for a while: 30 minutes after a limit or auth error, 2 minutes after a transient one. A launch whose primary model is cooling down starts on the first usable fallback. Each switch shows a warning naming the agent, the reason, the new model and, when it costs more, how much (`2.0x the price`), and is recorded in the session as `gentle-pi.model-fallback/v1`. Only models you put in a chain are ever used; when the chain runs out, the run fails as before.
+
 ### Per-repository pins
 
 A profile can be pinned to one repository, so that repository's subagent launches use that profile regardless of which profile is globally active. This is what keeps parallel repositories independent: without a pin, switching the active profile in one repository changes the routing every other repository will use for its next subagent launch.

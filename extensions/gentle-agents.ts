@@ -1,3 +1,4 @@
+import { fallbackNotice, MODEL_FALLBACK_ENTRY, profileFallbackChain } from "../lib/model-fallback-notice.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
@@ -698,6 +699,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const restoredTaskIds = new Set<string>();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
+	// The catalog prices a fallback notice ("2.0x the price").
+	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
 	const visualHome = gentlePiConfigHome(env);
@@ -1508,6 +1511,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			else messages.expireQuery(taskId, requestId);
 		},
+		onFallback: (task, change) => {
+			const record = { agent: task.agent, from: change.from, to: change.to, category: change.category };
+			if (activeSessionId() === task.parentSessionId) {
+				try { pi.appendEntry(MODEL_FALLBACK_ENTRY, { ...record, taskId: task.id, at: deps.now() }); } catch { /* The switch matters more than its record. */ }
+			}
+			const prices = (model: { provider: string | undefined; id: string }) => (model.provider ? modelRegistry?.find(model.provider, model.id)?.cost : undefined);
+			ui?.notify(fallbackNotice(record, prices), "warning");
+		},
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
 			// uses a separately bound, live-grant path only for successful tool evidence.
@@ -1822,6 +1833,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	const showWidget = (ctx: ExtensionContext) => {
 		ui = ctx.hasUI ? ctx.ui : undefined;
+		modelRegistry = ctx.modelRegistry;
 		sessions = ctx.sessionManager;
 		agentsVisible = resolveVisualSettings({ gentlePiConfigHome: visualHome }).settings.visibility.agents;
 		stopVisualUpdates?.();
@@ -2102,6 +2114,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			model: profile.model,
 			...(modelSource === undefined ? {} : { modelSource }),
 			thinking: profile.thinking,
+			...(() => {
+				// The chain of the profile this launch resolved, else the active profile's.
+				const name = sessionProfile.kind === "explicit" ? sessionProfile.name : sessionProfile.profile?.name;
+				const fallbacks = profileFallbackChain(profileConfigHome, name, agent.name);
+				return fallbacks.length ? { fallbacks } : {};
+			})(),
 			sessionDir,
 			resumeSessionPath: resume,
 			...childExtensionRequest(deps.env, deps.childExtensionPaths),

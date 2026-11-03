@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"] } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -81,6 +81,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		onFinish: (task, observations) => { finishes.push(task.id); options.onFinish?.(task, observations); },
 		onNotification: options.onNotification,
 		onSuccessfulMutation: options.onSuccessfulMutation,
+		onFallback: options.onFallback,
 	});
 	return { store, runner, children, timers, asks, finishes, spawnOptions, advance(ms) {
 		clock += ms;
@@ -2255,4 +2256,76 @@ test("advisories S2: session shutdown keeps a running or quarantined subagent's 
 	next.start();
 	assert.equal(existsSync(scratch), false, "the startup sweep removes the kept scratch once its owner ended");
 	next.shutdown();
+});
+
+const quotaEnd = { type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 insufficient_quota: monthly usage limit reached" }] };
+
+test("a subagent that runs out of quota switches its child to the next model in place and continues", async () => {
+	const fallbacks: Array<{ task: string; from: string; to: string; category: string }> = [];
+	const h = harness({ state: { model: { provider: "fb-a", id: "primary" } }, onFallback: (task, change) => { fallbacks.push({ task: task.id, ...change }); } });
+	const task = h.runner.run(request({ model: { provider: "fb-a", id: "primary" }, thinking: "high", fallbacks: [{ model: "fb-b/second", thinking: "medium" }, { model: "fb-c/third" }] }));
+	await tick();
+	h.children[0].emit(quotaEnd);
+	h.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick(); await tick();
+	assert.notEqual(h.store.get(task.id)?.status, TASK_STATUS.FAILED, "the task is still alive");
+	const sent = h.children[0].written.map((command) => command.type);
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]), [["fb-b", "second"]]);
+	assert.deepEqual(h.children[0].written.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["medium"]);
+	assert.ok(sent.lastIndexOf("prompt") > sent.indexOf("set_model"), "the continue prompt follows the switch");
+	assert.match(String(h.children[0].written.at(-1)?.message), /continue/i);
+	assert.equal(h.store.get(task.id)?.model, "fb-b/second");
+	assert.deepEqual(fallbacks, [{ task: task.id, from: "fb-a/primary", to: "fb-b/second", category: "quota" }]);
+	assert.equal(h.spawnOptions.length, 1, "the same child keeps going");
+	h.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done on the fallback" }], stopReason: "stop" }] });
+	h.children[0].emit({ type: "agent_settled" });
+	const done = await h.runner.waitFor(task.id);
+	assert.equal(done.status, TASK_STATUS.COMPLETED);
+	assert.equal(done.result, "done on the fallback");
+});
+
+test("errors another model would repeat, or an exhausted chain, fail the subagent as before", async () => {
+	const context = harness({ state: {} });
+	const contextTask = context.runner.run(request({ model: { provider: "fb-d", id: "one" }, fallbacks: [{ model: "fb-e/two" }] }));
+	await tick();
+	context.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "prompt is too long: maximum context length" }] });
+	context.children[0].emit({ type: "agent_settled" });
+	const failed = await context.runner.waitFor(contextTask.id);
+	assert.equal(failed.status, TASK_STATUS.FAILED);
+	assert.equal(context.children[0].written.some((command) => command.type === "set_model"), false);
+
+	const none = harness({ state: {} });
+	const noneTask = none.runner.run(request({ model: { provider: "fb-f", id: "only" } }));
+	await tick();
+	none.children[0].emit(quotaEnd);
+	none.children[0].emit({ type: "agent_settled" });
+	assert.equal((await none.runner.waitFor(noneTask.id)).status, TASK_STATUS.FAILED, "no chain, no fallback");
+
+	const spent = harness({ state: {} });
+	const spentTask = spent.runner.run(request({ model: { provider: "fb-g", id: "one" }, fallbacks: [{ model: "fb-h/two" }] }));
+	await tick();
+	spent.children[0].emit(quotaEnd);
+	spent.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick(); await tick();
+	spent.children[0].emit(quotaEnd);
+	spent.children[0].emit({ type: "agent_settled" });
+	const exhausted = await spent.runner.waitFor(spentTask.id);
+	assert.equal(exhausted.status, TASK_STATUS.FAILED, "the last model failing ends the task");
+	assert.match(exhausted.error ?? "", /quota/);
+	assert.equal(spent.children[0].written.filter((command) => command.type === "set_model").length, 1);
+});
+
+test("a launch whose primary model is cooling down starts on the first usable fallback", async () => {
+	const first = harness({ state: {} });
+	const task = first.runner.run(request({ model: { provider: "fb-i", id: "cool" }, fallbacks: [{ model: "fb-j/warm" }] }));
+	await tick();
+	first.children[0].emit(quotaEnd);
+	first.children[0].emit({ type: "agent_settled" });
+	await tick(); await tick();
+	const next = harness({ state: {} });
+	next.runner.run(request({ model: { provider: "fb-i", id: "cool" }, thinking: "low", fallbacks: [{ model: "fb-j/warm", thinking: "high" }] }));
+	await tick();
+	const args = next.spawnOptions[0]!.args;
+	assert.equal(args[args.indexOf("--model") + 1], "fb-j/warm:high", "the cooled primary is skipped at launch");
+	assert.ok(task.id);
 });

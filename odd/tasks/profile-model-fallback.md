@@ -28,7 +28,7 @@ Branch: `feat/profile-model-fallback` (from `origin/main` 813ec1106). Delivery: 
 |----|-------|-------|--------|----------|
 | T1 | S1 | inline | done | `lib/model-fallback-store.ts`: own file `profile-fallbacks.json`, strict reader (kind/version, safe ids, effort, unique models, ≤8), `chainFor` with `*`, `setChain`, `renameProfileFallbacks`; RED module missing → GREEN 5/5; typecheck 0 |
 | T2 | S2, S4 | inline | done | `lib/model-fallback-policy.ts`: `shouldFallBack` by category (terminal errors arrive after Pi retries), `ModelCooldown` (exhausted 30 min, transient 2 min) shared per process, `pickModel`; RED → GREEN 3/3; typecheck 0 |
-| T3 | S3, S5 | inline | pending | subagents: runner switches the child in place; session entry + notice |
+| T3 | S3, S5 | inline | done | runner `fallBack` on AGENT_SETTLED (category from AGENT_END), RPC set_model + set_thinking_level + continue prompt, cooled primary skipped at launch; gentle-agents passes the resolved profile's chain and notifies + records `gentle-pi.model-fallback/v1` (`lib/model-fallback-notice.ts`, price note via `computeModelPriceRatio`); RED runner 3 + notice 2 + integration 1 → GREEN; agents 688/688; typecheck 0. Risk: item 4 (runner settle path, async ordering) → independent verifier |
 | T4 | S3, S5 | inline | pending | orchestrator: main session switches and continues |
 | T5 | S6 | inline | pending | `/gentle:profiles` chain editing |
 | T6 | S4 | inline | pending | proactive skip from `/gentle:usage` windows |
@@ -45,3 +45,4 @@ Branch: `feat/profile-model-fallback` (from `origin/main` 813ec1106). Delivery: 
   - `lib/agents-protocol.ts` already reduces a child's terminal error to a closed category (`TERMINAL_ERROR_CATEGORY`) without keeping the provider text.
   - Strict readers reject unknown keys, so a key inside `profiles.json` would make older binaries reject the file.
 - L3 (user, 2026-11-03): "implementalo" — the recommendations above (separate file, design points 1–6) are accepted.
+- L4 (T3): a terminal error reaches the runner only after Pi's own retries, so the decision is the error category alone. The continue prompt keeps the child's conversation; a step without a provider cannot be selected over RPC and is skipped. The chain is the launch's resolved profile (binding, frozen, pin), else `profiles.json` `active`.

@@ -7399,3 +7399,36 @@ test("an agent asking the user exposes an alert row for the panel editor", async
 	await tick();
 	assert.match(alert()[0]!, /^ \? explore asked: Which file\? +\/gentle:agents $/, "the alert row names the asking agent and its question");
 });
+
+test("a subagent launched under a profile carries its fallback chain, and a quota error switches it with a notice and a session entry", async () => {
+	const agentHome = join(root, "fallback-launch", "agent");
+	const config = join(root, "fallback-launch", "config");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	mkdirSync(config, { recursive: true });
+	writeFileSync(join(agentHome, "agents", "fallbacker.md"), "---\ndescription: fallback fixture\n---\nMap things.");
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ default_model: "fbx/primary-model" }));
+	writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+	writeFileSync(join(config, "profile-fallbacks.json"), JSON.stringify({ kind: "gentle-pi.profile_model_fallbacks", version: 1, profiles: { home: { "*": [{ model: "fby/second-model", thinking: "low" }] } } }));
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const { pi, tools, fire, entries } = fakePi();
+	gentleAgents(pi, { GENTLE_PI_AGENT_HOME: agentHome, GENTLE_PI_CONFIG_HOME: config }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("fb", { agent: "fallbacker", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	try {
+		const child = harness.children[0]!;
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 insufficient_quota: usage limit reached" }] });
+		child.emit({ type: "agent_settled" });
+		await tick(); await tick(); await tick();
+		assert.deepEqual(child.written.filter((command) => command.type === "set_model").map((command) => `${command.provider}/${command.modelId}`), ["fby/second-model"]);
+		assert.ok(dialogs.some((line) => /fallbacker: fbx\/primary-model hit its usage limit; continuing on fby\/second-model/.test(line)), dialogs.join("\n"));
+		const recorded = entries.filter((entry) => entry.customType === "gentle-pi.model-fallback/v1").map((entry) => entry.data as Record<string, unknown>);
+		assert.equal(recorded.length, 1);
+		assert.deepEqual({ agent: recorded[0]!.agent, from: recorded[0]!.from, to: recorded[0]!.to, category: recorded[0]!.category }, { agent: "fallbacker", from: "fbx/primary-model", to: "fby/second-model", category: "quota" });
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+});

@@ -386,10 +386,10 @@ export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardThe
 	const taskWidth = Math.max(1, width - PANEL_ROW_INDENT - 2 - 1 - kindWidth - 1 - rightWidth);
 	const rows = listed.map((task) => {
 		const look = LOOK[task.status];
-		// A run that moved to a fallback model names it in its own task column,
-		// the flexible one, so the shared kind and right columns never change.
-		const moved = task.fallbackFrom ? `↪ ${task.model.slice(task.model.lastIndexOf("/") + 1)} · ` : "";
-		const text = clip(moved + taskText(task), taskWidth);
+		// A run that moved to a fallback model is marked in its own task column,
+		// the flexible one, so the shared kind and right columns never change;
+		// the task stays first and the model follows when there is room.
+		const text = clip(task.fallbackFrom ? `↪ ${taskText(task)} · ${task.model.slice(task.model.lastIndexOf("/") + 1)}` : taskText(task), taskWidth);
 		const kind = clip(agentKind(task.agent), kindWidth);
 		const left = `${theme.fg(look.role, look.glyph)} ${theme.fg(SECTION_TEXT_ROLE[task.status] ?? NAME_ROLE, text)}${" ".repeat(taskWidth - visibleWidth(text))} ${theme.fg(TASK_ROLE, kind)}`;
 		return renderPanelRow(width, left, theme.fg(META_ROLE, sectionRight(task, now).padStart(rightWidth)));

@@ -617,9 +617,10 @@ export class AgentRunner {
 			if (this.processControl.platform === "win32") { env.TMP = scratchDir; env.TEMP = scratchDir; }
 		} catch { scratchDir = undefined; }
 		let child: ChildLike;
+		const launch = this.launchRequest(id, request);
 		try {
 			const pi = this.deps.resolvePi?.() ?? this.deps.pi;
-			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(this.launchRequest(id, request), instructionsTransportPath)], {
+			child = this.deps.spawn(pi.command, [...pi.args, ...childArguments(launch.request, instructionsTransportPath)], {
 				cwd: request.cwd,
 				env,
 				detached,
@@ -635,6 +636,7 @@ export class AgentRunner {
 			this.finish(id, TASK_STATUS.FAILED, `could not start pi: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
+		launch.announce?.();
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
 		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
@@ -739,20 +741,24 @@ export class AgentRunner {
 	}
 
 	/** The request a child starts with: a primary model that is cooling down gives way to its first usable fallback. */
-	private launchRequest(id: string, request: TaskRequest): TaskRequest {
+	private launchRequest(id: string, request: TaskRequest): { request: TaskRequest; announce?: () => void } {
 		const chain = request.fallbacks ?? [];
-		if (!chain.length || !request.model) return request;
+		if (!chain.length || !request.model) return { request };
 		const cooldown = this.deps.cooldown ?? sharedCooldown();
 		const now = this.deps.now();
 		const primary = formatModelRef(request.model);
 		const pick = pickModel(primary, chain, { cooldown, now });
 		const model = pick?.fallback && pick.model ? parseModelRef(pick.model) : undefined;
-		if (!model?.provider || !pick?.model) return request;
+		if (!model?.provider || !pick?.model) return { request };
 		const updated = this.store.update(id, { model: pick.model, fallbackFrom: primary, ...(pick.thinking ? { thinking: pick.thinking } : {}) });
 		const category = cooldown.reason(primary, now);
-		try { if (updated && category) this.hooks.onFallback?.(updated, { from: primary, to: pick.model, category, launch: true }); }
-		catch { /* A notice failure must not stop the launch. */ }
-		return { ...request, model, thinking: pick.thinking ?? request.thinking };
+		const to = pick.model;
+		// Announced by the caller once the child actually started.
+		const announce = () => {
+			try { if (updated && category) this.hooks.onFallback?.(this.store.get(id) ?? updated, { from: primary, to, category, launch: true }); }
+			catch { /* A notice failure must not stop the launch. */ }
+		};
+		return { request: { ...request, model, thinking: pick.thinking ?? request.thinking }, announce };
 	}
 
 	/**
@@ -803,9 +809,13 @@ export class AgentRunner {
 				this.store.update(id, { lastStep: `↪ ${pick.model}` });
 			}
 			const to = pick.model!;
-			if (pick.thinking) await this.send(id, { type: "set_thinking_level", level: pick.thinking });
+			// Pi accepted the model: the record follows at once, even if the run stops next.
+			const level = pick.thinking ?? request.thinking;
+			this.store.update(id, { model: to, fallbackFrom: this.store.get(id)?.fallbackFrom ?? current ?? "default", ...(level ? { thinking: level } : {}) });
+			// A step without its own effort runs at the agent's configured effort, not the previous step's.
+			if (level) await this.send(id, { type: "set_thinking_level", level });
 			if (!alive()) return;
-			const updated = this.store.update(id, { model: to, fallbackFrom: this.store.get(id)?.fallbackFrom ?? current ?? "default", ...(pick.thinking ? { thinking: pick.thinking } : {}) });
+			const updated = this.store.get(id);
 			try { if (updated) this.hooks.onFallback?.(updated, { from: current ?? "default", to, category: category! }); }
 			catch { /* A notice failure must not stop the switch. */ }
 			const resumed = await this.send(id, { type: "prompt", message: fallbackContinuePrompt(current, to, category!) });

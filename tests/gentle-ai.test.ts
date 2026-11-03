@@ -5010,3 +5010,22 @@ test("models screen fallback card explains itself and the * chain belongs to the
 	const refused = __testing.routingTablePanel(screenConfig(), SCREEN_MODELS, SCREEN_AGENTS, 100, undefined, 30, ["\x1b[B", "\x1b[B", "f", "f", "\r"], [], [], { file: screenFile(), sessionBoundName: "current", fallbacks: failing } as never).map(stripAnsi).join("\n");
 	assert.match(refused, /malformed; fix or remove it first/, "a refused write is reported, not hidden");
 });
+
+test("models screen keeps ↑↓ agent at 72 columns; the fallbacks key yields first", () => {
+	const plain = renderScreen([], [], [], { width: 72 }).map(stripAnsi).join("\n");
+	assert.match(plain, /↑↓ agent/);
+});
+
+test("fallback chains are saved only for profiles that exist on disk", () => {
+	const home = mkdtempSync(join(tmpdir(), "fallbacks-saved-only-"));
+	try {
+		writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+		const fallbacks = __testing.fileRoutingFallbacks(home);
+		assert.match(fallbacks.save("draft", "*", [{ model: "openai/gpt-5.5" }]) ?? "", /Save the profile first/);
+		assert.equal(existsSync(join(home, "profile-fallbacks.json")), false, "nothing is written for an unsaved profile");
+		assert.equal(fallbacks.save("home", "*", [{ model: "openai/gpt-5.5" }]), undefined);
+		assert.deepEqual(fallbacks.chain("home", "*"), [{ model: "openai/gpt-5.5" }]);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});

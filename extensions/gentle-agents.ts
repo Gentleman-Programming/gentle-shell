@@ -1,6 +1,7 @@
 import { fallbackNotice, MODEL_FALLBACK_ENTRY, profileFallbackChain, type FallbackChange } from "../lib/model-fallback-notice.ts";
 import { sharedCooldown } from "../lib/model-fallback-policy.ts";
 import { createOrchestratorFallback } from "../lib/orchestrator-fallback.ts";
+import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
@@ -733,6 +734,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return found ? pi.setModel(found) : false;
 			},
 			setThinking: (level) => pi.setThinkingLevel(level),
+			// Unknown effort (an older host without the call) keeps each step's own effort only.
+			thinking: () => {
+				try { return typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() as ThinkingLevel : undefined; }
+				catch { return undefined; }
+			},
 			announce: (change) => announceFallback(change, undefined),
 			resume: (message) => pi.sendUserMessage(message, { deliverAs: "followUp" }),
 			cooldown: sharedCooldown(),

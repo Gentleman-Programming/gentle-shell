@@ -69,3 +69,15 @@ test("a full window whose reset already passed is a stale reading and blocks not
 	syncUsageCooldown({ provider: "anthropic", limits: [{ name: "plan", limitReached: false, windows: [{ usedPercent: 100, resetAt: 500 }] }] }, cooldown, 1_000);
 	assert.equal(cooldown.available("anthropic/claude-opus-5-5", 1_000), true);
 });
+
+test("a spent provider-wide limit (Codex's main one) skips every model; an extra limit's display name is matched as a model id", () => {
+	const cooldown = new ModelCooldown();
+	const window = (usedPercent: number, resetAt: number | null) => ({ usedPercent, resetAt });
+	syncUsageCooldown({ provider: "openai-codex", limits: [{ name: "codex", scope: "provider", limitReached: true, windows: [window(100, 80_000)] }, { name: "codex_spark", limitReached: false, windows: [window(10, 80_000)] }] }, cooldown, 1_000);
+	assert.equal(cooldown.available("openai-codex/gpt-5.5", 2_000), false, "the main limit holds every model");
+	assert.equal(cooldown.available("openai-codex/gpt-5.5", 80_000), true);
+	const extras = new ModelCooldown();
+	syncUsageCooldown({ provider: "openai-codex", limits: [{ name: "codex", scope: "provider", limitReached: false, windows: [window(40, 80_000)] }, { name: "GPT-5.3 Codex_Spark", limitReached: true, windows: [window(100, 90_000)] }] }, extras, 1_000);
+	assert.equal(extras.available("openai-codex/gpt-5.3-codex-spark", 2_000), false, "display names are matched in id form");
+	assert.equal(extras.available("openai-codex/gpt-5.5", 2_000), true);
+});

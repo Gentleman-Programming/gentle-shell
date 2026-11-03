@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, type AgentModelConfig, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
+import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, isServiceTier, type AgentModelConfig, type ServiceTier, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
 // Gentle Agents configuration. Agent definitions are markdown files with YAML
 // frontmatter (the format gentle-ai installs) and runtime settings come from
@@ -62,6 +62,7 @@ export interface AgentDefinitionError {
 export interface ModelProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	tier?: ServiceTier;
 }
 
 export interface AgentsConfig {
@@ -83,6 +84,7 @@ export interface ProfileSources {
 export interface ResolvedProfile {
 	model: ModelRef | undefined;
 	thinking: ThinkingLevel | undefined;
+	tier?: ServiceTier;
 	source: ProfileSources;
 }
 
@@ -246,7 +248,7 @@ function parseProfiles(value: unknown): Record<string, ModelProfile> {
 		if (!raw || typeof raw !== "object") continue;
 		const entry = raw as Record<string, unknown>;
 		const thinking = parseThinking(entry.effort ?? entry.thinking);
-		profiles[name] = { model: parseModelRef(entry.model), thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined };
+		profiles[name] = { model: parseModelRef(entry.model), thinking: thinking !== undefined && THINKING_LEVELS.includes(thinking) ? (thinking as ThinkingLevel) : undefined, ...(isServiceTier(entry.tier) ? { tier: entry.tier } : {}) };
 	}
 	return profiles;
 }
@@ -370,7 +372,7 @@ export function resolveAgentProfile(agent: AgentDefinition, config: AgentsConfig
 		[agent.thinking, PROFILE_SOURCE.DEFINITION],
 		[config.defaultThinking, PROFILE_SOURCE.DEFAULT],
 	]);
-	return { model, thinking, source: { model: modelSource, thinking: thinkingSource } };
+	return { model, thinking, ...(profile?.tier === undefined ? {} : { tier: profile.tier }), source: { model: modelSource, thinking: thinkingSource } };
 }
 
 export function formatModelRef(model: ModelRef | undefined): string {

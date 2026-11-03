@@ -126,6 +126,7 @@ import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETT
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { panelSheetBackHit, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
+import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
@@ -2397,8 +2398,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					// The rail drops what the wide chrome's title row and status bar show
 					// (session, permission mode) only while that chrome actually draws.
 					const view = statusCardVisible() && visualSettings.headerPlacement === "top"
-						? renderShellStatusSections(footerModel(), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
-						: renderShellStatusSections({ ...footerModel(), integrations: undefined, permission: undefined }, theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
+						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
+						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
 					statusTargets.set(width, view.targets);
 					return view.lines;
 				},
@@ -2406,6 +2407,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					statusHover = undefined;
 				},
 			};
+			// The Stats section (on in Power user); walked once per session leaf, like sessionStats.
+			let statsMemo: { key: SessionStatsKey | undefined; stats: SessionStats } | undefined;
+			const currentStats = (): SessionStats => {
+				const key = sessionStatsKey(ctx);
+				if (key && statsMemo?.key && statsMemo.key.every((value, index) => value === key[index])) return statsMemo.stats;
+				const stats = collectSessionStats(ctx.sessionManager.getEntries());
+				statsMemo = { key, stats };
+				return stats;
+			};
+			const statsOn = () => visualSettings.visibility.stats;
+			const withStats = (model: ShellBarModel): ShellBarModel => (statsOn() ? { ...model, stats: currentStats() } : model);
 			const targetAt = (y: number, width: number) => statusTargets.get(width)?.find((target) => target.row === y);
 			const statusRegion = new NativePointerRegion(statusCard, {
 				onHover(event) {
@@ -2432,7 +2444,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const part = sidebarPart(tui, "footer", bottomBar, {
 				surface: "panel",
-				digest: () => JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? ""]),
+				digest: () => {
+					const stats = statsOn() ? currentStats() : undefined;
+					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs] : ""]);
+				},
 				render: (width) => statusRegion.render(width),
 				handleMouse: (event) => statusRegion.handleMouse(event),
 				invalidate: () => statusRegion.invalidate(),

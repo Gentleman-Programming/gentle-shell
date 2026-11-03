@@ -115,7 +115,7 @@ test("the rail Status draws Changes, Review and Integrations as panel sections a
 		review: { state: "consent" as const, scope: "app.ts +2 files" },
 		statuses: ["🧠 gentle-pi · ready", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"],
 	};
-	const lines = renderShellSidebarBar(model, plain as never, 48, { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } }, "ctrl+shift+t todos · alt+u usage");
+	const lines = renderShellSidebarBar(model, plain as never, 48, { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } }, "ctrl+shift+t todos · alt+u usage");
 	for (const line of lines) assert.equal(visibleWidth(line), 48, `row fills the rail: ${line}`);
 	const rows = lines.map((line) => line.trimEnd());
 	assert.deepEqual(rows, [
@@ -138,7 +138,7 @@ test("the rail Status draws Changes, Review and Integrations as panel sections a
 
 test("the rail Status keeps an empty Changes row, hides Review without evidence and honors its toggles", () => {
 	const base = { cwd: "/p", branch: null, dirty: undefined, sessionName: undefined, modelId: "m", effort: undefined, contextPercent: null, contextWindow: 0, costTotal: 0, subscription: false, usage: undefined, statuses: [] };
-	const visibility = { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true };
+	const visibility = { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
 	const rows = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility }).map((line) => line.trimEnd());
 	assert.deepEqual(rows, [edge("▾ CHANGES", "clean", 40), edge("  no captured changes", "/gentle:changes", 40), edge("▾ INTEGRATIONS", "none", 40), "  no status reported"]);
 	const hidden = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility: { ...visibility, changes: false } }).map((line) => line.trimEnd());
@@ -188,7 +188,7 @@ test("a narrow status bar drops usage before the model and keeps the branch", ()
 	assert.equal(visibleWidth(tighter), 70);
 	assert.doesNotMatch(tighter, /claude-opus/, "then the model");
 	assert.match(tighter, /feat\/shell-ide-rework ±3 │ SUPER-YOLO +ctx [▰▱]+ 27% │ \$0\.000 $/, "branch, mode, context and cost stay");
-	const hidden = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 120, "alt+u", { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: false, modelDetails: false, contextWarning: true } }).rows[0]!);
+	const hidden = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 120, "alt+u", { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: false, modelDetails: false, contextWarning: true, stats: false } }).rows[0]!);
 	assert.doesNotMatch(hidden, /claude-opus|ctx|\$0\.000|usage/, "the visibility toggles hide model, context, cost and usage");
 });
 
@@ -241,7 +241,7 @@ test("the mobile title row carries the model, since the narrow status bar leaves
 
 test("a long branch gives way before the context and cost in a phone-width status bar", () => {
 	const longBranch = { ...chromeModel, branch: "feat/shell-ide-rework-07-mobile", dirty: undefined };
-	const narrowSettings = { density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: false, contextWarning: true } };
+	const narrowSettings = { density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: false, contextWarning: true, stats: false } };
 	const row = stripAnsi(renderShellStatusBar(longBranch, plain as never, 56, "alt+u", narrowSettings).rows[0]!);
 	assert.equal(visibleWidth(row), 56);
 	assert.match(row, /ctx [▰▱]+ 27% │ \$0\.000 $/, "context and cost stay");

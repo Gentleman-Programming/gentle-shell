@@ -3,6 +3,7 @@ import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type 
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { HOVER_ROLE } from "./shell-hover.ts";
+import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
 import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
 import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
@@ -21,6 +22,8 @@ export { gaugeTone, renderGauge, type GaugeTone };
 // verified without a live TUI.
 
 export interface ShellBarModel {
+	/** Session statistics for the Power user rail; absent elsewhere. */
+	stats?: SessionStats;
 	review?: ReviewSidebarSnapshot;
 	jobs?: RunningJobDisplay[];
 	profile?: string;
@@ -226,7 +229,7 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
 }
 
-export type StatusSection = "session" | "changes" | "review" | "integrations";
+export type StatusSection = "session" | "changes" | "review" | "stats" | "integrations";
 export type StatusTarget = { row: number; kind: "toggle"; section: StatusSection } | { row: number; kind: "open-changes" };
 export interface StatusSectionsOptions {
 	/** Keep the session name (no title row shows it). */
@@ -270,6 +273,10 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
 			],
 		});
+	}
+	// Power user (compact density) adds what the session spent, per model.
+	if (model.stats) {
+		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: renderStatsRows(model.stats, theme, width, model.subscription) });
 	}
 	// The status bar shows the permission mode once; Integrations only says
 	// what it means, so neither the mode nor its banner repeats here.

@@ -6732,10 +6732,12 @@ test("customize presets set density and visibility together, mark the current on
 	assert.equal(light.statusPlacement, "bottom", "Light is the minimal edition without the rail");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Light.*current/);
 	await customizeAction(ui, "Preset: Power user");
-	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "compact");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "comfortable", "Power user keeps Neutral's spacing");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.stats, true, "and adds Stats");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Power user.*current/);
-	await customizeAction(ui, "Density: comfortable");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "everything shown at comfortable density is Neutral again");
+	await customizeAction(ui, "Section stats: shown");
+	assert.ok(findCustomizeRow(ui, "Preset: Neutral"));
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "Power user without Stats is Neutral again");
 	await customizeAction(ui, "Density: minimal");
 	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Preset: [^\n]*current/, "a hand-tuned mix matches no preset");
 	ui.overlayView!.handleInput("\x1b");
@@ -6992,4 +6994,28 @@ test("alt+l cycles the visual presets Light → Neutral → Power user → Light
 	const moved = fakePi();
 	gentleShell(moved.pi, { GENTLE_PI_SHELL_PRESET_KEY: "alt+o" });
 	assert.ok(moved.shortcuts.has("alt+o"));
+});
+
+test("the Stats section (Power user) follows its visibility switch, at any density", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const render = async (stats: boolean, density: (typeof DENSITY)[keyof typeof DENSITY] = DENSITY.COMFORTABLE) => {
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, density, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, stats } }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+		const { ctx, ui } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 }), assistantEntry({ input: 500, output: 100, cost: 0.25 })] });
+		await fire(handlers, "session_start", ctx);
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+		const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		try {
+			return sidebarState(tui as unknown as TUI).parts.get("footer")!.render(46).map((line) => stripAnsi(line).trimEnd()).join("\n");
+		} finally {
+			footer.dispose();
+		}
+	};
+	const power = await render(true);
+	assert.match(power, /▾ STATS\s+\$0\.750 sub/, "a subscription marks the cost like the status bar");
+	assert.match(power, /spent\s+\$0\.750 sub\s+2 turns/);
+	assert.doesNotMatch(await render(false), /STATS/, "Neutral leaves it off");
+	assert.doesNotMatch(await render(false, DENSITY.COMPACT), /STATS/, "compact density alone no longer adds it");
+	assert.match(await render(true, DENSITY.COMPACT), /▾ STATS/);
 });

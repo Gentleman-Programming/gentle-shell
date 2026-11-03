@@ -15,7 +15,7 @@ import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 type Layer = "global" | "project";
 
-function isolate(t: TestContext, layer: Layer): string {
+function isolate(t: TestContext, layer: Layer, config: Record<string, unknown> = { autonomousMode: true }): string {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-guardrails-member-")));
 	const cwd = join(root, "project");
 	const configHome = join(root, "config");
@@ -23,7 +23,7 @@ function isolate(t: TestContext, layer: Layer): string {
 	for (const path of [cwd, configHome, agentHome]) mkdirSync(path, { recursive: true });
 	const dir = layer === "global" ? configHome : join(cwd, ".pi", "gentle-ai");
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, "runtime-guardrails.json"), `${JSON.stringify({ autonomousMode: true })}\n`);
+	writeFileSync(join(dir, "runtime-guardrails.json"), `${JSON.stringify(config)}\n`);
 	const previous = {
 		agentHome: process.env.GENTLE_PI_AGENT_HOME,
 		configHome: process.env.GENTLE_PI_CONFIG_HOME,
@@ -87,6 +87,21 @@ for (const layer of ["global", "project"] as const) {
 		assert.equal(result?.block, true, "the declined confirmation blocks the push");
 	});
 
+	test(`a fleet member keeps the ${layer} autonomous npm publish block: blocked without a dialog (S10 R1, verifier B1)`, async (t) => {
+		const cwd = isolate(t, layer);
+		const member = harness({ [FLEET_ROLE_ENV]: "member" }, cwd);
+		const result = await member.bash("npm publish");
+		assert.equal(result?.block, true, "the autonomous default block still applies");
+		assert.deepEqual(member.prompts, [], "a block never becomes a question the fleet could approve");
+	});
+
+	test(`a fleet member keeps an explicit ${layer} block under autonomousMode (S10 R1, verifier B1)`, async (t) => {
+		const cwd = isolate(t, layer, { autonomousMode: true, guardedCommands: { gitPush: "block" } });
+		const member = harness({ [FLEET_ROLE_ENV]: "member" }, cwd);
+		assert.equal((await member.bash("git push origin main"))?.block, true);
+		assert.deepEqual(member.prompts, []);
+	});
+
 	test(`a non-fleet session keeps the ${layer} autonomousMode push allowance (S10 R1 pin)`, async (t) => {
 		const cwd = isolate(t, layer);
 		const session = harness({}, cwd);
@@ -108,6 +123,8 @@ test("a fleet member's git push asks even under the autonomous env override (S10
 	const member = harness({ [FLEET_ROLE_ENV]: "member" }, cwd);
 	assert.equal((await member.bash("git push origin main"))?.block, true);
 	assert.deepEqual(member.prompts, ["confirm:Allow guarded git push?"]);
+	assert.equal((await member.bash("npm publish"))?.block, true, "the autonomous default block still applies");
+	assert.deepEqual(member.prompts, ["confirm:Allow guarded git push?"], "npm publish never asks");
 });
 
 test("a fleet member's unguarded commands still run without a dialog (S10 R1 pin)", async (t) => {

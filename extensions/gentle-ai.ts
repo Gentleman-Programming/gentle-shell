@@ -1789,14 +1789,32 @@ function parseGuardrailsConfigFile(
  *      (project values are merged on top of global)
  *   4. Any parse/read error anywhere → fail safe (return SAFE_GUARDRAILS_CONFIG)
  *
- * A fleet member always gets SAFE_GUARDRAILS_CONFIG: its guarded commands ask,
- * and the fleet relays the dialog to the human.
+ * A fleet member never gets an autonomous allowance: every guarded command
+ * resolves to the stricter of its loaded action and "confirm", so an allow asks
+ * (the fleet relays the dialog to the human) and a block stays a block.
  */
 function loadRuntimeGuardrailsConfig(
 	cwd: string,
 	options: LoadGuardrailsOptions = {},
 ): RuntimeGuardrailsConfig {
-	if (options.fleetMember === true) return SAFE_GUARDRAILS_CONFIG;
+	const loaded = loadConfiguredGuardrails(cwd, options);
+	return options.fleetMember === true ? memberGuardrails(loaded) : loaded;
+}
+
+function memberGuardrails(config: RuntimeGuardrailsConfig): RuntimeGuardrailsConfig {
+	if (!config.autonomousMode) return config;
+	const guardedCommands: GuardedCommandsConfig = {};
+	for (const key of Object.keys(GUARDED_KEY_PATTERNS) as GuardedCommandKey[]) {
+		const action = config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key];
+		guardedCommands[key] = action === "block" ? "block" : "confirm";
+	}
+	return { autonomousMode: true, guardedCommands };
+}
+
+function loadConfiguredGuardrails(
+	cwd: string,
+	options: LoadGuardrailsOptions,
+): RuntimeGuardrailsConfig {
 	try {
 		// Env var override: forces autonomous mode with default actions
 		if (process.env.GENTLE_PI_AUTONOMOUS_MODE === "1") {

@@ -80,9 +80,10 @@ type UsageLike = {
 };
 
 /**
- * Mirrors a /gentle:usage reading into the cooldown. Providers that report
- * one limit per model (NaN, Codex extras) name the limit after the model:
- * a spent limit makes only `provider/name` wait until it resets. The whole
+ * Mirrors a /gentle:usage reading into the cooldown. A spent limit named
+ * like a model id (NaN reports one limit per model) makes only
+ * `provider/name` wait until it resets; names that are not model ids, such
+ * as Codex's `codex` and `codex_spark`, cool nothing on their own. The whole
  * provider waits only when every limit is spent, until the earliest reset;
  * a reading with room releases it. A full window whose reset already passed
  * is a stale reading and blocks nothing; a spent limit with no reset time at

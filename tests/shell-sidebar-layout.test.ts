@@ -39,10 +39,9 @@ function railWithHeader(f: ReturnType<typeof fixture>): ScrollView {
 	return hstackOf(f).entries[1].component as ScrollView;
 }
 
-test("grouped Status preserves structured fields and opaque integration text", (t) => {
+test("the rail Status keeps its section order and opaque integration text in both card styles", (t) => {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
-	// Both styles keep the group order; float panels need a theme background.
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		setCardStyle(style);
@@ -52,15 +51,9 @@ test("grouped Status preserves structured fields and opaque integration text", (
 			costTotal: 1, subscription: false, usage: undefined, statuses: ["opaque integration"],
 		}, painted, 46);
 		const text = lines.join("\n");
-		let previous = -1;
-		for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
-			const index = text.indexOf(heading);
-			assert.ok(index > previous, `${style}: ${heading}`);
-			previous = index;
-		}
+		assert.ok(text.indexOf("CHANGES") >= 0 && text.indexOf("CHANGES") < text.indexOf("INTEGRATIONS"), `${style}: Changes before Integrations`);
 		assert.match(text, /opaque integration/);
-		assert.match(text, /Branch.*main/);
-		assert.doesNotMatch(text, /Usage/);
+		assert.doesNotMatch(text, /Branch|Usage/);
 	}
 });
 
@@ -293,13 +286,13 @@ test("TODO visibility hides both rail and bottom without mutating the registered
 	assert.deepEqual(todo.render(100), ["todo"]);
 });
 
-test("rail orders unified Status, agents, TODO without standalone changes", (t) => {
+test("rail orders live work first, then Status, without standalone changes", (t) => {
 	const f = fixture();
 	for (const key of ["todo", "agents", "changes"]) {
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
 	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "Status", "", "agents", "", "todo"]);
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
@@ -589,7 +582,7 @@ test("a rail digest refreshes live state that no invalidation announces", (t) =>
 	assert.equal(todoRenders, 2, "explicit invalidation still reaches a rail without a digest");
 });
 
-test("the jobs rail section paints between Status and Agents", (t) => {
+test("the rail paints Todos, Jobs and Agents before Status", (t) => {
 	const f = fixture();
 	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { digest: () => "jobs", render: () => ["Jobs card"], invalidate() {} });
 	sidebarPart(f.tui, "agents", { render: () => ["agents"], invalidate() {} }, { digest: () => "agents", render: () => ["Agents card"], invalidate() {} });
@@ -603,7 +596,7 @@ test("the jobs rail section paints between Status and Agents", (t) => {
 	for (const [name, index] of [["Status", footer], ["Jobs card", jobs], ["Agents card", agents], ["Todo card", todo]] as const) {
 		assert.ok(index >= 0, `${name} paints in the rail`);
 	}
-	assert.ok(footer < jobs && jobs < agents && agents < todo, `sections paint in order, got: ${text}`);
+	assert.ok(todo < jobs && jobs < agents && agents < footer, `sections paint in order, got: ${text}`);
 });
 
 test("panel sections paint on the rail surface, joined by a tinted gap, while card sections stay unpainted", (t) => {
@@ -620,8 +613,8 @@ test("panel sections paint on the rail surface, joined by a tinted gap, while ca
 	const todo = lines.findIndex((line) => line.includes("TODOS"));
 	assert.ok(!status.includes(open), "the Status card keeps its own chrome");
 	assert.ok(lines[jobs]!.startsWith(`${open} JOBS`), `panel row is painted including its padding: ${JSON.stringify(lines[jobs])}`);
-	assert.equal(todo, jobs + 2, "one gap row separates two panel sections");
-	assert.match(lines[jobs + 1]!, /^\x1b\[48;5;236m +\x1b\[49m$/, "the gap between two panel sections is tinted too");
+	assert.equal(jobs, todo + 2, "one gap row separates two panel sections");
+	assert.match(lines[todo + 1]!, /^\x1b\[48;5;236m +\x1b\[49m$/, "the gap between two panel sections is tinted too");
 	assert.ok(lines[todo]!.startsWith(`${open} TODOS`));
 });
 
@@ -988,7 +981,7 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	assert.notEqual(rail[1]?.trim(), "", "the first card starts on the second row");
 });
 
-test("float rail alignment starts Status background at the conversation body row with either header placement", (t) => {
+test("the rail panel surface starts at the conversation body row with either header placement", (t) => {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
 	setCardStyle(CARD_STYLE.FLOAT);
@@ -999,9 +992,10 @@ test("float rail alignment starts Status background at the conversation body row
 		const status = renderShellSidebarBar({
 			cwd: "/project", branch: "main", dirty: 0, sessionName: undefined,
 			modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
-			costTotal: 1, subscription: false, usage: undefined, statuses: [],
+			costTotal: 1, subscription: false, usage: undefined, statuses: ["one", "two", "three", "four", "five"],
 		}, painted, 48);
 		sidebarPart(f.tui, "footer", {
+			surface: "panel",
 			render: () => status,
 			invalidate() {},
 			handleMouse(event) { received.push(event); return { handled: true }; },
@@ -1017,7 +1011,7 @@ test("float rail alignment starts Status background at the conversation body row
 		assert.doesNotMatch(frame.lines.slice(0, bodyY).join("\n"), /\x1b\[48;5;22m/);
 		const scroll = railWithHeader(f);
 		const content = scroll.render(50);
-		assert.deepEqual(content, status.map((line) => ` ${line} `), "no external blank row; every internal padding byte survives");
+		assert.deepEqual(content, status.map((line) => `\x1b[48;5;22m ${line} \x1b[49m`), "no external blank row; every row, padding included, sits on the panel surface");
 		const height = 8 - bodyY;
 		const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 92, screenY: bodyY + y, width: 50, height, shift: false, alt: false, ctrl: false });
 		assert.equal(scroll.handleMouse(click(0))?.handled, true);
@@ -1044,7 +1038,7 @@ test("float rail alignment preserves fallback banners and neon bytes across live
 		sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} });
 		t.after(installSidebar(f.tui, theme));
 		const baseline = railWithHeader(f).render(50);
-		if (header) assert.deepEqual(baseline, ["", " Status ", "", " TODO "]);
+		if (header) assert.deepEqual(baseline, ["", " TODO ", "", " Status "]);
 		else assert.match(baseline.join("\n"), /✿ Gentle Shell ✿/);
 		setCardStyle(CARD_STYLE.FLOAT);
 		assert.deepEqual(railWithHeader(f).render(50), header ? baseline.slice(1) : baseline, "only the active-header external gap changes");

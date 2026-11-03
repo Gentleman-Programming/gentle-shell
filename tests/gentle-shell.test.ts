@@ -593,7 +593,7 @@ test("hidden Status leaves only a jobs count in regular bottom and fullscreen he
 	} finally { component.dispose(); await fire(handlers, "session_shutdown", ctx); }
 });
 
-test("the fullscreen Status rail carries a live digest so a profile switch refreshes it", async () => {
+test("the fullscreen Status rail carries a live digest, and a profile switch refreshes the header that shows it", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => profile });
@@ -611,13 +611,16 @@ test("the fullscreen Status rail carries a live digest so a profile switch refre
 		assert.equal(typeof rail.digest, "function", "the Status card paints live state and must declare a digest");
 		assert.doesNotMatch(rail.render(46).join("\n"), /gpt-5\.5/, "model now lives in the header, not the Status card");
 
-		assert.match(rail.render(46).join("\n"), /Profile.*team/);
-		const beforeProfile = live();
+		// The profile lives in the header row, once; the rail never repeats it.
+		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
+		assert.doesNotMatch(rail.render(46).join("\n"), /Profile|team/);
+		assert.match(header.render(160).join("\n"), /team/);
+		const beforeProfile = header.digest?.();
 		profile = "other";
-		assert.notEqual(live(), beforeProfile);
-		assert.match(rail.render(46).join("\n"), /Profile.*other/);
+		assert.notEqual(header.digest?.(), beforeProfile, "a profile switch changes the header digest");
+		assert.match(header.render(160).join("\n"), /other/);
 		profile = undefined;
-		assert.doesNotMatch(rail.render(46).join("\n"), /Profile/);
+		assert.doesNotMatch(header.render(160).join("\n"), /team|other/);
 
 		const beforeStatus = live();
 		statuses.set("mcp", "MCP: 3 servers enabled");
@@ -802,16 +805,15 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	try {
 		const timer = intervals.find((entry) => entry.delay === 2000);
 		assert.ok(timer, "UI session installs the 2000ms profile refresh");
-		assert.match(status(), /Profile.*team/);
+		assert.doesNotMatch(status(), /Profile|team/, "the rail never repeats the header's profile");
 		assert.match(header(), /team/);
 		const before = tui.requestRender.mock.callCount();
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before, "unchanged poll does not render");
 		writeFileSync(local, JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: "other" }));
-		assert.match(status(), /Profile.*team/, "external edits do not read during render");
+		assert.match(header(), /team/, "external edits do not read during render");
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
-		assert.match(status(), /Profile.*other \(local\)/);
 		assert.match(header(), /other \(local\)/);
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
@@ -4832,11 +4834,11 @@ test("Changes lists the session root's Git state at turn end, never at startup",
  assert.match(renderFooter(ui),/main ±2/);
  const rail = sidebarState(fakeTui as unknown as TUI).parts.get("footer")!;
  const digest = rail.digest!();
- assert.match(rail.render(46).join("\n"), /2 files · \+2 −0/);
+ assert.match(rail.render(46).join("\n"), /2 files\n {2}\+2 −0/);
  await fire(handlers,"agent_end",ctx);
  await changesSettled();
  assert.notEqual(rail.digest!(), digest, "same-count line changes invalidate the unified Status");
- assert.match(rail.render(46).join("\n"), /2 files · \+3 −0/);
+ assert.match(rail.render(46).join("\n"), /2 files\n {2}\+3 −0/);
  assert.ok(gitStateOnly(git), JSON.stringify(git));
  assert.ok(git.every((args) => args[1] === "/repo"), "only the session's own root is scanned");
  await fire(handlers,"session_shutdown",ctx);
@@ -6189,9 +6191,9 @@ test("an open session keeps its frozen profile in the status and Usage scope whe
 	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
 	const component = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	try {
-		const status = (sidebarState(tui as unknown as TUI).parts.get("footer") as SidebarRail).render(60).join("\n");
-		assert.match(status, /Profile.*team/, "the status keeps the bare global name of the frozen profile");
-		assert.doesNotMatch(status, /solo/);
+		const header = (sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail).render(160).join("\n");
+		assert.match(header, /team/, "the header keeps the bare global name of the frozen profile");
+		assert.doesNotMatch(header, /solo/);
 	} finally {
 		component.dispose();
 	}

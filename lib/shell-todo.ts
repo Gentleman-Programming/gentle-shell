@@ -124,6 +124,14 @@ const NOTE_ROLE = "muted";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
+const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
+
+/** The key that folds the Todos card and section; GENTLE_PI_TODO_KEY overrides it, "" or "off" disables it. */
+export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env.GENTLE_PI_TODO_KEY?.trim();
+	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
+	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+}
 
 export function emptyTodo(): TodoState {
 	return { tasks: [], nextId: 1, updatedTurn: null };

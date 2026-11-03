@@ -128,6 +128,7 @@ import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
 import { JOBS_FINISHED_TTL_MS, renderJobsSection } from "../lib/jobs-widget.ts";
+import { todoCollapseKey } from "../lib/shell-todo.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
@@ -2024,6 +2025,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
 	const usageShortcutKey = usageShortcut(env);
+	const todoKey = todoCollapseKey(env);
 	if (usageShortcutKey) {
 		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show subscription usage windows for the connected providers",
@@ -2229,9 +2231,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			};
+			// The rail's Status is a panel: Changes, Review and Integrations, then
+			// the key hints that close the rail (the section headers carry none).
+			const railHints = [todoKey ? `${todoKey} todos` : "", usageShortcutKey ? `${usageShortcutKey} usage` : "", "/ commands"].filter(Boolean).join(" · ");
 			const part = sidebarPart(tui, "footer", bottomBar, {
+				surface: "panel",
 				digest: () => footerStatus.key(),
-				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings),
+				render: (width) => renderShellSidebarBar(footerModel(), theme, width, visualSettings, railHints),
 				invalidate() {},
 			});
 			// The Jobs card: its own rail section, like Agents and Todos, fed by the

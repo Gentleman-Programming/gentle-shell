@@ -13,7 +13,7 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellTitleRow, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -23,7 +23,7 @@ import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
-import { discoverYoloUiAdapter, YOLO_DISPLAY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
+import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
@@ -122,7 +122,7 @@ import {
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -328,10 +328,16 @@ export function buildShellBarModel(
 	const { usage, costTotal } = sessionStats(ctx);
 	const model = ctx.model;
 	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
-	const statuses = Array.from(footerData.getExtensionStatuses().entries())
+	const entries = Array.from(footerData.getExtensionStatuses().entries())
 		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([, text]) => text);
+		.sort(([a], [b]) => a.localeCompare(b));
+	const statuses = entries.map(([, text]) => text);
+	// The permission mode has its own status keys: the wide chrome shows the mode
+	// once in its status bar and the rail only says what it means.
+	const modeText = entries.find(([key]) => key === MODE_STATUS_KEY)?.[1];
+	const yoloText = entries.find(([key]) => key === YOLO_STATUS_KEY)?.[1];
+	const mode = modeText?.replace(/^Permissions:\s*/, "").trim();
+	const detail = yoloText?.includes(" — ") ? yoloText.slice(yoloText.indexOf(" — ") + 3).trim() : yoloText?.trim();
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
@@ -347,6 +353,8 @@ export function buildShellBarModel(
 		usage: options.usage,
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
+		...(mode ? { permission: { mode, ...(detail ? { detail } : {}) } } : {}),
+		integrations: entries.filter(([key]) => key !== MODE_STATUS_KEY && key !== YOLO_STATUS_KEY).map(([, text]) => text),
 	};
 }
 
@@ -2308,13 +2316,29 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
 			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+			// With the rail shown and the header on top, the chrome splits like an
+			// IDE: a title row with the project identity above, and a status bar
+			// with the per-frame counters below (design/shell-rework/02-proposal.html).
+			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
+			const statusBarChrome = (width: number) => renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => headerBar(width).rows,
+				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
-					if (event.type !== "click" || event.button !== "left") return undefined;
+					if (ideChrome() || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(headerBar(event.width), event.x, event.y)) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
+			});
+			const disposeStatusBar = sidebarStatusBar(tui, {
+				digest: () => footerStatus.key(),
+				render: (width) => ideChrome() ? statusBarChrome(width).rows : [],
+				invalidate() {},
+				handleMouse(event) {
+					if (!ideChrome() || event.type !== "click" || event.button !== "left") return undefined;
+					if (!shellHeaderUsageHit(statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
@@ -2349,7 +2373,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(

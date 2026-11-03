@@ -47,6 +47,7 @@ type PreparedRail = {
 	// section: it never enters `lines`/`hits`, and an empty/blank result
 	// falls back to the old hstack-direct shape with the banner restored.
 	headerLines: string[];
+	statusLines: string[];
 	headerActive: boolean;
 	presentation?: SidebarPresentation;
 };
@@ -122,6 +123,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	let failed = false;
 	let railLines: string[] = [];
 	let headerLines: string[] = [];
+	let statusLines: string[] = [];
 	let prepared: PreparedRail | undefined;
 	// One rendered-lines cache per rail section key, independent of the
 	// whole-rail `prepared` memo below: a section with its own digest is
@@ -163,6 +165,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		render: () => headerLines,
 		invalidate() {},
 		handleMouse: (event) => state.parts.get("header")?.handleMouse?.(event),
+	};
+	// The status bar row: a leaf like the header, painted full-width below the
+	// hstack while the rail is shown, delegating its mouse to the registered part.
+	const statusBar: Component = {
+		render: () => statusLines,
+		invalidate() {},
+		handleMouse: (event) => state.parts.get("statusbar")?.handleMouse?.(event),
 	};
 	const scroll = new ScrollView(rail, {
 		follow: "none",
@@ -215,11 +224,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		if (stopped || failed || host.mode !== "fullscreen") {
 			prepared = undefined;
 			headerLines = [];
+			statusLines = [];
 			return false;
 		}
 		const railEligible = width >= SIDEBAR_BREAKPOINT && placement() !== "bottom" && placement() !== "hidden";
 		if (!railEligible) {
 			prepared = undefined;
+			statusLines = [];
 			try {
 				const headerPart = state.parts.get("header");
 				headerLines = headerPlacement() === "top" && headerPart
@@ -244,6 +255,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
 			railLines = prepared.lines;
+			statusLines = prepared.statusLines;
 			state.active = prepared.active;
 			return prepared.active;
 		}
@@ -307,7 +319,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
 			headerLines = headerActive && headerPlacement() === "top" ? preparedHeaderLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, headerActive: headerLines.length > 0 };
+			const statusPart = state.parts.get("statusbar");
+			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])] : [];
+			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -380,10 +395,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				}
 				const current = prepared!;
 				if (current.presentation?.scrollTop === scroll.scrollTop) return current.presentation.output;
-				const output: LayoutNode = current.headerActive && headerPlacement() !== "below-input"
+				const withHeader = current.headerActive && headerPlacement() !== "below-input";
+				const withStatus = current.statusLines.length > 0;
+				const output: LayoutNode = withHeader || withStatus
 					? { type: "vstack", gap: 0, align: "stretch", entries: [
-						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
+						...(withHeader ? [{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 }] : []),
 						{ component: hstackHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+						...(withStatus ? [{ component: statusBar, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 }] : []),
 					] }
 					: hstackHost[NODE]();
 				return (current.presentation = { scrollTop: scroll.scrollTop, output }).output;

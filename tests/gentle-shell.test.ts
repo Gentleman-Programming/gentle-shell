@@ -6889,12 +6889,6 @@ test("rail Status sections fold on a header click and the Changes row opens /gen
 		assert.ok(rows().some((line) => /^▸ INTEGRATIONS/.test(line)) && !rows().some((line) => /MCP: 3 servers/.test(line)), "a click folds the section");
 		click(rows().findIndex((line) => /^▸ INTEGRATIONS/.test(line)));
 		assert.ok(rows().some((line) => /MCP: 3 servers/.test(line)), "a second click unfolds it");
-		// A full-width render (the panel sheet) must not move the rail's click targets.
-		rail.render(120);
-		const foldedBefore = rows().filter((line) => /^▸ /.test(line)).length;
-		click(rows().findIndex((line) => /^▾ CHANGES/.test(line)));
-		assert.equal(rows().filter((line) => /^▸ /.test(line)).length, foldedBefore + 1, "a rail click still folds after a sheet-width render");
-		click(rows().findIndex((line) => /^▸ CHANGES/.test(line)));
 		const changesRow = rows().findIndex((line) => /\/gentle:changes/.test(line));
 		const notices = ui.notices.length;
 		assert.equal(click(changesRow)?.handled, true, "the Changes row is clickable");
@@ -6937,6 +6931,35 @@ test("the work row reacts to hover and the panel sheet closes from a click on es
 	} finally {
 		editor.dispose();
 		todo.dispose();
+		footer.dispose();
+	}
+});
+
+test("a render of the Status part at another width never moves the rail's click targets", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	// Below the input the rail keeps the Session section, whose row wraps at a narrow width.
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer")!;
+		const at = (width: number) => rail.render(width).map((line) => stripAnsi(line).trimEnd());
+		const wide = at(46);
+		const header = wide.findIndex((line) => /^▾ CHANGES/.test(line));
+		assert.ok(header > 0, "the rail shows Session above Changes");
+		const narrow = at(12);
+		assert.notEqual(narrow.findIndex((line) => /^▾ CHANGES/.test(line)), header, "the narrow render moves the Changes header");
+		// The click arrives at the rail's width with no render in between.
+		const notices = ui.notices.length;
+		const result = rail.handleMouse?.({ type: "click", button: "left", x: 2, y: header, screenX: 2, screenY: header, width: 46, height: wide.length, shift: false, alt: false, ctrl: false });
+		assert.equal(result?.handled, true, "the click lands on the rail's own Changes header");
+		assert.ok(at(46).some((line) => /^▸ CHANGES/.test(line)), "the click folds Changes");
+		assert.equal(ui.notices.length, notices, "the click runs nothing else");
+	} finally {
 		footer.dispose();
 	}
 });

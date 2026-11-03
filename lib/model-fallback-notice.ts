@@ -25,6 +25,11 @@ const REASON: Partial<Record<TerminalErrorCategory, string>> = {
 	[TERMINAL_ERROR_CATEGORY.NETWORK]: "a network error",
 };
 
+/** The message that resumes a run after its model changed. */
+export function fallbackContinuePrompt(from: string | undefined, to: string, category: TerminalErrorCategory): string {
+	return `The previous model${from ? ` (${from})` : ""} stopped with a provider error (${category}). You are now running on ${to}. Continue the task from where it stopped; do not repeat steps that already completed.`;
+}
+
 /** One line for the human; a pricier fallback says by how much, an unpriced one says so. */
 export function fallbackNotice(change: FallbackChange, prices?: ModelPriceLookup): string {
 	let price = "";

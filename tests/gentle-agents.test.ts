@@ -7432,3 +7432,37 @@ test("a subagent launched under a profile carries its fallback chain, and a quot
 		await tick();
 	}
 });
+
+test("the orchestrator's usage limit moves the session to the profile's orchestrator fallback and resumes; children never do it themselves", async () => {
+	const config = join(root, "orchestrator-fallback", "config");
+	mkdirSync(config, { recursive: true });
+	writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+	writeFileSync(join(config, "profile-fallbacks.json"), JSON.stringify({ kind: "gentle-pi.profile_model_fallbacks", version: 1, profiles: { home: { orchestrator: [{ model: "orx/backup", thinking: "high" }] } } }));
+	const catalog = new Map([["orx/main", { provider: "orx", id: "main", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], ["orx/backup", { provider: "orx", id: "backup", cost: { input: 3, output: 3, cacheRead: 0, cacheWrite: 0 } }]]);
+	const run = async (env: Record<string, string>) => {
+		const harness = deps();
+		const { home: _home, env: _env, ...overrides } = harness.deps;
+		const fake = fakePi();
+		const selected: string[] = [];
+		const levels: string[] = [];
+		Object.assign(fake.pi, { setModel: async (model: { provider: string; id: string }) => { selected.push(`${model.provider}/${model.id}`); return true; }, setThinkingLevel: (level: string) => levels.push(level) });
+		gentleAgents(fake.pi, { GENTLE_PI_CONFIG_HOME: config, ...env }, overrides);
+		const { ctx, dialogs } = fakeContext();
+		Object.assign(ctx, { model: catalog.get("orx/main"), modelRegistry: { find: (provider: string, id: string) => catalog.get(`${provider}/${id}`), getAll: () => [...catalog.values()] } });
+		await fake.fire("session_start", ctx);
+		await fake.fire("agent_end", ctx, { type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "insufficient_quota: monthly usage limit reached" }] });
+		await tick(); await tick();
+		await fake.fire("session_shutdown", ctx);
+		await tick();
+		return { selected, levels, dialogs, entries: fake.entries, userMessages: fake.userMessages };
+	};
+	const parent = await run({});
+	assert.deepEqual(parent.selected, ["orx/backup"]);
+	assert.deepEqual(parent.levels, ["high"]);
+	assert.ok(parent.dialogs.some((line) => /orchestrator: orx\/main hit its usage limit; continuing on orx\/backup \(3\.0x the price\)/.test(line)), parent.dialogs.join("\n"));
+	assert.equal(parent.entries.filter((entry) => entry.customType === "gentle-pi.model-fallback/v1").length, 1);
+	assert.equal(parent.userMessages.length, 1);
+	assert.match(String(parent.userMessages[0]!.content), /continue/i);
+	const child = await run({ GENTLE_PI_AGENTS_CHILD: "1" });
+	assert.deepEqual(child.selected, [], "a child leaves its fallback to the parent's runner");
+});

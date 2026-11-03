@@ -1,5 +1,6 @@
 import { pickModel, sharedCooldown, shouldFallBack, type ModelCooldown } from "./model-fallback-policy.ts";
 import type { FallbackChain } from "./model-fallback-store.ts";
+import { fallbackContinuePrompt } from "./model-fallback-notice.ts";
 import { isSessionChangeEvidence, type SessionChangeEvidence } from "./session-changes.ts";
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -326,11 +327,6 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 		// Missing/incompatible package remains an observable child capability gap.
 		return [];
 	}
-}
-
-/** The message that resumes a child after its model changed. */
-export function fallbackContinuePrompt(from: string | undefined, to: string, category: TerminalErrorCategory): string {
-	return `The previous model${from ? ` (${from})` : ""} stopped with a provider error (${category}). You are now running on ${to}. Continue the task from where it stopped; do not repeat steps that already completed.`;
 }
 
 export function childArguments(request: TaskRequest, instructionsPath?: string): string[] {

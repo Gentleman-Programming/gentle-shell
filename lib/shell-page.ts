@@ -82,7 +82,6 @@ export function installPagePaint(host: PageHost, theme: () => PageTheme): () => 
 	const render = host.doRender;
 	if (typeof resets !== "function" || typeof render !== "function") return () => undefined;
 	let painting: PageColors | undefined;
-	let cached: { theme: PageTheme; page: PageColors | undefined } | undefined;
 	host.applyLineResets = function (this: PageHost, lines: string[]) {
 		const done = resets.call(this, lines);
 		const page = painting;
@@ -91,9 +90,9 @@ export function installPagePaint(host: PageHost, theme: () => PageTheme): () => 
 		return done.map((line) => paintPageRow(line, width, page));
 	};
 	host.doRender = function (this: PageHost) {
-		const current = theme();
-		if (cached?.theme !== current) cached = { theme: current, page: pageColors(current) };
-		painting = cached.page;
+		// Recomputed every frame: Pi's theme is one stable proxy whose target
+		// changes on a switch, so an identity cache would never see it.
+		painting = pageColors(theme());
 		try {
 			render.call(this);
 		} finally {

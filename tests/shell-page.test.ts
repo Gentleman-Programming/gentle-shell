@@ -54,3 +54,19 @@ test("the page paint wraps the fullscreen render only, follows theme changes and
 	assert.deepEqual(calls[2], ["hi\x1b[0m"], "uninstall restores the render");
 	assert.equal(installPagePaint({}, () => light)(), undefined, "a host without the fullscreen renderer is left alone");
 });
+
+test("the page follows a theme switch behind one stable theme object (Pi's theme is a proxy)", () => {
+	const state = { appearance: "light", name: "light" };
+	const proxy = { get appearance() { return state.appearance; }, get name() { return state.name; }, getFgAnsi: () => FG, getColorMode: () => "truecolor" };
+	const frames: string[] = [];
+	const tui = { applyLineResets: (lines: string[]) => lines, doRender() { frames.push(this.applyLineResets(["hi"])[0]!); }, terminal: { columns: 4 } };
+	installPagePaint(tui, () => proxy);
+	tui.doRender();
+	Object.assign(state, { appearance: "dark", name: "dark" });
+	tui.doRender();
+	Object.assign(state, { appearance: "light", name: "light" });
+	tui.doRender();
+	assert.ok(frames[0]!.startsWith("\x1b[48;2;"));
+	assert.equal(frames[1], "hi", "switching to a dark theme stops painting");
+	assert.ok(frames[2]!.startsWith("\x1b[48;2;"), "switching back paints again");
+});

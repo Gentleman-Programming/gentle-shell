@@ -7027,3 +7027,28 @@ test("the Stats section (Power user) follows its visibility switch, at any densi
 	assert.doesNotMatch(await render(false, DENSITY.COMPACT), /STATS/, "compact density alone no longer adds it");
 	assert.match(await render(true, DENSITY.COMPACT), /▾ STATS/);
 });
+
+test("Stats reads what subagents spent from the Agents rail section", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, stats: true } }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext({ entries: [assistantEntry({ input: 1000, output: 200, cost: 0.5 })] });
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	let spend: { runs: number; tokens: number; cost: number } | undefined = { runs: 2, tokens: 4200, cost: 0.3 };
+	const agents = sidebarPart(tui as unknown as TUI, "agents", { render: (_width: number) => [], invalidate() {}, dispose() {} }, { surface: "panel", render: () => [], spend: () => spend, invalidate() {} });
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer")!;
+		const text = () => rail.render(46).map((line) => stripAnsi(line).trimEnd()).join("\n");
+		const before = rail.digest?.();
+		assert.match(text(), /agents\s+2 runs · 4\.2k · \$0\.300 sub/);
+		spend = { runs: 3, tokens: 5000, cost: 0.4 };
+		assert.notEqual(rail.digest?.(), before, "new subagent spend repaints the cached section");
+		assert.match(text(), /agents\s+3 runs/);
+	} finally {
+		agents.dispose();
+		footer.dispose();
+	}
+});

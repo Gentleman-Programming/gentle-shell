@@ -2418,7 +2418,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				return stats;
 			};
 			const statsOn = () => visualSettings.visibility.stats;
-			const withStats = (model: ShellBarModel): ShellBarModel => (statsOn() ? { ...model, stats: currentStats() } : model);
+			// Subagent spend comes from the Agents section, which owns the task records.
+			const subagentSpend = () => sidebarState(tui).parts.get("agents")?.spend?.();
+			const withStats = (model: ShellBarModel): ShellBarModel => (statsOn() ? { ...model, stats: { ...currentStats(), subagents: subagentSpend() } } : model);
 			const targetAt = (y: number, width: number) => statusTargets.get(width)?.find((target) => target.row === y);
 			const statusRegion = new NativePointerRegion(statusCard, {
 				onHover(event) {
@@ -2447,7 +2449,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				surface: "panel",
 				digest: () => {
 					const stats = statsOn() ? currentStats() : undefined;
-					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs] : ""]);
+					const spend = stats ? subagentSpend() : undefined;
+					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs, spend?.runs, spend?.tokens, spend?.cost] : ""]);
 				},
 				render: (width) => statusRegion.render(width),
 				handleMouse: (event) => statusRegion.handleMouse(event),

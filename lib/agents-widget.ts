@@ -412,6 +412,17 @@ export function renderAgentsAlert(tasks: readonly TaskRecord[], theme: CardTheme
 }
 
 /** The mobile work row's digest of live agents: how many run, wait for the user, and failed; undefined when none is live. */
+/** What started subagents spent, for the Stats section; undefined before the first one starts. */
+export function agentsSpend(tasks: readonly TaskRecord[]): { runs: number; tokens: number; cost: number } | undefined {
+	const started = tasks.filter((task) => task.status !== TASK_STATUS.QUEUED);
+	if (started.length === 0) return undefined;
+	return {
+		runs: started.length,
+		tokens: started.reduce((sum, task) => sum + (Number.isFinite(task.tokens) && task.tokens > 0 ? task.tokens : 0), 0),
+		cost: started.reduce((sum, task) => sum + (Number.isFinite(task.cost) && task.cost > 0 ? task.cost : 0), 0),
+	};
+}
+
 export function agentsSummary(tasks: readonly TaskRecord[], theme: CardTheme, now: number): { left: string; priority: number } | undefined {
 	const shown = widgetTasks(tasks, now);
 	const live = shown.filter((task) => !isFinished(task.status)).length;

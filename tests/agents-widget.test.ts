@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
-import { formatElapsed, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { formatElapsed, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { formatTokens } from "../lib/shell-bar.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -466,4 +466,21 @@ test("more agents than the section's rows keep waiting and running rows and coun
 	assert.match(rows[2]!, /^◐ the running one/);
 	assert.equal(rows.length, 1 + 8, "eight rows, the last one counting the rest");
 	assert.match(rows.at(-1)!, /^… 7 more · \/gentle:agents$/);
+});
+
+test("the agents alert names the agent asking the user and its question, above the editor", () => {
+	const painted = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => `\x1b[48;5;52m${text}\x1b[49m` };
+	const waiting = [
+		task({ id: "a", agent: "gentle-ai-explore", status: TASK_STATUS.WAITING, lastStep: "asked: Which base branch should the chain use?", createdAt: 1 }),
+		task({ id: "b", agent: "gentle-ai-worker", status: TASK_STATUS.WAITING, lastStep: "asked: Overwrite the fixture?", createdAt: 2 }),
+		task({ id: "c", label: "running" }),
+	];
+	const lines = renderAgentsAlert(waiting, painted, 110);
+	assert.equal(lines.length, 1);
+	assert.ok(lines[0]!.startsWith("\x1b[48;5;52m"), "the alert sits on the selection surface");
+	const row = stripAnsi(lines[0]!);
+	assert.equal(visibleWidth(row), 110);
+	assert.match(stripAnsi(renderAgentsAlert(waiting, painted, 60)[0]!), /…\s+\+1 more · \/gentle:agents $/, "a narrow row clips the question, never the way to the agents view");
+	assert.match(row, /^ \? explore asked: Which base branch should the chain use\? +\+1 more · \/gentle:agents $/);
+	assert.deepEqual(renderAgentsAlert([task({ id: "c" })], painted, 80), [], "nothing waits, nothing paints");
 });

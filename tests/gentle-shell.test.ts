@@ -3315,7 +3315,7 @@ test("customize Cards rows persist the card content level and switch the live qu
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
-test("T3 live style Cards action refreshes cached TODO, footer and prompt in both directions while the title row stays", async (t) => {
+test("T3 live style Cards action refreshes cached TODO and Status in both directions while the wide chrome stays", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
@@ -3385,9 +3385,10 @@ test("T3 live style Cards action refreshes cached TODO, footer and prompt in bot
 		assert.ok(overlayRenders > beforeOverlay, "customize redraws too");
 		assert.equal(todoRenders, beforeTodo + 1, "revision invalidation refreshes digest-less TODO");
 		assert.equal(statusRenders, beforeStatus + 1, "live style digest refreshes cached Status");
-		for (const key of ["rail", "prompt"] as const) assert.notEqual(frame[key], before[key], `${key} changes immediately`);
-		// The wide chrome's title row sits on the panel surface, not a card: no card style changes it.
+		assert.notEqual(frame.rail, before.rail, "rail changes immediately");
+		// The wide chrome's title row and panel editor are not cards: no card style changes them.
 		assert.equal(frame.header, before.header, "the title row is the same in every card style");
+		assert.equal(frame.prompt, before.prompt, "the panel editor is the same in every card style");
 		assert.match(ui.notices.at(-1)!, /Conversation cards and shell chrome redraw now/);
 		assert.match(ui.overlayView!.render(90).join("\n"), /prompt|shell chrome/i);
 		const rendered = { ...frame };
@@ -6619,4 +6620,31 @@ test("pasted image chips warn instead of sending images a text-only model reject
 		images: [],
 	});
 	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
+});
+
+test("the installed editor draws the panel frame while the wide IDE chrome owns the host", () => {
+	const previous = cardStyle();
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	const state = sidebarState(fakeTui as unknown as TUI);
+	const owned = { active: state.active, ownsHost: state.ownsHost };
+	try {
+		setCardStyle(CARD_STYLE.NEON);
+		state.active = true;
+		state.ownsHost = () => true;
+		const rows = editor.render(80).map(stripAnsi);
+		assert.match(rows[0]!, /^─ ✿ waiting for input ─+─$/, "a titled rule replaces the frame");
+		assert.match(rows[1]!, /^› /, "the input sits behind the prompt");
+		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/u);
+		for (const row of rows) assert.equal(visibleWidth(row), 80);
+		state.active = false;
+		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "without the wide chrome the framed editor returns");
+	} finally {
+		state.active = owned.active;
+		state.ownsHost = owned.ownsHost;
+		setCardStyle(previous);
+		editor.dispose();
+	}
 });

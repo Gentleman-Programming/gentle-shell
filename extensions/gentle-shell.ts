@@ -33,7 +33,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, V
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
@@ -488,6 +488,8 @@ interface PromptEditorDeps {
 	readClipboardImage?: () => Promise<ClipboardImage | null>;
 	/** Injectable silence-watchdog window; production and tests default to SHELL_PULSE_WATCHDOG_MS. */
 	watchdogMs?: number;
+	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
+	panelChrome?: () => boolean;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -1273,8 +1275,8 @@ export class GentlePromptEditor extends CustomEditor {
 		const layout = this.floatMouseLayout;
 		if (!layout) return super.handleMouse(event);
 		// Row coordinates stay native: padding=0, content=1…N, hint=N+1.
-		// Only float translates x; the existing neon/fallback path is unchanged.
-		if (event.x < layout.prefixWidth || event.x >= layout.width - 1) return undefined;
+		// Float and panel translate x; the existing neon/fallback path is unchanged.
+		if (event.x < layout.prefixWidth || event.x >= (layout.panel ? layout.prefixWidth + layout.nativeWidth : layout.width - 1)) return undefined;
 		return super.handleMouse({ ...event, x: event.x - layout.prefixWidth, width: layout.nativeWidth });
 	}
 
@@ -1286,8 +1288,8 @@ export class GentlePromptEditor extends CustomEditor {
 			this.tick += 1;
 			this.lastRenderAt = this.deps.now();
 		}
-		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg);
-		this.floatMouseLayout = layout.background ? layout : undefined;
+		const layout = resolvePromptLayout(width, cardStyle(), this.deps.bg, this.deps.panelChrome?.() ?? false);
+		this.floatMouseLayout = layout.background || layout.panel ? layout : undefined;
 		const inner = layout.nativeWidth;
 		const lines = super.render(inner);
 		if (this.getText() === "" && lines.length === 3) lines[1] = withPromptHint(lines[1], PROMPT_HINT, this.deps.fg);
@@ -1313,7 +1315,7 @@ export class GentlePromptEditor extends CustomEditor {
 		const framed = framePromptLines(editorLines.slice(0, borderEnd), width, {
 			state,
 			tick: this.tick,
-			borderColor: (text) => layout.background ? this.borderColor(text) : this.deps.fg(PROMPT_FRAME_ROLE, text),
+			borderColor: (text) => layout.background || layout.panel ? this.borderColor(text) : this.deps.fg(PROMPT_FRAME_ROLE, text),
 			fg: this.deps.fg,
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
@@ -1327,13 +1329,19 @@ export class GentlePromptEditor extends CustomEditor {
 			].filter(Boolean).join(" · ") || undefined,
 		}, layout);
 		if (this.vimPolicy !== "on") {
-			framed[framed.length - 1] = layout.background
-				? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
-				: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
+			framed[framed.length - 1] = layout.panel
+				? panelPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, " ".repeat(layout.prefixWidth))
+				: layout.background
+					? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
+					: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
 		}
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
 		for (const line of editorLines.slice(borderEnd)) {
+			if (layout.panel) {
+				framed.push(panelPromptRow(line, layout, " ".repeat(layout.prefixWidth)));
+				continue;
+			}
 			if (layout.background) {
 				framed.push(floatPromptRow(line, layout, (text) => this.borderColor(text)));
 				continue;
@@ -1428,7 +1436,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null> },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1447,6 +1455,7 @@ function installPrompt(
 			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
+			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
@@ -2384,7 +2393,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				prompt.setAnimationPolicy(animationPolicy);
 				prompt.setVimPolicy(vimPolicy);
 			},
-			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)() },
+			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
+				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
+				panelChrome: (tui) => { const state = sidebarState(tui); return Boolean(state.active && state.ownsHost?.()) && visualSettings.headerPlacement === "top"; } },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt

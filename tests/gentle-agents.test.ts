@@ -16,7 +16,8 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import gentleAgents, {
+	AGENTS_ALERT_WIDGET_KEY, agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
@@ -244,7 +245,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		return factory ? factory(tui, plainTheme).render(72).map(stripAnsi) : undefined;
 	};
 	const widgetComponent = () => widgets.get("gentle-agents")?.(tui, plainTheme) as Component | undefined;
-	return { ctx, widget, widgetComponent, dialogs, overlays, customCompletions, customOptions };
+	return { ctx, widget, widgetComponent, widgets, dialogs, overlays, customCompletions, customOptions };
 }
 
 for (const scenario of ["background", "task", "append-failure", "overflow", "bytes", "replacement", "task-replacement", "unsafe-id", "no-transport"] as const) {
@@ -7377,4 +7378,28 @@ test("a matched model_profiles key routes the task request model end to end", as
 	assert.deepEqual(captures[0]!.request.model, { provider: "openai", id: "alpha" }, "the matched key routes the configured model into the launch");
 	assert.equal(captures[0]!.request.thinking, "high");
 	assert.equal(captures[0]!.request.modelSource, "profile");
+});
+
+test("an agent asking the user gets a row above the editor only while the rail owns the host", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
+	// The relayed dialog stays open: the user has not answered yet.
+	const { ctx, widgets } = fakeContext(terminalTui, undefined, undefined, undefined, () => new Promise<string | undefined>(() => {}));
+	await fire("session_start", ctx);
+	// Only a task-mode child can ask the user; a background child's dialog is dismissed.
+	void tools.get("subagent_run")!.execute("ask", { agent: "explore", task: "Ask once" }, undefined, undefined, ctx);
+	await tick();
+	const alert = () => widgets.get(AGENTS_ALERT_WIDGET_KEY)!(terminalTui, plainTheme).render(100).map(stripAnsi);
+	assert.deepEqual(alert(), [], "a running agent needs no alert");
+	// A child question relayed to this session's UI is what makes a task wait for the user.
+	harness.children[0].emit({ type: "extension_ui_request", id: "u1", method: "select", title: "Which file?", options: ["a.ts", "b.ts"] });
+	await tick();
+	const state = sidebarState(terminalTui as unknown as TUI);
+	assert.deepEqual(alert(), [], "without the rail the Agents card already lists the waiting row");
+	state.active = true;
+	state.ownsHost = () => true;
+	assert.match(alert()[0]!, /^ \? explore asked: Which file\? +\/gentle:agents $/);
+	state.active = false;
 });

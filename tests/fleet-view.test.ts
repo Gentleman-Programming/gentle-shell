@@ -279,3 +279,11 @@ test("the deck snapshot carries the ledger's new and cached tokens, also for a m
 	const cells = lensRows("costs", "normal", snapshot).groups.flatMap((group) => group.rows)[0].cells;
 	assert.deepEqual(cells.filter((cell) => cell.gauge === undefined).map((cell) => cell.text), ["$1.65", "51k", "882k"]);
 });
+
+// T10 (S9): alt+w opens the members-and-subagents modal from the input; w does it outside the input.
+test("alt+w and w open the members' agents modal; alt+a stays /gentle:agents", () => {
+	const scope = (key: string) => FLEET_VIEW_KEYS.filter((binding) => binding.keys.includes(key)).map((binding) => `${binding.action}@${binding.scope}`);
+	assert.deepEqual(scope("alt+w"), ["agents.toggle@global"]);
+	assert.deepEqual(scope("w"), ["agents.toggle@outside-input"]);
+	assert.deepEqual(scope("alt+a"), [], "the controller's own /gentle:agents key (lib/agents-keys.ts)");
+});

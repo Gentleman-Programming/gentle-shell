@@ -1243,6 +1243,31 @@ test("alt+1-4 switch the lens, alt+m cycles the density, alt+z zooms and z or al
 	assert.equal(d.overlays[1].closed, true, "the zoom key closes it too");
 });
 
+test("alt+w shows each live member's own subagents from the activity it publishes, without waking the fleet", async () => {
+	const d = await deckFleet();
+	const activity = {
+		schema: "gentle-agents.activity/v1",
+		summary: { running: 1, queued: 0, waiting: 0, finished: 0 },
+		tasks: [{
+			summary: { id: "t1", agent: "sdd-apply", label: "Write the invite routes", prompt: "p", status: "running", createdAt: 1000, startedAt: 2000, endedAt: null, lastStep: "tool edit", lastActivityAt: 3000, turns: 2, toolCalls: 3, error: null },
+			thread: { version: 1, dropped: 0, items: [] },
+		}],
+	};
+	const sent = d.h.sent.length;
+	assert.deepEqual(d.press("\x1bw"), [true]);
+	assert.equal(d.overlays.length, 1);
+	assert.match(d.overlays[0].component.render(100).join("\n"), /web-invites/);
+	const renders = d.renders();
+	d.child.emit({ type: "extension_ui_request", id: "w1", method: "setWidget", widgetKey: "gentle-agents", widgetLines: [JSON.stringify(activity)] });
+	await d.settle();
+	assert.ok(d.renders() > renders, "new activity repaints the open modal");
+	assert.match(d.overlays[0].component.render(100).join("\n"), /└ sdd-apply · running/, "the member's subagent is listed under it");
+	// Like Pi, the focused overlay receives the key.
+	d.overlays[0].component.handleInput!("j");
+	assert.match(d.overlays[0].component.render(100).join("\n"), /Write the invite routes/, "selecting it shows its label");
+	assert.equal(d.h.sent.length, sent, "subagent activity never wakes the controller");
+});
+
 test("typing a message that starts with a lens letter keeps every character and switches nothing", async () => {
 	const d = await deckFleet();
 	for (const text of ["fix the login", "make it so", "listo", "zoom in", "$5 budget", "? what now"]) {

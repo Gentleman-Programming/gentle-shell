@@ -472,6 +472,9 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			snapshot: deckSnapshot,
 			answer: answerFocal,
 			relayDialog: () => activeRelay && (activeRelay.dialog.method === "select" || activeRelay.dialog.method === "confirm") ? activeRelay.focus : undefined,
+			// The members modal (alt+w) reads each member's own subagent activity.
+			memberAgents: () => [...members.values()],
+			...(deps.now ? { now: () => deps.now!().getTime() } : {}),
 		});
 		unmountDeck = deck.mount(ctx.ui);
 		void refreshPermission(ctx);
@@ -538,6 +541,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				refreshWidget();
 				track(changed);
 			},
+			// Subagent activity repaints the members modal only: no ledger write, no wake.
+			onSubagents: changed => { if (isCurrent(changed)) deck?.refreshAgents(); },
 		});
 		members.set(name, member);
 		return member;

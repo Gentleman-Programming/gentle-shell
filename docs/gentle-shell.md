@@ -60,6 +60,7 @@ Keys. There are no function keys. Letters never act in the input, so a message t
 | `alt+1`-`alt+4` | anywhere | Flows, Map, Costs, Log lens |
 | `alt+z` | anywhere | Zoom the current lens into a centered overlay, or close it. On WSL, where Pi binds `alt+z` to undo, the fleet controller takes it over |
 | `alt+m` | anywhere | Density light → normal → power (power is the 01 command deck) |
+| `alt+w` | anywhere (`w` in the focal bar or the zoom) | Members and their subagents, full screen; `alt+w`, `w`, `q` or `esc` closes it |
 | `tab` | empty input, a focal item exists | Move to the focal bar; `tab` or `esc` goes back. With a draft, or nothing to decide, `tab` stays Pi's tab and autocomplete |
 | `1`-`4` | focal bar | Answer the focal item; a number past its options, or any other key, goes back to the input and types there |
 | `f` `m` `$` `l`, `z`, `?` | focal bar or zoom | Lens, close the zoom, list the keys |
@@ -107,6 +108,8 @@ Answering the focal item. A relayed protected question is answered through the s
 - `[2]` marks the members exited in the ledger (logged as kept stopped); the next reopen asks nothing. Spawning a member with the same name instead counts its earlier spend in the fleet's.
 - An escalation asked before the stop stays on the deck; its member dialog closed with the member, so your choice goes to the controller, which passes it on with `fleet_send`.
 - Without the deck (RPC or print mode) the question is not asked and nothing restarts; the members wait for a terminal UI reopen.
+
+**Members and their subagents.** In the fleet TUI, `alt+w` (or `w` in the focal bar or the zoom) opens a full-screen, read-only view like `/gentle:agents`: each fleet member with its state line, then its own subagents (agent, status, elapsed), and on the right the selected subagent's label, last step and bounded thread. `j/k` select, `ctrl+j/k` scroll, `f` follows the tail, `esc` closes. The data is the activity each member already publishes; it never wakes the fleet or changes its digests. `alt+a` stays the controller's own `/gentle:agents`.
 
 **Adopting an open session.** `/fleet:adopt` in the controller's terminal UI lets you hand an already-open interactive Gentle Shell window to the fleet. It is a command for you only: it is not a tool, and the controller model cannot run it.
 

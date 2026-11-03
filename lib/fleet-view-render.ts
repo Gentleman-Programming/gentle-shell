@@ -164,7 +164,7 @@ export function renderWelcomeCard(width: number, theme: FleetViewTheme): string[
 		theme.fg(SECONDARY_ROLE, "Try:"),
 		...WELCOME_EXAMPLES.map((example) => `${theme.fg(SECONDARY_ROLE, "›")} ${example}`),
 		"",
-		theme.fg(SECONDARY_ROLE, "enter send · alt+1-4 lenses · alt+z zoom · alt+m detail"),
+		theme.fg(SECONDARY_ROLE, "enter send · alt+1-4 lenses · alt+z zoom · alt+m detail · alt+w agents"),
 	];
 	return renderCard({ title: "Start a fleet", body, tone: CARD_TONE.INFO, glyph: CARD_GLYPH }, theme, width, { expanded: true }).map((line) => fit(line, width));
 }
@@ -210,10 +210,10 @@ export function renderHintLine(context: FleetHintContext, queue: AttentionQueue,
 	const more = key("alt+m", "detail");
 	const options = Math.min(OPTION_KEYS_MAX, queue.focal.options.length) || 1;
 	const parts = {
-		input: [...(queue.focal.kind === "nothing" ? [] : [key("tab", queue.focal.tag.toLowerCase())]), key("enter", "send"), key("alt+1-4", "lenses"), key("alt+z", "zoom"), more, key("@name", "talk to one member")],
-		focal: [key(`1-${options}`, "choose"), key("tab", "back to the conversation"), key("f m $ l", "lenses"), key("z", "zoom"), key("?", "help")],
+		input: [...(queue.focal.kind === "nothing" ? [] : [key("tab", queue.focal.tag.toLowerCase())]), key("enter", "send"), key("alt+1-4", "lenses"), key("alt+z", "zoom"), more, key("alt+w", "agents"), key("@name", "talk to one member")],
+		focal: [key(`1-${options}`, "choose"), key("tab", "back to the conversation"), key("f m $ l", "lenses"), key("z", "zoom"), key("w", "agents"), key("?", "help")],
 		lens: [key("f m $ l", "switch lens"), key("z", "zoom"), more],
-		zoom: [key("z", "back to the conversation"), key("f m $ l", "switch lens")],
+		zoom: [key("z", "back to the conversation"), key("f m $ l", "switch lens"), key("w", "agents")],
 	}[context];
 	return [fitParts(parts, "   ", width)];
 }

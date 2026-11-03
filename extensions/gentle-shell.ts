@@ -1,3 +1,4 @@
+import { sharedCooldown, syncUsageCooldown } from "../lib/model-fallback-policy.ts";
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -1875,7 +1876,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		profilePoll = undefined;
 		profileReader.reset();
 	};
-	const usage = new UsageStore();
+	// A full subscription window makes model fallbacks skip that provider until it resets.
+	const usage = new UsageStore((reading) => syncUsageCooldown(reading, sharedCooldown(), Date.now()));
 	// Providers gentle-shell has never heard of get a usage source too, when
 	// the extension that owns them registers one on pi.events; see the
 	// USAGE_SOURCE_EVENT subscription below.

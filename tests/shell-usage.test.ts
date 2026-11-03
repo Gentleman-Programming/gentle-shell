@@ -680,3 +680,12 @@ test("renderUsagePanel renders the failure note beside a retained snapshot, and 
 	assert.ok(afterFailure.some((line) => /^ {2}fetch failed · r to retry$/.test(line)), "the failure is visible beside the retained snapshot");
 	assert.equal(scopePanel([codex], ["openai-codex"]).some((line) => line.includes("fetch failed")), false, "a provider whose latest refresh succeeded carries no failure note");
 });
+
+test("UsageStore hands every recorded reading to its onRecord hook (the fallback cooldown listens there)", () => {
+	const seen: string[] = [];
+	const store = new UsageStore((usage) => seen.push(usage.provider));
+	store.record({ provider: "anthropic", plan: undefined, limits: [], fetchedAt: 1 });
+	assert.deepEqual(seen, ["anthropic"]);
+	assert.equal(store.get("anthropic")?.provider, "anthropic");
+	assert.doesNotThrow(() => new UsageStore().record({ provider: "openai", plan: undefined, limits: [], fetchedAt: 1 }));
+});

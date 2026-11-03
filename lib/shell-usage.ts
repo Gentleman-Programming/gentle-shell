@@ -619,8 +619,16 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 export class UsageStore {
 	private readonly usages = new Map<string, ProviderUsage>();
 
+	private readonly onRecord: ((usage: ProviderUsage) => void) | undefined;
+
+	/** `onRecord` hears every reading, e.g. the model fallback cooldown. */
+	constructor(onRecord?: (usage: ProviderUsage) => void) {
+		this.onRecord = onRecord;
+	}
+
 	record(usage: ProviderUsage): void {
 		this.usages.set(usage.provider, usage);
+		try { this.onRecord?.(usage); } catch { /* A listener never breaks the usage panel. */ }
 	}
 
 	get(provider: string): ProviderUsage | undefined {

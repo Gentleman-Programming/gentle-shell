@@ -7399,3 +7399,75 @@ test("an agent asking the user exposes an alert row for the panel editor", async
 	await tick();
 	assert.match(alert()[0]!, /^ \? explore asked: Which file\? +\/gentle:agents $/, "the alert row names the asking agent and its question");
 });
+
+test("a subagent launched under a profile carries its fallback chain, and a quota error switches it with a notice and a session entry", async () => {
+	const agentHome = join(root, "fallback-launch", "agent");
+	const config = join(root, "fallback-launch", "config");
+	mkdirSync(join(agentHome, "agents"), { recursive: true });
+	mkdirSync(config, { recursive: true });
+	writeFileSync(join(agentHome, "agents", "fallbacker.md"), "---\ndescription: fallback fixture\n---\nMap things.");
+	writeFileSync(join(agentHome, "subagents.json"), JSON.stringify({ default_model: "fbx/primary-model" }));
+	writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+	writeFileSync(join(config, "profile-fallbacks.json"), JSON.stringify({ kind: "gentle-pi.profile_model_fallbacks", version: 1, profiles: { home: { "*": [{ model: "fby/second-model", thinking: "low" }] } } }));
+	const harness = deps();
+	const { home: _home, env: _env, ...overrides } = harness.deps;
+	const { pi, tools, fire, entries } = fakePi();
+	gentleAgents(pi, { GENTLE_PI_AGENT_HOME: agentHome, GENTLE_PI_CONFIG_HOME: config }, overrides);
+	const { ctx, dialogs } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("fb", { agent: "fallbacker", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	try {
+		const child = harness.children[0]!;
+		child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 insufficient_quota: usage limit reached" }] });
+		child.emit({ type: "agent_settled" });
+		await tick(); await tick(); await tick();
+		assert.deepEqual(child.written.filter((command) => command.type === "set_model").map((command) => `${command.provider}/${command.modelId}`), ["fby/second-model"]);
+		assert.ok(dialogs.some((line) => /fallbacker: fbx\/primary-model hit its usage limit; continuing on fby\/second-model/.test(line)), dialogs.join("\n"));
+		const recorded = entries.filter((entry) => entry.customType === "gentle-pi.model-fallback/v1").map((entry) => entry.data as Record<string, unknown>);
+		assert.equal(recorded.length, 1);
+		assert.deepEqual({ agent: recorded[0]!.agent, from: recorded[0]!.from, to: recorded[0]!.to, category: recorded[0]!.category }, { agent: "fallbacker", from: "fbx/primary-model", to: "fby/second-model", category: "quota" });
+	} finally {
+		await fire("session_shutdown", ctx);
+		await tick();
+	}
+});
+
+test("the orchestrator's usage limit moves the session to the profile's orchestrator fallback and resumes; children never do it themselves", async () => {
+	const config = join(root, "orchestrator-fallback", "config");
+	mkdirSync(config, { recursive: true });
+	writeFileSync(join(config, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+	writeFileSync(join(config, "profile-fallbacks.json"), JSON.stringify({ kind: "gentle-pi.profile_model_fallbacks", version: 1, profiles: { home: { orchestrator: [{ model: "orx/backup", thinking: "high" }] } } }));
+	const catalog = new Map([["orx/main", { provider: "orx", id: "main", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], ["orx/backup", { provider: "orx", id: "backup", cost: { input: 3, output: 3, cacheRead: 0, cacheWrite: 0 } }]]);
+	const run = async (env: Record<string, string>) => {
+		const harness = deps();
+		const { home: _home, env: _env, ...overrides } = harness.deps;
+		const fake = fakePi();
+		const selected: string[] = [];
+		const levels: string[] = [];
+		Object.assign(fake.pi, { setModel: async (model: { provider: string; id: string }) => { selected.push(`${model.provider}/${model.id}`); return true; }, setThinkingLevel: (level: string) => levels.push(level) });
+		gentleAgents(fake.pi, { GENTLE_PI_CONFIG_HOME: config, ...env }, overrides);
+		const { ctx, dialogs } = fakeContext();
+		Object.assign(ctx, { model: catalog.get("orx/main"), modelRegistry: { find: (provider: string, id: string) => catalog.get(`${provider}/${id}`), getAll: () => [...catalog.values()] } });
+		await fake.fire("session_start", ctx);
+		await fake.fire("agent_end", ctx, { type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "insufficient_quota: monthly usage limit reached" }] });
+		await tick(); await tick();
+		// Pi fires agent_end on every failed attempt and only then decides to retry: nothing moves yet.
+		const beforeSettle = selected.length;
+		await fake.fire("agent_settled", ctx, { type: "agent_settled", aborted: false });
+		await tick(); await tick();
+		await fake.fire("session_shutdown", ctx);
+		await tick();
+		return { selected, levels, dialogs, entries: fake.entries, userMessages: fake.userMessages, beforeSettle };
+	};
+	const parent = await run({});
+	assert.equal(parent.beforeSettle, 0, "the switch waits for the run to settle, after Pi's own retries");
+	assert.deepEqual(parent.selected, ["orx/backup"]);
+	assert.deepEqual(parent.levels, ["high"]);
+	assert.ok(parent.dialogs.some((line) => /orchestrator: orx\/main hit its usage limit; continuing on orx\/backup \(3\.0x the price\)/.test(line)), parent.dialogs.join("\n"));
+	assert.equal(parent.entries.filter((entry) => entry.customType === "gentle-pi.model-fallback/v1").length, 1);
+	assert.equal(parent.userMessages.length, 1);
+	assert.match(String(parent.userMessages[0]!.content), /continue/i);
+	const child = await run({ GENTLE_PI_AGENTS_CHILD: "1" });
+	assert.deepEqual(child.selected, [], "a child leaves its fallback to the parent's runner");
+});

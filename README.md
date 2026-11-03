@@ -220,7 +220,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ### Customize — Look, layout, and editor in one panel
 
-`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme.
+`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Settings with a few values (animations, banner color, preset, status, header, density, card style and content) take one line each with their values inline: `●` marks the current one, `↑`/`↓` move between settings, and `←`/`→` change the value and apply it at once (`←` past the first value returns to the categories). The focused setting says what it does, and Layout previews a schematic of the result. Permission and history rows still apply only on Enter.
 
 <details>
 <summary><kbd>More</kbd> <strong>Everything <code>/gentle:customize</code> controls</strong> — themes, status layout, Vim, history, and visual profiles</summary>

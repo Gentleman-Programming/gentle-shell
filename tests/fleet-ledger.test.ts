@@ -69,9 +69,9 @@ test("the ledger renders the general fleet document and persists the ledger JSON
 	assert.match(doc, /^Fleet session: `fleet-1`$/m);
 	assert.match(doc, /^Updated: 2026-11-02T10:00:\d\d\.000Z$/m);
 	assert.match(doc, /^## Members$/m);
-	assert.match(doc, /^\| Member \| Owns \| Status \| Progress \| Current task \| Tokens \/ cost \| Waiting on \|$/m);
-	assert.match(doc, /^\| api \| Own the API \\\| routes and tests \| working \| 1\/3 \| Write routes \| 12\.3k \/ \$0\.46 \| — \|$/m, "pipes in cells are escaped");
-	assert.match(doc, /^\| web \| Own the web front \| waiting-question \| — \| — \| 900 \/ \$0\.01 \| Pick a database \[postgres \\\| sqlite\] \|$/m);
+	assert.match(doc, /^\| Member \| Owns \| Status \| Progress \| Current task \| Tokens \/ cost \| Waiting on \| Branch \| Worktree \|$/m);
+	assert.match(doc, /^\| api \| Own the API \\\| routes and tests \| working \| 1\/3 \| Write routes \| 12\.3k \/ \$0\.46 \| — \| — \| — \|$/m, "pipes in cells are escaped");
+	assert.match(doc, /^\| web \| Own the web front \| waiting-question \| — \| — \| 900 \/ \$0\.01 \| Pick a database \[postgres \\\| sqlite\] \| — \| — \|$/m);
 	const blockers = doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Log"));
 	assert.match(blockers, /- web: question — Pick a database/);
 	assert.match(blockers, /- docs: error — model refused/);
@@ -159,4 +159,37 @@ test(`the log keeps the last ${FLEET_LOG_MAX} entries`, () => {
 	assert.equal(saved.log.at(-1)!.text, `message ${FLEET_LOG_MAX + 24}`);
 	const doc = readFileSync(h.ledger.documentPath, "utf8");
 	assert.equal([...doc.matchAll(/^- \S+ · send/gm)].length, FLEET_LOG_MAX);
+});
+
+// --- T4 (S3, L15): worktree and branch per git member, budget warnings.
+
+test("a git member's branch and worktree land in the ledger and the Members table, untruncated", () => {
+	const h = harness();
+	h.ledger.setObjective("Billing", "Ship billing.");
+	const worktree = `/very/long/path/${"segment/".repeat(12)}app.fleet/billing/api`;
+	h.ledger.spawned("api", "Own the API", worktree, { path: worktree, branch: "fleet/billing/api" });
+	h.ledger.spawned("pub", "Publish the release posts", "/notes");
+	h.ledger.flush();
+	const doc = readFileSync(h.ledger.documentPath, "utf8");
+	assert.ok(doc.includes(`| api | Own the API | starting | — | — | 0 / $0.00 | — | \`fleet/billing/api\` | \`${worktree}\` |\n`), doc);
+	assert.match(doc, /^\| pub \| Publish the release posts \| starting \| — \| — \| 0 \/ \$0\.00 \| — \| — \| — \|$/m, "a member outside git has none");
+	const saved = h.readLedger();
+	assert.deepEqual(saved.members.map(member => [member.name, member.worktree, member.branch]), [["api", worktree, "fleet/billing/api"], ["pub", null, null]]);
+});
+
+test("a budget warning becomes a Blockers entry and a budget log entry", () => {
+	const h = harness();
+	h.ledger.spawned("api", "Own the API", "/w");
+	h.ledger.budgetWarning("api", "member api spent $0.80 of its $1.00 budget (80%)");
+	h.ledger.budgetWarning(null, "fleet spent $5.00 of its $5.00 budget (100%)");
+	h.ledger.flush();
+	const doc = readFileSync(h.ledger.documentPath, "utf8");
+	const blockers = doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Log"));
+	assert.deepEqual(blockers.split("\n").filter(line => line.startsWith("- ")), [
+		"- api: budget — member api spent $0.80 of its $1.00 budget (80%)",
+		"- fleet: budget — fleet spent $5.00 of its $5.00 budget (100%)",
+	]);
+	const log = doc.slice(doc.indexOf("## Log"));
+	assert.deepEqual([...log.matchAll(/^- \S+ · (\w+) · (\S+)/gm)].map(match => `${match[1]}:${match[2]}`), ["spawn:api", "budget:api", "budget:fleet"]);
+	assert.deepEqual(h.readLedger().budgetWarnings.map(entry => [entry.member, entry.text]), [["api", "member api spent $0.80 of its $1.00 budget (80%)"], [null, "fleet spent $5.00 of its $5.00 budget (100%)"]]);
 });

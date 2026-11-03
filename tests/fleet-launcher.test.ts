@@ -56,7 +56,8 @@ test("the fleet launch marks only its own Pi as the controller", () => {
 	const built = invocation(true, { PATH: "/usr/bin" });
 	assert.equal(built.env[FLEET_ROLE_ENV], "controller");
 	// S3: the controller never codes, so it skips the coding context files.
-	assert.deepEqual(built.args, ["-e", "/pkg", "--no-context-files"]);
+	// The skills catalog was ~56% of the controller's instructions (L27).
+	assert.deepEqual(built.args, ["-e", "/pkg", "--no-context-files", "--no-skills"]);
 });
 
 test("a normal launch keeps loading context files", () => {

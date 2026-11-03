@@ -13,7 +13,7 @@ const TEXT_MAX = 160;
 const CELL_MAX = 80;
 const SLUG_MAX = 60;
 
-export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop";
+export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget";
 
 export interface FleetLedgerMember {
 	name: string;
@@ -26,6 +26,9 @@ export interface FleetLedgerMember {
 	/** Pending question, one line with its options. */
 	question: string | null;
 	lastError: string | null;
+	/** The member's own worktree and branch when it works in a git repository. */
+	worktree: string | null;
+	branch: string | null;
 	exitCode: number | null;
 	exitSignal: string | null;
 	spawnedAt: string;
@@ -41,6 +44,13 @@ export interface FleetLogEntry {
 	text: string;
 }
 
+export interface FleetBudgetWarning {
+	at: string;
+	/** null for the fleet budget. */
+	member: string | null;
+	text: string;
+}
+
 export interface FleetLedgerState {
 	version: 1;
 	fleetSessionId: string;
@@ -50,6 +60,8 @@ export interface FleetLedgerState {
 	documentPath: string;
 	updatedAt: string;
 	members: FleetLedgerMember[];
+	/** One entry per crossed budget threshold; shown under Blockers. */
+	budgetWarnings: FleetBudgetWarning[];
 	log: FleetLogEntry[];
 }
 
@@ -74,6 +86,11 @@ function oneLine(value: string, max: number): string {
 function cell(value: string | null | undefined): string {
 	const text = value ? oneLine(value, CELL_MAX) : "";
 	return text ? text.replace(/\|/g, "\\|") : "—";
+}
+
+// Paths and branches are never truncated: a cut path cannot be opened.
+function code(value: string | null): string {
+	return value ? `\`${value.replace(/[\r\n]+/g, " ").replace(/\|/g, "\\|")}\`` : "—";
 }
 
 function tokens(value: number): string {
@@ -105,10 +122,10 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 	];
 	if (state.members.length === 0) lines.push("No members yet.");
 	else {
-		lines.push("| Member | Owns | Status | Progress | Current task | Tokens / cost | Waiting on |", "|---|---|---|---|---|---|---|");
+		lines.push("| Member | Owns | Status | Progress | Current task | Tokens / cost | Waiting on | Branch | Worktree |", "|---|---|---|---|---|---|---|---|---|");
 		for (const member of state.members) {
 			const progress = member.todo ? `${member.todo.done}/${member.todo.total}` : null;
-			lines.push(`| ${cell(member.name)} | ${cell(member.objective)} | ${cell(member.status)} | ${cell(progress)} | ${cell(member.todo?.current)} | ${tokens(member.tokens)} / $${member.cost.toFixed(2)} | ${cell(member.question)} |`);
+			lines.push(`| ${cell(member.name)} | ${cell(member.objective)} | ${cell(member.status)} | ${cell(progress)} | ${cell(member.todo?.current)} | ${tokens(member.tokens)} / $${member.cost.toFixed(2)} | ${cell(member.question)} | ${code(member.branch)} | ${code(member.worktree)} |`);
 		}
 	}
 	const blockers: string[] = [];
@@ -117,6 +134,7 @@ export function renderFleetDocument(state: FleetLedgerState): string {
 		if (member.lastError) blockers.push(`- ${member.name}: error — ${oneLine(member.lastError, TEXT_MAX)}`);
 		if (member.exitedAt && member.exitCode !== null && member.exitCode !== 0) blockers.push(`- ${member.name}: exited with code ${member.exitCode}`);
 	}
+	for (const warning of state.budgetWarnings) blockers.push(`- ${warning.member ?? "fleet"}: budget — ${oneLine(warning.text, TEXT_MAX)}`);
 	lines.push("", "## Blockers", "", ...(blockers.length > 0 ? blockers : ["None."]), "", "## Log", "");
 	if (state.log.length === 0) lines.push("No entries yet.");
 	for (const entry of state.log) lines.push(`- ${entry.at} · ${entry.kind} · ${entry.member ?? "fleet"} — ${entry.text}`);
@@ -141,12 +159,18 @@ export class FleetLedger {
 			documentPath: this.pathFor(slug),
 			updatedAt: this.now(),
 			members: [],
+			budgetWarnings: [],
 			log: [],
 		};
 	}
 
 	get documentPath(): string {
 		return this.state.documentPath;
+	}
+
+	/** The fleet's slug; it names member branches and worktrees too. */
+	get slug(): string {
+		return this.state.slug;
 	}
 
 	/** Names the fleet; returns the document path, which follows the title. */
@@ -159,10 +183,11 @@ export class FleetLedger {
 		return this.state.documentPath;
 	}
 
-	spawned(name: string, objective: string, cwd: string): void {
+	spawned(name: string, objective: string, cwd: string, worktree?: { path: string; branch: string }): void {
 		const record: FleetLedgerMember = {
 			name, objective: objective.trim(), cwd, status: "starting", todo: null, tokens: 0, cost: 0,
-			question: null, lastError: null, exitCode: null, exitSignal: null, spawnedAt: this.now(), exitedAt: null,
+			question: null, lastError: null, worktree: worktree?.path ?? null, branch: worktree?.branch ?? null,
+			exitCode: null, exitSignal: null, spawnedAt: this.now(), exitedAt: null,
 		};
 		const index = this.state.members.findIndex(member => member.name === name);
 		if (index >= 0) this.state.members[index] = record;
@@ -181,6 +206,12 @@ export class FleetLedger {
 		const member = this.state.members.find(entry => entry.name === name);
 		if (member) Object.assign(member, { status: "exited", question: null, exitCode: code, exitSignal: signal, exitedAt: this.now() });
 		this.log("exit", name, `code ${code ?? "none"}${signal ? `, ${signal}` : ""}`);
+	}
+
+	/** A crossed budget threshold: a Blockers entry and a log entry. */
+	budgetWarning(member: string | null, text: string): void {
+		this.state.budgetWarnings.push({ at: this.now(), member, text: oneLine(text, TEXT_MAX) });
+		this.log("budget", member, text);
 	}
 
 	log(kind: FleetLogKind, member: string | null, text: string): void {

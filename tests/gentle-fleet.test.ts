@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PassThrough } from "node:stream";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import gentleFleet, { FLEET_DIGEST_MESSAGE_TYPE, FLEET_MEMBER_CAP, FLEET_WAKE_WINDOW_MS, type FleetDeps } from "../extensions/gentle-fleet.ts";
+import gentleFleet, { FLEET_DIGEST_MESSAGE_TYPE, FLEET_WAKE_WINDOW_MS, type FleetDeps } from "../extensions/gentle-fleet.ts";
+import { DEFAULT_MAX_LIVE_MEMBERS } from "../lib/fleet-config.ts";
 import type { FleetLedgerState } from "../lib/fleet-ledger.ts";
+import { runGit } from "../lib/fleet-worktree.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
@@ -55,24 +57,32 @@ function fakePi() {
 
 const mainCwd = join(scratch, "main");
 
-function fakeContext(sessionId = "fleet-session-1") {
+function fakeContext(sessionId = "fleet-session-1", cwd = mainCwd) {
 	const widgets = new Map<string, string[] | undefined>();
+	const notices: Array<[string, string]> = [];
 	const ctx = {
-		cwd: mainCwd,
+		cwd,
 		hasUI: true,
 		mode: "tui",
-		ui: { setWidget: (key: string, lines: string[] | undefined) => widgets.set(key, lines), setStatus() {}, notify() {} },
+		ui: { setWidget: (key: string, lines: string[] | undefined) => widgets.set(key, lines), setStatus() {}, notify: (message: string, level: string) => notices.push([message, level]) },
 		sessionManager: { getSessionId: () => sessionId },
 	} as unknown as ExtensionContext;
-	return { ctx, widgets };
+	return { ctx, widgets, notices };
 }
 
 let harnesses = 0;
 
-function harness(env: NodeJS.ProcessEnv = controllerEnv) {
+function harness(env: NodeJS.ProcessEnv = controllerEnv, options: { fleetConfig?: Record<string, unknown> | string } = {}) {
 	harnesses += 1;
 	const h = fakePi();
 	const agentHome = join(scratch, `agent-${harnesses}`);
+	// Never the user's config home: each harness owns its fleet.json.
+	const configHome = join(scratch, `config-${harnesses}`);
+	if (options.fleetConfig !== undefined) {
+		mkdirSync(configHome, { recursive: true });
+		writeFileSync(join(configHome, "fleet.json"), typeof options.fleetConfig === "string" ? options.fleetConfig : JSON.stringify(options.fleetConfig));
+	}
+	const gitCalls: string[][] = [];
 	const writes: string[] = [];
 	const children: FakeChild[] = [];
 	const spawned: Array<{ command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
@@ -99,13 +109,18 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv) {
 			writes.push(path);
 			writeJsonFileAtomicallySync(path, text);
 		},
+		configHome,
+		git: (args, cwd) => {
+			gitCalls.push(args);
+			return runGit(args, cwd);
+		},
 	};
 	gentleFleet(h.pi, env, deps);
 	const runTimers = () => {
 		for (const timer of timers.splice(0)) if (!timer.cancelled) timer.fn();
 	};
 	const wakeTimers = () => timers.filter(timer => timer.ms === FLEET_WAKE_WINDOW_MS && !timer.cancelled);
-	return { ...h, children, spawned, timers, runTimers, wakeTimers, writes, agentHome };
+	return { ...h, children, spawned, timers, runTimers, wakeTimers, writes, agentHome, configHome, gitCalls };
 }
 
 async function spawnMember(h: ReturnType<typeof harness>, ctx: ExtensionContext, name: string, extra: Record<string, unknown> = {}) {
@@ -140,20 +155,22 @@ test("fleet_spawn launches a member session under the fleet session dir and send
 	assert.equal(h.spawned[1].cwd, "/work/web");
 });
 
-test(`fleet_spawn rejects a member beyond the ${FLEET_MEMBER_CAP}-member cap and a duplicate live name`, async () => {
+test(`with no fleet.json fleet_spawn caps live members at ${DEFAULT_MAX_LIVE_MEMBERS} and rejects a duplicate live name`, async () => {
 	const h = harness();
 	const { ctx } = fakeContext();
 	await h.fire("session_start", ctx);
-	for (const name of ["a", "b", "c"]) await spawnMember(h, ctx, name);
+	const names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+	for (const name of names) assert.match((await spawnMember(h, ctx, name)).content[0].text, /^Spawned/, name);
 	const duplicate = await spawnMember(h, ctx, "a");
 	assert.match(duplicate.content[0].text, /already/);
-	const fourth = await spawnMember(h, ctx, "d");
-	assert.match(fourth.content[0].text, /at most 3 live members/);
-	assert.equal(h.spawned.length, 3);
+	const ninth = await spawnMember(h, ctx, "i");
+	assert.equal(ninth.content[0].text, `Error: the fleet runs at most 8 live members (maxLiveMembers in ${join(h.configHome, "fleet.json")}). Send the work to an existing member or stop one first.`);
+	assert.equal(h.spawned.length, 8);
 	await h.tools.get("fleet_stop")!.execute("stop", { name: "a" }, undefined, undefined, ctx);
 	await tick();
-	await spawnMember(h, ctx, "d");
-	assert.equal(h.spawned.length, 4, "a stopped member frees its slot");
+	await spawnMember(h, ctx, "i");
+	assert.equal(h.spawned.length, 9, "a stopped member frees its slot");
+	assert.equal(existsSync(h.configHome), false, "the controller never writes the fleet config");
 });
 
 test("member settles, questions and exits wake the controller once per coalescing window, never per tool call", async () => {
@@ -273,7 +290,7 @@ test("member spawn, settle, question, send, stop and exit land in the ledger and
 	await tick();
 	h.runTimers();
 	const doc = readFileSync(join(mainCwd, "odd", "fleet", "billing.md"), "utf8");
-	assert.match(doc, /^\| api \| Own the api front \| working \| 1\/2 \| Routes \| 1\.2k \/ \$0\.50 \| — \|$/m);
+	assert.match(doc, /^\| api \| Own the api front \| working \| 1\/2 \| Routes \| 1\.2k \/ \$0\.50 \| — \| — \| — \|$/m);
 	assert.match(doc, /^\| web \| Own the web front \| exited \|/m);
 	const log = doc.slice(doc.indexOf("## Log"));
 	assert.deepEqual([...log.matchAll(/^- \S+ · (\w+) · (\S+)/gm)].map(match => `${match[1]}:${match[2]}`), ["objective:fleet", "spawn:api", "spawn:web", "settle:api", "question:web", "send:api", "stop:web", "exit:web"]);
@@ -398,6 +415,196 @@ test("a new session start stops and forgets the previous session's members so th
 	assert.equal(dir, join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-2", "api"));
 	h.runTimers();
 	assert.deepEqual(readLedger(h, "fleet-session-2").members.map(member => member.name), ["api"]);
+});
+
+// --- T4 (S3, L15): configurable live-member limit, budgets, worktree per git member.
+
+const description = (h: ReturnType<typeof harness>, name: string) => (h.tools.get(name) as unknown as { description: string }).description;
+const usage = (cost: number) => ({ type: "message_end", message: { role: "assistant", content: [], usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { total: cost } } } });
+const budgetLines = (content: string) => content.split("\n").filter(line => line.startsWith("budget: "));
+
+test("fleet.json sets the live-member limit the tool description and the refusal name; the next spawn rereads it", async () => {
+	const h = harness(controllerEnv, { fleetConfig: { maxLiveMembers: 2 } });
+	const path = join(h.configHome, "fleet.json");
+	assert.match(description(h, "fleet_spawn"), /At most 2 live members \(maxLiveMembers in the human's fleet\.json\)\./);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await spawnMember(h, ctx, "a");
+	await spawnMember(h, ctx, "b");
+	const third = await spawnMember(h, ctx, "c");
+	assert.equal(third.content[0].text, `Error: the fleet runs at most 2 live members (maxLiveMembers in ${path}). Send the work to an existing member or stop one first.`);
+	assert.equal(h.spawned.length, 2);
+	writeFileSync(path, JSON.stringify({ maxLiveMembers: 3 }));
+	assert.match((await spawnMember(h, ctx, "c")).content[0].text, /^Spawned/, "a raised limit applies to the next spawn");
+	assert.equal(JSON.parse(readFileSync(path, "utf8")).maxLiveMembers, 3, "the controller never rewrites the file");
+});
+
+test("an invalid fleet.json falls back to the defaults and tells the human once per session", async () => {
+	const h = harness(controllerEnv, { fleetConfig: { maxLiveMembers: 0, fleetBudgetUsd: -2 } });
+	assert.match(description(h, "fleet_spawn"), /At most 8 live members/);
+	const { ctx, notices } = fakeContext();
+	await h.fire("session_start", ctx);
+	assert.deepEqual(notices, [[`Gentle Fleet ignored invalid values in ${join(h.configHome, "fleet.json")} and uses the defaults for: maxLiveMembers (an integer of at least 1), fleetBudgetUsd (a number of USD above 0).`, "warning"]]);
+	for (const name of ["a", "b", "c", "d"]) assert.match((await spawnMember(h, ctx, name)).content[0].text, /^Spawned/);
+	assert.equal(notices.length, 1, "spawns reread the file without repeating the notice");
+	const broken = harness(controllerEnv, { fleetConfig: "{oops" });
+	const second = fakeContext();
+	await broken.fire("session_start", second.ctx);
+	assert.match((await spawnMember(broken, second.ctx, "a")).content[0].text, /^Spawned/, "a malformed file never crashes a spawn");
+});
+
+test("budgets add one digest line and one blocker per crossed threshold, stop nothing, and refuse spawns at the fleet budget", async () => {
+	const h = harness(controllerEnv, { fleetConfig: { fleetBudgetUsd: 2, memberBudgetUsd: 1 } });
+	const configPath = join(h.configHome, "fleet.json");
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Budgets", objective: "Watch spend." }, undefined, undefined, ctx);
+	await spawnMember(h, ctx, "api");
+	await spawnMember(h, ctx, "web");
+	await tick();
+	const [api, web] = h.children;
+	const settle = async (child: typeof api) => {
+		child.emit({ type: "agent_settled", aborted: false });
+		await tick();
+		const before = h.sent.length;
+		for (const timer of h.wakeTimers()) { timer.cancelled = true; timer.fn(); }
+		assert.equal(h.sent.length, before + 1, "one wake");
+		return budgetLines(String(h.sent.at(-1)!.message.content));
+	};
+	api.emit(usage(0.85));
+	await tick();
+	assert.equal(h.wakeTimers().length, 0, "a crossed budget wakes nothing by itself");
+	assert.deepEqual(await settle(api), ["budget: member api spent $0.85 of its $1.00 budget (80%)"]);
+	api.emit(usage(0.05));
+	assert.deepEqual(await settle(api), [], "a threshold warns once");
+	api.emit(usage(0.2));
+	web.emit(usage(0.6));
+	assert.deepEqual(await settle(api), ["budget: member api spent $1.10 of its $1.00 budget (100%); it keeps working", "budget: fleet spent $1.70 of its $2.00 budget (80%)"]);
+	assert.equal(api.child.stdin!.writableEnded, false, "crossing a member budget stops nothing");
+	web.emit(usage(0.35));
+	assert.deepEqual(await settle(web), ["budget: member web spent $0.95 of its $1.00 budget (80%)", "budget: fleet spent $2.05 of its $2.00 budget (100%); fleet_spawn refuses new members"]);
+	const refused = await spawnMember(h, ctx, "docs");
+	assert.equal(refused.content[0].text, `Error: the fleet spent $2.05 of its $2.00 budget (fleetBudgetUsd in ${configPath}). Existing members keep working: send them work with fleet_send, or ask the human to raise the budget.`);
+	assert.equal(h.spawned.length, 2);
+	assert.equal((await h.tools.get("fleet_send")!.execute("s", { name: "api", message: "finish" }, undefined, undefined, ctx)).content[0].text, `Sent to "api" (prompt).`);
+	h.runTimers();
+	const doc = readFileSync(join(mainCwd, "odd", "fleet", "budgets.md"), "utf8");
+	const blockers = doc.slice(doc.indexOf("## Blockers"), doc.indexOf("## Log")).split("\n").filter(line => line.startsWith("- "));
+	assert.deepEqual(blockers, [
+		"- api: budget — member api spent $0.85 of its $1.00 budget (80%)",
+		"- api: budget — member api spent $1.10 of its $1.00 budget (100%); it keeps working",
+		"- fleet: budget — fleet spent $1.70 of its $2.00 budget (80%)",
+		"- web: budget — member web spent $0.95 of its $1.00 budget (80%)",
+		"- fleet: budget — fleet spent $2.05 of its $2.00 budget (100%); fleet_spawn refuses new members",
+	]);
+	assert.equal(readLedger(h).budgetWarnings.length, 5);
+});
+
+test("a jump past both thresholds warns once at 100%, and a respawned name keeps the fleet's earlier spend", async () => {
+	const h = harness(controllerEnv, { fleetConfig: { fleetBudgetUsd: 3, memberBudgetUsd: 1 } });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await spawnMember(h, ctx, "api");
+	await tick();
+	h.children[0].emit(usage(2.5));
+	h.children[0].emit({ type: "agent_settled", aborted: false });
+	await tick();
+	h.runTimers();
+	assert.deepEqual(budgetLines(String(h.sent[0].message.content)), ["budget: member api spent $2.50 of its $1.00 budget (100%); it keeps working", "budget: fleet spent $2.50 of its $3.00 budget (80%)"]);
+	await h.tools.get("fleet_stop")!.execute("stop", { name: "api" }, undefined, undefined, ctx);
+	await tick();
+	h.runTimers();
+	await spawnMember(h, ctx, "api");
+	await tick();
+	h.children[1].emit(usage(0.6));
+	h.children[1].emit({ type: "agent_settled", aborted: false });
+	await tick();
+	h.runTimers();
+	assert.deepEqual(budgetLines(String(h.sent.at(-1)!.message.content)), ["budget: fleet spent $3.10 of its $3.00 budget (100%); fleet_spawn refuses new members"], "the new api starts its own member budget; the fleet counts both");
+});
+
+function gitIn(cwd: string, ...args: string[]): string {
+	const result = runGit(["-c", "user.name=Fleet Test", "-c", "user.email=fleet@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], cwd);
+	assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+	return result.stdout.trim();
+}
+
+let repos = 0;
+function scratchRepo() {
+	repos += 1;
+	const root = join(scratch, `repo-${repos}`);
+	const repo = join(root, "app");
+	mkdirSync(repo, { recursive: true });
+	gitIn(repo, "init", "-q", "-b", "main");
+	gitIn(repo, "commit", "-q", "--allow-empty", "-m", "initial");
+	const branches = () => gitIn(repo, "branch", "--format=%(refname:short)").split("\n").sort();
+	const worktrees = () => gitIn(repo, "worktree", "list", "--porcelain").split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9));
+	return { root, repo, branches, worktrees };
+}
+
+test("a member in a git repository runs in its own worktree and branch, shown in the ledger, the document and fleet_inspect, and kept after it exits", async () => {
+	const h = harness();
+	const { root, repo, branches, worktrees } = scratchRepo();
+	const { ctx } = fakeContext("fleet-session-1", repo);
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Billing", objective: "Ship billing." }, undefined, undefined, ctx);
+	const path = join(root, "app.fleet", "billing", "api");
+	const result = await spawnMember(h, ctx, "api");
+	assert.equal(result.content[0].text, `Spawned fleet member "api" in ${path} on new branch fleet/billing/api (worktree of ${repo}). Its digest arrives when it settles, asks a question or exits.`);
+	assert.equal(h.spawned[0].cwd, path);
+	assert.deepEqual(branches(), ["fleet/billing/api", "main"]);
+	assert.deepEqual(worktrees(), [repo, path]);
+	const inspect = (await h.tools.get("fleet_inspect")!.execute("i", { name: "api" }, undefined, undefined, ctx)).content[0].text;
+	assert.match(inspect, new RegExp(`^worktree: ${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(branch fleet/billing/api\\)$`, "m"));
+	const inPlace = await spawnMember(h, ctx, "pub", { worktree: false });
+	assert.match(inPlace.content[0].text, new RegExp(`^Spawned fleet member "pub" in ${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\. `));
+	assert.equal(h.spawned[1].cwd, repo, "worktree: false runs the member in place");
+	assert.deepEqual(branches(), ["fleet/billing/api", "main"]);
+	await h.tools.get("fleet_stop")!.execute("st", { name: "api" }, undefined, undefined, ctx);
+	await tick();
+	await h.fire("session_shutdown", ctx, { reason: "quit" });
+	await tick();
+	h.runTimers();
+	assert.deepEqual(branches(), ["fleet/billing/api", "main"], "stop and exit keep the branch");
+	assert.deepEqual(worktrees(), [repo, path], "stop and exit keep the worktree");
+	assert.ok(h.gitCalls.every(args => !["remove", "prune", "-D", "-d", "--force", "-f"].some(flag => args.includes(flag))), JSON.stringify(h.gitCalls));
+	assert.deepEqual(readdirSync(root).sort(), ["app", "app.fleet"]);
+	const saved = readLedger(h);
+	assert.deepEqual(saved.members.map(member => [member.name, member.cwd, member.worktree, member.branch]), [["api", path, path, "fleet/billing/api"], ["pub", repo, null, null]]);
+	const doc = readFileSync(join(repo, "odd", "fleet", "billing.md"), "utf8");
+	assert.ok(doc.includes(`| \`fleet/billing/api\` | \`${path}\` |\n`), doc);
+});
+
+test("an existing member branch refuses the spawn before any member, session dir or ledger entry exists", async () => {
+	const h = harness();
+	const { root, repo, branches, worktrees } = scratchRepo();
+	gitIn(repo, "branch", "fleet/billing/api");
+	const { ctx } = fakeContext("fleet-session-1", repo);
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Billing", objective: "Ship billing." }, undefined, undefined, ctx);
+	const result = await spawnMember(h, ctx, "api");
+	assert.match(result.content[0].text, /^Error: could not give member "api" its own worktree: branch fleet\/billing\/api already exists/);
+	assert.equal(h.spawned.length, 0);
+	assert.equal((await h.tools.get("fleet_status")!.execute("st", {}, undefined, undefined, ctx)).content[0].text, "No fleet members.");
+	assert.equal(existsSync(join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-1", "api")), false);
+	h.runTimers();
+	assert.deepEqual(readLedger(h).members, []);
+	assert.deepEqual(branches(), ["fleet/billing/api", "main"]);
+	assert.deepEqual(worktrees(), [repo]);
+	assert.deepEqual(readdirSync(root), ["app"]);
+});
+
+test("outside a git repository a member runs in place and git is only asked where the repository is", async () => {
+	const h = harness();
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	await spawnMember(h, ctx, "pub");
+	assert.equal(h.spawned[0].cwd, mainCwd);
+	assert.deepEqual(h.gitCalls.map(args => args.slice(0, 2)), [["rev-parse", "--show-toplevel"]]);
+	await spawnMember(h, ctx, "posts", { worktree: false });
+	assert.equal(h.gitCalls.length, 1, "worktree: false never calls git");
+	h.runTimers();
+	assert.deepEqual(readLedger(h).members.map(member => [member.name, member.worktree, member.branch]), [["pub", null, null], ["posts", null, null]]);
 });
 
 // --- gentle-agents: members talk only through their controller (star topology).

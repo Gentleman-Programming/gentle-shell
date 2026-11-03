@@ -13,7 +13,7 @@ const TEXT_MAX = 160;
 const CELL_MAX = 80;
 const SLUG_MAX = 60;
 
-export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve" | "escalate" | "resume";
+export type FleetLogKind = "objective" | "spawn" | "send" | "settle" | "question" | "exit" | "stop" | "budget" | "answer" | "relay" | "grant" | "revoke" | "auto-approve" | "escalate" | "resume" | "adopt";
 export const FLEET_AUTO_APPROVALS_MAX = 200;
 const GRANT_TEXT_MAX = 300;
 
@@ -39,6 +39,10 @@ export interface FleetLedgerMember {
 	exitSignal: string | null;
 	spawnedAt: string;
 	exitedAt: string | null;
+	/** An adopted member's own session file (S8): a reopened fleet resumes it there. Absent for spawned members. */
+	sessionFile?: string;
+	/** Set for a session the human adopted from an open window instead of a fleet spawn. */
+	adopted?: boolean;
 }
 
 export type FleetMemberFields = Pick<FleetLedgerMember, "status" | "todo" | "tokens" | "newTokens" | "cacheRead" | "cost" | "question" | "lastError">;
@@ -228,6 +232,8 @@ export function loadFleetLedger(path: string, fleetSessionId: string): FleetLedg
 		retiredCost: typeof state.retiredCost === "number" && Number.isFinite(state.retiredCost) ? state.retiredCost : 0,
 		interrupted: isArray(state.interrupted) ? state.interrupted.filter((name): name is string => typeof name === "string") : [],
 		escalations: state.escalations.map(entry => ({ ...entry, stale: true })),
+		// A session file is a path code opens: anything but a string is dropped.
+		members: state.members.map(member => member.sessionFile === undefined || typeof member.sessionFile === "string" ? member : (({ sessionFile: _dropped, ...rest }) => rest)(member)),
 	};
 }
 
@@ -295,16 +301,18 @@ export class FleetLedger {
 		return this.state.documentPath;
 	}
 
-	spawned(name: string, objective: string, cwd: string, worktree?: { path: string; branch: string }): void {
+	/** A new member process; `adopted` is a session the human adopted on its own session file (S8). */
+	spawned(name: string, objective: string, cwd: string, worktree?: { path: string; branch: string }, adopted?: { sessionFile: string }): void {
 		const record: FleetLedgerMember = {
 			name, objective: objective.trim(), cwd, status: "starting", todo: null, tokens: 0, cost: 0,
 			question: null, lastError: null, worktree: worktree?.path ?? null, branch: worktree?.branch ?? null,
 			exitCode: null, exitSignal: null, spawnedAt: this.now(), exitedAt: null,
+			...(adopted ? { sessionFile: adopted.sessionFile, adopted: true } : {}),
 		};
 		const index = this.state.members.findIndex(member => member.name === name);
 		if (index >= 0) this.state.members[index] = record;
 		else this.state.members.push(record);
-		this.log("spawn", name, oneLine(objective, TEXT_MAX));
+		this.log(adopted ? "adopt" : "spawn", name, oneLine(adopted ? `${objective} in ${cwd}` : objective, TEXT_MAX));
 	}
 
 	update(name: string, fields: FleetMemberFields): void {

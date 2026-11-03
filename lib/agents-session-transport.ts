@@ -348,8 +348,16 @@ export class SessionPresenceRegistry {
 export const MAX_FRAME_BYTES = 65536;
 type ProtocolCode = "malformed" | "oversized" | "invalid_utf8" | "invalid_frame" | "trailing_frame";
 export type NotificationFrame = Readonly<{ version: 1; kind: "notification"; id: string; senderSessionId: string; recipientSessionId: string; message: string }>;
+// A fleet asks this session to become its member (odd/tasks/fleet-orchestrator.md S8).
+// It rides the notification envelope because the Windows native pipe gate admits
+// only that frame prefix; the extra adopt field and an empty message make strict
+// decoders of older peers reject it, so it never reaches a model as text.
+export type AdoptRequest = Readonly<{ fleetSlug: string; token: string }>;
+export type AdoptFrame = Readonly<{ version: 1; kind: "notification"; id: string; senderSessionId: string; recipientSessionId: string; message: ""; adopt: AdoptRequest }>;
 export type AckFrame = Readonly<{ version: 1; kind: "ack"; id: string; accepted: boolean; error?: "rejected" | "duplicate" | "busy" | "timeout" }>;
-export type WireFrame = NotificationFrame | AckFrame;
+export type WireFrame = NotificationFrame | AdoptFrame | AckFrame;
+export const ADOPT_SLUG = /^[a-z0-9][a-z0-9-]{0,59}$/, ADOPT_TOKEN = /^[A-Za-z0-9_-]{8,128}$/;
+export const isAdoptFrame = (value: WireFrame): value is AdoptFrame => value.kind === "notification" && "adopt" in value;
 
 export class TransportProtocolError extends Error {
 	readonly code: ProtocolCode;
@@ -381,19 +389,27 @@ function frame(value: unknown): WireFrame {
 		if (!ackError(error)) protocol("invalid_frame");
 		return Object.freeze({ version: 1, kind: "ack", id: wireId(ack.id), accepted: false, error });
 	}
+	if (Object.hasOwn(basic, "adopt")) {
+		const adopt = own(value, ["version", "kind", "id", "senderSessionId", "recipientSessionId", "message", "adopt"]);
+		if (adopt.version !== 1 || adopt.kind !== "notification" || adopt.message !== "") protocol("invalid_frame");
+		const request = own(adopt.adopt, ["fleetSlug", "token"]);
+		if (typeof request.fleetSlug !== "string" || !ADOPT_SLUG.test(request.fleetSlug) || typeof request.token !== "string" || !ADOPT_TOKEN.test(request.token)) protocol("invalid_frame");
+		return Object.freeze({ version: 1, kind: "notification", id: wireId(adopt.id), senderSessionId: wireId(adopt.senderSessionId), recipientSessionId: wireId(adopt.recipientSessionId), message: "", adopt: Object.freeze({ fleetSlug: request.fleetSlug, token: request.token }) });
+	}
 	const notification = own(value, ["version", "kind", "id", "senderSessionId", "recipientSessionId", "message"]);
 	if (notification.version !== 1 || notification.kind !== "notification") protocol("invalid_frame");
 	return Object.freeze({ version: 1, kind: "notification", id: wireId(notification.id), senderSessionId: wireId(notification.senderSessionId), recipientSessionId: wireId(notification.recipientSessionId), message: message(notification.message) });
 }
-const encode = (value: unknown, kind: WireFrame["kind"]) => {
+const encode = (value: unknown, kind: WireFrame["kind"] | "adopt") => {
 	const parsed = frame(value);
-	if (parsed.kind !== kind) protocol("invalid_frame");
+	if ((kind === "adopt" ? !isAdoptFrame(parsed) : parsed.kind !== kind || isAdoptFrame(parsed))) protocol("invalid_frame");
 	const bytes = Buffer.from(`${JSON.stringify(parsed)}\n`);
 	if (bytes.length > MAX_FRAME_BYTES) protocol("oversized");
 	return bytes;
 };
 export const encodeNotificationFrame = (value: NotificationFrame) => encode(value, "notification");
 export const encodeAckFrame = (value: AckFrame) => encode(value, "ack");
+export const encodeAdoptFrame = (value: AdoptFrame) => encode(value, "adopt");
 
 export class FrameDecoder {
 	private readonly buffer = Buffer.alloc(MAX_FRAME_BYTES);
@@ -428,10 +444,13 @@ export class FrameDecoder {
 }
 
 export type ReceivedNotification = Readonly<{ id: string; senderSessionId: string; message: string }>;
+export type ReceivedAdopt = Readonly<{ id: string; senderSessionId: string; fleetSlug: string; token: string }>;
+/** Resolves true to accept; anything else answers rejected. Never sees notification text. */
+export type AdoptHandler = (request: ReceivedAdopt) => Promise<boolean>;
 type ListenerState = "idle" | "starting" | "accepting" | "active" | "failed" | "closed";
 type ListenerFailure = Readonly<{ code: "io_error"; message: "listener failed" }>;
 type ListenerScheduler = Readonly<{ setTimeout: (callback: () => void, delay: number) => unknown; clearTimeout: (handle: unknown) => void }>;
-export type ActiveSessionListenerOptions = Readonly<{ callbackDeadlineMs?: number; scheduler?: ListenerScheduler; beforeEndpointCleanup?: () => Promise<void> }>;
+export type ActiveSessionListenerOptions = Readonly<{ callbackDeadlineMs?: number; scheduler?: ListenerScheduler; beforeEndpointCleanup?: () => Promise<void>; onAdopt?: AdoptHandler }>;
 const CALLBACK_DEADLINE_MS = 2000, MAX_CALLBACKS = 8, MAX_SEEN_NOTIFICATIONS = 64;
 
 export class ActiveSessionListener {
@@ -453,6 +472,7 @@ export class ActiveSessionListener {
 	private readonly callbackDeadlineMs: number;
 	private readonly scheduler: ListenerScheduler;
 	private readonly beforeEndpointCleanup?: () => Promise<void>;
+	private readonly onAdopt?: AdoptHandler;
 	private resolveClosed!: () => void;
 
 	constructor(registry: SessionPresenceRegistry, sessionID: string, onNotification: (notification: ReceivedNotification) => Promise<void>, options: ActiveSessionListenerOptions = {}) {
@@ -464,6 +484,7 @@ export class ActiveSessionListener {
 		this.callbackDeadlineMs = deadline;
 		this.scheduler = options.scheduler ?? { setTimeout, clearTimeout };
 		this.beforeEndpointCleanup = options.beforeEndpointCleanup;
+		this.onAdopt = options.onAdopt;
 		this.closed = new Promise<void>((resolveClosed) => { this.resolveClosed = resolveClosed; });
 	}
 
@@ -576,7 +597,8 @@ export class ActiveSessionListener {
 				if (incoming.kind !== "notification" || incoming.recipientSessionId !== this.sessionID) { settle({ version: 1, kind: "ack", id: incoming.id, accepted: false, error: "rejected" }); return; }
 				if (this.remember(incoming)) { settle({ version: 1, kind: "ack", id: incoming.id, accepted: false, error: "duplicate" }); return; }
 				processing = true;
-				this.deliver(incoming, settle, (cancel) => { cancelDelivery = cancel; });
+				const run = isAdoptFrame(incoming) ? this.adopt(incoming) : () => this.onNotification(Object.freeze({ id: incoming.id, senderSessionId: incoming.senderSessionId, message: incoming.message }));
+				this.deliver(incoming, run, settle, (cancel) => { cancelDelivery = cancel; });
 			} catch { settle(); }
 		});
 		socket.on("end", () => {
@@ -587,7 +609,15 @@ export class ActiveSessionListener {
 		socket.on("close", () => settle());
 	}
 
-	private remember(incoming: NotificationFrame) {
+	private adopt(incoming: AdoptFrame) {
+		const request = Object.freeze({ id: incoming.id, senderSessionId: incoming.senderSessionId, fleetSlug: incoming.adopt.fleetSlug, token: incoming.adopt.token });
+		const handler = this.onAdopt;
+		return async () => {
+			if (!handler || await handler(request) !== true) throw new Error("adopt refused");
+		};
+	}
+
+	private remember(incoming: NotificationFrame | AdoptFrame) {
 		const key = `${incoming.senderSessionId}\0${incoming.id}`;
 		if (this.seen.has(key)) {
 			this.seen.delete(key);
@@ -599,8 +629,7 @@ export class ActiveSessionListener {
 		return false;
 	}
 
-	private deliver(incoming: NotificationFrame, settle: (frame?: AckFrame) => void, setCancel: (cancel: () => void) => void) {
-		const payload = Object.freeze({ id: incoming.id, senderSessionId: incoming.senderSessionId, message: incoming.message });
+	private deliver(incoming: NotificationFrame | AdoptFrame, run: () => Promise<void>, settle: (frame?: AckFrame) => void, setCancel: (cancel: () => void) => void) {
 		let timer: unknown;
 		const cancel = () => {
 			if (timer === undefined) return;
@@ -615,7 +644,7 @@ export class ActiveSessionListener {
 				settle({ version: 1, kind: "ack", id: incoming.id, accepted: false, error: "timeout" });
 			}, this.callbackDeadlineMs);
 		} catch { settle({ version: 1, kind: "ack", id: incoming.id, accepted: false, error: "timeout" }); return; }
-		void Promise.resolve().then(() => this.onNotification(payload)).then(
+		void Promise.resolve().then(run).then(
 			() => { cancel(); settle({ version: 1, kind: "ack", id: incoming.id, accepted: true }); },
 			() => { cancel(); settle({ version: 1, kind: "ack", id: incoming.id, accepted: false, error: "rejected" }); },
 		);
@@ -691,6 +720,17 @@ export class ActiveSessionClient {
 	get closed() { return this.stopped; }
 
 	sendNotification(recipientSessionId: string, text: string, options: ActiveSessionClientOptions = {}): Promise<SentNotification> {
+		return this.send(recipientSessionId, text, undefined, options);
+	}
+
+	/** A fleet's adopt request (S8): accepted means the recipient took it, not that it closed. */
+	sendAdopt(recipientSessionId: string, request: AdoptRequest, options: ActiveSessionClientOptions = {}): Promise<SentNotification> {
+		try { encodeAdoptFrame(Object.freeze({ version: 1, kind: "notification", id: "adopt-check", senderSessionId: this.senderSessionId, recipientSessionId: sessionId(recipientSessionId), message: "", adopt: request })); }
+		catch (error) { return Promise.reject(error); }
+		return this.send(recipientSessionId, "", request, options);
+	}
+
+	private send(recipientSessionId: string, text: string, adopt: AdoptRequest | undefined, options: ActiveSessionClientOptions): Promise<SentNotification> {
 		let recipient: string, id: string;
 		try { recipient = sessionId(recipientSessionId); id = options.id === undefined ? randomBytes(16).toString("hex") : sessionId(options.id); }
 		catch (error) { return Promise.reject(error); }
@@ -713,7 +753,7 @@ export class ActiveSessionClient {
 			this.pending.add(pending);
 			pending.abort = () => pending.settle(clientError(this.stopped ? "closed" : "aborted"));
 			options.signal?.addEventListener("abort", pending.abort, { once: true });
-			void this.begin(pending, recipient, text, id, options.expectedActivation, options.beforeConnect);
+			void this.begin(pending, recipient, text, adopt, id, options.expectedActivation, options.beforeConnect);
 		});
 		return operation;
 	}
@@ -724,7 +764,7 @@ export class ActiveSessionClient {
 		for (const pending of [...this.pending]) pending.settle(clientError("closed"));
 	}
 
-	private async begin(pending: PendingOutbound, recipient: string, text: string, id: string, expectedActivation: PresenceRecord | undefined, beforeConnect: (() => boolean | Promise<boolean>) | undefined) {
+	private async begin(pending: PendingOutbound, recipient: string, text: string, adopt: AdoptRequest | undefined, id: string, expectedActivation: PresenceRecord | undefined, beforeConnect: (() => boolean | Promise<boolean>) | undefined) {
 		let record: PresenceRecord;
 		try { record = await this.registry.resolve(recipient); }
 		catch (error) {
@@ -738,7 +778,10 @@ export class ActiveSessionClient {
 		} catch { pending.settle(clientError("stale")); return; }
 		if (pending.settled || this.stopped) { pending.settle(clientError("closed")); return; }
 		let bytes: Buffer;
-		try { bytes = encodeNotificationFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId: recipient, message: text })); }
+		try {
+			bytes = adopt ? encodeAdoptFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId: recipient, message: "", adopt }))
+				: encodeNotificationFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId: recipient, message: text }));
+		}
 		catch { pending.settle(clientError("io_error")); return; }
 		let socket: Socket;
 		try { socket = this.connect(record.endpoint); }

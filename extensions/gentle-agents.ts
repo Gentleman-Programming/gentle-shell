@@ -38,7 +38,7 @@ import { isFinished, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskSto
 import { AgentRunner, piCommand, abortReasonText, REQUESTED_TOOLS_ENV, type AskAnswer, type RunnerDeps, type TaskRequest } from "../lib/agents-runner.ts";
 import { parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import { ChildMessenger, type IpcEndpoint } from "../lib/agents-messaging.ts";
-import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type AdoptHandler, type PresenceRecord, type ReceivedNotification, type SentNotification, type SessionPresenceCandidate } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessionPresenceRegistry, type WindowsSessionRegistryPhaseObserver } from "../lib/windows-session-transport.ts";
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
@@ -61,6 +61,7 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { fleetRole } from "../lib/fleet-role.ts";
+import { AdoptionTarget } from "../lib/fleet-adopt.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
@@ -143,7 +144,8 @@ export interface SessionTransportClient {
 
 export interface SessionTransportFactory {
 	createRegistry(agentHome: string, observeWindowsPhase?: WindowsSessionRegistryPhaseObserver): Promise<SessionTransportRegistry>;
-	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>): SessionTransportListener;
+	/** onAdopt receives a fleet's adopt request (S8); it never reaches onNotification. */
+	createListener(registry: SessionTransportRegistry, sessionId: string, onNotification: (notification: ReceivedNotification) => Promise<void>, onAdopt?: AdoptHandler): SessionTransportListener;
 	createClient(registry: SessionTransportRegistry, sessionId: string): SessionTransportClient;
 }
 
@@ -375,13 +377,13 @@ function registerChildMessaging(pi: ExtensionAPI, ipc: IpcEndpoint): void {
 
 const posixSessionTransport: SessionTransportFactory = {
 	createRegistry(agentHome) { return SessionPresenceRegistry.create(agentHome); },
-	createListener(registry: SessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: false }); },
+	createListener(registry: SessionPresenceRegistry, sessionId, onNotification, onAdopt) { return Object.assign(new ActiveSessionListener(registry, sessionId, onNotification, { onAdopt }), { closesRegistry: false }); },
 	createClient(registry: SessionPresenceRegistry, sessionId) { return new ActiveSessionClient(registry, sessionId); },
 };
 
 const windowsSessionTransport: SessionTransportFactory = {
 	createRegistry(agentHome, observeWindowsPhase) { return WindowsSessionPresenceRegistry.create(agentHome, observeWindowsPhase); },
-	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification), { closesRegistry: true }); },
+	createListener(registry: WindowsSessionPresenceRegistry, sessionId, onNotification, onAdopt) { return Object.assign(new WindowsActiveSessionListener(registry, sessionId, onNotification, onAdopt), { closesRegistry: true }); },
 	createClient(registry: WindowsSessionPresenceRegistry, sessionId) { return new WindowsActiveSessionClient(registry, sessionId); },
 };
 
@@ -924,11 +926,14 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					await closeStartupTransport();
 					return;
 				}
-				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
+				const current = () => {
 					const active = activeSessionTransport;
-					if (!active || active.generation !== generation || active.sessionManager !== sessionManager || active.sessionId !== sessionId || sessions !== sessionManager || activeSessionId() !== sessionId) throw new Error("stale session transport");
+					return Boolean(active && active.generation === generation && active.sessionManager === sessionManager && active.sessionId === sessionId && sessions === sessionManager && activeSessionId() === sessionId);
+				};
+				listener = sessionTransport.createListener(registry, sessionId, async (notification) => {
+					if (!current()) throw new Error("stale session transport");
 					pi.sendMessage({ customType: AGENTS_ORCHESTRATOR_MESSAGE_TYPE, content: `Session message from ${notification.senderSessionId} (correlation ${notification.id}): ${notification.message}`, display: true, details: { gentleAgents: { senderSessionId: notification.senderSessionId, recipientSessionId: sessionId, correlationId: notification.id, direction: "incoming", message: notification.message, senderLabel: messagePeerLabel(agentHome, notification.senderSessionId), recipientLabel: sanitizeDisplayLabel(sessionManager.getSessionName?.() ?? "") } } }, { deliverAs: "followUp", triggerTurn: true });
-				});
+				}, async (request) => current() && adoption.accept(request, parentCtx)); // A fleet's adopt request (S8): code only, never a model message.
 				client = sessionTransport.createClient(registry, sessionId);
 				if (sessions !== sessionManager || generation !== transportGeneration || activeSessionId() !== sessionId) {
 					await closeStartupTransport();
@@ -1066,6 +1071,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session_start context is kept for it and dropped at shutdown; a stale
 	// context throws instead of answering, so delivery fails closed.
 	let parentCtx: ExtensionContext | undefined;
+	// A fleet's adoption of this window (S8): the hand-off waits for idle, so the
+	// current turn finishes; a session change or close first cancels it.
+	const adoption = new AdoptionTarget({ agentHome, env: deps.env, schedule: deps.schedule });
+	pi.on("session_start", () => adoption.cancel("the session changed before the hand-off"));
+	pi.on("session_shutdown", () => adoption.cancel("the session closed before the hand-off"));
 	const helperPermission = new HelperCostPermission(() => parentCtx && activeTransportFor(parentCtx) ? parentCtx : undefined);
 	pi.on("session_before_switch", () => helperPermission.clear());
 	pi.on("session_before_fork", () => helperPermission.clear());

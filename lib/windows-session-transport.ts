@@ -7,8 +7,13 @@ import {
 	SessionPresenceError,
 	TransportProtocolError,
 	encodeAckFrame,
+	encodeAdoptFrame,
 	encodeNotificationFrame,
+	isAdoptFrame,
 	type AckFrame,
+	type AdoptFrame,
+	type AdoptHandler,
+	type AdoptRequest,
 	type PresenceRecord,
 	type ReceivedNotification,
 	type SessionPresenceCandidate,
@@ -36,11 +41,13 @@ const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 type HostState = Readonly<{ state: "partial" }> | Readonly<{ state: "initialized"; bootstrap: "complete" }> | Readonly<{ state: "initialized"; bootstrap: "complete"; entries: number }>;
 type HostReply = Readonly<{ requestId: string; ok: boolean; result?: HostState | WindowsRecord | Readonly<{ records: readonly WindowsRecord[] }>; error?: "unavailable" | "unsafe" | "busy" | "not_found" | "invalid" }>;
-type HostEvent = Readonly<{ event: "startup-marker"; marker: WindowsSessionStartupMarker }> | Readonly<{ event: "notification"; connectionId: string; generation: number; frame: NotificationFrame }> | Readonly<{ event: "listener-failed"; generation: number; error: "unavailable" }>;
+type HostEvent = Readonly<{ event: "startup-marker"; marker: WindowsSessionStartupMarker }> | Readonly<{ event: "notification"; connectionId: string; generation: number; frame: NotificationFrame | AdoptFrame }> | Readonly<{ event: "listener-failed"; generation: number; error: "unavailable" }>;
 type Pending = { kind: "rpc" | "ack"; resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 type WindowsHostFailureCallback = (generation: number) => void;
 type SpawnedHost = ChildProcessWithoutNullStreams;
-export type WindowsHostCallback = (notification: Readonly<{ connectionId: string; id: string; senderSessionId: string; recipientSessionId: string; message: string }>) => Promise<boolean>;
+type WindowsNotification = Readonly<{ connectionId: string; id: string; senderSessionId: string; recipientSessionId: string; message: string; adopt?: AdoptRequest }>;
+/** A fleet's adopt request (S8) arrives with its adopt field set and an empty message. */
+export type WindowsHostCallback = (notification: WindowsNotification) => Promise<boolean>;
 export type WindowsSessionTransportHostOptions = Readonly<{
 	runtimeScript?: string;
 	spawnProcess?: typeof spawn;
@@ -453,7 +460,7 @@ export class WindowsSessionTransportHost {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const deadline = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), CALLBACK_DEADLINE_MS); });
 		const accepted = await Promise.race([
-			Promise.resolve(callback?.(Object.freeze({ connectionId: event.connectionId, id: event.frame.id, senderSessionId: event.frame.senderSessionId, recipientSessionId: event.frame.recipientSessionId, message: event.frame.message }))).then((value) => value === true, () => false),
+			Promise.resolve(callback?.(Object.freeze({ connectionId: event.connectionId, id: event.frame.id, senderSessionId: event.frame.senderSessionId, recipientSessionId: event.frame.recipientSessionId, message: event.frame.message, ...(isAdoptFrame(event.frame) ? { adopt: event.frame.adopt } : {}) }))).then((value) => value === true, () => false),
 			deadline,
 		]);
 		if (timer) clearTimeout(timer);
@@ -689,12 +696,13 @@ export class WindowsActiveSessionListener {
 	readonly closed: Promise<void>;
 	failure?: Readonly<{ code: "io_error"; message: "listener failed" }>;
 	private readonly onNotification: (notification: ReceivedNotification) => Promise<void>;
+	private readonly onAdopt?: AdoptHandler;
 	private state: "idle" | "starting" | "active" | "closed" = "idle";
 	private generation = 0;
 	private resolveClosed!: () => void;
-	private readonly notification = (notification: Readonly<{ connectionId: string; id: string; senderSessionId: string; recipientSessionId: string; message: string }>) => this.receive(notification);
+	private readonly notification = (notification: WindowsNotification) => this.receive(notification);
 	private listenerFailure?: WindowsHostFailureCallback;
-	constructor(registry: WindowsSessionPresenceRegistry, sessionID: string, onNotification: (notification: ReceivedNotification) => Promise<void>) { this.registry = registry; this.sessionID = sessionID; this.onNotification = onNotification; this.closed = new Promise((resolve) => { this.resolveClosed = resolve; }); }
+	constructor(registry: WindowsSessionPresenceRegistry, sessionID: string, onNotification: (notification: ReceivedNotification) => Promise<void>, onAdopt?: AdoptHandler) { this.registry = registry; this.sessionID = sessionID; this.onNotification = onNotification; this.onAdopt = onAdopt; this.closed = new Promise((resolve) => { this.resolveClosed = resolve; }); }
 	get status() { return this.state; }
 	get activeConnections() { return 0; }
 	async start() {
@@ -724,7 +732,14 @@ export class WindowsActiveSessionListener {
 			throw error;
 		}
 	}
-	async receive(notification: Readonly<{ id: string; senderSessionId: string; recipientSessionId: string; message: string }>) { if ((this.state !== "starting" && this.state !== "active") || notification.recipientSessionId !== this.sessionID) return false; try { await this.onNotification(Object.freeze({ id: notification.id, senderSessionId: notification.senderSessionId, message: notification.message })); return true; } catch { return false; } }
+	async receive(notification: Omit<WindowsNotification, "connectionId">) {
+		if ((this.state !== "starting" && this.state !== "active") || notification.recipientSessionId !== this.sessionID) return false;
+		// An adopt request never reaches the notification callback (or a model).
+		if (notification.adopt) {
+			if (!this.onAdopt) return false;
+			try { return await this.onAdopt(Object.freeze({ id: notification.id, senderSessionId: notification.senderSessionId, fleetSlug: notification.adopt.fleetSlug, token: notification.adopt.token })) === true; } catch { return false; }
+		}
+		try { await this.onNotification(Object.freeze({ id: notification.id, senderSessionId: notification.senderSessionId, message: notification.message })); return true; } catch { return false; } }
 	private fail(generation: number) {
 		if ((this.state !== "starting" && this.state !== "active") || this.generation !== generation) return;
 		const listenerFailure = this.listenerFailure;
@@ -752,6 +767,7 @@ export class WindowsActiveSessionListener {
 
 type WindowsClientScheduler = Readonly<{ setTimeout: (callback: () => void, delay: number) => unknown; clearTimeout: (handle: unknown) => void }>;
 export type WindowsActiveSessionClientConfig = Readonly<{ connect?: (endpoint: string) => Socket; scheduler?: WindowsClientScheduler; connectDeadlineMs?: number; ackDeadlineMs?: number }>;
+type WindowsSendOptions = { id?: string; expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean>; signal?: AbortSignal };
 type WindowsPendingOutbound = { settled: boolean; socket?: Socket; connectTimer?: unknown; ackTimer?: unknown; abort?: () => void; cleanup?: () => void; settle: (error?: ActiveSessionClientError, result?: SentNotification) => void };
 
 export class WindowsActiveSessionClient {
@@ -779,7 +795,16 @@ export class WindowsActiveSessionClient {
 		this.stopped = true;
 		for (const pending of [...this.pending]) pending.settle(new ActiveSessionClientError("closed"));
 	}
-	sendNotification(recipientSessionId: string, message: string, options: { id?: string; expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean>; signal?: AbortSignal } = {}): Promise<SentNotification> {
+	sendNotification(recipientSessionId: string, message: string, options: WindowsSendOptions = {}): Promise<SentNotification> {
+		return this.send(recipientSessionId, message, undefined, options);
+	}
+	/** A fleet's adopt request (S8): accepted means the recipient took it, not that it closed. */
+	sendAdopt(recipientSessionId: string, request: AdoptRequest, options: WindowsSendOptions = {}): Promise<SentNotification> {
+		try { encodeAdoptFrame(Object.freeze({ version: 1, kind: "notification", id: "adopt-check", senderSessionId: this.senderSessionId, recipientSessionId, message: "", adopt: request })); }
+		catch (error) { return Promise.reject(error); }
+		return this.send(recipientSessionId, "", request, options);
+	}
+	private send(recipientSessionId: string, message: string, adopt: AdoptRequest | undefined, options: WindowsSendOptions): Promise<SentNotification> {
 		if (this.stopped) return Promise.reject(new ActiveSessionClientError("closed"));
 		if (recipientSessionId === this.senderSessionId) return Promise.reject(new ActiveSessionClientError("self"));
 		if (this.pending.size >= MAX_PENDING) return Promise.reject(new ActiveSessionClientError("busy"));
@@ -802,10 +827,10 @@ export class WindowsActiveSessionClient {
 			this.pending.add(pending);
 			pending.abort = () => pending.settle(new ActiveSessionClientError(this.stopped ? "closed" : "aborted"));
 			options.signal?.addEventListener("abort", pending.abort, { once: true });
-			void this.begin(pending, recipientSessionId, message, id, options);
+			void this.begin(pending, recipientSessionId, message, adopt, id, options);
 		});
 	}
-	private async begin(pending: WindowsPendingOutbound, recipientSessionId: string, message: string, id: string, options: { expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean> }) {
+	private async begin(pending: WindowsPendingOutbound, recipientSessionId: string, message: string, adopt: AdoptRequest | undefined, id: string, options: { expectedActivation?: PresenceRecord; beforeConnect?: () => boolean | Promise<boolean> }) {
 		let record: PresenceRecord;
 		try { record = await this.registry.resolve(recipientSessionId); }
 		catch { pending.settle(new ActiveSessionClientError(options.expectedActivation ? "stale" : "not_found")); return; }
@@ -817,7 +842,10 @@ export class WindowsActiveSessionClient {
 		if (pending.settled) return;
 		if (this.stopped) { pending.settle(new ActiveSessionClientError("closed")); return; }
 		let request: Buffer;
-		try { request = encodeNotificationFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId, message })); }
+		try {
+			request = adopt ? encodeAdoptFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId, message: "", adopt }))
+				: encodeNotificationFrame(Object.freeze({ version: 1, kind: "notification", id, senderSessionId: this.senderSessionId, recipientSessionId, message }));
+		}
 		catch { pending.settle(new ActiveSessionClientError("io_error")); return; }
 		let socket: Socket;
 		try { socket = this.connect(record.endpoint); }

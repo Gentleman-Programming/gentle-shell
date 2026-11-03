@@ -43,6 +43,8 @@ export interface FleetLedgerMember {
 	sessionFile?: string;
 	/** Set for a session the human adopted from an open window instead of a fleet spawn. */
 	adopted?: boolean;
+	/** The member's process while it runs (S10 R5): a reopened fleet never starts a second one. Null after its exit. */
+	pid?: number | null;
 }
 
 export type FleetMemberFields = Pick<FleetLedgerMember, "status" | "todo" | "tokens" | "newTokens" | "cacheRead" | "cost" | "question" | "lastError">;
@@ -232,8 +234,11 @@ export function loadFleetLedger(path: string, fleetSessionId: string): FleetLedg
 		retiredCost: typeof state.retiredCost === "number" && Number.isFinite(state.retiredCost) ? state.retiredCost : 0,
 		interrupted: isArray(state.interrupted) ? state.interrupted.filter((name): name is string => typeof name === "string") : [],
 		escalations: state.escalations.map(entry => ({ ...entry, stale: true })),
-		// A session file is a path code opens: anything but a string is dropped.
-		members: state.members.map(member => member.sessionFile === undefined || typeof member.sessionFile === "string" ? member : (({ sessionFile: _dropped, ...rest }) => rest)(member)),
+		// A session file is a path code opens and a pid is a process code probes: anything else is dropped.
+		members: state.members.map(member => {
+			const { sessionFile, pid, ...rest } = member;
+			return { ...rest, ...(typeof sessionFile === "string" ? { sessionFile } : {}), ...(pid === null || (Number.isSafeInteger(pid) && pid! > 0) ? { pid } : {}) };
+		}),
 	};
 }
 
@@ -315,6 +320,14 @@ export class FleetLedger {
 		this.log(adopted ? "adopt" : "spawn", name, oneLine(adopted ? `${objective} in ${cwd}` : objective, TEXT_MAX));
 	}
 
+	/** The member's new process started. */
+	processStarted(name: string, pid: number): void {
+		const member = this.state.members.find(entry => entry.name === name);
+		if (!member) return;
+		member.pid = pid;
+		this.changed();
+	}
+
 	update(name: string, fields: FleetMemberFields): void {
 		const member = this.state.members.find(entry => entry.name === name);
 		if (!member) return;
@@ -324,7 +337,7 @@ export class FleetLedger {
 
 	exited(name: string, code: number | null, signal: string | null): void {
 		const member = this.state.members.find(entry => entry.name === name);
-		if (member) Object.assign(member, { status: "exited", question: null, exitCode: code, exitSignal: signal, exitedAt: this.now() });
+		if (member) Object.assign(member, { status: "exited", question: null, exitCode: code, exitSignal: signal, exitedAt: this.now(), pid: null });
 		this.log("exit", name, `code ${code ?? "none"}${signal ? `, ${signal}` : ""}`);
 	}
 

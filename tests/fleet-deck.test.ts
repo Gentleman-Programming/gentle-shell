@@ -4,7 +4,7 @@ import { emptyThread, type TaskRecord } from "../lib/agents-protocol.ts";
 import type { FleetAgentsMember } from "../lib/fleet-agents-view.ts";
 import { FleetDeck } from "../lib/fleet-deck.ts";
 import type { FleetMemberSubagent } from "../lib/fleet-member.ts";
-import type { FleetViewSnapshot } from "../lib/fleet-view.ts";
+import { attentionQueue, type FleetViewSnapshot } from "../lib/fleet-view.ts";
 import { inkwellFleet } from "./support/fleet-view-fixture.ts";
 
 // T10 (S9): the deck opens the members-and-subagents modal; the other keys keep working.
@@ -21,13 +21,14 @@ function subagent(id: string, agent: string): FleetMemberSubagent {
 	return { task, thread: { ...emptyThread(), items: [{ kind: "text", text: `working on ${id}` }] } };
 }
 
-function harness(snapshot: FleetViewSnapshot = QUIET) {
+function harness(snapshot: FleetViewSnapshot | (() => FleetViewSnapshot) = QUIET) {
 	const list = { api: [subagent("t1", "sdd-apply")] };
 	const members: FleetAgentsMember[] = [{ name: "api", status: "working", subagents: () => list.api }];
 	const widgets = new Map<string, unknown>();
 	const inputs: Array<(data: string) => { consume?: boolean } | undefined> = [];
 	const overlays: Array<{ component: { render(width: number): string[]; handleInput?(data: string): void }; options: unknown; closed: boolean }> = [];
 	const notices: string[] = [];
+	const answers: Array<{ id: string; option: number }> = [];
 	let editorText = "";
 	let renders = 0;
 	const editor = { getText: () => editorText, isShowingAutocomplete: () => false, handleInput(data: string) { editorText += data; } };
@@ -48,12 +49,14 @@ function harness(snapshot: FleetViewSnapshot = QUIET) {
 		custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => unknown, options: unknown) => new Promise(resolve => {
 			const overlay = { component: undefined as never, options, closed: false };
 			const before = focused;
-			overlay.component = factory(tui, theme, {}, value => { overlay.closed = true; focused = before; resolve(value); }) as never;
+			// Like Pi, closing gives the focus back only when the overlay had it.
+			overlay.component = factory(tui, theme, {}, value => { overlay.closed = true; if (focused === overlay.component) focused = before; resolve(value); }) as never;
 			focused = overlay.component;
 			overlays.push(overlay);
 		}),
 	};
-	const deck = new FleetDeck({ snapshot: () => snapshot, answer: () => undefined, relayDialog: () => undefined, memberAgents: () => members, now: () => 100_000 });
+	const current = typeof snapshot === "function" ? snapshot : () => snapshot;
+	const deck = new FleetDeck({ snapshot: current, answer: (item, option) => { answers.push({ id: item.id, option }); return undefined; }, relayDialog: () => undefined, memberAgents: () => members, now: () => 100_000 });
 	deck.mount(ui as never);
 	const render = (key: string, width = 120): string[] => (widgets.get(key) as (tui: unknown, theme: unknown) => { render(width: number): string[] })(tui, theme).render(width);
 	// Like Pi's TUI: the input listeners first, then the focused component.
@@ -64,12 +67,18 @@ function harness(snapshot: FleetViewSnapshot = QUIET) {
 	});
 	const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 	return {
-		deck, list, overlays, notices, press, render, settle,
+		deck, list, overlays, notices, answers, press, render, settle,
 		status: () => render("gentle-fleet-status").join("\n"),
 		editorText: () => editorText,
 		setEditor: (text: string) => { editorText = text; },
 		renders: () => renders,
-		focusDialog: () => { focused = { kind: "dialog", handleInput() {} }; },
+		// Like Pi's ctx.ui.select/confirm: mounted under any overlay, with the focus.
+		focusDialog: () => {
+			const dialog = { kind: "dialog", keys: [] as string[], handleInput(data: string) { dialog.keys.push(data); } };
+			focused = dialog;
+			return dialog;
+		},
+		focusEditor: () => { focused = editor; },
 		open: () => overlays.filter(overlay => !overlay.closed),
 	};
 }
@@ -159,4 +168,98 @@ test("alt+2, alt+m and alt+z still switch the lens, the density and the zoom; th
 	assert.match(h.status(), /enter send .*alt\+1-4 lenses .*alt\+z zoom .*alt\+m detail .*alt\+w agents .*@name/);
 	h.press("?");
 	assert.deepEqual(h.notices, [], "letters still never act from the input");
+});
+
+// S10 R2: Pi mounts ctx.ui.select/confirm in the editor slot and focuses it
+// while a full-screen deck overlay stays painted on top. The overlay gives way,
+// so no key answers or navigates a dialog the human cannot see.
+const ENTER = "\r", DOWN = "\x1b[B";
+for (const [name, toggle] of [["the agents modal", ALT_W], ["the zoom", ALT_Z]] as const) {
+	test(`a dialog that takes the keys while ${name} is open closes it on the next frame; keys then reach the dialog (S10 R2)`, async () => {
+		const h = harness(inkwellFleet());
+		h.press(toggle);
+		h.overlays[0].component.render(120);
+		await h.settle();
+		assert.equal(h.open().length, 1, "focused, the overlay stays");
+		const dialog = h.focusDialog();
+		h.overlays[0].component.render(120);
+		await h.settle();
+		assert.equal(h.open().length, 0, "the frame that paints it over the dialog closes it");
+		assert.deepEqual(h.press(ENTER, DOWN, "1"), [false, false, false]);
+		assert.deepEqual(dialog.keys, [ENTER, DOWN, "1"], "every key reaches the visible dialog");
+		assert.deepEqual(h.answers, []);
+		assert.equal(h.editorText(), "");
+	});
+
+	test(`a key typed before that frame closes ${name} and reaches nothing hidden (S10 R2)`, async () => {
+		const h = harness(inkwellFleet());
+		h.press(toggle);
+		const dialog = h.focusDialog();
+		assert.deepEqual(h.press(ENTER), [true], "consumed: the dialog was hidden when it was typed");
+		assert.equal(h.open().length, 0);
+		assert.deepEqual(dialog.keys, []);
+		assert.deepEqual(h.press(DOWN, "1"), [false, false]);
+		assert.deepEqual(dialog.keys, [DOWN, "1"], "the now-visible dialog gets the next keys");
+		assert.deepEqual(h.answers, []);
+		h.focusEditor();
+		assert.deepEqual(h.press(toggle), [true], "the deck opens it again once the dialog is gone");
+		assert.equal(h.open().length, 1);
+	});
+}
+
+// Pi focuses an overlay a microtask after the deck builds it: until then the
+// opener (the input here) still has the keys, and the overlay stays.
+test("a deck overlay is not closed while its opener still has the keys (S10 R2)", async () => {
+	for (const toggle of [ALT_W, ALT_Z]) {
+		const h = harness(inkwellFleet());
+		h.press(toggle);
+		h.focusEditor();
+		h.overlays[0].component.render(120);
+		await h.settle();
+		assert.equal(h.open().length, 1, toggle);
+	}
+});
+
+// S10 R3: the focal bar answers only the item the human saw when it took the keys.
+const NO_ESCALATION = (): FleetViewSnapshot => ({ ...inkwellFleet(), escalations: [] });
+
+test("a digit after another item displaced the focal one leaves focal mode and answers nothing (S10 R3)", () => {
+	assert.equal(attentionQueue(NO_ESCALATION()).focal.id, "blocker:billing-seats");
+	assert.equal(attentionQueue(inkwellFleet()).focal.id, "decision:web-invite-flow:escalation-0");
+	let snapshot = NO_ESCALATION();
+	const h = harness(() => snapshot);
+	assert.deepEqual(h.press(TAB), [true]);
+	assert.match(h.status(), /choose/);
+	snapshot = inkwellFleet();
+	h.deck.invalidate();
+	assert.deepEqual(h.press("1"), [true], "consumed");
+	assert.deepEqual(h.answers, [], "neither the new item nor the old one is answered");
+	assert.doesNotMatch(h.status(), /choose/, "focal mode ended");
+	assert.equal(h.editorText(), "", "nothing typed");
+	assert.deepEqual(h.press("2"), [false], "the next digit types");
+	assert.equal(h.editorText(), "2");
+});
+
+test("a digit after the same item arrived again answers nothing (S10 R3)", () => {
+	let snapshot = NO_ESCALATION();
+	const h = harness(() => snapshot);
+	h.press(TAB);
+	const again = NO_ESCALATION();
+	again.members = again.members.map(m => (m.name === "billing-seats" ? { ...m, exitedAt: "2026-11-02T14:30:00.000Z" } : m));
+	snapshot = again;
+	h.deck.invalidate();
+	assert.equal(attentionQueue(snapshot).focal.id, "blocker:billing-seats", "same id, new arrival");
+	assert.deepEqual(h.press("1"), [true]);
+	assert.deepEqual(h.answers, []);
+	assert.doesNotMatch(h.status(), /choose/);
+});
+
+// Pinned (S10 R3): an unchanged focal item is answered as before.
+test("a digit for the unchanged focal item answers it", () => {
+	const h = harness(NO_ESCALATION);
+	h.press(TAB);
+	h.deck.invalidate();
+	assert.deepEqual(h.press("2"), [true]);
+	assert.deepEqual(h.answers, [{ id: "blocker:billing-seats", option: 1 }]);
+	assert.doesNotMatch(h.status(), /choose/);
 });

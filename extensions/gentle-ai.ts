@@ -1609,6 +1609,8 @@ interface RuntimeGuardrailsConfig {
 interface LoadGuardrailsOptions {
 	/** Override the config home directory (used in tests to avoid touching ~/.pi). */
 	gentlePiConfigHome?: string;
+	/** A fleet member never runs autonomous guardrails (odd/tasks/fleet-orchestrator.md S10 R1). */
+	fleetMember?: boolean;
 }
 
 const GUARDED_KEY_PATTERNS: Record<GuardedCommandKey, RegExp> = {
@@ -1786,10 +1788,32 @@ function parseGuardrailsConfigFile(
  *   3. Read project config from ${cwd}/.pi/gentle-ai/runtime-guardrails.json
  *      (project values are merged on top of global)
  *   4. Any parse/read error anywhere → fail safe (return SAFE_GUARDRAILS_CONFIG)
+ *
+ * A fleet member never gets an autonomous allowance: every guarded command
+ * resolves to the stricter of its loaded action and "confirm", so an allow asks
+ * (the fleet relays the dialog to the human) and a block stays a block.
  */
 function loadRuntimeGuardrailsConfig(
 	cwd: string,
 	options: LoadGuardrailsOptions = {},
+): RuntimeGuardrailsConfig {
+	const loaded = loadConfiguredGuardrails(cwd, options);
+	return options.fleetMember === true ? memberGuardrails(loaded) : loaded;
+}
+
+function memberGuardrails(config: RuntimeGuardrailsConfig): RuntimeGuardrailsConfig {
+	if (!config.autonomousMode) return config;
+	const guardedCommands: GuardedCommandsConfig = {};
+	for (const key of Object.keys(GUARDED_KEY_PATTERNS) as GuardedCommandKey[]) {
+		const action = config.guardedCommands[key] ?? AUTONOMOUS_DEFAULT_ACTIONS[key];
+		guardedCommands[key] = action === "block" ? "block" : "confirm";
+	}
+	return { autonomousMode: true, guardedCommands };
+}
+
+function loadConfiguredGuardrails(
+	cwd: string,
+	options: LoadGuardrailsOptions,
 ): RuntimeGuardrailsConfig {
 	try {
 		// Env var override: forces autonomous mode with default actions
@@ -2143,6 +2167,7 @@ async function confirmCommand(
 	yoloActive = false,
 	autoGate?: () => Promise<ToolCallEventResult | undefined>,
 	superActive = false,
+	fleetMember = false,
 ): Promise<ToolCallEventResult | undefined> {
 	if (superActive) {
 		// Sensitive-path and delivered-test guards already ran before this call;
@@ -2155,7 +2180,7 @@ async function confirmCommand(
 		}
 		return autoGate?.();
 	}
-	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
+	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd, { fleetMember });
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
 	// Configuration provenance is distinct from legacy autonomy resolution, which
 	// can ignore confirmations when an environment override is present. Activation
@@ -11640,7 +11665,7 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
+		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive, fleetRole(permissionEnvironment) === "member");
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

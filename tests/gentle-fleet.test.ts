@@ -12,7 +12,7 @@ import type { FleetLedgerState } from "../lib/fleet-ledger.ts";
 import { runGit } from "../lib/fleet-worktree.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
-import { ADOPT_POLL_MS, writeAdoptHandoff } from "../lib/fleet-adopt.ts";
+import { ADOPT_POLL_MS, readAdoptHandoff, writeAdoptHandoff } from "../lib/fleet-adopt.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
@@ -20,6 +20,14 @@ import { sidebarState } from "../lib/shell-sidebar.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+/** Waits for an asynchronous outcome, bounded; never a fixed number of ticks. */
+const until = async (label: string, condition: () => boolean, ms = 5000) => {
+	const deadline = Date.now() + ms;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+		await new Promise(resolve => setTimeout(resolve, 10));
+	}
+};
 // Scratch stays outside the worktree; it is reported, not removed.
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-fleet-test-")));
 const controllerEnv = { PATH: "/bin", [FLEET_ROLE_ENV]: "controller" };
@@ -160,6 +168,12 @@ type HarnessOptions = {
 	agentHome?: string;
 	adoptTransport?: FleetDeps["adoptTransport"];
 	alive?: (pid: number) => boolean;
+	/** Replaces real git for the fleet's own calls. */
+	git?: FleetDeps["git"];
+	/** This controller's process id; default: the test process. */
+	pid?: number;
+	/** Process ids the spawned members get, in spawn order. */
+	childPids?: number[];
 };
 
 function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions = {}) {
@@ -177,10 +191,11 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions
 	const children: FakeChild[] = [];
 	const spawned: Array<{ command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
 	const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+	const childPids = options.childPids;
 	const deps: Partial<FleetDeps> = {
 		spawn: (command, args, options) => {
 			spawned.push({ command, args, cwd: options.cwd, env: options.env });
-			const child = fakeChild({ exitOnKill: true });
+			const child = fakeChild({ exitOnKill: true, pid: childPids?.[children.length] });
 			// A real process closes its stdout when it exits; the fake does not.
 			child.child.on("exit", () => (child.child.stdout as PassThrough | null)?.end());
 			children.push(child);
@@ -202,11 +217,12 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions
 		configHome,
 		git: (args, cwd) => {
 			gitCalls.push(args);
-			return runGit(args, cwd);
+			return (options.git ?? runGit)(args, cwd);
 		},
 		permissionMode: options.permissionMode === null ? undefined : options.permissionMode ?? (async () => "normal"),
 		...(options.adoptTransport ? { adoptTransport: options.adoptTransport } : {}),
 		...(options.alive ? { isProcessAlive: options.alive } : {}),
+		...(options.pid ? { pid: options.pid } : {}),
 	};
 	gentleFleet(h.pi, env, deps);
 	const runTimers = () => {
@@ -705,6 +721,42 @@ test("outside a git repository a member runs in place and git is only asked wher
 	assert.deepEqual(readLedger(h).members.map(member => [member.name, member.worktree, member.branch]), [["pub", null, null], ["posts", null, null]]);
 });
 
+// S10 R6: a member's session dir comes before its worktree, and a git call past its bound is a refusal.
+test("a session dir that cannot be created refuses the spawn before any branch or worktree exists", async () => {
+	const h = harness();
+	const { root, repo, branches, worktrees } = scratchRepo();
+	const { ctx } = fakeContext("fleet-session-1", repo);
+	await h.fire("session_start", ctx);
+	await h.tools.get("fleet_objective")!.execute("o1", { title: "Billing", objective: "Ship billing." }, undefined, undefined, ctx);
+	const blocked = join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-1", "api");
+	mkdirSync(dirname(blocked), { recursive: true });
+	writeFileSync(blocked, "not a directory");
+	const result = await spawnMember(h, ctx, "api");
+	assert.match(result.content[0].text, new RegExp(`^Error: could not create ${blocked.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: `));
+	assert.deepEqual(result.details, { gentleFleet: { error: "session dir" } });
+	assert.equal(h.spawned.length, 0);
+	assert.deepEqual(branches(), ["main"], "no orphaned branch");
+	assert.deepEqual(worktrees(), [repo], "no orphaned worktree");
+	assert.deepEqual(readdirSync(root), ["app"]);
+	h.runTimers();
+	assert.deepEqual(readLedger(h).members, []);
+});
+
+test("a git call past its bound refuses the spawn with its typed reason and creates nothing", async () => {
+	const timedOut = { status: null, stdout: "", stderr: "git timed out after 60 s", timedOut: true };
+	const h = harness(controllerEnv, { git: () => timedOut });
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	const inPlace = await spawnMember(h, ctx, "api");
+	assert.equal(inPlace.content[0].text, `Error: could not give member "api" its own worktree: git rev-parse timed out after 60 s in ${mainCwd}`);
+	const created = join(scratch, "timeout-new", "project");
+	const fresh = await spawnMember(h, ctx, "web", { cwd: created, create: true });
+	assert.equal(fresh.content[0].text, `Error: could not check whether ${created} is inside a git repository: git rev-parse timed out after 60 s in ${scratch}`);
+	assert.equal(existsSync(join(scratch, "timeout-new")), false, "nothing is created");
+	assert.equal(h.spawned.length, 0);
+	assert.equal(existsSync(join(h.agentHome, "gentle-fleet", "sessions", "fleet-session-1", "api")), false);
+});
+
 // --- T8 (L54): every member runs in its own project directory, given as cwd.
 // The first real fleet spawned a member without cwd: it ran in a worktree of
 // the controller's repository while its objective was another project.
@@ -1097,12 +1149,13 @@ test("the controller's live mode is read through the real yolo host channel", as
 	const f = await fleetWithMember({ permissionMode: null, events, script: { confirm: false } });
 	assert.equal(await yolo.setMode("super-yolo", f.ctx), true);
 	f.child.emit({ type: "extension_ui_request", id: "p1", ...DATA_LOSS });
-	await f.settle();
+	// The mode is read asynchronously through the host channel (S10 R7): wait for the outcome, bounded.
+	await until("the super-yolo auto-response", () => f.responses().length > 0 || f.calls.length > 0);
 	assert.deepEqual(f.calls, []);
 	assert.deepEqual(f.responses(), [{ id: "p1", type: "extension_ui_response", confirmed: true }]);
 	assert.equal(await yolo.setMode("normal", f.ctx), true);
 	f.child.emit({ type: "extension_ui_request", id: "p2", ...DATA_LOSS });
-	await f.settle();
+	await until("the relay to the human", () => f.calls.length > 0 || f.responses().length > 1);
 	assert.equal(f.calls.length, 1, "after switching off the human is asked again");
 });
 
@@ -1472,9 +1525,10 @@ test("verifier B: letters typed in a dialog over focal mode or the zoom keep eve
 	d.focusEditor();
 	d.press(ALT_Z);
 	d.focusDialog({ kind: "input over the zoom" });
-	assert.deepEqual(d.type("map zoom"), [false, false, false, false, false, false, false, false]);
+	// S10 R2: the zoom gives way to the dialog under it; the first key, typed while the dialog was hidden, reaches nothing.
+	assert.deepEqual(d.type("map zoom"), [true, false, false, false, false, false, false, false]);
 	assert.match(d.status(), /lens flows/);
-	assert.equal(d.overlays[0].closed, false);
+	assert.equal(d.overlays[0].closed, true);
 });
 
 test("verifier B: focal mode on the relay dialog ends when that dialog closes", async () => {
@@ -1751,6 +1805,75 @@ test("previous behavior: a new fleet session writes a new ledger and asks no res
 	assert.equal(h.spawned.length, 0);
 });
 
+// S10 R5: one fleet session has one owner controller, and one member never has two processes.
+const OWNED = "fleet-owned";
+const ownerLock = (h: ReturnType<typeof harness>) => join(h.agentHome, "gentle-fleet", "sessions", OWNED, "owner.json");
+async function ownedFleet(alive: Set<number>, options: HarnessOptions = {}) {
+	const h = harness(controllerEnv, { pid: 1001, alive: pid => alive.has(pid), ...options });
+	const view = fakeContext(OWNED);
+	await h.fire("session_start", view.ctx, { reason: "startup" });
+	await spawnMember(h, view.ctx, "api", { worktree: false });
+	await spawnMember(h, view.ctx, "web", { worktree: false });
+	await tick();
+	h.runTimers();
+	return { h, ...view };
+}
+async function secondController(first: ReturnType<typeof harness>, pid: number, alive: Set<number>, options: HarnessOptions = {}) {
+	const h = harness(controllerEnv, { agentHome: first.agentHome, pid, alive: candidate => alive.has(candidate), ...options });
+	const view = fakeContext(OWNED);
+	await h.fire("session_start", view.ctx, { reason: "startup" });
+	await ticks();
+	return { h, ...view, focal: () => view.render("gentle-fleet").join("\n"), ledger: () => { h.runTimers(); return readLedger(h, OWNED); } };
+}
+
+test("a second controller on a fleet session another live controller owns asks nothing, resumes nothing and records a Blocker per member", async () => {
+	const alive = new Set([1001]);
+	const first = await ownedFleet(alive);
+	assert.deepEqual(JSON.parse(readFileSync(ownerLock(first.h), "utf8")).pid, 1001);
+	const second = await secondController(first.h, 2002, alive);
+	assert.doesNotMatch(second.focal(), /Resume/);
+	second.press(TAB, "1");
+	await ticks();
+	assert.equal(second.h.spawned.length, 0, "never a second process on the members' session files");
+	assert.deepEqual(second.notices.at(-1), ["Gentle Fleet: this fleet session is open in another controller (pid 1001); its members are not resumed here. Close that controller, then reopen this fleet.", "warning"]);
+	const saved = second.ledger();
+	assert.deepEqual(saved.blockers.map(note => [note.member, note.text]), [["api", "not resumed: this fleet session is open in another controller (pid 1001)"], ["web", "not resumed: this fleet session is open in another controller (pid 1001)"]]);
+	assert.deepEqual([saved.members.map(member => member.status), saved.interrupted], [["working", "working"], []], "the owner's members are not marked stopped");
+	assert.equal(JSON.parse(readFileSync(ownerLock(first.h), "utf8")).pid, 1001, "the owner keeps its lock");
+	await second.h.fire("session_shutdown", second.ctx, { reason: "quit" });
+	assert.equal(JSON.parse(readFileSync(ownerLock(first.h), "utf8")).pid, 1001, "a controller that never owned the session releases nothing");
+});
+
+test("a stale owner lock is taken over, and the owner's shutdown releases its lock", async () => {
+	const alive = new Set([1001]);
+	const crashed = await ownedFleet(alive);
+	alive.delete(1001);
+	const next = await secondController(crashed.h, 2002, alive);
+	assert.match(next.focal(), /Your call → Resume 2 members\?/);
+	assert.deepEqual(JSON.parse(readFileSync(ownerLock(crashed.h), "utf8")).pid, 2002);
+	const closing = await ownedFleet(alive);
+	await closing.h.fire("session_shutdown", closing.ctx, { reason: "quit" });
+	assert.equal(existsSync(ownerLock(closing.h)), false);
+	alive.add(1001);
+	assert.match((await secondController(closing.h, 2002, alive)).focal(), /Your call → Resume 2 members\?/, "a released lock blocks nothing even while its process lives");
+});
+
+test("a member whose recorded process still runs is not resumed; one whose process is gone resumes and records its new pid", async () => {
+	const alive = new Set<number>();
+	const first = await ownedFleet(alive, { childPids: [5001, 5002] });
+	assert.deepEqual(readLedger(first.h, OWNED).members.map(member => [member.name, member.pid]), [["api", 5001], ["web", 5002]]);
+	for (const name of ["api", "web"]) writeFileSync(join(first.h.agentHome, "gentle-fleet", "sessions", OWNED, name, "2026-11-02T12-00-00-000Z_member.jsonl"), "{}\n");
+	// The controller crashed; api's process outlived it.
+	alive.add(5001);
+	const next = await secondController(first.h, 2002, alive, { childPids: [6002] });
+	assert.deepEqual(next.press(TAB, "1"), [true, true]);
+	await ticks();
+	assert.deepEqual(next.h.spawned.map(launch => launch.args[launch.args.indexOf("--session-dir") + 1].split("/").at(-1)), ["web"]);
+	const saved = next.ledger();
+	assert.deepEqual(saved.blockers.map(note => [note.member, note.text]), [["api", "not resumed: its process 5001 still runs"]]);
+	assert.deepEqual(saved.members.map(member => [member.name, member.status, member.pid]), [["api", "exited", 5001], ["web", "starting", 6002]]);
+});
+
 test("alt+1-4 switch the lens from the input and every typed character still reaches the editor", async () => {
 	const d = await deckFleet();
 	for (const [key, lens] of [["\x1b2", "map"], ["\x1b3", "costs"], ["\x1b4", "log"], ["\x1b1", "flows"]] as const) {
@@ -1787,8 +1910,14 @@ test("T8: create: true inside an existing git repository is refused and creates 
 // session file once its window handed off and exited.
 
 const ADOPT_PID = 31337;
+const readySessionFile = () => {
+	const file = join(scratch, "pi-sessions", "--work-fast--", "2026-11-02T11-00-00-000Z_fast.jsonl");
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, "{}\n");
+	return file;
+};
 
-type AdoptPeer = { sessionId: string; label: string; workspace: string; refuse?: string; silent?: boolean };
+type AdoptPeer = { sessionId: string; label: string; workspace: string; refuse?: string; silent?: boolean; ack?: "lost" | "rejected"; readyAtOnce?: boolean };
 
 /** A fake transport whose peers act like the target's gentle-agents: they write the accepted (or refused) hand-off. */
 function adoptPeers(agentHome: () => string, peers: AdoptPeer[]) {
@@ -1802,14 +1931,18 @@ function adoptPeers(agentHome: () => string, peers: AdoptPeer[]) {
 		send: async (fleet, recipient, request) => {
 			sent.push({ fleet, recipient, request });
 			const peer = peers.find(entry => entry.sessionId === recipient)!;
-			if (peer.silent) return false;
+			// The agent home exists in every real session; a silent peer writes nothing in it.
 			mkdirSync(agentHome(), { recursive: true });
+			if (peer.silent) return false;
 			if (peer.refuse) {
 				writeAdoptHandoff(agentHome(), request.token, { state: "refused", reason: peer.refuse });
 				return false;
 			}
 			writeAdoptHandoff(agentHome(), request.token, { state: "accepted", pid: ADOPT_PID, label: peer.label });
-			return true;
+			// A fast target is idle already: its hand-off is ready before the fleet reads it (S10 R4).
+			if (peer.readyAtOnce) writeAdoptHandoff(agentHome(), request.token, { state: "ready", pid: ADOPT_PID, label: peer.label, sessionFile: readySessionFile(), sessionDir: dirname(readySessionFile()), cwd: webCwd });
+			if (peer.ack === "lost") throw new Error("the acknowledgement timed out");
+			return peer.ack !== "rejected";
 		},
 	};
 	return { transport, sent, listed };
@@ -1989,4 +2122,52 @@ test("a reopened fleet resumes an adopted member on its recorded session file", 
 	const args = h.spawned[0].args;
 	assert.deepEqual(args.slice(args.indexOf("--session-dir"), args.indexOf("--session-dir") + 4), ["--session-dir", dirname(sessionFile), "--session", sessionFile]);
 	assert.equal(h.spawned[0].cwd, webCwd);
+});
+
+// S10 R4: the hand-off is the truth about an adoption, and a fleet that stops
+// waiting tells the target, which then stays open.
+test("a target whose hand-off says accepted or ready is adopted whatever its acknowledgement said", async () => {
+	for (const peer of [
+		{ sessionId: "peer-fast-0001", label: "Fast", workspace: "/w", readyAtOnce: true },
+		{ sessionId: "peer-lost-0001", label: "Lost ack", workspace: "/w", ack: "lost" as const },
+		{ sessionId: "peer-slow-0001", label: "Slow close", workspace: "/w", ack: "rejected" as const, readyAtOnce: true },
+	]) {
+		const a = await adoptHarness([peer]);
+		await a.adopt();
+		assert.match(a.notices.at(-1)?.[0] ?? "", new RegExp(`^Adopting "${peer.label}"`), peer.sessionId);
+		a.poll();
+		assert.equal(a.h.spawned.length, 0, `${peer.sessionId}: never two writers on one session file`);
+		if (!peer.readyAtOnce) a.ready({ label: peer.label });
+		a.alive.delete(ADOPT_PID);
+		a.poll();
+		assert.equal(a.h.spawned.length, 1, peer.sessionId);
+		a.h.runTimers();
+		assert.deepEqual(readLedger(a.h).blockers, [], peer.sessionId);
+	}
+});
+
+test("a fleet that stops waiting marks the hand-off abandoned; a refusal keeps the target's answer", async () => {
+	const handoff = (a: Awaited<ReturnType<typeof adoptHarness>>) => readAdoptHandoff(a.h.agentHome, a.token());
+	const closing = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await closing.adopt();
+	await closing.h.fire("session_shutdown", closing.ctx, { reason: "quit" });
+	assert.deepEqual(handoff(closing), { state: "abandoned", reason: "the fleet controller closed" });
+	const switching = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await switching.adopt();
+	await switching.h.fire("session_start", fakeContext("fleet-session-2").ctx, { reason: "new" });
+	assert.deepEqual(handoff(switching), { state: "abandoned", reason: "the fleet session changed" });
+	assert.equal(switching.pollTimers().length, 0);
+	const silent = await adoptHarness([{ sessionId: "peer-old-00001", label: "Old shell", workspace: "/w", silent: true }]);
+	await silent.adopt();
+	assert.deepEqual(handoff(silent), { state: "abandoned", reason: "it did not accept the adopt request (an older Gentle Shell, or its window closed)" }, "a late acceptance is refused by the target");
+	const refused = await adoptHarness([{ sessionId: "peer-rpc-00001", label: "Desktop", workspace: "/w", refuse: "this is not an interactive terminal session (rpc mode)" }]);
+	await refused.adopt();
+	assert.deepEqual(handoff(refused), { state: "refused", reason: "this is not an interactive terminal session (rpc mode)" });
+	const joined = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await joined.adopt();
+	joined.ready();
+	joined.alive.delete(ADOPT_PID);
+	joined.poll();
+	await joined.h.fire("session_shutdown", joined.ctx, { reason: "quit" });
+	assert.equal(handoff(joined)?.state, "ready", "a finished adoption is left as it was");
 });

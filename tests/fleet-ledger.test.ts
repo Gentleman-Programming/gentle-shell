@@ -350,3 +350,31 @@ test("previous behavior: a spawned member records no session file, and an older 
 	assert.equal(loaded?.members[0].sessionFile, undefined, "a malformed session file is dropped, not trusted");
 	assert.equal(loaded?.members[0].name, "api");
 });
+
+// S10 R5: each member's process id is recorded so a reopened fleet never runs a second process for it.
+test("a member's process id is recorded at start, cleared at exit, and only a positive integer loads back", () => {
+	const h = harness();
+	h.ledger.spawned("api", "Own the API", "/work/api");
+	h.ledger.spawned("web", "Own the web", "/work/web");
+	h.ledger.processStarted("api", 4242);
+	h.ledger.processStarted("web", 5151);
+	h.ledger.processStarted("ghost", 6161);
+	h.ledger.exited("web", 0, null);
+	h.ledger.flush();
+	assert.deepEqual(h.readLedger().members.map(member => [member.name, member.pid]), [["api", 4242], ["web", null]]);
+	assert.doesNotMatch(readFileSync(h.ledger.documentPath, "utf8"), /4242/, "the document shows no process ids");
+	const saved = h.readLedger();
+	saved.members[1].pid = -3 as never;
+	writeFileSync(h.ledgerPath, JSON.stringify({ ...saved, members: [...saved.members, { ...saved.members[0], name: "odd", pid: "12" }] }));
+	assert.deepEqual(loadFleetLedger(h.ledgerPath, "fleet-1")!.members.map(member => [member.name, member.pid]), [["api", 4242], ["web", undefined], ["odd", undefined]]);
+});
+
+test("a resumed member keeps its recorded process id until its new process starts", () => {
+	const h = harness();
+	h.ledger.spawned("api", "Own the API", "/work/api");
+	h.ledger.processStarted("api", 4242);
+	h.ledger.resumed("api");
+	assert.equal(h.ledger.current.members[0].pid, 4242, "resume changes no process id by itself");
+	h.ledger.processStarted("api", 4343);
+	assert.equal(h.ledger.current.members[0].pid, 4343);
+});

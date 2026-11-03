@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { createMemberWorktree, reattachMemberWorktree, runGit, type GitExec } from "../lib/fleet-worktree.ts";
+import nodeTest from "node:test";
+import { boundedGit, createMemberWorktree, GIT_TIMEOUT_MS, reattachMemberWorktree, runGit, type GitExec, type GitResult } from "../lib/fleet-worktree.ts";
+
+const test = nodeTest;
+const posixTest = process.platform === "win32" ? nodeTest.skip : nodeTest;
 
 // odd/tasks/fleet-orchestrator.md T4 (L15): a member that works in a git
 // repository gets its own worktree and branch; anything else runs in place.
@@ -135,4 +138,60 @@ test("reattaching a member worktree checks it is still a worktree and changes no
 	assert.match(reattachMemberWorktree({ path: join(root, "app.fleet", "billing", "gone"), git: exec }) ?? "", /worktree .*gone is missing/);
 	assert.deepEqual([branches(repo), worktrees(repo)], before);
 	assert.ok(calls.every(args => args[0] === "rev-parse"), JSON.stringify(calls));
+});
+
+// S10 R6: a fleet git call never blocks the controller without a bound; a
+// timeout is a typed refusal that names what git may have left behind.
+const TIMED_OUT: GitResult = { status: null, stdout: "", stderr: "git timed out after 60 s", timedOut: true };
+
+test("a git call that outlives its bound returns a timed-out result at the bound", () => {
+	const { repo } = setup();
+	const started = Date.now();
+	const result = boundedGit(300)(["-c", "alias.slow=!sleep 3", "slow"], repo);
+	assert.ok(Date.now() - started < 2500, "the call returns at its bound, not when git finishes");
+	assert.deepEqual(result, { status: null, stdout: "", stderr: "git timed out after 0.3 s", timedOut: true });
+	assert.deepEqual(boundedGit(5000)(["rev-parse", "--is-inside-work-tree"], repo), { status: 0, stdout: "true\n", stderr: "" }, "a call within its bound is unchanged");
+	assert.equal(GIT_TIMEOUT_MS, 60_000);
+});
+
+posixTest("a worktree add that outlives its bound is a refusal naming the branch and path it may have left", () => {
+	const { root, repo } = setup();
+	const hooks = join(root, "hooks");
+	mkdirSync(hooks);
+	writeFileSync(join(hooks, "post-checkout"), "#!/bin/sh\nsleep 3\n");
+	chmodSync(join(hooks, "post-checkout"), 0o755);
+	const slow = boundedGit(300);
+	const result = createMemberWorktree({ cwd: repo, fleetSlug: "billing", member: "api", git: (args, cwd) => slow(["-c", `core.hooksPath=${hooks}`, ...args], cwd) });
+	const path = join(root, "app.fleet", "billing", "api");
+	assert.deepEqual(result, { kind: "refused", message: `git worktree add timed out after 0.3 s in ${repo}; it may have left branch fleet/billing/api or ${path}: check them before you retry.` });
+});
+
+test("a timed-out git call is a refusal, never outside-git, and stops before anything is created", () => {
+	const { root, repo } = setup();
+	for (const failAt of [0, 1]) {
+		const calls: string[][] = [];
+		const exec: GitExec = (args, cwd) => {
+			calls.push(args);
+			return calls.length - 1 === failAt ? TIMED_OUT : runGit(args, cwd);
+		};
+		const result = createMemberWorktree({ cwd: repo, fleetSlug: "billing", member: "api", git: exec });
+		assert.equal(result.kind, "refused", `call ${failAt}`);
+		assert.match(result.kind === "refused" ? result.message : "", /^git rev-parse timed out after 60 s in /);
+		assert.equal(calls.length, failAt + 1, "no later git call runs");
+	}
+	assert.deepEqual(branches(repo), ["main"]);
+	assert.equal(existsSync(join(root, "app.fleet")), false);
+	assert.equal(reattachMemberWorktree({ path: repo, git: () => TIMED_OUT }), `git rev-parse timed out after 60 s in ${repo}`);
+});
+
+test("beforeAdd runs after every check, right before the add, and its refusal creates nothing", () => {
+	const { root, repo, exec } = setup();
+	const order: string[] = [];
+	const result = createMemberWorktree({ cwd: repo, fleetSlug: "billing", member: "api", git: exec, beforeAdd: () => { order.push(`before add, branches ${branches(repo).join(",")}`); return undefined; } });
+	assert.equal(result.kind, "created");
+	assert.deepEqual(order, ["before add, branches main"]);
+	const blocked = createMemberWorktree({ cwd: repo, fleetSlug: "billing", member: "web", git: exec, beforeAdd: () => "could not create the session dir" });
+	assert.deepEqual(blocked, { kind: "refused", message: "could not create the session dir" });
+	assert.deepEqual(branches(repo), ["fleet/billing/api", "main"], "a refusal before the add creates no branch");
+	assert.equal(existsSync(join(root, "app.fleet", "billing", "web")), false);
 });

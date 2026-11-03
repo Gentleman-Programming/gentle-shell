@@ -15,11 +15,11 @@ function harness(model: any = native) {
  fast({ on: (name: string, fn: Function) => events.set(name, fn), events: { on: (name: string, fn: Function) => bus.set(name, fn) }, registerCommand: (name: string, command: any) => commands.set(name, command) } as any);
  events.get("session_start")!({}, ctx);
  return {
-  ctx, commands, statuses,
+  ctx, commands, statuses, hasEvent: (name: string) => events.has(name),
   profile(tier?: string, ref = `${ctx.model.provider}/${ctx.model.id}`, id = "fast-test") { bus.get(PROFILE_TIER_EVENT)!({ sessionId: id, tier, model: ref }); },
   event: (name: string, event: any = {}) => events.get(name)!(event, ctx),
   request: (payload: unknown) => events.get("before_provider_request")!({ payload }, ctx),
-  stream: (data: unknown, source: any = ctx.model) => events.get("provider_stream_event")!({ provider: source.provider, api: source.api, model: source.id, data }, ctx),
+  stream: (data: unknown, source: any = ctx.model) => events.get("provider_stream_event")?.({ provider: source.provider, api: source.api, model: source.id, data }, ctx),
  };
 }
 
@@ -28,66 +28,28 @@ test("Profiles replaces the slash selector", () => {
  assert.equal(h.commands.has("fast"), false);
 });
 
-test("footer reports the terminal server tier separately from the requested tier", () => {
+test("Fast request handling publishes no integration status or response observer", () => {
  for (const model of [native, legacy]) {
   const h = harness(model);
   h.profile("fast");
-  assert.match(h.statuses.at(-1) ?? "", /fast requested.*not yet observed/i);
-  for (const tier of ["priority", "fast", "default", undefined, "flex"]) {
-   const requested = tier === "priority" || tier === "fast" ? "standard" : "fast";
-   h.profile(requested);
-   const payload = { input: [{ text: "private input" }] };
-   assert.deepEqual(h.request(payload), { ...payload, service_tier: requested === "fast" ? "priority" : "default" });
-   const data = { type: model === legacy ? "response.done" : "response.completed", response: { id: "r", service_tier: tier, output: [{ secret: "private output" }] } };
-   const copy = structuredClone(data);
-   h.stream({ type: "response.created", response: { id: "r", service_tier: "priority" } });
-   h.stream(data);
-   assert.deepEqual(data, copy);
-   assert.match(h.statuses.at(-1) ?? "", tier === "priority" || tier === "fast" ? /standard requested.*last response.*fast/i : tier === "default" ? /fast requested.*last response.*standard/i : /fast requested.*cannot confirm/i);
-   assert.doesNotMatch(h.statuses.join(" "), /private/);
-  }
+  assert.equal((h.request({}) as any).service_tier, "priority");
+  h.stream({ type: "response.completed", response: { service_tier: "default" } });
+  assert.deepEqual(h.statuses, []);
+  assert.equal(h.hasEvent("provider_stream_event"), false);
  }
 });
 
-test("observation respects request, source and response ID", () => {
+test("profile, model, session and tree changes keep request tier authority", () => {
  const h = harness();
- h.profile("fast");
- h.request({});
- h.stream({ type: "response.created", response: { id: "current" } });
- for (const model of [legacy, { ...native, provider: "proxy" }, { ...native, id: "gpt-5.5" }, { ...native, api: "openai-completions" }]) h.stream({ type: "response.completed", response: { id: "current", service_tier: "priority" } }, model);
- h.stream({ type: "response.completed", response: { id: "other", service_tier: "priority" } });
- assert.match(h.statuses.at(-1) ?? "", /not yet observed/i);
- h.stream({ type: "response.completed", response: { id: "current", service_tier: "default" } });
- assert.match(h.statuses.at(-1) ?? "", /last response.*standard/i);
- h.request({});
- h.stream({ type: "response.created", response: { id: "new" } });
- h.stream({ type: "response.completed", response: { service_tier: "priority" } });
- assert.match(h.statuses.at(-1) ?? "", /cannot confirm/i);
-});
-
-test("model, session, tree and profile changes clear observations and invalidate in-flight events", () => {
- const h = harness();
- function observe() {
-  h.request({}); h.stream({ type: "response.incomplete", response: { service_tier: "priority" } });
-  assert.match(h.statuses.at(-1) ?? "", /last response.*fast/i);
-  h.request({}); h.stream({ type: "response.created", response: { id: "pending" } });
- }
- h.profile("fast"); observe();
- h.profile("standard");
- h.stream({ type: "response.completed", response: { id: "pending", service_tier: "priority" } });
- assert.match(h.statuses.at(-1) ?? "", /standard requested.*not yet observed/i);
- assert.equal((h.request({}) as any).service_tier, "default");
- observe();
+ h.profile("fast"); assert.equal((h.request({}) as any).service_tier, "priority");
+ h.profile("standard", undefined, "foreign-session");
+ assert.equal((h.request({}) as any).service_tier, "priority");
+ h.profile("standard"); assert.equal((h.request({}) as any).service_tier, "default");
  h.ctx.model = legacy; h.event("model_select", { model: legacy });
- assert.equal(h.statuses.at(-1), undefined);
  assert.equal(h.request({}), undefined);
- h.profile("fast"); observe();
- h.event("session_tree");
- assert.equal(h.statuses.at(-1), undefined);
- h.profile("fast"); observe();
- h.event("session_start");
- h.stream({ type: "response.completed", response: { id: "pending", service_tier: "priority" } });
- assert.equal(h.statuses.at(-1), undefined);
+ h.profile("fast"); assert.equal((h.request({}) as any).service_tier, "priority");
+ h.event("session_tree"); assert.equal(h.request({}), undefined);
+ h.profile("fast"); h.event("session_start"); assert.equal(h.request({}), undefined);
 });
 
 test("profile tiers rewrite only supported routes and preserve payload fields", () => {
@@ -104,7 +66,7 @@ test("profile tiers rewrite only supported routes and preserve payload fields", 
   const h = harness(model); h.profile("fast");
   assert.equal(h.request({ service_tier: "flex" }), undefined);
   h.stream({ type: "response.completed", response: { service_tier: "priority" } });
-  assert.match(h.statuses.at(-1) ?? "", /inactive.*not yet observed/i);
+  assert.deepEqual(h.statuses, []);
  }
  const h = harness();
  assert.equal(h.request({ service_tier: "flex" }), undefined);

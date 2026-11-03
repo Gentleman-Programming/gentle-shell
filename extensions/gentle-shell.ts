@@ -165,6 +165,7 @@ interface ShellBarComponent {
 interface BuildOptions {
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	profileTier?: ShellBarModel["profileTier"];
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -188,6 +189,7 @@ export interface ShellDeps {
 }
 
 export type ActiveProfileReader = (() => string | undefined) & {
+	tier(): ShellBarModel["profileTier"];
 	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
@@ -199,6 +201,8 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
+	let tiers: Record<string, ShellBarModel["profileTier"]> = {};
+	let effectiveTier: ShellBarModel["profileTier"];
 	let bound = false;
 	let cwd: string | undefined;
 	let identity: WorktreeIdentity | undefined;
@@ -211,6 +215,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			if (next !== fingerprint) {
 				const result = readProfilesFileResult(path);
 				name = result.status === "valid" ? result.file.active : undefined;
+				tiers = result.status === "valid" ? Object.fromEntries(Object.entries(result.file.profiles).map(([name, config]) => [name, config.orchestrator?.tier])) : {};
 				fingerprint = next;
 			}
 			return name;
@@ -221,6 +226,11 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		}
 	};
 	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.tier = () => {
+		if (bound) return effectiveTier;
+		const active = global();
+		return active ? tiers[active] : undefined;
+	};
 	reader.refresh = () => {
 		if (!bound) return false;
 		// gentle-shell#1064: the status shows the profile launches use, through
@@ -228,15 +238,20 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		// startup → live p → P → G only in follow mode), with the existing
 		// spelling: "name (session)", "name (local)", "name (repo)", or the bare
 		// global name.
-		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
+		global();
+		const selected = cwd === undefined ? undefined : resolveSessionProfile({
 			sessionId,
 			cwd,
 			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
-		}));
-		const changed = next !== effective;
+		});
+		const next = selected ? sessionProfileLabel(selected) : name;
+		const configuredName = selected ? selected.kind === "explicit" ? selected.name : selected.profile?.name : name;
+		const nextTier = configuredName ? tiers[configuredName] : undefined;
+		const changed = next !== effective || nextTier !== effectiveTier;
 		effective = next;
+		effectiveTier = nextTier;
 		return changed;
 	};
 	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
@@ -247,7 +262,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveTier = undefined; };
 	return reader;
 }
 
@@ -334,7 +349,7 @@ export function buildShellBarModel(
 	const model = ctx.model;
 	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
 	const entries = Array.from(footerData.getExtensionStatuses().entries())
-		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
+		.filter(([key]) => key !== "gentle-fast" && (options.jobs === undefined || key !== JOBS_STATUS_KEY))
 		.sort(([a], [b]) => a.localeCompare(b));
 	const statuses = entries.map(([, text]) => text);
 	// The permission mode has its own status keys: the wide chrome shows the mode
@@ -346,6 +361,7 @@ export function buildShellBarModel(
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
+		...(options.profileTier ? { profileTier: options.profileTier } : {}),
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -369,6 +385,7 @@ export interface FooterStatusMemoDeps {
 	footerData: ShellFooterData;
 	usage: () => ProviderUsage | undefined;
 	profile: () => string | undefined;
+	profileTier?: () => ShellBarModel["profileTier"];
 	jobs: () => RunningJobDisplay[] | undefined;
 	review: () => ReviewSidebarSnapshot | undefined;
 	tracker: () => Pick<WorktreeChangesTracker, "model" | "unbornRoots">;
@@ -403,6 +420,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 			footerData.getGitBranch(),
 			deps.profile(),
+			deps.profileTier?.(),
 			ctx.sessionManager.getSessionName(),
 			ctx.sessionManager.getCwd(),
 			[...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b)),
@@ -422,7 +440,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 		if (cache?.key === k) return cache.model;
 		const tracker = deps.tracker();
 		const built: ShellBarModel = {
-			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), jobs: deps.jobs() }),
+			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), profileTier: deps.profileTier?.(), jobs: deps.jobs() }),
 			changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
 			review: deps.review(),
 		};
@@ -2352,6 +2370,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pi, ctx, footerData,
 				usage: () => usage.get(ctx.model?.provider ?? ""),
 				profile: () => deps.activeProfile(),
+				profileTier: () => deps.activeProfile === profileReader ? profileReader.tier() : undefined,
 				// The compact bar and header derive ⧗ N jobs from model.jobs.length,
 				// so this input is running-only: the snapshot carries the finished tail.
 				jobs: () => runningJobs?.filter((job) => job.status === undefined),

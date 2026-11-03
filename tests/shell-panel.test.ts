@@ -127,9 +127,9 @@ test("the rail Status draws Changes, Review and Integrations as panel sections a
 		"  app.ts +2 files",
 		"",
 		edge("▾ INTEGRATIONS", "2", 48),
-		"  🧠 gentle-pi · ready",
-		"  💥 SUPER YOLO ON — no permission prompts;",
-		"  private paths stay blocked",
+		"  - 🧠 gentle-pi · ready",
+		"  - 💥 SUPER YOLO ON — no permission prompts;",
+		"    private paths stay blocked",
 		"",
 		"  ctrl+shift+t todos · alt+u usage",
 	]);
@@ -192,10 +192,30 @@ test("a narrow status bar drops usage before the model and keeps the branch", ()
 	assert.doesNotMatch(hidden, /claude-opus|ctx|\$0\.000|usage/, "the visibility toggles hide model, context, cost and usage");
 });
 
+test("Integrations bullets distinguish items from continuations without losing details or folding", () => {
+ const model = { ...chromeModel, integrations: ["🧠 gentle-pi · ready", "Fast requested; last response from server: Standard (default)"] };
+ const visibility = { changes: false, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
+ for (const width of [28, 40, 72]) {
+  const result = renderShellStatusSections(model, plain, width, { density: "compact", visibility });
+  const [header, ...body] = result.lines.map(line => stripAnsi(line).trimEnd());
+  assert.match(header, /INTEGRATIONS\s+3$/);
+  assert.equal(body.filter(line => line.startsWith("  - ")).length, 3);
+  assert.ok(body.every(line => line.startsWith("  - ") || line.startsWith("    ")), "wrapped lines align beneath the item's text");
+  const content = body.map(line => line.replace(/^  - /, "").trim()).join(" ");
+  assert.match(content, /no permission prompts; private paths stay blocked/);
+  assert.match(content, /Fast requested; last response from server: Standard \(default\)/);
+  for (const line of result.lines) assert.equal(visibleWidth(line), width);
+  assert.deepEqual(result.targets, [{ row: 0, kind: "toggle", section: "integrations" }]);
+  const folded = renderShellStatusSections(model, plain, width, { density: "compact", visibility }, undefined, { collapsed: new Set(["integrations"]) });
+  assert.equal(folded.lines.length, 1);
+  assert.match(stripAnsi(folded.lines[0]), /INTEGRATIONS\s+3$/);
+ }
+});
+
 test("Integrations explains the permission mode without repeating it", () => {
 	const rows = renderShellSidebarBar(chromeModel, plain as never, 48).map((line) => line.trimEnd());
 	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
-	assert.deepEqual(rows.slice(at + 1), ["  permissions no permission prompts; private", "  paths stay blocked", "  🧠 gentle-pi · ready"]);
+	assert.deepEqual(rows.slice(at + 1), ["  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
 	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
 });
 

@@ -133,6 +133,10 @@ function sha256(openRead, file, signal) {
 	});
 }
 
+/**
+ * Fails with `runtime-invalid` unless every file the request names, plus the
+ * `extraFiles` a selected backend needs, exists in the validated runtime tree.
+ */
 async function validateRuntime(runtime, uid, extraFiles = []) {
 	const files = await readTree(runtime.root, uid, "runtime-invalid");
 	for (const required of [...runtime.files, ...extraFiles]) if (!files.has(required)) fail("runtime-invalid");
@@ -273,6 +277,10 @@ class WorkerSession {
 		fail("invalid-request");
 	}
 
+	/**
+	 * Validates the runtime, picks the capture backend for this kernel and opens
+	 * the microphone; the model is verified later, while recording.
+	 */
 	async begin(request) {
 		this.state = "loading";
 		const { io } = this;

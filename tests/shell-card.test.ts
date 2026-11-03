@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
+	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardElapsed, cardRunningLine, cardStyle, cardTopLine, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
 	type Card, type CardStyle, type CardTone,
 } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -492,6 +492,78 @@ test("a call card awaits its result until pi finishes the row or a result render
 	}
 	assert.equal(cardRunningLine(CARD_TONE.WARNING, plainTheme, 20), `│ running…${" ".repeat(8)} │`);
 	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) assert.ok(visibleWidth(cardRunningLine(CARD_TONE.WARNING, plainTheme, width)) <= width);
+});
+
+test("a title role paints the glyph and title while the frame keeps the call's tone", () => {
+	// A labelled card names its own identity in that identity's role; the frame
+	// still reports status, so a finished check never reads as a pending one.
+	const labelled = renderCard(
+		card({ glyph: "◎", title: "exploring", subtitle: "git status", tone: CARD_TONE.SUCCESS, titleRole: "mdLink" }),
+		taggedTheme,
+		80,
+		{ expanded: true },
+	);
+	assert.match(labelled[0], /^<success>╭<\/success><success>─ <\/success><mdLink>◎ exploring<\/mdLink> <muted>·<\/muted> <muted>git status<\/muted><success> ─+<\/success><success>╮<\/success>$/);
+	assert.match(labelled[1], /^<success>│<\/success> /, "the frame and rails keep the tone");
+
+	const panel = renderCard(
+		card({ glyph: "◎", title: "exploring", subtitle: "git status", tone: CARD_TONE.SUCCESS, titleRole: "mdLink", body: ["alpha"] }),
+		taggedTheme,
+		60,
+		{ expanded: true, panel: true },
+	);
+	assert.match(panel[0], /<mdLink>◎ exploring<\/mdLink>/, "a panel header honors the override too");
+
+	// Without an override every card keeps painting its title in the tone.
+	const plain = renderCard(card({ subtitle: undefined, tone: CARD_TONE.SUCCESS }), taggedTheme, 80, { expanded: true });
+	assert.match(plain[0], /<success>✿ Gentle AI<\/success>/);
+});
+
+test("a heading detail that cannot share the top rule continues below it", () => {
+	const detail = "printf alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+	const value: Card = { title: "bash", subtitle: detail, body: [], tone: CARD_TONE.WARNING };
+	const hint = "ctrl+o to expand";
+	const lines = cardTopRows(value, plainTheme, 60, hint).map(stripAnsi);
+
+	assert.match(lines[0], /^╭─ ✿ bash ─+ ctrl\+o to expand ╮$/, "the title keeps the top rule and the hint");
+	assert.ok(!lines[0].includes("printf"), "a detail too wide for the rule never crowds the title");
+	assert.ok(lines.length > 1, "the detail continues inside the frame");
+	for (const line of lines) assert.equal(visibleWidth(line), 60, `"${line}" is not 60 wide`);
+	const shown = lines.slice(1).map((line) => line.replace(/^│ /, "").replace(/ +│$/, "")).join(" ").replace(/\s+/g, " ").trim();
+	assert.equal(shown, `· ${detail}`, "the complete detail stays visible");
+
+	// A detail that fits keeps traveling on the title row, as every other card does.
+	const short = cardTopRows({ ...value, subtitle: "git status" }, plainTheme, 60, hint).map(stripAnsi);
+	assert.match(short[0], /^╭─ ✿ bash · git status ─+ ctrl\+o to expand ╮$/);
+	assert.equal(short.length, 1);
+});
+
+test("a one-line heading truncates an over-wide detail with an ellipsis and keeps the hint", () => {
+	const value: Card = { title: "bash", subtitle: "printf alpha bravo charlie delta echo foxtrot golf hotel", body: [], tone: CARD_TONE.WARNING };
+	const row = stripAnsi(cardTopLine(value, plainTheme, 40, "to expand"));
+
+	assert.equal(visibleWidth(row), 40);
+	assert.match(row, /^╭─ ✿ bash · printf .*….*to expand ╮$/, "the detail ends in an ellipsis instead of a second row");
+	assert.doesNotMatch(row, /golf/, "only what fits stays visible");
+
+	// At a narrow width the hint gives way before the ellipsis does.
+	const narrow = stripAnsi(cardTopLine(value, plainTheme, 22, "to expand"));
+	assert.equal(visibleWidth(narrow), 22);
+	assert.match(narrow, /…/, "truncation still ends in an ellipsis");
+	assert.doesNotMatch(narrow, /to expand/, "the hint yields its columns to the detail");
+
+	// A detail that fits is untouched, and a multi-line one collapses onto the row.
+	assert.match(stripAnsi(cardTopLine({ ...value, subtitle: "git diff" }, plainTheme, 40, "to expand")), /^╭─ ✿ bash · git diff ─+ to expand ╮$/);
+	assert.match(stripAnsi(cardTopLine({ ...value, subtitle: "git diff\n--stat" }, plainTheme, 60)), /^╭─ ✿ bash · git diff --stat ─+╮$/);
+});
+
+test("elapsed time reads in milliseconds and seconds, and is omitted when unknown", () => {
+	assert.equal(cardElapsed(0), "0ms");
+	assert.equal(cardElapsed(42), "42ms");
+	assert.equal(cardElapsed(999), "999ms");
+	assert.equal(cardElapsed(1200), "1.2s");
+	assert.equal(cardElapsed(60000), "60.0s");
+	for (const value of [undefined, Number.NaN, Number.POSITIVE_INFINITY, -5]) assert.equal(cardElapsed(value), undefined, String(value));
 });
 
 test("headingFits says whether a composed subtitle still leaves room for the key hint", () => {

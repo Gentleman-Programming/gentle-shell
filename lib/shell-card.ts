@@ -19,6 +19,13 @@ export interface Card {
 	body: string[];
 	tone: CardTone;
 	glyph?: string;
+	/**
+	 * Theme color role for the glyph and title, overriding the tone's role. A
+	 * quiet bash card names its ODD phase in that phase's color while the frame
+	 * keeps the call's status tone, so the heading never hides a pending or
+	 * failed call.
+	 */
+	titleRole?: string;
 }
 
 export interface CardTheme {
@@ -86,6 +93,9 @@ const SUBTITLE_ROLE = "muted";
 const BODY_ROLE = "text";
 const SEPARATOR = "·";
 const FRAME_COLUMNS = 4;
+// Columns a heading row keeps for the call itself before its detail (or the
+// key hint) is asked to give way to the next row.
+const MIN_HEADING_COLUMNS = 12;
 
 // The characters that draw a card around its content. The float style keeps
 // every row the same width: the left edge becomes an accent bar and the rules
@@ -122,11 +132,15 @@ function rule(length: number): string {
 	return chrome.rule.repeat(Math.max(0, length));
 }
 
+function titleRole(card: Card): string {
+	return card.titleRole ?? TITLE_ROLE[card.tone];
+}
+
 function titleText(card: Card, theme: CardTheme): { styled: string; width: number } {
 	const head = `${card.glyph ?? CARD_GLYPH} ${card.title}`;
 	const styled = card.subtitle
-		? `${theme.fg(TITLE_ROLE[card.tone], head)} ${theme.fg(SUBTITLE_ROLE, SEPARATOR)} ${theme.fg(SUBTITLE_ROLE, card.subtitle)}`
-		: theme.fg(TITLE_ROLE[card.tone], head);
+		? `${theme.fg(titleRole(card), head)} ${theme.fg(SUBTITLE_ROLE, SEPARATOR)} ${theme.fg(SUBTITLE_ROLE, card.subtitle)}`
+		: theme.fg(titleRole(card), head);
 	return { styled, width: visibleWidth(head) + (card.subtitle ? visibleWidth(card.subtitle) + 3 : 0) };
 }
 
@@ -223,6 +237,11 @@ const RUNNING_ROLE = "muted";
 export interface CardRowContext {
 	isPartial?: boolean;
 	state?: unknown;
+	/**
+	 * The host's own expansion state for this row. A card that reacts to clicks
+	 * reads it, because the host's click region is what toggles it.
+	 */
+	expanded?: boolean;
 }
 
 /** Result renderers mark the shared row state: from now on a result component closes the card. */
@@ -242,7 +261,12 @@ export function cardRunningLine(tone: CardTone, theme: CardTheme, width: number)
 	return cardLine(theme.fg(RUNNING_ROLE, RUNNING_TEXT), tone, theme, width);
 }
 
-/** Quiet calls may continue long or multiline headings inside the same frame. */
+/**
+ * Quiet calls may continue long or multiline headings inside the same frame. A
+ * detail that cannot share the top rule without crowding the call (or its key
+ * hint) continues on card rows below it, so a long call stays fully visible
+ * instead of being truncated.
+ */
 export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: string): string[] {
 	const target = Math.max(0, Math.floor(width));
 	if (target === 0) return [];
@@ -250,15 +274,69 @@ export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: 
 	const [first = "", ...rest] = card.title.split("\n");
 	// Reserve the hint before wrapping, plus one rule column and enough heading
 	// space to retain identity. This policy belongs only to continuing tool tops.
-	const available = target - 6 - visibleWidth(`${card.glyph ?? CARD_GLYPH} `) - (card.subtitle ? visibleWidth(card.subtitle) + 3 : 0);
+	const lead = visibleWidth(`${card.glyph ?? CARD_GLYPH} `);
 	const hintWidth = hint ? visibleWidth(hint) + 2 : 0;
-	const shownHint = hint && available - hintWidth >= 12 ? hint : undefined;
+	const available = target - 6 - lead;
+	if (card.subtitle !== undefined) {
+		// Let the detail share the rule only when the whole heading (and the key
+		// hint) fits there; otherwise it continues below, where it keeps its width.
+		// A multi-line detail keeps its first line on the rule and its other lines
+		// below, so a script or heredoc never disappears behind a truncation.
+		const [detailFirst = "", ...detailRest] = card.subtitle.split("\n");
+		const detailWidth = visibleWidth(detailFirst) + 3;
+		const inline = lead + visibleWidth(first) + detailWidth + hintWidth + 5 <= target;
+		const shownHint = inline ? hint : (hint && available - hintWidth >= MIN_HEADING_COLUMNS ? hint : undefined);
+		const room = Math.max(1, available - (inline ? detailWidth : 0) - (shownHint ? hintWidth : 0));
+		const [head = "", ...overflow] = wrapTextWithAnsi(first, room);
+		const detail = inline
+			? detailRest.map((line) => theme.fg(SUBTITLE_ROLE, line))
+			: card.subtitle.split("\n").map((line, index) => theme.fg(SUBTITLE_ROLE, index === 0 ? `${SEPARATOR} ${line}` : line));
+		return [
+			cardTop({ ...card, subtitle: inline ? detailFirst : undefined, title: head }, theme, target, shownHint),
+			...cardBodyRows([...overflow, ...rest, ...detail], card.tone, theme, target, { expanded: true }),
+		];
+	}
+	const shownHint = hint && available - hintWidth >= MIN_HEADING_COLUMNS ? hint : undefined;
 	const room = Math.max(1, available - (shownHint ? hintWidth : 0));
 	const [head = "", ...overflow] = wrapTextWithAnsi(first, room);
 	return [
 		cardTop({ ...card, title: head }, theme, target, shownHint),
 		...cardBodyRows([...overflow, ...rest], card.tone, theme, target, { expanded: true }),
 	];
+}
+
+/**
+ * A single-row heading: a detail too wide for the rule ends in an ellipsis
+ * instead of continuing on the rows below, so a collapsed card stays one line.
+ * Expanding the call is what reveals the complete command.
+ */
+export function cardTopLine(card: Card, theme: CardTheme, width: number, hint?: string): string {
+	const target = Math.max(0, Math.floor(width));
+	if (target < 8 || card.subtitle === undefined) return cardTop(card, theme, target, hint);
+	const head = visibleWidth(`${card.glyph ?? CARD_GLYPH} ${card.title}`);
+	const subtitle = card.subtitle.split("\n").join(" ");
+	// The key hint comes first when it fits beside a readable detail; otherwise it
+	// yields its columns so the detail keeps an ellipsis instead of vanishing.
+	let shownHint = hint;
+	let room = target - 5 - (shownHint ? visibleWidth(shownHint) + 2 : 0) - head - 3;
+	if (room < 1 && shownHint !== undefined) {
+		shownHint = undefined;
+		room = target - 5 - head - 3;
+	}
+	const shown = room >= 1 && visibleWidth(subtitle) > room
+		? `${truncateToWidth(subtitle, Math.max(1, room - 1), "")}…`
+		: subtitle;
+	return cardTop({ ...card, subtitle: shown }, theme, target, shownHint);
+}
+
+/**
+ * Elapsed time for a closing rule, or undefined when the host reported no
+ * reliable duration. Sub-second runs read in milliseconds, longer ones in
+ * seconds with one decimal.
+ */
+export function cardElapsed(durationMs: number | undefined): string | undefined {
+	if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) return undefined;
+	return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
 }
 
 /** The rows one card component draws, by position. */
@@ -421,7 +499,7 @@ function fitRow(text: string, width: number): string {
 function panelHeader(card: Card, theme: CardTheme, width: number, hint?: string): string {
 	const lead = theme.fg(FRAME_ROLE[card.tone], chrome.topLeft) + chrome.topLead;
 	const subtitle = card.subtitle ? `  ${theme.fg(SUBTITLE_ROLE, card.subtitle)}` : "";
-	const left = `${lead}${theme.fg(TITLE_ROLE[card.tone], `${card.glyph ?? CARD_GLYPH} ${card.title}`)}${subtitle}`;
+	const left = `${lead}${theme.fg(titleRole(card), `${card.glyph ?? CARD_GLYPH} ${card.title}`)}${subtitle}`;
 	const right = hint ? `${theme.fg(SUBTITLE_ROLE, hint)}${chrome.topRight}` : "";
 	const gap = width - visibleWidth(left) - visibleWidth(right);
 	return right && gap >= 1 ? `${left}${" ".repeat(gap)}${right}` : fitRow(left, width);

@@ -132,3 +132,12 @@ export function renameProfileFallbacks(file: FallbacksFile, from: string, to: st
 	if (to) profiles[to] = chains;
 	return { ...file, profiles };
 }
+
+/** Keeps the chains on disk with a renamed (`to`) or deleted profile; false when there was nothing to follow or the file is broken. */
+export function followProfileRename(configHome: string, from: string, to: string | undefined): boolean {
+	const path = fallbacksFilePath(configHome);
+	const read = readFallbacksFile(path);
+	if (read.status !== "valid" || !(from in read.file.profiles)) return false;
+	writeFallbacksFile(path, renameProfileFallbacks(read.file, from, to));
+	return true;
+}

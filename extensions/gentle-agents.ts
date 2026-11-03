@@ -704,9 +704,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// The catalog prices a fallback notice ("2.0x the price").
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	const announceFallback = (change: FallbackChange, parentSessionId: string | undefined, taskId?: string) => {
-		if (parentSessionId === undefined || activeSessionId() === parentSessionId) {
-			try { pi.appendEntry(MODEL_FALLBACK_ENTRY, { ...change, ...(taskId ? { taskId } : {}), at: deps.now() }); } catch { /* The switch matters more than its record. */ }
-		}
+		// Only the session that owns the run hears about it and records it.
+		if (parentSessionId !== undefined && activeSessionId() !== parentSessionId) return;
+		try { pi.appendEntry(MODEL_FALLBACK_ENTRY, { ...change, ...(taskId ? { taskId } : {}), at: deps.now() }); } catch { /* The switch matters more than its record. */ }
 		const prices = (model: { provider: string | undefined; id: string }) => (model.provider ? modelRegistry?.find(model.provider, model.id)?.cost : undefined);
 		ui?.notify(fallbackNotice(change, prices), "warning");
 	};
@@ -1553,7 +1553,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			else messages.expireQuery(taskId, requestId);
 		},
-		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category }, task.parentSessionId, task.id),
+		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category, ...(change.launch ? { launch: true } : {}) }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
 			// uses a separately bound, live-grant path only for successful tool evidence.

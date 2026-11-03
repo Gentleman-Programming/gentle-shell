@@ -14,6 +14,8 @@ export interface FallbackChange {
 	from: string;
 	to: string;
 	category: TerminalErrorCategory;
+	/** The run started on the fallback because the primary was still cooling down. */
+	launch?: boolean;
 }
 
 const REASON: Partial<Record<TerminalErrorCategory, string>> = {
@@ -40,7 +42,10 @@ export function fallbackNotice(change: FallbackChange, prices?: ModelPriceLookup
 		if (ratio.kind === "unknown") price = " (price unknown)";
 		else if (ratio.blended >= 1.05) price = ` (${(Math.round(ratio.blended * 10) / 10).toFixed(1)}x the price)`;
 	}
-	return `${change.agent}: ${change.from} hit ${REASON[change.category] ?? change.category}; continuing on ${change.to}${price}.`;
+	const reason = REASON[change.category] ?? change.category;
+	return change.launch
+		? `${change.agent}: ${change.from} is still cooling down after ${reason}; starting on ${change.to}${price}.`
+		: `${change.agent}: ${change.from} hit ${reason}; continuing on ${change.to}${price}.`;
 }
 
 /** The chain for `agent` under the launch's profile, or the active profile when the launch names none. */

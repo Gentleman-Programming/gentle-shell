@@ -1180,7 +1180,7 @@ Each profile can give every agent an ordered list of fallback models, kept in `p
 }
 ```
 
-An agent without its own chain uses the profile's `*` chain. A chain holds at most eight unique `provider/model` ids, each with an optional effort. A launch uses the chain of the profile it resolved (a session binding, a frozen or pinned profile), else the active profile's.
+Edit them in `/gentle:profiles`: on an agent row (or the `set every agent` row, for `*`), `f` opens its chain; there `f` adds a model from the catalog (the row's own model and models already in the chain are not offered), `e` sets the step's effort, shift+↑/↓ move a step, `x` removes it and `esc` goes back. Each change is saved at once, apart from the profile's `s save`; a row with a chain shows `↪ first-model +N`. Renaming or deleting a profile takes its chains along. An agent without its own chain uses the profile's `*` chain. A chain holds at most eight unique `provider/model` ids, each with an optional effort. A launch uses the chain of the profile it resolved (a session binding, a frozen or pinned profile), else the active profile's.
 
 When a run's final response fails, its error category decides:
 

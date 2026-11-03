@@ -9,6 +9,7 @@ import {
 	chainFor,
 	emptyFallbacksFile,
 	fallbacksFilePath,
+	followProfileRename,
 	parseFallbacksFileText,
 	readFallbacksFile,
 	renameProfileFallbacks,
@@ -87,4 +88,24 @@ test("renaming or deleting a profile carries or drops its chains", () => {
 	assert.deepEqual(Object.keys(renamed.profiles), ["job"]);
 	assert.deepEqual(renameProfileFallbacks(parsed.file, "work", undefined).profiles, {}, "a deleted profile loses its chains");
 	assert.equal(renameProfileFallbacks(parsed.file, "missing", "x"), parsed.file);
+});
+
+test("followProfileRename moves or drops a profile's chains on disk and leaves a broken file alone", () => {
+	const home = mkdtempSync(join(tmpdir(), "fallbacks-follow-"));
+	try {
+		const path = fallbacksFilePath(home);
+		assert.equal(followProfileRename(home, "work", "job"), false, "no file, nothing to follow");
+		writeFallbacksFile(path, setChain(emptyFallbacksFile(), "work", "*", [{ model: "a/b" }]));
+		assert.equal(followProfileRename(home, "work", "job"), true);
+		const moved = readFallbacksFile(path);
+		assert.deepEqual(moved.status === "valid" && Object.keys(moved.file.profiles), ["job"]);
+		assert.equal(followProfileRename(home, "job", undefined), true);
+		const dropped = readFallbacksFile(path);
+		assert.deepEqual(dropped.status === "valid" && dropped.file.profiles, {});
+		writeFileSync(path, "{ broken");
+		assert.equal(followProfileRename(home, "job", "x"), false);
+		assert.equal(readFileSync(path, "utf8"), "{ broken");
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 });

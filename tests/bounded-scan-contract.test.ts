@@ -6,7 +6,7 @@ import test from "node:test";
 // gentle-shell#2686: on network-mounted workspaces a single unbounded recursive
 // scan (`grep -r … .`) over raw `bash` cost up to 24.8 minutes (21–75× SMB I/O),
 // and six such calls turned a trivial verification into a 49.6-minute wait. The
-// dedicated `grep`/`find` tools honour `.gitignore` and never walk `.git`, and a
+// dedicated `grep`/`find` tools honour `.gitignore`, and a
 // bounded scan is faster even on local disks (0.06 s vs 1.8 s on an 8.7 MB repo),
 // so the bound is unconditional: it never depends on the model detecting a
 // network mount. Like the other prompt contracts here, this pins instruction
@@ -26,7 +26,7 @@ for (const [label, prompt] of [["verify", verify], ["worker", worker]] as const)
 	test(`${label}: prefers the dedicated tools over raw bash grep`, () => {
 		containsAll(prompt, [
 			"prefer the dedicated `grep`/`find` tools over raw `bash` grep",
-			"they honour `.gitignore` and never walk `.git`",
+			"they honour `.gitignore`",
 		], `${label} search bounds`);
 	});
 

@@ -236,6 +236,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				headerLines = headerPlacement() === "top" && headerPart
 					? [...(headerPart.render(Math.max(0, width)) ?? [])] : [];
 				if (!headerLines.some((line) => line.trim() !== "")) headerLines = [];
+				// A narrow terminal keeps the status bar row (mobile chrome) when its part paints one.
+				const statusPart = state.parts.get("statusbar");
+				const narrowStatus = statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
+				statusLines = narrowStatus.some((line) => line.trim() !== "") ? narrowStatus : [];
 			} catch {
 				failed = true;
 				headerLines = [];
@@ -387,10 +391,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const replacement = () => {
 				if (!prepare(tui.terminal.columns, root)) {
 					if (failed || stopped || host.mode !== "fullscreen") return original.call(root);
-					if (!headerLines.length) return nativeLayout();
+					if (!headerLines.length && !statusLines.length) return nativeLayout();
 					return { type: "vstack", gap: 0, align: "stretch", entries: [
-						{ component: header, basis: "auto", grow: 0, shrink: 0, minSize: 1 },
+						...(headerLines.length ? [{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 }] : []),
 						{ component: nativeHost, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+						...(statusLines.length ? [{ component: statusBar, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 }] : []),
 					] };
 				}
 				const current = prepared!;

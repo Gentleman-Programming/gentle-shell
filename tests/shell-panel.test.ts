@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { paintPanelSurface, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "../lib/shell-panel.ts";
-import { renderTodoSection, type TodoState } from "../lib/shell-todo.ts";
+import { paintPanelSurface, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { renderTodoSection, todoWorkSummary, type TodoState } from "../lib/shell-todo.ts";
 import { renderJobsSection } from "../lib/jobs-widget.ts";
 import { JOB_GLYPH } from "../lib/background-jobs-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -197,4 +197,53 @@ test("Integrations explains the permission mode without repeating it", () => {
 	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
 	assert.deepEqual(rows.slice(at + 1), ["  permissions no permission prompts; private", "  paths stay blocked", "  🧠 gentle-pi · ready"]);
 	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
+});
+
+// Mobile (design/shell-rework/05-mobile.html, 07-many-agents-mobile.html): below
+// the rail breakpoint live work folds into one row above the editor, and
+// /gentle:panel opens the rail's sections as a full-width sheet.
+test("the work row shows the current todo, or the agents while they run, with the todo count", () => {
+	const todo = todoWorkSummary(state([["Done", "done"], ["Run the full suite", "in_progress"], ["Next", "pending"]]), plain);
+	assert.deepEqual(todo, { left: "◐ Run the full suite", right: "1/3", rightLabel: "todos" });
+	assert.equal(todoWorkSummary(state([]), plain), undefined);
+	const row = stripAnsi(renderWorkRow([todo!], plain, 40)!);
+	assert.equal(visibleWidth(row), 40);
+	assert.match(row, /^ ▸ ◐ Run the full suite +1\/3 $/);
+	const withAgents = stripAnsi(renderWorkRow([todo!, { left: "◐ 3 agents · ? 1 waiting", priority: 1 }], plain, 56)!);
+	assert.match(withAgents, /^ ▸ ◐ 3 agents · \? 1 waiting +1\/3 todos $/, "agents lead while they run; the todo count stays");
+	assert.equal(renderWorkRow([], plain, 40), undefined);
+});
+
+test("the panel sheet stacks the rail sections under a title row and scrolls within its rows", () => {
+	const parts = new Map<string, { render(width: number): string[]; invalidate(): void }>([
+		["todo", { render: (width: number) => ["▾ TODOS".padEnd(width), "  ○ one".padEnd(width)], invalidate() {} }],
+		["agents", { render: (width: number) => ["▾ AGENTS".padEnd(width)], invalidate() {} }],
+		["footer", { render: (width: number) => ["▾ CHANGES".padEnd(width), "  clean".padEnd(width)], invalidate() {} }],
+	]);
+	const sheet = renderPanelSheet(parts as never, plain, 30, { rows: 20, scrollTop: 0 });
+	const rows = sheet.lines.map((line) => stripAnsi(line).trimEnd());
+	assert.deepEqual(rows, [edge(" ✿ Panel", "esc back ", 30).trimEnd(), "", " ▾ TODOS", "   ○ one", "", " ▾ AGENTS", "", " ▾ CHANGES", "   clean"]);
+	for (const line of sheet.lines) assert.equal(visibleWidth(stripAnsi(line)), 30);
+	const clipped = renderPanelSheet(parts as never, plain, 30, { rows: 5, scrollTop: 2 });
+	assert.equal(clipped.lines.length, 5, "title row plus four content rows");
+	assert.match(stripAnsi(clipped.lines[1]!), /○ one/, "the content scrolls under the fixed title row");
+	assert.equal(clipped.maxScroll, 4, "eight content rows in a four-row viewport");
+	assert.match(stripAnsi(clipped.lines.at(-1)!), /↓ 3 more · scroll/);
+	const end = renderPanelSheet(parts as never, plain, 30, { rows: 5, scrollTop: 4 }).lines.map((line) => stripAnsi(line).trimEnd());
+	assert.deepEqual(end.slice(1), [" ▾ AGENTS", "", " ▾ CHANGES", "   clean"], "the last page shows the last rows without a more row");
+});
+
+test("the mobile title row carries the model, since the narrow status bar leaves it out", () => {
+	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 56, { model: true }));
+	assert.equal(visibleWidth(row), 56);
+	assert.match(row, /^ ✿ gentle-pi .*claude-opus-5-5 · high $/);
+});
+
+test("a long branch gives way before the context and cost in a phone-width status bar", () => {
+	const longBranch = { ...chromeModel, branch: "feat/shell-ide-rework-07-mobile", dirty: undefined };
+	const narrowSettings = { density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: false, contextWarning: true } };
+	const row = stripAnsi(renderShellStatusBar(longBranch, plain as never, 56, "alt+u", narrowSettings).rows[0]!);
+	assert.equal(visibleWidth(row), 56);
+	assert.match(row, /ctx [▰▱]+ 27% │ \$0\.000 $/, "context and cost stay");
+	assert.match(row, /^ feat\/shell-\S*… │ SUPER-YOLO /, "the branch is clipped and the permission mode stays");
 });

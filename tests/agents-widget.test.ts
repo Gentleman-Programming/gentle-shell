@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
-import { formatElapsed, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { agentsSummary, formatElapsed, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { formatTokens } from "../lib/shell-bar.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -483,4 +483,10 @@ test("the agents alert names the agent asking the user and its question, above t
 	assert.match(stripAnsi(renderAgentsAlert(waiting, painted, 60)[0]!), /…\s+\+1 more · \/gentle:agents $/, "a narrow row clips the question, never the way to the agents view");
 	assert.match(row, /^ \? explore asked: Which base branch should the chain use\? +\+1 more · \/gentle:agents $/);
 	assert.deepEqual(renderAgentsAlert([task({ id: "c" })], painted, 80), [], "nothing waits, nothing paints");
+});
+
+test("the agents summary counts running, waiting and failed agents for the mobile work row", () => {
+	const tasks = [task({ id: "a" }), task({ id: "b" }), task({ id: "c", status: TASK_STATUS.WAITING, lastStep: "asked: x" }), task({ id: "d", status: TASK_STATUS.FAILED, endedAt: 9_000 })];
+	assert.deepEqual(agentsSummary(tasks, plainTheme, 10_000), { left: "◐ 3 agents · ? 1 waiting · ✗ 1", priority: 1 });
+	assert.equal(agentsSummary([task({ id: "e", status: TASK_STATUS.COMPLETED, endedAt: 9_000 })], plainTheme, 10_000), undefined, "finished work alone is not live work");
 });

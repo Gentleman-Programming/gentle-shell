@@ -61,7 +61,7 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, agentsCardTone, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, agentsCardTone, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -1864,7 +1864,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// One surface of the Agents card. The rail is natively scrollable, so it
 	// lists every task; the above-editor widget keeps its row budget. Only the
 	// header row is the clickable collapse control, exactly like Todos.
-	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel" } => {
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary> } => {
 		let hovered = false;
 		let headerRow = 0;
 		const card: Component = {
@@ -1905,7 +1905,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		});
 		return {
-			...(rail ? { surface: "panel" as const } : {}),
+			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined) } : {}),
 			// The rail memo repaints a part only when its digest moves: task
 			// state, the local controls, and the elapsed clock (to the second)
 			// only while a task is still running, so an idle or finished card

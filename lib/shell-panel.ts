@@ -70,3 +70,61 @@ export function paintPanelSurface(theme: CardTheme, rows: readonly string[]): st
 	const open = surfaceOpener(theme, PANEL_SURFACE_ROLE);
 	return rows.map((row) => paintSurfaceRow(row, open));
 }
+
+/** A one-row digest of a rail section for the mobile work row. */
+export interface PanelSummary {
+	left: string;
+	/** Right-aligned count, e.g. `2/6`. */
+	right?: string;
+	/** Names the count when another summary leads the row, e.g. `todos`. */
+	rightLabel?: string;
+	/** Higher leads the row: live agents outrank the current todo. */
+	priority?: number;
+}
+
+/** ` ▸ <lead> … <count>`: the section that matters most, plus the todo count; undefined without live work. */
+export function renderWorkRow(summaries: readonly PanelSummary[], theme: PanelTheme, width: number): string | undefined {
+	if (summaries.length === 0) return undefined;
+	const lead = [...summaries].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0]!;
+	const counted = lead.right ? lead : summaries.find((summary) => summary.right);
+	const right = !counted ? "" : counted === lead ? counted.right! : `${counted.right} ${counted.rightLabel ?? ""}`.trimEnd();
+	const row = fitPanelLine(`${theme.fg("muted", "▸")} ${lead.left}`, right ? theme.fg("muted", right) : "", Math.max(0, Math.floor(width) - 2));
+	return paintPanelSurface(theme, [` ${row} `])[0];
+}
+
+export interface PanelSheet {
+	lines: string[];
+	/** The largest useful scrollTop for this content and height. */
+	maxScroll: number;
+}
+
+const SHEET_ORDER = ["todo", "jobs", "agents", "footer"] as const;
+
+/**
+ * The rail's sections as a full-width sheet (/gentle:panel, mobile): a fixed
+ * ` ✿ Panel … esc back` row, then every section the rail would show, in rail
+ * order, scrolled within `rows`. Rows hidden below say how many remain.
+ */
+export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: number): string[] }>, theme: PanelTheme, width: number, view: { rows: number; scrollTop: number }): PanelSheet {
+	const target = Math.max(0, Math.floor(width));
+	const inner = Math.max(0, target - 2);
+	const title = ` ${fitPanelLine(`${theme.fg("accent", "✿")} ${theme.fg("text", theme.bold ? theme.bold("Panel") : "Panel")}`, theme.fg("muted", "esc back"), inner)} `;
+	const content: string[] = [];
+	for (const key of SHEET_ORDER) {
+		const lines = [...(parts.get(key)?.render(inner) ?? [])];
+		while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
+		if (lines.length === 0) continue;
+		content.push(" ".repeat(target), ...lines.map((line) => ` ${line}${" ".repeat(Math.max(0, inner - visibleWidth(line)))} `));
+	}
+	const viewport = Math.max(1, Math.floor(view.rows) - 1);
+	const maxScroll = Math.max(0, content.length - viewport);
+	const top = Math.min(Math.max(0, Math.floor(view.scrollTop)), maxScroll);
+	let shown: string[];
+	if (content.length <= viewport || top >= maxScroll) shown = content.slice(top, top + viewport);
+	else {
+		shown = content.slice(top, top + viewport - 1);
+		const remaining = content.length - top - shown.length;
+		shown.push(` ${fitPanelLine(`${theme.fg("accent", "↓")} ${theme.fg("muted", `${remaining} more · scroll`)}`, "", inner)} `);
+	}
+	return { lines: paintPanelSurface(theme, [title, ...shown]), maxScroll };
+}

@@ -518,6 +518,8 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 	const rail = state.parts.get("footer")!;
 	const jobs = state.parts.get("jobs")!;
 	const header = state.parts.get("header")!;
+	// Mobile keeps the running-job count in its status bar: no rail lists jobs there.
+	const statusbar = state.parts.get("statusbar")!;
 	const publish = (sessionId: string, jobs: unknown) => pi.events.emit("gentle-ai:jobs-sidebar", { sessionId, snapshot: { jobs } });
 	try {
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
@@ -532,7 +534,7 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		publish("shell-session", [{ id: "job-2", label: "Fresh tail", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);
 		tui.terminal.columns = 80;
 		assert.match(jobs.render(46).join("\n"), /Fresh tail/, "the finished tail still paints the card");
-		assert.doesNotMatch(header.render(80).join("\n"), /⧗ 1 job/, "the compact count is running-only");
+		assert.doesNotMatch(statusbar.render(80).join("\n"), /⧗ 1 job/, "the compact count is running-only");
 		tui.terminal.columns = 160;
 		publish("shell-session", [{ id: "job-0", label: "Stale tail", startedAt: 1, status: "exited", endedAt: 5, exitCode: 0 }]);
 		assert.doesNotMatch(jobs.render(46).join("\n"), /Stale tail/, "a finished job past the TTL paints nothing");
@@ -540,17 +542,18 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		state.active = true;
 		state.ownsHost = () => true;
 		assert.doesNotMatch(header.render(160).join("\n"), /1 job/, "the visible rail owns job details");
+		assert.doesNotMatch(statusbar.render(160).join("\n"), /1 job/, "the wide status bar leaves jobs to the rail");
 		state.active = false;
 		tui.terminal.columns = 80;
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
-		assert.match(header.render(80).join("\n"), /1 job/, "mobile topbar preserves the count of a running job");
+		assert.match(statusbar.render(80).join("\n"), /1 job/, "the mobile status bar preserves the count of a running job");
 		const before = jobs.render(46).join("\n");
 		publish("foreign", []);
 		publish("shell-session", [{ label: "invalid" }]);
 		assert.equal(jobs.render(46).join("\n"), before);
 		publish("shell-session", []);
 		assert.doesNotMatch(jobs.render(46).join("\n"), /Jobs|CI for PR/);
-		assert.doesNotMatch(header.render(80).join("\n"), /1 job/);
+		assert.doesNotMatch(statusbar.render(80).join("\n"), /1 job/);
 		publish("shell-session", [{ id: "job-2", label: "Build runtime", startedAt: 2 }]);
 		await fire(handlers, "session_start", ctx);
 		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /Build runtime/);
@@ -6622,7 +6625,7 @@ test("pasted image chips warn instead of sending images a text-only model reject
 	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
 });
 
-test("the installed editor draws the panel frame while the wide IDE chrome owns the host", () => {
+test("the installed editor draws the panel frame in the wide and mobile IDE chrome and the frame in regular mode", () => {
 	const previous = cardStyle();
 	const { pi, handlers } = fakePi();
 	gentleShell(pi, {});
@@ -6630,8 +6633,10 @@ test("the installed editor draws the panel frame while the wide IDE chrome owns 
 	const editor = installedPrompt(ctx, ui, handlers);
 	const state = sidebarState(fakeTui as unknown as TUI);
 	const owned = { active: state.active, ownsHost: state.ownsHost };
+	const host = fakeTui as { mode?: string };
 	try {
 		setCardStyle(CARD_STYLE.NEON);
+		host.mode = "fullscreen";
 		state.active = true;
 		state.ownsHost = () => true;
 		const rows = editor.render(80).map(stripAnsi);
@@ -6640,11 +6645,50 @@ test("the installed editor draws the panel frame while the wide IDE chrome owns 
 		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/u);
 		for (const row of rows) assert.equal(visibleWidth(row), 80);
 		state.active = false;
-		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "without the wide chrome the framed editor returns");
+		assert.match(stripAnsi(editor.render(80)[0]!), /^─ ✿ waiting for input/, "a narrow fullscreen terminal (mobile) keeps the panel editor");
+		delete host.mode;
+		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "regular mode keeps the framed editor");
 	} finally {
+		delete host.mode;
 		state.active = owned.active;
 		state.ownsHost = owned.ownsHost;
 		setCardStyle(previous);
 		editor.dispose();
+	}
+});
+
+test("mobile folds live work into one row above the editor that opens /gentle:panel as a sheet", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 34, columns: 56 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const state = sidebarState(tui as unknown as TUI);
+	const todoCard = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => ["TODO CARD"], invalidate() {}, dispose() {} }, {
+		render: (width: number) => ["▾ TODOS".padEnd(width), "  ◐ Run the suite".padEnd(width)],
+		summary: () => ({ left: "◐ Run the suite", right: "1/3", rightLabel: "todos" }),
+		invalidate() {},
+	});
+	try {
+		assert.equal(state.compactWork?.(), true, "a narrow fullscreen terminal folds live work");
+		assert.deepEqual(todoCard.render(56), [], "the Todos card steps aside for the work row");
+		const workRow = (ui.widgets.get("gentle-shell-work-row") as () => { render(width: number): string[]; handleMouse?(event: unknown): unknown })();
+		assert.match(stripAnsi(workRow.render(56)[0]!), /^ ▸ ◐ Run the suite +1\/3 $/);
+		const header = state.parts.get("header")!;
+		assert.match(stripAnsi(header.render(56).join("\n")), /^ ✿ repo .*· /, "the mobile title row carries the model");
+		assert.match(stripAnsi(state.parts.get("statusbar")!.render(56).join("\n")), /^ main/, "the mobile status bar leads with the branch");
+		void commands.get("gentle:panel")!.handler("", ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		const sheet = openPanelLines(ui);
+		assert.match(sheet[0]!, /^ ✿ Panel +esc back $/);
+		assert.ok(sheet.some((line) => /▾ TODOS/.test(line)) && sheet.some((line) => /Run the suite/.test(line)), "the sheet shows the rail sections");
+		(ui.overlayView as unknown as { handleInput(data: string): void }).handleInput("\x1b");
+		tui.terminal.columns = 160;
+		assert.equal(state.compactWork?.(), false, "a wide terminal keeps the rail and the cards' rules");
+	} finally {
+		todoCard.dispose();
+		footer.dispose();
 	}
 });

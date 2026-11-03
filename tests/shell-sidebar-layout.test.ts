@@ -1213,10 +1213,12 @@ test("a status bar part paints one full-width row below the transcript and the r
 	assert.equal(widthSeen, 160 - 2, "rendered at the header's width");
 });
 
-test("below the rail breakpoint the status bar part paints nothing and the native layout stays", (t) => {
+test("below the rail breakpoint the status bar row stays only while its part paints one (mobile)", (t) => {
 	const f = fixture("fullscreen", 139);
-	sidebarStatusBar(f.tui, { render: () => ["STATUS BAR"], invalidate() {} });
+	let paints = true;
+	sidebarStatusBar(f.tui, { render: () => paints ? ["STATUS BAR"] : [], invalidate() {} });
 	t.after(installSidebar(f.tui, theme));
-	const frame = renderLayoutFrame(f.root, 139, 6, () => {});
-	assert.doesNotMatch(frame.lines.join("\n"), /STATUS BAR/);
+	assert.match(renderLayoutFrame(f.root, 139, 6, () => {}).lines.at(-1)!, /^STATUS BAR/, "the mobile status bar is the last row");
+	paints = false;
+	assert.doesNotMatch(renderLayoutFrame(f.root, 139, 6, () => {}).lines.join("\n"), /STATUS BAR/, "a part with nothing to show leaves the native layout");
 });

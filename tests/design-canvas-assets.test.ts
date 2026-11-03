@@ -546,6 +546,35 @@ test("navigation pan declares selection suppression without disabling editable t
 	assert.match(focused, /(?:^|;)\s*user-select:\s*auto\s*;/);
 });
 
+test("the overview fits again when the window settles at another size, until you zoom or pan yourself", async () => {
+	const canvas = await loadCanvas();
+	Object.defineProperty(canvas.world, "offsetWidth", { get: () => 9000 });
+	Object.defineProperty(canvas.world, "offsetHeight", { get: () => 1000 });
+	// A browser window that opens small and is then given its size (a tiling window manager, a restored window).
+	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
+	canvas.document.getElementById("gd-fit").dispatch("click");
+	assert.equal(canvas.zoomLevel.textContent, "5%");
+	canvas.viewport.rect = { left: 0, top: 50, width: 1800, height: 900 };
+	canvas.windowEvent("resize");
+	const settled = canvas.zoomLevel.textContent;
+	canvas.document.getElementById("gd-fit").dispatch("click");
+	assert.deepEqual([settled, canvas.zoomLevel.textContent], ["19%", "19%"], "the same view Fit gives at the new size");
+	// Once you zoom, a resize leaves your view alone.
+	canvas.viewport.dispatch("wheel", { deltaX: 0, deltaY: -40, deltaMode: 0, ctrlKey: true, metaKey: false, shiftKey: false, clientX: 300, clientY: 300 });
+	const zoomed = canvas.world.style.transform;
+	canvas.viewport.rect = { left: 0, top: 50, width: 400, height: 300 };
+	canvas.windowEvent("resize");
+	assert.equal(canvas.world.style.transform, zoomed);
+	// Fit starts following the viewport again; a pan of yours ends it too.
+	canvas.document.getElementById("gd-fit").dispatch("click");
+	canvas.viewport.dispatch("wheel", { deltaX: 0, deltaY: 40, deltaMode: 0, ctrlKey: false, metaKey: false, shiftKey: false, clientX: 300, clientY: 300 });
+	const panned = canvas.world.style.transform;
+	canvas.viewport.rect = { left: 0, top: 50, width: 1800, height: 900 };
+	canvas.windowEvent("resize");
+	assert.equal(canvas.world.style.transform, panned);
+	assert.equal(canvas.zoomLevel.textContent, "5%");
+});
+
 // S14: `open` while a canvas page is connected sends it a show event instead of opening a tab.
 
 test("a show event for the same design re-fetches its manifest and reloads its artboards, keeping zoom, pan and focus", async () => {

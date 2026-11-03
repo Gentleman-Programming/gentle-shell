@@ -860,6 +860,32 @@ test("a footer digest change does not re-render Agents or TODO", (t) => {
 	assert.deepEqual(counts, { footer: 2, agents: 2, todo: 2 }, "revision invalidation reaches only the sections with no digest of their own");
 });
 
+test("a card style change re-renders sections whose digest is unchanged", (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(CARD_STYLE.FLOAT);
+	const f = fixture();
+	let renders = 0;
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, {
+		digest: () => "unchanged",
+		render: () => { renders++; return [`Todos ${cardStyle()}`]; },
+		invalidate() {},
+	});
+	t.after(installSidebar(f.tui, theme));
+
+	assert.match(rail(f).render(50).join("\n"), /Todos float/);
+	assert.equal(renders, 1);
+
+	setCardStyle(CARD_STYLE.NEON);
+	const output = rail(f).render(50).join("\n");
+	assert.match(output, /Todos neon/, "the cached float lines must not survive a switch to neon");
+	assert.doesNotMatch(output, /Todos float/);
+	assert.equal(renders, 2);
+
+	assert.match(rail(f).render(50).join("\n"), /Todos neon/);
+	assert.equal(renders, 2, "an unchanged style keeps the section cache");
+});
+
 test("a throwing digest still degrades to invalidation-only under the per-section memo", (t) => {
 	const f = fixture();
 	let todoRenders = 0;

@@ -117,6 +117,8 @@ export const requiredPaths = [
   "extensions/skill-registry.ts",
   "lib/child-package-injection.ts",
   "lib/fleet-role.ts",
+  "lib/fleet-view.ts",
+  "lib/fleet-view-render.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
   "lib/gentle-shell-bundled.ts",

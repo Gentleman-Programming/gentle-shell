@@ -20,6 +20,8 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
+import { ADOPT_POLL_MS, readAdoptHandoff } from "../lib/fleet-adopt.ts";
+import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
@@ -7440,4 +7442,85 @@ test("a matched model_profiles key routes the task request model end to end", as
 	assert.deepEqual(captures[0]!.request.model, { provider: "openai", id: "alpha" }, "the matched key routes the configured model into the launch");
 	assert.equal(captures[0]!.request.thinking, "high");
 	assert.equal(captures[0]!.request.modelSource, "profile");
+});
+
+// --- T9 (S8): a fleet adopts this open session. The adopt request is handled
+// by code only; a transport notification keeps becoming a follow-up message.
+
+const ADOPT_TOKEN = "Tok_en-12345678";
+let adoptHomes = 0;
+async function adoptableSession(env: Record<string, string> = {}) {
+	const h = fakePi();
+	const runtime = deps();
+	const agentHome = join(root, `adopt-agent-${++adoptHomes}`);
+	mkdirSync(agentHome, { recursive: true });
+	const captured: { notify?: (notification: { id: string; senderSessionId: string; message: string }) => Promise<void>; adopt?: (request: { id: string; senderSessionId: string; fleetSlug: string; token: string }) => Promise<boolean> } = {};
+	runtime.deps.agentHome = agentHome;
+	runtime.deps.env = { ...runtime.deps.env, ...env } as NodeJS.ProcessEnv;
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => ({ list: async () => [], listActivations: async () => [] }),
+		createListener: (registry, _id, onNotification, onAdopt) => {
+			captured.notify = onNotification;
+			captured.adopt = onAdopt;
+			return { registry, start: async () => {}, close: async () => {} };
+		},
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unused"); } }),
+	};
+	const timers = recordTimers(runtime.deps);
+	gentleAgents(h.pi, runtime.deps.env, runtime.deps);
+	const view = fakeContext();
+	const sessionFile = join(agentHome, "sessions", "2026_s1.jsonl");
+	mkdirSync(dirname(sessionFile), { recursive: true });
+	writeFileSync(sessionFile, "{}\n");
+	let shutdowns = 0;
+	let aborts = 0;
+	Object.assign(view.ctx.sessionManager, { getSessionFile: () => sessionFile, getSessionDir: () => dirname(sessionFile), getSessionName: () => "Blog posts" });
+	Object.assign(view.ctx, { shutdown: () => { shutdowns += 1; }, abort: () => { aborts += 1; } });
+	await h.fire("session_start", view.ctx);
+	await eventually(() => captured.notify !== undefined, "the session transport listener must start");
+	return { h, ...view, agentHome, sessionFile, captured, timers, shutdowns: () => shutdowns, aborts: () => aborts };
+}
+
+test("a fleet's adopt request is handled by code: the session finishes its turn, hands off and shuts down, and the model sees nothing", async () => {
+	const s = await adoptableSession();
+	s.h.setIdle(false);
+	const before = [s.h.sent.length, s.h.userMessages.length];
+	assert.equal(await s.captured.adopt!({ id: "adopt-1", senderSessionId: "fleet-1", fleetSlug: "ship-it", token: ADOPT_TOKEN }), true);
+	assert.deepEqual(readAdoptHandoff(s.agentHome, ADOPT_TOKEN), { state: "accepted", pid: process.pid, label: "Blog posts" });
+	assert.ok(s.dialogs.includes("notify:Adopted by fleet ship-it: this window will close after the current turn"), JSON.stringify(s.dialogs));
+	assert.equal(s.timers.run(ADOPT_POLL_MS), 1);
+	assert.deepEqual([s.shutdowns(), s.aborts()], [0, 0], "the current turn finishes; it is never aborted");
+	s.h.setIdle(true);
+	assert.equal(s.timers.run(ADOPT_POLL_MS), 1);
+	assert.deepEqual(readAdoptHandoff(s.agentHome, ADOPT_TOKEN), { state: "ready", pid: process.pid, label: "Blog posts", sessionFile: s.sessionFile, sessionDir: dirname(s.sessionFile), cwd });
+	assert.equal(s.shutdowns(), 1);
+	assert.deepEqual([s.h.sent.length, s.h.userMessages.length], before, "no adopt request ever reaches the model");
+	await s.h.fire("session_shutdown", s.ctx, { reason: "quit" });
+	assert.equal(readAdoptHandoff(s.agentHome, ADOPT_TOKEN)?.state, "ready");
+});
+
+test("a fleet controller session refuses an adopt request by its own role, and a session switch cancels a pending one", async () => {
+	const controller = await adoptableSession({ [FLEET_ROLE_ENV]: "controller" });
+	assert.equal(await controller.captured.adopt!({ id: "adopt-1", senderSessionId: "fleet-1", fleetSlug: "ship-it", token: ADOPT_TOKEN }), false);
+	assert.deepEqual(readAdoptHandoff(controller.agentHome, ADOPT_TOKEN), { state: "refused", reason: "this session is a fleet controller" });
+	await controller.h.fire("session_shutdown", controller.ctx, { reason: "quit" });
+	const s = await adoptableSession();
+	s.h.setIdle(false);
+	assert.equal(await s.captured.adopt!({ id: "adopt-2", senderSessionId: "fleet-1", fleetSlug: "ship-it", token: ADOPT_TOKEN }), true);
+	await s.h.fire("session_start", s.ctx, { reason: "new" });
+	assert.deepEqual(readAdoptHandoff(s.agentHome, ADOPT_TOKEN), { state: "refused", reason: "the session changed before the hand-off" });
+	s.h.setIdle(true);
+	s.timers.run(ADOPT_POLL_MS);
+	assert.equal(s.shutdowns(), 0);
+	await s.h.fire("session_shutdown", s.ctx, { reason: "quit" });
+});
+
+test("previous behavior: a transport notification becomes one follow-up session message for the model", async () => {
+	const s = await adoptableSession();
+	await s.captured.notify!({ id: "message-1", senderSessionId: "peer-1", message: "hello" });
+	const last = s.h.sent.at(-1);
+	assert.equal(last?.message.content, "Session message from peer-1 (correlation message-1): hello");
+	assert.deepEqual(last?.options, { deliverAs: "followUp", triggerTurn: true });
+	assert.equal(existsSync(join(s.agentHome, "gentle-fleet")), false, "a notification writes no hand-off");
+	await s.h.fire("session_shutdown", s.ctx, { reason: "quit" });
 });

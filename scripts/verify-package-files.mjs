@@ -111,6 +111,7 @@ export const requiredPaths = [
   "lib/fleet-config.ts",
   "lib/fleet-worktree.ts",
   "lib/fleet-dialogs.ts",
+  "lib/fleet-adopt.ts",
   "assets/fleet-orchestrator.md",
   "extensions/resume-hint.ts",
   "extensions/session-scratch.ts",

@@ -12,6 +12,7 @@ import type { FleetLedgerState } from "../lib/fleet-ledger.ts";
 import { runGit } from "../lib/fleet-worktree.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { writeJsonFileAtomicallySync } from "../lib/agent-profiles.ts";
+import { ADOPT_POLL_MS, writeAdoptHandoff } from "../lib/fleet-adopt.ts";
 import { FLEET_ROLE_ENV } from "../lib/fleet-role.ts";
 import type { PermissionMode } from "../lib/permission-mode-policy.ts";
 import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
@@ -32,6 +33,7 @@ const OTHER_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "cod
 
 function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown[]): unknown } = { on: () => () => {}, emit() {} }) {
 	const tools = new Map<string, Tool>();
+	const commands = new Map<string, { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
 	const userMessages: Array<{ content: unknown; options: unknown }> = [];
@@ -47,7 +49,7 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 		},
 		sendMessage: (message: Record<string, unknown>, options: Record<string, unknown>) => sent.push({ message, options }),
 		sendUserMessage: async (content: unknown, options: unknown) => { userMessages.push({ content, options }); },
-		registerCommand() {},
+		registerCommand: (name: string, registration: { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
 		events,
 		getAllTools: () => registered.map(name => ({ name, exposure: name === "hidden_mem_tool" ? "hidden" : "direct" })),
 		getActiveTools: () => [...active],
@@ -60,7 +62,7 @@ function fakePi(events: { on(...args: unknown[]): unknown; emit(...args: unknown
 		for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
 	};
 	const activate = (name: string) => { registered.push(name); active.push(name); };
-	return { pi, tools, handlers, sent, userMessages, fire, activeSets, activeTools: () => [...active], activate };
+	return { pi, tools, commands, handlers, sent, userMessages, fire, activeSets, activeTools: () => [...active], activate };
 }
 
 const mainCwd = join(scratch, "main");
@@ -156,6 +158,8 @@ type HarnessOptions = {
 	events?: Parameters<typeof fakePi>[0];
 	/** Another controller process over the same agent home (a reopened fleet). */
 	agentHome?: string;
+	adoptTransport?: FleetDeps["adoptTransport"];
+	alive?: (pid: number) => boolean;
 };
 
 function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions = {}) {
@@ -201,6 +205,8 @@ function harness(env: NodeJS.ProcessEnv = controllerEnv, options: HarnessOptions
 			return runGit(args, cwd);
 		},
 		permissionMode: options.permissionMode === null ? undefined : options.permissionMode ?? (async () => "normal"),
+		...(options.adoptTransport ? { adoptTransport: options.adoptTransport } : {}),
+		...(options.alive ? { isProcessAlive: options.alive } : {}),
 	};
 	gentleFleet(h.pi, env, deps);
 	const runTimers = () => {
@@ -1749,4 +1755,200 @@ test("T8: create: true inside an existing git repository is refused and creates 
 	assert.deepEqual(h.spawned, []);
 	assert.deepEqual([branches(), worktrees()], [["main"], [repo]]);
 	assert.deepEqual(readdirSync(root), ["app"]);
+});
+
+// --- T9 (S8): the human adopts an already-open Gentle Shell session from the
+// fleet TUI with /fleet:adopt; it continues headless as a member on its own
+// session file once its window handed off and exited.
+
+const ADOPT_PID = 31337;
+
+type AdoptPeer = { sessionId: string; label: string; workspace: string; refuse?: string; silent?: boolean };
+
+/** A fake transport whose peers act like the target's gentle-agents: they write the accepted (or refused) hand-off. */
+function adoptPeers(agentHome: () => string, peers: AdoptPeer[]) {
+	const sent: Array<{ fleet: string; recipient: string; request: { fleetSlug: string; token: string } }> = [];
+	const listed: string[] = [];
+	const transport: NonNullable<FleetDeps["adoptTransport"]> = {
+		candidates: async fleet => {
+			listed.push(fleet);
+			return peers.map(({ sessionId, label, workspace }) => ({ sessionId, label, workspace }));
+		},
+		send: async (fleet, recipient, request) => {
+			sent.push({ fleet, recipient, request });
+			const peer = peers.find(entry => entry.sessionId === recipient)!;
+			if (peer.silent) return false;
+			mkdirSync(agentHome(), { recursive: true });
+			if (peer.refuse) {
+				writeAdoptHandoff(agentHome(), request.token, { state: "refused", reason: peer.refuse });
+				return false;
+			}
+			writeAdoptHandoff(agentHome(), request.token, { state: "accepted", pid: ADOPT_PID, label: peer.label });
+			return true;
+		},
+	};
+	return { transport, sent, listed };
+}
+
+async function adoptHarness(peers: AdoptPeer[], options: HarnessOptions & { env?: NodeJS.ProcessEnv } = {}) {
+	let home = "";
+	const fake = adoptPeers(() => home, peers);
+	const alive = new Set([ADOPT_PID]);
+	const h = harness(options.env ?? controllerEnv, { ...options, adoptTransport: fake.transport, alive: pid => alive.has(pid) });
+	home = h.agentHome;
+	const view = fakeContext();
+	const selects: Array<{ title: string; options: string[] }> = [];
+	let pick: (options: string[]) => string | undefined = options => options[0];
+	(view.ctx.ui as unknown as Record<string, unknown>).select = async (title: string, options: string[]) => {
+		selects.push({ title, options });
+		return pick(options);
+	};
+	await h.fire("session_start", view.ctx, { reason: "startup" });
+	const adopt = () => h.commands.get("fleet:adopt")!.handler("", view.ctx);
+	const token = () => fake.sent.at(-1)!.request.token;
+	const ready = (handoff: Partial<{ sessionFile: string; cwd: string; label: string }> = {}) => {
+		const sessionFile = handoff.sessionFile ?? join(scratch, "pi-sessions", "--work-blog--", "2026-11-02T11-00-00-000Z_blog.jsonl");
+		mkdirSync(dirname(sessionFile), { recursive: true });
+		writeFileSync(sessionFile, "{}\n");
+		writeAdoptHandoff(h.agentHome, token(), { state: "ready", pid: ADOPT_PID, label: handoff.label ?? "Blog posts", sessionFile, sessionDir: dirname(sessionFile), cwd: handoff.cwd ?? webCwd });
+		return sessionFile;
+	};
+	const pollTimers = () => h.timers.filter(timer => timer.ms === ADOPT_POLL_MS && !timer.cancelled);
+	const poll = () => { for (const timer of pollTimers()) { h.timers.splice(h.timers.indexOf(timer), 1); timer.fn(); } };
+	return { h, ...view, fake, alive, selects, adopt, token, ready, poll, pollTimers, choose: (fn: typeof pick) => { pick = fn; } };
+}
+
+test("/fleet:adopt is a human-only command: no tool is added and the controller allowlist is unchanged", () => {
+	const h = harness();
+	assert.match(h.commands.get("fleet:adopt")?.description ?? "", /Adopt a running Gentle Shell session/);
+	assert.deepEqual([...h.tools.keys()].filter(name => /adopt/.test(name)), []);
+	assert.equal(h.tools.size, 9);
+	for (const env of [{}, { [FLEET_ROLE_ENV]: "member" }]) assert.equal(harness(env).commands.size, 0, "only the controller registers it");
+});
+
+test("with no other open session /fleet:adopt shows a notice and asks nothing", async () => {
+	const a = await adoptHarness([]);
+	await a.adopt();
+	assert.deepEqual(a.selects, []);
+	assert.deepEqual(a.fake.sent, []);
+	assert.deepEqual(a.fake.listed, ["fleet-session-1"], "the fleet's own session is excluded by the registry");
+	assert.deepEqual(a.notices.at(-1), ["No other Gentle Shell session is open to adopt.", "info"]);
+	assert.equal(a.h.spawned.length, 0);
+});
+
+test("the picker lists open sessions by label and directory, never another fleet controller", async () => {
+	const a = await adoptHarness([
+		{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/work/blog" },
+		{ sessionId: "other-fleet-01", label: "Other fleet", workspace: "/work/other" },
+		{ sessionId: "peer-nolabel-1", label: "", workspace: "" },
+	]);
+	mkdirSync(join(a.h.agentHome, "gentle-fleet", "sessions", "other-fleet-01"), { recursive: true });
+	a.choose(() => undefined);
+	await a.adopt();
+	assert.equal(a.selects.length, 1);
+	assert.match(a.selects[0].title, /Adopt which session/);
+	assert.deepEqual(a.selects[0].options, ["Blog posts · /work/blog · peer-blo", "unnamed · unknown directory · peer-nol"]);
+	assert.deepEqual(a.fake.sent, [], "a dismissed picker sends nothing");
+});
+
+test("an adopted session respawns headless on its own session file only after its hand-off exists and its window exited", async () => {
+	const a = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/work/blog" }], { env: { ...controllerEnv, GENTLE_PI_AUTONOMOUS_MODE: "1" } });
+	await a.adopt();
+	assert.deepEqual(a.fake.sent.map(entry => [entry.fleet, entry.recipient, entry.request.fleetSlug]), [["fleet-session-1", "peer-blog-0001", "fleet-fleet-session-1"]]);
+	assert.match(a.token(), /^[A-Za-z0-9_-]{8,128}$/);
+	assert.match(a.notices.at(-1)?.[0] ?? "", /Adopting "Blog posts": it finishes its current turn, closes its window and joins the fleet/);
+	a.poll();
+	assert.equal(a.h.spawned.length, 0, "no hand-off yet");
+	const sessionFile = a.ready();
+	a.poll();
+	assert.equal(a.h.spawned.length, 0, "the window has not exited yet: never two writers on one session file");
+	a.alive.delete(ADOPT_PID);
+	a.poll();
+	assert.equal(a.h.spawned.length, 1);
+	const launch = a.h.spawned[0];
+	assert.equal(launch.cwd, webCwd, "the session's own directory, no worktree");
+	assert.deepEqual(launch.args.slice(launch.args.indexOf("--session-dir"), launch.args.indexOf("--session-dir") + 4), ["--session-dir", dirname(sessionFile), "--session", sessionFile]);
+	assert.equal(launch.env[FLEET_ROLE_ENV], "member");
+	assert.equal(launch.env.GENTLE_PI_AUTONOMOUS_MODE, undefined, "members always start in normal permission mode");
+	assert.deepEqual(a.h.gitCalls, [], "nothing is created for an adopted member");
+	assert.deepEqual(a.h.children[0].written.filter(command => command.type === "prompt"), [], "it continues its own conversation");
+	assert.equal(a.pollTimers().length, 0);
+	assert.match(String(a.h.sent.at(-1)?.message.content), /adopted blog-posts: the human's session "Blog posts" in .* continues as a member/);
+	a.h.runTimers();
+	const saved = readLedger(a.h);
+	assert.deepEqual(saved.members.map(member => [member.name, member.cwd, member.sessionFile, member.adopted, member.worktree]), [["blog-posts", webCwd, sessionFile, true, null]]);
+	assert.match(readFileSync(saved.documentPath, "utf8"), /^\| blog-posts \| Adopted session "Blog posts" \|/m);
+	const status = (await a.h.tools.get("fleet_status")!.execute("s", {}, undefined, undefined, a.ctx)).content[0].text;
+	assert.match(status, /^blog-posts \[starting\]/);
+});
+
+test("a refused, silent or vanished adoption leaves one Blockers entry and a notice, and spawns nothing", async () => {
+	const refused = await adoptHarness([{ sessionId: "peer-rpc-00001", label: "Desktop", workspace: "/w", refuse: "this is not an interactive terminal session (rpc mode)" }]);
+	await refused.adopt();
+	refused.h.runTimers();
+	assert.deepEqual(readLedger(refused.h).blockers.map(note => [note.member, note.text]), [["desktop", "not adopted: this is not an interactive terminal session (rpc mode)"]]);
+	assert.deepEqual(refused.notices.at(-1), ["Gentle Fleet did not adopt \"Desktop\": this is not an interactive terminal session (rpc mode).", "warning"]);
+	const silent = await adoptHarness([{ sessionId: "peer-old-00001", label: "Old shell", workspace: "/w", silent: true }]);
+	await silent.adopt();
+	silent.h.runTimers();
+	assert.match(readLedger(silent.h).blockers[0].text, /^not adopted: it did not accept the adopt request/);
+	const vanished = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await vanished.adopt();
+	vanished.alive.delete(ADOPT_PID);
+	vanished.poll();
+	vanished.h.runTimers();
+	assert.deepEqual(readLedger(vanished.h).blockers.map(note => note.text), ["not adopted: the session closed without a hand-off"]);
+	for (const a of [refused, silent, vanished]) assert.equal(a.h.spawned.length, 0);
+});
+
+test("the member limit and the fleet budget refuse before any adopt request is sent", async () => {
+	const limited = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }], { fleetConfig: { maxLiveMembers: 1 } });
+	await spawnMember(limited.h, limited.ctx, "api");
+	await limited.adopt();
+	assert.deepEqual([limited.fake.listed, limited.fake.sent], [[], []]);
+	assert.match(limited.notices.at(-1)?.[0] ?? "", /^Gentle Fleet cannot adopt a session: the fleet runs at most 1 live members/);
+	const spent = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }], { fleetConfig: { fleetBudgetUsd: 0.1 } });
+	await spawnMember(spent.h, spent.ctx, "api");
+	spent.h.children[0].emit(usage(0.2));
+	await tick();
+	await spent.adopt();
+	assert.deepEqual(spent.fake.sent, []);
+	assert.match(spent.notices.at(-1)?.[0] ?? "", /^Gentle Fleet cannot adopt a session: the fleet spent \$0\.20 of its \$0\.10 budget/);
+});
+
+test("an adopted member's name is unique among members, and the controller's shutdown clears a pending adoption", async () => {
+	const a = await adoptHarness([{ sessionId: "peer-blog-0001", label: "api", workspace: "/w" }]);
+	await spawnMember(a.h, a.ctx, "api");
+	await a.adopt();
+	a.ready({ label: "api" });
+	a.alive.delete(ADOPT_PID);
+	a.poll();
+	assert.deepEqual(a.h.spawned.map(launch => launch.args.includes("--session")), [false, true]);
+	a.h.runTimers();
+	assert.deepEqual(readLedger(a.h).members.map(member => member.name), ["api", "api-2"]);
+	const pending = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await pending.adopt();
+	assert.equal(pending.pollTimers().length, 1);
+	await pending.h.fire("session_shutdown", pending.ctx, { reason: "quit" });
+	assert.equal(pending.pollTimers().length, 0, "no watch timer outlives the controller session");
+});
+
+test("a reopened fleet resumes an adopted member on its recorded session file", async () => {
+	const a = await adoptHarness([{ sessionId: "peer-blog-0001", label: "Blog posts", workspace: "/w" }]);
+	await a.adopt();
+	const sessionFile = a.ready({ sessionFile: join(scratch, "pi-sessions", "--work-resume--", "2026-11-02T11-30-00-000Z_resume.jsonl") });
+	a.alive.delete(ADOPT_PID);
+	a.poll();
+	await a.h.fire("session_shutdown", a.ctx, { reason: "quit" });
+	a.h.runTimers();
+	const h = harness(controllerEnv, { agentHome: a.h.agentHome });
+	const view = fakeContext();
+	await h.fire("session_start", view.ctx, { reason: "startup" });
+	await ticks();
+	view.press(TAB, "1");
+	await ticks();
+	assert.equal(h.spawned.length, 1);
+	const args = h.spawned[0].args;
+	assert.deepEqual(args.slice(args.indexOf("--session-dir"), args.indexOf("--session-dir") + 4), ["--session-dir", dirname(sessionFile), "--session", sessionFile]);
+	assert.equal(h.spawned[0].cwd, webCwd);
 });

@@ -752,3 +752,71 @@ test("Windows host late guards prevent unhandled errors without external error l
 	assert.equal(child.stdout.listenerCount("error"), 0);
 	assert.equal(child.stderr.listenerCount("error"), 0);
 });
+
+// --- T9 (S8): the fleet's adopt request on the Windows host. The native helper
+// admits only the notification envelope, so the adopt field rides inside it.
+
+const adoptWire = (id: string, adopt: Record<string, unknown> = { fleetSlug: "ship-it", token: "Tok_en-12345678" }) => Buffer.from(JSON.stringify({ version: 1, kind: "notification", id, senderSessionId: "fleet", recipientSessionId: "recipient", message: "", adopt }) + "\n").toString("base64");
+
+function activeListenerRegistry() {
+	const record = Object.freeze({ version: 1 as const, sessionId: "recipient", endpoint: testEndpoint, createdAt: 1 });
+	return {
+		setNotification() {}, clearNotification() {}, setListenerFailure() {}, clearListenerFailure() {},
+		async startListener() { return record; }, async stopListener() {}, async close() {},
+	} as unknown as WindowsSessionPresenceRegistry;
+}
+
+test("Windows host passes an adopt event to its callback with the adopt request and acknowledges the callback's answer", async () => {
+	const seen: unknown[] = [];
+	const { child, emit } = await createListeningFakeHost(async (notification?: unknown) => { seen.push(notification); return false; });
+	emit(notificationEvent(adoptWire("adopt-1"), "adopt-connection"));
+	await nextTurn(); await nextTurn();
+	assert.deepEqual(seen, [{ connectionId: "adopt-connection", id: "adopt-1", senderSessionId: "fleet", recipientSessionId: "recipient", message: "", adopt: { fleetSlug: "ship-it", token: "Tok_en-12345678" } }]);
+	assert.match(child.lines.at(-1) ?? "", /"operation":"ack".*"accepted":false/);
+	emit(notificationEvent(adoptWire("adopt-2", { fleetSlug: "ship-it", token: "../escape" }), "bad-connection"));
+	await nextTurn(); await nextTurn();
+	assert.equal(seen.length, 1, "an invalid adopt token never reaches the callback");
+	child.emit("exit", 1, null);
+});
+
+test("Windows listener routes an adopt request to its adopt handler only, and refuses it without one", async () => {
+	const notifications: unknown[] = [], adopts: unknown[] = [];
+	const adopting = new WindowsActiveSessionListener(activeListenerRegistry(), "recipient", async (value) => { notifications.push(value); }, async (request) => { adopts.push(request); return true; });
+	await adopting.start();
+	const adopt = { id: "adopt-1", senderSessionId: "fleet", recipientSessionId: "recipient", message: "", adopt: { fleetSlug: "ship-it", token: "Tok_en-12345678" } };
+	assert.equal(await adopting.receive(adopt), true);
+	assert.deepEqual(adopts, [{ id: "adopt-1", senderSessionId: "fleet", fleetSlug: "ship-it", token: "Tok_en-12345678" }]);
+	const plain = new WindowsActiveSessionListener(activeListenerRegistry(), "recipient", async (value) => { notifications.push(value); });
+	await plain.start();
+	assert.equal(await plain.receive(adopt), false);
+	assert.deepEqual(notifications, [], "an adopt request never becomes a notification");
+});
+
+test("previous behavior: a Windows notification still reaches the notification callback when an adopt handler is set", async () => {
+	const notifications: unknown[] = [];
+	let adopts = 0;
+	const listener = new WindowsActiveSessionListener(activeListenerRegistry(), "recipient", async (value) => { notifications.push(value); }, async () => { adopts++; return true; });
+	await listener.start();
+	assert.equal(await listener.receive({ id: "message-1", senderSessionId: "peer", recipientSessionId: "recipient", message: "hello" }), true);
+	assert.deepEqual(notifications, [{ id: "message-1", senderSessionId: "peer", message: "hello" }]);
+	assert.equal(adopts, 0);
+});
+
+test("Windows client sends one adopt frame and resolves on the accepted ack", async () => {
+	const record = Object.freeze({ version: 1 as const, sessionId: "recipient", endpoint: testEndpoint, createdAt: 1 });
+	const socket = new Socket();
+	socket.on("error", () => {});
+	const written: string[] = [];
+	(socket as unknown as { write: (data: Buffer) => boolean }).write = (data) => { written.push(data.toString()); return true; };
+	const registry = { resolve: async () => record } as unknown as WindowsSessionPresenceRegistry;
+	const client = new WindowsActiveSessionClient(registry, "fleet", { connect: () => socket });
+	const sent = client.sendAdopt("recipient", { fleetSlug: "ship-it", token: "Tok_en-12345678" }, { id: "adopt-1" });
+	await nextTurn();
+	socket.emit("connect");
+	await nextTurn();
+	assert.deepEqual(written.map(line => JSON.parse(line)), [{ version: 1, kind: "notification", id: "adopt-1", senderSessionId: "fleet", recipientSessionId: "recipient", message: "", adopt: { fleetSlug: "ship-it", token: "Tok_en-12345678" } }]);
+	socket.emit("data", Buffer.from('{"version":1,"kind":"ack","id":"adopt-1","accepted":true}\n'));
+	socket.emit("end");
+	assert.deepEqual(await sent, { id: "adopt-1", accepted: true });
+	await assert.rejects(client.sendAdopt("recipient", { fleetSlug: "ship-it", token: "/abs/path" }));
+});

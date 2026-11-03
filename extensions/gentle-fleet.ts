@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import os from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -7,6 +8,7 @@ import { Type } from "typebox";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
 import type { PiCommand, ProcessControl, Spawn } from "../lib/agents-runner.ts";
+import { adoptedMemberName, createAdoptTransport, readAdoptHandoff, watchAdoption, type AdoptCandidate, type AdoptTransport, type ReadyHandoff } from "../lib/fleet-adopt.ts";
 import { readFleetConfig } from "../lib/fleet-config.ts";
 import { buildFleetSnapshot, DECK_WIDGET_KEY, FleetDeck } from "../lib/fleet-deck.ts";
 import { autoApproval, describeResponse, type DialogResponse } from "../lib/fleet-dialogs.ts";
@@ -35,6 +37,9 @@ import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 // F5 (T6): reopening the controller session (Pi's --continue, --resume or
 // --session) loads its ledger; members that stopped with it resume only when
 // the human says so on the deck, in their own session file and worktree.
+// S8 (T9): the human adopts an open Gentle Shell window with /fleet:adopt
+// (lib/fleet-adopt.ts); it continues headless as a member on its own session
+// file once its window handed off and exited. Never a model tool (L60).
 
 export const FLEET_DIGEST_MESSAGE_TYPE = "gentle-fleet.digest";
 export const FLEET_WAKE_WINDOW_MS = 1500;
@@ -79,6 +84,10 @@ export interface FleetDeps {
 	git: GitExec;
 	/** This controller session's live permission mode; default: the yolo host channel. */
 	permissionMode?(ctx: ExtensionContext): Promise<PermissionMode>;
+	/** Open sessions and the adopt request (S8); default: the session transport of this agent home. */
+	adoptTransport?: AdoptTransport;
+	/** Whether the adopted window's process still runs; default: process.kill(pid, 0). */
+	isProcessAlive?(pid: number): boolean;
 }
 
 const defaultDeps = (): FleetDeps => ({
@@ -194,6 +203,10 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const dialogArrivals = new WeakMap<FleetMemberDialog, string>();
 	let deck: FleetDeck | undefined;
 	let unmountDeck: (() => void) | undefined;
+	// Adoptions waiting for their window to hand off and exit: each cancels its own poll.
+	const adoptions = new Set<() => void>();
+	let defaultAdoptTransport: AdoptTransport | undefined;
+	const adoptTransport = () => deps.adoptTransport ?? (defaultAdoptTransport ??= createAdoptTransport(agentHome));
 	// The controller's live permission mode, for the deck's status line.
 	let permission: PermissionMode = "normal";
 	let stopObservingMode: (() => void) | undefined;
@@ -539,12 +552,13 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		for (const name of pendingResume.splice(0)) {
 			const record = fleetLedger.current.members.find(member => member.name === name);
 			if (!record || members.get(name)?.live) continue;
-			const sessionDir = sessionPath(name);
-			const sessionFile = latestMemberSessionFile(sessionDir);
+			// An adopted member (S8) lives in its own session file, wherever it was.
+			const sessionDir = record.sessionFile ? dirname(record.sessionFile) : sessionPath(name);
+			const sessionFile = record.sessionFile ? (existsSync(record.sessionFile) ? record.sessionFile : undefined) : latestMemberSessionFile(sessionDir);
 			const spent = fleetSpend();
 			const reason = (record.worktree ? reattachMemberWorktree({ path: record.worktree, git: deps.git }) : undefined)
 				?? (!existsSync(record.cwd) ? `working directory ${record.cwd} is missing`
-				: !sessionFile ? `no session file in ${sessionDir}`
+				: !sessionFile ? (record.sessionFile ? `session file ${record.sessionFile} is missing` : `no session file in ${sessionDir}`)
 				: liveCount() >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
 				: config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd ? `the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget`
 				: undefined);
@@ -585,11 +599,117 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const stopAll = () => {
 		cancelWake?.();
 		cancelWake = undefined;
+		for (const cancel of adoptions) cancel();
+		adoptions.clear();
 		pending.clear();
 		// A reopened fleet asks before resuming these; members stopped on purpose stay stopped.
 		ledger?.interrupt([...members.values()].filter(member => member.live && !member.stopping).map(member => member.name));
 		for (const member of members.values()) member.stop();
 		ledger?.flush();
+	};
+
+	// What keeps a new adopted member out: the member limit (a pending adoption
+	// holds its slot) and the fleet budget, worded like spawn and resume refusals.
+	const adoptLimit = () => {
+		const spent = fleetSpend();
+		return liveCount() + adoptions.size >= config.maxLiveMembers ? `the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path})`
+			: config.fleetBudgetUsd !== undefined && spent >= config.fleetBudgetUsd ? `the fleet spent $${spent.toFixed(2)} of its $${config.fleetBudgetUsd.toFixed(2)} budget (fleetBudgetUsd in ${config.path})`
+			: undefined;
+	};
+	const memberNames = () => [...members.keys(), ...(ledger?.current.members.map(member => member.name) ?? [])];
+	const adoptFailed = (ctx: ExtensionContext, label: string, name: string, reason: string) => {
+		ensureLedger(ctx.cwd).blocker(name, `not adopted: ${reason}`);
+		ctx.ui.notify(`Gentle Fleet did not adopt "${label}": ${reason}.`, "warning");
+	};
+
+	// The window handed off and exited: the same session file continues headless,
+	// in the session's own directory, with no worktree and no new prompt.
+	const startAdopted = (ctx: ExtensionContext, handoff: ReadyHandoff, label: string) => {
+		if (closed) return;
+		config = readFleetConfig(configHome);
+		const fleetLedger = ensureLedger(ctx.cwd);
+		const name = adoptedMemberName(handoff.label || label, memberNames());
+		const reason = adoptLimit()
+			?? (!existsSync(handoff.cwd) ? `working directory ${handoff.cwd} is missing`
+			: !existsSync(handoff.sessionFile) ? `session file ${handoff.sessionFile} is missing`
+			: undefined);
+		if (reason) {
+			adoptFailed(ctx, label, name, `${reason}; its window already closed, reopen it with --session ${handoff.sessionFile}`);
+			return;
+		}
+		const objective = `Adopted session "${handoff.label || label}"`;
+		const member = startMember(name, objective, buildMemberLaunch({ env, cwd: handoff.cwd, sessionDir: dirname(handoff.sessionFile), sessionFile: handoff.sessionFile, pi: deps.pi }));
+		fleetLedger.spawned(name, objective, handoff.cwd, undefined, { sessionFile: handoff.sessionFile });
+		member.start();
+		track(member);
+		refreshWidget();
+		pi.sendMessage({ customType: FLEET_DIGEST_MESSAGE_TYPE, content: `Fleet adopted (code-built):\n- adopted ${name}: the human's session "${label}" in ${handoff.cwd} continues as a member on its own session file and waits; send it work with fleet_send.`, display: true, details: { gentleFleet: { adopted: name, members: [...members.keys()] } } }, { deliverAs: "followUp", triggerTurn: true });
+	};
+
+	// /fleet:adopt (S8): the human's pick here is the consent (L60). The target
+	// answers at once and closes after its turn; refusals never spawn anything.
+	const adoptSession = async (ctx: ExtensionContext) => {
+		ctxRef = ctx;
+		if (!ctx.hasUI || ctx.mode !== "tui") {
+			if (ctx.hasUI) ctx.ui.notify("/fleet:adopt needs the fleet's terminal UI: the human picks the session there.", "warning");
+			return;
+		}
+		config = readFleetConfig(configHome);
+		const limit = adoptLimit();
+		if (limit) {
+			ctx.ui.notify(`Gentle Fleet cannot adopt a session: ${limit}.`, "warning");
+			return;
+		}
+		let candidates: AdoptCandidate[];
+		// Another fleet's controller keeps its sessions under gentle-fleet/sessions; members never advertise.
+		try { candidates = (await adoptTransport().candidates(fleetSessionId)).filter(candidate => !existsSync(join(agentHome, "gentle-fleet", "sessions", candidate.sessionId))); }
+		catch (error) {
+			ctx.ui.notify(`Gentle Fleet cannot list the open sessions: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			return;
+		}
+		if (candidates.length === 0) {
+			ctx.ui.notify("No other Gentle Shell session is open to adopt.", "info");
+			return;
+		}
+		const options = candidates.map(candidate => `${candidate.label || "unnamed"} · ${candidate.workspace || "unknown directory"} · ${candidate.sessionId.slice(0, 8)}`);
+		const picked = await ctx.ui.select("Adopt which session into the fleet? It finishes its turn, closes its window and continues here as a member.", options);
+		const candidate = picked === undefined ? undefined : candidates[options.indexOf(picked)];
+		if (!candidate || closed || ctxRef !== ctx) return;
+		config = readFleetConfig(configHome);
+		const again = adoptLimit();
+		if (again) {
+			ctx.ui.notify(`Gentle Fleet cannot adopt a session: ${again}.`, "warning");
+			return;
+		}
+		const fleetLedger = ensureLedger(ctx.cwd);
+		const label = candidate.label || candidate.sessionId.slice(0, 8);
+		const name = adoptedMemberName(label, memberNames());
+		const token = randomBytes(18).toString("base64url");
+		let accepted = false;
+		try { accepted = await adoptTransport().send(fleetSessionId, candidate.sessionId, { fleetSlug: fleetLedger.slug, token }); } catch { /* unreachable: not accepted */ }
+		const answer = readAdoptHandoff(agentHome, token);
+		if (!accepted || answer?.state !== "accepted") {
+			adoptFailed(ctx, label, name, answer?.state === "refused" ? answer.reason : "it did not accept the adopt request (an older Gentle Shell, or its window closed)");
+			return;
+		}
+		ctx.ui.notify(`Adopting "${label}": it finishes its current turn, closes its window and joins the fleet.`, "info");
+		fleetLedger.log("adopt", null, `adopting "${label}" (${candidate.sessionId}); waiting for its window to hand off and exit`);
+		const cancel = watchAdoption({
+			agentHome,
+			token,
+			pid: answer.pid,
+			schedule: deps.schedule,
+			alive: deps.isProcessAlive,
+			onReady: handoff => {
+				adoptions.delete(cancel);
+				startAdopted(ctx, handoff, label);
+			},
+			onFailed: reason => {
+				adoptions.delete(cancel);
+				if (!closed) adoptFailed(ctx, label, name, reason);
+			},
+		});
+		adoptions.add(cancel);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -644,6 +764,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		stopObservingMode?.();
 		stopObservingMode = undefined;
 		deck = undefined;
+	});
+
+	// A human-only TUI action (L60): commands never reach the controller model's tools.
+	pi.registerCommand("fleet:adopt", {
+		description: "Adopt a running Gentle Shell session into this fleet: pick it here; it finishes its current turn, closes its window and continues headless as a member on its own session file.",
+		handler: async (_args, ctx) => adoptSession(ctx),
 	});
 
 	pi.registerTool({

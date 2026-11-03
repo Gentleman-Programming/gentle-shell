@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import nodeTest, { type TestContext } from "node:test";
 const test = process.platform === "win32" ? nodeTest.skip : nodeTest;
-import { ActiveSessionClient, ActiveSessionClientError, ActiveSessionListener, FrameDecoder, MAX_FRAME_BYTES, SessionPresenceError, SessionPresenceRegistry, TransportProtocolError, encodeAckFrame, encodeNotificationFrame, isSafeRuntimeParent, type PresenceRecord, type ReceivedNotification } from "../lib/agents-session-transport.ts";
+import { ActiveSessionClient, ActiveSessionClientError, ActiveSessionListener, FrameDecoder, MAX_FRAME_BYTES, SessionPresenceError, SessionPresenceRegistry, TransportProtocolError, encodeAckFrame, encodeAdoptFrame, encodeNotificationFrame, isSafeRuntimeParent, type PresenceRecord, type ReceivedAdopt, type ReceivedNotification } from "../lib/agents-session-transport.ts";
 
 async function registry(t: TestContext, beforeCandidateOpen?: () => Promise<void>) {
 	const home = await mkdtemp(join(tmpdir(), "g-"));
@@ -870,4 +870,58 @@ test("shares concurrent close through delayed final cleanup", async (t) => {
 	assert.equal(instance.status, "closed");
 	await assert.rejects(lstat(endpoint));
 	await rejected(instance.registry.resolve("recipient"), "not_found");
+});
+
+// --- T9 (S8): the fleet's adopt request rides the notification envelope (the
+// Windows native pipe gate admits only that prefix) with an extra adopt field.
+
+const adoptFrame = (adopt: Record<string, unknown> = { fleetSlug: "ship-it", token: "Tok_en-12345678" }, message = "") => ({ version: 1 as const, kind: "notification" as const, id: "adopt-1", senderSessionId: "fleet", recipientSessionId: "recipient", message, adopt });
+
+test("adopt frames encode and decode strictly and never pass as a plain notification", () => {
+	const frame = adoptFrame();
+	const bytes = encodeAdoptFrame(frame as never);
+	for (let split = 0; split <= bytes.length; split++) assert.deepEqual(decode(bytes, split), frame);
+	assert.match(bytes.toString(), /^\{"version":1,"kind":"notification","id":"adopt-1",/, "the Windows pipe gate prefix holds");
+	protocolRejected(() => encodeNotificationFrame(frame as never), "invalid_frame");
+	protocolRejected(() => encodeAdoptFrame(notification() as never), "invalid_frame");
+	for (const adopt of [{ fleetSlug: "ship-it", token: "../../etc/passwd" }, { fleetSlug: "ship-it", token: "/abs/path" }, { fleetSlug: "ship-it", token: "short" }, { fleetSlug: "Ship It", token: "Tok_en-12345678" }, { fleetSlug: "ship-it", token: "Tok_en-12345678", handoffPath: "/tmp/x" }, { fleetSlug: "ship-it" }]) {
+		protocolRejected(() => encodeAdoptFrame(adoptFrame(adopt) as never), "invalid_frame");
+	}
+	protocolRejected(() => encodeAdoptFrame(adoptFrame(undefined, "text for a model") as never), "invalid_frame");
+});
+
+test("an adopt request reaches only the adopt handler, never the notification callback", async (t) => {
+	const transport = await registry(t), notifications: unknown[] = [], adopts: ReceivedAdopt[] = [];
+	const recipient = new ActiveSessionListener(transport, "recipient", async (value) => { notifications.push(value); }, { onAdopt: async (value) => { adopts.push(value); return true; } });
+	t.after(() => recipient.close());
+	await recipient.start();
+	const client = new ActiveSessionClient(transport, "fleet");
+	assert.deepEqual(await wait("adopt accepted", client.sendAdopt("recipient", { fleetSlug: "ship-it", token: "Tok_en-12345678" }, { id: "adopt-1" })), { id: "adopt-1", accepted: true });
+	assert.deepEqual(adopts, [{ id: "adopt-1", senderSessionId: "fleet", fleetSlug: "ship-it", token: "Tok_en-12345678" }]);
+	assert.deepEqual(notifications, []);
+});
+
+test("a refused adopt request or a listener without an adopt handler answers rejected", async (t) => {
+	const transport = await registry(t), notifications: unknown[] = [];
+	const refusing = new ActiveSessionListener(transport, "refusing", async (value) => { notifications.push(value); }, { onAdopt: async () => false });
+	const plain = new ActiveSessionListener(transport, "plain", async (value) => { notifications.push(value); });
+	t.after(() => Promise.all([refusing.close(), plain.close()]));
+	await Promise.all([refusing.start(), plain.start()]);
+	const client = new ActiveSessionClient(transport, "fleet");
+	await clientRejected(client.sendAdopt("refusing", { fleetSlug: "ship-it", token: "Tok_en-12345678" }), "remote_rejected");
+	await clientRejected(client.sendAdopt("plain", { fleetSlug: "ship-it", token: "Tok_en-12345678" }), "remote_rejected");
+	await assert.rejects(client.sendAdopt("plain", { fleetSlug: "ship-it", token: "../escape" }), TransportProtocolError);
+	assert.deepEqual(notifications, [], "no adopt request ever becomes a notification");
+});
+
+test("previous behavior: a notification still reaches the notification callback when an adopt handler is set", async (t) => {
+	const transport = await registry(t), notifications: unknown[] = [];
+	let adopts = 0;
+	const recipient = new ActiveSessionListener(transport, "recipient", async (value) => { notifications.push(value); }, { onAdopt: async () => { adopts++; return true; } });
+	t.after(() => recipient.close());
+	await recipient.start();
+	const client = new ActiveSessionClient(transport, "sender");
+	assert.deepEqual(await wait("notification accepted", client.sendNotification("recipient", "exact", { id: "outbound-1" })), { id: "outbound-1", accepted: true });
+	assert.deepEqual(notifications, [{ id: "outbound-1", senderSessionId: "sender", message: "exact" }]);
+	assert.equal(adopts, 0);
 });

@@ -322,3 +322,31 @@ test("the fleet document's members table and totals show new tokens and cost", (
 	const saved = h.readLedger().members[0];
 	assert.deepEqual([saved.newTokens, saved.cacheRead], [51000, 882200], "the breakdown is kept in the ledger");
 });
+
+// T9 (S8): an adopted member keeps its own session file in the ledger, so a
+// reopened fleet resumes it there; it shows in the document like any member.
+test("an adopted member records its session file and adopted flag, logs the adoption and shows like any member", () => {
+	const h = harness();
+	const path = h.ledger.setObjective("Swipe", "Build the swipe app.");
+	h.ledger.spawned("blog", "Adopted session \"Blog\"", "/work/blog", undefined, { sessionFile: "/home/.pi/agent/sessions/--work-blog--/2026_x.jsonl" });
+	h.ledger.flush();
+	const saved = h.readLedger().members[0];
+	assert.deepEqual([saved.sessionFile, saved.adopted, saved.worktree, saved.branch], ["/home/.pi/agent/sessions/--work-blog--/2026_x.jsonl", true, null, null]);
+	assert.equal(h.readLedger().log.at(-1)?.kind, "adopt");
+	assert.match(readFileSync(path, "utf8"), /^\| blog \| Adopted session "Blog" \| starting \| — \| — \| 0 \/ \$0\.00 \| — \| — \| — \|$/m);
+	const loaded = loadFleetLedger(h.ledgerPath, "fleet-1");
+	assert.equal(loaded?.members[0].sessionFile, "/home/.pi/agent/sessions/--work-blog--/2026_x.jsonl");
+});
+
+test("previous behavior: a spawned member records no session file, and an older ledger without one still loads", () => {
+	const h = harness();
+	h.ledger.spawned("api", "Own the API", "/work/api");
+	h.ledger.flush();
+	const saved = h.readLedger();
+	assert.deepEqual(Object.keys(saved.members[0]).filter(key => key === "sessionFile" || key === "adopted"), []);
+	assert.equal(saved.log.at(-1)?.kind, "spawn");
+	writeFileSync(h.ledgerPath, JSON.stringify({ ...saved, members: [{ ...saved.members[0], sessionFile: 42 }] }));
+	const loaded = loadFleetLedger(h.ledgerPath, "fleet-1");
+	assert.equal(loaded?.members[0].sessionFile, undefined, "a malformed session file is dropped, not trusted");
+	assert.equal(loaded?.members[0].name, "api");
+});

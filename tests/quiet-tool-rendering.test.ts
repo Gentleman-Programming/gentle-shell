@@ -60,11 +60,9 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 // call text (glyph, fill, and hint dropped), sides are stripped, and the closing
 // rule is dropped. Gentle AI cards keep their raw frame for the card-text
 // helpers, and the quiet card tests assert the raw frame via frameLines.
-// Legacy bash argument assertions drop its new identity prefix here; distinct
-// tool identity is asserted separately against the actual unmodified frame.
 // A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
-const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[✿≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}(?:\\S|\u{1F300}-\u{1FAFF}){1,2}${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
 const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
 
@@ -80,7 +78,7 @@ function renderLines(component: { render(width: number): string[] }, width = 120
 	return component.render(width).flatMap((line) => {
 		if (CARD_BOTTOM.test(line)) return [];
 		const top = CARD_TOP.exec(line);
-		if (top) return [top[1]!.replace(/^(?:<[^>]+>)*bash(?:<[^>]+>)* /, "").trimEnd()];
+		if (top) return [top[1]!.trimEnd()];
 		const side = CARD_SIDE.exec(line);
 		const text = (side ? side[1]! : line).trimEnd();
 		return call && side && text.replace(/<\/?[a-zA-Z]+>/g, "") === "running…" ? [] : [text];
@@ -202,7 +200,7 @@ function renderToolResult(tool: any, result: any, options: any, context: Record<
 function assertGenericBash(tool: any, command: string): void {
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const output = renderToolResult(tool, textResult("original command output"), { expanded: true, isPartial: false }, { args: { command } });
-	assert.equal(call.trimEnd(), `$ ${command}`, command);
+	assert.equal(call.trimEnd(), `bash · ${command}`, command);
 	assert.doesNotMatch(call, /🌹/);
 	assert.match(output, /original command output/);
 }
@@ -500,7 +498,7 @@ test("retired SDD commands use generic bash rendering while review remains priva
 	]) {
 		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
-		assert.equal(call, `$ ${command}`);
+		assert.equal(call, `bash · ${command}`);
 		const result = renderToString(bash.renderResult(textResult("ordinary output"), { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 		assert.match(result, /ordinary output/);
 	}
@@ -546,7 +544,7 @@ test("quiet tool rendering refuses to compact composed Gentle AI shell commands"
 		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
 		const call = renderToString(tools.get("bash").renderCall({ command }, passthroughTheme, {}));
 		const output = renderToString(tools.get("bash").renderResult(textResult("command output"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command } }));
-		assert.equal(call.replace(/[ \t]+$/gm, "").trimEnd(), `$ ${command.trimEnd()}`);
+		assert.equal(call.replace(/[ \t]+$/gm, "").trimEnd(), `bash · ${command.trimEnd().replace(/\n/g, " ")}`);
 		assert.match(output, /command output/);
 	}
 });
@@ -657,7 +655,7 @@ test("quiet Bash keeps direct Gentle AI calls seamless while streaming", () => {
 
 	for (const malformed of ["gentle-ai\x1b[31m review status", 'gentle-ai review status "unfinished']) {
 		const text = render(malformed, {}, { argsComplete: true })[1];
-		assert.doesNotMatch(text, rose); assert.match(text, /\$ gentle-ai.*review status/);
+		assert.doesNotMatch(text, rose); assert.match(text, /bash · gentle-ai.*review status/);
 	}
 	for (const bracket of ["[", "]"]) assert.match(render(`${direct} ${bracket}`, {})[1], rose);
 
@@ -780,7 +778,7 @@ test("quiet tool rendering recognizes exact quoted, escaped, Windows, and comman
 
 	for (const command of ["'gentle-ai-copy' version", '"gentle-ai-copy.exe" version', "'gentle-ai' version && echo done"] as const) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
-		assert.equal(call.trimEnd(), `$ ${command}`);
+		assert.equal(call.trimEnd(), `bash · ${command}`);
 		assert.doesNotMatch(call, /🌹/);
 	}
 });
@@ -945,7 +943,7 @@ test("quiet tool rendering keeps shell compositions, expansions, and lookalikes 
 		const output = renderToString(
 			tool.renderResult(textResult("original command output"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command } }),
 		);
-		assert.equal(call.trimEnd(), `$ ${command}`);
+		assert.equal(call.trimEnd(), `bash · ${command}`);
 		assert.doesNotMatch(call, /🌹/);
 		assert.match(output, /original command output/);
 	}
@@ -970,7 +968,7 @@ test("quiet Bash previews semantic lines for generic JSON output", () => {
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const collapsed = renderToolResult(tool, textResult(object), { expanded: false, isPartial: false }, { args: { command } });
 	const expanded = renderToolResult(tool, textResult(object), { expanded: true, isPartial: false }, { args: { command } });
-	assert.equal(call.trimEnd(), `$ ${command}`);
+	assert.equal(call.trimEnd(), `bash · ${command}`);
 	assert.doesNotMatch(call, /🌹/);
 	assert.doesNotMatch(collapsed, /^\n\s*[}\]]/);
 	const expandHint = keyHint("app.tools.expand", "to expand");
@@ -1062,7 +1060,7 @@ test("quiet tool rendering sanitizes collapsed output and call rows", () => {
 	const carriageReturn = renderToolResult(tools.get("bash"), textResult("prefix\rSECRET\r\nnext"), { expanded: false, isPartial: false }, { args: { command: "printf output" } });
 	assert.match(collapsed, /safered/);
 	assert.doesNotMatch(cardBody(collapsed), /\x1b\[31m|\x1b\[0m/);
-	assert.equal(call.trimEnd(), "$ echo red");
+	assert.equal(call.trimEnd(), "bash · echo red");
 	assert.match(carriageReturn, /prefixSECRET\nnext/);
 	assert.doesNotMatch(carriageReturn, /\r/);
 });
@@ -1086,7 +1084,7 @@ test("quiet tool rendering call rows show tool calls without result output", () 
 	const grepCall = renderToString(tools.get("grep").renderCall({ pattern: "needle", path: "src", glob: "*.ts" }, passthroughTheme, {}));
 
 	assert.match(readCall, /read .*example\.ts:2-4/);
-	assert.match(bashCall, /\$ printf noisy \(timeout 5s\)/);
+	assert.match(bashCall, /bash · printf noisy \(timeout 5s\)/);
 	assert.match(grepCall, /grep \/needle\/ in src \(\*\.ts\)/);
     });
 
@@ -1143,7 +1141,7 @@ test("quiet tool rendering keeps unescaped expansions inside double quotes gener
 			{ args: { command } },
 		);
 		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
-		assert.equal(call.trimEnd(), `$ ${command}`, command);
+		assert.equal(call.trimEnd(), `bash · ${command}`, command);
 		assert.match(collapsed, /original command output/, command);
 	}
 });
@@ -1364,7 +1362,7 @@ test("quiet tool rendering redacts only exact package-local executable paths wit
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
 		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
-		assert.equal(call.trimEnd(), `$ ${command}`, command);
+		assert.equal(call.trimEnd(), `bash · ${command}`, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 });
@@ -1447,14 +1445,156 @@ test("long finished quiet headings retain the applicable expansion hint and comp
 		const ctx = routineRenderContext({ args, executionStarted: true, isPartial: false, expanded });
 		for (const width of [80, 120]) {
 			const rows = frameLines(tool.renderCall(args, passthroughTheme, ctx), width);
-			assert.ok(rows[0].endsWith(` ${hint} ╮`), `width ${width}: applicable hint must survive heading wrapping`);
-			assert.ok(rows.length > 1);
+			assert.ok(rows[0].endsWith(` ${hint} ╮`), `width ${width}: the expand key survives`);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+			if (!expanded) {
+				// Collapsed, the generic fallback stays one visible line and ends in an ellipsis.
+				assert.equal(rows.length, 1);
+				assert.match(rows[0], /^╭─ \$ bash · printf .*…/);
+				assert.doesNotMatch(rows[0], /tango/);
+				continue;
+			}
+			// Expanded, the complete command returns instead of the ellipsis.
+			assert.ok(rows.length > 1);
 			const first = rows[0].slice("╭─ $ ".length).split(" ─")[0];
 			const rest = rows.slice(1).map((row) => row.replace(/^│ /, "").replace(/ +│$/, ""));
-			assert.equal([first, ...rest].join(" ").replace(/\s+/g, " ").trim(), `bash $ ${command}`);
+			assert.equal([first, ...rest].join(" ").replace(/\s+/g, " ").trim(), `bash · ${command}`);
 		}
 	}
+});
+
+test("bash cards head with the ODD phase their command implies and keep the call below it", () => {
+	const bash = registeredQuietTools().get("bash");
+	const header = (args: Record<string, unknown>, theme: any = passthroughTheme) =>
+		frameLines(bash.renderCall(args, theme, routineRenderContext({ args })), 120)[0] ?? "";
+	const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+	// The phase names the card, its own mark leads it, and the command rides beside it.
+	for (const [command, phase, glyph] of [
+		["git status --short", "exploring", "◎"],
+		["ls -la src", "exploring", "◎"],
+		// A verification runner checks, even alongside inspection.
+		["pnpm test", "checking", "✓"],
+		// A composition names the segment that decided its phase.
+		["git log --oneline && pnpm test", "checking", "✓"],
+	] as const) {
+		const detail = command === "git log --oneline && pnpm test" ? "pnpm test" : command;
+		assert.match(header({ command }), new RegExp(`^╭─ ${glyph} ${phase} · ${escape(detail)} ─+╮$`), command);
+	}
+
+	// Each label paints itself in its own color while the frame keeps the call's status.
+	assert.match(header({ command: "git status" }, statusTheme), /^<warning>╭<\/warning>.*<mdLink>◎ exploring<\/mdLink>/);
+	assert.match(header({ command: "pnpm test" }, statusTheme), /<mdHeading>✓ checking<\/mdHeading>/);
+	// The timeout chip stays part of the call detail.
+	assert.match(header({ command: "git status", timeout: 5 }), /· git status \(timeout 5s\) ─+╮$/);
+});
+
+test("bash cards name the principal action of a shell composition", () => {
+	const bash = registeredQuietTools().get("bash");
+	const heading = (command: string) => frameLines(bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })), 120)[0] ?? "";
+
+	assert.match(heading("git status"), /^╭─ ◎ exploring · git status ─+╮$/, "a single command has nothing to abbreviate");
+	assert.match(heading("cd repo && git diff"), /^╭─ ◎ exploring · git diff ─+╮$/, "the neutral segment is dropped");
+	assert.match(heading("git log --oneline && pnpm test"), /^╭─ ✓ checking · pnpm test ─+╮$/, "checking names the runner that decided it");
+	assert.match(heading("npx vitest run src"), /^╭─ ✓ checking · npx vitest run src ─+╮$/);
+	// An unreadable composition keeps the whole command instead of guessing at it.
+	assert.match(heading('git diff "$(cat list.txt)"'), /^╭─ ◎ exploring · git diff "\$\(cat list\.txt\)" ─+╮$/);
+});
+
+test("a composition with a consequential extra action keeps the whole command", () => {
+	const bash = registeredQuietTools().get("bash");
+	const heading = (command: string) => frameLines(bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })), 120)[0] ?? "";
+
+	// A mutation or an unknown program must never be hidden behind a test run.
+	assert.match(heading("pnpm test && rm -rf dist"), /✓ checking · pnpm test && rm -rf dist/);
+	assert.match(heading("pnpm test && npm install"), /✓ checking · pnpm test && npm install/);
+	// A mutation makes the whole command ambiguous, so it is generic and shows all of it.
+	assert.match(heading("git status && node scripts/deploy.mjs"), /\$ bash · git status && node scripts\/deploy\.mjs/);
+
+	// A redirection in an otherwise neutral segment writes a file: show everything.
+	assert.match(heading("pnpm test && echo ok > out.txt"), /✓ checking · pnpm test && echo ok > out\.txt/);
+	assert.match(heading("pnpm test; echo done >> test.log"), /✓ checking · pnpm test; echo done >> test\.log/);
+
+	// A pipeline routes output into another program, so no part of it is the whole story.
+	assert.match(heading("pnpm test && echo done | tee log.txt"), /✓ checking · pnpm test && echo done \| tee log\.txt/);
+	assert.match(heading("git status || pnpm test"), /✓ checking · git status \|\| pnpm test/);
+
+	// Harmless no-ops may still be skipped, and the preserved cases stay abbreviated.
+	assert.match(heading("pnpm test && echo done"), /✓ checking · pnpm test ─+/);
+	assert.match(heading("git log --oneline && pnpm test"), /✓ checking · pnpm test ─+/);
+	assert.match(heading("cd repo && git diff"), /◎ exploring · git diff ─+/);
+	// Discarded output and stream merges are not writes, so they may still be skipped.
+	assert.match(heading("pnpm test && echo ok 2>/dev/null"), /✓ checking · pnpm test ─+/);
+	assert.match(heading("cd repo && echo ok 2>&1"), /\$ bash|◎ exploring|✓ checking/);
+});
+
+test("a command with no inferable phase heads as the generic bash card", () => {
+	const bash = registeredQuietTools().get("bash");
+	const header = (args: Record<string, unknown>, theme: any = passthroughTheme) =>
+		frameLines(bash.renderCall(args, theme, routineRenderContext({ args })), 120)[0] ?? "";
+
+	// Ambiguous commands keep the generic bash identity: its mark, its title, its color.
+	for (const command of ["printf output", "rm -rf build", "node scripts/release.mjs"]) {
+		const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		assert.match(header({ command }), new RegExp(`^╭─ \\$ bash · ${escaped} ─+╮$`), command);
+	}
+	assert.match(header({ command: "printf output" }, statusTheme), /<bashMode>\$ bash<\/bashMode>/);
+});
+
+test("only the phases a bash command can produce carry a card style", async () => {
+	const { PHASE_IDENTITY, BASH_IDENTITY } = await import("../extensions/quiet-tools.ts") as any;
+	const { inferOddPhase } = await import("../lib/odd-phase-inference.ts");
+	const { ODD_PHASES } = await import("../lib/odd-phase.ts");
+	// Evidence for the narrow table: shell inference can only return these two.
+	const reachable = new Set<string>();
+	for (const command of ["git status", "ls -la", "pnpm test", "npx vitest run", "rm -rf build", "node x.mjs", "printf hi"]) {
+		const phase = inferOddPhase("bash", { command });
+		if (phase) reachable.add(phase);
+	}
+	assert.deepEqual([...reachable].sort(), ["checking", "exploring"]);
+	assert.deepEqual(Object.keys(PHASE_IDENTITY).sort(), [...reachable].sort(), "the card styles exactly the reachable phases");
+	assert.deepEqual(Object.keys(PHASE_IDENTITY).filter((phase) => !(ODD_PHASES as readonly string[]).includes(phase)), []);
+	const marks = Object.values(PHASE_IDENTITY).map((identity: any) => identity.glyph);
+	assert.equal(new Set(marks).size, 2, "each reachable phase has its own mark");
+	const roles = Object.values(PHASE_IDENTITY).map((identity: any) => identity.titleRole);
+	assert.equal(new Set(roles).size, 2, "each reachable phase has its own color");
+	assert.notEqual(BASH_IDENTITY.titleRole, PHASE_IDENTITY.exploring.titleRole, "the generic fallback is never a phase look");
+});
+
+test("the bash card draws its result below the heading, collapsed or expanded", (t) => {
+	const bash = registeredQuietTools().get("bash");
+	const command = "git status";
+	const context = routineRenderContext({ args: { command }, executionStarted: true, isPartial: false });
+
+	const rows = frameLines(bash.renderCall({ command }, passthroughTheme, context), 120);
+	assert.match(rows[0] ?? "", /^╭─ ◎ exploring · git status ─+ .*to expand.*╮$/);
+	assert.match(cardHint(rows.join("\n")) ?? "", /to expand$/);
+
+	const collapsed = renderToolResult(bash, textResult("one\ntwo\nthree\nfour"), { expanded: false, isPartial: false }, context);
+	assert.doesNotMatch(collapsed, /one/);
+	assert.match(collapsed, /two\nthree\nfour/);
+	assert.equal(renderToolResult(bash, textResult("one\ntwo"), { expanded: true, isPartial: false }, context), "one\ntwo");
+
+	// Minimal keeps the same heading and only withholds the preview rows.
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 120)[0] ?? "", /^╭─ ◎ exploring · git status ─+/);
+	assert.equal(renderToolResult(bash, textResult("one\ntwo"), { expanded: false, isPartial: false }, context), "");
+});
+
+test("a narrow bash card keeps its heading and wraps the call detail below it", () => {
+	const bash = registeredQuietTools().get("bash");
+	const command = "git status";
+	const context = routineRenderContext({ args: { command }, executionStarted: true, isPartial: false });
+
+	for (const width of [30, 44, 60]) {
+		const rows = frameLines(bash.renderCall({ command }, passthroughTheme, context), width);
+		assert.equal(rows.length, 1, `width ${width}: the collapsed heading is one line`);
+		assert.ok(rows[0]?.includes("◎ exploring"), `width ${width}: ${rows[0]}`);
+		assert.match(rows[0] ?? "", /git st/, `width ${width}: the detail stays readable`);
+		assert.ok(rows.every((row) => visibleWidth(row) <= width));
+	}
+	// The expand key outranks the detail's width: it rides the heading and the detail truncates around it.
+	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 44)[0] ?? "", /to expand/);
 });
 
 test("quiet components repaint after theme invalidation and retain transparent error frames", (t) => {
@@ -1504,10 +1644,17 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const args = { command: "printf output" };
 	const width = 30;
 
+	// The card heads with the tool's own identity, kept to one row while collapsed.
 	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
-	assert.deepEqual(header, [`╭─ $ bash $ printf output ${"─".repeat(3)}╮`]);
+	assert.equal(header.length, 1);
+	// This slice keeps pi's own finish signal, so a finished call carries the key; at
+	// thirty columns the key wins the room and the detail ends in an ellipsis. The
+	// slice that measures what expanding really draws restores the whole detail here.
+	assert.match(stripAnsi(header[0] ?? ""), /^╭─ \$ bash · pri…\s+to expand ╮$/);
+	const wideRow = stripAnsi(bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(60)[0] ?? "");
+	assert.match(wideRow, /^╭─ \$ bash · printf output ─+  to expand ╮$/);
 	const running = bash.renderCall(args, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(width);
-	assert.match(running[0] ?? "", /^<warning>╭<\/warning><warning>─ <\/warning><warning>\$ (?:<toolTitle>)?bash/);
+	assert.match(running[0] ?? "", /^<warning>╭<\/warning><warning>─ <\/warning><bashMode>\$ bash<\/bashMode> <muted>·<\/muted> <muted>printf output<\/muted>/);
 	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>╭<\/error>/);
 
 	const expanded = bash.renderResult(textResult("alpha\nbeta"), { expanded: true, isPartial: false }, passthroughTheme, { args }).render(width);
@@ -1720,7 +1867,7 @@ test("every quiet tool card shows only the command while collapsed and stays exp
 	}
 });
 
-test("the default Card content preference restores result previews and native bash drawing", () => {
+test("the default Card content preference restores result previews and Gentle bash cards", () => {
 	const tools = registeredQuietTools();
 	const read = tools.get("read");
 	setCardContent(CARD_CONTENT.DEFAULT);
@@ -1738,7 +1885,14 @@ test("the default Card content preference restores result previews and native ba
 		};
 		withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 		const native = { marker: "native" };
-		assert.equal(resolvers.at(-1)!("bash", () => native), native, "default content defers bash drawing to the native renderer");
+		const bash = resolvers.at(-1)!("bash", () => native) as any;
+		assert.notEqual(bash, native, "default content also draws bash as a Gentle card, so its inferred phase stays visible");
+		assert.equal(bash.renderShell, "self");
+		const bashArgs = { command: "git status" };
+		const bashCall = renderToString(bash.renderCall(bashArgs, passthroughTheme, routineRenderContext({ args: bashArgs, executionStarted: true, isPartial: false })));
+		assert.equal(bashCall.trimEnd(), "exploring · git status");
+		const bashCollapsed = renderToString(bash.renderResult(textResult("clean tree"), { expanded: false, isPartial: false }, passthroughTheme, { args: bashArgs }));
+		assert.match(bashCollapsed, /clean tree/, "default content keeps the bash result preview");
 		assert.equal(resolvers.at(-1)!("read", () => native), native, "every other tool still defers");
 	} finally {
 		setCardContent(CARD_CONTENT.DEFAULT);

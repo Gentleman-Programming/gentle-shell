@@ -310,11 +310,10 @@ export function cardTopRows(card: Card, theme: CardTheme, width: number, hint?: 
  * instead of continuing on the rows below, so a collapsed card stays one line.
  * Expanding the call is what reveals the complete command.
  */
-export function cardTopLine(card: Card, theme: CardTheme, width: number, hint?: string): string {
+export function cardTopLine(card: Card, theme: CardTheme, width: number, hint?: string, detail?: (room: number) => string): string {
 	const target = Math.max(0, Math.floor(width));
-	if (target < 8 || card.subtitle === undefined) return cardTop(card, theme, target, hint);
+	if (target < 8 || (card.subtitle === undefined && detail === undefined)) return cardTop(card, theme, target, hint);
 	const head = visibleWidth(`${card.glyph ?? CARD_GLYPH} ${card.title}`);
-	const subtitle = card.subtitle.split("\n").join(" ");
 	// The key hint comes first when it fits beside a readable detail; otherwise it
 	// yields its columns so the detail keeps an ellipsis instead of vanishing.
 	let shownHint = hint;
@@ -323,6 +322,10 @@ export function cardTopLine(card: Card, theme: CardTheme, width: number, hint?: 
 		shownHint = undefined;
 		room = target - 5 - head - 3;
 	}
+	// A heading that measures its own collapsed detail takes the room left once the
+	// chrome and the key hint have taken theirs, so a script folds into a stated
+	// count instead of vanishing behind an ellipsis.
+	const subtitle = detail === undefined ? (card.subtitle ?? "").split("\n").join(" ") : detail(Math.max(1, room));
 	const shown = room >= 1 && visibleWidth(subtitle) > room
 		? `${truncateToWidth(subtitle, Math.max(1, room - 1), "")}…`
 		: subtitle;

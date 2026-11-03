@@ -3437,15 +3437,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The content level picks between the quiet tools' result previews
 			// (default) and command-only cards (minimal).
 			const cardContentPreview = {
-				[CARD_CONTENT.DEFAULT]: "≡ read a.ts · result previews + counts · bash rows keep pi's native card",
-				[CARD_CONTENT.MINIMAL]: "≡ read a.ts · command only · ctrl+o expands · bash draws as a Gentle card",
+				[CARD_CONTENT.DEFAULT]: "≡ read a.ts · result previews + counts · bash shows its inferred phase",
+				[CARD_CONTENT.MINIMAL]: "≡ read a.ts · command only · ctrl+o expands · bash shows its inferred phase",
 			};
 			for (const content of Object.values(CARD_CONTENT)) add(
 				() => {
 					const current = resolveCardContent(home);
 					return `Card content: ${content}${current.content === content && !current.malformed ? " (current)" : ""}`;
 				},
-				`Card content: ${content}. Quiet tool cards redraw now; bash rows follow on new calls.`,
+				`Card content: ${content}. Quiet tool cards redraw now.`,
 				() => {
 					writeCardContent(content, home);
 					setCardContent(content);

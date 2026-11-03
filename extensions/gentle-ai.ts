@@ -1290,6 +1290,13 @@ function getFleetOrchestratorPrompt(): string {
 	return fleetOrchestratorPrompt;
 }
 
+// odd/tasks/fleet-orchestrator.md T8 (L54): a fleet member keeps the normal
+// prompt plus this block, so it raises blockers to the fleet instead of
+// sending the human to another session.
+export const FLEET_MEMBER_PROMPT = `## Fleet member
+
+You are a member of a Gentle Shell fleet led by a fleet orchestrator. Questions you raise (ask_user_question, ask_user_choice, permission prompts) reach the fleet, which answers them or relays them to the human. When you are blocked, say so in your reply and ask through those tools. Never tell the human to open another session or terminal. Stay inside your cwd.`;
+
 function renderOrchestratorPrompt(
 	assetsDir: string,
 	background: BackgroundSubagentsRendering = DEFAULT_BACKGROUND_SUBAGENTS_RENDERING,
@@ -11428,7 +11435,8 @@ function createGentleAiExtensionForTesting(
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
-		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
+		const memberPrompt = isPrimarySession && gentlePrompt && fleetRole(permissionEnvironment) === "member" ? `\n\n${FLEET_MEMBER_PROMPT}` : "";
+		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}${memberPrompt}`);
 		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx), isPrimarySession && await yolo.superActive(ctx));
 		updateAutoPrompt(event.systemPromptOptions, isPrimarySession && await yolo.mode(ctx) === "auto");
 		return undefined;

@@ -167,7 +167,7 @@ test("digest is one compact line built by code and detail stays bounded", async 
 	assert.match(line, /^api \[working\]/);
 	assert.match(line, /todo 0\/2 "Write routes"/);
 	assert.match(line, /last tool todo/);
-	assert.match(line, /12\.3k tok/);
+	assert.match(line, /1\.5k new tok/, "new tokens: input + output + cache write");
 	assert.match(line, /\$0\.46/);
 	assert.doesNotMatch(line, /secret transcript/);
 	const detail = h.member.detail();
@@ -245,7 +245,7 @@ test("stdout lines that arrive after the process exit are still counted before t
 	assert.ok(Math.abs(h.member.usage.cost - 0.25) < 1e-9);
 	assert.equal(h.member.lastText, "final answer");
 	assert.deepEqual(h.events.map(event => event.kind), ["settled", "exit"], "exit is reported last, once");
-	assert.match(h.member.digest(), /120 tok · \$0\.25/);
+	assert.match(h.member.digest(), /120 new tok · \$0\.25/);
 });
 
 test("a member whose stdout never closes still exits after the bounded drain and refuses commands meanwhile", async () => {
@@ -422,4 +422,43 @@ test("a resumed member keeps counting from its earlier tokens and cost", async (
 	fake.emit(assistantEnd({ input: 10, output: 5, totalTokens: 15, costTotal: 0.25 }));
 	await tick();
 	assert.deepEqual([member.usage.totalTokens, member.usage.cost], [1215, 0.75]);
+});
+
+// T8 (L54): 933k "tokens" were ~95% cache reads, so the digest misled. The
+// digest shows NEW tokens (input + output + cache write) next to the cost;
+// detail and inspect keep the full breakdown.
+test("the digest shows new tokens and cost, never the cache-inclusive total; detail and inspect keep the breakdown", async () => {
+	const h = harness();
+	h.member.start();
+	h.member.prompt("go");
+	await tick();
+	const child = h.children[0];
+	child.emit(assistantEnd({ input: 20000, output: 2000, cacheRead: 0, cacheWrite: 0, totalTokens: 22000, costTotal: 1 }));
+	child.emit(assistantEnd({ input: 1000, output: 3000, cacheRead: 880000, cacheWrite: 25000, totalTokens: 909000, costTotal: 0.65 }));
+	await tick();
+	assert.equal(h.member.newTokens, 51000);
+	const line = h.member.digest();
+	assert.match(line, / · 51\.0k new tok · \$1\.65/);
+	assert.doesNotMatch(line, /931\.0k|880\.0k/, "no cache-inclusive total in the digest");
+	for (const text of [h.member.detail(), h.member.inspect(5)]) {
+		assert.match(text, /^tokens: 51\.0k new \(input 21\.0k, output 5\.0k, cache write 25\.0k\) · 880\.0k cached · 931\.0k with cache$/m);
+		assert.match(text, /^prefix 20\.0k tok$/m);
+	}
+});
+
+test("a resumed member keeps counting its new and cached tokens", async () => {
+	const fake = fakeChild();
+	const member = new FleetMember({
+		name: "api",
+		launch: { command: "pi", args: [], env: {}, cwd: "/w" },
+		usage: { totalTokens: 50000, cost: 0.5, newTokens: 8000, cacheRead: 42000 },
+		spawn: () => fake.child,
+		schedule: () => () => {},
+	});
+	member.start();
+	assert.deepEqual([member.newTokens, member.usage.cacheRead], [8000, 42000]);
+	fake.emit(assistantEnd({ input: 10, output: 5, cacheRead: 100, cacheWrite: 0, totalTokens: 115, costTotal: 0.25 }));
+	await tick();
+	assert.deepEqual([member.newTokens, member.usage.cacheRead, member.usage.totalTokens], [8015, 42100, 50115]);
+	assert.match(member.digest(), /8\.0k new tok · \$0\.75/);
 });

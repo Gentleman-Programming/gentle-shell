@@ -15,6 +15,7 @@ import { generateUnifiedPatch, type ExtensionAPI, type ExtensionContext } from "
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
+import { classifyDialog } from "../lib/fleet-dialogs.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
@@ -2841,6 +2842,76 @@ test("foreign selector rejects RPC and retired SDD selections before consent", a
 		assert.equal(runtime.children.length, 0);
 		await h.fire("session_shutdown", ctx);
 	} finally { rmSync(fixture, TEST_DIR_REMOVAL); }
+});
+
+// fleet-orchestrator T8 (L54): a fleet member runs as an interactive RPC host,
+// so its foreign-repository launch reaches the existing foreign clone consent,
+// which travels over RPC to the fleet and on to the human (lib/fleet-dialogs.ts
+// "foreign clone"). Every other non-TUI session keeps the hard refusal.
+// Scratch is reported, not removed.
+test("a fleet member over its interactive RPC host reaches the foreign clone consent; a refusal launches nothing", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "fleet-member-foreign-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+	const h = fakePi(), runtime = deps();
+	runtime.deps.resolveWorktree = resolveSessionWorktree;
+	runtime.deps.env = { ...runtime.deps.env, GENTLE_SHELL_FLEET_ROLE: "member", GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	gentleAgents(h.pi, {}, runtime.deps);
+	let answer: boolean | undefined = false;
+	const { ctx, dialogs } = fakeContext(fakeTui, async () => answer as boolean);
+	ctx.sessionManager.getCwd = () => parent;
+	await h.fire("session_start", ctx);
+	ctx.mode = "rpc";
+	const run = h.tools.get("subagent_run")!;
+	const args = { agent: "explore", task: "Map", repository_root: foreign, mode: "background" };
+	const consents = () => dialogs.filter(dialog => dialog.startsWith("confirm:Authorize foreign clone subagent:"));
+	await assert.rejects(run.execute("refused", args, undefined, undefined, ctx), /Foreign clone requires interactive human consent before launch/);
+	answer = undefined;
+	await assert.rejects(run.execute("cancelled", args, undefined, undefined, ctx), /Foreign clone requires interactive human consent before launch/);
+	assert.equal(consents().length, 2, "each launch raised the consent dialog");
+	const [, title, ...message] = consents()[0].split(":");
+	assert.deepEqual(classifyDialog({ method: "confirm", title, message: message.join(":") }), { class: "security-permission", marker: "foreign clone grant" }, "the fleet relays it to the human; its model cannot answer it");
+	assert.match(consents()[0], new RegExp(`Launch a subagent in ${foreign.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\?`));
+	assert.equal(runtime.spawned.length, 0, "a refused or cancelled consent launches nothing");
+	assert.equal(runtime.children.length, 0);
+	assert.deepEqual(h.entries.filter(entry => entry.customType === SESSION_WORKTREE_ENTRY), []);
+	answer = true;
+	const launched = await run.execute("granted", args, undefined, undefined, ctx);
+	assert.equal((launched.details.gentleAgents as { cwd: string }).cwd, foreign);
+	assert.equal(consents().length, 3);
+	await h.fire("session_shutdown", ctx);
+});
+
+test("outside a fleet member's interactive RPC host a foreign launch keeps the hard refusal before any dialog", async () => {
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "fleet-foreign-refusal-")));
+	const parent = join(fixture, "parent"), foreign = join(fixture, "foreign"), template = join(fixture, "template");
+	mkdirSync(template);
+	for (const path of [parent, foreign]) execFileSync("git", ["init", "--quiet", `--template=${template}`, path]);
+	const member = { GENTLE_SHELL_FLEET_ROLE: "member" }, host = { GENTLE_SHELL_INTERACTIVE_HOST: "1" };
+	const cases: Array<{ label: string; env: Record<string, string>; mode: ExtensionContext["mode"]; hasUI: boolean }> = [
+		{ label: "rpc host, not a member", env: host, mode: "rpc", hasUI: true },
+		{ label: "controller over an rpc host", env: { ...host, GENTLE_SHELL_FLEET_ROLE: "controller" }, mode: "rpc", hasUI: true },
+		{ label: "member without the interactive host", env: member, mode: "rpc", hasUI: true },
+		{ label: "member without UI", env: { ...member, ...host }, mode: "rpc", hasUI: false },
+		{ label: "member in print mode", env: { ...member, ...host }, mode: "print", hasUI: true },
+		{ label: "member in json mode", env: { ...member, ...host }, mode: "json", hasUI: true },
+	];
+	for (const entry of cases) {
+		const h = fakePi(), runtime = deps();
+		runtime.deps.resolveWorktree = resolveSessionWorktree;
+		runtime.deps.env = { ...runtime.deps.env, ...entry.env };
+		gentleAgents(h.pi, {}, runtime.deps);
+		const { ctx, dialogs } = fakeContext();
+		ctx.sessionManager.getCwd = () => parent;
+		await h.fire("session_start", ctx);
+		ctx.mode = entry.mode;
+		ctx.hasUI = entry.hasUI;
+		await assert.rejects(h.tools.get("subagent_run")!.execute(entry.label, { agent: "explore", task: "Map", repository_root: foreign, mode: "task" }, undefined, undefined, ctx), /Foreign repository launch requires an interactive parent session\./, entry.label);
+		assert.deepEqual(dialogs.filter(dialog => dialog.startsWith("confirm:")), [], entry.label);
+		assert.equal(runtime.spawned.length, 0, entry.label);
+		await h.fire("session_shutdown", ctx);
+	}
 });
 
 test("foreign clone rejects aliases, absent UI, decline and changed session before any child starts", async () => {

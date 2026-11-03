@@ -6889,6 +6889,12 @@ test("rail Status sections fold on a header click and the Changes row opens /gen
 		assert.ok(rows().some((line) => /^▸ INTEGRATIONS/.test(line)) && !rows().some((line) => /MCP: 3 servers/.test(line)), "a click folds the section");
 		click(rows().findIndex((line) => /^▸ INTEGRATIONS/.test(line)));
 		assert.ok(rows().some((line) => /MCP: 3 servers/.test(line)), "a second click unfolds it");
+		// A full-width render (the panel sheet) must not move the rail's click targets.
+		rail.render(120);
+		const foldedBefore = rows().filter((line) => /^▸ /.test(line)).length;
+		click(rows().findIndex((line) => /^▾ CHANGES/.test(line)));
+		assert.equal(rows().filter((line) => /^▸ /.test(line)).length, foldedBefore + 1, "a rail click still folds after a sheet-width render");
+		click(rows().findIndex((line) => /^▸ CHANGES/.test(line)));
 		const changesRow = rows().findIndex((line) => /\/gentle:changes/.test(line));
 		const notices = ui.notices.length;
 		assert.equal(click(changesRow)?.handled, true, "the Changes row is clickable");

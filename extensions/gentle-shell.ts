@@ -2376,7 +2376,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// folds its section, the Changes row opens /gentle:changes.
 			const statusCollapsed = new Set<StatusSection>();
 			let statusHover: StatusSection | "open-changes" | undefined;
-			let statusTargets: StatusTarget[] = [];
+			// Keyed by width: the rail and the full-width panel sheet render the same part.
+			const statusTargets = new Map<number, StatusTarget[]>();
 			const statusCard: Component = {
 				render(width: number) {
 					// The rail drops what the wide chrome's title row and status bar show
@@ -2384,17 +2385,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const view = statusCardVisible() && visualSettings.headerPlacement === "top"
 						? renderShellStatusSections(footerModel(), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
 						: renderShellStatusSections({ ...footerModel(), integrations: undefined, permission: undefined }, theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
-					statusTargets = view.targets;
+					statusTargets.set(width, view.targets);
 					return view.lines;
 				},
 				invalidate() {
 					statusHover = undefined;
 				},
 			};
-			const targetAt = (y: number) => statusTargets.find((target) => target.row === y);
+			const targetAt = (y: number, width: number) => statusTargets.get(width)?.find((target) => target.row === y);
 			const statusRegion = new NativePointerRegion(statusCard, {
 				onHover(event) {
-					const target = targetAt(event.y);
+					const target = targetAt(event.y, event.width);
 					const next = !target ? undefined : target.kind === "toggle" ? target.section : "open-changes";
 					if (next === statusHover) return { handled: true };
 					statusHover = next;
@@ -2406,7 +2407,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					tui.requestRender();
 				},
 				onClick(event) {
-					const target = event.button === "left" ? targetAt(event.y) : undefined;
+					const target = event.button === "left" ? targetAt(event.y, event.width) : undefined;
 					if (!target) return undefined;
 					if (target.kind === "open-changes") void openChanges(ctx);
 					else if (statusCollapsed.has(target.section)) statusCollapsed.delete(target.section);

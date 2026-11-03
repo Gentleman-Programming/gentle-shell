@@ -1,6 +1,8 @@
 import { formatElapsed } from "./agents-widget.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
-import { renderPanelRow } from "./shell-panel.ts";
+import { PANEL_ROW_INDENT, renderPanelRow } from "./shell-panel.ts";
+import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 // Session statistics for the Power user rail (compact density): what the
 // session spent, per model, and how the harness is behaving (cache reuse,
@@ -41,7 +43,7 @@ type StatsEntry = {
 	};
 };
 
-const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
 
 export function collectSessionStats(entries: readonly unknown[]): SessionStats {
 	const stats: SessionStats = { cost: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0, toolCalls: 0, toolErrors: 0, spanMs: 0, cacheHitRate: undefined, models: [] };
@@ -75,7 +77,10 @@ export function collectSessionStats(entries: readonly unknown[]): SessionStats {
 		stats.cacheRead += cacheRead;
 		stats.cacheWrite += cacheWrite;
 		stats.cost += cost;
-		const name = typeof message.model === "string" && message.model ? message.model : "unknown";
+		// The registry id may carry a provider prefix (`claude-bridge/…`) and comes from
+		// session files, so it is reduced to the model name and stripped of escapes.
+		const id = typeof message.model === "string" ? sanitizeTerminalText(message.model).replace(/[\x00-\x1f\x7f]/g, "").trim() : "";
+		const name = id.slice(id.lastIndexOf("/") + 1) || "unknown";
 		const model = models.get(name) ?? { model: name, turns: 0, tokens: 0, cost: 0 };
 		model.turns++;
 		model.tokens += input + output + cacheRead + cacheWrite;
@@ -106,7 +111,10 @@ export function renderStatsRows(stats: SessionStats, theme: StatsTheme, width: n
 	const failed = stats.toolErrors ? ` · ${theme.fg("warning", `${stats.toolErrors} failed`)}` : "";
 	rows.push(renderPanelRow(width, `${label("tools")}${value(plural(stats.toolCalls, "call"))}${failed}`));
 	for (const model of stats.models) {
-		rows.push(renderPanelRow(width, value(model.model), muted(`${plural(model.turns, "turn")} · ${formatTokens(model.tokens)} · ${formatCost(model.cost, subscription)}`)));
+		const numbers = `${plural(model.turns, "turn")} · ${formatTokens(model.tokens)} · ${formatCost(model.cost, subscription)}`;
+		// A narrow rail keeps the name: the numbers move to their own row instead of clipping it away.
+		if (visibleWidth(model.model) + 2 + visibleWidth(numbers) <= width - PANEL_ROW_INDENT) rows.push(renderPanelRow(width, value(model.model), muted(numbers)));
+		else rows.push(renderPanelRow(width, value(model.model)), renderPanelRow(width, muted(numbers), "", PANEL_ROW_INDENT + 2));
 	}
 	return rows;
 }

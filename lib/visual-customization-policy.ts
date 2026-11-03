@@ -20,6 +20,8 @@ export interface VisualVisibility {
 	modelDetails: boolean;
 	/** High-context warning notice; independent from audio notifications. */
 	contextWarning: boolean;
+	/** Session statistics in the Status rail (spend, tokens, cache, tools, per model); the Power user preset turns it on. */
+	stats: boolean;
 }
 export interface VisualSettings {
 	statusPlacement: StatusPlacement;
@@ -31,22 +33,22 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
-	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true },
+	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false },
 };
 /**
  * Presets bundle the density and visibility switches (design/shell-rework/inventory.md):
  * Light is the minimal edition: Status at the bottom (no rail) and priority 1
  * only (model, context, agent questions, review); Neutral is the default;
- * Power user shows everything densely. They keep the header placement and add
- * no key to the file, so every binary keeps reading it; the active preset is
- * whichever bundle the current settings match.
+ * Power user adds session Stats at Neutral's spacing. They keep the header
+ * placement; the active preset is whichever bundle the current settings match.
  */
 export const VISUAL_PRESET = { LIGHT: "light", NEUTRAL: "neutral", POWER_USER: "power-user" } as const;
 export type VisualPreset = (typeof VISUAL_PRESET)[keyof typeof VISUAL_PRESET];
 const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "density" | "visibility">> = {
-	[VISUAL_PRESET.LIGHT]: { density: DENSITY.MINIMAL, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true } },
+	[VISUAL_PRESET.LIGHT]: { density: DENSITY.MINIMAL, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true, stats: false } },
 	[VISUAL_PRESET.NEUTRAL]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility } },
-	[VISUAL_PRESET.POWER_USER]: { density: DENSITY.COMPACT, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true } },
+	// Same spacing as Neutral: what Power user adds is content (Stats), not density.
+	[VISUAL_PRESET.POWER_USER]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: true } },
 };
 export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset): VisualSettings {
 	const bundle = PRESET_BUNDLES[preset];
@@ -66,9 +68,10 @@ export function visualPresetOf(settings: VisualSettings): VisualPreset | undefin
 	});
 }
 /** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */
-export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"] as const satisfies readonly (keyof VisualVisibility)[];
-/** Keys added after v1 shipped: stored settings may omit them together or one at a time, and they default to shown. */
-const ADDED_SECTION_KEYS: readonly (keyof VisualVisibility)[] = ["rdd", "contextWarning"];
+export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning", "stats"] as const satisfies readonly (keyof VisualVisibility)[];
+/** Keys added after v1 shipped, with the value a stored file that omits them loads as. */
+const ADDED_SECTION_DEFAULTS: Partial<Record<keyof VisualVisibility, boolean>> = { rdd: true, contextWarning: true, stats: false };
+const ADDED_SECTION_KEYS = Object.keys(ADDED_SECTION_DEFAULTS) as (keyof VisualVisibility)[];
 const BASE_SECTION_KEYS = VISUAL_SECTION_KEYS.filter((key) => !ADDED_SECTION_KEYS.includes(key));
 interface VisualOptions { gentlePiConfigHome?: string }
 export interface VisualResolution {
@@ -101,7 +104,7 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
 /**
  * Reader-side validation: accepts the current shape plus every historical one.
  * Every key must be known, every base key present, and every present value a
- * boolean; missing added keys (`rdd`, `contextWarning`) then default to shown,
+ * boolean; missing added keys then take their default (`rdd`, `contextWarning` shown, `stats` hidden),
  * while present values (including `rdd: false`) are preserved. Writers stay strict.
  */
 export function normalizeVisualSettings(value: unknown): VisualSettings | undefined {
@@ -113,7 +116,7 @@ export function normalizeVisualSettings(value: unknown): VisualSettings | undefi
 	if (!Object.keys(visibility).every((key) => typeof visibility[key] === "boolean")) return undefined;
 	const candidate = keysMatch(visibility, VISUAL_SECTION_KEYS)
 		? value
-		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? true])) };
+		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? ADDED_SECTION_DEFAULTS[key] ?? true])) };
 	return isVisualSettings(candidate) ? candidate : undefined;
 }
 export function parseVisualSettingsFile(raw: string): VisualSettings | undefined {

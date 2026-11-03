@@ -13,7 +13,7 @@ test("missing settings use responsive defaults and return independent copies", (
 		assert.equal(DEFAULT_VISUAL_SETTINGS.statusPlacement, "auto");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.headerPlacement, "top");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.density, "comfortable");
-		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true });
+		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false });
 		resolved.settings.visibility.agents = false;
 		assert.equal(DEFAULT_VISUAL_SETTINGS.visibility.agents, true);
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.agents, true);
@@ -29,13 +29,13 @@ test("strict versioned parsing rejects malformed and partial settings", () => {
 });
 
 test("Sections rows follow one ordered key list that covers every visibility key", () => {
-	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"]);
+	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning", "stats"]);
 	assert.deepEqual([...VISUAL_SECTION_KEYS].sort(), Object.keys(DEFAULT_VISUAL_SETTINGS.visibility).sort());
 });
 
 test("settings saved before the rdd section existed load as valid with rdd shown", () => {
 	const legacy = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
-	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } };
+	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(legacy)), expected);
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ ...legacy, visibility: { ...expected.visibility, rdd: false } })), { ...expected, visibility: { ...expected.visibility, rdd: false } });
 	for (const visibility of [{ ...legacy.visibility, extra: true }, { ...legacy.visibility, rdd: "no" }, { ...legacy.visibility, todo: "yes" }, { agents: true, todo: true, usageCost: true, modelDetails: true, rdd: true }]) {
@@ -58,13 +58,13 @@ test("settings saved before contextWarning existed load it shown and preserve rd
 	const shared = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS };
 	const preRdd = { ...shared, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preRdd)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+		visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } });
 	const preContext = { ...shared, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preContext)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+		visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } });
 	const withoutRdd = { ...shared, visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(withoutRdd)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } });
+		visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false, stats: false } });
 });
 
 test("a present non-boolean added key in a partial legacy shape is rejected before default fill", () => {
@@ -159,7 +159,7 @@ test("presets are valid settings that keep the file format and the header placem
 	assert.equal(light.density, DENSITY.MINIMAL);
 	assert.deepEqual({ changes: light.visibility.changes, todo: light.visibility.todo, agents: light.visibility.agents, modelDetails: light.visibility.modelDetails, usageCost: light.visibility.usageCost }, { changes: false, todo: false, agents: true, modelDetails: true, usageCost: true }, "Light keeps priority 1: model, context, agent questions");
 	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
-	assert.equal(power.density, DENSITY.COMPACT);
+	assert.equal(power.density, DENSITY.COMFORTABLE, "Power user keeps Neutral's spacing");
 	assert.ok(Object.values(power.visibility).every(Boolean), "Power user shows everything");
 	assert.equal(visualPresetOf({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }), undefined, "a hand-tuned mix is custom");
 	const home = mkdtempSync(join(tmpdir(), "visual-preset-"));
@@ -171,4 +171,23 @@ test("presets are valid settings that keep the file format and the header placem
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
+});
+
+test("settings saved before the stats section existed load as valid with Stats hidden", () => {
+	const { stats: _stats, ...visibility } = DEFAULT_VISUAL_SETTINGS.visibility;
+	const parsed = parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { ...visibility, rdd: false } }));
+	assert.equal(parsed?.visibility.stats, false, "a missing stats key stays hidden, unlike rdd and contextWarning");
+	assert.equal(parsed?.visibility.rdd, false, "present keys are preserved");
+	const shown = parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { ...visibility, stats: true } }));
+	assert.equal(shown?.visibility.stats, true);
+});
+
+test("Power user keeps Neutral's spacing and adds Stats; Neutral and Light leave Stats off", () => {
+	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
+	assert.equal(power.density, DEFAULT_VISUAL_SETTINGS.density, "same spacing as Neutral");
+	assert.equal(power.visibility.stats, true);
+	assert.equal(visualPresetOf(power), VISUAL_PRESET.POWER_USER);
+	assert.equal(visualPresetOf(DEFAULT_VISUAL_SETTINGS), VISUAL_PRESET.NEUTRAL);
+	assert.equal(applyVisualPreset(power, VISUAL_PRESET.NEUTRAL).visibility.stats, false);
+	assert.equal(applyVisualPreset(power, VISUAL_PRESET.LIGHT).visibility.stats, false);
 });

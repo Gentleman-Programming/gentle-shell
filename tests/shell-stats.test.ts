@@ -66,3 +66,18 @@ test("Status adds a foldable Stats section only when the model carries stats", (
 	assert.match(folded, /▸ STATS/);
 	assert.doesNotMatch(folded, /spent/);
 });
+
+test("Stats rows keep the model name at narrow widths, strip escapes and ignore negative usage", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const stats = collectSessionStats([
+		assistant("claude-bridge/claude-opus-5-5", "2026-11-03T10:00:00.000Z", { input: 100, output: 200, cacheRead: 0, cacheWrite: -5, cost: 0.2 }),
+		assistant("evil\x1b]0;pwned\x07model", "2026-11-03T10:01:00.000Z", { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0 }),
+	]);
+	assert.equal(stats.cacheWrite, 0, "negative usage is not counted");
+	const rows = renderStatsRows(stats, theme, 30).map((row) => row.trimEnd());
+	for (const row of rows) assert.ok(row.length <= 30, JSON.stringify(row));
+	const text = rows.join("\n");
+	assert.match(text, /claude-opus-5-5/, "the model name survives a narrow rail (provider prefix dropped)");
+	assert.match(text, /1 turn · 300 · \$0\.200/, "its numbers move to their own row");
+	assert.doesNotMatch(text, /\x1b|\x07/, "terminal escapes in a model id never reach the screen");
+});

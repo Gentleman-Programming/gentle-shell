@@ -2407,7 +2407,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					statusHover = undefined;
 				},
 			};
-			// Power user (compact density) adds Stats; walked once per session leaf, like sessionStats.
+			// The Stats section (on in Power user); walked once per session leaf, like sessionStats.
 			let statsMemo: { key: SessionStatsKey | undefined; stats: SessionStats } | undefined;
 			const currentStats = (): SessionStats => {
 				const key = sessionStatsKey(ctx);
@@ -2416,7 +2416,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				statsMemo = { key, stats };
 				return stats;
 			};
-			const statsOn = () => visualSettings.density === "compact";
+			const statsOn = () => visualSettings.visibility.stats;
 			const withStats = (model: ShellBarModel): ShellBarModel => (statsOn() ? { ...model, stats: currentStats() } : model);
 			const targetAt = (y: number, width: number) => statusTargets.get(width)?.find((target) => target.row === y);
 			const statusRegion = new NativePointerRegion(statusCard, {

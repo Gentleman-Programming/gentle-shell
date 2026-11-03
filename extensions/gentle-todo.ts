@@ -3,12 +3,14 @@ import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@ea
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
+import { renderPanelRow } from "../lib/shell-panel.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
 import {
 	applyTodo,
 	emptyTodo,
 	renderTodoCard,
+	renderTodoSection,
 	replayTodo,
 	staleTurns,
 	TODO_DETAILS_KEY,
@@ -136,7 +138,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.host?.requestRender();
 	};
 
-	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void } => {
+	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void; surface?: "panel" } => {
 		let hovered = false;
 		let body: string[] = [];
 		let collapsed = current.collapsed;
@@ -156,14 +158,30 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const card: Component = {
 			render(width: number) {
 				const stale = staleTurns(current.state, current.turn);
-				headerRow = panelHeaderRow(theme, width, todoCardTone(stale));
-				const lines = renderTodoCard(current.state, theme, width, {
-					collapsed: current.collapsed,
-					staleTurns: stale,
-					collapseKey,
-					hovered,
-					scrollable: true,
-				});
+				// The fullscreen rail draws a panel section (header row, task rows, no
+				// closing rule); the bottom widget keeps the card with its chrome.
+				let head: string[];
+				let foot: string[];
+				if (spacer) {
+					headerRow = panelHeaderRow(theme, width, todoCardTone(stale));
+					const lines = renderTodoCard(current.state, theme, width, {
+						collapsed: current.collapsed,
+						staleTurns: stale,
+						collapseKey,
+						hovered,
+						scrollable: true,
+					});
+					const bodyStart = headerRow === 1 ? 3 : 1;
+					head = lines.slice(0, bodyStart);
+					body = lines.slice(bodyStart, -1);
+					foot = lines.slice(-1);
+				} else {
+					headerRow = 0;
+					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered });
+					head = section.header ? [section.header] : [];
+					body = section.body;
+					foot = [];
+				}
 				if (collapsed !== current.collapsed) {
 					collapsed = current.collapsed;
 					scroll.scrollToStart();
@@ -172,14 +190,16 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 				// on every render so a mobile resize immediately releases chat space.
 				const terminalRows = current.tui?.terminal?.rows ?? 48;
 				const height = Math.min(16, Math.floor(terminalRows / 3));
-				const bodyStart = headerRow === 1 ? 3 : 1;
-				body = lines.slice(bodyStart, -1);
-				const overflow = !current.collapsed && lines.length + Number(spacer) > height;
-				const room = Math.max(1, height - bodyStart - 1 - Number(spacer) - Number(overflow));
+				if (head.length === 0) return [];
+				const overflow = !current.collapsed && head.length + body.length + foot.length + Number(spacer) > height;
+				const room = Math.max(1, height - head.length - foot.length - Number(spacer) - Number(overflow));
 				scroll.updateLayout(body.length, current.collapsed ? body.length : room, () => current.host?.requestRender());
 				const visible = scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + scroll.viewportHeight);
-				const output = [...lines.slice(0, bodyStart), ...visible, ...lines.slice(-1)];
-				if (overflow) output.push(theme.fg("muted", truncateToWidth(`↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · alt+shift+↑/↓`, width)));
+				const output = [...head, ...visible, ...foot];
+				if (overflow) {
+					const position = `↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · alt+shift+↑/↓`;
+					output.push(spacer ? theme.fg("muted", truncateToWidth(position, width)) : renderPanelRow(width, theme.fg("muted", position)));
+				}
 				return spacer && output.length > 0 ? [...output, ""] : output;
 			},
 			invalidate() {
@@ -216,6 +236,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			scrollBy,
 			// Sidebar caches must observe height-only resizes and local viewport
 			// changes, even when terminal width and task content stay the same.
+			...(spacer ? {} : { surface: "panel" as const }),
 			digest: () => JSON.stringify([current.tui?.terminal?.rows, current.collapsed, current.turn, hovered, scroll.scrollTop]),
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),

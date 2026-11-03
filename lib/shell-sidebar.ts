@@ -32,6 +32,12 @@ export interface SidebarRail extends Component {
 	 * one; explicit invalidateSidebar() stays for discrete state changes.
 	 */
 	digest?(): string;
+	/**
+	 * "panel" sections render IDE-like panel rows (lib/shell-panel.ts) and the
+	 * rail paints them, padding included, on one shared surface; others are
+	 * cards that carry their own chrome.
+	 */
+	surface?: "panel";
 }
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;

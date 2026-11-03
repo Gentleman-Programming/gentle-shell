@@ -97,11 +97,14 @@ test("long Todo widgets stay bounded, scroll, resize and keep their collapse con
 		for (const component of [bottom, rail]) {
 			const before = component.render(40).map(stripAnsi);
 			assert.ok(before.length <= 10, "card uses at most one third of terminal height");
-			const header = style === CARD_STYLE.FLOAT ? 1 : 0;
-			assert.match(before[header]!, /Todos ▾/);
+			// The rail draws a panel section (header on row 0 in every style); the
+			// bottom widget keeps the card, whose float header sits below padding.
+			const header = component === rail ? 0 : style === CARD_STYLE.FLOAT ? 1 : 0;
+			const title = component === rail ? /▾ TODOS/ : /Todos ▾/;
+			assert.match(before[header]!, title);
 			assert.equal(component.handleMouse?.({ type: "wheel", button: "none", wheelDelta: 10000, x: 5, y: header + 2, screenX: 5, screenY: 5, width: 40, height: before.length, shift: false, alt: false, ctrl: false })?.handled, true);
 			const after = component.render(40).map(stripAnsi);
-			assert.match(after[header]!, /Todos ▾/);
+			assert.match(after[header]!, title);
 			assert.match(after.join("\n"), /LAST TASK/, "all details remain reachable by scrolling");
 			assert.notDeepEqual(after, before);
 		}
@@ -265,6 +268,35 @@ test("the Todo header paints the shared hover role while hovered, and clears it 
 	// Re-entering, then a second move at the same row is a no-op (already hovered).
 	component.handleMouse?.(move(0));
 	assert.deepEqual(component.handleMouse?.(move(0)), { handled: true });
+});
+
+test("the rail draws Todos as a panel section whose header row 0 is the collapse control in every card style", async (t) => {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const { pi, tools, fire } = fakePi();
+		gentleTodo(pi, {});
+		const { ctx, widgets } = fakeContext();
+		await fire("session_start", ctx);
+		await tools.get("todo")!.execute("c1", { action: "write", tasks: [{ title: "A", status: "done" }, { title: "B", status: "in_progress", note: "job-1" }, { title: "C" }] }, undefined, undefined, ctx);
+		await fire("tool_execution_end", ctx, { toolName: "todo" });
+		const tui = { requestRender() {}, terminal: { rows: 40, columns: 160 } };
+		const theme = { ...plainTheme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		widgets.get("gentle-todo")!(tui, theme);
+		const rail = sidebarState(tui as never).parts.get("todo")!;
+		assert.equal((rail as { surface?: string }).surface, "panel", "the rail paints this section on the panel surface");
+		const rows = rail.render(48).map((row) => stripAnsi(row).trimEnd());
+		assert.deepEqual(rows, ["▾ TODOS                                      1/3", "  ✓ 1 done", "  ◐ B", "    └ job-1", "  ○ C"]);
+		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│▎]/u, "no card chrome in the rail");
+		const pointer = (type: "move" | "click", y: number) => ({
+			type, button: type === "move" ? "none" as const : "left" as const, x: 1, y, screenX: 1, screenY: y, width: 48, height: rows.length, shift: false, alt: false, ctrl: false,
+		});
+		assert.deepEqual(rail.handleMouse?.(pointer("move", 0)), { handled: true, render: true }, "the header row is hoverable");
+		assert.equal(rail.handleMouse?.(pointer("click", 1)), undefined, "a body row is not the control");
+		assert.equal(rail.handleMouse?.(pointer("click", 0))?.handled, true);
+		assert.deepEqual(rail.render(48).map((row) => stripAnsi(row).trimEnd()), ["▸ TODOS                                      1/3", "  ◐ B"]);
+	}
 });
 
 test("in the float style the Todos header sits on row 1 below the top padding, and hover and click work there", async (t) => {

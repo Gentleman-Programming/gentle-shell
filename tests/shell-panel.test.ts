@@ -6,7 +6,7 @@ import { renderTodoSection, type TodoState } from "../lib/shell-todo.ts";
 import { renderJobsSection } from "../lib/jobs-widget.ts";
 import { JOB_GLYPH } from "../lib/background-jobs-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
-import { renderShellSidebarBar } from "../lib/shell-bar.ts";
+import { renderShellSidebarBar, renderShellStatusBar, renderShellTitleRow } from "../lib/shell-bar.ts";
 
 // The fullscreen rail draws its sections as one panel (design/shell-rework/02-proposal.html):
 // a one-row header `▾ NAME … count` and dense rows, no card chrome.
@@ -16,7 +16,7 @@ const theme = {
 	bold: (text: string) => `*${text}*`,
 	strikethrough: (text: string) => `~${text}~`,
 };
-const plain = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };
+const plain = { fg: (_color: string, text: string) => text, bold: (text: string) => text, strikethrough: (text: string) => text };
 
 test("a panel header names the section in bold caps with its count right-aligned", () => {
 	assert.equal(visibleWidth(renderPanelHeader(plain, 40, { title: "Todos", count: "2/6", open: true })), 40);
@@ -143,4 +143,58 @@ test("the rail Status keeps an empty Changes row, hides Review without evidence 
 	assert.deepEqual(rows, [edge("▾ CHANGES", "clean", 40), edge("  no captured changes", "/gentle:changes", 40), edge("▾ INTEGRATIONS", "none", 40), "  no status reported"]);
 	const hidden = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility: { ...visibility, changes: false } }).map((line) => line.trimEnd());
 	assert.doesNotMatch(hidden.join("\n"), /CHANGES/);
+});
+
+// The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
+// with the project identity above, one status bar row below.
+const chromeModel = {
+	cwd: "~/work/gentle-pi", branch: "feat/shell-ide-rework", dirty: 3, sessionName: "fleet adopt", profile: "claude (session)",
+	modelId: "claude-opus-5-5", effort: "high", contextPercent: 27, contextWindow: 1000,
+	costTotal: 0, subscription: false, usage: undefined,
+	permission: { mode: "SUPER-YOLO", detail: "no permission prompts; private paths stay blocked" },
+	statuses: ["Permissions: SUPER-YOLO", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked", "🧠 gentle-pi · ready"],
+	integrations: ["🧠 gentle-pi · ready"],
+};
+
+test("the title row names the project once and always keeps the session and profile", () => {
+	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90));
+	assert.equal(visibleWidth(row), 90);
+	assert.match(row, /^ ✿ gentle-pi  ~\/work\/gentle-pi +fleet adopt · claude \(session\) $/);
+	const narrow = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 44));
+	assert.equal(visibleWidth(narrow), 44);
+	assert.match(narrow, /fleet adopt · claude \(session\) $/, "the path gives way before the profile");
+	assert.doesNotMatch(stripAnsi(renderShellTitleRow({ ...chromeModel, sessionName: undefined, profile: undefined }, plain as never, 90)), /·/);
+});
+
+test("the status bar shows branch, permission mode, model, context, cost and usage in one row", () => {
+	const chrome = renderShellStatusBar(chromeModel, plain as never, 120, "alt+u");
+	assert.equal(chrome.rows.length, 1);
+	const row = stripAnsi(chrome.rows[0]!);
+	assert.equal(visibleWidth(row), 120);
+	assert.match(row, /^ feat\/shell-ide-rework ±3 │ SUPER-YOLO +claude-opus-5-5 · high │ ctx [▰▱]+ 27% │ \$0\.000 │ usage · alt\+u $/);
+	assert.equal((row.match(/SUPER-YOLO/g) ?? []).length, 1, "the permission mode appears once");
+	assert.ok(chrome.usageSpan && row.slice(chrome.usageSpan.start, chrome.usageSpan.end).startsWith("usage"), "the usage segment is the click target");
+	const normal = stripAnsi(renderShellStatusBar({ ...chromeModel, permission: { mode: "NORMAL" } }, plain as never, 120, "alt+u").rows[0]!);
+	assert.doesNotMatch(normal, /NORMAL/, "the default permission mode stays quiet");
+});
+
+test("a narrow status bar drops usage before the model and keeps the branch", () => {
+	const row = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 95, "alt+u").rows[0]!);
+	assert.equal(visibleWidth(row), 95);
+	assert.match(row, /feat\/shell-ide-rework/);
+	assert.match(row, /claude-opus-5-5/);
+	assert.doesNotMatch(row, /usage/, "usage gives way first");
+	const tighter = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 70, "alt+u").rows[0]!);
+	assert.equal(visibleWidth(tighter), 70);
+	assert.doesNotMatch(tighter, /claude-opus/, "then the model");
+	assert.match(tighter, /feat\/shell-ide-rework ±3 │ SUPER-YOLO +ctx [▰▱]+ 27% │ \$0\.000 $/, "branch, mode, context and cost stay");
+	const hidden = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 120, "alt+u", { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: false, modelDetails: false, contextWarning: true } }).rows[0]!);
+	assert.doesNotMatch(hidden, /claude-opus|ctx|\$0\.000|usage/, "the visibility toggles hide model, context, cost and usage");
+});
+
+test("Integrations explains the permission mode without repeating it", () => {
+	const rows = renderShellSidebarBar(chromeModel, plain as never, 48).map((line) => line.trimEnd());
+	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
+	assert.deepEqual(rows.slice(at + 1), ["  permissions no permission prompts; private", "  paths stay blocked", "  🧠 gentle-pi · ready"]);
+	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
 });

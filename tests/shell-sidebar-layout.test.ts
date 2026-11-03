@@ -3,7 +3,7 @@ import test from "node:test";
 import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
-import { sidebarHeader, sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
+import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
@@ -1196,4 +1196,27 @@ test("rail scrollbar stays hidden when the rail does not overflow", (t) => {
 	renderLayoutFrame(f.root, 140, 20, () => {});
 	scroll.scrollBy(1);
 	assert.equal(scroll.isScrollbarVisible, false);
+});
+
+test("a status bar part paints one full-width row below the transcript and the rail", (t) => {
+	const f = fixture("fullscreen", 160);
+	let widthSeen = 0;
+	sidebarHeader(f.tui, { render: () => ["TITLE"], invalidate() {} });
+	sidebarStatusBar(f.tui, { render: (width: number) => { widthSeen = width; return ["STATUS BAR"]; }, invalidate() {} });
+	const transcript = { render: () => ["CONVERSATION"], invalidate() {} };
+	f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
+	t.after(installSidebar(f.tui, theme));
+	const frame = renderLayoutFrame(f.root, 160, 8, () => {});
+	assert.match(frame.lines[0]!, /TITLE/);
+	assert.match(frame.lines.at(-1)!, /^STATUS BAR/, "the status bar is the last row, under the rail too");
+	assert.ok(frame.lines.slice(1, -1).some((line) => /CONVERSATION/.test(line) && /Status/.test(line)), "transcript and rail sit between them");
+	assert.equal(widthSeen, 160 - 2, "rendered at the header's width");
+});
+
+test("below the rail breakpoint the status bar part paints nothing and the native layout stays", (t) => {
+	const f = fixture("fullscreen", 139);
+	sidebarStatusBar(f.tui, { render: () => ["STATUS BAR"], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const frame = renderLayoutFrame(f.root, 139, 6, () => {});
+	assert.doesNotMatch(frame.lines.join("\n"), /STATUS BAR/);
 });

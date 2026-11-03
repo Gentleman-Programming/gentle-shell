@@ -2,8 +2,8 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { CARD_TONE, floatRows, panelInnerWidth, renderCard } from "./shell-card.ts";
-import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
+import { fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -36,6 +36,10 @@ export interface ShellBarModel {
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
 	statuses: string[];
+	/** The permission mode published under its own status key, shown once in the status bar. */
+	permission?: { mode: string; detail?: string };
+	/** Statuses for the rail's Integrations: `statuses` without the permission keys. */
+	integrations?: string[];
 }
 
 // The live header row above the fullscreen rail: session identity plus the
@@ -237,13 +241,67 @@ export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme
 			...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
 		]);
 	}
+	// The status bar shows the permission mode once; Integrations only says
+	// what it means, so neither the mode nor its banner repeats here.
+	const integrations = model.integrations ?? model.statuses;
+	const permission = model.permission?.detail ? wrapTextWithAnsi(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line)) : [];
+	const count = integrations.length + (permission.length ? 1 : 0);
 	sections.push([
-		renderPanelHeader(theme, width, { title: "Integrations", count: model.statuses.length ? String(model.statuses.length) : "none", open: true }),
-		...(model.statuses.length ? model.statuses.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : [renderPanelRow(width, label("no status reported"))]),
+		renderPanelHeader(theme, width, { title: "Integrations", count: count ? String(count) : "none", open: true }),
+		...permission,
+		...(integrations.length ? integrations.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))]),
 	]);
 	if (hints) sections.push([renderPanelRow(width, label(hints))]);
 	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
 	return sections.flatMap((rows, index) => [...(index ? gap : []), ...rows]);
+}
+
+// The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
+// with the project identity above the transcript and the rail, and one status
+// bar row below them. Both sit on the rail's panel surface.
+const STATUS_BAR_DIVIDER = "│";
+const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, surfaceOpener(theme, PANEL_SURFACE_ROLE));
+
+/** `✿ name  path` left, the session name and profile right; the path gives way first, so the profile always shows. */
+export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number): string {
+	const target = Math.max(0, Math.floor(width));
+	const name = model.cwd.split("/").filter((part) => part.length > 0).pop() ?? model.cwd;
+	const left = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}  ${theme.fg(ROLE.PATH, model.cwd)}`;
+	const right = [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
+		.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
+	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
+}
+
+/**
+ * The status bar: branch, dirty count and a non-default permission mode on
+ * the left; model · effort, context, cost and usage on the right. Usage gives
+ * way first (gauges, secondary windows, the segment), then the model; the
+ * usage segment stays the click target that opens the usage view.
+ */
+export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: Presentation, paint?: GaugePaint): ShellHeaderChrome {
+	const target = Math.max(0, Math.floor(width));
+	const divider = ` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `;
+	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
+	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
+	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
+	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(sanitizeStatus(model.permission.mode))) : "";
+	const left = join([branch, mode]);
+	const showCounters = presentation?.visibility.usageCost !== false;
+	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
+	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
+	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
+	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
+	const attempts = [...stages.map((stage) => ({ stage, withExec: true })), { stage: undefined, withExec: false }];
+	for (const { stage, withExec } of attempts) {
+		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
+		const right = join([withExec ? exec : "", ...counters, usage]);
+		const room = target - 2;
+		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
+		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;
+		const usageSpan = usage ? { start: target - 1 - visibleWidth(usage), end: target - 1 } : undefined;
+		return { rows: [paintChromeRow(theme, row)], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
+	}
+	return { rows: [paintChromeRow(theme, ` ${fitPanelLine(left, "", Math.max(0, target - 2))} `)], headerRow: 0 };
 }
 
 const HEADER_BRAND = "✿ Gentle Shell";

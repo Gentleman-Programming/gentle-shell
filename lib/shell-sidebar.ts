@@ -75,3 +75,18 @@ export function sidebarHeader(tui: TUI, rail: SidebarRail): () => void {
 		if (state.parts.get("header") === rail) state.parts.delete("header");
 	};
 }
+
+/**
+ * Register the fullscreen status bar: one full-width row below the transcript
+ * and the rail while the rail is shown. Below the breakpoint it paints nothing;
+ * the compact bar carries the same data there. Writes the "statusbar" slot and
+ * returns its own disposer.
+ */
+export function sidebarStatusBar(tui: TUI, rail: SidebarRail): () => void {
+	if (!tui.terminal) return () => {};
+	const state = sidebarState(tui);
+	state.parts.set("statusbar", rail);
+	return () => {
+		if (state.parts.get("statusbar") === rail) state.parts.delete("statusbar");
+	};
+}

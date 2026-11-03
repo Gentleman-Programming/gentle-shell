@@ -3315,7 +3315,7 @@ test("customize Cards rows persist the card content level and switch the live qu
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 
-test("T3 live style Cards action refreshes cached TODO, header, footer and prompt in both directions", async (t) => {
+test("T3 live style Cards action refreshes cached TODO, footer and prompt in both directions while the title row stays", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
@@ -3360,6 +3360,11 @@ test("T3 live style Cards action refreshes cached TODO, header, footer and promp
 	paint();
 	assert.equal(todoRenders, 1);
 	assert.match(frame.rail, /Cached task/);
+	// The wide chrome: the title row on top and one status bar row as the last layout entry.
+	const wide = root[node]() as unknown as { entries: { component: { render(width: number): string[] } }[] };
+	assert.equal(wide.entries.length, 3, "title row, transcript with the rail, status bar");
+	assert.match(stripAnsi(frame.header), /^ ✿ repo  \/repo .*team $/);
+	assert.match(stripAnsi(wide.entries[2]!.component.render(160).join("\n")), /^ main .*ctx .*usage/);
 	const neon = { ...frame };
 	paint();
 	assert.equal(todoRenders, 1, "unchanged frame uses cached TODO");
@@ -3380,7 +3385,9 @@ test("T3 live style Cards action refreshes cached TODO, header, footer and promp
 		assert.ok(overlayRenders > beforeOverlay, "customize redraws too");
 		assert.equal(todoRenders, beforeTodo + 1, "revision invalidation refreshes digest-less TODO");
 		assert.equal(statusRenders, beforeStatus + 1, "live style digest refreshes cached Status");
-		for (const key of ["header", "rail", "prompt"] as const) assert.notEqual(frame[key], before[key], `${key} changes immediately`);
+		for (const key of ["rail", "prompt"] as const) assert.notEqual(frame[key], before[key], `${key} changes immediately`);
+		// The wide chrome's title row sits on the panel surface, not a card: no card style changes it.
+		assert.equal(frame.header, before.header, "the title row is the same in every card style");
 		assert.match(ui.notices.at(-1)!, /Conversation cards and shell chrome redraw now/);
 		assert.match(ui.overlayView!.render(90).join("\n"), /prompt|shell chrome/i);
 		const rendered = { ...frame };

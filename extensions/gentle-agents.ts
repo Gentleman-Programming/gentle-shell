@@ -1,4 +1,6 @@
-import { fallbackNotice, MODEL_FALLBACK_ENTRY, profileFallbackChain } from "../lib/model-fallback-notice.ts";
+import { fallbackNotice, MODEL_FALLBACK_ENTRY, profileFallbackChain, type FallbackChange } from "../lib/model-fallback-notice.ts";
+import { sharedCooldown } from "../lib/model-fallback-policy.ts";
+import { createOrchestratorFallback } from "../lib/orchestrator-fallback.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
@@ -29,7 +31,7 @@ import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
 import { createAgentMessageQueue, type PendingAgentMessage } from "../lib/agents-message-delivery.ts";
-import { AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
+import { parseModelRef, AGENT_MODE, PROFILE_SOURCE, PROVIDER_REVIEW_ROLES, discoverAgents, formatModelRef, loadAgentsConfig, resolveAgentProfile, unmatchedProfileKeys, withPinnedModelProfiles, type AgentDefinition, type AgentMode, type ProfileSource } from "../lib/agents-config.ts";
 import { freezeSessionProfileAtStartup, inheritedProfileDriftNotice, resolveSessionProfile, sessionProfileRoutingAt, type InheritedProfileOptions, type SessionProfileResolution } from "../lib/session-profile-freeze.ts";
 import { resolveProfilePin, resolveUnversionedProjectProfile } from "../lib/agent-profile-pin.ts";
 import { requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -701,6 +703,44 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	let ui: ExtensionContext["ui"] | undefined;
 	// The catalog prices a fallback notice ("2.0x the price").
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
+	const announceFallback = (change: FallbackChange, parentSessionId: string | undefined, taskId?: string) => {
+		if (parentSessionId === undefined || activeSessionId() === parentSessionId) {
+			try { pi.appendEntry(MODEL_FALLBACK_ENTRY, { ...change, ...(taskId ? { taskId } : {}), at: deps.now() }); } catch { /* The switch matters more than its record. */ }
+		}
+		const prices = (model: { provider: string | undefined; id: string }) => (model.provider ? modelRegistry?.find(model.provider, model.id)?.cost : undefined);
+		ui?.notify(fallbackNotice(change, prices), "warning");
+	};
+	// One episode state per main session: a chain is walked once until a turn succeeds.
+	const orchestratorFallbacks = new Map<string, ReturnType<typeof createOrchestratorFallback>>();
+	const orchestratorFallbackFor = (ctx: ExtensionContext) => {
+		const sessionId = ctx.sessionManager.getSessionId() ?? "";
+		let fallback = orchestratorFallbacks.get(sessionId);
+		if (fallback) return fallback;
+		const find = (model: string) => {
+			const ref = parseModelRef(model);
+			return ref?.provider ? ctx.modelRegistry?.find(ref.provider, ref.id) : undefined;
+		};
+		fallback = createOrchestratorFallback({
+			chain: () => {
+				const configHome = gentlePiConfigHome(deps.env);
+				const resolution = resolveSessionProfile({ sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.sessionManager.getCwd(), configHome, resolveWorktree: deps.resolveWorktree, env: deps.env });
+				return profileFallbackChain(configHome, resolution.kind === "explicit" ? resolution.name : resolution.profile?.name, "orchestrator");
+			},
+			current: () => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
+			available: (model) => find(model) !== undefined,
+			setModel: async (model) => {
+				const found = find(model);
+				return found ? pi.setModel(found) : false;
+			},
+			setThinking: (level) => pi.setThinkingLevel(level),
+			announce: (change) => announceFallback(change, undefined),
+			resume: (message) => pi.sendUserMessage(message, { deliverAs: "followUp" }),
+			cooldown: sharedCooldown(),
+			now: () => deps.now(),
+		});
+		orchestratorFallbacks.set(sessionId, fallback);
+		return fallback;
+	};
 	let host: { requestRender(): void } | undefined;
 	let sidebarTui: TUI | undefined;
 	const visualHome = gentlePiConfigHome(env);
@@ -1472,9 +1512,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		deliveryRetries = 0;
 		endPromptStart();
 	});
-	pi.on("agent_end", () => {
+	pi.on("agent_end", (event, ctx) => {
 		activeAgentRuns = Math.max(0, activeAgentRuns - 1);
 		flushAll();
+		// A child's own failures are handled by the parent's runner, never by the child.
+		if (deps.env.GENTLE_PI_AGENTS_CHILD !== "1" && ctx) void orchestratorFallbackFor(ctx).onAgentEnd(event?.messages ?? []).catch((error: unknown) => ui?.notify(`Model fallback failed: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
 	pi.on("agent_settled", () => {
 		parentRunActive = false;
@@ -1511,14 +1553,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			else messages.expireQuery(taskId, requestId);
 		},
-		onFallback: (task, change) => {
-			const record = { agent: task.agent, from: change.from, to: change.to, category: change.category };
-			if (activeSessionId() === task.parentSessionId) {
-				try { pi.appendEntry(MODEL_FALLBACK_ENTRY, { ...record, taskId: task.id, at: deps.now() }); } catch { /* The switch matters more than its record. */ }
-			}
-			const prices = (model: { provider: string | undefined; id: string }) => (model.provider ? modelRegistry?.find(model.provider, model.id)?.cost : undefined);
-			ui?.notify(fallbackNotice(record, prices), "warning");
-		},
+		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
 			// Same-clone registry attribution remains unchanged. A foreign task
 			// uses a separately bound, live-grant path only for successful tool evidence.

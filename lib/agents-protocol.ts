@@ -260,6 +260,11 @@ function terminalErrorCategory(message: { errorMessage?: unknown; rawStopReason?
 	return TERMINAL_ERROR_CATEGORY.UNAVAILABLE;
 }
 
+/** The closed error category of a failed assistant message; undefined unless it stopped with an error. */
+export function assistantErrorCategory(message: { stopReason?: unknown; errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown } | undefined): TerminalErrorCategory | undefined {
+	return message && clean(message.stopReason).toLowerCase() === "error" ? terminalErrorCategory(message) : undefined;
+}
+
 function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 	if (!Array.isArray(messages)) return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	for (let index = messages.length - 1; index >= 0; index -= 1) {

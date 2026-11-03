@@ -23,7 +23,7 @@ import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
@@ -78,8 +78,6 @@ import { publishTaskStatusChanges } from "../lib/notification-events.ts";
 
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
-/** The above-editor "needs you" row for agents waiting for a reply in the wide chrome. */
-export const AGENTS_ALERT_WIDGET_KEY = "gentle-agents-alert";
 export const JOBS_COMMAND_NAME = "gentle:jobs";
 // How long session shutdown waits for stopped jobs to close their logs.
 const JOBS_SHUTDOWN_GRACE_MS = 2000;
@@ -1842,17 +1840,6 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
 		});
-		// While the rail owns the host, or the mobile work row folds the card, the
-		// above-editor card steps aside, so an agent asking the user gets its own
-		// row right above the editor. Otherwise the card lists the waiting row.
-		ui?.setWidget(AGENTS_ALERT_WIDGET_KEY, (tui, theme) => ({
-			render(width: number) {
-				if (!agentsVisible) return [];
-				const state = sidebarState(tui);
-				return (state.active && state.ownsHost?.()) || state.compactWork?.() ? renderAgentsAlert(visibleTasks(), theme, width) : [];
-			},
-			invalidate() {},
-		}));
 	};
 
 	const toggleCollapsed = () => {
@@ -1864,7 +1851,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// One surface of the Agents card. The rail is natively scrollable, so it
 	// lists every task; the above-editor widget keeps its row budget. Only the
 	// header row is the clickable collapse control, exactly like Todos.
-	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary> } => {
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[] } => {
 		let hovered = false;
 		let headerRow = 0;
 		const card: Component = {
@@ -1905,7 +1892,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			},
 		});
 		return {
-			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined) } : {}),
+			// The panel editor draws the alert above its rule while the IDE chrome
+			// hides the above-editor card (rail or mobile work row).
+			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined), alert: (width: number) => (agentsVisible ? renderAgentsAlert(visibleTasks(), theme, width) : []) } : {}),
 			// The rail memo repaints a part only when its digest moves: task
 			// state, the local controls, and the elapsed clock (to the second)
 			// only while a task is still running, so an idle or finished card

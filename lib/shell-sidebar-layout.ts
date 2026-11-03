@@ -143,6 +143,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		narrowStatusOwner({ mode: host.mode, columns: tui.terminal.columns, statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
 	state.railColumns = SIDEBAR_RAIL_COLUMNS;
+	state.layoutAttached = () => !stopped && !failed && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
 	const rail: Component = {
 		render: () => railLines,
@@ -373,7 +374,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// Without a rail the native layout stays in place; a hidden Status, or a
 			// narrow top header owning it, only frees the footer's reserved dock row,
 			// exactly as the rail does.
-			const nativeLayout = () => placement() === "hidden" || headerOwnsStatus() ? reclaimFooterRow(original.call(root)) : original.call(root);
+			// The minimal edition (compact work) hands the footer row to its status bar too.
+			const nativeLayout = () => placement() === "hidden" || headerOwnsStatus() || state.compactWork?.() ? reclaimFooterRow(original.call(root)) : original.call(root);
 			const nativeHost = { render: () => [], invalidate() {}, [NODE]: nativeLayout };
 			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
 			// Stable component wrapping the [left, scroll] hstack behind its own

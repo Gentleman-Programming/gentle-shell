@@ -140,16 +140,19 @@ test("atomic write round trips and invalid existing files fall back without over
 
 // Presets (/gentle:customize → Layout → Preset) bundle the existing density and
 // visibility switches; they never add a key, so every binary keeps reading the file.
-test("presets are valid settings that keep the file format and the chosen placements", () => {
+test("presets are valid settings that keep the file format and the header placement; Light drops the rail", () => {
 	assert.deepEqual(Object.values(VISUAL_PRESET), ["light", "neutral", "power-user"]);
 	const custom = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.RIGHT, headerPlacement: HEADER_PLACEMENT.BELOW_INPUT };
 	for (const preset of Object.values(VISUAL_PRESET)) {
 		const applied = applyVisualPreset(custom, preset);
 		assert.ok(isVisualSettings(applied), `${preset} is a valid settings object`);
-		assert.equal(applied.statusPlacement, STATUS_PLACEMENT.RIGHT, "a preset keeps the status placement");
 		assert.equal(applied.headerPlacement, HEADER_PLACEMENT.BELOW_INPUT, "a preset keeps the header placement");
+		assert.equal(applied.statusPlacement, preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM : STATUS_PLACEMENT.RIGHT, "Light moves Status to the bottom bar (no rail); the others keep the placement");
 		assert.equal(visualPresetOf(applied), preset);
 	}
+	const fromLight = applyVisualPreset(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), VISUAL_PRESET.NEUTRAL);
+	assert.equal(fromLight.statusPlacement, STATUS_PLACEMENT.AUTO, "leaving Light brings the rail back");
+	assert.equal(visualPresetOf({ ...applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), statusPlacement: STATUS_PLACEMENT.AUTO }), undefined, "Light switches with a rail are a custom mix");
 	assert.deepEqual(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.NEUTRAL), DEFAULT_VISUAL_SETTINGS, "Neutral is today's default");
 	const light = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT);
 	assert.equal(light.density, DENSITY.MINIMAL);

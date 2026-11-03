@@ -26,7 +26,7 @@ import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import { isJobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
-import { resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
+import { DEFAULT_VISUAL_SETTINGS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
@@ -520,6 +520,7 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 	const header = state.parts.get("header")!;
 	// Mobile keeps the running-job count in its status bar: no rail lists jobs there.
 	const statusbar = state.parts.get("statusbar")!;
+	state.layoutAttached = () => true; // installSidebar sets this on a real fullscreen root
 	const publish = (sessionId: string, jobs: unknown) => pi.events.emit("gentle-ai:jobs-sidebar", { sessionId, snapshot: { jobs } });
 	try {
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
@@ -6644,8 +6645,18 @@ test("the installed editor draws the panel frame in the wide and mobile IDE chro
 		assert.match(rows[1]!, /^› /, "the input sits behind the prompt");
 		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│]/u);
 		for (const row of rows) assert.equal(visibleWidth(row), 80);
+		// An agent question sits right above the rule, inside the editor, so no widget can land between.
+		const agents = sidebarPart(fakeTui as unknown as TUI, "agents", { render: (_width: number) => [], invalidate() {}, dispose() {} }, { render: () => [], alert: () => [" ? explore asked: Which file?"], invalidate() {} });
+		const asked = editor.render(80).map(stripAnsi);
+		assert.match(asked[0]!, /explore asked: Which file\?/);
+		assert.match(asked[1]!, /^─ ✿ waiting for input/);
+		assert.equal(editor.handleMouse?.({ type: "move", button: "none", x: 2, y: 0, screenX: 2, screenY: 0, width: 80, height: asked.length, shift: false, alt: false, ctrl: false }), undefined, "the alert row is not the editor");
+		agents.dispose();
 		state.active = false;
+		state.layoutAttached = () => true;
 		assert.match(stripAnsi(editor.render(80)[0]!), /^─ ✿ waiting for input/, "a narrow fullscreen terminal (mobile) keeps the panel editor");
+		state.layoutAttached = undefined;
+		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "without the fullscreen layout installed the framed editor stays");
 		delete host.mode;
 		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "regular mode keeps the framed editor");
 	} finally {
@@ -6666,6 +6677,7 @@ test("mobile folds live work into one row above the editor that opens /gentle:pa
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
 	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	const state = sidebarState(tui as unknown as TUI);
+	state.layoutAttached = () => true; // installSidebar sets this on a real fullscreen root
 	const todoCard = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => ["TODO CARD"], invalidate() {}, dispose() {} }, {
 		render: (width: number) => ["▾ TODOS".padEnd(width), "  ◐ Run the suite".padEnd(width)],
 		summary: () => ({ left: "◐ Run the suite", right: "1/3", rightLabel: "todos" }),
@@ -6674,8 +6686,17 @@ test("mobile folds live work into one row above the editor that opens /gentle:pa
 	try {
 		assert.equal(state.compactWork?.(), true, "a narrow fullscreen terminal folds live work");
 		assert.deepEqual(todoCard.render(56), [], "the Todos card steps aside for the work row");
-		const workRow = (ui.widgets.get("gentle-shell-work-row") as () => { render(width: number): string[]; handleMouse?(event: unknown): unknown })();
-		assert.match(stripAnsi(workRow.render(56)[0]!), /^ ▸ ◐ Run the suite +1\/3 $/);
+		// The work row is part of the panel editor, right above its rule.
+		assert.equal(ui.widgets.has("gentle-shell-work-row"), false, "no separate widget can land between the row and the editor");
+		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+		const editorRows = editor.render(56).map(stripAnsi);
+		assert.match(editorRows[0]!, /^ ▸ ◐ Run the suite +1\/3 $/);
+		assert.match(editorRows[1]!, /^─ ✿ waiting for input/, "the editor rule follows the work row directly");
+		assert.equal(editor.handleMouse?.({ type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 56, height: editorRows.length, shift: false, alt: false, ctrl: false })?.handled, true, "a tap on the work row is handled");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.match(openPanelLines(ui)[0]!, /^ ✿ Panel/, "the tap opens the panel sheet");
+		(ui.overlayView as unknown as { handleInput(data: string): void }).handleInput("\x1b");
+		editor.dispose();
 		const header = state.parts.get("header")!;
 		assert.match(stripAnsi(header.render(56).join("\n")), /^ ✿ repo .*· /, "the mobile title row carries the model");
 		assert.match(stripAnsi(state.parts.get("statusbar")!.render(56).join("\n")), /^ main/, "the mobile status bar leads with the branch");
@@ -6708,6 +6729,7 @@ test("customize presets set density and visibility together, mark the current on
 	assert.equal(light.visibility.todo, false);
 	assert.equal(light.visibility.changes, false);
 	assert.equal(light.headerPlacement, "below-input", "the preset keeps the chosen header placement");
+	assert.equal(light.statusPlacement, "bottom", "Light is the minimal edition without the rail");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Light.*current/);
 	await customizeAction(ui, "Preset: Power user");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "compact");
@@ -6750,13 +6772,15 @@ test("a hidden Todos section stays hidden in the mobile work row and the panel s
 	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
 	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 	const state = sidebarState(tui as unknown as TUI);
+	state.layoutAttached = () => true; // installSidebar sets this on a real fullscreen root
 	const todo = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => ["TODO CARD"], invalidate() {}, dispose() {} }, {
 		render: (width: number) => ["▾ TODOS".padEnd(width), ...Array.from({ length: 40 }, (_, i) => `  ○ task ${i}`.padEnd(width))],
 		summary: () => ({ left: "◐ Secret plan task", right: "1/3", rightLabel: "todos" }),
 		invalidate() {},
 	});
+	const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
 	try {
-		const workRow = (ui.widgets.get("gentle-shell-work-row") as () => { render(width: number): string[] })();
+		const workRow = { render: (width: number) => editor.render(width).filter((row) => /▸/.test(stripAnsi(row))) };
 		assert.match(stripAnsi(workRow.render(56)[0]!), /Secret plan task/);
 		void commands.get("gentle:panel")!.handler("", ctx);
 		await new Promise((resolve) => setImmediate(resolve));
@@ -6775,5 +6799,42 @@ test("a hidden Todos section stays hidden in the mobile work row and the panel s
 		state.visibility = undefined;
 		todo.dispose();
 		footer.dispose();
+		editor.dispose();
+	}
+});
+
+test("Status at the bottom with the header on top draws the minimal IDE chrome on a wide terminal, without the rail", async () => {
+	const { pi, handlers } = fakePi();
+	const home = mkdtempSync(join(tmpdir(), "shell-light-"));
+	try {
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, statusPlacement: "bottom" }, { gentlePiConfigHome: home });
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		const state = sidebarState(tui as unknown as TUI);
+		state.layoutAttached = () => true; // installSidebar sets this on a real fullscreen root
+		const todo = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => ["TODO CARD"], invalidate() {}, dispose() {} }, {
+			render: (width: number) => ["▾ TODOS".padEnd(width)],
+			summary: () => ({ left: "◐ Run the suite", right: "1/3", rightLabel: "todos" }),
+			invalidate() {},
+		});
+		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+		try {
+			assert.equal(state.compactWork?.(), true, "the minimal edition folds live work like a phone");
+			assert.deepEqual(footer.render(180), [], "the old compact bottom bar steps aside for the status bar");
+			assert.deepEqual(todo.render(180), [], "the Todos card folds into the work row");
+			assert.match(stripAnsi(state.parts.get("header")!.render(180).join("\n")), /^ ✿ repo /, "the title row draws");
+			assert.match(stripAnsi(state.parts.get("statusbar")!.render(180).join("\n")), /^ main /, "the status bar draws");
+			assert.match(stripAnsi(editor.render(180)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
+		} finally {
+			editor.dispose();
+			todo.dispose();
+			footer.dispose();
+		}
+	} finally {
+		rmSync(home, { recursive: true, force: true });
 	}
 });

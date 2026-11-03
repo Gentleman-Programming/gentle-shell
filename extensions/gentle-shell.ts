@@ -491,6 +491,10 @@ interface PromptEditorDeps {
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
+	/** Rows the panel editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input. */
+	topRows?: (width: number) => string[];
+	/** A left click on one of the top rows (index into topRows). */
+	onTopRowClick?: (index: number) => void;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -551,6 +555,7 @@ export class GentlePromptEditor extends CustomEditor {
 	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
+	private topRowCount = 0;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
 	// from pi-select-del so the petal prompt owns the feature without factory
 	// composition. Constructed with `this`; the internals probe degrades to
@@ -1273,6 +1278,15 @@ export class GentlePromptEditor extends CustomEditor {
 	}
 
 	handleMouse(event: Parameters<CustomEditor["handleMouse"]>[0]): ReturnType<CustomEditor["handleMouse"]> {
+		// Rows drawn above the panel rule belong to the shell, not to Pi's editor.
+		if (this.topRowCount > 0) {
+			if (event.y < this.topRowCount) {
+				if (event.type !== "click" || event.button !== "left") return undefined;
+				this.deps.onTopRowClick?.(event.y);
+				return { handled: true, render: true };
+			}
+			event = { ...event, y: event.y - this.topRowCount, height: event.height - this.topRowCount };
+		}
 		const layout = this.floatMouseLayout;
 		if (!layout) return super.handleMouse(event);
 		// Row coordinates stay native: padding=0, content=1…N, hint=N+1.
@@ -1336,6 +1350,9 @@ export class GentlePromptEditor extends CustomEditor {
 					? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
 					: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
 		}
+		const topRows = layout.panel ? (this.deps.topRows?.(width) ?? []) : [];
+		this.topRowCount = topRows.length;
+		framed.unshift(...topRows);
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
 		for (const line of editorLines.slice(borderEnd)) {
@@ -1437,7 +1454,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1457,6 +1474,8 @@ function installPrompt(
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
+			topRows: promptDeps.topRows ? (width) => promptDeps.topRows!(tui, width) : undefined,
+			onTopRowClick: promptDeps.onTopRowClick ? (index) => promptDeps.onTopRowClick!(tui, index) : undefined,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
@@ -1695,8 +1714,6 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
-/** The mobile work row above the editor: live work folded into one row below the rail breakpoint. */
-const WORK_ROW_WIDGET_KEY = "gentle-shell-work-row";
 const USAGE_SHORTCUT_DEFAULT = "alt+u";
 const REVIEW_PREFLIGHT_TYPE = "gentle-pi.review-preflight";
 const DEV_BINARY_WIDGET_KEY = "gentle-shell-dev-binary";
@@ -2022,14 +2039,33 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
 	// Which IDE chrome the fullscreen shell draws: "wide" while the rail owns the
-	// host, "narrow" (mobile) below the rail breakpoint, undefined for the
-	// below-input header, a hidden Status, and regular mode.
+	// host, "narrow" (mobile) below the rail breakpoint or with Status at the
+	// bottom (the minimal edition), undefined for the below-input header, a
+	// hidden Status, and regular mode.
 	const chromeMode = (tui: TUI): "wide" | "narrow" | undefined => {
 		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
 		const state = sidebarState(tui);
 		if (state.active && state.ownsHost?.()) return "wide";
+		// The compact chrome replaces the bottom bar, so it only applies while the
+		// layout that draws its title row and status bar is installed.
+		if (!state.layoutAttached?.()) return undefined;
 		const placement = visualSettings.statusPlacement;
+		// "bottom" (the Light preset) is the minimal edition: the phone layout at any width, no rail.
+		if (placement === "bottom") return "narrow";
 		return tui.terminal.columns < SIDEBAR_BREAKPOINT && (placement === "auto" || placement === "right") ? "narrow" : undefined;
+	};
+	// The live-work digests the mobile work row folds, honoring the Todos switch.
+	const workSummaries = (tui: TUI) => {
+		const state = sidebarState(tui);
+		return ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => state.parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
+	};
+	// What the panel editor draws above its rule: the mobile work row, then any
+	// agent question, so nothing another widget adds can land between them and the input.
+	const panelTopRows = (tui: TUI, width: number, theme: Parameters<typeof renderWorkRow>[1]): string[] => {
+		const mode = chromeMode(tui);
+		if (!mode) return [];
+		const row = mode === "narrow" ? renderWorkRow(workSummaries(tui), theme, width) : undefined;
+		return [...(row ? [row] : []), ...(sidebarState(tui).parts.get("agents")?.alert?.(width) ?? [])];
 	};
 	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
 	const openPanelSheet = (ctx: ExtensionContext) =>
@@ -2391,7 +2427,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// same split stays, with the model in the title row and live work folded
 			// into one row above the editor.
 			const narrowChrome = () => chromeMode(tui) === "narrow";
-			if (tui.terminal) sidebarState(tui).compactWork = narrowChrome;
+			if (tui.terminal) {
+				sidebarState(tui).compactWork = narrowChrome;
+				// Both IDE chromes draw a status bar that shows the permission mode.
+				sidebarState(tui).statusBarShowsMode = () => ideChrome() || narrowChrome();
+			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
 				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
@@ -2421,21 +2461,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
-			ctx.ui.setWidget(WORK_ROW_WIDGET_KEY, () => ({
-				render(width: number) {
-					if (!narrowChrome()) return [];
-					const state = sidebarState(tui);
-					const summaries = ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => state.parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
-					const row = renderWorkRow(summaries, theme, width);
-					return row ? [row] : [];
-				},
-				invalidate() {},
-				handleMouse(event) {
-					if (!narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
-					void openPanelSheet(ctx);
-					return { handled: true, render: true };
-				},
-			}));
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
@@ -2462,7 +2487,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); ctx.ui.setWidget(WORK_ROW_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2475,7 +2500,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
-				panelChrome: (tui) => chromeMode(tui) !== undefined },
+				panelChrome: (tui) => chromeMode(tui) !== undefined,
+				topRows: (tui, width) => panelTopRows(tui, width, ctx.ui.theme),
+				// The mobile work row is the first top row; a tap on it opens the panel sheet.
+				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0 && workSummaries(tui).length > 0) void openPanelSheet(ctx); } },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt

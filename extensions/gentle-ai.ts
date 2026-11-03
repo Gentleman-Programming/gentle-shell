@@ -5155,9 +5155,11 @@ async function runProfilesPanelAction(
 			// profile omits, so the dialog must name the concrete diff. The current
 			// routing is read from the same authority every other consumer uses; an
 			// unreadable config is tolerated as empty, exactly like readModelConfigAsync.
+			// Like applySavedModelConfig, an active profile excludes legacy project
+			// routes it omitted, so they never surface as a false clearing diff.
 			const savedRouting = await readModelRoutingAuthorityAsync(
 				modelConfigPath(ctx.cwd),
-				legacyProjectModelConfigPath(ctx.cwd),
+				secondaryMergeSourcePath(ctx.cwd, resolveCurrentProfileTarget(ctx.cwd)),
 			);
 			// The apply pads omitted discoverable agents with clear entries, so the
 			// diff must run against the effective current routing: the saved global

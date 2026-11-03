@@ -52,13 +52,13 @@ export class ModelCooldown {
 		if (until >= (this.until.get(model) ?? 0)) this.why.set(model, category);
 		this.until.set(model, Math.max(this.until.get(model) ?? 0, until));
 	}
-	/** Why a model is cooling down, while it is. */
 	/** A model whose own usage limit is spent waits until that limit resets. */
 	markModelUntil(model: string, until: number): void {
 		if (until <= (this.until.get(model) ?? 0)) return;
 		this.until.set(model, until);
 		this.why.set(model, TERMINAL_ERROR_CATEGORY.QUOTA);
 	}
+	/** Why a model is cooling down, while it is. */
 	reason(model: string, now: number): TerminalErrorCategory | undefined {
 		if (this.available(model, now)) return undefined;
 		return this.why.get(model) ?? TERMINAL_ERROR_CATEGORY.QUOTA;

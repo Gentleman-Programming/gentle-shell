@@ -1,6 +1,6 @@
 import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
-import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
 import { readPastedImagePaths } from "../lib/pasted-image-paths.ts";
 import { describeAttachment, ImageAttachments } from "../lib/image-attachments.ts";
@@ -13,7 +13,7 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellTitleRow, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -124,7 +124,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { panelSheetBackHit, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
@@ -491,8 +491,8 @@ interface PromptEditorDeps {
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
-	/** Rows the panel editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input. */
-	topRows?: (width: number) => string[];
+	/** Rows the editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input; `hovered` is the top row under the pointer. */
+	topRows?: (width: number, hovered?: number) => string[];
 	/** A left click on one of the top rows (index into topRows). */
 	onTopRowClick?: (index: number) => void;
 }
@@ -556,6 +556,7 @@ export class GentlePromptEditor extends CustomEditor {
 	private readonly deps: PromptEditorDeps;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
 	private topRowCount = 0;
+	private hoveredTopRow: number | undefined;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
 	// from pi-select-del so the petal prompt owns the feature without factory
 	// composition. Constructed with `this`; the internals probe degrades to
@@ -1281,9 +1282,19 @@ export class GentlePromptEditor extends CustomEditor {
 		// Rows drawn above the panel rule belong to the shell, not to Pi's editor.
 		if (this.topRowCount > 0) {
 			if (event.y < this.topRowCount) {
+				// Hovering a top row paints it as clickable, like every other control.
+				if (event.type === "move" && this.hoveredTopRow !== event.y) {
+					this.hoveredTopRow = event.y;
+					this.deps.requestRender();
+					return { handled: true, render: true };
+				}
 				if (event.type !== "click" || event.button !== "left") return undefined;
 				this.deps.onTopRowClick?.(event.y);
 				return { handled: true, render: true };
+			}
+			if (this.hoveredTopRow !== undefined) {
+				this.hoveredTopRow = undefined;
+				this.deps.requestRender();
 			}
 			event = { ...event, y: event.y - this.topRowCount, height: event.height - this.topRowCount };
 		}
@@ -1350,7 +1361,9 @@ export class GentlePromptEditor extends CustomEditor {
 					? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
 					: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
 		}
-		const topRows = layout.panel ? (this.deps.topRows?.(width) ?? []) : [];
+		// The shell decides what goes above the editor (work row, agent questions) for every frame style.
+		const topRows = this.deps.topRows?.(width, this.hoveredTopRow) ?? [];
+		if (this.hoveredTopRow !== undefined && this.hoveredTopRow >= topRows.length) this.hoveredTopRow = undefined;
 		this.topRowCount = topRows.length;
 		framed.unshift(...topRows);
 		// Pi places autocomplete after its bottom border. Keep those rows below
@@ -1454,7 +1467,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1474,7 +1487,7 @@ function installPrompt(
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
-			topRows: promptDeps.topRows ? (width) => promptDeps.topRows!(tui, width) : undefined,
+			topRows: promptDeps.topRows ? (width, hovered) => promptDeps.topRows!(tui, width, hovered) : undefined,
 			onTopRowClick: promptDeps.onTopRowClick ? (index) => promptDeps.onTopRowClick!(tui, index) : undefined,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
@@ -2061,11 +2074,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	};
 	// What the panel editor draws above its rule: the mobile work row, then any
 	// agent question, so nothing another widget adds can land between them and the input.
-	const panelTopRows = (tui: TUI, width: number, theme: Parameters<typeof renderWorkRow>[1]): string[] => {
-		const mode = chromeMode(tui);
-		if (!mode) return [];
-		const row = mode === "narrow" ? renderWorkRow(workSummaries(tui), theme, width) : undefined;
-		return [...(row ? [row] : []), ...(sidebarState(tui).parts.get("agents")?.alert?.(width) ?? [])];
+	const panelTopRows = (tui: TUI, width: number, theme: Parameters<typeof renderWorkRow>[1], hovered?: number): string[] => {
+		if (!tui.terminal) return [];
+		const state = sidebarState(tui);
+		const row = chromeMode(tui) === "narrow" ? renderWorkRow(workSummaries(tui), theme, width, hovered === 0) : undefined;
+		// An agent question needs its own row whenever the above-editor Agents
+		// card is hidden: the rail owns the host (any header placement) or the
+		// work row folded the card.
+		const cardHidden = Boolean(state.active && state.ownsHost?.()) || Boolean(state.compactWork?.());
+		return [...(row ? [row] : []), ...(cardHidden ? (state.parts.get("agents")?.alert?.(width) ?? []) : [])];
 	};
 	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
 	const openPanelSheet = (ctx: ExtensionContext) =>
@@ -2074,8 +2091,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const close = withOverlayRepaint(tui, done);
 				let scrollTop = 0;
 				let maxScroll = 0;
+				let backHovered = false;
+				let sheetWidth = 0;
 				return {
 					render(width: number) {
+						sheetWidth = width;
 						// Hang from the top and leave the bottom rows to the work row, the
 						// editor and the status bar, so the input stays visible.
 						// The sections live on the shell's sidebar terminal, the one its footer drew on,
@@ -2084,7 +2104,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						const rows = Math.max(4, (host.terminal?.rows ?? 24) - SHEET_RESERVED_ROWS);
 						const state = sidebarState(host);
 						const parts = new Map([...state.parts].filter(([key]) => key !== "todo" || state.visibility?.todo !== false));
-						const sheet = renderPanelSheet(parts, theme, width, { rows, scrollTop });
+						const sheet = renderPanelSheet(parts, theme, width, { rows, scrollTop, backHovered });
 						maxScroll = sheet.maxScroll;
 						scrollTop = Math.min(scrollTop, maxScroll);
 						return sheet.lines;
@@ -2095,6 +2115,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						else if (matchesKey(data, Key.up) || data === "k") scrollTop = Math.max(0, scrollTop - 1);
 						else return;
 						tui.requestRender();
+					},
+					// `esc back` is a control too: hover paints it, a click closes the sheet; the wheel scrolls.
+					handleMouse(event: TuiMouseEvent) {
+						const onBack = panelSheetBackHit(sheetWidth || event.width, event.x, event.y);
+						if (event.type === "move" && onBack !== backHovered) { backHovered = onBack; return { handled: true, render: true }; }
+						if (event.type === "click" && event.button === "left" && onBack) { close(null); return { handled: true, render: true }; }
+						if (event.type === "wheel") {
+							scrollTop = Math.max(0, Math.min(maxScroll, scrollTop + Math.sign(event.wheelDelta ?? 0)));
+							return { handled: true, render: true };
+						}
+						return undefined;
 					},
 					invalidate() {},
 				};
@@ -2341,15 +2372,56 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The rail's Status is a panel: Changes, Review and Integrations, then
 			// the key hints that close the rail (the section headers carry none).
 			const railHints = [todoKey ? `${todoKey} todos` : "", usageShortcutKey ? `${usageShortcutKey} usage` : "", "/ commands"].filter(Boolean).join(" · ");
+			// Status sections are clickable like the other rail sections: a header
+			// folds its section, the Changes row opens /gentle:changes.
+			const statusCollapsed = new Set<StatusSection>();
+			let statusHover: StatusSection | "open-changes" | undefined;
+			// Keyed by width: the rail and the full-width panel sheet render the same part.
+			const statusTargets = new Map<number, StatusTarget[]>();
+			const statusCard: Component = {
+				render(width: number) {
+					// The rail drops what the wide chrome's title row and status bar show
+					// (session, permission mode) only while that chrome actually draws.
+					const view = statusCardVisible() && visualSettings.headerPlacement === "top"
+						? renderShellStatusSections(footerModel(), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
+						: renderShellStatusSections({ ...footerModel(), integrations: undefined, permission: undefined }, theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
+					statusTargets.set(width, view.targets);
+					return view.lines;
+				},
+				invalidate() {
+					statusHover = undefined;
+				},
+			};
+			const targetAt = (y: number, width: number) => statusTargets.get(width)?.find((target) => target.row === y);
+			const statusRegion = new NativePointerRegion(statusCard, {
+				onHover(event) {
+					const target = targetAt(event.y, event.width);
+					const next = !target ? undefined : target.kind === "toggle" ? target.section : "open-changes";
+					if (next === statusHover) return { handled: true };
+					statusHover = next;
+					return { handled: true, render: true };
+				},
+				onLeave() {
+					if (!statusHover) return;
+					statusHover = undefined;
+					tui.requestRender();
+				},
+				onClick(event) {
+					const target = event.button === "left" ? targetAt(event.y, event.width) : undefined;
+					if (!target) return undefined;
+					if (target.kind === "open-changes") void openChanges(ctx);
+					else if (statusCollapsed.has(target.section)) statusCollapsed.delete(target.section);
+					else statusCollapsed.add(target.section);
+					invalidateSidebar(tui);
+					return { handled: true, render: true };
+				},
+			});
 			const part = sidebarPart(tui, "footer", bottomBar, {
 				surface: "panel",
-				digest: () => footerStatus.key(),
-				// The rail drops what the wide chrome's title row and status bar show
-				// (session, permission mode) only while that chrome actually draws.
-				render: (width) => statusCardVisible() && visualSettings.headerPlacement === "top"
-					? renderShellSidebarBar(footerModel(), theme, width, visualSettings, railHints)
-					: renderShellSidebarBar({ ...footerModel(), integrations: undefined, permission: undefined }, theme, width, visualSettings, railHints, { session: true }),
-				invalidate() {},
+				digest: () => JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? ""]),
+				render: (width) => statusRegion.render(width),
+				handleMouse: (event) => statusRegion.handleMouse(event),
+				invalidate: () => statusRegion.invalidate(),
 			});
 			// The Jobs card: its own rail section, like Agents and Todos, fed by the
 			// same running-job display snapshot the Status card used to print. The
@@ -2430,7 +2502,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (tui.terminal) {
 				sidebarState(tui).compactWork = narrowChrome;
 				// Both IDE chromes draw a status bar that shows the permission mode.
-				sidebarState(tui).statusBarShowsMode = () => ideChrome() || narrowChrome();
+				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined;
 			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
@@ -2487,7 +2559,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); statusRegion.dispose(); uninstall(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2501,7 +2573,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
 				panelChrome: (tui) => chromeMode(tui) !== undefined,
-				topRows: (tui, width) => panelTopRows(tui, width, ctx.ui.theme),
+				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
 				// The mobile work row is the first top row; a tap on it opens the panel sheet.
 				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0 && workSummaries(tui).length > 0) void openPanelSheet(ctx); } },
 		);

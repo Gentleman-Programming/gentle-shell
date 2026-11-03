@@ -2,6 +2,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
+import { HOVER_ROLE } from "./shell-hover.ts";
 import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
 import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
@@ -221,44 +222,80 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // Location, model and profile live in the header row, so they never repeat
 // here. Opaque integration statuses wrap so none of their meaning is clipped,
 // and the optional key hints close the rail.
-export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: { session?: boolean } = {}): string[] {
+export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): string[] {
+	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
+}
+
+export type StatusSection = "session" | "changes" | "review" | "integrations";
+export type StatusTarget = { row: number; kind: "toggle"; section: StatusSection } | { row: number; kind: "open-changes" };
+export interface StatusSectionsOptions {
+	/** Keep the session name (no title row shows it). */
+	session?: boolean;
+	/** Sections folded to their header. */
+	collapsed?: ReadonlySet<StatusSection>;
+	/** The pointer is over this section's header, or over the Changes row. */
+	hovered?: StatusSection | "open-changes";
+}
+
+/** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
+export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
-	const sections: string[][] = [];
+	type Section = { key?: StatusSection; header?: string; rows: string[]; openChangesRow?: number };
+	const sections: Section[] = [];
+	const header = (key: StatusSection, title: string, count?: string, countRole?: string) => renderPanelHeader(theme, width, { title, count, countRole, open: !options.collapsed?.has(key), hovered: options.hovered === key });
 	// Without the top title row (header below the input) the session name has no
 	// other home, so the rail keeps it.
 	if (options.session && model.sessionName) {
-		sections.push([renderPanelHeader(theme, width, { title: "Session", open: true }), ...wrapped(sanitizeStatus(model.sessionName), ROLE.VALUE)]);
+		sections.push({ key: "session", header: header("session", "Session"), rows: wrapped(sanitizeStatus(model.sessionName), ROLE.VALUE) });
 	}
 	if (presentation?.visibility.changes !== false) {
 		const changes = model.changes;
-		sections.push([
-			renderPanelHeader(theme, width, { title: "Changes", count: changes?.files ? `${changes.files} ${changes.files === 1 ? "file" : "files"}` : "clean", open: true }),
-			renderPanelRow(width, changes?.files ? `${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}` : label("no captured changes"), label("/gentle:changes")),
-		]);
+		const command = options.hovered === "open-changes" ? theme.fg(HOVER_ROLE, "/gentle:changes") : label("/gentle:changes");
+		sections.push({
+			key: "changes",
+			header: header("changes", "Changes", changes?.files ? `${changes.files} ${changes.files === 1 ? "file" : "files"}` : "clean"),
+			rows: [renderPanelRow(width, changes?.files ? `${theme.fg("success", `+${changes.added}`)} ${theme.fg("error", `−${changes.deleted}`)}` : label("no captured changes"), command)],
+			openChangesRow: 0,
+		});
 	}
 	if (model.review && presentation?.visibility.rdd !== false) {
 		const needsYou = model.review.state === "consent";
-		sections.push([
-			renderPanelHeader(theme, width, { title: "Review", count: needsYou ? "needs you" : undefined, countRole: "warning", open: true }),
-			...wrapped(REVIEW_SIDEBAR_LABELS[model.review.state], needsYou ? "warning" : ROLE.VALUE),
-			// Unknown scope is an internal sentinel, not something the user acts on.
-			...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
-		]);
+		sections.push({
+			key: "review",
+			header: header("review", "Review", needsYou ? "needs you" : undefined, "warning"),
+			rows: [
+				...wrapped(REVIEW_SIDEBAR_LABELS[model.review.state], needsYou ? "warning" : ROLE.VALUE),
+				// Unknown scope is an internal sentinel, not something the user acts on.
+				...(model.review.scope !== REVIEW_SCOPE_UNAVAILABLE ? wrapped(sanitizeStatus(model.review.scope), ROLE.LABEL) : []),
+			],
+		});
 	}
 	// The status bar shows the permission mode once; Integrations only says
 	// what it means, so neither the mode nor its banner repeats here.
 	const integrations = model.integrations ?? model.statuses;
 	const permission = model.permission?.detail ? wrapTextWithAnsi(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line)) : [];
 	const count = integrations.length + (permission.length ? 1 : 0);
-	sections.push([
-		renderPanelHeader(theme, width, { title: "Integrations", count: count ? String(count) : "none", open: true }),
-		...permission,
-		...(integrations.length ? integrations.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))]),
-	]);
-	if (hints) sections.push([renderPanelRow(width, label(hints))]);
+	sections.push({
+		key: "integrations",
+		header: header("integrations", "Integrations", count ? String(count) : "none"),
+		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+	});
+	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
 	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
-	return sections.flatMap((rows, index) => [...(index ? gap : []), ...rows]);
+	const lines: string[] = [];
+	const targets: StatusTarget[] = [];
+	sections.forEach((section, index) => {
+		if (index) lines.push(...gap);
+		if (section.key && section.header) {
+			targets.push({ row: lines.length, kind: "toggle", section: section.key });
+			lines.push(section.header);
+			if (options.collapsed?.has(section.key)) return;
+		}
+		if (section.openChangesRow !== undefined) targets.push({ row: lines.length + section.openChangesRow, kind: "open-changes" });
+		lines.push(...section.rows);
+	});
+	return { lines, targets };
 }
 
 // The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row

@@ -6650,7 +6650,7 @@ test("the installed editor draws the panel frame in the wide and mobile IDE chro
 		const asked = editor.render(80).map(stripAnsi);
 		assert.match(asked[0]!, /explore asked: Which file\?/);
 		assert.match(asked[1]!, /^─ ✿ waiting for input/);
-		assert.equal(editor.handleMouse?.({ type: "move", button: "none", x: 2, y: 0, screenX: 2, screenY: 0, width: 80, height: asked.length, shift: false, alt: false, ctrl: false }), undefined, "the alert row is not the editor");
+		assert.deepEqual(editor.handleMouse?.({ type: "move", button: "none", x: 2, y: 0, screenX: 2, screenY: 0, width: 80, height: asked.length, shift: false, alt: false, ctrl: false }), { handled: true, render: true }, "the shell owns the alert row's pointer events; they never reach Pi's editor");
 		agents.dispose();
 		state.active = false;
 		state.layoutAttached = () => true;
@@ -6836,5 +6836,130 @@ test("Status at the bottom with the header on top draws the minimal IDE chrome o
 		}
 	} finally {
 		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("an agent question keeps its row above the framed editor while the rail hides the Agents card with the header below the input", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui } = fakeContext();
+	const editor = installedPrompt(ctx, ui, handlers);
+	const state = sidebarState(fakeTui as unknown as TUI);
+	const owned = { active: state.active, ownsHost: state.ownsHost };
+	const host = fakeTui as { mode?: string };
+	const agents = sidebarPart(fakeTui as unknown as TUI, "agents", { render: (_width: number) => [], invalidate() {}, dispose() {} }, { render: () => [], alert: () => [" ? explore asked: Which file?"], invalidate() {} });
+	try {
+		host.mode = "fullscreen";
+		state.active = true;
+		state.ownsHost = () => true;
+		const rows = editor.render(80).map(stripAnsi);
+		assert.match(rows[0]!, /explore asked: Which file\?/, "the question sits right above the editor");
+		assert.match(rows[1]!, /^╭/, "the below-input header keeps the framed editor");
+		state.active = false;
+		assert.doesNotMatch(editor.render(80).map(stripAnsi).join("\n"), /explore asked/, "without the rail the Agents card lists the question itself");
+	} finally {
+		agents.dispose();
+		delete host.mode;
+		state.active = owned.active;
+		state.ownsHost = owned.ownsHost;
+		editor.dispose();
+	}
+});
+
+test("rail Status sections fold on a header click and the Changes row opens /gentle:changes", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map([["mcp", "MCP: 3 servers"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer")!;
+		const rows = () => rail.render(46).map((line) => stripAnsi(line).trimEnd());
+		const click = (y: number, type: "click" | "move" = "click") => rail.handleMouse?.({ type, button: type === "click" ? "left" : "none", x: 2, y, screenX: 2, screenY: y, width: 46, height: rows().length, shift: false, alt: false, ctrl: false });
+		const header = rows().findIndex((line) => /^▾ INTEGRATIONS/.test(line));
+		assert.ok(header >= 0);
+		const before = rail.digest?.();
+		assert.deepEqual(click(header, "move"), { handled: true, render: true }, "the header is hoverable");
+		assert.notEqual(rail.digest?.(), before, "hover repaints the cached section");
+		assert.equal(click(header)?.handled, true);
+		assert.ok(rows().some((line) => /^▸ INTEGRATIONS/.test(line)) && !rows().some((line) => /MCP: 3 servers/.test(line)), "a click folds the section");
+		click(rows().findIndex((line) => /^▸ INTEGRATIONS/.test(line)));
+		assert.ok(rows().some((line) => /MCP: 3 servers/.test(line)), "a second click unfolds it");
+		const changesRow = rows().findIndex((line) => /\/gentle:changes/.test(line));
+		const notices = ui.notices.length;
+		assert.equal(click(changesRow)?.handled, true, "the Changes row is clickable");
+		for (let i = 0; i < 5 && !ui.overlayView && ui.notices.length === notices; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.ok(ui.overlayView || ui.notices.length > notices, "the click runs /gentle:changes (its view, or its note when nothing changed)");
+		(ui.overlayView as unknown as { handleInput?(data: string): void } | undefined)?.handleInput?.("\x1b");
+	} finally {
+		footer.dispose();
+	}
+});
+
+test("the work row reacts to hover and the panel sheet closes from a click on esc back and scrolls with the wheel", async () => {
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 20, columns: 56 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const state = sidebarState(tui as unknown as TUI);
+	state.layoutAttached = () => true;
+	const todo = sidebarPart(tui as unknown as TUI, "todo", { render: (_width: number) => [], invalidate() {}, dispose() {} }, {
+		render: (width: number) => ["▾ TODOS".padEnd(width), ...Array.from({ length: 30 }, (_, i) => `  ○ task ${i}`.padEnd(width))],
+		summary: () => ({ left: "◐ Run the suite", right: "1/3", rightLabel: "todos" }),
+		invalidate() {},
+	});
+	const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+	const pointer = (type: "move" | "click" | "wheel", x: number, y: number, extra: Record<string, unknown> = {}) => ({ type, button: type === "click" ? "left" : "none", x, y, screenX: x, screenY: y, width: 56, height: 6, shift: false, alt: false, ctrl: false, ...extra }) as never;
+	try {
+		editor.render(56);
+		assert.deepEqual(editor.handleMouse?.(pointer("move", 3, 0)), { handled: true, render: true }, "hovering the work row repaints it as clickable");
+		const opened = commands.get("gentle:panel")!.handler("", ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		const sheet = ui.overlayView as unknown as { render(width: number): string[]; handleMouse(event: unknown): unknown };
+		const first = stripAnsi(sheet.render(56)[1]!);
+		assert.deepEqual(sheet.handleMouse(pointer("wheel", 10, 5, { wheelDelta: 1 })), { handled: true, render: true });
+		assert.notEqual(stripAnsi(sheet.render(56)[1]!), first, "the wheel scrolls the sheet");
+		assert.deepEqual(sheet.handleMouse(pointer("move", 52, 0)), { handled: true, render: true }, "esc back is hoverable");
+		assert.equal((sheet.handleMouse(pointer("click", 52, 0)) as { handled?: boolean }).handled, true);
+		await opened;
+	} finally {
+		editor.dispose();
+		todo.dispose();
+		footer.dispose();
+	}
+});
+
+test("a render of the Status part at another width never moves the rail's click targets", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	// Below the input the rail keeps the Session section, whose row wraps at a narrow width.
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 180 }, requestRender() {} };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void })(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	try {
+		const rail = sidebarState(tui as unknown as TUI).parts.get("footer")!;
+		const at = (width: number) => rail.render(width).map((line) => stripAnsi(line).trimEnd());
+		const wide = at(46);
+		const header = wide.findIndex((line) => /^▾ CHANGES/.test(line));
+		assert.ok(header > 0, "the rail shows Session above Changes");
+		const narrow = at(12);
+		assert.notEqual(narrow.findIndex((line) => /^▾ CHANGES/.test(line)), header, "the narrow render moves the Changes header");
+		// The click arrives at the rail's width with no render in between.
+		const notices = ui.notices.length;
+		const result = rail.handleMouse?.({ type: "click", button: "left", x: 2, y: header, screenX: 2, screenY: header, width: 46, height: wide.length, shift: false, alt: false, ctrl: false });
+		assert.equal(result?.handled, true, "the click lands on the rail's own Changes header");
+		assert.ok(at(46).some((line) => /^▸ CHANGES/.test(line)), "the click folds Changes");
+		assert.equal(ui.notices.length, notices, "the click runs nothing else");
+	} finally {
+		footer.dispose();
 	}
 });

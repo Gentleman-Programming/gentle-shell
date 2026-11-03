@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { paintPanelSurface, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { paintPanelSurface, PANEL_SURFACE_ROLE, panelSheetBackHit, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
 import { renderTodoSection, todoWorkSummary, type TodoState } from "../lib/shell-todo.ts";
 import { renderJobsSection } from "../lib/jobs-widget.ts";
 import { JOB_GLYPH } from "../lib/background-jobs-tools.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
-import { renderShellSidebarBar, renderShellStatusBar, renderShellTitleRow } from "../lib/shell-bar.ts";
+import { renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow } from "../lib/shell-bar.ts";
 
 // The fullscreen rail draws its sections as one panel (design/shell-rework/02-proposal.html):
 // a one-row header `▾ NAME … count` and dense rows, no card chrome.
@@ -246,4 +246,34 @@ test("a long branch gives way before the context and cost in a phone-width statu
 	assert.equal(visibleWidth(row), 56);
 	assert.match(row, /ctx [▰▱]+ 27% │ \$0\.000 $/, "context and cost stay");
 	assert.match(row, /^ feat\/shell-\S*… │ SUPER-YOLO /, "the branch is clipped and the permission mode stays");
+});
+
+test("the rail Status sections are click targets: headers collapse them and the Changes row opens /gentle:changes", () => {
+	const model = { ...chromeModel, changes: { files: 2, added: 7, deleted: 3 }, review: undefined };
+	const open = renderShellStatusSections(model, plain as never, 48, undefined, undefined, {});
+	const at = (pattern: RegExp) => open.lines.findIndex((line) => pattern.test(stripAnsi(line)));
+	assert.deepEqual(open.targets, [
+		{ row: at(/^▾ CHANGES/), kind: "toggle", section: "changes" },
+		{ row: at(/\+7 −3/), kind: "open-changes" },
+		{ row: at(/^▾ INTEGRATIONS/), kind: "toggle", section: "integrations" },
+	]);
+	const collapsed = renderShellStatusSections(model, plain as never, 48, undefined, undefined, { collapsed: new Set(["integrations"]) }).lines.map((line) => stripAnsi(line).trimEnd());
+	assert.ok(collapsed.some((line) => /^▸ INTEGRATIONS/.test(line)), "a collapsed section keeps its header with ▸");
+	assert.ok(!collapsed.some((line) => /gentle-pi · ready/.test(line)), "and hides its rows");
+	const hovered = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "changes" }).lines.join("\n");
+	assert.match(hovered, /<warning>▾<\/warning> <text>\*CHANGES\*<\/text>/, "a hovered header paints the shared hover role");
+	const hoveredOpen = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "open-changes" }).lines.join("\n");
+	assert.match(hoveredOpen, /<warning>\/gentle:changes<\/warning>/, "a hovered Changes row paints its command in the hover role");
+	assert.deepEqual(renderShellSidebarBar(model, plain as never, 48), open.lines, "renderShellSidebarBar stays the lines of the same render");
+});
+
+test("the work row and the sheet's esc back show they are clickable", () => {
+	const hovered = renderWorkRow([{ left: "◐ Run the suite", right: "1/3" }], theme as never, 80, true)!;
+	assert.match(hovered, /<warning>▸<\/warning>/, "a hovered work row paints its affordance in the hover role");
+	assert.doesNotMatch(renderWorkRow([{ left: "◐ Run the suite", right: "1/3" }], theme as never, 80)!, /<warning>/);
+	const parts = new Map([["todo", { render: (width: number) => ["▾ TODOS".padEnd(width)] }]]);
+	assert.match(renderPanelSheet(parts as never, theme as never, 80, { rows: 10, scrollTop: 0, backHovered: true }).lines[0]!, /<warning>esc back<\/warning>/);
+	assert.equal(panelSheetBackHit(30, 25, 0), true, "a click on esc back closes the sheet");
+	assert.equal(panelSheetBackHit(30, 5, 0), false);
+	assert.equal(panelSheetBackHit(30, 25, 1), false, "only the title row carries the control");
 });

@@ -48,6 +48,8 @@ type PreparedRail = {
 	// falls back to the old hstack-direct shape with the banner restored.
 	headerLines: string[];
 	statusLines: string[];
+	/** The tinted blank row that fills the rail below a trailing panel section, or "" when the rail ends on a card. */
+	fillRow: string;
 	headerActive: boolean;
 	presentation?: SidebarPresentation;
 };
@@ -122,6 +124,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	let stopped = false;
 	let failed = false;
 	let railLines: string[] = [];
+	let fillRow = "";
 	let headerLines: string[] = [];
 	let statusLines: string[] = [];
 	let prepared: PreparedRail | undefined;
@@ -145,8 +148,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	state.railColumns = SIDEBAR_RAIL_COLUMNS;
 	state.layoutAttached = () => !stopped && !failed && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
+	// The panel surface runs to the bottom of the rail: below the last panel
+	// section, blank tinted rows fill what is left of the viewport. They are
+	// not content, so they never add scroll range or hit targets.
 	const rail: Component = {
-		render: () => railLines,
+		render: () => {
+			const room = scroll.viewportHeight - railLines.length;
+			return fillRow && room > 0 ? [...railLines, ...Array.from({ length: room }, () => fillRow)] : railLines;
+		},
 		invalidate() {
 			invalidateSidebar(tui);
 			for (const part of state.parts.values()) part.invalidate();
@@ -261,6 +270,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		if (unchanged) {
 			railLines = prepared.lines;
 			statusLines = prepared.statusLines;
+			fillRow = prepared.fillRow;
 			state.active = prepared.active;
 			return prepared.active;
 		}
@@ -299,6 +309,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
 			railLines = [];
+			fillRow = "";
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 			} else if (sections.length && headerActive && density() === "comfortable" && style === CARD_STYLE.NEON) {
@@ -319,6 +330,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				const startY = railLines.length;
 				railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
 				previousPanel = panel;
+				fillRow = panel ? paint(" ".repeat(contentWidth)) : "";
 				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
@@ -327,7 +339,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {

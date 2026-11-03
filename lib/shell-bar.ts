@@ -221,10 +221,15 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // Location, model and profile live in the header row, so they never repeat
 // here. Opaque integration statuses wrap so none of their meaning is clipped,
 // and the optional key hints close the rail.
-export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string): string[] {
+export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: { session?: boolean } = {}): string[] {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
 	const sections: string[][] = [];
+	// Without the top title row (header below the input) the session name has no
+	// other home, so the rail keeps it.
+	if (options.session && model.sessionName) {
+		sections.push([renderPanelHeader(theme, width, { title: "Session", open: true }), ...wrapped(sanitizeStatus(model.sessionName), ROLE.VALUE)]);
+	}
 	if (presentation?.visibility.changes !== false) {
 		const changes = model.changes;
 		sections.push([

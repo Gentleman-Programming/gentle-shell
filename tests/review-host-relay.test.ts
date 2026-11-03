@@ -215,6 +215,22 @@ function textReviewer(text: string, reviewerModel = "openai/gpt-5") {
 	return { runReviewer, calls };
 }
 
+test("resolveReviewHostRelayMaxTokens defaults, honors a positive-integer override, and ignores invalid input", () => {
+	assert.equal(reviewHostRelayModule.resolveReviewHostRelayMaxTokens({}), 16_384);
+	assert.equal(reviewHostRelayModule.resolveReviewHostRelayMaxTokens({ [reviewHostRelayModule.REVIEW_HOST_RELAY_MAX_TOKENS_ENV]: "32768" }), 32_768);
+	for (const bad of ["0", "-1", "abc", "16.5", " 1"]) {
+		assert.equal(reviewHostRelayModule.resolveReviewHostRelayMaxTokens({ [reviewHostRelayModule.REVIEW_HOST_RELAY_MAX_TOKENS_ENV]: bad }), 16_384);
+	}
+});
+
+test("relay threads the resolved maxTokens ceiling into the reviewer request", async (t) => {
+	const fixture = harness(t);
+	const { runReviewer, calls } = textReviewer(REVIEWER_TEXT);
+	await runRelay(fixture, {}, runReviewer);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0]!.maxTokens, 16_384);
+});
+
 /** A `runReviewer` fake resolving with a canned typed refusal. */
 function refusingReviewer(code: (typeof INPROCESS_REVIEWER_FAILURE)[keyof typeof INPROCESS_REVIEWER_FAILURE], message: string, evidence?: Record<string, unknown>, delayMs = 0): typeof runInProcessReviewer {
 	return (async () => {
@@ -545,6 +561,9 @@ test("every in-process reviewer refusal maps to its typed relay failure code, ca
 			content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 		} },
 		{ code: INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE },
+		{ code: INPROCESS_REVIEWER_FAILURE.OUTPUT_TRUNCATED, kind: REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TRUNCATED, evidence: {
+			reviewerModel: "minimax/MiniMax-M3", reasoningLabel: "high", stopReason: "length", outputCeiling: 16_384,
+		} },
 		{ code: INPROCESS_REVIEWER_FAILURE.PROVIDER_FAILED, kind: REVIEW_HOST_RELAY_FAILURE.PI_FAILED },
 	];
 	for (const { code, kind, evidence } of cases) {
@@ -883,6 +902,7 @@ test("the unachievable predicate names only deterministic slot failures", () => 
 		REVIEW_HOST_RELAY_FAILURE.REVIEWER_TOOL_CALL,
 		REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT,
 		REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE,
+		REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TRUNCATED,
 		REVIEW_HOST_RELAY_FAILURE.REVIEWER_ABORTED,
 		REVIEW_HOST_RELAY_FAILURE.REVIEWER_CONFIG_INVALID,
 		REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED,

@@ -88,6 +88,10 @@ export const REVIEW_HOST_RELAY_FAILURE = {
 	REVIEWER_TOOL_CALL: "reviewer-tool-call-attempted",
 	REVIEWER_EMPTY_OUTPUT: "reviewer-empty-output",
 	REVIEWER_OUTPUT_TOO_LARGE: "reviewer-output-too-large",
+	// gentle-shell#1607: a completion the provider cut at the output ceiling
+	// carries partial text, so it is a distinct refusal from an empty output
+	// and must stay distinguishable in the relay failure kind.
+	REVIEWER_OUTPUT_TRUNCATED: "reviewer-output-truncated",
 	REVIEWER_ABORTED: "reviewer-aborted",
 	SUBMISSION_REFUSED: "submission-refused",
 } as const;
@@ -475,6 +479,24 @@ export function resolveReviewHostRelayPiTimeoutMs(promptByteLength: number, envi
 	return Math.min(scaled, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS);
 }
 
+export const REVIEW_HOST_RELAY_MAX_TOKENS_ENV = "GENTLE_PI_REVIEW_RELAY_MAX_TOKENS";
+export const REVIEW_HOST_RELAY_MAX_TOKENS_DEFAULT = 16_384;
+
+/**
+ * The completion's output ceiling. A reasoning model draws thinking tokens
+ * from the same pool as the answer, so an unbounded completion can spend the
+ * whole ceiling on reasoning and return no text (gentle-shell#1607). The
+ * default caps the runaway; a positive integer in the environment replaces it.
+ */
+export function resolveReviewHostRelayMaxTokens(environment: NodeJS.ProcessEnv = process.env): number {
+	const configured = environment[REVIEW_HOST_RELAY_MAX_TOKENS_ENV];
+	if (configured !== undefined && /^[1-9]\d*$/.test(configured)) {
+		const parsed = Number(configured);
+		if (Number.isSafeInteger(parsed)) return parsed;
+	}
+	return REVIEW_HOST_RELAY_MAX_TOKENS_DEFAULT;
+}
+
 // The reviewer completion ran out of time; it did not crash. The message
 // states both measurements and names the two things that can change the
 // outcome, because the one thing that cannot is relaunching the identical
@@ -542,10 +564,12 @@ function collectGentleAiProcess(
 	});
 }
 
-// Maps one in-process reviewer refusal onto a typed relay error. TIMED_OUT
-// reuses PI_TIMED_OUT and PROVIDER_FAILED reuses PI_FAILED (identical
-// semantics: a deterministic bound; a generic failure bucket); every other
-// code gets its own REVIEWER_* kind with no prior equivalent.
+/**
+ * Maps one in-process reviewer refusal onto a typed relay error. TIMED_OUT
+ * reuses PI_TIMED_OUT and PROVIDER_FAILED reuses PI_FAILED (identical
+ * semantics: a deterministic bound; a generic failure bucket); every other
+ * code gets its own REVIEWER_* kind with no prior equivalent.
+ */
 function relayReviewerRefusalError(
 	outcome: Extract<InProcessReviewerOutcome, { kind: "refused" }>,
 	timing: { elapsedMs: number; timeoutMs: number },
@@ -566,6 +590,8 @@ function relayReviewerRefusalError(
 			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, "pi", outcome.message, details);
 		case INPROCESS_REVIEWER_FAILURE.OUTPUT_TOO_LARGE:
 			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TOO_LARGE, "pi", outcome.message, details);
+		case INPROCESS_REVIEWER_FAILURE.OUTPUT_TRUNCATED:
+			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_OUTPUT_TRUNCATED, "pi", outcome.message, details);
 		case INPROCESS_REVIEWER_FAILURE.ABORTED:
 			return new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_ABORTED, "pi", outcome.message, details);
 		case INPROCESS_REVIEWER_FAILURE.SELECTION_INVALID:
@@ -754,6 +780,7 @@ export async function prepareReviewHostRelaySlot(
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,
 				timeoutMs: piTimeoutMs,
+				maxTokens: resolveReviewHostRelayMaxTokens(preparedRequest.environment),
 				...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
 				routingKey: preparedRequest.routingKey!,
 			},

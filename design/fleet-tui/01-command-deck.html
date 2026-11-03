@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Fleet orchestrator TUI · 01 Command deck</title>
+<style>
+/* Palettes from themes/Gentle.json, themes/Gentleman-Cute.json, themes/Gentleman-Sexy.json; rules in design/system.md. */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+	--lh: 17px;
+	--bg: #06080f; --panel: #0d0f14; --user-bg: #161D2E; --sel: #232A40; --border: #313342; --border-subtle: #232A40;
+	--text: #F3F6F9; --dim: #8394A3; --accent: #7FB4CA; --accent-strong: #7FB4CA; --label: #7FB4CA; --heading: #B5B2D0;
+	--success: #B7CC85; --warning: #DEBA87; --error: #CB7C94; --thinking: #8394A3; --code: #B7CC85;
+	--tool-ok-bg: #1a2e1a; --tool-pending-bg: #0d0f14; --custom-bg: #0d0f14;
+	--m-api: #E0C15A; --m-web: #B99BF2; --m-docs: #A4DAA7;
+	--theme-name: "Gentle";
+	width: 1440px; height: 900px; overflow: hidden;
+	background: var(--bg); color: var(--text);
+	font: 13px/17px "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+body:has(#theme-cute:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2A1523; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F095C8; --accent-strong: #FFB1DD; --label: #E0C27A; --heading: #E0C27A;
+	--success: #B4E7C7; --warning: #F2B86D; --error: #FF718F; --thinking: #D7A0B8; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #B4E7C7;
+	--theme-name: "Gentleman-Cute";
+}
+body:has(#theme-sexy:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2E0F1F; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F43888; --accent-strong: #FF4F9A; --label: #E0C27A; --heading: #E0C27A;
+	--success: #D2CBD0; --warning: #F2B86D; --error: #FF718F; --thinking: #A78E9B; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #C49BFF;
+	--theme-name: "Gentleman-Sexy";
+}
+h1, h2, h3, p, ul, ol, dl, dd, fieldset { margin: 0; padding: 0; font: inherit; }
+ul, ol { list-style: none; }
+button, input, textarea { font: inherit; line-height: var(--lh); color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+kbd { font: inherit; color: var(--accent); }
+code { font: inherit; color: var(--code); }
+:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 16px; top: -40px; z-index: 5; background: var(--accent); color: var(--bg); padding: 0 1ch; }
+.skip:focus { top: 4px; }
+
+/* Window chrome */
+.titlebar { height: 28px; display: flex; align-items: center; gap: 2ch; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.dots { display: flex; gap: 6px; }
+.dots span { width: 10px; height: 10px; border-radius: 50%; }
+.titlebar h1 { font-weight: 700; }
+.themes { margin-left: auto; border: 0; display: flex; align-items: center; gap: 1ch; }
+.themes input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.themes label { padding: 0 1ch; cursor: pointer; color: var(--dim); }
+.themes input:checked + label { color: var(--bg); background: var(--accent); }
+.themes input:focus-visible + label { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.screen { position: relative; width: 180ch; height: calc(50 * var(--lh)); margin: 4px auto 0; }
+
+/* Terminal boxes: frames are drawn with box-drawing characters by the script below. */
+.tbox { position: relative; padding: var(--lh) 2ch; min-width: 0; }
+.tbox > .fr { position: absolute; inset: 0; margin: 0; font: inherit; color: var(--border); white-space: pre; overflow: hidden; pointer-events: none; }
+.tbox > :not(.fr) { position: relative; }
+.tbox.hot > .fr { color: var(--accent-strong); }
+.tbox.ask > .fr { color: var(--warning); }
+.tbox > .ttl, .tbox > .tmeta, .tbox > .tfoot { position: absolute; padding: 0 1ch; background: var(--bg); white-space: nowrap; }
+.tbox > .ttl { top: 0; left: 2ch; font-weight: 700; color: var(--accent); }
+.tbox > .tmeta { top: 0; right: 2ch; color: var(--dim); }
+.tbox > .tfoot { bottom: 0; right: 2ch; color: var(--dim); }
+
+.dim { color: var(--dim); } .acc { color: var(--accent); } .ok { color: var(--success); } .warn { color: var(--warning); }
+.err { color: var(--error); } .think { color: var(--thinking); } .lbl { color: var(--label); } .bd { color: var(--border); }
+.api { color: var(--m-api); } .web { color: var(--m-web); } .docs { color: var(--m-docs); } .b { font-weight: 700; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line { white-space: pre; }
+.caret::after { content: "▍"; color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+	.caret::after { animation: blink 1.1s steps(1) infinite; }
+	.pulse { animation: pulse 1.6s ease-in-out infinite; }
+}
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 50% { opacity: .55; } }
+
+/* Direction 01 — command deck, scaled to a 20-member fleet */
+[hidden] { display: none !important; }
+.oth { color: var(--text); }
+.screen { display: grid; grid-template-columns: 108ch 72ch; grid-template-rows: var(--lh) calc(47 * var(--lh)) calc(2 * var(--lh)); }
+.top { grid-column: 1 / -1; grid-row: 1; display: flex; gap: 2ch; padding: 0 1ch; white-space: nowrap; }
+.top .obj { flex: 1; min-width: 0; }
+
+/* Chat */
+.chat { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; }
+.log { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: var(--lh); overflow: hidden; }
+.msg-you { background: var(--user-bg); padding: 0 1ch; }
+.who { display: block; }
+.plan { display: grid; grid-template-columns: 10ch 1fr; padding-left: 2ch; }
+.events li { display: grid; grid-template-columns: 7ch 3ch 17ch 1fr; padding-left: 2ch; }
+.prompt { flex: none; height: calc(3 * var(--lh)); margin-top: var(--lh); }
+.prompt textarea { display: block; width: 100%; height: var(--lh); padding: 0; border: 0; resize: none; background: transparent; caret-color: var(--accent); }
+.prompt textarea::placeholder { color: var(--dim); opacity: 1; }
+.prompt .row { display: flex; }
+.hints { padding: 0 1ch; color: var(--dim); white-space: nowrap; }
+
+/* Rail: tab strip, pinned inbox, members or map panel */
+.rail { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; min-height: 0; }
+.tabs { flex: none; display: flex; align-items: center; gap: 2ch; padding: 0 1ch; white-space: nowrap; background: var(--panel); }
+.tabs [role="tablist"] { display: flex; gap: 1ch; }
+.tabs [role="tab"] { padding: 0 1ch; color: var(--dim); }
+.tabs [role="tab"][aria-selected="true"] { color: var(--text); background: var(--sel); font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent-strong); text-underline-offset: 3px; }
+.tabs [role="tab"]:hover, .open-map:hover { color: var(--accent-strong); }
+.open-map { color: var(--dim); }
+.filter { margin-left: auto; display: flex; gap: 1ch; }
+.filter input { width: 20ch; padding: 0; border: 0; background: transparent; caret-color: var(--accent); }
+.filter input::placeholder { color: var(--dim); opacity: 1; }
+.filter input::-webkit-search-cancel-button { display: none; }
+.pinned { flex: none; }
+.panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.more { flex: none; color: var(--dim); white-space: pre; }
+.scrollwrap { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 1ch; column-gap: 1ch; }
+.scroller { overflow-y: auto; scrollbar-width: none; scroll-snap-type: y proximity; }
+.scroller::-webkit-scrollbar { display: none; }
+.scroller:focus-visible { outline-offset: -2px; }
+.sbar { margin: 0; font: inherit; color: var(--border); white-space: pre; overflow: hidden; }
+.sbar .thumb { color: var(--accent); }
+.nomatch { color: var(--dim); }
+
+/* Collapsible groups and member rows (details/summary) */
+summary { list-style: none; cursor: pointer; scroll-snap-align: start; }
+summary::-webkit-details-marker { display: none; }
+summary:hover { background: var(--sel); }
+summary:focus-visible { outline-offset: -2px; background: var(--sel); }
+.car { color: var(--dim); }
+.car::before { content: "▸"; }
+details[open] > summary > .car::before { content: "▾"; }
+.grp + .grp { margin-top: var(--lh); }
+.grow { display: grid; grid-template-columns: 2ch auto minmax(0, 1fr); column-gap: 1ch; }
+.rule { overflow: hidden; white-space: nowrap; color: var(--border); }
+.mrow { display: grid; grid-template-columns: 2ch 2ch 17ch 9ch 5ch minmax(0, 1fr) 7ch; }
+.mrow .cost { text-align: right; }
+.br { display: grid; grid-template-columns: 2ch minmax(0, 1fr); padding-left: 2ch; scroll-snap-align: start; }
+.br > .trunc { min-width: 0; }
+.opts { display: flex; gap: 1ch; white-space: nowrap; }
+.opt { padding: 0 1ch; background: var(--sel); color: var(--text); }
+.opt kbd { color: var(--warning); }
+.opt:hover { color: var(--accent-strong); }
+
+/* Transit maps (rail tab and full-screen modal) */
+.legend { white-space: nowrap; color: var(--dim); }
+.tmap li > div { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.tmap .trunk { color: var(--accent); }
+.tmap .pend { color: var(--border); }
+.tmap .now { font-weight: 700; }
+.tmap .over { display: flex; gap: 2ch; white-space: pre; }
+.map-panel .legend { margin-bottom: var(--lh); }
+
+/* Full-screen map modal (m / esc) */
+.modal { grid-column: 1 / -1; grid-row: 2; z-index: 4; display: grid; grid-template-columns: 132ch 48ch; background: var(--bg); }
+.mmap .legend { margin-bottom: var(--lh); }
+.mmap .wakes { display: flex; gap: 1ch; white-space: nowrap; overflow: hidden; margin-top: var(--lh); color: var(--dim); }
+.tbox > button.tmeta:hover { color: var(--accent-strong); }
+.odd h3 { color: var(--heading); font-weight: 700; }
+.odd section + section { margin-top: var(--lh); }
+.odd table { border-collapse: collapse; width: 100%; }
+.odd th { text-align: left; font-weight: 400; color: var(--dim); padding: 0; }
+.odd td { padding: 0; white-space: nowrap; }
+.odd ol li { display: grid; grid-template-columns: 6ch minmax(0, 1fr); }
+.odd ol li > span:last-child, .odd .blk p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.status { grid-column: 1 / -1; grid-row: 3; }
+.status p { display: flex; gap: 3ch; padding: 0 1ch; white-space: nowrap; }
+.status p:first-child { background: var(--panel); }
+.theme-name::after { content: var(--theme-name); }
+</style>
+</head>
+<body>
+<a class="skip" href="#prompt-input">Skip to message input</a>
+<header class="titlebar">
+	<div class="dots" aria-hidden="true"><span style="background:var(--error)"></span><span style="background:var(--warning)"></span><span style="background:var(--success)"></span></div>
+	<h1>gentle-shell orchestrator</h1>
+	<span class="dim">~/work/inkwell · 180×50</span>
+	<fieldset class="themes">
+		<legend class="sr-only">Terminal theme</legend>
+		<span class="dim" aria-hidden="true">theme</span>
+		<input type="radio" name="theme" id="theme-gentle" value="gentle" checked><label for="theme-gentle">Gentle</label>
+		<input type="radio" name="theme" id="theme-cute" value="cute"><label for="theme-cute">Gentleman-Cute</label>
+		<input type="radio" name="theme" id="theme-sexy" value="sexy"><label for="theme-sexy">Gentleman-Sexy</label>
+	</fieldset>
+</header>
+
+<div class="screen">
+	<p class="top">
+		<span class="acc b">✿ fleet</span>
+		<span class="obj trunc"><span class="dim">objective</span> Add team workspaces to Inkwell (notes app): API, web app and docs</span>
+		<span><span class="dim">odd.md</span> .gentle/fleet/odd.md <kbd>ctrl+o</kbd></span>
+	</p>
+
+	<main class="tbox chat" aria-labelledby="chat-title">
+		<h2 class="ttl" id="chat-title">✿ fleet orchestrator</h2>
+		<span class="tmeta">ctx 41k · $0.31</span>
+		<div class="log" role="log" aria-label="Conversation with the fleet orchestrator">
+			<div class="msg-you">
+				<span class="who"><span class="b">you</span> <span class="dim">· 14:02</span></span>
+				<p>Add team workspaces to Inkwell: API, web app and docs. Email invite links, no SSO yet. Go wide: live cap 16, budget $40.</p>
+			</div>
+			<div>
+				<span class="who"><span class="lbl b">✿ fleet</span> <span class="dim">· 14:02</span></span>
+				<p>20 members in five fronts, one worktree and branch each:</p>
+				<p class="plan"><span class="api b">api</span><span>api-migration · api-invites · api-roles · audit-log</span></p>
+				<p class="plan"><span class="web b">web</span><span>web-switcher · web-invite-flow · web-settings · web-empty-states · mobile-layout</span></p>
+				<p class="plan"><span class="docs b">docs</span><span>docs-guides · docs-api-ref · docs-changelog</span></p>
+				<p class="plan"><span class="oth b">quality</span><span>e2e-tests · perf-audit · security-review</span></p>
+				<p class="plan"><span class="oth b">platform</span><span>billing-seats · i18n-strings · sync-realtime · design-tokens · seed-data</span></p>
+				<p>Members that depend on another start idle and wake when it lands. Questions come to you through the inbox.</p>
+			</div>
+			<ul class="events" aria-label="Fleet events">
+				<li><span class="dim">14:03</span><span class="dim" aria-hidden="true">◌</span><span class="dim">fleet</span><span>spawned 20 members <span class="dim">· 16 live, 4 queued behind dependencies</span></span></li>
+				<li><span class="dim">14:11</span><span class="acc" aria-hidden="true">●</span><span class="api">api-migration</span><span>3/7 started “Add invite token table migration”</span></li>
+			</ul>
+			<div class="msg-you">
+				<span class="who"><span class="b">you</span> <span class="dim">· 14:14</span></span>
+				<p><span class="api">@api-invites</span> hash invite tokens; never store the raw token.</p>
+			</div>
+			<div>
+				<span class="who"><span class="lbl b">✿ fleet</span> <span class="dim">· 14:14</span></span>
+				<p>Steered api-invites (queued as a follow-up, it was mid-turn). It answered: “storing sha256(token) + expires_at; the raw token only travels in the email link.”</p>
+			</div>
+			<ul class="events" aria-label="More fleet events">
+				<li><span class="dim">14:16</span><span class="err" aria-hidden="true">✕</span><span class="oth">billing-seats</span><span>exited with code 1 · 3 tests failing</span></li>
+				<li><span class="dim">14:18</span><span class="warn" aria-hidden="true">◆</span><span class="web">web-invite-flow</span><span>asked you a question <span class="dim">→ inbox</span></span></li>
+				<li><span class="dim">14:21</span><span class="ok" aria-hidden="true">✓</span><span class="docs">docs-changelog</span><span>done · PR #412 opened</span></li>
+			</ul>
+			<div class="msg-you">
+				<span class="who"><span class="b">you</span> <span class="dim">· 14:22</span></span>
+				<p>Where are we? Anything blocked?</p>
+			</div>
+			<div>
+				<span class="who"><span class="lbl b">✿ fleet</span> <span class="dim">· 14:22</span></span>
+				<p>1. Yours: <span class="web">web-invite-flow</span> needs the invite link expiry (inbox, top right). It also unblocks docs-guides and web-empty-states.</p>
+				<p>2. <span class="oth">billing-seats</span> failed: its Stripe mock has no quantity. I can respawn it with the failing output as its first message, or you take it.</p>
+				<p>3. Done: design-tokens, seed-data, docs-changelog. PRs #409, #410 and #412 wait for your review.</p>
+				<p class="dim">Spent <span data-fleet="spent"></span> of $40.00 (<span data-fleet="pct"></span>). <span data-fleet="live"></span> live. Press <kbd>m</kbd> for the whole objective map.</p>
+			</div>
+		</div>
+		<div class="tbox prompt hot">
+			<div class="row"><label for="prompt-input" class="sr-only">Message the fleet</label><span class="acc" aria-hidden="true">›&nbsp;</span><textarea id="prompt-input" rows="1" placeholder="Message the fleet, or press 1-4 to answer web-invite-flow"></textarea></div>
+		</div>
+		<p class="hints"><kbd>enter</kbd> send · <kbd>@name</kbd> steer a member · <kbd>/</kbd> filter rail · <kbd>esc</kbd> interrupt fleet</p>
+	</main>
+
+	<aside class="rail" aria-label="Fleet sidebar">
+		<div class="tabs">
+			<div role="tablist" aria-label="Sidebar view">
+				<button type="button" role="tab" id="tab-members" aria-selected="true" aria-controls="panel-members">Members <span class="dim" data-fleet="count"></span></button>
+				<button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="panel-map" tabindex="-1">Map</button>
+			</div>
+			<button type="button" class="open-map" aria-haspopup="dialog" aria-controls="map-modal"><kbd>m</kbd> full map</button>
+			<span class="filter"><label for="rail-filter"><kbd>/</kbd><span class="sr-only"> Filter members by name</span></label><input type="search" id="rail-filter" placeholder="filter members" autocomplete="off" spellcheck="false"></span>
+		</div>
+
+		<section class="tbox ask pinned" aria-labelledby="pinned-title">
+			<h2 class="ttl" id="pinned-title"><span class="warn">◆ inbox</span></h2>
+			<span class="tmeta">pinned · relayed by the fleet</span>
+			<div id="pinned-groups"></div>
+			<span class="tfoot"><kbd>1-4</kbd> answer · <kbd>i</kbd> inbox</span>
+		</section>
+
+		<section class="tbox panel" id="panel-members" role="tabpanel" aria-labelledby="tab-members">
+			<h2 class="ttl">members · attention first</h2>
+			<span class="tmeta" data-fleet="shown"></span>
+			<p class="more" id="more-up"></p>
+			<div class="scrollwrap">
+				<div class="scroller" id="scroller" tabindex="0" role="region" aria-label="Members, scrollable list">
+					<div id="mem-groups"></div>
+					<p class="nomatch" hidden>No member matches the filter. <kbd>esc</kbd> clears it.</p>
+				</div>
+				<pre class="sbar" id="sbar" aria-hidden="true"></pre>
+			</div>
+			<p class="more" id="more-down"></p>
+			<span class="tfoot"><kbd>↑↓</kbd> move · <kbd>→←</kbd> open/close · <kbd>e</kbd> expand all · <kbd>c</kbd> collapse all · <kbd>/</kbd> filter</span>
+		</section>
+
+		<section class="tbox panel map-panel" id="panel-map" role="tabpanel" aria-labelledby="tab-map" hidden>
+			<h2 class="ttl">objective map</h2>
+			<span class="tmeta">updated by code · 14:23</span>
+			<p class="legend"><span class="ok">●</span> done <span class="acc">◉</span> now <span class="warn">◆</span> you <span class="err">✕</span> failed ◇ paused ○ pending □ PR</p>
+			<ol class="tmap" id="rail-map" aria-label="Objective map, one line per member"></ol>
+			<span class="tfoot"><kbd>m</kbd> full map · <kbd>esc</kbd> close</span>
+		</section>
+	</aside>
+
+	<div class="modal" id="map-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+		<section class="tbox mmap hot" aria-labelledby="modal-title">
+			<h2 class="ttl" id="modal-title">✿ objective map · <span data-fleet="count"></span> lines</h2>
+			<button type="button" class="tmeta close-map"><kbd>esc</kbd> close</button>
+			<p class="legend">each line is a member · each station a todo &nbsp; <span class="ok">●</span> done &nbsp;<span class="acc">◉</span> now &nbsp;<span class="warn">◆</span> waiting on you &nbsp;<span class="err">✕</span> failed &nbsp;◇ paused &nbsp;○ pending &nbsp;□ pull request (you merge)</p>
+			<ol class="tmap" id="modal-map" aria-label="Objective map, one line per member"></ol>
+			<p class="wakes" aria-label="Fleet wake timeline"><span>wakes</span><span aria-hidden="true">┄</span><span>14:02 plan</span><span aria-hidden="true">┄</span><span>14:03 spawn ×20</span><span aria-hidden="true">┄</span><span>14:14 you steer <span class="api">api-invites</span></span><span aria-hidden="true">┄</span><span><span class="oth">billing-seats</span> ✕ 14:16</span><span aria-hidden="true">┄</span><span><span class="web">web-invite-flow</span> ◆ 14:18</span><span aria-hidden="true">┄</span><span><span class="docs">docs-changelog</span> ✓ 14:21</span><span aria-hidden="true">┄</span><span class="acc">14:23 now</span></p>
+			<span class="tfoot"><kbd>m</kbd> or <kbd>esc</kbd> close · <kbd>↑↓</kbd> line · <kbd>enter</kbd> open member</span>
+		</section>
+		<aside class="tbox odd" aria-labelledby="odd-title">
+			<h2 class="ttl" id="odd-title">odd.md · state of everything</h2>
+			<section aria-labelledby="odd-obj">
+				<h3 id="odd-obj">Objective</h3>
+				<p>Add team workspaces to Inkwell (notes app): API, web app and docs</p>
+			</section>
+			<section aria-labelledby="odd-fronts">
+				<h3 id="odd-fronts">Fronts</h3>
+				<table>
+					<thead><tr><th scope="col">front</th><th scope="col">n</th><th scope="col">owns</th><th scope="col">status</th></tr></thead>
+					<tbody id="odd-front-rows"></tbody>
+				</table>
+			</section>
+			<section class="blk" aria-labelledby="odd-block">
+				<h3 id="odd-block">Blockers</h3>
+				<p><span class="warn">◆</span> <span class="web">web-invite-flow</span> ← you: invite expiry</p>
+				<p><span class="dim">  also blocks docs-guides, web-empty-states</span></p>
+				<p><span class="err">✕</span> billing-seats: Stripe mock lacks quantity</p>
+				<p><span class="dim">◇</span> docs-api-ref ← api-invites (409 contract)</p>
+				<p><span class="dim">◇</span> security-review ← api-migration</p>
+			</section>
+			<section aria-labelledby="odd-log">
+				<h3 id="odd-log">Log</h3>
+				<ol reversed>
+					<li><span class="dim">14:21</span><span><span class="docs">docs-changelog</span> done, PR #412</span></li>
+					<li><span class="dim">14:18</span><span><span class="web">web-invite-flow</span> asked: expiry</span></li>
+					<li><span class="dim">14:16</span><span>billing-seats exited, tests failing</span></li>
+					<li><span class="dim">14:14</span><span>you steered <span class="api">api-invites</span></span></li>
+					<li><span class="dim">14:11</span><span><span class="api">api-migration</span> on token table</span></li>
+					<li><span class="dim">14:03</span><span>fleet spawned 20 members</span></li>
+				</ol>
+			</section>
+			<section aria-labelledby="odd-budget">
+				<h3 id="odd-budget">Budget</h3>
+				<p><span data-fleet="spent"></span> / $40.00 <span data-fleet="gauge"></span> <span data-fleet="pct"></span></p>
+			</section>
+			<span class="tfoot"><kbd>ctrl+o</kbd> open file</span>
+		</aside>
+	</div>
+
+	<footer class="status">
+		<p>
+			<span><span class="dim">fleet budget</span> <span data-fleet="spent"></span> / $40.00 <span data-fleet="gauge"></span> <span data-fleet="pct"></span></span>
+			<span><span class="dim">members</span> <span data-fleet="live"></span> live</span>
+			<span><span class="dim">tokens</span> <span data-fleet="tokens"></span></span>
+			<span><span class="warn">◆</span> inbox 1</span>
+			<span><span class="err">✕</span> errors 1</span>
+			<span><span class="dim">layout</span> deck</span>
+			<span><span class="dim">theme</span> <span class="theme-name"></span></span>
+		</p>
+		<p class="dim"><span><kbd>tab</kbd> chat ↔ rail</span><span><kbd>↑↓</kbd> move</span><span><kbd>→</kbd> expand</span><span><kbd>←</kbd> collapse</span><span><kbd>1-4</kbd> answer</span><span><kbd>m</kbd> map</span><span><kbd>ctrl+l</kbd> layout</span><span><kbd>ctrl+t</kbd> theme</span><span><kbd>?</kbd> help</span></p>
+	</footer>
+</div>
+
+<script>
+// Draw each .tbox frame with box-drawing characters sized to its cell grid.
+(() => {
+	const screen = document.querySelector(".screen");
+	const probe = document.createElement("span");
+	probe.textContent = "0".repeat(100);
+	probe.setAttribute("aria-hidden", "true");
+	probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;left:0;top:0";
+	screen.append(probe);
+	function draw() {
+		const cw = probe.getBoundingClientRect().width / 100;
+		const lh = parseFloat(getComputedStyle(document.body).getPropertyValue("--lh"));
+		for (const box of document.querySelectorAll(".tbox")) {
+			const cols = Math.round(box.offsetWidth / cw);
+			const rows = Math.round(box.offsetHeight / lh);
+			if (cols < 2 || rows < 2) continue;
+			let fr = box.querySelector(":scope > .fr");
+			if (!fr) {
+				fr = document.createElement("pre");
+				fr.className = "fr";
+				fr.setAttribute("aria-hidden", "true");
+				box.prepend(fr);
+			}
+			const rule = "─".repeat(cols - 2);
+			const side = "│" + " ".repeat(cols - 2) + "│";
+			fr.textContent = ["╭" + rule + "╮", ...Array(rows - 2).fill(side), "╰" + rule + "╯"].join("\n");
+		}
+	}
+	window.drawFrames = draw;
+	draw();
+	if (document.fonts) document.fonts.ready.then(draw);
+	addEventListener("resize", draw);
+})();
+</script>
+<script>
+// Fleet state as the controller builds it in code (lib/fleet-member.ts): status, todos, last tool, usage, dialogs.
+(() => {
+	const BUDGET = 40;
+	const CONTROLLER = { tok: 41, cost: 0.31 };
+	const MEMBERS = [
+		{ name: "web-invite-flow", front: "web", state: "waiting", done: 2, tok: 96, cost: 0.71, first: 20.4, owns: "apps/web/src/invites",
+			tool: ["edit", "apps/web/src/invites/InviteDialog.tsx"], think: "Expiry shows in the dialog copy and the API contract — asking before I hardcode it",
+			q: { title: "Invite links: expire after 7 days or 30 days?", context: "Dialog copy and API default must match; also unblocks 2 members.", options: ["7 days", "30 days", "Never (revoke)", "Type an answer…"] },
+			todos: [["invite btn", "Invite button in workspace settings"], ["form", "Invite form + email validation"], ["dialog", "Invite dialog with expiring link"], ["pending", "Pending invites list"], ["revoke", "Resend and revoke actions"], ["e2e", "Playwright invite flow test"]] },
+		{ name: "billing-seats", front: "platform", state: "error", done: 1, tok: 74, cost: 0.58, first: 20.2, owns: "apps/api/src/billing",
+			tool: ["bash", "pnpm test apps/api/src/billing"], think: "Stripe quantity must change when an invite is accepted, not when it is sent",
+			error: "exit 1 · 3 tests failing: Stripe mock lacks subscriptions.update quantity",
+			todos: [["seat count", "Seat count per workspace"], ["stripe sync", "Sync Stripe quantity on member join"], ["proration", "Proration preview"], ["limit", "Seat limit banner"]] },
+		{ name: "api-migration", front: "api", state: "working", done: 3, tok: 182, cost: 1.12, first: 20.1, owns: "prisma/",
+			tool: ["read", "prisma/schema.prisma"], think: "Token table needs a unique index on (workspace_id, email) — checking existing users schema",
+			spark: "▂▃▅▇▆▃▂▅▇█▆▄▃▅▆▇▅▃▂▃▅▆▇█▆▅▆▇█",
+			todos: [["schema", "Workspace + membership schema"], ["backfill", "Backfill personal workspaces"], ["notes fk", "Notes foreign key to workspace"], ["token table", "Add invite token table migration"], ["indexes", "Indexes for invite lookups"], ["down mig", "Down migration and rollback test"], ["seed", "Update seed for workspaces"]] },
+		{ name: "api-invites", front: "api", state: "working", done: 2, tok: 121, cost: 0.84, first: 20.3, owns: "apps/api/src/invites",
+			tool: ["edit", "apps/api/src/invites/invites.controller.ts"], think: "Return 409 when the email already has a pending invite in this workspace",
+			todos: [["service", "Invite service skeleton"], ["tokens", "Hashed invite tokens"], ["create", "POST /workspaces/:id/invites"], ["accept", "Accept invite endpoint"], ["revoke", "Revoke invite endpoint"], ["tests", "Integration tests for invites"]] },
+		{ name: "e2e-tests", front: "quality", state: "working", done: 3, tok: 143, cost: 0.97, first: 20.6, owns: "e2e/",
+			tool: ["bash", "pnpm playwright test switcher"], think: "Fixture needs two workspaces with overlapping note titles to catch cache bleed",
+			todos: [["fixtures", "Two-workspace fixtures"], ["login", "Login lands on last workspace"], ["switch", "Switch workspace from sidebar"], ["open note", "Switch keeps the open note"], ["invite", "Invite and accept flow"], ["roles", "Role change flow"], ["leave", "Leave workspace flow"], ["ci shard", "Run suite in a CI shard"]] },
+		{ name: "web-switcher", front: "web", state: "working", done: 5, tok: 102, cost: 0.69, first: 20.4, owns: "apps/web/src/workspaces",
+			tool: ["edit", "apps/web/src/workspaces/useLastWorkspace.ts"], think: "The localStorage key must include the user id, or shared laptops leak the last workspace",
+			todos: [["menu", "Switcher menu in sidebar"], ["context", "Workspace context provider"], ["route", "Workspace route param"], ["shortcut", "Cmd+K switch shortcut"], ["create", "Create workspace from switcher"], ["persist", "Persist last workspace per device"]] },
+		{ name: "api-roles", front: "api", state: "working", done: 4, tok: 88, cost: 0.61, first: 20.3, owns: "apps/api/src/members",
+			tool: ["grep", "\"role ===\" apps/api"], think: "The last owner must not be able to leave; guard it in the service, not the route",
+			todos: [["roles", "Owner, admin and member roles"], ["guard", "Role guard middleware"], ["change", "Change member role endpoint"], ["remove", "Remove member endpoint"], ["transfer", "Owner transfer endpoint"]] },
+		{ name: "sync-realtime", front: "platform", state: "working", done: 1, tok: 91, cost: 0.66, first: 20.2, owns: "apps/api/src/realtime",
+			tool: ["read", "apps/api/src/realtime/gateway.ts"], think: "Channel names must include workspace_id, or other workspaces receive note events",
+			todos: [["audit", "Audit websocket channels"], ["scope", "Scope channels by workspace"], ["auth", "Authorize channel joins"], ["presence", "Presence per workspace"], ["rejoin", "Rejoin on workspace switch"], ["load test", "Load test with 500 sockets"]] },
+		{ name: "web-settings", front: "web", state: "working", done: 2, tok: 64, cost: 0.44, first: 20.4, owns: "apps/web/src/settings",
+			tool: ["read", "apps/web/src/settings/MembersPage.tsx"], think: "Role select stays disabled for the last owner; reusing the guard message from api-roles",
+			todos: [["page", "Workspace settings page"], ["rename", "Rename and avatar"], ["members", "Members table with role select"], ["leave", "Leave workspace"], ["delete", "Delete workspace (owner)"]] },
+		{ name: "perf-audit", front: "quality", state: "working", done: 2, tok: 58, cost: 0.40, first: 20.1, owns: "perf/",
+			tool: ["bash", "psql -c \"EXPLAIN ANALYZE SELECT … FROM notes …\""], think: "Notes list does a sequential scan at 50k notes; needs a (workspace_id, updated_at) index",
+			todos: [["baseline", "Baseline notes list latency"], ["explain", "EXPLAIN notes by workspace"], ["index", "Index (workspace_id, updated_at)"], ["cache", "Per-workspace cache keys"], ["report", "Before and after report"]] },
+		{ name: "i18n-strings", front: "platform", state: "working", done: 3, tok: 47, cost: 0.31, first: 20.0, owns: "apps/web/src/i18n",
+			tool: ["edit", "apps/web/src/i18n/es.json"], think: "“N members” needs ICU plural rules, not string concatenation",
+			todos: [["extract", "Extract workspace strings"], ["es", "Spanish translations"], ["pt-BR", "Portuguese (Brazil) translations"], ["plurals", "ICU plurals for member counts"], ["dates", "Relative expiry dates"], ["check", "Missing-key CI check"]] },
+		{ name: "audit-log", front: "api", state: "working", done: 1, tok: 33, cost: 0.22, first: 20.1, owns: "apps/api/src/events",
+			tool: ["edit", "apps/api/src/events/events.service.ts"], think: "Reusing the events table with a workspace_id column instead of a new table",
+			todos: [["column", "workspace_id on events"], ["invites", "Log invite created, accepted, revoked"], ["roles", "Log role changes"], ["export", "CSV export for owners"]] },
+		{ name: "docs-guides", front: "docs", state: "idle", done: 4, tok: 41, cost: 0.48, first: 19.8, owns: "docs/guides", note: "one placeholder left: {{INVITE_EXPIRY}}",
+			tool: ["write", "docs/guides/team-workspaces.md"], think: "Done; the expiry placeholder fills itself once you answer web-invite-flow",
+			todos: [["outline", "Outline team workspaces guide"], ["sections", "Write guide sections"], ["screens", "Screenshot list for design"], ["nav", "Link guide from sidebar nav"]] },
+		{ name: "docs-api-ref", front: "docs", state: "idle", done: 2, tok: 29, cost: 0.21, first: 19.8, owns: "docs/api", note: "waiting for api-invites",
+			tool: ["read", "openapi/workspaces.yaml"], think: "The invites reference waits for api-invites to settle the 409 contract",
+			todos: [["workspaces", "Workspaces endpoints reference"], ["members", "Members endpoints reference"], ["invites", "Invites endpoints reference"]] },
+		{ name: "web-empty-states", front: "web", state: "idle", done: 1, tok: 39, cost: 0.27, first: 20.4, owns: "apps/web/src/workspaces/empty", note: "paused until the expiry answer",
+			tool: ["write", "apps/web/src/workspaces/EmptyWorkspace.tsx"], think: "The invite call-to-action copy depends on the expiry answer",
+			todos: [["onboarding", "Empty workspace onboarding card"], ["no notes", "No notes yet state"], ["invite cta", "Invite teammates call to action"], ["illustr.", "Illustrations from design-tokens"]] },
+		{ name: "security-review", front: "quality", state: "idle", done: 0, tok: 22, cost: 0.18, first: 19.9, owns: "docs/security", note: "waiting for api-migration",
+			tool: ["read", "docs/security/threat-model.md"], think: "Reviewing token storage only after api-migration lands the token table",
+			todos: [["tokens", "Review invite token storage"], ["authz", "Review cross-workspace authz"], ["rate limit", "Invite rate limiting"]] },
+		{ name: "mobile-layout", front: "web", state: "idle", done: 2, tok: 26, cost: 0.19, first: 20.4, owns: "apps/web/src/styles", note: "waiting for web-switcher",
+			tool: ["edit", "apps/web/src/workspaces/Switcher.module.css"], think: "Verifying the switcher at 360px after web-switcher merges",
+			todos: [["switcher", "Switcher at 360px"], ["settings", "Settings table as cards"], ["verify", "Verify on iOS Safari"]] },
+		{ name: "docs-changelog", front: "docs", state: "done", done: 2, tok: 12, cost: 0.09, first: 19.8, owns: "CHANGELOG.md", note: "PR #412 ready for review", pr: "PR #412",
+			tool: ["write", "CHANGELOG.md"], think: "Changelog entry and upgrade note are in; PR opened",
+			todos: [["entry", "Changelog entry (Unreleased)"], ["upgrade", "Upgrade note for self-hosters"]] },
+		{ name: "design-tokens", front: "platform", state: "done", done: 3, tok: 18, cost: 0.13, first: 19.9, owns: "packages/ui", note: "PR #409 ready for review", pr: "PR #409",
+			tool: ["edit", "packages/ui/tokens.json"], think: "Avatar, role badge and switcher spacing tokens added; PR opened",
+			todos: [["avatars", "Workspace avatar colors"], ["badge", "Role badge tokens"], ["switcher", "Switcher spacing tokens"]] },
+		{ name: "seed-data", front: "platform", state: "done", done: 3, tok: 15, cost: 0.11, first: 19.8, owns: "prisma/seed.ts", note: "PR #410 ready for review", pr: "PR #410",
+			tool: ["write", "prisma/seed.ts"], think: "Seed creates two workspaces with three members each; PR opened",
+			todos: [["users", "Seed users"], ["workspaces", "Two workspaces"], ["members", "Three members each"]] },
+	];
+	// Rows the user expanded in this snapshot. Default: only "Needs you" is open, everything else collapsed.
+	const SNAPSHOT_OPEN = ["billing-seats", "api-migration"];
+	// The compact rail map shows this many lines before the "+N lines" overflow row.
+	const RAIL_MAP_LINES = 14;
+
+	const GROUPS = [
+		{ key: "waiting", label: "Needs you", tone: "warn" },
+		{ key: "error", label: "Errors", tone: "err" },
+		{ key: "working", label: "Working", tone: "acc" },
+		{ key: "idle", label: "Idle", tone: "dim" },
+		{ key: "done", label: "Done", tone: "ok" },
+	];
+	const STATE = {
+		waiting: { glyph: "◆", tone: "warn", label: "waiting on you" },
+		error: { glyph: "✕", tone: "err", label: "exited with an error" },
+		working: { glyph: "●", tone: "acc", label: "working" },
+		idle: { glyph: "◇", tone: "dim", label: "idle" },
+		done: { glyph: "✓", tone: "ok", label: "done" },
+	};
+	const FRONTS = [
+		{ key: "api", owns: "apps/api, prisma" },
+		{ key: "web", owns: "apps/web" },
+		{ key: "docs", owns: "docs, changelog" },
+		{ key: "quality", owns: "e2e, perf, security" },
+		{ key: "platform", owns: "billing, i18n, rt" },
+	];
+	const esc = (value) => String(value).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[c]);
+	const hue = (m) => (["api", "web", "docs"].includes(m.front) ? m.front : "oth");
+	const current = (m) => (m.done < m.todos.length ? m.done : -1);
+	const pct = (m) => Math.round((m.done / m.todos.length) * 100);
+	const ordered = GROUPS.flatMap((g) => MEMBERS.filter((m) => m.state === g.key));
+
+	function gauge(done, total, label) {
+		const filled = Math.round((done / total) * 8);
+		return `<span role="img" aria-label="${esc(label)}"><span class="acc">${"▰".repeat(filled)}</span><span class="bd">${"▱".repeat(8 - filled)}</span></span>`;
+	}
+
+	function spark(m) {
+		if (m.spark) return m.spark;
+		const bars = "▁▂▃▄▅▆▇█";
+		const stopAt = { working: 29, waiting: 13, error: 20, idle: 11, done: 6 }[m.state];
+		let seed = [...m.name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+		let out = "";
+		for (let i = 0; i < 29; i++) {
+			seed = (seed * 1103515245 + 12345) >>> 0;
+			out += i < stopAt ? bars[2 + ((seed >>> 16) % 6)] : bars[0];
+		}
+		return out;
+	}
+
+	function caption(m) {
+		if (m.state === "waiting") return `<span class="warn">${esc(m.q.title)}</span>`;
+		if (m.state === "error") return `<span class="err">${esc(m.error)}</span>`;
+		if (m.state === "working") return esc(m.todos[current(m)][1]);
+		return `<span class="dim">${esc(m.note)}</span>`;
+	}
+
+	function summaryRow(m) {
+		const s = STATE[m.state];
+		const n = m.todos.length;
+		return `<summary class="mrow"><span class="car" aria-hidden="true"></span><span class="${s.tone}" aria-hidden="true">${s.glyph}</span><span class="${hue(m)} b">${m.name}</span><span>${gauge(m.done, n, `${pct(m)} percent of todos done`)}</span><span>${m.done}/${n}</span><span class="trunc">${caption(m)}</span><span class="cost">$${m.cost.toFixed(2)}</span><span class="sr-only">, ${s.label}</span></summary>`;
+	}
+
+	function bodyRows(m) {
+		const s = STATE[m.state];
+		const h = hue(m);
+		const n = m.todos.length;
+		const row = (html) => `<p class="br"><span class="${h}" aria-hidden="true">▎</span><span class="trunc">${html}</span></p>`;
+		const cur = current(m);
+		const curGlyph = cur < 0 ? `<span class="ok">●</span>` : { error: `<span class="err">✕</span>`, idle: `<span class="dim">◇</span>` }[m.state] ?? `<span class="acc">◐</span>`;
+		const rows = [
+			row(`<span class="${s.tone} b">${s.glyph} ${s.label}</span>${m.note ? ` <span class="dim">· ${esc(m.note)}</span>` : ""} <span class="dim">· owns ${esc(m.owns)} · fleet/${m.name}</span>`),
+			row(`${gauge(m.done, n, `${pct(m)} percent of todos done`)} <span class="dim">${pct(m)}%</span>  ${curGlyph} <span class="b">${m.done}/${n}</span> ${esc(cur < 0 ? "all todos done" : m.todos[cur][1])}`),
+		];
+		if (m.state === "error") rows.push(row(`<span class="err">${esc(m.error)}</span>`));
+		rows.push(row(`<span class="think"><span aria-hidden="true">∴ </span>${esc(m.think)}</span>`));
+		if (m.q) {
+			rows.push(row(`<span class="b">${esc(m.q.title)}</span>`));
+			rows.push(row(`<span class="dim">${esc(m.q.context)}</span>`));
+			rows.push(`<div class="br"><span class="${h}" aria-hidden="true">▎</span><div class="opts" role="group" aria-label="Answer ${m.name}">${m.q.options.map((o, i) => `<button class="opt" type="button"><kbd>${i + 1}</kbd> ${esc(o)}</button>`).join("")}</div></div>`);
+			rows.push(row(`<span class="dim">fleet: product choice, relayed to you · last tool</span> <span class="lbl">${m.tool[0]}</span> <span class="dim">${esc(m.tool[1])}</span>`));
+			return rows.join("");
+		}
+		const stopped = m.state === "working" ? "steady" : "stopped";
+		rows.push(row(`<span class="dim">last tool </span><span class="lbl">${m.tool[0]}</span> ${esc(m.tool[1])}`));
+		rows.push(row(`<span class="dim">activity  </span><span class="${h}" role="img" aria-label="Activity, last 15 minutes: ${stopped}">${spark(m)}</span> <span class="dim">15m</span>`));
+		rows.push(row(m.state === "error"
+			? `<span class="dim">actions   </span><kbd>r</kbd> respawn with the failure <span class="dim">·</span> <kbd>x</kbd> dismiss <span class="dim">·</span> <kbd>enter</kbd> open log`
+			: `<span class="dim">usage     </span>${m.tok}k tok · $${m.cost.toFixed(2)} <span class="dim">· first request ${m.first}k tok</span>`));
+		return rows.join("");
+	}
+
+	function memberItem(m, open) {
+		return `<li class="memrow" data-name="${m.name}"><details class="mem"${open ? " open" : ""}>${summaryRow(m)}<div class="mbody">${bodyRows(m)}</div></details></li>`;
+	}
+
+	function group(g, members, openMember) {
+		return `<details class="grp" data-group="${g.key}" open><summary class="grow"><span class="car" aria-hidden="true"></span><span class="${g.tone} b">${g.label} (<span class="cnt">${members.length}</span>)</span><span class="rule" aria-hidden="true">${"─".repeat(80)}</span></summary><ul class="mems">${members.map((m) => memberItem(m, openMember(m))).join("")}</ul></details>`;
+	}
+
+	document.getElementById("pinned-groups").innerHTML = group(GROUPS[0], MEMBERS.filter((m) => m.state === "waiting"), () => true);
+	document.getElementById("mem-groups").innerHTML = GROUPS.slice(1)
+		.map((g) => group(g, MEMBERS.filter((m) => m.state === g.key), (m) => SNAPSHOT_OPEN.includes(m.name)))
+		.join("");
+
+	// Transit maps: one line per member, one station per todo, then the pull request station.
+	function stations(m) {
+		const cur = current(m);
+		const list = m.todos.map(([short, full], i) => {
+			if (i < m.done) return { kind: "done", short, full };
+			if (i === cur) return { kind: m.state, short, full };
+			return { kind: "todo", short, full };
+		});
+		list.push(m.state === "done" ? { kind: "pr-done", short: m.pr, full: `${m.pr}, ready for your review` } : { kind: "pr", short: "PR → you", full: "pull request, merged by you" });
+		return list;
+	}
+	const GLYPH = {
+		done: (h) => [h, "●"], working: () => ["acc pulse", "◉"], waiting: () => ["warn pulse", "◆"], error: () => ["err", "✕"],
+		idle: () => ["dim", "◇"], todo: () => ["dim", "○"], pr: () => ["dim", "□"], "pr-done": () => ["ok", "●"],
+	};
+	const KIND_LABEL = { done: "done", working: "now", waiting: "waiting on you", error: "failed", idle: "paused", todo: "pending", pr: "pending", "pr-done": "done" };
+	function describe(m) {
+		const s = STATE[m.state];
+		return `<span class="sr-only">${m.name}, ${s.label}, ${m.done} of ${m.todos.length} todos done: ${stations(m).map((st) => `${KIND_LABEL[st.kind]} ${st.full}`).join("; ")}.</span>`;
+	}
+	const pad = (text, width) => (text.length > width ? text.slice(0, width - 1) + "…" : text.padEnd(width));
+	const center = (text, width) => {
+		const t = text.length > width - 1 ? text.slice(0, width - 2) + "…" : text;
+		const left = Math.floor((width - t.length) / 2);
+		return " ".repeat(left) + t + " ".repeat(width - t.length - left);
+	};
+
+	function fullLine(m, last) {
+		const h = hue(m);
+		const list = stations(m);
+		let track = "";
+		let labels = "";
+		let behind = true;
+		list.forEach((st, i) => {
+			const [tone, glyph] = GLYPH[st.kind](h);
+			const isPr = i === list.length - 1;
+			const lead = behind ? h : "pend";
+			const tail = st.kind === "done" ? h : "pend";
+			track += `<span class="${lead}">━━━━━</span><span class="${tone}">${glyph}</span>${isPr ? "" : `<span class="${tail}">━━━━━━</span>`}`;
+			const labelTone = st.kind === "done" ? "" : st.kind === "pr-done" ? "ok" : ["working", "waiting", "error"].includes(st.kind) ? `now ${tone.replace(" pulse", "")}` : "dim";
+			labels += `<span class="${labelTone}">${esc(center(st.short, 12))}</span>`;
+			if (st.kind !== "done") behind = false;
+		});
+		return `<li><div aria-hidden="true"><span class="trunk">${last ? "┗━ " : "┣━ "}</span><span class="${h} b">${pad(m.name, 18)}</span>${track}</div><div aria-hidden="true"><span class="trunk">${last ? "   " : "┃  "}</span>${" ".repeat(18)}${labels}</div>${describe(m)}</li>`;
+	}
+
+	function railLine(m, last) {
+		const h = hue(m);
+		const list = stations(m);
+		let track = "";
+		let behind = true;
+		list.forEach((st, i) => {
+			const [tone, glyph] = GLYPH[st.kind](h);
+			track += `<span class="${tone}">${glyph}</span>${i < list.length - 1 ? `<span class="${st.kind === "done" && behind ? h : "pend"}">━</span>` : ""}`;
+			if (st.kind !== "done") behind = false;
+		});
+		return `<li><div aria-hidden="true"><span class="trunk">${last ? "┗━ " : "┣━ "}</span><span class="${h} b">${pad(m.name, 17)}</span>${track} <span class="dim">${m.done}/${m.todos.length}</span></div><div aria-hidden="true"><span class="trunk">${last ? "   " : "┃  "}</span> <span class="${STATE[m.state].tone}">${STATE[m.state].glyph}</span> ${caption(m)}</div>${describe(m)}</li>`;
+	}
+
+	const hub = `<li><div><span class="acc b">✿ fleet orchestrator</span> <span class="dim">· ${MEMBERS.length} lines · stations are todos</span></div></li>`;
+	const shown = ordered.slice(0, RAIL_MAP_LINES);
+	const rest = ordered.slice(RAIL_MAP_LINES);
+	const restSummary = GROUPS.map((g) => [g, rest.filter((m) => m.state === g.key).length]).filter(([, n]) => n > 0).map(([g, n]) => `${n} ${g.label.toLowerCase()}`).join(", ");
+	document.getElementById("rail-map").innerHTML = hub
+		+ shown.map((m, i) => railLine(m, i === shown.length - 1 && rest.length === 0)).join("")
+		+ (rest.length ? `<li class="over"><span class="trunk" aria-hidden="true">┗━</span><span>+${rest.length} lines <span class="dim">· ${restSummary}</span></span><button type="button" class="open-map" aria-haspopup="dialog" aria-controls="map-modal"><kbd>m</kbd> full map</button></li>` : "");
+	document.getElementById("modal-map").innerHTML = hub + ordered.map((m, i) => fullLine(m, i === ordered.length - 1)).join("");
+
+	// odd.md fronts table and fleet totals, computed from the same state.
+	document.getElementById("odd-front-rows").innerHTML = FRONTS.map((f) => {
+		const ms = MEMBERS.filter((m) => m.front === f.key);
+		const parts = GROUPS.map((g) => [g, ms.filter((m) => m.state === g.key).length]).filter(([, n]) => n > 0)
+			.map(([g, n]) => `<span class="${STATE[g.key].tone}">${STATE[g.key].glyph}${n}</span>`).join(" ");
+		const h = ["api", "web", "docs"].includes(f.key) ? f.key : "oth";
+		return `<tr><td class="${h} b">${f.key}</td><td>${ms.length}</td><td class="dim">${f.owns}</td><td>${parts}</td></tr>`;
+	}).join("");
+	const spent = MEMBERS.reduce((a, m) => a + m.cost, CONTROLLER.cost);
+	const tokens = MEMBERS.reduce((a, m) => a + m.tok, CONTROLLER.tok);
+	const live = MEMBERS.filter((m) => !["error", "done"].includes(m.state)).length;
+	const used = Math.round((spent / BUDGET) * 100);
+	const fill = (key, html) => document.querySelectorAll(`[data-fleet="${key}"]`).forEach((el) => { el.innerHTML = html; });
+	fill("spent", `$${spent.toFixed(2)}`);
+	fill("pct", `${used}%`);
+	fill("gauge", gauge(spent, BUDGET, `${used} percent of the fleet budget used`));
+	fill("tokens", `${(tokens / 1000).toFixed(2)}M`);
+	fill("live", `${live}/${MEMBERS.length}`);
+	fill("count", String(MEMBERS.length));
+
+	// Scroll position: "▲ N more" / "▼ N more" and a box-drawing scrollbar.
+	const scroller = document.getElementById("scroller");
+	const sbar = document.getElementById("sbar");
+	const moreUp = document.getElementById("more-up");
+	const moreDown = document.getElementById("more-down");
+	const visible = (el) => el.getClientRects().length > 0;
+	function updateScroll() {
+		const box = scroller.getBoundingClientRect();
+		let above = 0;
+		let below = 0;
+		for (const s of scroller.querySelectorAll("details.mem > summary")) {
+			if (!visible(s)) continue;
+			const r = s.getBoundingClientRect();
+			if (r.bottom <= box.top + 1) above++;
+			else if (r.top >= box.bottom - 1) below++;
+		}
+		moreUp.textContent = above ? `▲ ${above} more` : "▲ top";
+		moreDown.textContent = below ? `▼ ${below} more` : "▼ end";
+		const lh = parseFloat(getComputedStyle(document.body).getPropertyValue("--lh"));
+		const rows = Math.max(1, Math.round(scroller.clientHeight / lh));
+		const total = scroller.scrollHeight;
+		const view = scroller.clientHeight;
+		const size = total <= view + 1 ? rows : Math.max(1, Math.round((rows * view) / total));
+		const at = total <= view + 1 ? 0 : Math.round(((rows - size) * scroller.scrollTop) / (total - view));
+		sbar.innerHTML = Array.from({ length: rows }, (_, i) => (i >= at && i < at + size ? `<span class="thumb">┃</span>` : "│")).join("\n");
+		const open = scroller.querySelectorAll("details.mem[open]").length;
+		fill("shown", `${open} expanded`);
+	}
+	scroller.addEventListener("scroll", updateScroll, { passive: true });
+	addEventListener("resize", updateScroll);
+	document.addEventListener("toggle", () => { window.drawFrames(); updateScroll(); }, true);
+
+	// Filter (/): hides non-matching members in the list; "Needs you" stays pinned.
+	const filter = document.getElementById("rail-filter");
+	const noMatch = scroller.querySelector(".nomatch");
+	filter.addEventListener("input", () => {
+		const q = filter.value.trim().toLowerCase();
+		let any = false;
+		for (const grp of scroller.querySelectorAll("details.grp")) {
+			const rows = [...grp.querySelectorAll("li.memrow")];
+			let shownInGroup = 0;
+			for (const li of rows) {
+				const hit = !q || li.dataset.name.includes(q);
+				li.hidden = !hit;
+				if (hit) shownInGroup++;
+			}
+			grp.hidden = shownInGroup === 0;
+			grp.querySelector(".cnt").textContent = q ? `${shownInGroup}/${rows.length}` : String(rows.length);
+			any ||= shownInGroup > 0;
+		}
+		noMatch.hidden = any;
+		updateScroll();
+	});
+	filter.addEventListener("keydown", (e) => {
+		if (e.key === "Escape") { filter.value = ""; filter.dispatchEvent(new Event("input")); scroller.focus(); e.preventDefault(); }
+	});
+
+	// Rail keyboard: ↑↓ move between rows, → expands, ← collapses or jumps to the group, Home/End.
+	const rail = document.querySelector(".rail");
+	rail.addEventListener("keydown", (e) => {
+		const s = e.target;
+		if (!(s instanceof HTMLElement) || s.tagName !== "SUMMARY") return;
+		const d = s.parentElement;
+		const list = [...rail.querySelectorAll("summary")].filter(visible);
+		const i = list.indexOf(s);
+		const go = (t) => { if (t) t.focus(); e.preventDefault(); };
+		if (e.key === "ArrowDown") go(list[i + 1]);
+		else if (e.key === "ArrowUp") go(list[i - 1]);
+		else if (e.key === "Home") go(list[0]);
+		else if (e.key === "End") go(list[list.length - 1]);
+		else if (e.key === "ArrowRight") { if (!d.open) d.open = true; e.preventDefault(); }
+		else if (e.key === "ArrowLeft") {
+			if (d.open) d.open = false;
+			else d.parentElement.closest("details")?.querySelector(":scope > summary")?.focus();
+			e.preventDefault();
+		}
+	});
+
+	// Sidebar tabs: Members | Map.
+	const tabs = [...document.querySelectorAll(".tabs [role=tab]")];
+	function selectTab(tab) {
+		for (const t of tabs) {
+			const on = t === tab;
+			t.setAttribute("aria-selected", String(on));
+			t.tabIndex = on ? 0 : -1;
+			document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+		}
+		window.drawFrames();
+		updateScroll();
+	}
+	for (const t of tabs) {
+		t.addEventListener("click", () => selectTab(t));
+		t.addEventListener("keydown", (e) => {
+			if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+			const next = tabs[(tabs.indexOf(t) + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+			selectTab(next);
+			next.focus();
+			e.preventDefault();
+		});
+	}
+
+	// Full-screen map modal: m opens or closes it, esc closes it; the rest of the screen is inert meanwhile.
+	const modal = document.getElementById("map-modal");
+	const screen = document.querySelector(".screen");
+	let returnFocus = null;
+	function openModal() {
+		returnFocus = document.activeElement;
+		modal.hidden = false;
+		for (const el of screen.children) if (el !== modal) el.inert = true;
+		window.drawFrames();
+		modal.querySelector(".close-map").focus();
+	}
+	function closeModal() {
+		modal.hidden = true;
+		for (const el of screen.children) el.inert = false;
+		if (returnFocus instanceof HTMLElement) returnFocus.focus();
+	}
+	for (const b of document.querySelectorAll(".open-map")) b.addEventListener("click", openModal);
+	modal.querySelector(".close-map").addEventListener("click", closeModal);
+
+	function setAll(open) {
+		for (const d of scroller.querySelectorAll("details.mem")) if (!d.closest("[hidden]")) d.open = open;
+		if (open) for (const g of scroller.querySelectorAll("details.grp")) g.open = true;
+	}
+	document.addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && !modal.hidden) { closeModal(); e.preventDefault(); return; }
+		const typing = e.target instanceof HTMLElement && e.target.matches("textarea, input[type=search], input[type=text]");
+		if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (e.key === "m") { modal.hidden ? openModal() : closeModal(); e.preventDefault(); return; }
+		if (!modal.hidden) return;
+		if (e.key === "e") { setAll(true); e.preventDefault(); }
+		else if (e.key === "c") { setAll(false); e.preventDefault(); }
+		else if (e.key === "/") { filter.focus(); e.preventDefault(); }
+	});
+
+	window.drawFrames();
+	updateScroll();
+	if (document.fonts) document.fonts.ready.then(updateScroll);
+})();
+</script>
+</body>
+</html>

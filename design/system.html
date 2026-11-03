@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Gentle Shell design system</title>
+<style>
+:root {
+	color-scheme: dark;
+	--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+	--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	--bg: #06080f;
+	--panel: #0d0f14;
+	--border: #313342;
+	--text: #F3F6F9;
+	--dim: #8394A3;
+	--accent: #7FB4CA;
+	--success: #B7CC85;
+	--warning: #DEBA87;
+	--error: #CB7C94;
+	--tool-ok-bg: #1a2e1a;
+	--tool-pending-bg: #0d0f14;
+	--tool-err-bg: #2e1a1a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; width: 1440px; background: var(--bg); color: var(--text); font: 16px/1.6 var(--font-sans); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skip { position: absolute; left: 16px; top: -100px; background: var(--accent); color: var(--bg); padding: 8px 12px; }
+.skip:focus { top: 12px; }
+header, main { padding: 32px 48px; }
+header { border-bottom: 1px solid var(--border); }
+h1 { margin: 0 0 8px; font-size: 28px; }
+h2 { margin: 48px 0 16px; font: 600 12px/1.4 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+h3 { margin: 0 0 12px; font-size: 16px; }
+p { margin: 0 0 12px; color: var(--dim); }
+code, .mono { font-family: var(--font-mono); font-size: 13px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.theme { border: 1px solid var(--border); padding: 20px; }
+.theme ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.theme li { display: grid; grid-template-columns: 32px 1fr; gap: 10px; align-items: center; font: 12px/1.4 var(--font-mono); }
+.sw { width: 32px; height: 32px; border: 1px solid #ffffff17; }
+.theme small { display: block; color: var(--dim); }
+.web ul { grid-template-columns: repeat(3, 1fr); }
+table { border-collapse: collapse; width: 100%; font: 13px/1.5 var(--font-mono); }
+th, td { text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+th { color: var(--dim); font-weight: 600; }
+.chip { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; margin-right: 6px; border: 1px solid #ffffff17; }
+.type-row { display: grid; grid-template-columns: 220px 1fr; gap: 24px; padding: 12px 0; border-bottom: 1px solid var(--border); align-items: baseline; }
+.type-row span:first-child { font: 12px/1.4 var(--font-mono); color: var(--dim); }
+.space { display: flex; gap: 20px; align-items: flex-end; }
+.space div { background: var(--accent); height: 24px; }
+.space figure { margin: 0; font: 12px/1.4 var(--font-mono); color: var(--dim); text-align: center; }
+.radius { display: flex; gap: 24px; }
+.radius div { width: 96px; height: 64px; border: 1px solid var(--accent); display: grid; place-items: center; font: 12px/1 var(--font-mono); color: var(--dim); }
+.shadows { display: flex; gap: 40px; padding: 24px; background: #1a1218; }
+.shadows div { width: 200px; height: 96px; background: #20161e; display: grid; place-items: center; font: 12px/1.4 var(--font-mono); color: #a78e9b; border-radius: 12px; }
+.term { background: var(--bg); border: 1px solid var(--border); padding: 16px 20px; font: 13px/17px var(--font-mono); white-space: pre; margin: 0; }
+.acc { color: var(--accent); } .bd { color: var(--border); } .ok { color: var(--success); } .warn { color: var(--warning); } .err { color: var(--error); } .dim { color: var(--dim); }
+.float { display: block; padding: 0 1ch; }
+.float.info { background: var(--tool-ok-bg); }
+.float.warn-bg { background: var(--tool-pending-bg); }
+.float.err-bg { background: var(--tool-err-bg); }
+.comps { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header>
+	<h1>Gentle Shell design system</h1>
+	<p>Synced read-only from <code>themes/*.json</code>, <code>lib/shell-card.ts</code>, <code>lib/shell-gauge.ts</code>, <code>lib/gauge-theme.ts</code>, <code>lib/card-style-policy.ts</code>, <code>assets/install-wizard/wizard.css</code> and <code>assets/design-canvas/canvas.css</code>. Full table in <code>design/system.md</code>.</p>
+</header>
+<main id="main">
+	<h2>TUI palettes · themes/*.json</h2>
+	<div class="grid3">
+		<section class="theme" aria-labelledby="t-gentle">
+			<h3 id="t-gentle">Gentle</h3>
+			<ul>
+				<li><span class="sw" style="background:#06080f"></span><span>bg<small>#06080f</small></span></li>
+				<li><span class="sw" style="background:#0d0f14"></span><span>bgSubtle<small>#0d0f14</small></span></li>
+				<li><span class="sw" style="background:#161D2E"></span><span>userMessageBg<small>#161D2E</small></span></li>
+				<li><span class="sw" style="background:#232A40"></span><span>selection / borderSubtle<small>#232A40</small></span></li>
+				<li><span class="sw" style="background:#313342"></span><span>border<small>#313342</small></span></li>
+				<li><span class="sw" style="background:#F3F6F9"></span><span>text<small>#F3F6F9</small></span></li>
+				<li><span class="sw" style="background:#5C6170"></span><span>muted / dim<small>#5C6170 · fails AA text</small></span></li>
+				<li><span class="sw" style="background:#8394A3"></span><span>brightBlack<small>#8394A3 · readable dim</small></span></li>
+				<li><span class="sw" style="background:#7FB4CA"></span><span>blue → accent role<small>#7FB4CA</small></span></li>
+				<li><span class="sw" style="background:#E0C15A"></span><span>accent var<small>#E0C15A</small></span></li>
+				<li><span class="sw" style="background:#B5B2D0"></span><span>heading<small>#B5B2D0</small></span></li>
+				<li><span class="sw" style="background:#B7CC85"></span><span>green → success<small>#B7CC85</small></span></li>
+				<li><span class="sw" style="background:#DEBA87"></span><span>warning<small>#DEBA87</small></span></li>
+				<li><span class="sw" style="background:#CB7C94"></span><span>red → error<small>#CB7C94</small></span></li>
+				<li><span class="sw" style="background:#B99BF2"></span><span>brightPurple<small>#B99BF2</small></span></li>
+				<li><span class="sw" style="background:#A4DAA7"></span><span>syntaxNumber<small>#A4DAA7</small></span></li>
+				<li><span class="sw" style="background:#1a2e1a"></span><span>toolSuccessBg<small>#1a2e1a</small></span></li>
+				<li><span class="sw" style="background:#2e1a1a"></span><span>toolErrorBg<small>#2e1a1a</small></span></li>
+			</ul>
+		</section>
+		<section class="theme" aria-labelledby="t-cute">
+			<h3 id="t-cute">Gentleman-Cute</h3>
+			<ul>
+				<li><span class="sw" style="background:#060407"></span><span>bg<small>#060407</small></span></li>
+				<li><span class="sw" style="background:#100A0F"></span><span>bgSubtle / panel<small>#100A0F</small></span></li>
+				<li><span class="sw" style="background:#2A1523"></span><span>userMessageBg<small>#2A1523</small></span></li>
+				<li><span class="sw" style="background:#28121E"></span><span>selection<small>#28121E</small></span></li>
+				<li><span class="sw" style="background:#563040"></span><span>border<small>#563040</small></span></li>
+				<li><span class="sw" style="background:#F6EFF3"></span><span>text<small>#F6EFF3</small></span></li>
+				<li><span class="sw" style="background:#A78E9B"></span><span>muted<small>#A78E9B</small></span></li>
+				<li><span class="sw" style="background:#76616B"></span><span>dim<small>#76616B · fails AA text</small></span></li>
+				<li><span class="sw" style="background:#F095C8"></span><span>accent<small>#F095C8</small></span></li>
+				<li><span class="sw" style="background:#FFB1DD"></span><span>activePink → borderAccent<small>#FFB1DD</small></span></li>
+				<li><span class="sw" style="background:#E0C27A"></span><span>champagne → label<small>#E0C27A</small></span></li>
+				<li><span class="sw" style="background:#D7A0B8"></span><span>softRose → thinking<small>#D7A0B8</small></span></li>
+				<li><span class="sw" style="background:#B4E7C7"></span><span>mint → success<small>#B4E7C7</small></span></li>
+				<li><span class="sw" style="background:#F2B86D"></span><span>warning / peach<small>#F2B86D</small></span></li>
+				<li><span class="sw" style="background:#FF718F"></span><span>error<small>#FF718F</small></span></li>
+				<li><span class="sw" style="background:#A9C7EE"></span><span>powderBlue<small>#A9C7EE</small></span></li>
+				<li><span class="sw" style="background:#C96AA2"></span><span>deepPink<small>#C96AA2</small></span></li>
+				<li><span class="sw" style="background:#261019"></span><span>toolErrorBg<small>#261019</small></span></li>
+			</ul>
+		</section>
+		<section class="theme" aria-labelledby="t-sexy">
+			<h3 id="t-sexy">Gentleman-Sexy</h3>
+			<ul>
+				<li><span class="sw" style="background:#060407"></span><span>bg<small>#060407</small></span></li>
+				<li><span class="sw" style="background:#100A0F"></span><span>bgSubtle / panel<small>#100A0F</small></span></li>
+				<li><span class="sw" style="background:#2E0F1F"></span><span>userMessageBg<small>#2E0F1F</small></span></li>
+				<li><span class="sw" style="background:#28121E"></span><span>selection<small>#28121E</small></span></li>
+				<li><span class="sw" style="background:#563040"></span><span>border<small>#563040</small></span></li>
+				<li><span class="sw" style="background:#F6EFF3"></span><span>text<small>#F6EFF3</small></span></li>
+				<li><span class="sw" style="background:#A78E9B"></span><span>muted → thinking<small>#A78E9B</small></span></li>
+				<li><span class="sw" style="background:#76616B"></span><span>dim<small>#76616B · fails AA text</small></span></li>
+				<li><span class="sw" style="background:#F43888"></span><span>accent<small>#F43888</small></span></li>
+				<li><span class="sw" style="background:#FF4F9A"></span><span>activePink → borderAccent<small>#FF4F9A</small></span></li>
+				<li><span class="sw" style="background:#E0C27A"></span><span>champagne → label<small>#E0C27A</small></span></li>
+				<li><span class="sw" style="background:#C49BFF"></span><span>violet<small>#C49BFF</small></span></li>
+				<li><span class="sw" style="background:#D2CBD0"></span><span>pearl → success<small>#D2CBD0</small></span></li>
+				<li><span class="sw" style="background:#F2B86D"></span><span>warning<small>#F2B86D</small></span></li>
+				<li><span class="sw" style="background:#FF718F"></span><span>error<small>#FF718F</small></span></li>
+				<li><span class="sw" style="background:#A9C7EE"></span><span>powderBlue<small>#A9C7EE</small></span></li>
+				<li><span class="sw" style="background:#BF0F50"></span><span>deepPink<small>#BF0F50 · fails AA text</small></span></li>
+				<li><span class="sw" style="background:#261019"></span><span>toolErrorBg<small>#261019</small></span></li>
+			</ul>
+		</section>
+	</div>
+
+	<h2>TUI roles · colors map</h2>
+	<table>
+		<thead><tr><th scope="col">Role</th><th scope="col">Gentle</th><th scope="col">Gentleman-Cute</th><th scope="col">Gentleman-Sexy</th><th scope="col">Usage</th></tr></thead>
+		<tbody>
+			<tr><td>accent</td><td><span class="chip" style="background:#7FB4CA"></span>#7FB4CA</td><td><span class="chip" style="background:#F095C8"></span>#F095C8</td><td><span class="chip" style="background:#F43888"></span>#F43888</td><td>Primary accent, INFO card titles, fleet orchestrator</td></tr>
+			<tr><td>borderAccent</td><td><span class="chip" style="background:#7FB4CA"></span>#7FB4CA</td><td><span class="chip" style="background:#FFB1DD"></span>#FFB1DD</td><td><span class="chip" style="background:#FF4F9A"></span>#FF4F9A</td><td>Focused frame, focus ring</td></tr>
+			<tr><td>success</td><td><span class="chip" style="background:#B7CC85"></span>#B7CC85</td><td><span class="chip" style="background:#B4E7C7"></span>#B4E7C7</td><td><span class="chip" style="background:#D2CBD0"></span>#D2CBD0</td><td>Done</td></tr>
+			<tr><td>warning</td><td><span class="chip" style="background:#DEBA87"></span>#DEBA87</td><td><span class="chip" style="background:#F2B86D"></span>#F2B86D</td><td><span class="chip" style="background:#F2B86D"></span>#F2B86D</td><td>Waiting on the human, gauge ≥ 80%</td></tr>
+			<tr><td>error</td><td><span class="chip" style="background:#CB7C94"></span>#CB7C94</td><td><span class="chip" style="background:#FF718F"></span>#FF718F</td><td><span class="chip" style="background:#FF718F"></span>#FF718F</td><td>Failure, gauge ≥ 95%</td></tr>
+			<tr><td>thinkingText</td><td><span class="chip" style="background:#5C6170"></span>#5C6170 → design #8394A3</td><td><span class="chip" style="background:#D7A0B8"></span>#D7A0B8</td><td><span class="chip" style="background:#A78E9B"></span>#A78E9B</td><td>Reasoning text, prefixed ∴</td></tr>
+			<tr><td>customMessageLabel</td><td><span class="chip" style="background:#7FB4CA"></span>#7FB4CA</td><td><span class="chip" style="background:#E0C27A"></span>#E0C27A</td><td><span class="chip" style="background:#E0C27A"></span>#E0C27A</td><td>Extension message labels, tool names</td></tr>
+			<tr><td>member hues (design rule)</td><td><span class="chip" style="background:#E0C15A"></span><span class="chip" style="background:#B99BF2"></span><span class="chip" style="background:#A4DAA7"></span></td><td><span class="chip" style="background:#A9C7EE"></span><span class="chip" style="background:#E0C27A"></span><span class="chip" style="background:#B4E7C7"></span></td><td><span class="chip" style="background:#A9C7EE"></span><span class="chip" style="background:#E0C27A"></span><span class="chip" style="background:#C49BFF"></span></td><td>One per member up to three; beyond that one per front (api, web, docs), other fronts in text</td></tr>
+		</tbody>
+	</table>
+
+	<h2>Web palettes · wizard.css and canvas.css</h2>
+	<div class="grid3">
+		<section class="theme web" aria-labelledby="t-wizard" style="grid-column: span 2">
+			<h3 id="t-wizard">Install wizard</h3>
+			<ul>
+				<li><span class="sw" style="background:#1a1218"></span><span>--bg<small>#1a1218</small></span></li>
+				<li><span class="sw" style="background:#000000"></span><span>--bg-deep<small>#000000</small></span></li>
+				<li><span class="sw" style="background:#20161e"></span><span>--surface<small>#20161e</small></span></li>
+				<li><span class="sw" style="background:#241822"></span><span>--surface-1<small>#241822</small></span></li>
+				<li><span class="sw" style="background:#342230"></span><span>--surface-2 / --border<small>#342230</small></span></li>
+				<li><span class="sw" style="background:#ffffff17"></span><span>--border-soft<small>#ffffff17</small></span></li>
+				<li><span class="sw" style="background:#f6eff3"></span><span>--text<small>#f6eff3</small></span></li>
+				<li><span class="sw" style="background:#a78e9b"></span><span>--text-muted<small>#a78e9b</small></span></li>
+				<li><span class="sw" style="background:#76616b"></span><span>--text-faint<small>#76616b</small></span></li>
+				<li><span class="sw" style="background:#f095c8"></span><span>--accent<small>#f095c8</small></span></li>
+				<li><span class="sw" style="background:#ff76c3"></span><span>--accent-strong<small>#ff76c3</small></span></li>
+				<li><span class="sw" style="background:#ffb1dd"></span><span>--accent-soft<small>#ffb1dd</small></span></li>
+				<li><span class="sw" style="background:#b4e7c7"></span><span>--success<small>#b4e7c7</small></span></li>
+				<li><span class="sw" style="background:#e0c27a"></span><span>--warning<small>#e0c27a</small></span></li>
+				<li><span class="sw" style="background:#ff718f"></span><span>--error<small>#ff718f</small></span></li>
+				<li><span class="sw" style="background:#a9c7ee"></span><span>--info<small>#a9c7ee</small></span></li>
+			</ul>
+		</section>
+		<section class="theme" aria-labelledby="t-canvas">
+			<h3 id="t-canvas">Design canvas chrome</h3>
+			<ul>
+				<li><span class="sw" style="background:#111214"></span><span>--gd-bg<small>#111214</small></span></li>
+				<li><span class="sw" style="background:#1a1b1e"></span><span>--gd-stage<small>#1a1b1e</small></span></li>
+				<li><span class="sw" style="background:#222327"></span><span>--gd-panel<small>#222327</small></span></li>
+				<li><span class="sw" style="background:#3a3b40"></span><span>--gd-border<small>#3a3b40</small></span></li>
+				<li><span class="sw" style="background:#ececee"></span><span>--gd-text<small>#ececee</small></span></li>
+				<li><span class="sw" style="background:#a9abb2"></span><span>--gd-muted<small>#a9abb2</small></span></li>
+				<li><span class="sw" style="background:#8ab4ff"></span><span>--gd-accent / --gd-pin<small>#8ab4ff</small></span></li>
+				<li><span class="sw" style="background:#0b1220"></span><span>--gd-accent-text<small>#0b1220</small></span></li>
+				<li><span class="sw" style="background:#ff9b9b"></span><span>--gd-danger<small>#ff9b9b</small></span></li>
+				<li><span class="sw" style="background:#ffd479"></span><span>--gd-focus<small>#ffd479</small></span></li>
+				<li><span class="sw" style="background:#7d8a7f"></span><span>--gd-pin-resolved<small>#7d8a7f</small></span></li>
+				<li><span class="sw" style="background:#9be0a8"></span><span>--gd-success<small>#9be0a8</small></span></li>
+			</ul>
+		</section>
+	</div>
+
+	<h2>Typography</h2>
+	<div class="type-row"><span>--font-mono · 13/17 terminal</span><span class="mono" style="font-size:13px;line-height:17px">✿ fleet · api [working] · todo 3/7 "Add invite token table migration" · 182k tok · $1.12</span></div>
+	<div class="type-row"><span>--font-mono · 600 12 caps .12em</span><span style="font:600 12px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase">Progress</span></div>
+	<div class="type-row"><span>--font-mono · 600 11 caps .08em</span><span style="font:600 11px/1.4 var(--font-mono);letter-spacing:.08em;text-transform:uppercase">Running</span></div>
+	<div class="type-row"><span>--font-sans · 16/1.6</span><span>Add team workspaces to Inkwell: API, web app and docs.</span></div>
+	<div class="type-row"><span>--font-sans · 15 / 14 / 12</span><span><span style="font-size:15px">Step label 15</span> · <span style="font-size:14px">Canvas 14</span> · <span style="font-size:12px">Caption 12</span></span></div>
+
+	<h2>Spacing · observed in wizard.css (no tokens)</h2>
+	<div class="space">
+		<figure><div style="width:4px"></div>4</figure>
+		<figure><div style="width:6px"></div>6</figure>
+		<figure><div style="width:8px"></div>8</figure>
+		<figure><div style="width:10px"></div>10</figure>
+		<figure><div style="width:12px"></div>12</figure>
+		<figure><div style="width:14px"></div>14</figure>
+		<figure><div style="width:16px"></div>16</figure>
+		<figure><div style="width:18px"></div>18</figure>
+		<figure><div style="width:20px"></div>20</figure>
+		<figure><div style="width:24px"></div>24</figure>
+		<figure><div style="width:28px"></div>28</figure>
+		<figure><div style="width:32px"></div>32</figure>
+	</div>
+
+	<h2>Radius · wizard.css</h2>
+	<div class="radius">
+		<div style="border-radius:8px">sm 8</div>
+		<div style="border-radius:12px">md 12</div>
+		<div style="border-radius:16px">lg 16</div>
+		<div style="border-radius:999px">pill 999</div>
+	</div>
+
+	<h2>Shadows · wizard.css (web only)</h2>
+	<div class="shadows">
+		<div style="box-shadow:0 10px 30px #f095c84d">--glow</div>
+		<div style="box-shadow:0 14px 36px #f095c86b">--glow-hover</div>
+		<div style="box-shadow:0 24px 60px #00000073, 0 0 40px #f095c81a">--shadow-panel</div>
+	</div>
+
+	<h2>TUI components · shell-card.ts, shell-gauge.ts</h2>
+	<div class="comps">
+		<section aria-labelledby="c-neon">
+			<h3 id="c-neon">Card · neon (outline chrome)</h3>
+<pre class="term"><span class="bd">╭─ </span><span class="acc">✿ Agents</span><span class="bd"> ───────────────────────── </span><span class="dim">ctrl+o</span><span class="bd"> ╮</span>
+<span class="bd">│</span> <span class="dim">2 running · concurrency 2</span>                       <span class="bd">│</span>
+<span class="bd">│</span> api-explorer  reading prisma/schema.prisma      <span class="bd">│</span>
+<span class="bd">╰────────────────────────────────────────────────╯</span>
+<span class="warn">╭─ ◆ Question ────────────────────────────────────╮</span>
+<span class="warn">│</span> Invite links: expire after 7 days or 30 days?  <span class="warn">│</span>
+<span class="warn">╰────────────────────────────────────────────────╯</span></pre>
+		</section>
+		<section aria-labelledby="c-float">
+			<h3 id="c-float">Card · float (default style)</h3>
+<pre class="term"><span class="float info"><span class="acc">▎</span> <span class="acc">✿ Agents</span> <span class="dim">· 2 running</span>                              </span><span class="float info"><span class="acc">▎</span> api-explorer  reading prisma/schema.prisma          </span>
+<span class="float warn-bg"><span class="warn">▎</span> <span class="warn">◆ Question</span> <span class="dim">· from web</span>                              </span><span class="float warn-bg"><span class="warn">▎</span> Invite links: expire after 7 days or 30 days?       </span>
+<span class="float err-bg"><span class="err">▎</span> <span class="err">✕ exited</span> <span class="dim">· code 1</span>                                  </span></pre>
+		</section>
+		<section aria-labelledby="c-gauge">
+			<h3 id="c-gauge">Gauge · 8 cells ▰▱, thresholds 80 / 95</h3>
+<pre class="term"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span>  42%   ok (accent)
+<span class="warn">▰▰▰▰▰▰▰</span><span class="bd">▱</span>  84%   warning
+<span class="err">▰▰▰▰▰▰▰▰</span>  97%   error</pre>
+		</section>
+		<section aria-labelledby="c-state">
+			<h3 id="c-state">Member states and todo glyphs (design rule)</h3>
+<pre class="term"><span class="dim">◌ starting</span>   <span class="acc">● working</span>   <span class="warn">◆ waiting on you</span>   <span class="dim">◇ idle</span>   <span class="err">✕ exited</span>   <span class="ok">✓ done</span>
+<span class="ok">●</span> done   <span class="acc">◐</span> current   <span class="dim">○</span> pending   <span class="dim">∴ thinking gist</span></pre>
+		</section>
+	</div>
+</main>
+</body>
+</html>

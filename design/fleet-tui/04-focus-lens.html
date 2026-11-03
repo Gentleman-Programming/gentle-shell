@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>Fleet orchestrator TUI · 04 Focus lens</title>
+<style>
+/* Palettes from themes/Gentle.json, themes/Gentleman-Cute.json, themes/Gentleman-Sexy.json; rules in design/system.md. */
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+	--lh: 17px;
+	--bg: #06080f; --panel: #0d0f14; --user-bg: #161D2E; --sel: #232A40; --border: #313342; --border-subtle: #232A40;
+	--text: #F3F6F9; --dim: #8394A3; --accent: #7FB4CA; --accent-strong: #7FB4CA; --label: #7FB4CA; --heading: #B5B2D0;
+	--success: #B7CC85; --warning: #DEBA87; --error: #CB7C94; --thinking: #8394A3; --code: #B7CC85;
+	--tool-ok-bg: #1a2e1a; --tool-pending-bg: #0d0f14; --custom-bg: #0d0f14;
+	--m-api: #E0C15A; --m-web: #B99BF2; --m-docs: #A4DAA7;
+	--theme-name: "Gentle";
+	width: 1440px; height: 900px; overflow: hidden;
+	background: var(--bg); color: var(--text);
+	font: 13px/17px "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+body:has(#theme-cute:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2A1523; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F095C8; --accent-strong: #FFB1DD; --label: #E0C27A; --heading: #E0C27A;
+	--success: #B4E7C7; --warning: #F2B86D; --error: #FF718F; --thinking: #D7A0B8; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #B4E7C7;
+	--theme-name: "Gentleman-Cute";
+}
+body:has(#theme-sexy:checked) {
+	--bg: #060407; --panel: #100A0F; --user-bg: #2E0F1F; --sel: #28121E; --border: #563040; --border-subtle: #2A1720;
+	--text: #F6EFF3; --dim: #A78E9B; --accent: #F43888; --accent-strong: #FF4F9A; --label: #E0C27A; --heading: #E0C27A;
+	--success: #D2CBD0; --warning: #F2B86D; --error: #FF718F; --thinking: #A78E9B; --code: #E0C27A;
+	--tool-ok-bg: #151316; --tool-pending-bg: #100A0F; --custom-bg: #100A0F;
+	--m-api: #A9C7EE; --m-web: #E0C27A; --m-docs: #C49BFF;
+	--theme-name: "Gentleman-Sexy";
+}
+h1, h2, h3, p, ul, ol, dl, dd, fieldset { margin: 0; padding: 0; font: inherit; }
+ul, ol { list-style: none; }
+button, input, textarea { font: inherit; line-height: var(--lh); color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+kbd { font: inherit; color: var(--accent); }
+code { font: inherit; color: var(--code); }
+:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 16px; top: -40px; z-index: 5; background: var(--accent); color: var(--bg); padding: 0 1ch; }
+.skip:focus { top: 4px; }
+
+/* Window chrome */
+.titlebar { height: 28px; display: flex; align-items: center; gap: 2ch; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.dots { display: flex; gap: 6px; }
+.dots span { width: 10px; height: 10px; border-radius: 50%; }
+.titlebar h1 { font-weight: 700; }
+.themes { margin-left: auto; border: 0; display: flex; align-items: center; gap: 1ch; }
+.themes input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.themes label { padding: 0 1ch; cursor: pointer; color: var(--dim); }
+.themes input:checked + label { color: var(--bg); background: var(--accent); }
+.themes input:focus-visible + label { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.screen { position: relative; width: 180ch; height: calc(50 * var(--lh)); margin: 4px auto 0; }
+
+/* Terminal boxes: frames are drawn with box-drawing characters by the script below. */
+.tbox { position: relative; padding: var(--lh) 2ch; min-width: 0; }
+.tbox > .fr { position: absolute; inset: 0; margin: 0; font: inherit; color: var(--border); white-space: pre; overflow: hidden; pointer-events: none; }
+.tbox > :not(.fr) { position: relative; }
+.tbox.hot > .fr { color: var(--accent-strong); }
+.tbox.ask > .fr { color: var(--warning); }
+.tbox > .ttl, .tbox > .tmeta, .tbox > .tfoot { position: absolute; padding: 0 1ch; background: var(--bg); white-space: nowrap; }
+.tbox > .ttl { top: 0; left: 2ch; font-weight: 700; color: var(--accent); }
+.tbox > .tmeta { top: 0; right: 2ch; color: var(--dim); }
+.tbox > .tfoot { bottom: 0; right: 2ch; color: var(--dim); }
+
+.dim { color: var(--dim); } .acc { color: var(--accent); } .ok { color: var(--success); } .warn { color: var(--warning); }
+.err { color: var(--error); } .think { color: var(--thinking); } .lbl { color: var(--label); } .bd { color: var(--border); }
+.api { color: var(--m-api); } .web { color: var(--m-web); } .docs { color: var(--m-docs); } .b { font-weight: 700; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line { white-space: pre; }
+.caret::after { content: "▍"; color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+	.caret::after { animation: blink 1.1s steps(1) infinite; }
+	.pulse { animation: pulse 1.6s ease-in-out infinite; }
+}
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 50% { opacity: .55; } }
+
+/* Direction 04 — focus lens */
+.screen { display: grid; grid-template-columns: 84ch 96ch; grid-template-rows: var(--lh) var(--lh) calc(46 * var(--lh)) calc(2 * var(--lh)); }
+.top { grid-column: 1 / -1; display: flex; gap: 2ch; padding: 0 1ch; white-space: nowrap; }
+.top .obj { flex: 1; min-width: 0; }
+.strip { grid-column: 1 / -1; display: flex; gap: 1ch; padding: 0 1ch; white-space: nowrap; background: var(--panel); }
+.strip [role="tab"] { padding: 0 1ch; color: var(--text); }
+.strip [role="tab"][aria-selected="true"] { background: var(--sel); font-weight: 700; text-decoration: underline; text-decoration-color: var(--accent-strong); text-underline-offset: 3px; }
+.strip [role="tab"]:hover { color: var(--accent-strong); }
+.strip .end { margin-left: auto; display: flex; gap: 1ch; }
+.strip .end button { padding: 0 1ch; color: var(--dim); }
+.strip .end button[aria-expanded="true"] { color: var(--accent); }
+.chat { display: flex; flex-direction: column; }
+.log { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: var(--lh); overflow: hidden; }
+.msg-you { background: var(--user-bg); padding: 0 1ch; }
+.who { display: block; }
+.ask { flex: none; height: calc(7 * var(--lh)); margin-top: var(--lh); }
+.opts { display: flex; flex-wrap: wrap; gap: 0 1ch; }
+.opt { padding: 0 1ch; background: var(--sel); color: var(--text); }
+.opt kbd { color: var(--warning); }
+.opt:hover { color: var(--accent-strong); }
+.prompt { flex: none; height: calc(3 * var(--lh)); }
+.prompt textarea { display: block; width: 100%; height: var(--lh); padding: 0; border: 0; resize: none; background: transparent; caret-color: var(--accent); }
+.prompt textarea::placeholder { color: var(--dim); opacity: 1; }
+.prompt .row { display: flex; }
+.hints { padding: 0 1ch; color: var(--dim); white-space: nowrap; }
+.lens section + section { margin-top: var(--lh); }
+body:has(#den-compact:checked) .lens section + section { margin-top: 0; }
+.lens h3 { color: var(--heading); font-weight: 700; display: flex; gap: 2ch; }
+.lens h3 .end { margin-left: auto; font-weight: 400; color: var(--dim); }
+.reason p { padding-left: 2ch; text-indent: -2ch; }
+.todo li, .tools li { display: grid; grid-template-columns: 2ch 1fr auto; gap: 0 1ch; }
+.tools li { grid-template-columns: 2ch 6ch 1fr 8ch; }
+.tools li span:nth-child(3) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools li span:last-child { text-align: right; color: var(--dim); }
+.todo .cur { background: var(--sel); }
+.overlay { position: absolute; left: 4ch; top: calc(7 * var(--lh)); width: 76ch; height: calc(24 * var(--lh)); z-index: 3; background: var(--panel); }
+.overlay > .ttl, .overlay > .tfoot { background: var(--panel); }
+.overlay fieldset { border: 0; }
+.overlay fieldset + fieldset { margin-top: var(--lh); }
+.overlay legend { color: var(--heading); font-weight: 700; padding: 0; }
+.overlay .choices { display: flex; flex-wrap: wrap; gap: 0 3ch; }
+.overlay label { cursor: pointer; white-space: nowrap; }
+.overlay input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.overlay input + span::before { content: "( ) "; color: var(--dim); }
+.overlay input:checked + span::before { content: "(•) "; color: var(--accent); }
+.overlay input[type="checkbox"] + span::before { content: "[ ] "; }
+.overlay input[type="checkbox"]:checked + span::before { content: "[x] "; }
+.overlay input:focus-visible + span { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.overlay .note { margin-top: var(--lh); color: var(--dim); }
+.status { grid-column: 1 / -1; }
+.status p { display: flex; gap: 3ch; padding: 0 1ch; white-space: nowrap; }
+.status p:first-child { background: var(--panel); }
+.theme-name::after { content: var(--theme-name); }
+/* Signals really toggle this artboard. */
+body:has(#sig-think:not(:checked)) .sig-think,
+body:has(#sig-tools:not(:checked)) .sig-tools,
+body:has(#sig-cost:not(:checked)) .sig-cost { display: none; }
+</style>
+</head>
+<body>
+<a class="skip" href="#prompt-input">Skip to message input</a>
+<header class="titlebar">
+	<div class="dots" aria-hidden="true"><span style="background:var(--error)"></span><span style="background:var(--warning)"></span><span style="background:var(--success)"></span></div>
+	<h1>gentle-shell orchestrator</h1>
+	<span class="dim">~/work/inkwell · 180×50</span>
+	<fieldset class="themes">
+		<legend class="sr-only">Terminal theme</legend>
+		<span class="dim" aria-hidden="true">theme</span>
+		<input type="radio" name="theme" id="theme-gentle" value="gentle" checked><label for="theme-gentle">Gentle</label>
+		<input type="radio" name="theme" id="theme-cute" value="cute"><label for="theme-cute">Gentleman-Cute</label>
+		<input type="radio" name="theme" id="theme-sexy" value="sexy"><label for="theme-sexy">Gentleman-Sexy</label>
+	</fieldset>
+</header>
+
+<div class="screen">
+	<p class="top">
+		<span class="acc b">✿ fleet</span>
+		<span class="obj trunc"><span class="dim">objective</span> Add team workspaces to Inkwell (notes app): API, web app and docs</span>
+		<span><span class="dim">odd.md</span> .gentle/fleet/odd.md <kbd>ctrl+o</kbd></span>
+	</p>
+
+	<nav class="strip" aria-label="Fleet members">
+		<div role="tablist" aria-label="Open a member in the lens">
+			<button type="button" role="tab" aria-selected="true" aria-controls="lens"><kbd>1</kbd> <span class="acc pulse" aria-hidden="true">●</span> <span class="api b">api</span> <span role="img" aria-label="3 of 7 done"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> 3/7</button>
+			<button type="button" role="tab" aria-selected="false" aria-controls="lens"><kbd>2</kbd> <span class="warn" aria-hidden="true">◆</span> <span class="web b">web</span> <span role="img" aria-label="2 of 6 done"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> 2/6 <span class="warn">asks you</span></button>
+			<button type="button" role="tab" aria-selected="false" aria-controls="lens"><kbd>3</kbd> <span class="dim" aria-hidden="true">◇</span> <span class="docs b">docs</span> <span role="img" aria-label="4 of 4 done"><span class="acc">▰▰▰▰▰▰▰▰</span></span> 4/4 <span class="ok">✓</span></button>
+		</div>
+		<div class="end">
+			<button type="button"><kbd>o</kbd> odd.md</button>
+			<button type="button" aria-expanded="true" aria-controls="customize"><kbd>ctrl+,</kbd> customize</button>
+		</div>
+	</nav>
+
+	<main class="tbox chat" aria-labelledby="chat-title">
+		<h2 class="ttl" id="chat-title">✿ fleet orchestrator</h2>
+		<span class="tmeta">ctx 34k · $0.19</span>
+		<div class="log" role="log" aria-label="Conversation with the fleet orchestrator">
+			<div class="msg-you">
+				<span class="who"><span class="b">you</span> <span class="dim">· 14:02</span></span>
+				<p>Add team workspaces to Inkwell: API, web app and docs. Keep invites simple: email invite links, no SSO yet.</p>
+			</div>
+			<div>
+				<span class="who"><span class="lbl b">✿ fleet</span> <span class="dim">· 14:02</span></span>
+				<p>Three fronts, one worktree each: <span class="api">api</span>, <span class="web">web</span>, <span class="docs">docs</span>. <span class="web">web</span> waits for the invite contract from <span class="api">api</span>.</p>
+			</div>
+			<div class="msg-you">
+				<span class="who"><span class="b">you</span> <span class="dim">· 14:22</span></span>
+				<p>Where are we? Anything blocked?</p>
+			</div>
+			<div>
+				<span class="who"><span class="lbl b">✿ fleet</span> <span class="dim">· 14:22</span></span>
+				<p>One blocker, and it is yours: <span class="web">web</span> needs the invite link expiry (below). The same answer fills the last placeholder in <span class="docs">docs</span>. <span class="api">api</span> is not blocked. Spent $2.50 of $6.00 (42%).</p>
+			</div>
+		</div>
+		<section class="tbox ask" aria-labelledby="ask-title">
+			<h2 class="ttl" id="ask-title"><span class="warn">◆</span> <span class="web">web</span> <span class="warn">asks you</span></h2>
+			<span class="tmeta">select · 14:18</span>
+			<p class="b">Invite links: expire after 7 days or 30 days?</p>
+			<p class="dim">The dialog copy and the API default must match.</p>
+			<div class="opts" role="group" aria-label="Answer web">
+				<button class="opt" type="button"><kbd>1</kbd> 7 days</button>
+				<button class="opt" type="button"><kbd>2</kbd> 30 days</button>
+				<button class="opt" type="button"><kbd>3</kbd> Never</button>
+				<button class="opt" type="button"><kbd>4</kbd> Type…</button>
+			</div>
+		</section>
+		<div class="tbox prompt hot">
+			<div class="row"><label for="prompt-input" class="sr-only">Message the fleet</label><span class="acc" aria-hidden="true">›&nbsp;</span><textarea id="prompt-input" rows="1" placeholder="Message the fleet"></textarea></div>
+		</div>
+		<p class="hints"><kbd>enter</kbd> send · <kbd>@api</kbd> steer · <kbd>1-3</kbd> lens · <kbd>esc</kbd> close lens</p>
+	</main>
+
+	<section class="tbox lens hot" id="lens" role="tabpanel" aria-labelledby="lens-title">
+		<h2 class="ttl" id="lens-title">lens · <span class="api">api</span></h2>
+		<span class="tmeta"><span class="acc">● working</span> · feat/workspaces-api<span class="sig-cost"> · 182k tok · $1.12</span></span>
+		<section class="reason sig-think" aria-labelledby="lens-reason">
+			<h3 id="lens-reason">Reasoning · live <span class="end">streamed from the member’s thinking events</span></h3>
+			<p class="think">∴ Token table needs a unique index on (workspace_id, email) — checking existing users schema.</p>
+			<p class="think">∴ users.email is already citext, so the unique index can stay plain.</p>
+			<p class="think">∴ Invites keyed by sha256(token), per the steer from the fleet; the raw token only travels in the email link.</p>
+			<p class="think caret">∴ web asked about expiry; keeping expires_at per row so the answer only sets the default </p>
+		</section>
+		<section class="todo" aria-labelledby="lens-todo">
+			<h3 id="lens-todo">Todo 3/7 <span role="img" aria-label="43 percent"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> <span class="end">member’s own todo list</span></h3>
+			<ol>
+				<li><span class="ok" aria-hidden="true">●</span><span>Workspace + membership schema</span><span class="sr-only">done</span></li>
+				<li><span class="ok" aria-hidden="true">●</span><span>Workspaces CRUD endpoints</span><span class="sr-only">done</span></li>
+				<li><span class="ok" aria-hidden="true">●</span><span>Role guard middleware</span><span class="sr-only">done</span></li>
+				<li class="cur"><span class="acc" aria-hidden="true">◐</span><span class="b">Add invite token table migration</span><span class="acc">now</span></li>
+				<li><span class="dim" aria-hidden="true">○</span><span>POST /workspaces/:id/invites</span><span class="sr-only">pending</span></li>
+				<li><span class="dim" aria-hidden="true">○</span><span>Accept invite endpoint</span><span class="sr-only">pending</span></li>
+				<li><span class="dim" aria-hidden="true">○</span><span>Integration tests for invites</span><span class="sr-only">pending</span></li>
+			</ol>
+		</section>
+		<section class="tools sig-tools" aria-labelledby="lens-tools">
+			<h3 id="lens-tools">Tool steps · this turn <span class="end">5 steps</span></h3>
+			<ol>
+				<li><span class="ok" aria-hidden="true">✓</span><span class="lbl">read</span><span>prisma/schema.prisma</span><span>0.2s</span></li>
+				<li><span class="ok" aria-hidden="true">✓</span><span class="lbl">grep</span><span>“model User” apps/api</span><span>0.1s</span></li>
+				<li><span class="ok" aria-hidden="true">✓</span><span class="lbl">read</span><span>apps/api/src/workspaces/workspace.service.ts</span><span>0.2s</span></li>
+				<li><span class="ok" aria-hidden="true">✓</span><span class="lbl">bash</span><span>pnpm prisma migrate dev --create-only --name invite_tokens</span><span>4.8s</span></li>
+				<li><span class="acc pulse" aria-hidden="true">◐</span><span class="lbl">edit</span><span>prisma/migrations/20261102141500_invite_tokens/migration.sql</span><span>running</span></li>
+			</ol>
+		</section>
+		<section aria-labelledby="lens-sub">
+			<h3 id="lens-sub">Subagents <span class="end">the member’s own orchestrator · 1 of 2 slots</span></h3>
+			<p><span class="acc">●</span> api-explorer <span class="dim">· listing every read of users.email in apps/api</span></p>
+		</section>
+		<section aria-labelledby="lens-last">
+			<h3 id="lens-last">Last reply <span class="end">2m ago</span></h3>
+			<p>“Workspaces CRUD and the role guard are in; starting the invite token migration.”</p>
+		</section>
+		<span class="tfoot"><kbd>s</kbd> steer api · <kbd>x</kbd> stop · <kbd>[</kbd> <kbd>]</kbd> prev/next member · <kbd>esc</kbd> close</span>
+	</section>
+
+	<section class="tbox overlay hot" id="customize" role="dialog" aria-labelledby="cz-title">
+		<h2 class="ttl" id="cz-title">Customize fleet view</h2>
+		<span class="tmeta"><kbd>ctrl+,</kbd></span>
+		<form>
+			<fieldset>
+				<legend>Layout preset</legend>
+				<div class="choices">
+					<label><input type="radio" name="layout"><span>deck</span></label>
+					<label><input type="radio" name="layout"><span>map</span></label>
+					<label><input type="radio" name="layout"><span>conversation</span></label>
+					<label><input type="radio" name="layout" checked><span>focus</span></label>
+				</div>
+			</fieldset>
+			<fieldset>
+				<legend>Density</legend>
+				<div class="choices">
+					<label><input type="radio" name="density" id="den-compact"><span>compact</span></label>
+					<label><input type="radio" name="density" id="den-comfy" checked><span>comfortable</span></label>
+				</div>
+			</fieldset>
+			<fieldset>
+				<legend>Signals</legend>
+				<div class="choices">
+					<label><input type="checkbox" id="sig-think" checked><span>thinking</span></label>
+					<label><input type="checkbox" id="sig-tools" checked><span>tool steps</span></label>
+					<label><input type="checkbox" id="sig-cost" checked><span>tokens and cost</span></label>
+				</div>
+			</fieldset>
+			<fieldset>
+				<legend>Theme</legend>
+				<div class="choices">
+					<label><input type="radio" name="theme-ov" value="gentle" checked><span>Gentle</span></label>
+					<label><input type="radio" name="theme-ov" value="cute"><span>Gentleman-Cute</span></label>
+					<label><input type="radio" name="theme-ov" value="sexy"><span>Gentleman-Sexy</span></label>
+				</div>
+			</fieldset>
+			<fieldset>
+				<legend>Lens follows</legend>
+				<div class="choices">
+					<label><input type="radio" name="follow" checked><span>the member that changed last</span></label>
+					<label><input type="radio" name="follow"><span>only questions</span></label>
+				</div>
+			</fieldset>
+			<p class="note">Applies live; saved per user for every fleet.</p>
+		</form>
+		<span class="tfoot"><kbd>space</kbd> toggle · <kbd>esc</kbd> close</span>
+	</section>
+
+	<footer class="status">
+		<p>
+			<span><span class="dim">fleet budget</span> $2.50 / $6.00 <span role="img" aria-label="42 percent of budget used"><span class="acc">▰▰▰</span><span class="bd">▱▱▱▱▱</span></span> 42%</span>
+			<span><span class="dim">members</span> 3/3 live</span>
+			<span class="sig-cost"><span class="dim">tokens</span> 353k</span>
+			<span><span class="warn">◆</span> inbox 1</span>
+			<span><span class="dim">layout</span> focus</span>
+			<span><span class="dim">theme</span> <span class="theme-name"></span></span>
+		</p>
+		<p class="dim"><span><kbd>1-3</kbd> open lens</span><span><kbd>tab</kbd> chat ↔ lens</span><span><kbd>s</kbd> steer</span><span><kbd>ctrl+,</kbd> customize</span><span><kbd>ctrl+l</kbd> layout</span><span><kbd>ctrl+t</kbd> theme</span><span><kbd>?</kbd> help</span></p>
+	</footer>
+</div>
+
+<script>
+// Draw each .tbox frame with box-drawing characters sized to its cell grid.
+(() => {
+	const screen = document.querySelector(".screen");
+	const probe = document.createElement("span");
+	probe.textContent = "0".repeat(100);
+	probe.setAttribute("aria-hidden", "true");
+	probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;left:0;top:0";
+	screen.append(probe);
+	function draw() {
+		const cw = probe.getBoundingClientRect().width / 100;
+		const lh = parseFloat(getComputedStyle(document.body).getPropertyValue("--lh"));
+		for (const box of document.querySelectorAll(".tbox")) {
+			const cols = Math.round(box.offsetWidth / cw);
+			const rows = Math.round(box.offsetHeight / lh);
+			if (cols < 2 || rows < 2) continue;
+			let fr = box.querySelector(":scope > .fr");
+			if (!fr) {
+				fr = document.createElement("pre");
+				fr.className = "fr";
+				fr.setAttribute("aria-hidden", "true");
+				box.prepend(fr);
+			}
+			const rule = "─".repeat(cols - 2);
+			const side = "│" + " ".repeat(cols - 2) + "│";
+			fr.textContent = ["╭" + rule + "╮", ...Array(rows - 2).fill(side), "╰" + rule + "╯"].join("\n");
+		}
+	}
+	draw();
+	if (document.fonts) document.fonts.ready.then(draw);
+	addEventListener("resize", draw);
+})();
+</script>
+<script>
+// Keep the overlay theme choice and the title bar switcher in sync.
+(() => {
+	const sync = (from, to) => {
+		for (const input of document.querySelectorAll(`input[name="${from}"]`)) {
+			input.addEventListener("change", () => {
+				const twin = document.querySelector(`input[name="${to}"][value="${input.value}"]`);
+				if (twin) twin.checked = true;
+			});
+		}
+	};
+	sync("theme", "theme-ov");
+	sync("theme-ov", "theme");
+})();
+</script>
+</body>
+</html>

@@ -6692,3 +6692,30 @@ test("mobile folds live work into one row above the editor that opens /gentle:pa
 		footer.dispose();
 	}
 });
+
+test("customize presets set density and visibility together, mark the current one, and keep the placements", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Header placement: below-input");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "the default density and visibility are the Neutral preset");
+	await customizeAction(ui, "Preset: Light");
+	const light = resolveVisualSettings({ gentlePiConfigHome: home }).settings;
+	assert.equal(light.density, "minimal");
+	assert.equal(light.visibility.todo, false);
+	assert.equal(light.visibility.changes, false);
+	assert.equal(light.headerPlacement, "below-input", "the preset keeps the chosen header placement");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Light.*current/);
+	await customizeAction(ui, "Preset: Power user");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "compact");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Power user.*current/);
+	await customizeAction(ui, "Density: comfortable");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset: Neutral.*current/, "everything shown at comfortable density is Neutral again");
+	await customizeAction(ui, "Density: minimal");
+	assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /Preset: [^\n]*current/, "a hand-tuned mix matches no preset");
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
+});

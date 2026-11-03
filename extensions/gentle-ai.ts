@@ -59,6 +59,7 @@ import type {
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VimListKeys, vimListIndex } from "../lib/vim-list-keys.ts";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -3365,6 +3366,9 @@ class RoutingTablePanel implements OverlayComponent {
 	private target: string = PROFILE_ORCHESTRATOR_KEY;
 	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
+	// One gg/G state per panel: the table and its menu share it, so a half-typed
+	// gg never survives a switch between them.
+	private readonly listKeys = new VimListKeys();
 	private query = "";
 	private modelCursor = 0;
 	private effortCursor = 0;
@@ -3789,8 +3793,14 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		this.escArmed = false;
-		if (matchesKey(data, "left")) return this.switchBy(-1);
-		if (matchesKey(data, "right")) return this.switchBy(1);
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
+		if (jump === "first" || jump === "last") {
+			this.cursor = vimListIndex(jump, this.cursor, this.rows.length, 0);
+			return;
+		}
+		if (matchesKey(data, "left") || matchesKey(data, "h")) return this.switchBy(-1);
+		if (matchesKey(data, "right") || matchesKey(data, "l")) return this.switchBy(1);
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.cursor = Math.max(0, this.cursor - 1);
 			return;
@@ -3835,17 +3845,24 @@ class RoutingTablePanel implements OverlayComponent {
 	private handleEffortKey(data: string): void {
 		if (matchesKey(data, "escape")) return this.closeOverlay();
 		if (matchesKey(data, "return")) return this.pickEffort(this.effortCursor);
-		if (matchesKey(data, "left") || matchesKey(data, "up")) {
+		if (matchesKey(data, "left") || matchesKey(data, "up") || matchesKey(data, "h") || matchesKey(data, "k")) {
 			this.effortCursor = Math.max(0, this.effortCursor - 1);
 			return;
 		}
-		if (matchesKey(data, "right") || matchesKey(data, "down")) {
+		if (matchesKey(data, "right") || matchesKey(data, "down") || matchesKey(data, "l") || matchesKey(data, "j")) {
 			this.effortCursor = Math.min(this.effortOptions().length - 1, this.effortCursor + 1);
 		}
 	}
 
 	private handleMenuKey(data: string): void {
 		const items = this.menuItems();
+		// Read first so any other key, the close keys included, drops a pending gg.
+		const jump = this.listKeys.action(data);
+		if (jump === "pending") return;
+		if (jump === "first" || jump === "last") {
+			this.menuCursor = vimListIndex(jump, this.menuCursor, items.length, 0);
+			return;
+		}
 		if (matchesKey(data, "escape")) return this.closeOverlay();
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.menuCursor = Math.max(0, this.menuCursor - 1);

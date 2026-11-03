@@ -893,3 +893,96 @@ test("the native fullscreen wrapper keeps keyboard, hover, click and wheel on th
 		tui.stop();
 	}
 });
+
+test("changes view accepts vim gg/G row jumps", () => {
+	const h = view();
+	h.view.handleInput("G");
+	h.view.handleInput("o");
+	assert.deepEqual(h.events.filter((e) => e.startsWith("open:")), ["open:lib/b.ts"], "G selects the last file");
+	h.view.handleInput("g");
+	h.view.handleInput("g");
+	h.view.handleInput("o");
+	assert.deepEqual(
+		h.events.filter((e) => e.startsWith("open:")),
+		["open:lib/b.ts", "open:lib/a.ts"],
+		"gg selects the first file",
+	);
+});
+
+test("WorktreeChangesView accepts vim gg/G row jumps", async () => {
+	const trees = ["/main", "/linked"].map((root) => ({ root, branch: root === "/main" ? "main" : undefined, model: changesModel([file("same.ts", 1, 0)]) }));
+	const opened: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: (root: string, target: { path: string }) => { opened.push(`${root}:${target.path}`); },
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	component.handleInput("\r"); // expand /main
+	component.handleInput("j");
+	component.handleInput("j");
+	component.handleInput("\r"); // expand /linked
+	component.handleInput("G");
+	component.handleInput("o");
+	assert.deepEqual(opened, ["/linked:same.ts"], "G selects the last file");
+	opened.length = 0;
+	component.handleInput("g");
+	component.handleInput("g");
+	component.handleInput("j");
+	component.handleInput("o");
+	assert.deepEqual(opened, ["/main:same.ts"], "gg returns to the first row");
+});
+
+test("ctrl+d/ctrl+u move the changes selection half a page", async () => {
+	const files = Array.from({ length: 20 }, (_, i) => file(`f${i + 1}.ts`, 1, 0));
+	const trees = [{ root: "/main", branch: "main", model: changesModel(files) }];
+	const opened: string[] = [];
+	const component = new WorktreeChangesView(trees, {
+		theme: taggedTheme, rows: 10,
+		loadDiff: async () => "",
+		onOpen: (_root: string, target: { path: string }) => { opened.push(target.path); },
+		onClose: () => {}, requestRender() {}, onRefresh() {},
+	});
+	component.render(80);
+	component.handleInput("\r"); // expand /main
+	component.handleInput("G");
+	component.handleInput("\x15"); // ctrl+u: half a page up
+	component.handleInput("o");
+	assert.notEqual(opened[0], "f9.ts", "ctrl+u moved the selection up from the last file (rows sort alphabetically)");
+	assert.notEqual(opened[0], "f1.ts", "half a page, not the whole list");
+	component.dispose();
+});
+
+test("standalone ChangesView scrolls the diff half a page with ctrl+d/ctrl+u", async () => {
+	const long = Array.from({ length: 40 }, (_, index) => `+line ${index}`).join("\n");
+	const { view: component } = view({ async loadDiff() { return `@@ -0,0 +1,40 @@\n${long}`; } });
+	await settle();
+	assert.match(stripAnsi(component.render(80)[2]), /@@/, "the diff starts at its hunk header");
+	component.handleInput("\x04"); // ctrl+d
+	const down = stripAnsi(component.render(80)[2]);
+	assert.doesNotMatch(down, /@@/, "ctrl+d scrolls the diff down");
+	assert.match(down, /\+line \d+/);
+	component.handleInput("\x15"); // ctrl+u
+	assert.match(stripAnsi(component.render(80)[2]), /@@/, "ctrl+u scrolls back to the top");
+});
+
+test("diff-only mode scrolls the diff with ctrl+d/u and jumps files with G and gg", async () => {
+	const long = Array.from({ length: 40 }, (_, index) => `+line ${index}`).join("\n");
+	const { component } = diffOnlyView({ loadDiff: async (root, target) => `@@ ${root}:${target.path}\n${long}` });
+	component.handleInput("F");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M a\.ts +│$/);
+	assert.match(component.render(100)[2]!, /@@/);
+	component.handleInput("\x04");
+	assert.match(component.render(100)[1]!, /^│ M a\.ts +│$/, "ctrl+d keeps the same file");
+	assert.doesNotMatch(component.render(100)[2]!, /@@/, "ctrl+d scrolls the diff");
+	component.handleInput("\x15");
+	assert.match(component.render(100)[2]!, /@@/, "ctrl+u scrolls back");
+	component.handleInput("G");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M c\.ts +│$/, "G jumps to the last file");
+	component.handleInput("g"); component.handleInput("g");
+	await settle();
+	assert.match(component.render(100)[1]!, /^│ M a\.ts +│$/, "gg jumps to the first file");
+});

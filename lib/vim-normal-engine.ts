@@ -19,6 +19,12 @@ export class VimNormalEngine {
     this.pendingFind = undefined; this.lastFind = undefined;
   }
 
+  /** True while f/F/t/T waits for its target character. */
+  get findPending(): boolean { return !!this.pendingFind; }
+
+  /** Drop a typed count without touching the last find (; and , keep working). */
+  clearCount(): void { this.digits = ""; }
+
   cancelPendingFind(): boolean {
     if (!this.pendingFind) return false;
     this.pendingFind = undefined;

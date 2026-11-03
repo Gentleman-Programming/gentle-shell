@@ -19,6 +19,11 @@ export class NativeFullscreenInteraction extends Container {
 		this.options = options;
 	}
 
+	/** Forwards the keyboard target's claim on ctrl+j/k paging to the key translation layer. */
+	get ownsVimScrollKeys(): boolean {
+		return (this.options.keyboardTarget as { ownsVimScrollKeys?: boolean }).ownsVimScrollKeys === true;
+	}
+
 	handleInput(data: string): void {
 		if (!this.options.keyboardTarget.handleInput) return;
 		this.options.keyboardTarget.handleInput(data);

@@ -62,6 +62,47 @@ test("UsageView refetches on r and closes on escape or q", async () => {
 	assert.equal(events.filter((event) => event === "close").length, 2);
 });
 
+test("UsageView scrolls its rows and answers j/k, arrows, PageUp/PageDown and gg/G", () => {
+	const store = new UsageStore();
+	for (const [index, provider] of ["alpha", "beta", "gamma", "delta"].entries()) store.record({ ...parseCodexUsage(payload((index + 1) * 10), NOW), provider });
+	const view = new UsageView(store, {
+		theme: plainTheme, now: () => NOW, active: () => undefined,
+		onRefresh: async () => {}, onClose: () => {}, requestRender: () => {}, viewportRows: () => 3,
+	});
+	const body = () => view.render(90).map(stripAnsi).slice(1, -2);
+	assert.equal(body().length, 3, "the viewport shows 3 body rows");
+	assert.match(body()[0]!, /alpha/, "starts at the top");
+	view.handleInput("j");
+	assert.match(body()[0]!, /10%/, "j scrolls down one row");
+	view.handleInput("\x1b[B");
+	assert.match(body()[0]!, /beta/, "arrowDown scrolls down one row");
+	view.handleInput("k");
+	assert.match(body()[0]!, /10%/, "k scrolls up one row");
+	view.handleInput("\x1b[6~");
+	assert.match(body()[1]!, /30%/, "PageDown scrolls down a page");
+	view.handleInput("g");
+	view.handleInput("g");
+	assert.match(body()[0]!, /alpha/, "gg jumps to the top");
+	view.handleInput("G");
+	assert.match(body()[0]!, /30%/, "G jumps to the bottom");
+	assert.match(body()[2]!, /40%/, "the bottom shows the last row");
+	assert.match(stripAnsi(view.render(90).at(-2)!), /j\/k scroll/, "the keys line advertises the scroll keys");
+});
+
+test("previous behavior holds: without a viewport the panel renders every row and scroll keys are inert", () => {
+	const store = new UsageStore();
+	for (const provider of ["alpha", "beta"]) store.record({ ...parseCodexUsage(payload(40), NOW), provider });
+	const view = new UsageView(store, {
+		theme: plainTheme, now: () => NOW, active: () => undefined,
+		onRefresh: async () => {}, onClose: () => {}, requestRender: () => {},
+	});
+	const before = view.render(90).map(stripAnsi);
+	assert.ok(before.length - 3 >= 4, "every provider row is rendered");
+	view.handleInput("j");
+	view.handleInput("G");
+	assert.deepEqual(view.render(90).map(stripAnsi), before, "scroll keys change nothing without a viewport");
+});
+
 test("UsageView starts a refresh at open and repaints when it settles", async () => {
 	const store = new UsageStore();
 	const events: string[] = [];
@@ -206,4 +247,20 @@ test("a rejected refresh from a click or key never escapes as an unhandled rejec
 	} finally {
 		process.off("unhandledRejection", onUnhandled);
 	}
+});
+
+test("ctrl+d/ctrl+u scroll the subscriptions panel half a page", () => {
+	const store = new UsageStore();
+	for (const [index, provider] of ["alpha", "beta", "gamma", "delta"].entries()) store.record({ ...parseCodexUsage(payload((index + 1) * 10), NOW), provider });
+	const view = new UsageView(store, {
+		theme: plainTheme, now: () => NOW, active: () => undefined,
+		onRefresh: async () => {}, onClose: () => {}, requestRender: () => {}, viewportRows: () => 4,
+	});
+	const body = () => view.render(90).map(stripAnsi).slice(1, -2);
+	assert.match(body()[0]!, /alpha/, "starts at the top");
+	view.handleInput("\x04"); // ctrl+d: half a page (2 of 4 rows)
+	assert.match(body()[0]!, /beta/, "ctrl+d scrolls down half a page (a full page would start at gamma)");
+	assert.doesNotMatch(body()[0]!, /gamma/, "half a page, not the whole viewport");
+	view.handleInput("\x15"); // ctrl+u
+	assert.match(body()[0]!, /alpha/, "ctrl+u returns to the top");
 });

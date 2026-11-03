@@ -27,7 +27,7 @@ Branch: `feat/profile-model-fallback` (from `origin/main` 813ec1106). Delivery: 
 | ID | Specs | Route | Status | Evidence |
 |----|-------|-------|--------|----------|
 | T1 | S1 | inline | done | `lib/model-fallback-store.ts`: own file `profile-fallbacks.json`, strict reader (kind/version, safe ids, effort, unique models, ≤8), `chainFor` with `*`, `setChain`, `renameProfileFallbacks`; RED module missing → GREEN 5/5; typecheck 0 |
-| T2 | S2, S4 | inline | pending | policy: `lib/model-fallback-policy.ts` (category → decision, next model, cooldown) |
+| T2 | S2, S4 | inline | done | `lib/model-fallback-policy.ts`: `shouldFallBack` by category (terminal errors arrive after Pi retries), `ModelCooldown` (exhausted 30 min, transient 2 min) shared per process, `pickModel`; RED → GREEN 3/3; typecheck 0 |
 | T3 | S3, S5 | inline | pending | subagents: runner switches the child in place; session entry + notice |
 | T4 | S3, S5 | inline | pending | orchestrator: main session switches and continues |
 | T5 | S6 | inline | pending | `/gentle:profiles` chain editing |

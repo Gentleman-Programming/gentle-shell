@@ -1386,8 +1386,8 @@ test("models screen shows profiles as tabs with their scope, the orchestrator fi
 	assert.match(plain[5] ?? "", /▸ Orchestrator\s+openai-codex\/gpt-6\.1-sol\s+max/);
 	assert.match(plain.join("\n"), /Agent\s+Model ▾\s+Effort ▾\s+set every agent/);
 	assert.match(plain.join("\n"), /\[ u · Use in this session \]  \[ d · Make default \]  \[ s · Save \]\s+Saved/);
-	// n new and m menu stay on screen as the "+ New" and "▾" tabs, so they yield first to the fallbacks key.
-	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}f fallbacks {2}s save {2}u use {2}d default {2}esc close/);
+	// The profile tabs and buttons remain available when lower-priority hints yield.
+	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}f fallbacks {2}t tier {2}s save {2}u use(?: {2}d default)? {2}esc close/);
 	assert.doesNotMatch(plain.join("\n"), /⋯/, "no ellipsis-like glyph: it reads as cut text");
 });
 

@@ -1,5 +1,6 @@
 import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
 import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
@@ -128,7 +129,7 @@ import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/se
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
-import { resolveSessionProfile, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
+import { resolveSessionProfile, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -3276,6 +3277,7 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "enter model", keep: 1 },
 	{ text: "e effort", keep: 2 },
 	{ text: "f fallbacks", keep: 6.5 },
+	{ text: "t tier", keep: 6.25 },
 	{ text: "s save", keep: 3 },
 	{ text: "u use", keep: 7 },
 	{ text: "d default", keep: 8 },
@@ -3334,6 +3336,7 @@ type RoutingTableMouseAction =
 	| { kind: "new" }
 	| { kind: "row"; row: string }
 	| { kind: "effort"; row: string }
+	| { kind: "tier"; row: string }
 	| { kind: "model-option"; index: number }
 	| { kind: "effort-option"; index: number }
 	| { kind: "menu-item"; id: string }
@@ -3430,6 +3433,7 @@ class RoutingTablePanel implements OverlayComponent {
 	private sessionBoundName: string | undefined;
 	private pinWinner: string | undefined;
 	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
+	private readonly fastModels: ReadonlySet<string>;
 	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
 	private notices: string[];
 	private readonly switchProfile: RoutingProfileSwitcher | undefined;
@@ -3448,6 +3452,7 @@ class RoutingTablePanel implements OverlayComponent {
 			pinWinner?: string;
 			feedback?: string;
 			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+			fastModels?: string[];
 			notices?: string[];
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
@@ -3456,6 +3461,7 @@ class RoutingTablePanel implements OverlayComponent {
 		this.switchProfile = options.switchProfile;
 		this.fallbacks = options.fallbacks;
 		this.thinkingSupport = options.thinkingSupport ?? {};
+		this.fastModels = new Set(options.fastModels ?? []);
 		this.notices = options.notices ?? [];
 		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
 		const names = Object.keys(this.file.profiles);
@@ -3490,11 +3496,12 @@ class RoutingTablePanel implements OverlayComponent {
 		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
 			if (this.isEdited(key, "model")) count += 1;
 			if (this.isEdited(key, "thinking")) count += 1;
+			if (this.isEdited(key, "tier")) count += 1;
 		}
 		return count;
 	}
 
-	private isEdited(key: string, field: "model" | "thinking"): boolean {
+	private isEdited(key: string, field: "model" | "thinking" | "tier"): boolean {
 		return (this.draft[key]?.[field] ?? undefined) !== (this.stored[key]?.[field] ?? undefined);
 	}
 
@@ -3790,6 +3797,16 @@ class RoutingTablePanel implements OverlayComponent {
 		this.effortCursor = Math.max(0, landed === undefined ? 0 : this.effortOptions().indexOf(landed));
 	}
 
+	private toggleTier(key: string): void {
+		const entry = this.draft[key];
+		if (!entry?.model || !this.fastModels.has(entry.model)) {
+			this.say("Standard/Fast is available only for compatible OpenAI models.");
+			return;
+		}
+		entry.tier = entry.tier === "fast" ? "standard" : "fast";
+		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
+	}
+
 	private openMenu(kind: "menu" | "new"): void {
 		this.overlay = kind;
 		this.menuCursor = 0;
@@ -3842,6 +3859,7 @@ class RoutingTablePanel implements OverlayComponent {
 			return;
 		}
 		const entry = { ...(this.draft[key] ?? {}) };
+		if (model !== entry.model) delete entry.tier;
 		if (model === undefined) delete entry.model;
 		else entry.model = model;
 		this.draft[key] = entry.model || entry.thinking ? entry : {};
@@ -3966,6 +3984,7 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
 		if (matchesKey(data, "d")) return this.pressButton("default");
@@ -4084,6 +4103,7 @@ class RoutingTablePanel implements OverlayComponent {
 		switch (action.kind) {
 			case "row":
 			case "effort":
+			case "tier":
 				return `row:${action.row}`;
 			case "tab":
 				return `tab:${action.name}`;
@@ -4117,6 +4137,10 @@ class RoutingTablePanel implements OverlayComponent {
 			case "effort":
 				this.cursor = Math.max(0, this.rows.indexOf(action.row));
 				this.openEffort(action.row);
+				return;
+			case "tier":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.toggleTier(action.row);
 				return;
 			case "model-option":
 				this.pickModel(this.modelOptions()[action.index]);
@@ -4218,26 +4242,30 @@ class RoutingTablePanel implements OverlayComponent {
 			const safe = truncateToWidth(sanitizeTerminalText(text), agentCol - 1, "…");
 			return safe + " ".repeat(Math.max(0, agentCol - visibleWidth(safe)));
 		};
-		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12));
+		const tierRoom = Object.values(this.draft).some((entry) => entry.model && this.fastModels.has(entry.model)) ? 12 : 0;
+		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12 - tierRoom));
 		const effortStart = 2 + agentCol + modelCol;
 		const row = (key: string, label: string, labelTone: PanelTone) => {
 			const focused = this.rows[this.cursor] === key;
 			const model = this.modelValue(key);
 			const effort = this.effortValue(key);
+			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
 			const modelTone: PanelTone = this.isEdited(key, "model")
 				? "edited"
 				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
 			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
 			const chain = this.fallbacks ? this.chain(key) : [];
-			const room = inner - effortStart - visibleWidth(effort) - 3;
+			const room = inner - effortStart - visibleWidth(effort + tier) - 3;
 			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
-			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${fallback ? `   ${fallback}` : ""}`;
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}`;
 			const styled =
 				this.renderText(focused ? "▸ " : "  ", "accent")
 				+ this.renderText(padLabel(label), labelTone)
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone)
+				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
 				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
+			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
 			region({ kind: "row", row: key }, 0, inner);
 			lines.push(this.hoverWrap(`row:${key}`, styled, plain, inner));
@@ -4665,6 +4693,7 @@ function renderRoutingTableForTesting(
 		profileName?: string;
 		feedback?: string;
 		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+		fastModels?: string[];
 		notices?: string[];
 		fallbacks?: RoutingFallbacks;
 	} = {},
@@ -4797,6 +4826,10 @@ async function showRoutingTablePanel(
 ): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
 	const thinkingSupport = await getPiThinkingSupport(ctx);
+	let fastModels: string[] = [];
+	try {
+		fastModels = (await ctx.modelRegistry.getAvailable()).filter(supportsOpenAIFast).map((model) => `${model.provider}/${model.id}`);
+	} catch { /* Unknown catalog entries do not claim Fast compatibility. */ }
 	const agents = modelAssignmentNames(ctx.cwd);
 	return ctx.ui.custom<RoutingTableResult>(
 		(tui, theme, _keybindings, done) => {
@@ -4814,6 +4847,7 @@ async function showRoutingTablePanel(
 					pinWinner: request.pinWinner,
 					feedback: request.feedback,
 					thinkingSupport,
+					fastModels,
 					notices: request.notices,
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
@@ -5101,7 +5135,7 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 }
 
 /** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel"> & Partial<Pick<ExtensionAPI, "events">>;
 
 /**
  * Switch the running session to the profile's orchestrator. `settings.json`
@@ -5111,7 +5145,7 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThin
  * keep the current live model and report what happened; callers retain their
  * routing snapshot or persisted default independently.
  */
-async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
+async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry, current: () => boolean = () => true, onSuccess?: () => void): Promise<string> {
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
@@ -5131,6 +5165,9 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
 	}
 	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
+	if (!current()) return "";
+	onSuccess?.();
+	live.events?.emit(PROFILE_TIER_EVENT, { sessionId: ctx.sessionManager?.getSessionId?.(), tier: supportsOpenAIFast(model) ? entry.tier : undefined, model: `${model.provider}/${model.id}` });
 	if (entry.thinking === undefined) return `\nThis session now runs on ${label}.`;
 	try {
 		live.setThinkingLevel(entry.thinking);
@@ -5226,7 +5263,9 @@ async function runProfilesPanelAction(
 					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
 					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
 					getThinkingLevel: () => live.getThinkingLevel(),
-				}, orchestrator);
+					events: live.events,
+				}, orchestrator, current);
+				if (orchestrator?.model === undefined && current()) live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
 				if (current()) {
 					const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
 					report.status = `This session now uses "${snapshot.name}" (${persistence}). Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
@@ -5250,6 +5289,9 @@ async function runProfilesPanelAction(
 		}
 		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			const manager = ctx.sessionManager;
+			const sessionId = manager?.getSessionId?.();
+			const current = () => isCommandContextActive(ctx) && ctx.sessionManager === manager && manager?.getSessionId?.() === sessionId;
 			// A pinned repository resolves its subagent routing from the profile at launch,
 			// so a global apply would move global state this repository never reads. When a
 			// pin wins, applying is repo-scoped: re-pin this clone and write no global
@@ -5311,7 +5353,7 @@ async function runProfilesPanelAction(
 					clearedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → inherit (cleared)`);
 				} else if (from === undefined) {
 					addedRoutes.push(`${name}: ${formatOrchestratorSelection(to)} (added)`);
-				} else if (from.model !== to.model || from.thinking !== to.thinking) {
+				} else if (from.model !== to.model || from.thinking !== to.thinking || from.tier !== to.tier) {
 					replacedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → ${formatOrchestratorSelection(to)}`);
 				}
 			}
@@ -5374,6 +5416,7 @@ async function runProfilesPanelAction(
 					return current.status === "valid" && current.entry !== undefined
 						&& current.entry.model === orchestratorEntry.model
 						&& current.entry.thinking === orchestratorEntry.thinking
+						&& (savedRouting.status === "valid" ? savedRouting.config[PROFILE_ORCHESTRATOR_KEY]?.tier : undefined) === orchestratorEntry.tier
 						&& liveOrchestrator !== undefined
 						&& liveOrchestrator.model === orchestratorEntry.model
 						&& liveOrchestrator.thinking === orchestratorEntry.thinking;
@@ -5509,7 +5552,16 @@ async function runProfilesPanelAction(
 				// settings.json only governs future sessions. The session the user is
 				// sitting in keeps its model until told otherwise, which made a profile
 				// look applied while the orchestrator kept answering with the old one.
-				orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry);
+				if (current()) {
+					if (orchestratorEntry.model) orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry, current, () => setFrozenDefaultOrchestrator(sessionId, orchestratorEntry));
+					else {
+						setFrozenDefaultOrchestrator(sessionId, undefined);
+						live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
+					}
+				}
+			} else if (current()) {
+				setFrozenDefaultOrchestrator(sessionId, undefined);
+				live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
 			}
 			// A pin that does not resolve changes nothing at launch, so the global apply
 			// above is what governs this repository. Saying so keeps a broken pin from
@@ -8585,7 +8637,7 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // never carry them. For those two keys only, a snapshot with no model falls
 // back to Pi's persisted default model and effort, the default the routing
 // panel already labels them with. Lens keys keep the fail-closed rule.
-function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; routingKey: string } {
+function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; tier?: AgentRoutingEntry["tier"]; routingKey: string } {
 	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = config[routingKey];
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
@@ -8600,6 +8652,7 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 	return {
 		...(model === undefined ? {} : { selection: model }),
 		...(thinking === undefined ? {} : { thinking }),
+		...(entry?.tier === undefined ? {} : { tier: entry.tier }),
 		routingKey,
 	};
 }

@@ -27,7 +27,8 @@
 // `gentle-pi.session-profile/v1` entry with origin `local | repo | global` is
 // the integration point with slice 3b-i.
 import { createHash } from "node:crypto";
-import { normalizeModelConfig, type AgentModelConfig } from "./model-routing-authority.ts";
+import { join } from "node:path";
+import { normalizeModelConfig, normalizeRoutingEntry, readModelConfigFile, type AgentModelConfig, type AgentRoutingEntry } from "./model-routing-authority.ts";
 import { profileRoleEntries, profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { readProfilePinStatus, resolveProfilePin, resolveUnversionedProjectProfile } from "./agent-profile-pin.ts";
 import { readSessionProfileBinding } from "./session-profile-binding.ts";
@@ -49,6 +50,8 @@ export interface InheritedProfile {
 /** A frozen session: `profile` is `undefined` when no layer had a profile at startup. */
 export interface FrozenInheritedProfile {
 	readonly profile: InheritedProfile | undefined;
+	/** Pi's global default orchestrator, separate from the role-only routing. */
+	readonly defaultOrchestrator?: AgentRoutingEntry;
 }
 
 /**
@@ -70,10 +73,13 @@ export interface InheritedProfileOptions {
 export interface SessionProfileOptions extends InheritedProfileOptions {
 	sessionId: string | undefined;
 	env?: NodeJS.ProcessEnv;
+	/** Injected only by callers that already own an authoritative startup snapshot. */
+	readDefaultOrchestrator?: () => AgentRoutingEntry | undefined;
 }
 
 interface FreezeRegistry {
 	frozen: Map<string, FrozenInheritedProfile>;
+	orchestrators: Map<string, AgentRoutingEntry | null>;
 	// Drift fingerprints already reported, per session.
 	notified: Map<string, Set<string>>;
 }
@@ -82,8 +88,10 @@ const freezeRegistryKey = Symbol.for("gentle-pi:session-profile-freeze");
 
 function registry(): FreezeRegistry {
 	const holder = globalThis as { [freezeRegistryKey]?: FreezeRegistry };
-	(holder[freezeRegistryKey] ??= { frozen: new Map(), notified: new Map() });
-	return holder[freezeRegistryKey]!;
+	(holder[freezeRegistryKey] ??= { frozen: new Map(), orchestrators: new Map(), notified: new Map() });
+	const store = holder[freezeRegistryKey]!;
+	store.orchestrators ??= new Map();
+	return store;
 }
 
 function cloneProfiles(profiles: AgentModelConfig): AgentModelConfig {
@@ -136,7 +144,38 @@ export function resolveInheritedProfile(options: InheritedProfileOptions): Inher
 export function readFrozenInheritedProfile(sessionId: string | undefined): FrozenInheritedProfile | undefined {
 	if (sessionId === undefined) return undefined;
 	const frozen = registry().frozen.get(sessionId);
-	return frozen === undefined ? undefined : { profile: cloneProfile(frozen.profile) };
+	if (frozen === undefined) return undefined;
+	const defaultOrchestrator = readFrozenDefaultOrchestrator(sessionId);
+	return { profile: cloneProfile(frozen.profile), ...(defaultOrchestrator ? { defaultOrchestrator } : {}) };
+}
+
+/** Capture the materialized global orchestrator once; pins only affect roles. */
+function freezeDefaultOrchestrator(options: SessionProfileOptions): void {
+	const id = options.sessionId;
+	if (!id || isChildSession(options.env ?? process.env)) return;
+	const store = registry().orchestrators;
+	if (store.has(id)) return;
+	const raw = options.readDefaultOrchestrator
+		? options.readDefaultOrchestrator()
+		: (() => {
+			const result = readModelConfigFile(join(options.configHome, "models.json"));
+			return result.status === "valid" ? result.config.orchestrator : undefined;
+		})();
+	const entry = normalizeRoutingEntry(raw);
+	store.set(id, entry?.model && entry.tier ? { model: entry.model, tier: entry.tier } : null);
+}
+
+export function readFrozenDefaultOrchestrator(sessionId: string | undefined): AgentRoutingEntry | undefined {
+	if (!sessionId) return undefined;
+	const entry = registry().orchestrators.get(sessionId);
+	return entry ? { ...entry } : undefined;
+}
+
+/** An explicit Make default may update only the applying session's snapshot. */
+export function setFrozenDefaultOrchestrator(sessionId: string | undefined, value: AgentRoutingEntry | undefined): void {
+	if (!sessionId) return;
+	const entry = normalizeRoutingEntry(value);
+	registry().orchestrators.set(sessionId, entry?.model && entry.tier ? { model: entry.model, tier: entry.tier } : null);
 }
 
 function freezes(options: SessionProfileOptions): boolean {
@@ -146,6 +185,7 @@ function freezes(options: SessionProfileOptions): boolean {
 
 // Only called after `freezes(options)`, which guarantees a session id.
 function frozenOrFreeze(options: SessionProfileOptions): FrozenInheritedProfile {
+	freezeDefaultOrchestrator(options);
 	const store = registry().frozen;
 	const sessionId = options.sessionId!;
 	let frozen = store.get(sessionId);
@@ -162,6 +202,7 @@ function frozenOrFreeze(options: SessionProfileOptions): FrozenInheritedProfile 
  * process. Children and `follow` sessions never freeze.
  */
 export function freezeSessionProfileAtStartup(options: SessionProfileOptions): void {
+	freezeDefaultOrchestrator(options);
 	if (freezes(options)) frozenOrFreeze(options);
 }
 
@@ -286,5 +327,6 @@ function bindingDefinitionDriftNotice(
 /** Testing-only reset of every frozen snapshot and drift memory. */
 export function resetFrozenInheritedProfilesForTesting(): void {
 	registry().frozen.clear();
+	registry().orchestrators.clear();
 	registry().notified.clear();
 }

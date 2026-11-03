@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { fleetRole } from "../lib/fleet-role.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -655,6 +656,8 @@ export default function (pi: ExtensionAPI) {
     // Delegated rpc children report hasUI=true but have no terminal to paint
     // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
     if (process.env.GENTLE_PI_AGENTS_CHILD === "1") return;
+    // The fleet controller opens on its own deck (odd/tasks/fleet-orchestrator.md T5-U3).
+    if (fleetRole(process.env) === "controller") return;
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
     if (isPiCliSubcommandInvocation(process.argv)) return;

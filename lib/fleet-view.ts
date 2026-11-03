@@ -89,6 +89,8 @@ export interface FleetViewSnapshot {
 	nextStep?: string;
 	/** When the fleet expects to report next, e.g. "around 14:40". */
 	nextUpdate?: string;
+	/** The controller's live permission mode (lib/permission-mode-policy.ts). */
+	permission?: string;
 }
 
 export type FleetMemberViewState = "needs-you" | "blocked" | "working" | "waiting" | "done";
@@ -140,6 +142,8 @@ function ordered(snapshot: FleetViewSnapshot): { member: FleetViewMember; state:
 export interface FleetObjectiveProgress {
 	title: string;
 	objective: string | null;
+	/** False until the fleet states its objective (fleet_objective). */
+	stated: boolean;
 	done: number;
 	total: number;
 	percent: number;
@@ -155,7 +159,7 @@ export function objectiveProgress(snapshot: FleetViewSnapshot): FleetObjectivePr
 	const frontsDone = fronts.filter((front) => snapshot.members.filter((m) => frontOf(m) === front).every((m) => memberState(m, snapshot) === "done")).length;
 	const working = ordered(snapshot).find((entry) => entry.state === "working" && entry.member.todo?.current);
 	const nextStep = snapshot.nextStep ?? (working ? `${working.member.todo.current} (${working.member.name})` : null);
-	return { title: snapshot.title ?? "Untitled fleet", objective: snapshot.objective, done, total, percent: percent(done, total), frontsDone, frontsTotal: fronts.length, nextStep };
+	return { title: snapshot.title ?? "Untitled fleet", objective: snapshot.objective, stated: snapshot.title !== null, done, total, percent: percent(done, total), frontsDone, frontsTotal: fronts.length, nextStep };
 }
 
 export type FocalKind = "decision" | "blocker" | "review" | "nothing";
@@ -233,9 +237,10 @@ export function attentionQueue(snapshot: FleetViewSnapshot): AttentionQueue {
 	const ranked = items.map((item, index) => ({ item, index }))
 		.sort((a, b) => RANK[a.item.kind] - RANK[b.item.kind] || byTime(a.item.at, b.item.at) || a.index - b.index)
 		.map((entry) => entry.item);
+	const idle = snapshot.members.length === 0;
 	const nothing: FocalItem = {
-		id: "nothing", kind: "nothing", tag: "Nothing needs you", title: "Nothing needs you",
-		ask: `The fleet keeps going${snapshot.nextUpdate ? `; next update ${snapshot.nextUpdate}` : ""}.`, why: "", options: [], members: [], at: null,
+		id: "nothing", kind: "nothing", tag: "Nothing needs you", title: idle ? "Nothing needs you yet" : "Nothing needs you",
+		ask: idle ? "No member is working yet." : `The fleet keeps going${snapshot.nextUpdate ? `; next update ${snapshot.nextUpdate}` : ""}.`, why: "", options: [], members: [], at: null,
 	};
 	return { focal: ranked[0] ?? nothing, more: Math.max(0, ranked.length - 1), items: ranked };
 }
@@ -283,6 +288,8 @@ export interface LensView {
 	focal: FocalItem;
 	head: string[];
 	groups: LensGroup[];
+	/** With no members: the lens's one short empty line; null otherwise. */
+	empty: string | null;
 }
 
 function task(m: FleetViewMember, state: FleetMemberViewState, snapshot: FleetViewSnapshot): string {
@@ -332,7 +339,23 @@ function cells(lens: FleetLens, density: FleetDensity, m: FleetViewMember, state
 	return [{ key: "time", text: time(last?.at), role: "muted", width: 5 }, { key: "event", text: last ? oneLine(`${last.kind}: ${last.text}`) : "no events yet", flex: true }];
 }
 
-function heads(lens: FleetLens, snapshot: FleetViewSnapshot, rows: { member: FleetViewMember; state: FleetMemberViewState }[]): string[] {
+// An empty fleet shows one short line per lens (05, T5-U3); the context
+// line joins it from normal density on.
+const EMPTY_LINES: Record<FleetLens, string> = { flows: "No members yet", map: "No map yet", costs: "No spend yet", log: "No events yet" };
+
+function emptyHeads(lens: FleetLens, density: FleetDensity, snapshot: FleetViewSnapshot): string[] {
+	if (density === "light") return [];
+	const status = fleetStatus(snapshot);
+	return [{
+		flows: "the fleet spawns members for the objective",
+		map: "stations appear as members take todos",
+		costs: `spent $${status.spentUsd.toFixed(2)}${status.budgetUsd ? ` of $${status.budgetUsd.toFixed(2)}` : " · no fleet budget set"}`,
+		log: snapshot.documentPath ?? "the fleet document starts with the objective",
+	}[lens]];
+}
+
+function heads(lens: FleetLens, density: FleetDensity, snapshot: FleetViewSnapshot, rows: { member: FleetViewMember; state: FleetMemberViewState }[]): string[] {
+	if (snapshot.members.length === 0) return emptyHeads(lens, density, snapshot);
 	const count = (state: FleetMemberViewState) => rows.filter((entry) => entry.state === state).length;
 	const progress = objectiveProgress(snapshot);
 	if (lens === "flows") {
@@ -340,7 +363,7 @@ function heads(lens: FleetLens, snapshot: FleetViewSnapshot, rows: { member: Fle
 		return [
 			"what each member is doing, attention first",
 			`${count("needs-you")} needs you · ${count("blocked")} blocked · ${count("working")} working · ${count("waiting")} waiting · ${count("done")} done`,
-			`${live} of ${snapshot.members.length} live · enter on a member looks closer`,
+			`${live} of ${snapshot.members.length} live`,
 		];
 	}
 	if (lens === "map") {
@@ -394,7 +417,7 @@ export function lensRows(lens: FleetLens, density: FleetDensity, snapshot: Fleet
 			}),
 		};
 	}).filter((group) => group.count > 0);
-	return { lens, density, focal: queue.focal, head: heads(lens, snapshot, rows), groups };
+	return { lens, density, focal: queue.focal, head: heads(lens, density, snapshot, rows), groups, empty: snapshot.members.length === 0 ? EMPTY_LINES[lens] : null };
 }
 
 export interface FleetStatus {
@@ -404,6 +427,8 @@ export interface FleetStatus {
 	queue: string;
 	spentUsd: number;
 	budgetUsd: number | null;
+	/** One status segment for a permission mode that changes what code approves; null otherwise. */
+	permission: string | null;
 }
 
 export function fleetStatus(snapshot: FleetViewSnapshot, queue: AttentionQueue = attentionQueue(snapshot)): FleetStatus {
@@ -421,6 +446,8 @@ export function fleetStatus(snapshot: FleetViewSnapshot, queue: AttentionQueue =
 		queue: parts.length ? parts.join(" · ") : "nothing needs you",
 		spentUsd: snapshot.members.reduce((sum, m) => sum + m.cost, snapshot.controller?.cost ?? 0),
 		budgetUsd: snapshot.budgets?.fleetUsd ?? null,
+		// Under the controller's Super YOLO, code approves members' guarded prompts (T3).
+		permission: snapshot.permission === "super-yolo" ? "super-yolo: auto-approves guarded prompts" : null,
 	};
 }
 
@@ -440,12 +467,14 @@ export interface FleetViewKey {
 // spelling. None takes a Pi default except tab, which Pi uses for autocomplete
 // (docs/keybindings.md `tui.input.tab`); the fleet takes it only as stated.
 // Letters never act in the input (a message may start with them): from the
-// input, F1-F4 pick a lens, F5 zooms and alt+m changes the density.
+// input, alt+1-4 pick a lens, alt+z zooms and alt+m changes the density. No
+// function keys: they need fn on most Mac keyboards (user, T5-U3). Pi binds
+// alt+z to undo only on WSL (docs/keybindings.md `tui.editor.undo`).
 export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
-	{ keys: ["f1"], action: "lens.flows", scope: "global" },
-	{ keys: ["f2"], action: "lens.map", scope: "global" },
-	{ keys: ["f3"], action: "lens.costs", scope: "global" },
-	{ keys: ["f4"], action: "lens.log", scope: "global" },
+	{ keys: ["alt+1"], action: "lens.flows", scope: "global" },
+	{ keys: ["alt+2"], action: "lens.map", scope: "global" },
+	{ keys: ["alt+3"], action: "lens.costs", scope: "global" },
+	{ keys: ["alt+4"], action: "lens.log", scope: "global" },
 	{ keys: ["f"], action: "lens.flows", scope: "outside-input" },
 	{ keys: ["m"], action: "lens.map", scope: "outside-input" },
 	{ keys: ["$"], action: "lens.costs", scope: "outside-input" },
@@ -453,7 +482,7 @@ export const FLEET_VIEW_KEYS: readonly FleetViewKey[] = [
 	{ keys: ["alt+m"], action: "density.next", scope: "global" },
 	{ keys: ["tab"], action: "focal.toggle", scope: "input", sharesPiAction: "tui.input.tab", when: "a focal item exists and no autocomplete is open; otherwise Pi's tab runs" },
 	{ keys: ["1", "2", "3", "4"], action: "focal.answer", scope: "focal-bar" },
-	{ keys: ["f5"], action: "zoom.toggle", scope: "global" },
+	{ keys: ["alt+z"], action: "zoom.toggle", scope: "global", sharesPiAction: "tui.editor.undo", when: "always in the fleet controller; Pi binds alt+z to undo only on WSL, where the deck takes it over" },
 	{ keys: ["z"], action: "zoom.toggle", scope: "outside-input" },
 	{ keys: ["?"], action: "help", scope: "outside-input" },
 ];

@@ -20,7 +20,7 @@ import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { discoverYoloUiAdapter } from "../lib/yolo-session-policy.ts";
 
 // Gentle Fleet controller (odd/tasks/fleet-orchestrator.md, F0-F1, F3). Active
-// only in the session `gentle-shell orchestrator` starts: it spawns full
+// only in the session `gentle-shell fleet` starts: it spawns full
 // headless Gentle Shell members (each git member in its own worktree), tracks
 // them in code, keeps the fleet ledger and its general document current by
 // code, and wakes the controller model with one coalesced digest when a member
@@ -180,10 +180,14 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// The human answers one relayed dialog at a time.
 	let humanQueue: Promise<void> = Promise.resolve();
 	// The relayed dialog the human is answering now; the deck's 1-4 can answer it too.
-	let activeRelay: { member: FleetMember; dialog: FleetMemberDialog; answer(response: DialogResponse): void } | undefined;
+	// `focus` is the relay dialog's component, read right after Pi focused it.
+	let activeRelay: { member: FleetMember; dialog: FleetMemberDialog; answer(response: DialogResponse): void; focus?: unknown } | undefined;
 	const dialogArrivals = new WeakMap<FleetMemberDialog, string>();
 	let deck: FleetDeck | undefined;
 	let unmountDeck: (() => void) | undefined;
+	// The controller's live permission mode, for the deck's status line.
+	let permission: PermissionMode = "normal";
+	let stopObservingMode: (() => void) | undefined;
 	const readPermissionMode = deps.permissionMode ?? (async (ctx: ExtensionContext): Promise<PermissionMode> => {
 		const adapter = await discoverYoloUiAdapter(pi, ctx);
 		if (!adapter) return "normal";
@@ -273,8 +277,12 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const fromDeck = new Promise<DialogResponse>(resolve => {
 			activeRelay = { member, dialog, answer: resolve };
 		});
+		const relay = activeRelay!;
+		// Pi focuses its dialog synchronously, before the first await in askDialog.
+		const asked = askDialog(ctx, member, dialog, dismiss.signal);
+		relay.focus = deck?.focused();
 		refreshWidget();
-		try { return await Promise.race([askDialog(ctx, member, dialog, dismiss.signal), fromDeck]); }
+		try { return await Promise.race([asked, fromDeck]); }
 		finally {
 			activeRelay = undefined;
 			dismiss.abort();
@@ -385,20 +393,43 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		arrivedAt: dialog => dialogArrivals.get(dialog as FleetMemberDialog),
 		budgets: { fleetUsd: config.fleetBudgetUsd, memberUsd: config.memberBudgetUsd },
 		controller: ctxRef ? controllerUsage(ctxRef) : undefined,
+		permission,
 	});
+
+	const refreshPermission = async (ctx: ExtensionContext) => {
+		const mounted = deck;
+		let mode: PermissionMode = "normal";
+		try { mode = await readPermissionMode(ctx); } catch { /* unreadable mode shows as normal */ }
+		// A remounted deck (new session) reads its own mode.
+		if (!mounted || deck !== mounted || mode === permission) return;
+		permission = mode;
+		mounted.invalidate();
+	};
 
 	// The deck needs Pi's terminal UI; rpc and print keep the digest widget.
 	const mountDeck = (ctx: ExtensionContext) => {
 		unmountDeck?.();
 		unmountDeck = undefined;
+		stopObservingMode?.();
+		stopObservingMode = undefined;
+		permission = "normal";
 		deck = undefined;
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
 		deck = new FleetDeck({
 			snapshot: deckSnapshot,
 			answer: answerFocal,
-			relayOpen: () => activeRelay !== undefined && (activeRelay.dialog.method === "select" || activeRelay.dialog.method === "confirm"),
+			relayDialog: () => activeRelay && (activeRelay.dialog.method === "select" || activeRelay.dialog.method === "confirm") ? activeRelay.focus : undefined,
 		});
 		unmountDeck = deck.mount(ctx.ui);
+		void refreshPermission(ctx);
+		// /gentle:mode changes repaint the status line; tests inject the mode instead.
+		if (!deps.permissionMode) void discoverYoloUiAdapter(pi, ctx).then(adapter => {
+			if (!adapter) return;
+			if (ctxRef !== ctx || !deck) { adapter.dispose(); return; }
+			stopObservingMode?.();
+			const stop = adapter.observe(() => void refreshPermission(ctx));
+			stopObservingMode = () => { stop(); adapter.dispose(); };
+		}).catch(() => {});
 	};
 
 	const flushWake = () => {
@@ -482,13 +513,18 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 
 	// The controller's own spend shows in the Costs lens.
-	pi.on("turn_end", () => deck?.invalidate());
+	pi.on("turn_end", (_event, ctx) => {
+		deck?.invalidate();
+		if (deck && ctx) void refreshPermission(ctx);
+	});
 
 	pi.on("session_shutdown", () => {
 		closed = true;
 		stopAll();
 		unmountDeck?.();
 		unmountDeck = undefined;
+		stopObservingMode?.();
+		stopObservingMode = undefined;
 		deck = undefined;
 	});
 
@@ -527,6 +563,8 @@ export default function gentleFleet(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const { name, objective, cwd, model, worktree } = params as { name: string; objective: string; cwd?: string; model?: string; worktree?: boolean };
 			if (!NAME_PATTERN.test(name)) return text(`Error: member name "${name}" must match ${NAME_PATTERN.source}.`, { error: "invalid name" });
 			if (!objective?.trim()) return text("Error: objective is required.", { error: "missing objective" });
+			// The member reads its objective as its first prompt: a leading "/" would run as a command.
+			if (/^\s*\//.test(objective)) return text("Error: fleet_spawn sends instructions, not slash commands.", { error: "slash command" });
 			if (members.get(name)?.live) return text(`Error: member "${name}" is already live; use fleet_send.`, { error: "duplicate" });
 			config = readFleetConfig(configHome);
 			if (liveCount() >= config.maxLiveMembers) return text(`Error: the fleet runs at most ${config.maxLiveMembers} live members (maxLiveMembers in ${config.path}). Send the work to an existing member or stop one first.`, { error: "cap" });

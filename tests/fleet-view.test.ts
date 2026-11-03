@@ -31,8 +31,9 @@ test("objectiveProgress sums todos across members, rounds the percent and counts
 	for (const m of docsOnly.members.filter((entry) => entry.front === "docs")) Object.assign(m, { status: "exited", exitCode: 0 });
 	assert.equal(objectiveProgress(docsOnly).frontsDone, 1);
 	assert.deepEqual(objectiveProgress({ title: null, objective: null, members: [], log: [] }), {
-		title: "Untitled fleet", objective: null, done: 0, total: 0, percent: 0, frontsDone: 0, frontsTotal: 0, nextStep: null,
+		title: "Untitled fleet", objective: null, stated: false, done: 0, total: 0, percent: 0, frontsDone: 0, frontsTotal: 0, nextStep: null,
 	});
+	assert.equal(progress.stated, true);
 });
 
 test("attentionQueue ranks a decision, then a blocking failure, then reviews, with one focal item and then: N more", () => {
@@ -174,9 +175,10 @@ const PI_DOC_LINES = [
 	"| `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |",
 	"| `app.model.select` | `ctrl+l` | Open model selector |",
 	"| `tui.input.tab` | `tab` | Tab or autocomplete |",
+	"| `tui.editor.undo` | `ctrl+-` (`ctrl+z` on Windows; `alt+z` on WSL) | Undo last edit |",
 ];
 
-test("fleet keys never take one of Pi's default bindings, except the declared tab share", () => {
+test("fleet keys never take one of Pi's default bindings, except the declared tab and WSL-only alt+z shares", () => {
 	const doc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "node_modules", "@earendil-works", "pi-coding-agent", "docs", "keybindings.md"), "utf8");
 	for (const line of PI_DOC_LINES) assert.ok(doc.split("\n").includes(line), `keybindings.md still has: ${line}`);
 	const reserved = new Map<string, string[]>();
@@ -195,17 +197,18 @@ test("fleet keys never take one of Pi's default bindings, except the declared ta
 			shares.push(key);
 		} else assert.deepEqual(taken, [], `${key} (${binding.action}) is free in Pi`);
 	}
-	assert.deepEqual([...new Set(shares)], ["tab"]);
+	assert.deepEqual([...new Set(shares)].sort(), ["alt+z", "tab"]);
+	assert.match(FLEET_VIEW_KEYS.find((binding) => binding.keys.includes("alt+z"))!.when!, /WSL/);
 	const all = FLEET_VIEW_KEYS.flatMap((binding) => binding.keys);
-	for (const key of ["f1", "f2", "f3", "f4", "f5", "f", "m", "$", "l", "alt+m", "tab", "1", "2", "3", "4", "z", "?"]) assert.ok(all.includes(key), key);
+	for (const key of ["alt+1", "alt+2", "alt+3", "alt+4", "alt+z", "f", "m", "$", "l", "alt+m", "tab", "1", "2", "3", "4", "z", "?"]) assert.ok(all.includes(key), key);
+	assert.deepEqual(all.filter((key) => /^f\d+$/.test(key)), [], "no function keys (user, T5-U3)");
 });
 
-test("letters act only outside the input; from the input F1-F5 and alt+m reach the lenses, the zoom and the density", () => {
+test("letters act only outside the input; from the input alt+1-4, alt+z and alt+m reach the lenses, the zoom and the density", () => {
 	const scope = (key: string) => FLEET_VIEW_KEYS.filter((binding) => binding.keys.includes(key)).map((binding) => `${binding.action}@${binding.scope}`);
 	for (const key of ["f", "m", "$", "l", "z", "?"]) assert.ok(scope(key).every((entry) => entry.endsWith("@outside-input")), `${key}: ${scope(key)}`);
-	assert.deepEqual(scope("f5"), ["zoom.toggle@global"]);
+	assert.deepEqual(scope("alt+z"), ["zoom.toggle@global"]);
 	assert.deepEqual(scope("alt+m"), ["density.next@global"]);
-	assert.deepEqual(["f1", "f2", "f3", "f4"].map((key) => scope(key)[0]), ["lens.flows@global", "lens.map@global", "lens.costs@global", "lens.log@global"]);
 });
 
 test("an escalated confirm offers Yes and No, and an escalation keeps its member dialog id", () => {
@@ -215,4 +218,17 @@ test("an escalated confirm offers Yes and No, and an escalation keeps its member
 	const { focal } = attentionQueue(snapshot);
 	assert.deepEqual(focal.options, ["Yes", "No"]);
 	assert.equal(focal.dialogId, "q7");
+});
+
+// T5-U3 (user: letters did not switch tabs; F1-F4 need fn on most Mac
+// keyboards): alt+1-4 pick a lens from anywhere, F1-F4 stay as aliases.
+test("alt+1-4 pick the four lenses from anywhere", () => {
+	const scope = (key: string) => FLEET_VIEW_KEYS.filter((binding) => binding.keys.includes(key)).map((binding) => `${binding.action}@${binding.scope}`);
+	for (const [index, lens] of FLEET_LENSES.entries()) assert.deepEqual(scope(`alt+${index + 1}`), [`lens.${lens}@global`]);
+});
+
+// U3 verifier advisory: the Flows lens must not advertise a key that does nothing.
+test("the flows lens summary never advertises enter on a member", () => {
+	const view = lensRows("flows", "light", inkwellFleet());
+	assert.equal(JSON.stringify(view).includes("enter on a member"), false);
 });

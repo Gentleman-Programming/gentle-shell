@@ -1281,7 +1281,7 @@ function getOrchestratorPrompt(
 	return prompt;
 }
 
-// odd/tasks/fleet-orchestrator.md: the `gentle-shell orchestrator` controller
+// odd/tasks/fleet-orchestrator.md: the `gentle-shell fleet` controller
 // leads member sessions instead of coding, so it gets this lean prompt in
 // place of the ODD orchestrator prompt. Read once per process.
 let fleetOrchestratorPrompt: string | undefined;

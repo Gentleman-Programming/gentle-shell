@@ -42,6 +42,8 @@ export interface ShellBarModel {
 // Status is absent; opaque extension statuses and working state stay excluded.
 export interface ShellHeaderModel {
 	jobs?: number;
+	/** Replaces "✿ Gentle Shell", e.g. in the fleet controller. */
+	brand?: string;
 	cwd: string;
 	branch: string | null;
 	dirty: number | undefined;
@@ -274,7 +276,7 @@ const HEADER_BRAND = "✿ Gentle Shell";
 // Once location goes, restore effort if it fits before trying model-only
 // alongside the right-aligned counters.
 function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showModelDetails: boolean): string[][] {
-	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const brand = theme.fg(ROLE.BRAND, theme.bold(model.brand ?? HEADER_BRAND));
 	const location = locationSegment(model, theme);
 	if (!showModelDetails) return [[brand, location], [brand]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);

@@ -791,6 +791,8 @@ function settingsView(applied: string[] = []) {
 		{ category: "Layout", label: "Reset layout", action: () => { applied.push("reset"); } },
 	];
 	const view = new VisualCustomizeView({ rows, theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+	// The user sees the card before the first key.
+	view.render(100);
 	view.handleInput("\x1b[C");
 	return { view, state, applied };
 }
@@ -849,4 +851,29 @@ test("a setting too wide for the pane shows only the selected choice with arrows
 	const line = view.render(44).find((row) => row.includes("Status placement"))!;
 	assert.match(line, /‹ auto › 1\/3/);
 	assert.equal(visibleWidth(line), 44);
+});
+
+test("arrows never apply a setting while the card is too small to show its controls", async () => {
+	const applied: string[] = [];
+	let rows = 3;
+	const view = new VisualCustomizeView({
+		rows: [
+			{ category: "Layout", label: "Status: auto", choice: { setting: "Status", value: "auto", current: () => true }, action: () => { applied.push("auto"); } },
+			{ category: "Layout", label: "Status: right", choice: { setting: "Status", value: "right", current: () => false }, action: () => { applied.push("right"); } },
+		],
+		theme, requestRender() {}, rowsAvailable: () => rows, onClose() {},
+	});
+	view.handleInput("\x1b[C");
+	assert.deepEqual(view.render(90), ["Customization", "Enlarge terminal"]);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, [], "→ applies nothing behind 'Enlarge terminal'");
+	rows = 24;
+	view.render(90);
+	view.handleInput("\x1b[C");
+	await settle();
+	assert.deepEqual(applied, ["right"], "once the controls show, → applies");
+	view.handleInput("\t");
+	assert.match(view.render(90).join("\n"), /↑\/↓ categories|→ open|Tab panes/, "the categories pane does not advertise setting keys");
+	assert.doesNotMatch(view.render(90).join("\n"), /←\/→ change/);
 });

@@ -342,6 +342,10 @@ export class VisualCustomizeView {
 		const entries = this.lineEntries(rows);
 		this.controls.set(category, this.landOn(rows, entries[this.lineOf(entries, Math.min(this.controls.get(category) ?? 0, Math.max(0, rows.length - 1)))]));
 	}
+	/** The last render showed the controls (not the "Enlarge terminal" fallback), so a key may apply one. */
+	private controlsShown(): boolean {
+		return this.mainWidth !== undefined && this.mainWidth >= CARD_PADDING + 3 && (this.options.rowsAvailable?.() ?? 24) >= 4;
+	}
 	/** Moves the selection to the first row whose label contains `label`, without applying it. */
 	focus(label: string): boolean {
 		const previous = this.categoryIndex;
@@ -400,7 +404,8 @@ export class VisualCustomizeView {
 		if (step === -1 && this.selected === entry!.first) this.pane = "categories";
 		else if (step) {
 			const next = this.selected + step;
-			if (next >= entry!.first && next < entry!.first + entry!.count && !this.busy) {
+			// Same guard as Enter: never apply a value the card is too small to show.
+			if (next >= entry!.first && next < entry!.first + entry!.count && !this.busy && this.controlsShown()) {
 				this.controls.set(category, next);
 				this.withBusy(() => rows[next]!.action(this.inline));
 			}
@@ -413,9 +418,7 @@ export class VisualCustomizeView {
 			if (this.pane === "categories") this.categoryIndex = (this.categoryIndex + 1) % length;
 			else this.controls.set(category, this.landOn(rows, entries[(line + 1) % entries.length]));
 		} else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && this.pane === "categories") this.enterControls();
-		else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && !this.busy &&
-			this.mainWidth !== undefined && this.mainWidth >= CARD_PADDING + 3 &&
-			(this.options.rowsAvailable?.() ?? 24) >= 4 && rows[this.selected]) {
+		else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && !this.busy && this.controlsShown() && rows[this.selected]) {
 			this.withBusy(() => rows[this.selected]!.action(this.inline));
 		}
 		this.options.requestRender();
@@ -472,7 +475,7 @@ export class VisualCustomizeView {
 		this.selected = Math.min(this.controls.get(category) ?? 0, Math.max(0, rows.length - 1));
 		const entries = this.lineEntries(rows);
 		const line = this.lineOf(entries, this.selected);
-		const focusedSetting = entries[line]?.setting ? rows[this.selected]?.choice : undefined;
+		const focusedSetting = this.pane === "controls" && entries[line]?.setting ? rows[this.selected]?.choice : undefined;
 		const position = navOnly ? this.categoryIndex : line;
 		const listLength = navOnly ? this.categories.length : entries.length;
 		const nameWidth = Math.min(20, Math.max(0, ...entries.map(entry => entry.setting ? visibleWidth(entry.setting) : 0)));

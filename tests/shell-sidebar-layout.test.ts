@@ -606,6 +606,25 @@ test("the jobs rail section paints between Status and Agents", (t) => {
 	assert.ok(footer < jobs && jobs < agents && agents < todo, `sections paint in order, got: ${text}`);
 });
 
+test("panel sections paint on the rail surface, joined by a tinted gap, while card sections stay unpainted", (t) => {
+	const f = fixture();
+	const roleCode: Record<string, number> = { customMessageBg: 236 };
+	const painting = { ...theme, bg: (color: string, text: string) => `\x1b[48;5;${roleCode[color] ?? 1}m${text}\x1b[49m` };
+	const open = "\x1b[48;5;236m";
+	sidebarPart(f.tui, "jobs", { render: () => ["jobs"], invalidate() {} }, { surface: "panel", digest: () => "jobs", render: (width: number) => ["JOBS".padEnd(width)], invalidate() {} });
+	sidebarPart(f.tui, "todo", { render: () => ["todo"], invalidate() {} }, { surface: "panel", digest: () => "todo", render: (width: number) => ["TODOS".padEnd(width)], invalidate() {} });
+	t.after(installSidebar(f.tui, painting));
+	const lines = rail(f).render(50);
+	const status = lines.find((line) => line.includes("Status"))!;
+	const jobs = lines.findIndex((line) => line.includes("JOBS"));
+	const todo = lines.findIndex((line) => line.includes("TODOS"));
+	assert.ok(!status.includes(open), "the Status card keeps its own chrome");
+	assert.ok(lines[jobs]!.startsWith(`${open} JOBS`), `panel row is painted including its padding: ${JSON.stringify(lines[jobs])}`);
+	assert.equal(todo, jobs + 2, "one gap row separates two panel sections");
+	assert.match(lines[jobs + 1]!, /^\x1b\[48;5;236m +\x1b\[49m$/, "the gap between two panel sections is tinted too");
+	assert.ok(lines[todo]!.startsWith(`${open} TODOS`));
+});
+
 test("a theme switch repaints rail sections whose digest did not change", (t) => {
 	const f = fixture();
 	// Pi hands extensions a live theme proxy and announces a switch only through

@@ -1,7 +1,8 @@
 import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
-import { CARD_STYLE, cardStyle, type CardStyle } from "./shell-card.ts";
+import { CARD_STYLE, cardStyle, paintSurfaceRow, surfaceOpener, type CardStyle } from "./shell-card.ts";
+import { PANEL_SURFACE_ROLE } from "./shell-panel.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 
@@ -287,12 +288,19 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				// on the same body row as the transcript, without an external gap.
 				railLines.push("");
 			}
+			// Panel sections share one tinted surface: their rows, padding
+			// included, and the gap between two of them are painted alike.
+			const surface = surfaceOpener(theme, PANEL_SURFACE_ROLE);
+			let previousPanel = false;
 			for (const section of sections) {
+				const panel = (section.component as SidebarRail).surface === "panel";
+				const paint = (row: string) => (panel ? paintSurfaceRow(row, surface) : row);
 				// One blank row separates a section from the banner or the
 				// previous section; neon's header gap above is not a section.
-				if ((hits.length > 0 || branding.length > 0) && density() === "comfortable") railLines.push("");
+				if ((hits.length > 0 || branding.length > 0) && density() === "comfortable") railLines.push(panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
 				const startY = railLines.length;
-				railLines.push(...section.lines.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
+				railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
+				previousPanel = panel;
 				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: contentWidth - RAIL_PADDING * 2 });
 			}
 			// Height is owned by the native ScrollView, never by the transcript.

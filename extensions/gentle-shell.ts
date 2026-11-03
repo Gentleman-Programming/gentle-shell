@@ -127,7 +127,7 @@ import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOIN
 import { sessionChangeRoots } from "../lib/session-changes.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY, isJobsSidebarSnapshot, jobsCollapseKey, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
-import { JOBS_FINISHED_TTL_MS, jobsCardTone, renderJobsCard } from "../lib/jobs-widget.ts";
+import { JOBS_FINISHED_TTL_MS, renderJobsSection } from "../lib/jobs-widget.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
@@ -2245,9 +2245,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render(width: number) {
 					const jobs = runningJobs ?? [];
 					if (jobs.length === 0) { jobsPainted = false; return []; }
-					const lines = renderJobsCard(jobs, theme, width, deps.now(), { collapsed: jobsCollapsed, collapseKey: jobsKey, collapseControl: true, hovered: jobsHovered });
+					// The rail draws Jobs as a panel section: its header is row 0.
+					const lines = renderJobsSection(jobs, theme, width, deps.now(), { collapsed: jobsCollapsed, hovered: jobsHovered });
 					jobsPainted = lines.length > 0;
-					jobsHeaderRow = jobsPainted ? panelHeaderRow(theme, width, jobsCardTone(jobs)) : 0;
+					jobsHeaderRow = 0;
 					return lines;
 				},
 				invalidate() {
@@ -2274,7 +2275,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			});
-			const jobsRail: Component & { digest(): string; dispose(): void } = {
+			const jobsRail: Component & { digest(): string; dispose(): void; surface: "panel" } = {
+				surface: "panel",
 				digest: () => JSON.stringify([jobsCollapsed, jobsHovered, runningJobs, Math.floor(deps.now() / 1000)]),
 				render: (width) => jobsRegion.render(width),
 				handleMouse: (event) => jobsRegion.handleMouse(event),

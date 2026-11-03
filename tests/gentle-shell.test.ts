@@ -523,10 +523,10 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
 		assert.doesNotMatch(rail.render(46).join("\n"), /Jobs|CI for PR 1860/, "the Status card never prints jobs; the jobs card owns them");
 		assert.match(rail.render(46).join("\n"), /MCP: 3 servers/);
-		assert.match(jobs.render(46).join("\n"), /Jobs[\s\S]*CI for PR 1860/);
+		assert.match(jobs.render(46).join("\n"), /▾ JOBS[\s\S]*CI for PR 1860/);
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }, { id: "job-0", label: "Build runtime", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);
 		assert.match(jobs.render(60).join("\n"), /1 running · 1 finished/, "finished tails ride the same snapshot");
-		assert.match(jobs.render(60).join("\n"), /✓\s+Build runtime/);
+		assert.match(jobs.render(60).join("\n"), /✓ \S+ Build runtime/);
 		// The compact count is running-only: a finished tail still paints the
 		// card, but the header's ⧗ N jobs derives from running entries alone.
 		publish("shell-session", [{ id: "job-2", label: "Fresh tail", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);

@@ -23,7 +23,7 @@ import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { sidebarPart, sidebarState, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
@@ -61,7 +61,7 @@ import { OrchestratorScopeCache, type RepositoryFact } from "../lib/orchestrator
 import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/agents-rpc-publisher.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { AGENTS_GLYPH, agentsCardTone, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
+import { AGENTS_GLYPH, agentsCardTone, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -78,6 +78,8 @@ import { publishTaskStatusChanges } from "../lib/notification-events.ts";
 
 export const AGENTS_WIDGET_KEY = "gentle-agents";
 export const AGENTS_COMMAND_NAME = "gentle:agents";
+/** The above-editor "needs you" row for agents waiting for a reply in the wide chrome. */
+export const AGENTS_ALERT_WIDGET_KEY = "gentle-agents-alert";
 export const JOBS_COMMAND_NAME = "gentle:jobs";
 // How long session shutdown waits for stopped jobs to close their logs.
 const JOBS_SHUTDOWN_GRACE_MS = 2000;
@@ -1840,6 +1842,17 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			sidebarTui = tui;
 			return sidebarPart(tui, "agents", agentsCard(tui, theme, false), agentsCard(tui, theme, true));
 		});
+		// While the rail owns the host the above-editor card steps aside, so an
+		// agent waiting for a reply gets its own row right above the editor.
+		// Narrower terminals keep the card, which already lists the waiting row.
+		ui?.setWidget(AGENTS_ALERT_WIDGET_KEY, (tui, theme) => ({
+			render(width: number) {
+				if (!agentsVisible) return [];
+				const state = sidebarState(tui);
+				return state.active && state.ownsHost?.() ? renderAgentsAlert(visibleTasks(), theme, width) : [];
+			},
+			invalidate() {},
+		}));
 	};
 
 	const toggleCollapsed = () => {

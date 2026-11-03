@@ -2,8 +2,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
 import { paintHoverable } from "./shell-hover.ts";
-import { CARD_TONE, panelExtraRows, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
-import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { CARD_TONE, paintSurfaceRow, panelExtraRows, panelInnerWidth, renderCard, surfaceOpener, type CardTheme, type CardTone } from "./shell-card.ts";
+import { fitPanelLine, PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
@@ -394,4 +394,19 @@ export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardThe
 	if (!fits) rows.push(renderPanelRow(width, theme.fg(META_ROLE, `${ELLIPSIS} ${ordered.length - listed.length} more · ${AGENTS_VIEW}`)));
 	const body = [...rows, ...summaries];
 	return [header, ...(options.collapsed ? body.slice(0, 1) : body)];
+}
+
+// The "needs you" row above the editor in the wide IDE chrome: the first agent
+// waiting on a question relayed to this session's UI (TASK_EVENT.ASK, whose
+// lastStep reads "asked: <title>"), and how many more wait.
+const ALERT_SURFACE_ROLE = "selectedBg";
+
+export function renderAgentsAlert(tasks: readonly TaskRecord[], theme: CardTheme, width: number): string[] {
+	const waiting = tasks.filter((task) => task.status === TASK_STATUS.WAITING).sort(startOrder);
+	const first = waiting[0];
+	if (!first) return [];
+	const target = Math.max(0, Math.floor(width));
+	const left = `${theme.fg("warning", "?")} ${theme.fg("warning", agentKind(first.agent))} ${theme.fg(NAME_ROLE, first.lastStep)}`;
+	const right = theme.fg(META_ROLE, `${waiting.length > 1 ? `+${waiting.length - 1} more · ` : ""}${AGENTS_VIEW}`);
+	return [paintSurfaceRow(` ${fitPanelLine(left, right, Math.max(0, target - 2))} `, surfaceOpener(theme, ALERT_SURFACE_ROLE))];
 }

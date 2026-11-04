@@ -372,6 +372,108 @@ test("gentleShell installs the footer on session_start when a UI exists", () => 
 	assert.match(lines[0], /main ⟡ gpt-5\.5 · medium/);
 });
 
+test("session shutdown detaches the footer before a queued fullscreen render and reload", async (t) => {
+	const intervals: Array<{ tick: () => void; delay: number; stopped: boolean }> = [];
+	t.mock.method(globalThis, "setInterval", (tick: () => void, delay: number) => {
+		const timer = { tick, delay, stopped: false };
+		intervals.push(timer);
+		return { unref() {}, timer };
+	});
+	t.mock.method(globalThis, "clearInterval", (handle: { timer: (typeof intervals)[number] }) => { handle.timer.stopped = true; });
+	const old = fakePi();
+	const first = fakeContext();
+	const oldUi = first.ctx.ui;
+	const oldSession = first.ctx.sessionManager;
+	let oldLive = true;
+	let staleReads = 0;
+	Object.defineProperty(first.ctx, "ui", { configurable: true, get() {
+		if (!oldLive) { staleReads++; throw new Error("old extension context is stale"); }
+		return oldUi;
+	} });
+	Object.defineProperty(first.ctx, "sessionManager", { configurable: true, get() {
+		if (!oldLive) { staleReads++; throw new Error("old session is stale"); }
+		return oldSession;
+	} });
+	const state = { appearance: "light" };
+	const foreground = "\x1b[38;2;64;66;72m";
+	const theme = { ...plainTheme, get appearance() { return state.appearance; }, getFgAnsi: () => foreground, getColorMode: () => "truecolor" };
+	(oldUi as unknown as { theme: typeof theme }).theme = theme;
+	// The provider is deliberately inert: this lifecycle test makes no network calls.
+	(first.ctx as unknown as { model: { provider: string } }).model.provider = "test";
+	const deps = { activeProfile: () => undefined };
+	gentleShell(old.pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+	const frames: string[] = [];
+	let mounted: { render(width: number): string[]; dispose(): void } | undefined;
+	let mountedWidget: { render(width: number): string[] } | undefined;
+	const tui = {
+		mode: "fullscreen",
+		terminal: { rows: 40, columns: 160 },
+		requestRender() {},
+		applyLineResets: (lines: string[]) => lines.map((line) => `${line}\x1b[0m`),
+		doRender() { frames.push(this.applyLineResets(["hi"])[0]!); mounted?.render(160); mountedWidget?.render(160); },
+	};
+	let unsubscribed = 0;
+	const data = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => { unsubscribed++; } };
+	const installFooter = (ui: FakeUi) => (ui.footerFactory as (host: unknown, theme: ShellBarTheme, data: unknown) => NonNullable<typeof mounted>)(tui, theme, data);
+	let oldFooter: NonNullable<typeof mounted> | undefined;
+	let fresh: ReturnType<typeof fakePi> | undefined;
+	let second: ReturnType<typeof fakeContext> | undefined;
+	let freshFooter: NonNullable<typeof mounted> | undefined;
+	let freshStopped = false;
+	try {
+		await fire(old.handlers, "session_start", first.ctx);
+		oldFooter = mounted = installFooter(first.ui);
+		mountedWidget = (first.ui.widgets.get("gentle-shell-below-input-header") as () => NonNullable<typeof mountedWidget>)();
+		const jobsTimer = intervals.find((timer) => timer.delay === 1000);
+		const sidebarTimer = intervals.find((timer) => timer.delay === 100);
+		assert.ok(jobsTimer);
+		assert.ok(sidebarTimer);
+		tui.doRender();
+		assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"), "the old fullscreen light theme paints");
+		const queuedRender = () => tui.doRender(); // The real scheduled callback resolves the host method when it runs.
+		await fire(old.handlers, "session_shutdown", first.ctx);
+		oldLive = false;
+		assert.doesNotThrow(queuedRender, "the queued frame cannot touch an invalidated context");
+		assert.equal(staleReads, 0);
+		assert.equal(frames.at(-1), "hi\x1b[0m", "the frame after shutdown is unpainted");
+		assert.equal(jobsTimer.stopped, true, "shutdown stops the footer's jobs interval");
+		assert.equal(sidebarTimer.stopped, true, "shutdown stops the sidebar attachment interval");
+		assert.equal(unsubscribed, 1, "shutdown disposes the native footer subscription once");
+
+		fresh = fakePi();
+		second = fakeContext();
+		(second.ctx as unknown as { model: { provider: string } }).model.provider = "test";
+		(second.ctx.ui as unknown as { theme: typeof theme }).theme = theme;
+		gentleShell(fresh.pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, deps);
+		await fire(fresh.handlers, "session_start", second.ctx);
+		freshFooter = mounted = installFooter(second.ui);
+		mountedWidget = (second.ui.widgets.get("gentle-shell-below-input-header") as () => NonNullable<typeof mountedWidget>)();
+		tui.mode = "regular";
+		tui.doRender();
+		assert.equal(frames.at(-1), "hi\x1b[0m", "regular mode keeps the terminal background");
+		tui.mode = "fullscreen";
+		tui.doRender();
+		assert.ok(frames.at(-1)!.startsWith(`\x1b[48;2;243;242;241m${foreground}`), "the replacement paints its own light theme");
+		oldFooter.dispose();
+		oldFooter.dispose();
+		state.appearance = "dark";
+		tui.doRender();
+		assert.equal(frames.at(-1), "hi\x1b[0m", "the replacement still follows a dark switch");
+		state.appearance = "light";
+		tui.doRender();
+		assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"), "late old disposal cannot remove the new paint");
+		assert.equal(staleReads, 0);
+		assert.equal(unsubscribed, 1);
+		await fire(fresh.handlers, "session_shutdown", second.ctx);
+		freshStopped = true;
+	} finally {
+		oldLive = true;
+		oldFooter?.dispose();
+		if (fresh && second && !freshStopped) await fire(fresh.handlers, "session_shutdown", second.ctx);
+		freshFooter?.dispose();
+	}
+});
+
 async function reviewSidebarHarness() {
 	const { pi, handlers, tools } = fakePi();
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
@@ -559,8 +661,9 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		await fire(handlers, "session_start", ctx);
 		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /Build runtime/);
 		await fire(handlers, "session_shutdown", ctx);
+		assert.equal(state.parts.has("jobs"), false, "shutdown removes the footer-owned jobs rail");
 		publish("shell-session", [{ id: "job-3", label: "late", startedAt: 3 }]);
-		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /late/);
+		assert.doesNotMatch(jobs.render(46).join("\n"), /late/, "shutdown also unsubscribes the jobs consumer");
 	} finally { component.dispose(); }
 });
 
@@ -834,8 +937,9 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 		assert.equal(tui.requestRender.mock.callCount(), before + 1, "old session cannot repaint");
 		await fire(handlers, "session_shutdown", second.ctx);
 		assert.equal(replacement.stopped, true);
+		const afterShutdown = tui.requestRender.mock.callCount();
 		replacement.tick();
-		assert.equal(tui.requestRender.mock.callCount(), before + 1);
+		assert.equal(tui.requestRender.mock.callCount(), afterShutdown, "a stopped poll cannot repaint after footer teardown");
 	} finally {
 		component.dispose();
 	}

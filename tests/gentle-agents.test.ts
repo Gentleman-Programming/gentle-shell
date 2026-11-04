@@ -7341,6 +7341,26 @@ test("subagent_run never reports provider review routing keys as unmatched", asy
 	assert.doesNotMatch(warnings[0]!, /review-refuter|review-validator/);
 });
 
+// A profile bound with "Use in this session" keeps the reserved `orchestrator`
+// key (the parent's own model); it is never a subagent routing key, so the
+// launch warning must not report it, while a real typo next to it still is.
+test("subagent_run never reports the bound profile's orchestrator key as unmatched", async (t) => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const child = fakePi();
+	const runtime = deps();
+	captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	bindSessionProfile("s1", "team", { orchestrator: { model: "openai/alpha" }, explore: { model: "openai/beta" }, explor: { model: "openai/gamma" } });
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const warnings = dialogs.filter((message) => /did not match any agent and was ignored/.test(message));
+	assert.equal(warnings.length, 1, "the typo is still reported once");
+	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.doesNotMatch(warnings[0]!, /"orchestrator"/, "the reserved orchestrator key is never a subagent key");
+});
+
 // Issue #2400: a model_profiles key that matches no discovered agent and has no
 // did-you-mean suggestion (a typo such as `explor`) was still silent, because
 // the launch warning only named keys suggesting the launched agent. The first

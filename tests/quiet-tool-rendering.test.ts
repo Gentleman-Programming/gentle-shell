@@ -1528,6 +1528,35 @@ test("a composition with a consequential extra action keeps the whole command", 
 	assert.match(heading("cd repo && echo ok 2>&1"), /\$ bash|◎ exploring|✓ checking/);
 });
 
+test("a partial bash result never draws an elapsed time the host supplied", () => {
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const context = routineRenderContext({ args, executionStarted: true, isPartial: true, durationMs: 1200 });
+
+	for (const expanded of [false, true]) {
+		const rows = frameLines(bash.renderResult(textResult("partial output"), { expanded, isPartial: true }, passthroughTheme, context), 120);
+		assert.doesNotMatch(rows.at(-1) ?? "", / \d+(?:ms|\.\d+s) ╯$/, `expanded=${expanded}: a running call has no duration yet`);
+	}
+
+	// The same reported duration still lands on the finished card.
+	const finished = frameLines(bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, passthroughTheme, { ...context, isPartial: false }), 120);
+	assert.match(finished.at(-1) ?? "", /─+ 1\.2s ╯$/);
+});
+
+test("the elapsed time rides the closing rule when the host reports it", () => {
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const closed = (durationMs?: number) => frameLines(
+		bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false, durationMs })),
+		120,
+	).at(-1) ?? "";
+
+	assert.match(closed(42), /─+ 42ms ╯$/);
+	assert.match(closed(1200), /─+ 1\.2s ╯$/);
+	// No reliable duration means no invented one.
+	assert.doesNotMatch(closed(undefined), / \d+ms ╯$| \d+\.\ds ╯$/);
+});
+
 test("a command with no inferable phase heads as the generic bash card", () => {
 	const bash = registeredQuietTools().get("bash");
 	const header = (args: Record<string, unknown>, theme: any = passthroughTheme) =>
@@ -1597,6 +1626,10 @@ test("a narrow bash card keeps its heading and wraps the call detail below it", 
 	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 44)[0] ?? "", /to expand/);
 });
 
+function cardCallHint(component: { render(width: number): string[] }): string | undefined {
+	return cardHint(frameLines(component, 120).join("\n"));
+}
+
 test("quiet components repaint after theme invalidation and retain transparent error frames", (t) => {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
@@ -1644,15 +1677,11 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const args = { command: "printf output" };
 	const width = 30;
 
-	// The card heads with the tool's own identity, kept to one row while collapsed.
-	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(width);
+	// A finished call carries the expand key even when the host never recorded a
+	// live execution for it (a row replayed from a stored session), so its top
+	// rule keeps the key beside a complete command.
+	const header = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(60);
 	assert.equal(header.length, 1);
-	// This slice keeps pi's own finish signal, so a finished call carries the key; at
-	// thirty columns the key wins the room and the detail ends in an ellipsis. The
-	// slice that measures what expanding really draws restores the whole detail here.
-	assert.match(stripAnsi(header[0] ?? ""), /^╭─ \$ bash · pri…\s+to expand ╮$/);
-	const wideRow = stripAnsi(bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false })).render(60)[0] ?? "");
-	assert.match(wideRow, /^╭─ \$ bash · printf output ─+  to expand ╮$/);
 	const running = bash.renderCall(args, statusTheme, routineRenderContext({ args, executionStarted: true, isPartial: true })).render(width);
 	assert.match(running[0] ?? "", /^<warning>╭<\/warning><warning>─ <\/warning><bashMode>\$ bash<\/bashMode> <muted>·<\/muted> <muted>printf output<\/muted>/);
 	assert.match(bash.renderCall(args, statusTheme, routineRenderContext({ args, isPartial: false, isError: true })).render(width)[0] ?? "", /^<error>╭<\/error>/);
@@ -1967,4 +1996,60 @@ test("a finished card restored from the session history keeps its expand hint ev
 			assert.doesNotMatch(streaming, /to expand/, `${level} ${name}: a call still streaming has nothing to expand yet`);
 		}
 	}
+});
+
+test("a restored call keeps the expand key on the bash card alone", () => {
+	const tools = registeredQuietTools();
+	const replayed = (args: Record<string, unknown>) => routineRenderContext({ args, state: {}, executionStarted: false, argsComplete: false, isPartial: false });
+
+	// Pi replays a stored row without starting it here. A result alone is the finish
+	// signal every quiet card now accepts, so each one offers the key it would offer on
+	// a freshly finished call; only a card that measures its own reveal withholds it.
+	for (const [name, args] of [
+		["read", { path: "a.ts" }],
+		["grep", { pattern: "needle", path: "." }],
+		["find", { pattern: "*.ts" }],
+		["ls", { path: "." }],
+		["edit", { path: "a.ts", edits: [] }],
+		["write", { path: "a.ts", content: "body" }],
+	] as const) {
+		const call = tools.get(name).renderCall(args, passthroughTheme, replayed(args));
+		assert.match(cardHint(frameLines(call, 120).join("\n")) ?? "", /to expand$/, `${name} offers the key on a replayed final result`);
+	}
+
+	const bashArgs = { command: "git status" };
+	const bash = tools.get("bash").renderCall(bashArgs, passthroughTheme, replayed(bashArgs));
+	assert.match(cardHint(frameLines(bash, 120).join("\n")) ?? "", /to expand$/);
+});
+
+// pi replays a stored transcript without ever starting the call in this
+// process: no execution started and no arguments "completed", only a final
+// result. The expand key must survive that path too.
+test("a finished card restored from a session keeps its expand key", () => {
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const context = { ...routineRenderContext({ expanded: false, state: {} }), args, executionStarted: false, argsComplete: false, isPartial: false };
+	bash.renderResult(textResult("one\ntwo\nthree\nfour"), { expanded: false, isPartial: false }, passthroughTheme, context);
+	assert.match(cardCallHint(bash.renderCall(args, passthroughTheme, context)) ?? "", /to expand$/, "a restored row keeps the key");
+});
+
+test("elapsed time stays on the bash card and leaves the other quiet cards unchanged", () => {
+	const tools = registeredQuietTools();
+	const closed = (rendered: string) => rendered.split("\n").at(-1) ?? "";
+	const context = (args: Record<string, unknown>) => routineRenderContext({ args, executionStarted: true, isPartial: false, durationMs: 1200 });
+
+	for (const [name, args] of [
+		["read", { path: "a.ts" }],
+		["grep", { pattern: "needle", path: "." }],
+		["find", { pattern: "*.ts" }],
+		["ls", { path: "." }],
+		["edit", { path: "a.ts", edits: [] }],
+		["write", { path: "a.ts", content: "body" }],
+	] as const) {
+		const rows = tools.get(name).renderResult(textResult("useful output"), { expanded: false, isPartial: false }, passthroughTheme, context(args)).render(120);
+		assert.doesNotMatch(closed(rows.join("\n")), / \d+m?s ╯$/, `${name} keeps its own closing rule`);
+	}
+
+	const bash = renderToolResult(tools.get("bash"), textResult("clean"), { expanded: false, isPartial: false }, context({ command: "git status" }));
+	assert.match(closed(bash), /─+ 1\.2s ╯$/);
 });

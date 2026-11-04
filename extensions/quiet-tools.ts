@@ -483,6 +483,31 @@ export function formatToolResultOutput(
 	return "";
 }
 
+/**
+ * The rows one quiet card paints for a result at one expansion level: the
+ * formatted output plus the count totals and changed diff lines a collapsed
+ * card keeps beside them. The leading newline is dropped here, so callers paint
+ * the rows alone.
+ */
+function quietResultRows(
+	toolName: QuietToolName,
+	result: AgentToolResult<unknown>,
+	text: string,
+	options: ToolResultFormatOptions,
+): string {
+	const { expanded, isError = false, args } = options;
+	let output = formatToolResultOutput(toolName, result, { expanded, isError, args });
+	// Counts alone hide the result: retain their useful totals alongside actual rows.
+	if (!expanded && !isError && output && COLLAPSED_COUNT_LABELS[toolName]) {
+		output += `\n${firstLines(text, PREVIEW_LINE_LIMIT - 1)}`;
+	}
+	if (!expanded && !isError && toolName === "edit") {
+		const diff = detailsRecord(result).diff;
+		if (typeof diff === "string") output += `\n${firstLines(safeText(diff).split("\n").filter((line) => /^[+-]/.test(line)).join("\n"), PREVIEW_LINE_LIMIT - 1)}`;
+	}
+	return output.replace(/^\n/, "");
+}
+
 function lineRangeSuffix(args: Record<string, unknown>, theme: ThemeLike): string {
 	if (args.offset === undefined && args.limit === undefined) return "";
 	const startLine = typeof args.offset === "number" ? args.offset : 1;
@@ -939,25 +964,13 @@ export function createQuietToolRenderer(
 					{ ...sanitizedRenderContext(renderContext), lastComponent: undefined } as any,
 				), false);
 			}
-			let output = formatToolResultOutput(toolName, safeResult, {
-				expanded: options.expanded,
-				isError,
-				args: renderContext?.args,
-			});
-			// Counts alone hide the result: retain their useful totals alongside actual rows.
-			if (!options.expanded && !isError && output && COLLAPSED_COUNT_LABELS[toolName]) {
-				output += `\n${firstLines(text, PREVIEW_LINE_LIMIT - 1)}`;
-			}
-			if (!options.expanded && !isError && toolName === "edit") {
-				const diff = detailsRecord(safeResult).diff;
-				if (typeof diff === "string") output += `\n${firstLines(safeText(diff).split("\n").filter((line) => /^[+-]/.test(line)).join("\n"), PREVIEW_LINE_LIMIT - 1)}`;
-			}
+			const output = quietResultRows(toolName, safeResult, text, { expanded: options.expanded, isError, args: renderContext?.args });
 			const color = isError ? "error" : options.expanded ? "toolOutput" : "muted";
-			if (options.expanded) return carded(() => new Text(output ? theme.fg(color, output.replace(/^\n/, "")) : "", 0, 0));
+			if (options.expanded) return carded(() => new Text(output ? theme.fg(color, output) : "", 0, 0));
 			if (output) {
 				const tail = shouldRenderPreviewTail(toolName, text, isError, renderContext?.args);
 				return carded(() => new BoundedRows([
-					{ text: theme.fg(color, output.replace(/^\n/, "")), rows: PREVIEW_LINE_LIMIT, tail },
+					{ text: theme.fg(color, output), rows: PREVIEW_LINE_LIMIT, tail },
 				], cacheKey));
 			}
 			// The card top rule carries the expand key, so an empty result only closes the frame.

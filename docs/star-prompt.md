@@ -12,16 +12,20 @@ Gentle Shell can thank engaged users with a single, non-blocking invitation to s
 
 ## The offer
 
-When idle conditions are met, a footer status line appears, painted in the theme's `success` green (the color of added lines in the changes view) so it stands out:
+When idle conditions are met, a one-line offer appears below the editor, painted in the theme's `success` green (the color of added lines in the changes view) so it stands out, followed by a `[star]` button:
 
 ```
-Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again
+Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again [star]
 ```
+
+On narrow terminals the offer text is truncated with `…`; the `[star]` button always stays visible. The button exists only while the offer is visible.
 
 Only two control chords are intercepted while the offer is visible — plain typing is passed through untouched, so the prompt can never eat a character:
 
-- `Ctrl+G` — star now.
+- `Ctrl+G` or a left click on `[star]` — star now.
 - `Alt+D` — never ask again.
+
+The `[star]` button uses the shell's shared hover treatment, like the sidebar's clickable controls. Mouse reports arrive only in fullscreen mode; under tmux, zellij, and screen clicks work but hover does not, and without mouse support the chords keep working.
 
 ## Starring
 

@@ -1,5 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { NativePointerRegion } from "../lib/native-pointer-region.ts";
+import { paintHoverable, type HoverTheme } from "../lib/shell-hover.ts";
 import {
 	DEFAULT_STAR_PROMPT_STATE,
 	DISMISS_CHORD,
@@ -48,6 +51,57 @@ interface SessionRuntime {
 
 const STATUS_KEY = "star-prompt";
 const OFFER_TEXT = `Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (${STAR_PROMPT_REPOSITORY_URLS.map((url) => url.replace("https://", "")).join(" and ")}) on GitHub, Alt+D never asks again`;
+
+const STAR_BUTTON = "[star]";
+
+/** The one-row offer below the editor: the green offer text, truncated first so
+ * the trailing [star] button always fits, then the button with the shell's
+ * shared hover treatment. Clicking it does exactly what Ctrl+G does. Mouse
+ * reports only arrive in fullscreen; elsewhere the chords keep working. */
+function offerRow(theme: HoverTheme, tui: { requestRender(): void }, onStar: () => void): Component & { handleMouse(event: TuiMouseEvent): unknown; dispose(): void } {
+	let hovered = false;
+	let buttonStart = -1;
+	const row: Component = {
+		render(width) {
+			// OFFER_TEXT is plain ASCII, so slicing is exact; pi-tui's truncateToWidth
+			// would insert an SGR reset before the ellipsis and drop the green there.
+			const room = Math.max(0, width - visibleWidth(STAR_BUTTON) - 1);
+			const text = OFFER_TEXT.length <= room ? OFFER_TEXT : room > 0 ? `${OFFER_TEXT.slice(0, room - 1)}…` : "";
+			buttonStart = visibleWidth(text) + 1;
+			return [`${theme.fg("success", text)} ${paintHoverable(theme, STAR_BUTTON, hovered, "accent")}`];
+		},
+		invalidate() {
+			hovered = false;
+		},
+	};
+	const onButton = (event: TuiMouseEvent) => buttonStart >= 0 && event.x >= buttonStart && event.x < buttonStart + visibleWidth(STAR_BUTTON);
+	const region = new NativePointerRegion(row, {
+		onHover(event) {
+			// The region spans the whole row, but only the button is clickable, so a
+			// move over the offer text clears hover like leaving the row would.
+			const next = onButton(event);
+			if (next === hovered) return { handled: true };
+			hovered = next;
+			return { handled: true, render: true };
+		},
+		onLeave() {
+			if (!hovered) return;
+			hovered = false;
+			tui.requestRender();
+		},
+		onClick(event) {
+			if (event.button !== "left" || !onButton(event)) return undefined;
+			onStar();
+			return { handled: true, render: true };
+		},
+	});
+	return {
+		render: (width) => region.render(width),
+		invalidate: () => region.invalidate(),
+		handleMouse: (event) => region.handleMouse(event),
+		dispose: () => region.dispose(),
+	};
+}
 
 function defaultSchedule(ms: number, fn: () => void): Timer {
 	const id = setTimeout(fn, ms);
@@ -102,7 +156,7 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 	const hide = (ctx: ExtensionContext) => {
 		clearTimers();
 		if (runtime) runtime.visible = false;
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		ctx.ui.setWidget(STATUS_KEY, undefined);
 	};
 
 	const persist = (ctx: ExtensionContext, next: StarPromptState): boolean => {
@@ -219,12 +273,12 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 			}
 			current.visible = true;
 			// The success green of added lines in the changes view, so the offer stands out.
-			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("success", OFFER_TEXT));
+			ctx.ui.setWidget(STATUS_KEY, (tui, theme) => offerRow(theme, tui, () => void starNow(ctx)), { placement: "belowEditor" });
 			visibleTimer = schedule(STAR_PROMPT_VISIBLE_MS, () => {
 				if (runtime !== current) return;
 				current.visible = false;
 				current.offeredThisSession = true;
-				ctx.ui.setStatus(STATUS_KEY, undefined);
+				ctx.ui.setWidget(STATUS_KEY, undefined);
 			});
 		});
 	};

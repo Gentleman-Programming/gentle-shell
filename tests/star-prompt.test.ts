@@ -83,6 +83,12 @@ test("decision: dismissal, unusable state, already offered, or a running agent b
 
 const drain = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
+interface OfferRow {
+	render(width: number): string[];
+	handleMouse(event: never): unknown;
+	dispose?(): void;
+}
+
 interface HarnessOptions {
 	state?: unknown;
 	unusable?: boolean;
@@ -102,10 +108,21 @@ function harness(options: HarnessOptions = {}) {
 	const statuses: Array<string | undefined> = [];
 	const notes: string[] = [];
 	let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined;
+	const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+	let widget: OfferRow | undefined;
+	let renders = 0;
+	const tui = { requestRender: () => void renders++ };
 	const ctx = {
 		ui: {
-			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
+			theme,
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text),
+			// The offer row: wide enough here that the offer text is never truncated.
+			setWidget: (_key: string, factory: ((tui: unknown, theme: unknown) => OfferRow) | undefined, options?: { placement?: string }) => {
+				widget?.dispose?.();
+				widget = factory?.(tui, theme);
+				if (widget) assert.equal(options?.placement, "belowEditor");
+				statuses.push(widget?.render(400).join("\n"));
+			},
 			notify: (message: string) => notes.push(message),
 			onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
 				terminalHandler = handler;
@@ -158,7 +175,7 @@ function harness(options: HarnessOptions = {}) {
 	const send = (text: string) => fire("input", { text, source: "interactive" });
 	const key = (data: string) => terminalHandler?.(data);
 
-	return { fire, send, key, statuses, notes, written, scheduled, advance, gh, openedUrls, get terminalHandler() { return terminalHandler; } };
+	return { fire, send, key, statuses, notes, written, scheduled, advance, gh, openedUrls, get terminalHandler() { return terminalHandler; }, get widget() { return widget; }, get renders() { return renders; } };
 }
 
 const stateWith = (sent: number, extra: Record<string, unknown> = {}) => ({ schema: "gentle-shell.star-prompt/v1", sent, dismissed: false, directStar: false, ...extra });
@@ -262,7 +279,58 @@ test("extension: the offer is painted in the theme's success green, like added l
 	h.advance(STAR_PROMPT_IDLE_MS);
 	h.scheduled[0].fn();
 	const offer = h.statuses.at(-1);
-	assert.ok(typeof offer === "string" && offer.startsWith("<success>Enjoying Gentle Shell?") && offer.endsWith("</success>"));
+	assert.ok(typeof offer === "string" && offer.startsWith("<success>Enjoying Gentle Shell?") && offer.includes("never asks again</success>"));
+});
+
+const mouse = (type: "move" | "click", x: number, button: "none" | "left" | "right" = type === "move" ? "none" : "left") =>
+	({ type, button, x, y: 0, screenX: x, screenY: 0, width: 400, height: 1, shift: false, alt: false, ctrl: false }) as never;
+
+async function visibleOffer(state = stateWith(9)) {
+	const h = harness({ state });
+	await h.fire("agent_end");
+	h.advance(STAR_PROMPT_IDLE_MS);
+	h.scheduled[0].fn();
+	const row = h.widget!.render(400)[0]!;
+	const plain = row.replace(/<\/?[a-z]+>/g, "");
+	return { h, buttonX: plain.indexOf("[star]") };
+}
+
+test("extension: the offer row ends with a [star] button painted like the sidebar's clickable controls", async () => {
+	const { h, buttonX } = await visibleOffer();
+	assert.ok(buttonX > 0);
+	assert.ok(h.widget!.render(400)[0]!.endsWith("</success> <accent>[star]</accent>"));
+
+	assert.deepEqual(h.widget!.handleMouse(mouse("move", buttonX + 2)), { handled: true, render: true });
+	assert.ok(h.widget!.render(400)[0]!.endsWith("<warning>[star]</warning>"), "hover uses the shared hover role");
+	assert.deepEqual(h.widget!.handleMouse(mouse("move", buttonX + 2)), { handled: true });
+
+	h.widget!.handleMouse(mouse("move", 3));
+	assert.ok(h.widget!.render(400)[0]!.endsWith("<accent>[star]</accent>"), "moving off the button clears the hover");
+});
+
+test("extension: a left click on [star] stars exactly like Ctrl+G and removes the button", async () => {
+	const { h, buttonX } = await visibleOffer({ ...DEFAULT_STAR_PROMPT_STATE, sent: 9 });
+	const row = h.widget!;
+	assert.equal(row.handleMouse(mouse("click", 3)), undefined, "the offer text is not the button");
+	assert.equal(row.handleMouse(mouse("click", buttonX, "right")), undefined);
+	assert.equal(h.gh.star, 0);
+
+	assert.deepEqual(row.handleMouse(mouse("click", buttonX)), { handled: true, render: true });
+	assert.equal(h.gh.star, 1);
+	assert.equal(h.widget, undefined);
+	assert.equal(h.statuses.at(-1), undefined);
+	await drain();
+	assert.deepEqual(h.openedUrls, []);
+	assert.ok(h.notes[0].includes("Thanks for the star"));
+	assert.equal(h.written.at(-1)?.dismissed, true);
+});
+
+test("extension: a narrow terminal truncates the offer text, never the [star] button", async () => {
+	const { h } = await visibleOffer();
+	const row = h.widget!.render(60)[0]!;
+	assert.ok(row.includes("…"));
+	assert.ok(row.endsWith(" <accent>[star]</accent>"));
+	assert.ok(row.replace(/<\/?[a-z]+>/g, "").length <= 60);
 });
 
 test("extension: Ctrl+G with directStar false opens the browser instead of using credentials", async () => {

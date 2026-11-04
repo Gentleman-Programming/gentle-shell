@@ -6242,6 +6242,25 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 }
 
 /**
+ * Whether this `session_start` is the session's own start (gentle-shell#2742,
+ * section 3). Pi has no new-session flag: "startup" also opens an existing
+ * session file, and a reload or resume restarts a session that already began.
+ * Before `session_start`, Pi records the model and thinking level of a session
+ * without a conversation, a new one included, so an own start holds at most
+ * that one pair. A profile record, any other entry, or an earlier pair means
+ * the session started before, and its startup state stays unknown.
+ */
+function isSessionOwnStart(event: { reason: string }, manager: ExtensionContext["sessionManager"]): boolean {
+	if (event.reason !== "startup" && event.reason !== "new") return false;
+	const seen = new Set<string>();
+	for (const entry of manager.getEntries()) {
+		if ((entry.type !== "model_change" && entry.type !== "thinking_level_change") || seen.has(entry.type)) return false;
+		seen.add(entry.type);
+	}
+	return true;
+}
+
+/**
  * Warn when the current session profile record cannot be read: an invalid record
  * or one from a newer version blocks affected launches instead of falling back.
  */
@@ -11497,10 +11516,10 @@ function createGentleAiExtensionForTesting(
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
-		// gentle-shell#2742: a start with no conversation on its branch is the
-		// session's own start, so this process knows its startup state.
+		// gentle-shell#2742: only a session's own start tells this process its
+		// startup state; anything else leaves it unknown.
 		try {
-			if (profileSessionId && event.reason !== "fork" && event.reason !== "resume" && !ctx.sessionManager.getBranch().some((entry) => entry.type === "message"))
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
 		} catch { /* The startup state stays unknown. */ }
 		readSessionProfileAuthority(ctx.sessionManager);

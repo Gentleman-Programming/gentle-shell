@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
@@ -4688,6 +4688,109 @@ test("clear after a session's own start goes back to the defaults it started wit
 	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
 	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
 });
+
+// Pi records a new session's model and thinking level before any extension sees
+// session_start, and records them again when it opens an existing session with no
+// conversation, so an own start is a session holding at most that one pair.
+test("Pi records the model and thinking level of a new session before session_start", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "own-start-sdk-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const agentDir = join(root, "agent");
+	mkdirSync(agentDir);
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "offline-auth.json"), modelsPath: null, refreshOnCreate: false });
+	modelRuntime.registerProvider("offline-own-start", {
+		api: "offline-own-start-test", apiKey: "offline-dummy", baseUrl: "http://offline.invalid",
+		models: [{ id: "fixture", name: "Own start fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+		streamSimple() { throw new Error("no request is expected"); },
+	});
+	const seen: { reason: string; types: string[] }[] = [];
+	const loader = new DefaultResourceLoader({
+		cwd: root, agentDir, settingsManager,
+		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		extensionFactories: [(pi) => { pi.on("session_start", (event, ctx) => { seen.push({ reason: event.reason, types: ctx.sessionManager.getEntries().map((entry) => entry.type) }); }); }],
+	});
+	await loader.reload();
+	const { session } = await createAgentSession({ cwd: root, agentDir, modelRuntime, model: modelRuntime.getModel("offline-own-start", "fixture")!, resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(root), tools: [] });
+	try {
+		await session.bindExtensions({});
+	} finally {
+		session.dispose();
+	}
+	assert.deepEqual(seen, [{ reason: "startup", types: ["model_change", "thinking_level_change"] }]);
+});
+
+/** Use in this session, then clear; returns the record the clear appended. */
+async function useInSessionThenClear(h: ReturnType<typeof profilesCommandHarness>, ctx: ExtensionCommandContext, manager: SessionManager): Promise<unknown> {
+	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
+	await h.run("clear", ctx);
+	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	return (family.at(-1) as { data?: unknown }).data;
+}
+
+/** A saved session holding a legacy explicit bind and no conversation, reopened. */
+function reopenedLegacyBindSession(h: ReturnType<typeof profilesCommandHarness>, dir: string): SessionManager {
+	const sessions = join(h.ctx.cwd, dir);
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast));
+	source.appendMessage({ role: "user", content: "flush the reopened fixture", timestamp: 1 });
+	const file = source.getSessionFile()!;
+	writeFileSync(file, `${readFileSync(file, "utf8").trim().split("\n").filter((line) => JSON.parse(line).type !== "message").join("\n")}\n`);
+	const manager = SessionManager.open(file, sessions);
+	assert.equal(manager.getEntries().some((entry) => entry.type === "message"), false, "the reopened session has no conversation");
+	return manager;
+}
+
+// gentle-shell#2742, section 3: a reload restarts this process's extensions, not
+// the session, so it never makes the defaults current at resume its startup state.
+test("clear after a resume and a reload writes a legacy clear, not the resume-time defaults", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = reopenedLegacyBindSession(h, "reload-sessions");
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	await h.start({ type: "session_start", reason: "reload" }, ctx);
+	assert.deepEqual(await useInSessionThenClear(h, ctx, manager), { kind: "clear" }, "an unknown startup state writes a legacy clear");
+});
+
+// The CLI reports "startup" when it opens an existing session file, and Pi then
+// records the model and thinking level again, so a profile record or an earlier
+// such pair means the session started before this process.
+for (const [subject, prepare] of [
+	["a legacy explicit bind", (manager: SessionManager) => { manager.appendModelChange("openai", "alpha"); manager.appendThinkingLevelChange("medium"); }],
+	["an earlier start", (manager: SessionManager) => { for (const _ of [1, 2]) { manager.appendModelChange("openai", "alpha"); manager.appendThinkingLevelChange("medium"); } }],
+] as const) {
+	test(`clear after a startup on a saved session with ${subject} and no conversation writes a legacy clear`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+		const manager = subject === "a legacy explicit bind" ? reopenedLegacyBindSession(h, "reopened-sessions") : SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "reopened-sessions"));
+		prepare(manager);
+		const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+		await h.start({ type: "session_start", reason: "startup" }, ctx);
+		assert.deepEqual(await useInSessionThenClear(h, ctx, manager), { kind: "clear" }, "an unknown startup state writes a legacy clear");
+	});
+}
+
+for (const reason of ["startup", "new"] as const) {
+	test(`clear after a new session's ${reason} start, as Pi records it, goes back to the defaults it started with`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+		const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "new-sessions"));
+		manager.appendModelChange("openai", "alpha");
+		manager.appendThinkingLevelChange("medium");
+		const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+		await h.start(reason === "new" ? { type: "session_start", reason, previousSessionFile: join(h.ctx.cwd, "previous.jsonl") } : { type: "session_start", reason }, ctx);
+		manager.appendMessage({ role: "user", content: "flush the new-session fixture", timestamp: 1 });
+		assert.deepEqual(await useInSessionThenClear(h, ctx, manager), createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
+		assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
+	});
+}
 
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);

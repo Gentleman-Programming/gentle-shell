@@ -24,6 +24,7 @@ import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { buildKeymapRows } from "../lib/keymaps-customize.ts";
 import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
@@ -32,10 +33,11 @@ import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
-import { agentsViewKey } from "../lib/agents-keys.ts";
+import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -165,6 +167,7 @@ interface ShellBarComponent {
 interface BuildOptions {
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	profileTier?: ShellBarModel["profileTier"];
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -188,6 +191,7 @@ export interface ShellDeps {
 }
 
 export type ActiveProfileReader = (() => string | undefined) & {
+	tier(): ShellBarModel["profileTier"];
 	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
@@ -199,6 +203,8 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
+	let tiers: Record<string, ShellBarModel["profileTier"]> = {};
+	let effectiveTier: ShellBarModel["profileTier"];
 	let bound = false;
 	let cwd: string | undefined;
 	let identity: WorktreeIdentity | undefined;
@@ -211,6 +217,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			if (next !== fingerprint) {
 				const result = readProfilesFileResult(path);
 				name = result.status === "valid" ? result.file.active : undefined;
+				tiers = result.status === "valid" ? Object.fromEntries(Object.entries(result.file.profiles).map(([name, config]) => [name, config.orchestrator?.tier])) : {};
 				fingerprint = next;
 			}
 			return name;
@@ -221,6 +228,11 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		}
 	};
 	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.tier = () => {
+		if (bound) return effectiveTier;
+		const active = global();
+		return active ? tiers[active] : undefined;
+	};
 	reader.refresh = () => {
 		if (!bound) return false;
 		// gentle-shell#1064: the status shows the profile launches use, through
@@ -228,15 +240,20 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		// startup → live p → P → G only in follow mode), with the existing
 		// spelling: "name (session)", "name (local)", "name (repo)", or the bare
 		// global name.
-		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
+		global();
+		const selected = cwd === undefined ? undefined : resolveSessionProfile({
 			sessionId,
 			cwd,
 			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
-		}));
-		const changed = next !== effective;
+		});
+		const next = selected ? sessionProfileLabel(selected) : name;
+		const configuredName = selected ? selected.kind === "explicit" ? selected.name : selected.profile?.name : name;
+		const nextTier = configuredName ? tiers[configuredName] : undefined;
+		const changed = next !== effective || nextTier !== effectiveTier;
 		effective = next;
+		effectiveTier = nextTier;
 		return changed;
 	};
 	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
@@ -247,7 +264,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveTier = undefined; };
 	return reader;
 }
 
@@ -334,7 +351,7 @@ export function buildShellBarModel(
 	const model = ctx.model;
 	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
 	const entries = Array.from(footerData.getExtensionStatuses().entries())
-		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
+		.filter(([key]) => key !== "gentle-fast" && (options.jobs === undefined || key !== JOBS_STATUS_KEY))
 		.sort(([a], [b]) => a.localeCompare(b));
 	const statuses = entries.map(([, text]) => text);
 	// The permission mode has its own status keys: the wide chrome shows the mode
@@ -346,6 +363,7 @@ export function buildShellBarModel(
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
+		...(options.profileTier ? { profileTier: options.profileTier } : {}),
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -354,7 +372,8 @@ export function buildShellBarModel(
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal,
-		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+		// claude-bridge runs on a Claude subscription without a Pi OAuth credential.
+		subscription: model ? model.provider === CLAUDE_BRIDGE_PROVIDER || ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
@@ -369,6 +388,7 @@ export interface FooterStatusMemoDeps {
 	footerData: ShellFooterData;
 	usage: () => ProviderUsage | undefined;
 	profile: () => string | undefined;
+	profileTier?: () => ShellBarModel["profileTier"];
 	jobs: () => RunningJobDisplay[] | undefined;
 	review: () => ReviewSidebarSnapshot | undefined;
 	tracker: () => Pick<WorktreeChangesTracker, "model" | "unbornRoots">;
@@ -403,6 +423,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 			footerData.getGitBranch(),
 			deps.profile(),
+			deps.profileTier?.(),
 			ctx.sessionManager.getSessionName(),
 			ctx.sessionManager.getCwd(),
 			[...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b)),
@@ -422,7 +443,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 		if (cache?.key === k) return cache.model;
 		const tracker = deps.tracker();
 		const built: ShellBarModel = {
-			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), jobs: deps.jobs() }),
+			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), profileTier: deps.profileTier?.(), jobs: deps.jobs() }),
 			changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
 			review: deps.review(),
 		};
@@ -1550,7 +1571,6 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
-const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -1599,22 +1619,17 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 };
 
 export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
-export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
-	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+// Each key reads its environment variable, then keymaps.json, then its default (lib/keymaps.ts).
+export function changesShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("changes", env, bindings);
 }
 
-export function presetShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_PRESET_KEY?.trim();
-	if (value === undefined) return PRESET_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function presetShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("preset", env, bindings);
 }
 
-export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
-	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("usage", env, bindings);
 }
 
 function positiveMs(value: string | undefined, fallback: number): number {
@@ -1699,21 +1714,61 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 // entries that are actually registered, so a missing extension never shows
 // a dead row. Selecting an entry runs it exactly as if the user had typed
 // the underlying slash command.
-async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv): Promise<void> {
+// Each row shows the key saved now; one that differs from the key Pi loaded at
+// startup is marked "(reload)", since Pi only applies it after /reload.
+function paletteShortcuts(pi: ExtensionAPI, env: NodeJS.ProcessEnv, loaded: KeymapBindings): Record<string, string | undefined> {
+	const saved = loadKeymaps(env).bindings;
+	const shortcuts: Record<string, string | undefined> = {};
+	for (const { name } of pi.getCommands()) {
+		const id = commandKeymapId(name);
+		const now = effectiveKey(id, env, saved);
+		const active = effectiveKey(id, env, loaded);
+		shortcuts[name] = now === active ? now : `${now ?? "none"} (reload)`;
+	}
+	return shortcuts;
+}
+
+/**
+ * The palette commands Customize lists under Keymaps. The command list is an
+ * extra there: when Pi cannot report it yet (before its runtime is
+ * initialized), Customize still opens with the built-in actions only.
+ */
+function paletteCommandsForKeymaps(pi: ExtensionAPI): { command: string; label: string }[] {
+	try {
+		return buildCommandPaletteGroups(pi.getCommands(), {}).flatMap((group) => group.items);
+	} catch {
+		return [];
+	}
+}
+
+/** Tab in the palette: assign the captured key to the command, through the same checks as /gentle:customize. */
+async function bindFromPalette(ctx: ExtensionContext, env: NodeJS.ProcessEnv, command: string, data: string, keybindings: PiKeybindings | undefined): Promise<void> {
+	const id = commandKeymapId(command);
+	const file = loadKeymaps(env);
+	const change = prepareKeymapChange(id, data, env, file, keybindings);
+	if (change.kind === "refused") return ctx.ui.notify(change.message, change.type);
+	if (change.confirm && !(await ctx.ui.confirm("Keymaps", change.confirm))) return;
+	writeKeymaps(gentlePiConfigHome(env), change.bindings);
+	ctx.ui.notify(keymapSavedNotice(id, keymapLabel(id), env, change.bindings), "info");
+}
+
+async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv, loaded: KeymapBindings = {}): Promise<void> {
 	if (!ctx.hasUI) return;
-	const groups = buildCommandPaletteGroups(pi.getCommands(), {
-		"gentle:changes": changesShortcut(env),
-		"gentle:agents": agentsViewKey(env),
-	});
+	const groups = buildCommandPaletteGroups(pi.getCommands(), paletteShortcuts(pi, env, loaded));
 	if (groups.length === 0) {
 		ctx.ui.notify("No Gentle commands are registered.", "info");
 		return;
 	}
+	let piKeybindings: PiKeybindings | undefined;
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, keybindings, done) => {
+			if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
+			return new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
+		},
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
+	if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
 }
 
 function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true, grouped: (width: number) => boolean = () => false): void {
@@ -1737,8 +1792,6 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
-const USAGE_SHORTCUT_DEFAULT = "alt+u";
-const PRESET_SHORTCUT_DEFAULT = "alt+l";
 const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
 /** The order the preset shortcut walks; a hand-tuned mix starts it on Neutral. */
 const PRESET_CYCLE: readonly VisualPreset[] = [VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL, VISUAL_PRESET.POWER_USER];
@@ -1867,6 +1920,14 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
+	// Pi reads shortcuts once (startup and /reload), so the saved keymaps are read once too.
+	const keymaps = loadKeymaps(env);
+	let keymapsReported = false;
+	pi.on("session_start", (_event, ctx) => {
+		if (!keymaps.malformed || keymapsReported || !ctx.hasUI) return;
+		keymapsReported = true;
+		ctx.ui.notify(`Keymaps: ${keymaps.path} is unreadable or malformed; using the default keys.`, "warning");
+	});
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
@@ -2048,6 +2109,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// only that provider is forced, never the whole scope.
 		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
 	});
+	// Replaced before persistence, so the footer, /gentle:stats and the session file
+	// all carry the API-equivalent cost of claude-bridge turns instead of $0.
+	pi.on("message_end", (event, ctx) => {
+		const priced = priceBridgeMessage(event.message, (provider, id) => ctx.modelRegistry.find(provider, id)?.cost);
+		return priced ? { message: priced } : undefined;
+	});
 	pi.on("after_provider_response", (event, ctx) => {
 		const headerUsage = parseUsageHeaders(event.headers, deps.now());
 		if (!headerUsage) return;
@@ -2180,8 +2247,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
-	const usageShortcutKey = usageShortcut(env);
-	const todoKey = todoCollapseKey(env);
+	const usageShortcutKey = usageShortcut(env, keymaps.bindings);
+	const todoKey = todoCollapseKey(env, keymaps.bindings);
 	if (usageShortcutKey) {
 		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show subscription usage windows for the connected providers",
@@ -2241,6 +2308,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: WorktreeChangesTracker | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let disposeFooter: (() => void) | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
 	let jobsCollapsed = false;
@@ -2338,6 +2406,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		changes = changesTracker(ctx);
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			disposeFooter?.();
 			sidebarTui = tui;
 			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
@@ -2352,6 +2421,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pi, ctx, footerData,
 				usage: () => usage.get(ctx.model?.provider ?? ""),
 				profile: () => deps.activeProfile(),
+				profileTier: () => deps.activeProfile === profileReader ? profileReader.tier() : undefined,
 				// The compact bar and header derive ⧗ N jobs from model.jobs.length,
 				// so this input is running-only: the snapshot carries the finished tail.
 				jobs: () => runningJobs?.filter((job) => job.status === undefined),
@@ -2571,13 +2641,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
+			let disposed = false;
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
+					if (disposed) return [];
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
 					return belowHeader() ? headerBar(width).rows : [];
 				},
 				invalidate() {},
 				handleMouse(event) {
+					if (disposed) return undefined;
 					const grouped = belowFloat(event.width, false);
 					if ((grouped ? !footerSuppressed() : !belowHeader()) || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(widgetChrome(event.width), event.x, event.y)) return undefined;
@@ -2585,8 +2658,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			}), { placement: "belowEditor" });
+			// Pi still owns the footer component; shutdown releases its session-bound
+			// hooks before the old context becomes invalid, even if Pi disposes later.
+			const dispose = () => {
+				if (disposed) return;
+				disposed = true;
+				if (disposeFooter === dispose) disposeFooter = undefined;
+				clearInterval(jobsTimer);
+				jobsPart.dispose();
+				ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined);
+				disposeHeader();
+				disposeStatusBar();
+				statusRegion.dispose();
+				uninstall();
+				unpaintPage();
+				part.dispose();
+				if (sidebarTui === tui) { sidebarTui = undefined; renderHost = undefined; groupedChangesOwner = () => false; }
+			};
+			disposeFooter = dispose;
 			return { ...part,
 				render(width: number) {
+					if (disposed) return [];
 					// Running-only: a finished tail must never paint a ⧗ 0 jobs row.
 					const compactRunningJobs = runningJobs?.filter((job) => job.status === undefined);
 					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && compactRunningJobs?.length) {
@@ -2597,7 +2689,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); statusRegion.dispose(); uninstall(); unpaintPage(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
+					return disposed ? undefined : part.handleMouse?.(event);
+				},
+				dispose };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2652,6 +2747,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return { action: "transform", text: submitted.text, images: [...(event.images ?? []), ...submitted.images] };
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		disposeFooter?.();
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2705,7 +2801,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
 	});
-	const shortcut = changesShortcut(env);
+	const shortcut = changesShortcut(env, keymaps.bindings);
 	if (shortcut) {
 		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the session's uncommitted Git changes",
@@ -2714,16 +2810,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	}
 	pi.registerCommand(COMMANDS_COMMAND_NAME, {
 		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
-		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env),
+		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 	});
-	const commandsShortcut = commandsKey(env);
+	const commandsShortcut = commandsKey(env, keymaps.bindings);
 	if (commandsShortcut) {
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
-			handler: async (ctx) => showCommandPalette(pi, ctx, env),
+			handler: async (ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 		});
 	}
-	const jobsKey = jobsCollapseKey(env);
+	// A palette command the user gave a key runs exactly as if typed.
+	for (const id of commandKeymapIds(keymaps.bindings)) {
+		const key = effectiveKey(id, env, keymaps.bindings);
+		const command = keymapCommand(id);
+		if (!key || !command) continue;
+		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: `Run /${command}`,
+			handler: async (ctx) => {
+				if (!pi.getCommands().some((registered) => registered.name === command)) {
+					ctx.ui.notify(`${key} runs /${command}, which is not available in this session.`, "warning");
+					return;
+				}
+				pi.sendUserMessage(`/${command}`, { expandPromptTemplates: true });
+			},
+		});
+	}
+	const jobsKey = jobsCollapseKey(env, keymaps.bindings);
 	if (jobsKey) {
 		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the jobs card",
@@ -2734,7 +2846,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 		});
 	}
-	const presetKey = presetShortcut(env);
+	const presetKey = presetShortcut(env, keymaps.bindings);
 	if (presetKey) {
 		pi.registerShortcut(presetKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Cycle the visual preset: Light, Neutral, Power user",
@@ -2785,6 +2897,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				if (await action() === false) return;
 				ctx.ui.notify(notice, "info");
 			} });
+			const explicitChoice = (setting: string, value: string, current: () => boolean): CustomizeRow["choice"] => ({ setting, value, current, applyOnMove: false });
 			for (const policy of ["quality", "performance", "potato"] as const) add(
 				() => `Animations: ${policy}${resolveAnimationPolicy(animationOptions).policy === policy ? " (current)" : ""}`,
 				"Animation saved. Prompt applies now; startup banner applies at next startup.",
@@ -2802,18 +2915,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const [r, g, b] = bannerColors[next.color];
 				return { title: `Banner · ${next.color} (static)`, sample: `${next.showRose ? `\x1b[38;2;${r};${g};${b}m🌹\x1b[0m` : "·"}  ${next.showTextLogo ? "GENTLE SHELL" : "(logo hidden)"}` };
 			};
-			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showRose = !next.showRose;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showRose: !banner.showRose }));
-			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showTextLogo = !next.showTextLogo;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showTextLogo: !banner.showTextLogo }));
+			for (const [setting, key] of [["Banner rose", "showRose"], ["Banner text logo", "showTextLogo"]] as const) {
+				for (const enabled of [true, false]) add(
+					() => `${setting}: ${enabled ? "on" : "off"}${banner[key] === enabled ? " (current)" : ""}`,
+					"Banner saved; applies at next startup.",
+					async () => {
+						const next = { ...await readBannerConfigForEdit(bannerHome), [key]: enabled };
+						await writeBannerConfig(next, bannerHome);
+						banner = next;
+					},
+					() => bannerPreview({ ...banner, [key]: enabled }),
+					explicitChoice(setting, enabled ? "on" : "off", () => banner[key] === enabled),
+				);
+			}
 			for (const color of BANNER_COLORS) add(
 				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
 				"Banner saved; applies at next startup.",
@@ -2831,6 +2945,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				for (const name of names) rows.push({
 					category,
 					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
+					choice: explicitChoice("Theme", name, () => activeTheme === name),
 					preview: () => {
 						const selected = ctx.ui.getTheme(name);
 						if (selected?.name !== name) throw new Error("Selected theme is unavailable.");
@@ -2866,6 +2981,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
 				category,
 				label: () => `Vim: ${label}${resolveVimPolicy(animationOptions).policy === policy ? " (current preference)" : ""}`,
+				choice: explicitChoice("Vim", policy, () => resolveVimPolicy(animationOptions).policy === policy),
 				preview: () => {
 					const result = resolveVimPolicy(animationOptions);
 					const effective = prompt?.effectiveVimPolicy ?? "no active prompt";
@@ -2909,23 +3025,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				})().finally(() => { refreshing = undefined; });
 				return refreshing;
 			};
-			rows.push({
+			for (const value of [YOLO_DISPLAY.on, YOLO_DISPLAY.off]) rows.push({
 				category,
-				label: () => `YOLO: ${yoloDisplay} · session only`,
-				preview: () => ({ title: "YOLO · session permission", sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
+				label: () => `YOLO: ${value} · session only`,
+				choice: explicitChoice("YOLO", value, () => yoloDisplay === value),
+				preview: () => ({ title: `YOLO: ${yoloDisplay} · session only`, sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
 				action: async () => {
 					if (closed) return;
 					if (!adapter || yoloDisplay === YOLO_DISPLAY.unavailable) {
 						ctx.ui.notify("YOLO is unavailable in this live primary session.", "warning");
 						return;
 					}
-					await adapter.toggle();
+					if (yoloDisplay !== value) await adapter.toggle();
 					await refreshYolo();
 				},
 			});
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Session permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDisplay === mode ? " (current)" : ""}`,
+				choice: explicitChoice("Session permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDisplay === mode),
 				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
 					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
 					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain"
@@ -2940,6 +3058,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Default permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDefault === mode ? " (saved)" : ""}`,
+				choice: explicitChoice("Default permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDefault === mode),
 				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),
 				action: async () => {
 					if (closed) return;
@@ -2958,6 +3077,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const result = historyCapture();
 					return `Prompt history capture: ${label}${result.preference === policy && !result.malformed ? " (current)" : ""}${result.envOverride ? " · env override" : ""}`;
 				},
+				choice: explicitChoice("History capture", policy, () => { const result = historyCapture(); return result.preference === policy && !result.malformed; }),
 				preview: () => {
 					const result = historyCapture();
 					const effective = result.enabled ? "on" : "off";
@@ -3024,15 +3144,27 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
 			);
 			category = "Sections";
-			for (const key of VISUAL_SECTION_KEYS) add(
-				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
+			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(
+				() => `Section ${key}: ${shown ? "shown" : "hidden"}`,
 				pending,
-				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: shown } })),
 				() => {
-					const visibility = { ...visual().visibility, [key]: !visual().visibility[key] };
-					return { title: `Sections · ${key} ${visibility[key] ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, shown]) => shown).map(([section]) => section).join("] [") || "no optional sections"}]` };
+					const visibility = { ...visual().visibility, [key]: shown };
+					return { title: `Sections · ${key} ${shown ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, value]) => value).map(([section]) => section).join("] [") || "no optional sections"}]` };
 				},
+				explicitChoice(key, shown ? "shown" : "hidden", () => visual().visibility[key] === shown),
 			);
+			let piKeybindings: PiKeybindings | undefined;
+			let reloadRequested = false;
+			rows.push(...buildKeymapRows({
+				env,
+				configHome: doubleEscCancelConfigHome,
+				keybindings: () => piKeybindings,
+				commands: paletteCommandsForKeymaps(pi),
+				notify: (message, type) => ctx.ui.notify(message, type),
+				// Pi reloads after this card closes, as the command's last step.
+				reload: () => { reloadRequested = true; close(); },
+			}));
 			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
 			category = "Profiles";
 			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
@@ -3114,7 +3246,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				unobserve = adapter?.observe(() => { void refreshYolo(); });
 				await refreshYolo();
 				if (closed) return;
-				await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				await ctx.ui.custom<null>((tui, theme, keys, done) => {
+					if (typeof (keys as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keys as PiKeybindings;
 					finish = () => done(null);
 					if (closed) done(null);
 					requestYoloRender = () => { if (!closed) tui.requestRender(); };
@@ -3131,6 +3264,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					};
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 			} finally { close(); }
+			if (reloadRequested) await ctx.reload();
 		},
 	});
 	pi.registerCommand("gentle:vim", {

@@ -981,7 +981,7 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	assert.notEqual(rail[1]?.trim(), "", "the first card starts on the second row");
 });
 
-test("the rail panel surface starts at the conversation body row with either header placement", (t) => {
+test("the top header has a rail-local inset without moving the conversation or losing hits", (t) => {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
 	setCardStyle(CARD_STYLE.FLOAT);
@@ -1007,19 +1007,23 @@ test("the rail panel surface starts at the conversation body row with either hea
 		const frame = renderLayoutFrame(f.root, 140, 8, () => {});
 		const bodyY = placement === "top" ? 2 : 0;
 		assert.match(frame.lines[bodyY], /CONVERSATION/);
-		assert.match(frame.lines[bodyY], /\x1b\[48;5;22m/, `${placement}: the first painted padding row aligns with conversation content`);
+		const inset = placement === "top" ? 1 : 0;
 		assert.doesNotMatch(frame.lines.slice(0, bodyY).join("\n"), /\x1b\[48;5;22m/);
+		assert.match(frame.lines[bodyY], /\x1b\[48;5;22m/, "the panel surface reaches the header through its top padding");
+		assert.match(frame.lines[bodyY + inset], /\x1b\[48;5;22m/);
+		for (const line of frame.lines.slice(bodyY)) assert.equal(visibleWidth(line), 140);
 		const scroll = railWithHeader(f);
 		const content = scroll.render(50);
-		assert.deepEqual(content, status.map((line) => `\x1b[48;5;22m ${line} \x1b[49m`), "no external blank row; every row, padding included, sits on the panel surface");
+		assert.deepEqual(content, [...(inset ? [`\x1b[48;5;22m${" ".repeat(scroll.getContentWidth(50))}\x1b[49m`] : []), ...status.map((line) => `\x1b[48;5;22m ${line} \x1b[49m`)]);
 		const height = 8 - bodyY;
 		const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 92, screenY: bodyY + y, width: 50, height, shift: false, alt: false, ctrl: false });
-		assert.equal(scroll.handleMouse(click(0))?.handled, true);
-		assert.equal(received.at(-1)?.y, 0, "first painted row is also the first part hit row");
-		assert.equal(scroll.handleMouse(click(1))?.handled, true);
-		assert.equal(received.at(-1)?.y, 1, "approved internal header offset is preserved");
+		if (inset) assert.equal(scroll.handleMouse(click(0)), undefined, "inset is not a hit target");
+		assert.equal(scroll.handleMouse(click(inset))?.handled, true);
+		assert.equal(received.at(-1)?.y, 0, "first section row keeps its local hit offset");
+		assert.equal(scroll.handleMouse(click(inset + 1))?.handled, true);
+		assert.equal(received.at(-1)?.y, 1);
 		scroll.scrollBy(1000);
-		assert.equal(scroll.scrollTop, status.length - height, "scroll bounds contain only actual card rows");
+		assert.equal(scroll.scrollTop, status.length + inset - height, "scroll bounds include the inset exactly once");
 		assert.equal(scroll.handleMouse(click(height - 1))?.handled, true);
 		assert.equal(received.at(-1)?.y, status.length - 1, "last clipped viewport row hits the last card row");
 		const count = received.length;
@@ -1041,7 +1045,7 @@ test("float rail alignment preserves fallback banners and neon bytes across live
 		if (header) assert.deepEqual(baseline, ["", " TODO ", "", " Status "]);
 		else assert.match(baseline.join("\n"), /✿ Gentle Shell ✿/);
 		setCardStyle(CARD_STYLE.FLOAT);
-		assert.deepEqual(railWithHeader(f).render(50), header ? baseline.slice(1) : baseline, "only the active-header external gap changes");
+		assert.deepEqual(railWithHeader(f).render(50), baseline, "the active top header keeps its gap in both styles");
 		setCardStyle(CARD_STYLE.NEON);
 		assert.deepEqual(railWithHeader(f).render(50), baseline, "neon is byte-identical after switching back");
 	}
@@ -1209,7 +1213,8 @@ test("a status bar part paints one full-width row below the transcript and the r
 	const frame = renderLayoutFrame(f.root, 160, 8, () => {});
 	assert.match(frame.lines[0]!, /TITLE/);
 	assert.match(frame.lines.at(-1)!, /^STATUS BAR/, "the status bar is the last row, under the rail too");
-	assert.ok(frame.lines.slice(1, -1).some((line) => /CONVERSATION/.test(line) && /Status/.test(line)), "transcript and rail sit between them");
+	assert.match(frame.lines[1]!, /CONVERSATION/, "the transcript starts immediately below the title");
+	assert.ok(frame.lines.slice(1, -1).some((line) => /Status/.test(line)), "the rail sits above the status bar");
 	assert.equal(widthSeen, 160 - 2, "rendered at the header's width");
 });
 

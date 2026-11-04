@@ -165,10 +165,12 @@ function footerMemoFixture() {
 	let style: unknown = "comfortable";
 	const footerData = { getGitBranch: () => branch, getExtensionStatuses: () => statuses } as unknown as ShellFooterData;
 	let profile: string | undefined = "team";
+	let profileTier: "standard" | "fast" | undefined;
 	const memo = createFooterStatusMemo({
 		pi, ctx: ctx as unknown as ExtensionContext, footerData,
 		usage: () => usage,
 		profile: () => profile,
+		profileTier: () => profileTier,
 		jobs: () => jobs,
 		review: () => review,
 		tracker: () => ({ model: { files: [{ path: "a.ts", status: CHANGE_STATUS.MODIFIED, added, deleted }], added, deleted }, unbornRoots: Array.from({ length: unbornRoots }, () => "root") }),
@@ -183,6 +185,7 @@ function footerMemoFixture() {
 		spend: () => { entries[0]!.message.usage.cost.total += 1; },
 		setModelId: (value: string) => { model = { ...model, id: value }; },
 		setProfile: (value: string | undefined) => { profile = value; },
+		setProfileTier: (value: "standard" | "fast") => { profileTier = value; },
 		setBranch: (value: string | null) => { branch = value; },
 		setStatuses: (value: Map<string, string>) => { statuses = value; },
 		setUsage: (value: ProviderUsage | undefined) => { usage = value; },
@@ -211,6 +214,7 @@ test("the footer status digest key notices every live input the model reads", ()
 	const mutations: Array<[string, () => void]> = [
 		["branch", () => f.setBranch("feature")],
 		["profile", () => f.setProfile("other (local)")],
+		["profile tier", () => f.setProfileTier("fast")],
 		["statuses", () => f.setStatuses(new Map([["jobs", "1 running"]]))],
 		["usage", () => f.setUsage({ provider: "p", plan: undefined, limits: [], fetchedAt: 1 })],
 		["change counts", () => f.setChangeCounts(2, 1)],
@@ -234,6 +238,7 @@ test("the footer status digest key notices every live input the model reads", ()
 	// A branch or profile move rebuilds the model without rescanning statistics:
 	// the model object identity stays stable across those rebuilds.
 	const settled = f.memo.model();
+	assert.equal(settled.profileTier, "fast", "the footer receives the configured tier after cache invalidation");
 	const [reads, projections] = f.counts();
 	f.setBranch("release");
 	assert.notEqual(f.memo.model(), settled);

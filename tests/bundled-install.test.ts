@@ -1525,7 +1525,10 @@ test("Pi reads the bundled npmCommand as npm and installs git extensions with np
 		: prefixLayout({ platform: process.platform, env: {}, home: "/home/npm" });
 	const pi = await piPackageManager(bundledNpmCommand(host));
 	assert.equal(pi.getPackageManagerName(), "npm");
-	assert.deepEqual(pi.getGitDependencyInstallArgs(), ["install", "--omit=dev", "--legacy-peer-deps"]);
+	const args = pi.getGitDependencyInstallArgs();
+	const npmFlags = ["install", "--omit=dev", "--legacy-peer-deps"];
+	// Pi 1.5 adds two npm-only flags; reject any vector other than the audited 1.4/1.5 forms.
+	assert.deepEqual(args, args.length === npmFlags.length ? npmFlags : [...npmFlags, "--no-audit", "--no-fund"]);
 	// The command before N1 read as `node`: plain `npm install` for git extensions.
 	const before = await piPackageManager([host.node, host.npmCli, ...bundledNpmCommand(host).slice(2)]);
 	assert.equal(before.getPackageManagerName(), "node");

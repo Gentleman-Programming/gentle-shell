@@ -3,6 +3,7 @@ import { sharedCooldown } from "../lib/model-fallback-policy.ts";
 import { createOrchestratorFallback } from "../lib/orchestrator-fallback.ts";
 import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
 import { CHILD_TIER_ENV } from "../lib/openai-fast-tier.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
@@ -697,9 +698,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 		return;
 	}
-	const collapseKey = agentsCollapseKey(env);
-	const viewKey = agentsViewKey(env);
-	const stopKey = agentsStopKey(env);
+	const keymaps = loadKeymaps(env).bindings;
+	const collapseKey = agentsCollapseKey(env, keymaps);
+	const viewKey = agentsViewKey(env, keymaps);
+	const stopKey = agentsStopKey(env, keymaps);
 	const store = new TaskStore();
 	// Attach before any live add/start; restore and unchanged updates are silent.
 	// TaskStore contains bus listener failures so notifications cannot fail tools.

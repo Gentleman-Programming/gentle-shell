@@ -76,6 +76,7 @@ The regular-mode compact bar replaces pi's three-line footer with a single line 
 
 - Context is a gauge, not a number. It turns amber at 80% and red at 95%; after compaction it shows `?%` until the next response.
 - Cost carries `sub` when the active model runs on a subscription login.
+- `pi-claude-bridge` records every turn at $0, so a `claude-bridge` turn is priced at the Anthropic list price of the same model when it ends. The cost (shown with `sub`), the Stats section and `/gentle:stats` then show what those tokens would cost on the API, not what the subscription bills. Sessions recorded before this stay at $0.
 - Statuses other extensions publish through `setStatus` are appended as trailing segments; the session name sits at the right edge.
 - On narrow terminals the session name is dropped first, then trailing segments, before the line is truncated.
 
@@ -152,7 +153,34 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 
 ### Command palette
 
-`/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its shortcut hint where it has one; a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.
+`/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its current key where it has one (a key saved but not yet applied reads `(reload)`); a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, `tab` assigns a key to it (press the key next; escape cancels), escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.
+
+### Guided tour
+
+`/gentle:guide` gives a guided tour of Gentle Shell, one step at a time, in the style of [driver.js](https://driverjs.com/). Each step is a popover beside the part of the screen it describes (the prompt, the sidebar or the middle of the screen) with a step counter and the command and key to try it.
+
+- **With a model**, the agent drives the tour through its `gentle_guide` tool and explains each step in the chat. The popover never takes the prompt's focus: reply to continue, or ask anything and the agent answers before moving on.
+- **Without a model**, or with `/gentle:guide local`, you step through it yourself: `→`, `Enter` or `Space` next, `←` back, `Esc` ends.
+- `/gentle:guide stop` closes the tour at any point.
+
+Steps only appear for features the session has (for example, Design only when `/gentle:design` is registered). The startup banner ends with a one-line reminder of `/gentle:guide` on every start, while the command exists.
+
+### Keymaps
+
+Every Gentle shortcut, and any command in the palette, can get a key of your choice:
+
+- `/gentle:customize` → **Keymaps** lists each action with its current key. `Enter` waits for the new key, `⌫` disables the key, `r` restores the default, and the last row reloads.
+- In the command palette, `tab` assigns a key to the highlighted command.
+
+Keys are saved in `keymaps.json` in the Gentle config home and **apply after `/reload`**, because Pi reads shortcuts only at startup and on reload; the shell says so after every change.
+
+| Rule | Behavior |
+|---|---|
+| Typing keys | Only keys with `ctrl` or `alt` (with or without `shift`), or `f1`-`f12`, can be assigned. |
+| Keys Pi reserves | Refused with the Pi action that owns them (for example `ctrl+k`, delete to line end). |
+| A key another action uses | Asks first; confirming moves the key and leaves the other action without one. |
+| Environment variables | A `GENTLE_PI_*_KEY` variable still wins; its row shows the variable and cannot be changed there. |
+| Unreadable `keymaps.json` | The default keys apply, startup warns once, and the file is never overwritten. |
 
 To use `ctrl+p` like OpenCode, rebind Pi's `app.model.cycleForward` in `~/.pi/agent/keybindings.json` (Pi reserves that action, so an extension cannot take `ctrl+p` while it holds it) and set `GENTLE_PI_COMMANDS_KEY=ctrl+p`.
 
@@ -244,6 +272,8 @@ Quiet tool cards redraw immediately after a change; bash rows follow on new call
 
 With quiet tools enabled, `codemode` uses the same rounded **Code** card. The collapsed view shows up to eight observed child calls in their original order, including repeats, with Pi's actual status and available nonnegative duration. Additional calls and failures are counted. Error payloads have a separate two-row preview even when their child falls outside the first eight; final output has a three-row physical budget, and a full-output locator remains visible when available.
 
+The same registration adds thin-orchestration rules to `codemode`'s prompt guidelines, after Pi's own guideline. Pi puts them in the system prompt only while `codemode` is active, in the primary session and in subagents. They ask the model to give each script one coherent objective, run only independent calls together with `Promise.allSettled()`, check each result's failure fields (such as bash `exit_code` or MCP `isError`) instead of trusting a fulfilled promise, treat side effects as non-transactional, return evidence rather than hiding failures, move long waits to background tools (or one bounded direct foreground call when those are unavailable), and discover unfamiliar tools with `searchTools()` and `describeTool()`. Discovery does not make a tool callable: direct-only tools stay direct-only, and permissions, consent, and sandbox boundaries still apply, since codemode never bypasses them. The rules live in `CODEMODE_GUIDELINES` in `lib/codemode-renderer.ts`.
+
 - JavaScript and child arguments stay out of the collapsed preview. Expand with the configured key shown in the top rule for the actual script, all observed children, complete available error/output text, image fallback and full-output locator.
 - Host failure/partial flags and observed child failures retain their existing semantic colors; no generic `finished` heading, inferred children, progress percentage, or aggregate duration is added. Pi's final status/wall-time header stays in expanded output rather than displacing useful collapsed content. Child success does not promise rollback or overall success.
 - Missing metadata is reported honestly. Terminal controls are stripped from displayed text; this is terminal-spoofing protection, **not secret redaction**. Both collapsed previews and expanded content can contain sensitive data.
@@ -262,7 +292,7 @@ Gentle Shell ships its own interactive tools instead of depending on third-party
 
 ### Gentle Agents
 
-The current package requires Pi 1.2.0 or newer and Node >=22.19.0. Development tests resolve Pi through the open `>=1.0.0` development range. The private Vim editor adapter admits only the audited Pi `0.99.1`, `0.99.2`, `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, and `1.4.0` releases; any other release keeps ordinary prompt editing until its editor is audited. Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
+The current package requires Pi 1.2.0 or newer and Node >=22.19.0. Development tests resolve Pi through the open `>=1.0.0` development range. The private Vim editor adapter admits only the audited Pi `0.99.1`, `0.99.2`, `1.0.0`, `1.1.0`, `1.2.0`, `1.3.0`, `1.4.0`, and `1.5.0` releases; any other release keeps ordinary prompt editing until its editor is audited. Use the latest Pi release; gentle-pi does not update your installed Pi automatically. Children, including any `GENTLE_PI_AGENTS_PI` override, must emit `agent_settled`: `agent_end` records a run's output but is not completion because retries or queued continuations may follow.
 
 The `subagent_*` tools and the agents card replace the third-party subagents package (remove `npm:pi-subagents-j0k3r` from your pi packages; while it is still installed the tools stay unregistered and a warning says so at startup). Agent definitions and settings are the ones you already have: markdown agents in `~/.pi/agent/agents/`, `~/.pi/agent/subagents/`, `<cwd>/.pi/agents/`, `<cwd>/.pi/subagents/` (project beats global, `subagents/` beats `agents/`), and `subagents.json` at the global and project level (`default_model`, `default_effort`, `default_mode`, `model_profiles`, `stall_timeout_ms`, `tool_stall_timeout_ms`, `max_concurrency`, `history_max_tasks`).
 

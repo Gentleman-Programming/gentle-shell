@@ -82,14 +82,17 @@ export function installPagePaint(host: PageHost, theme: () => PageTheme): () => 
 	const render = host.doRender;
 	if (typeof resets !== "function" || typeof render !== "function") return () => undefined;
 	let painting: PageColors | undefined;
-	host.applyLineResets = function (this: PageHost, lines: string[]) {
+	let active = true;
+	const applyPageResets = function (this: PageHost, lines: string[]) {
 		const done = resets.call(this, lines);
-		const page = painting;
+		const page = active ? painting : undefined;
 		if (!page) return done;
 		const width = Math.max(1, this.terminal?.columns ?? 0);
 		return done.map((line) => paintPageRow(line, width, page));
 	};
-	host.doRender = function (this: PageHost) {
+	const renderPage = function (this: PageHost) {
+		// A newer wrapper may still call this one after its owner shut down.
+		if (!active) return render.call(this);
 		// Recomputed every frame: Pi's theme is one stable proxy whose target
 		// changes on a switch, so an identity cache would never see it.
 		painting = pageColors(theme());
@@ -99,10 +102,19 @@ export function installPagePaint(host: PageHost, theme: () => PageTheme): () => 
 			painting = undefined;
 		}
 	};
+	host.applyLineResets = applyPageResets;
+	host.doRender = renderPage;
 	return () => {
-		if (ownResets) host.applyLineResets = resets;
-		else delete host.applyLineResets;
-		if (ownRender) host.doRender = render;
-		else delete host.doRender;
+		if (!active) return;
+		active = false;
+		painting = undefined;
+		if (host.applyLineResets === applyPageResets) {
+			if (ownResets) host.applyLineResets = resets;
+			else delete host.applyLineResets;
+		}
+		if (host.doRender === renderPage) {
+			if (ownRender) host.doRender = render;
+			else delete host.doRender;
+		}
 	};
 }

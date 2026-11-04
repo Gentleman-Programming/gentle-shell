@@ -264,3 +264,7 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 
 export const STAR_PROMPT_THRESHOLD = PROMPTS_BEFORE_ASKING;
 export const STAR_PROMPT_DEFAULTS = DEFAULT_STAR_PROMPT_STATE;
+
+export default function gentleStarPrompt(pi: ExtensionAPI): void {
+	createStarPromptExtension(pi);
+}

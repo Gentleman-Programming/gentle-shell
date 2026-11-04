@@ -6161,8 +6161,9 @@ function startupStateText(startup: SessionProfileStartupState): string {
  * `/gentle:profiles clear`: go back to the startup state when it is known
  * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
  * only the returned state. Never-bound, already-cleared and startup sessions
- * write nothing; an unreadable record is the recovery case and is replaced. The
- * live orchestrator and every shared default stay untouched.
+ * write nothing; an unreadable record is the recovery case and is replaced.
+ * Follow mode has no startup state, so a startup record gets a legacy clear
+ * (section 6). The live orchestrator and every shared default stay untouched.
  */
 async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -6180,12 +6181,12 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 			return true;
 		}
 		const startupOrigin = prior.status === "bound" && prior.binding.origin !== "user" ? prior.binding.origin : undefined;
-		if (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none")) {
+		if (!profileFollowEnabled() && (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none"))) {
 			const label = prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined;
 			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
 			return true;
 		}
-		if (prior.status === "cleared") {
+		if (prior.status === "cleared" && prior.startup !== "none") {
 			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
 			return true;
 		}
@@ -6200,7 +6201,7 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 			);
 			return false;
 		}
-		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : "the unreadable session profile record";
+		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : prior.status === "cleared" ? "the recorded startup state" : "the unreadable session profile record";
 		const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
 		if (startup !== undefined) {
 			ctx.ui.notify(`el Gentleman cleared ${what} (${persistence}). New launches go back to ${startupStateText(startup)}. The live orchestrator is unchanged.`, "info");

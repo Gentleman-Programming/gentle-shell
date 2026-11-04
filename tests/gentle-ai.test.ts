@@ -4616,6 +4616,26 @@ test("clear in follow mode writes a legacy clear even when the newest record car
 	assert.match(h.last().message, /New launches use the routing without a session profile/);
 });
 
+// gentle-shell#2742, section 6: follow mode has no startup state, so a startup
+// record on the newest entry is cleared like any bind, back to the current defaults.
+// The separator after the cleared subject is matched with `.`.
+for (const [record, subject] of [
+	["startup bind", 'session profile "team"'],
+	["clear with startup none", "the recorded startup state"],
+] as const)
+	test(`clear in follow mode appends a legacy clear when the newest record is a ${record}`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, record === "startup bind" ? createSessionProfileStartupBind("local", "team", TEAM_DEFINITION) : createSessionProfileClear("none"));
+		process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+		t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+		await h.run("clear");
+		assert.equal(h.family().length, 2, "one legacy clear follows the startup record");
+		assert.deepEqual(newest(h), { kind: "clear" });
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, new RegExp(`^el Gentleman cleared ${subject} . persisted in this session\\. New launches use the routing without a session profile \\(pins, repository declaration, global\\)\\. The live orchestrator is unchanged\\.$`));
+		h.assertSharedUntouched();
+	});
+
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);
 	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };

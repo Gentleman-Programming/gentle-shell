@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inferOddPhase } from "../lib/odd-phase-inference.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { SHELL_ACTIVITIES, SHELL_ACTIVITY_IDENTITY, inferOddPhase, inferShellActivity } from "../lib/odd-phase-inference.ts";
 
 // Deterministic, conservative tool -> ODD phase mapping for the Gentle Shell
 // working label. Unknown tools and ambiguous shell commands never change it.
@@ -210,4 +211,79 @@ test("MCP-prefixed tool names are normalized before mapping", () => {
 	assert.equal(inferOddPhase("mcp__custom-tools__bash", { command: "pnpm test" }), "checking");
 	assert.equal(inferOddPhase("mcp__custom-tools__mem_save", {}), undefined);
 	assert.equal(inferOddPhase("mcp__custom-tools__subagent_run", { agent: "gentle-ai-worker" }), "implementing");
+});
+
+// A bash card names the activity its own command implies, so the vocabulary it
+// words a heading with is a closed list: an activity without a mark and a theme
+// role could not be drawn, and one the phase enum also owned would move the
+// working label it must never touch.
+test("the activity vocabulary names each card identity once", () => {
+	assert.deepEqual([...SHELL_ACTIVITIES], ["checking", "formatting", "preparing", "publishing", "versioning", "exploring"]);
+	assert.deepEqual(Object.keys(SHELL_ACTIVITY_IDENTITY).sort(), [...SHELL_ACTIVITIES].sort());
+});
+
+// Each activity carries its own mark, so a heading is never told apart by its
+// color alone — two identities share the code palette, and a status tone shares
+// none of the roles. A mark is one counted column, because a heading's width is
+// the terminal's count and a glyph the font paints wide would overflow it.
+// Exactly one mark carries a trailing gap of its own; see SHELL_ACTIVITY_IDENTITY.
+test("every activity wears its own mark and theme role", () => {
+	assert.deepEqual(SHELL_ACTIVITY_IDENTITY, {
+		checking: { glyph: "✓", titleRole: "mdHeading" },
+		formatting: { glyph: "≋", titleRole: "syntaxFunction" },
+		preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },
+		publishing: { glyph: "↑", titleRole: "success" },
+		versioning: { glyph: "⎇", titleRole: "warning" },
+		exploring: { glyph: "⌕", titleRole: "mdLink" },
+	});
+	const marks = SHELL_ACTIVITIES.map((activity) => SHELL_ACTIVITY_IDENTITY[activity].glyph);
+	assert.equal(new Set(marks.map((mark) => mark.trim())).size, marks.length, "no two activities share a mark");
+	for (const activity of SHELL_ACTIVITIES) {
+		const glyph = SHELL_ACTIVITY_IDENTITY[activity].glyph;
+		assert.equal(visibleWidth(glyph), activity === "preparing" ? 2 : 1, `${activity}: one counted column plus its own gap`);
+	}
+});
+
+// The card's own reader: an exploration card names what the call does, which is
+// the same reading the phase label makes of a read-only composition.
+test("a read-only composition names the exploring activity", () => {
+	for (const command of ["git status", "git diff", "git log --oneline -3", "gh pr view 12", "cat package.json && git diff"]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+});
+
+test("a verification runner names the checking activity", () => {
+	for (const command of ["pnpm test", "npm run lint", "cargo test", "make", "npx vitest run a.test.ts", "gh pr checks 12"]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// The activity is a composition rule, like the phase: a check outranks the
+// inspection beside it, and a segment this classifier cannot name keeps the whole
+// call generic so a mutation is never hidden behind a labelled neighbour.
+test("the strongest named segment decides the card, and an unnamed one keeps it generic", () => {
+	assert.equal(inferShellActivity("git status && pnpm test"), "checking");
+	assert.equal(inferShellActivity("pnpm test | tail -20"), "checking");
+	for (const command of [
+		"pnpm test && node scripts/release.mjs",
+		"pnpm test && echo ok > out.txt",
+		"pnpm test && echo done | tee log.txt",
+		"pnpm test && ./scripts/deploy.sh",
+		"pnpm test && bash -c 'unknown-tool --flag'",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		// The working label still follows the check that ran.
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// A call that changes nothing cannot name an activity, and neither can one with
+// no command at all: the card falls back to the tool's own identity.
+test("a neutral or empty command names no activity", () => {
+	for (const command of ["cd repo", "echo ok", "CI=1 pnpm test"] as const) {
+		assert.equal(inferShellActivity(command), command === "CI=1 pnpm test" ? "checking" : undefined, command);
+	}
+	for (const command of [undefined, "", "   "]) assert.equal(inferShellActivity(command), undefined, String(command));
 });

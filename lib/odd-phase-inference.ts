@@ -10,6 +10,46 @@
 
 import type { OddPhase } from "./odd-phase.ts";
 
+/**
+ * The activity a shell call names on its own card. `exploring` and `checking` are
+ * ODD phases; the rest are presentation only — installing, reformatting, deleting,
+ * a commit or a push is not a step of the ODD protocol, so none of them reaches the
+ * phase label, the global phase enum, or the exploration budget.
+ */
+export const SHELL_ACTIVITIES = ["checking", "formatting", "preparing", "publishing", "versioning", "exploring"] as const;
+
+export type ShellActivity = (typeof SHELL_ACTIVITIES)[number];
+
+/**
+ * The mark and theme role reserved for each activity. Classifier families and
+ * card consumers are introduced separately; this table does not change them.
+ *
+ * The roles are the theme's own slots, never a fixed palette: `mdLink` and
+ * `mdHeading` paint the two ODD phases, `warning` is the warm role a local history change wears, and
+ * `success` the green one a remote write wears, so a theme that changes its
+ * palette changes the cards with it. `syntaxFunction` is the code palette, and it
+ * is the one slot `preparing` and `formatting` share: the shipped themes define
+ * six colours a heading can wear, and the two maintenance identities are told
+ * apart by their mark and their word rather than by a colour no theme has. The
+ * mark still tells an identity apart from a status tone, and the frame keeps
+ * painting the call's own state.
+ *
+ * A mark carries its own gap where a font may paint it wider than pi-tui counts:
+ * U+2692 is drawn two cells wide by an emoji-fallback font while pi-tui counts it
+ * as one, so a single space after it is painted inside the glyph's own second cell
+ * and the heading reads `⚒preparing`. Preparing's mark therefore ends in one
+ * space — the minimum that still shows — so one column always appears and the
+ * heading's counted width matches what the terminal paints.
+ */
+export const SHELL_ACTIVITY_IDENTITY: Record<ShellActivity, { glyph: string; titleRole: string }> = {
+	checking: { glyph: "✓", titleRole: "mdHeading" },
+	formatting: { glyph: "≋", titleRole: "syntaxFunction" },
+	preparing: { glyph: "⚒ ", titleRole: "syntaxFunction" },
+	publishing: { glyph: "↑", titleRole: "success" },
+	versioning: { glyph: "⎇", titleRole: "warning" },
+	exploring: { glyph: "⌕", titleRole: "mdLink" },
+};
+
 const TOOL_PHASES: Readonly<Record<string, OddPhase>> = {
 	read: "exploring",
 	grep: "exploring",
@@ -120,13 +160,52 @@ function isOddTaskPath(path: string | undefined): boolean {
  * else — a mutation, an install, an unknown program — is ambiguous.
  */
 function inferShellPhase(command: string | undefined): OddPhase | undefined {
-	if (command === undefined) return undefined;
-	const segments = splitShellCommands(command)
+	const segments = shellSegments(command);
+	if (segments.length === 0) return undefined;
+	const activities = segments.map(segmentActivity);
+	if (activities.includes("checking")) return "checking";
+	return activities.every((activity) => activity === "exploring") ? "exploring" : undefined;
+}
+
+/**
+ * The activity a shell command names for its own card, or undefined when some
+ * segment carries no reliable signal. Formatting, preparing, versioning and
+ * publishing are card identities, not ODD phases: the working label and the
+ * exploration budget read inferOddPhase, which never returns them.
+ *
+ * The card keeps every segment honest: a segment nothing can name keeps the whole
+ * call generic — a check printed beside an unknown script never claims the card —
+ * and a check outranks the inspection beside it. That is a display rule only: the
+ * phase inference still lets any checking segment decide the label.
+ */
+export function inferShellActivity(command: string | undefined): ShellActivity | undefined {
+	const segments = shellSegments(command);
+	if (segments.length === 0) return undefined;
+	const activities = segments.map(segmentActivity);
+	// Beside a segment nothing can name the card stays generic: the heading never
+	// claims a check — or any other identity — for work the call also did silently.
+	if (activities.includes(undefined)) return undefined;
+	if (activities.includes("checking")) return "checking";
+	return "exploring";
+}
+
+/** The command split into the simple commands the classifier reads, with the ones that do nothing dropped. */
+function shellSegments(command: string | undefined): string[] {
+	if (command === undefined) return [];
+	return splitShellCommands(command)
 		.map(stripSegment)
 		.filter((segment) => segment.length > 0 && !isNeutral(segment));
-	if (segments.length === 0) return undefined;
-	if (segments.some((segment) => matchesAny(CHECKING_COMMANDS, segment))) return "checking";
-	return segments.every(isReadOnlyInspection) ? "exploring" : undefined;
+}
+
+/**
+ * What one simple command does. A check verifies work and a read-only segment
+ * inspects it; everything else — a mutation, an install, an unknown program, a
+ * redirect — carries no activity this classifier can name.
+ */
+function segmentActivity(segment: string): ShellActivity | undefined {
+	if (matchesAny(CHECKING_COMMANDS, segment)) return "checking";
+	if (isReadOnlyInspection(segment)) return "exploring";
+	return undefined;
 }
 
 /**

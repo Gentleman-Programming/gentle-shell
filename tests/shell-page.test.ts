@@ -55,6 +55,42 @@ test("the page paint wraps the fullscreen render only, follows theme changes and
 	assert.equal(installPagePaint({}, () => light)(), undefined, "a host without the fullscreen renderer is left alone");
 });
 
+test("an old page-paint disposer cannot displace a replacement or read its stale theme", () => {
+	let oldLive = true;
+	let staleReads = 0;
+	let theme: object = light;
+	const frames: string[] = [];
+	const tui = {
+		applyLineResets: (lines: string[]) => lines.map((line) => `${line}\x1b[0m`),
+		doRender() { frames.push(this.applyLineResets(["hi"])[0]!); },
+		terminal: { columns: 4 },
+	};
+	const removeOld = installPagePaint(tui, () => {
+		if (!oldLive) { staleReads++; throw new Error("old theme is stale"); }
+		return light;
+	});
+	const oldRender = tui.doRender;
+	const removeNew = installPagePaint(tui, () => theme);
+	const newRender = tui.doRender;
+	const newResets = tui.applyLineResets;
+	removeOld();
+	oldLive = false;
+	removeOld();
+	assert.equal(tui.doRender, newRender);
+	assert.equal(tui.applyLineResets, newResets);
+	assert.doesNotThrow(() => tui.doRender(), "replacement can still call the old wrapper in its chain");
+	assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"));
+	theme = { appearance: "dark" };
+	tui.doRender();
+	assert.equal(frames.at(-1), "hi\x1b[0m", "the new owner's dark theme stops painting");
+	assert.doesNotThrow(() => oldRender.call(tui), "a queued old wrapper is inert after teardown");
+	assert.equal(staleReads, 0);
+	removeNew();
+	tui.doRender();
+	assert.equal(frames.at(-1), "hi\x1b[0m", "no page remains after both owners stop");
+	assert.equal(staleReads, 0);
+});
+
 test("the page follows a theme switch behind one stable theme object (Pi's theme is a proxy)", () => {
 	const state = { appearance: "light", name: "light" };
 	const proxy = { get appearance() { return state.appearance; }, get name() { return state.name; }, getFgAnsi: () => FG, getColorMode: () => "truecolor" };

@@ -34,6 +34,8 @@ export interface ShellBarModel {
 	sessionName: string | undefined;
 	modelId: string;
 	effort: string | undefined;
+	/** Orchestrator tier configured in the named profile; not a server observation. */
+	profileTier?: "standard" | "fast";
 	contextPercent: number | null;
 	contextWindow: number;
 	costTotal: number;
@@ -222,9 +224,9 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // or inferred meanings from opaque extension status strings.
 // The fullscreen rail's Status, drawn as panel sections (design/shell-rework/02-proposal.html):
 // Changes, Review (only with current-session RDD evidence) and Integrations.
-// Location, model and profile live in the header row, so they never repeat
-// here. Opaque integration statuses wrap so none of their meaning is clipped,
-// and the optional key hints close the rail.
+// Location and model live in the header row; Integrations also identifies the
+// effective agent profile. Opaque integration statuses wrap so none of their
+// meaning is clipped, and the optional key hints close the rail.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): string[] {
 	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
 }
@@ -281,12 +283,18 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	// The status bar shows the permission mode once; Integrations only says
 	// what it means, so neither the mode nor its banner repeats here.
 	const integrations = model.integrations ?? model.statuses;
-	const permission = model.permission?.detail ? wrapTextWithAnsi(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line)) : [];
+	const integrationRows = (text: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT - 2))
+		.map((line, index) => renderPanelRow(width, `${label(index === 0 ? "- " : "  ")}${line}`));
+	const permission = model.permission?.detail ? integrationRows(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`) : [];
+	const profile = model.profile ? sanitizeStatus(model.profile) : "";
+	const profileRows = profile
+		? wrapTextWithAnsi(`${label("Agent profile:")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line))
+		: [];
 	const count = integrations.length + (permission.length ? 1 : 0);
 	sections.push({
 		key: "integrations",
 		header: header("integrations", "Integrations", count ? String(count) : "none"),
-		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => wrapped(sanitizeStatus(status), ROLE.STATUS)) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+		rows: [...profileRows, ...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
 	});
 	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
 	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
@@ -342,14 +350,16 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
 	const left = join([branch, tail]);
 	const showCounters = presentation?.visibility.usageCost !== false;
+	const tier = model.profileTier ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(model.profileTier === "fast" ? "warning" : ROLE.LABEL, model.profileTier === "fast" ? "Fast" : "Standard")}` : "";
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
 	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
-	const attempts = [...stages.map((stage) => ({ stage, withExec: true })), { stage: undefined, withExec: false }];
-	for (const { stage, withExec } of attempts) {
+	const attempts = [...stages.map((stage) => ({ stage, withExec: true, withTier: true })),
+		...(tier ? [{ stage: undefined, withExec: true, withTier: false }] : []), { stage: undefined, withExec: false, withTier: false }];
+	for (const { stage, withExec, withTier } of attempts) {
 		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
-		const right = join([withExec ? exec : "", ...counters, usage]);
+		const right = join([withExec ? exec + (exec && withTier ? tier : "") : "", ...counters, usage]);
 		const room = target - 2;
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
 		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;

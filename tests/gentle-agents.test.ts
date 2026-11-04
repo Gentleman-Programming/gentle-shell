@@ -16,7 +16,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
@@ -35,6 +35,10 @@ import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
+
+const gentleAgents: typeof installGentleAgents = (pi, env, overrides) => installGentleAgents(pi, isolatedConfigEnv(env), overrides);
+after(removeIsolatedConfigHomes);
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
 const initialCardStyle = cardStyle();
@@ -3718,6 +3722,20 @@ test("the agents task card shows the winning layer next to the model, and render
 	assert.equal(taskHeader(record, 61_000), "explore · running · nan/glm5.3 · 1s", "absent modelSource renders exactly as today");
 });
 
+test("saved keymaps replace the agents shortcuts, and the environment still wins", () => {
+	const home = keymapsConfigHome({ "agents.view": "alt+v", "agents.stop": null, "agents.collapse": "alt+c" });
+	const { pi, shortcuts } = fakePi();
+	gentleAgents(pi, { GENTLE_PI_CONFIG_HOME: home }, deps().deps);
+	assert.ok(shortcuts.has("alt+v") && shortcuts.has("alt+c"));
+	for (const key of ["alt+a", "alt+s", "ctrl+shift+a"]) assert.equal(shortcuts.has(key), false, key);
+	const envWins = fakePi();
+	gentleAgents(envWins.pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_AGENTS_VIEW_KEY: "alt+w" }, deps().deps);
+	assert.ok(envWins.shortcuts.has("alt+w"));
+	assert.equal(envWins.shortcuts.has("alt+v"), false);
+	assert.equal(agentsViewKey({}, { "agents.view": "alt+v" }), "alt+v");
+	assert.equal(agentsStopKey({}, { "agents.stop": null }), undefined);
+});
+
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {
 	assert.equal(agentsEnabled({}), true);
 	assert.equal(agentsEnabled({ GENTLE_PI_AGENTS: "off" }), false);
@@ -3934,7 +3952,7 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	// (a host with no .terminal is already a passthrough); this is the host
 	// shape the fullscreen layout actually uses.
 	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
-	const { ctx, widgetComponent } = fakeContext(terminalTui);
+	const { ctx, widgetComponent, overlays } = fakeContext(terminalTui);
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
 	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Map tests/", label: "map test suites", mode: "background" }, undefined, undefined, ctx);
@@ -3966,7 +3984,10 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 		type, button, x: 1, y, screenX: 1, screenY: y, width: 72, height: bottom.length, shift: false, alt: false, ctrl: false,
 	});
 	assert.equal(component.handleMouse?.(event("click", "right")), undefined);
-	assert.equal(component.handleMouse?.(event("click", "left", 1)), undefined);
+	assert.equal(component.handleMouse?.(event("click", "right", 1)), undefined, "a right click on an agent row does nothing");
+	assert.equal(component.handleMouse?.(event("click", "left", 1))?.handled, true, "a left click on an agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 1, "a left click on an agent row opens /gentle:agents");
 	assert.match(stripAnsi(component.render(72)[0]!), /Agents ▾ Collapse/, "only a left click on the header toggles");
 	assert.equal(component.handleMouse?.(event("click", "left"))?.handled, true);
 	const collapsed = component.render(72).map(stripAnsi);
@@ -3977,6 +3998,11 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	const railClick = { type: "click" as const, button: "left" as const, x: 1, y: 0, screenX: 1, screenY: 0, width: 46, height: 2, shift: false, alt: false, ctrl: false };
 	assert.equal(rail.handleMouse?.(railClick)?.handled, true, "the rail header row 0 is the collapse control");
 	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/);
+	assert.equal(rail.handleMouse?.({ ...railClick, y: 1, screenY: 1 })?.handled, true, "a left click on a rail agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 2, "a left click on a rail agent row opens /gentle:agents, never the panel");
+	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/, "an agent row click never toggles the section");
+	assert.equal(typeof (rail as { open?: unknown }).open, "function", "the rail part exposes the agents view for the mobile work row");
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {
@@ -7321,6 +7347,26 @@ test("subagent_run never reports provider review routing keys as unmatched", asy
 	assert.equal(warnings.length, 1, "the typo is still reported once");
 	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
 	assert.doesNotMatch(warnings[0]!, /review-refuter|review-validator/);
+});
+
+// A profile bound with "Use in this session" keeps the reserved `orchestrator`
+// key (the parent's own model); it is never a subagent routing key, so the
+// launch warning must not report it, while a real typo next to it still is.
+test("subagent_run never reports the bound profile's orchestrator key as unmatched", async (t) => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const child = fakePi();
+	const runtime = deps();
+	captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	bindSessionProfile("s1", "team", { orchestrator: { model: "openai/alpha" }, explore: { model: "openai/beta" }, explor: { model: "openai/gamma" } });
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const warnings = dialogs.filter((message) => /did not match any agent and was ignored/.test(message));
+	assert.equal(warnings.length, 1, "the typo is still reported once");
+	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.doesNotMatch(warnings[0]!, /"orchestrator"/, "the reserved orchestrator key is never a subagent key");
 });
 
 // Issue #2400: a model_profiles key that matches no discovered agent and has no

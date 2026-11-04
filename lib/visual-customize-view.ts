@@ -31,10 +31,12 @@ function dropLastGrapheme(text: string): string {
 }
 
 /** Category-aware footer; the audio card advertises audio keys, never the visual profiles pane. */
-function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string, setting = false): string {
+function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string, setting = false, applyOnMove = true): string {
 	if (navOnly) return "↑/↓ categories · → open · Esc close";
-	if (setting) return "↑/↓ settings · ←/→ change · Tab categories · p profiles · Esc close";
+	if (setting && category === "Notifications") return keyhint ?? "←/→ choose · Enter apply · Tab panes · Esc close";
+	if (setting) return applyOnMove ? "↑/↓ settings · ←/→ change · Tab categories · p profiles · Esc close" : "←/→ choose · Enter apply · ↑/↓ settings · Tab panes · Esc close";
 	if (category === "Notifications") return keyhint ?? "Tab panes · Enter change · p test · Esc close";
+	if (category === "Keymaps") return keyhint ?? "Enter assign · Tab panes · Esc close";
 	return previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close";
 }
 
@@ -46,7 +48,7 @@ function rowVisible(row: CustomizeRow): boolean {
 
 type LineEntry = { first: number; count: number; setting?: string };
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
+export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Keymaps" | "Profiles" | "Reset";
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;
@@ -55,10 +57,10 @@ export interface CustomizeRow {
 	preview?: () => { title: string; sample: string };
 	/**
 	 * One value of a setting. Consecutive rows of the same `setting` render as one
-	 * line with their values inline; ←/→ moves between them and applies at once.
-	 * Leave it off for rows that must never apply on an arrow key (permissions, privacy).
+	 * line with their values inline. Layout choices apply on ←/→; set applyOnMove
+	 * to false for preview-first, permission or privacy settings that need Enter.
 	 */
-	choice?: { setting: string; value: string; current(): boolean; hint?: string };
+	choice?: { setting: string; value: string; current(): boolean; hint?: string; applyOnMove?: boolean };
 	/** When present and it returns false the row is hidden from its category; an exception fails closed. */
 	visible?: () => boolean;
 	/** Audio-footer hint for this row; omitted rows use the category default (never advertising `f WAV`). */
@@ -74,6 +76,8 @@ export interface CustomizeRow {
 export interface CustomizeInline {
 	/** Opens an inline field on the highlighted row; resolves on submit or undefined when cancelled. */
 	input(request: { prompt: string; value: string }): Promise<string | undefined>;
+	/** Waits for the next raw key press on the highlighted row; resolves undefined on Esc or when the prompt is not fully visible. */
+	capture(prompt: string): Promise<string | undefined>;
 	/** Opens an inline confirmation; resolves true only after an explicit, fully visible yes. */
 	confirm(message: string): Promise<boolean>;
 	/** Set once the owning card is disposed; a row must never persist after this. */
@@ -118,8 +122,10 @@ export class VisualCustomizeView {
 	private profileBusy = false;
 	private inlineInput?: { prompt: string; value: string; resolve: (value: string | undefined) => void; visible: boolean };
 	private inlineConfirm?: { message: string; resolve: (value: boolean) => void; visible: boolean };
+	private inlineCapture?: { prompt: string; resolve: (value: string | undefined) => void; visible: boolean };
 	private readonly inline: CustomizeInline = {
 		input: request => this.openInlineInput(request),
+		capture: prompt => this.openInlineCapture(prompt),
 		confirm: message => this.openInlineConfirm(message),
 		disposed: false,
 	};
@@ -132,6 +138,23 @@ export class VisualCustomizeView {
 		if (input) { this.inlineInput = undefined; input.resolve(undefined); }
 		const confirm = this.inlineConfirm;
 		if (confirm) { this.inlineConfirm = undefined; confirm.resolve(false); }
+		const capture = this.inlineCapture;
+		if (capture) { this.inlineCapture = undefined; capture.resolve(undefined); }
+	}
+	private openInlineCapture(prompt: string): Promise<string | undefined> {
+		if (this.closed) return Promise.resolve(undefined);
+		return new Promise(resolve => { this.inlineCapture = { prompt, resolve, visible: false }; });
+	}
+	/** The next key answers the capture; Esc, or a prompt the card could not show, cancels it. */
+	private handleInlineCapture(data: string): void {
+		const capture = this.inlineCapture!;
+		// Same guard as the inline confirmation: a resize that hides the prompt cancels it.
+		const area = this.previewCapacity();
+		capture.visible = area !== undefined && !area.navOnly && area.lines > 0
+			&& this.wrapInline(`${capture.prompt} · Esc cancel`, area.inner, area.lines) !== undefined;
+		this.inlineCapture = undefined;
+		capture.resolve(matchesKey(data, Key.escape) || !capture.visible ? undefined : data);
+		this.options.requestRender();
 	}
 	private openInlineInput(request: { prompt: string; value: string }): Promise<string | undefined> {
 		if (this.closed) return Promise.resolve(undefined);
@@ -367,6 +390,7 @@ export class VisualCustomizeView {
 		if (this.closed || isKeyRelease(data)) return;
 		if (this.inlineInput) { this.handleInlineInput(data); return; }
 		if (this.inlineConfirm) { this.handleInlineConfirm(data); return; }
+		if (this.inlineCapture) { this.handleInlineCapture(data); return; }
 		if (this.profileOpen && this.options.profiles) { this.handleProfiles(data); return; }
 		if (matchesKey(data, Key.escape)) { this.dispose(); this.options.onClose(); return; }
 		const rows = this.categoryRows();
@@ -399,7 +423,8 @@ export class VisualCustomizeView {
 		const line = this.lineOf(entries, this.selected);
 		const entry = entries[line];
 		const category = this.categories[this.categoryIndex]!;
-		// On a setting line ←/→ walk its values and apply each at once; ← past the first returns to the categories.
+		// Walk inline values; live choices apply immediately, deferred choices wait for Enter.
+		// Moving left past the first value returns to the categories.
 		const step = this.pane === "controls" && entry?.setting ? matchesKey(data, Key.left) ? -1 : matchesKey(data, Key.right) ? 1 : 0 : 0;
 		if (step === -1 && this.selected === entry!.first) this.pane = "categories";
 		else if (step) {
@@ -407,7 +432,7 @@ export class VisualCustomizeView {
 			// Same guard as Enter: never apply a value the card is too small to show.
 			if (next >= entry!.first && next < entry!.first + entry!.count && !this.busy && this.controlsShown()) {
 				this.controls.set(category, next);
-				this.withBusy(() => rows[next]!.action(this.inline));
+				if (rows[next]!.choice?.applyOnMove !== false) this.withBusy(() => rows[next]!.action(this.inline));
 			}
 		} else if (matchesKey(data, Key.left) || matchesKey(data, Key.tab) && this.pane === "controls") this.pane = "categories";
 		else if (matchesKey(data, Key.right) || matchesKey(data, Key.tab) && this.pane === "categories") this.enterControls();
@@ -507,6 +532,11 @@ export class VisualCustomizeView {
 			this.inlineConfirm.visible = shows !== undefined;
 			if (shows) for (const line of shows) lines.push(paint(line, inner, "warning"));
 			else if (previewLines > 0) lines.push(paint("Confirmation needs more space · enlarge terminal", inner, "warning"));
+		} else if (this.inlineCapture) {
+			const shows = !navOnly && previewLines > 0 ? this.wrapInline(`${this.inlineCapture.prompt} · Esc cancel`, inner, previewLines) : undefined;
+			this.inlineCapture.visible = shows !== undefined;
+			if (shows) for (const line of shows) lines.push(paint(line, inner, "accent"));
+			else if (previewLines > 0) lines.push(paint("Key capture needs more space · enlarge terminal", inner, "warning"));
 		} else if (this.inlineInput) {
 			const field = `${this.inlineInput.prompt}: ${this.inlineInput.value}▏`;
 			const shows = !navOnly ? this.wrapInline(field, inner, previewLines) : undefined;
@@ -528,7 +558,7 @@ export class VisualCustomizeView {
 			for (let i = 0; i < previewLines - 2; i++) lines.push(paint(sample[i] ?? "", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined), inner, "muted"));
+		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false), inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
 		const title = this.title();
 		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");

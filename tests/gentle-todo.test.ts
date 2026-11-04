@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import installGentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
+
+const gentleTodo: typeof installGentleTodo = (pi, env) => installGentleTodo(pi, isolatedConfigEnv(env));
+after(removeIsolatedConfigHomes);
 
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
@@ -122,6 +126,15 @@ test("long Todo widgets stay bounded, scroll, resize and keep their collapse con
 		assert.notDeepEqual(bottom.render(40), collapsed, "keyboard scrolling is available without mouse");
 	}
 	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
+
+test("a saved keymap replaces the todo collapse key", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleTodo(pi, { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "todo.collapse": "alt+t" }) });
+	assert.deepEqual([...shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up", "alt+t"]);
+	const envWins = fakePi();
+	gentleTodo(envWins.pi, { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "todo.collapse": "alt+t" }), GENTLE_PI_TODO_KEY: "off" });
+	assert.deepEqual([...envWins.shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up"]);
 });
 
 test("Todo shortcuts never take a key Pi binds by default, so startup reports no shortcut conflict", async () => {

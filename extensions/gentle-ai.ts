@@ -3285,6 +3285,7 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "n new", keep: 10 },
 	{ text: "m menu", keep: 9 },
 	{ text: "esc close", keep: 4 },
+	{ text: "a all fast", keep: 11 },
 ];
 /** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
 const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
@@ -3338,6 +3339,7 @@ type RoutingTableMouseAction =
 	| { kind: "row"; row: string }
 	| { kind: "effort"; row: string }
 	| { kind: "tier"; row: string }
+	| { kind: "all-fast" }
 	| { kind: "model-option"; index: number }
 	| { kind: "effort-option"; index: number }
 	| { kind: "menu-item"; id: string }
@@ -3808,6 +3810,19 @@ class RoutingTablePanel implements OverlayComponent {
 		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
 	}
 
+	private setAllFast(): void {
+		let count = 0;
+		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
+			const entry = this.draft[key];
+			if (!entry?.model || !this.fastModels.has(entry.model)) continue;
+			if (entry.tier !== "fast") this.toggleTier(key);
+			count += 1;
+		}
+		this.say(count
+			? `All Fast: ${count} compatible route${count === 1 ? "" : "s"}. Save to keep. Subscription 2.5x; purchased credits 2x. API pricing differs.`
+			: "No compatible OpenAI routes in this profile.");
+	}
+
 	private openMenu(kind: "menu" | "new"): void {
 		this.overlay = kind;
 		this.menuCursor = 0;
@@ -3986,6 +4001,7 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
 		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "a")) return this.setAllFast();
 		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
 		if (matchesKey(data, "u")) return this.pressButton("use");
 		if (matchesKey(data, "d")) return this.pressButton("default");
@@ -4143,6 +4159,9 @@ class RoutingTablePanel implements OverlayComponent {
 				this.cursor = Math.max(0, this.rows.indexOf(action.row));
 				this.toggleTier(action.row);
 				return;
+			case "all-fast":
+				this.setAllFast();
+				return;
 			case "model-option":
 				this.pickModel(this.modelOptions()[action.index]);
 				return;
@@ -4278,9 +4297,11 @@ class RoutingTablePanel implements OverlayComponent {
 		// The header doubles as the "every agent" row: Model ▾ and Effort ▾.
 		const headerFocused = this.rows[this.cursor] === ROUTING_ALL_ROW;
 		const headerBase = `${headerFocused ? "▸ " : "  "}${"Agent".padEnd(agentCol)}${"Model ▾".padEnd(modelCol)}Effort ▾`;
-		const headerNote = visibleWidth(`${headerBase}   set every agent`) <= inner ? "   set every agent" : "";
-		const headerPlain = `${headerBase}${headerNote}`;
+		const allFast = tierRoom && visibleWidth(`${headerBase}  All Fast`) <= inner ? "  All Fast" : "";
+		const headerNote = visibleWidth(`${headerBase}${allFast}   set every agent`) <= inner ? "   set every agent" : "";
+		const headerPlain = `${headerBase}${allFast}${headerNote}`;
 		region({ kind: "effort", row: ROUTING_ALL_ROW }, effortStart, effortStart + "Effort ▾".length);
+		if (allFast) region({ kind: "all-fast" }, visibleWidth(headerBase), visibleWidth(headerBase + allFast));
 		region({ kind: "row", row: ROUTING_ALL_ROW }, 0, inner);
 		lines.push(
 			this.hoverWrap(
@@ -4289,6 +4310,7 @@ class RoutingTablePanel implements OverlayComponent {
 					+ this.renderText("Agent".padEnd(agentCol), "muted")
 					+ this.renderText("Model ▾".padEnd(modelCol), "muted")
 					+ this.renderText("Effort ▾", "muted")
+					+ (allFast ? this.hoverWrap("all-fast", this.renderText(allFast, "accent"), allFast) : "")
 					+ this.renderText(headerNote, "dim"),
 				headerPlain,
 				inner,

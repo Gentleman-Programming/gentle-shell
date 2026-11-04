@@ -13,6 +13,47 @@ import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { bindSessionProfile, clearSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtStartup, readFrozenDefaultOrchestrator, readFrozenInheritedProfile, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 
+test("All Fast sets compatible routes without toggling existing Fast or changing other fields", () => {
+ const model = "openai/gpt-6.1-sol";
+ const codex = "openai-codex/gpt-6.1-terra";
+ const draft = { orchestrator: { model, thinking: "high" as const, tier: "standard" as const }, worker: { model: codex, thinking: "medium" as const }, verify: { model, tier: "fast" as const }, other: { model: "other/model", tier: "standard" as const }, inherited: { thinking: "high" as const } };
+ const original = structuredClone(draft);
+ for (const width of [72, 120]) {
+  const results: any[] = [];
+  __testing.routingTablePanel(draft, [model, codex], ["worker", "verify", "other", "inherited"], width, undefined, undefined, ["a", "a", "s"], [], results, { fastModels: [model, codex] });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].type, "save");
+  assert.equal(results[0].name, "current");
+  assert.deepEqual(results[0].config, { ...original, orchestrator: { ...original.orchestrator, tier: "fast" }, worker: { ...original.worker, tier: "fast" } });
+  assert.deepEqual(draft, original, "editing does not mutate the original profile");
+ }
+});
+
+test("All Fast is clickable at narrow and wide widths and does not save or apply by itself", () => {
+ const model = "openai/gpt-6.1-sol";
+ const draft = { orchestrator: { model }, worker: { model } };
+ for (const width of [72, 120]) {
+  const args: [typeof draft, string[], string[], number, undefined, undefined] = [draft, [model], ["worker"], width, undefined, undefined];
+  const options = { fastModels: [model] };
+  const before = __testing.routingTablePanel(...args, [], [], [], options);
+  const y = before.findIndex(line => line.includes("All Fast"));
+  assert.notEqual(y, -1, `All Fast is visible at ${width} columns`);
+  const results: any[] = [];
+  const after = __testing.routingTablePanel(...args, [], [{ type: "click", x: before[y].indexOf("All Fast") + 2, y }], results, options);
+  assert.equal(after.filter(line => line.includes("Fast ▾")).length, 2);
+  assert.match(after.join("\n"), /2 unsaved/);
+  assert.deepEqual(results, [], "bulk edit does not silently save or change session/defaults");
+ }
+});
+
+test("individual tier selection still overrides All Fast", () => {
+ const model = "openai/gpt-6.1-sol";
+ const results: any[] = [];
+ __testing.routingTablePanel({ orchestrator: { model }, worker: { model } }, [model], ["worker"], 120, undefined, undefined, ["a", "t", "s"], [], results, { fastModels: [model] });
+ assert.equal(results[0].config.orchestrator.tier, "standard");
+ assert.equal(results[0].config.worker.tier, "fast");
+});
+
 test("profile UI saves Fast for both providers and independent roles", () => {
  for (const provider of ["openai", "openai-codex"]) {
   const model = `${provider}/gpt-5.6-luna`;

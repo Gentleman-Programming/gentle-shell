@@ -3,6 +3,7 @@ import { sharedCooldown } from "../lib/model-fallback-policy.ts";
 import { createOrchestratorFallback } from "../lib/orchestrator-fallback.ts";
 import type { ThinkingLevel } from "../lib/model-routing-authority.ts";
 import { agentsViewKey, agentsCollapseKey, agentsStopKey } from "../lib/agents-keys.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
 import { CHILD_TIER_ENV } from "../lib/openai-fast-tier.ts";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
@@ -697,9 +698,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		});
 		return;
 	}
-	const collapseKey = agentsCollapseKey(env);
-	const viewKey = agentsViewKey(env);
-	const stopKey = agentsStopKey(env);
+	const keymaps = loadKeymaps(env).bindings;
+	const collapseKey = agentsCollapseKey(env, keymaps);
+	const viewKey = agentsViewKey(env, keymaps);
+	const stopKey = agentsStopKey(env, keymaps);
 	const store = new TaskStore();
 	// Attach before any live add/start; restore and unchanged updates are silent.
 	// TaskStore contains bus listener failures so notifications cannot fail tools.
@@ -708,6 +710,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const restoredTaskIds = new Set<string>();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
+	// The session that owns the Agents widget, so a click on an agent row opens its /gentle:agents view.
+	let widgetCtx: ExtensionContext | undefined;
 	// The catalog prices a fallback notice ("2.0x the price").
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	const announceFallback = (change: FallbackChange, parentSessionId: string | undefined, taskId?: string) => {
@@ -1885,6 +1889,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	const showWidget = (ctx: ExtensionContext) => {
+		widgetCtx = ctx;
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		modelRegistry = ctx.modelRegistry;
 		sessions = ctx.sessionManager;
@@ -1915,12 +1920,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// One surface of the Agents card. The rail is natively scrollable, so it
 	// lists every task; the above-editor widget keeps its row budget. Only the
-	// header row is the clickable collapse control, exactly like Todos.
-	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[] } => {
+	// header row is the clickable collapse control, exactly like Todos; a click
+	// on an agent row below it opens /gentle:agents.
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[]; open?(): void } => {
 		let hovered = false;
 		let headerRow = 0;
+		// The rows the card drew last, so a click past them (the card's spacer) opens nothing.
+		let drawnRows = 0;
 		const card: Component = {
 			render(width: number) {
+				drawnRows = 0;
 				if (!agentsVisible) return [];
 				const tasks = visibleTasks();
 				const now = deps.now();
@@ -1928,10 +1937,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// stays as one idle row without tasks; above the editor it is a card.
 				if (rail) {
 					headerRow = 0;
-					return renderAgentsSection(tasks, theme, width, now, { collapsed, hovered });
+					const rows = renderAgentsSection(tasks, theme, width, now, { collapsed, hovered });
+					drawnRows = tasks.length === 0 ? 0 : rows.length;
+					return rows;
 				}
 				headerRow = panelHeaderRow(theme, width, agentsCardTone(tasks, now));
 				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered });
+				drawnRows = tasks.length === 0 ? 0 : lines.length;
 				return lines.length === 0 ? lines : [...lines, ""];
 			},
 			invalidate() {
@@ -1951,12 +1963,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				host?.requestRender();
 			},
 			onClick(event) {
-				if (event.button !== "left" || event.y !== headerRow) return undefined;
-				toggleCollapsed();
+				if (event.button !== "left") return undefined;
+				if (event.y === headerRow) {
+					toggleCollapsed();
+					return { handled: true, render: true };
+				}
+				if (event.y < headerRow || event.y >= drawnRows || !widgetCtx) return undefined;
+				void openOverlay(widgetCtx);
 				return { handled: true, render: true };
 			},
 		});
 		return {
+			// The mobile work row folds this section; a tap on it opens /gentle:agents.
+			...(rail ? { open: () => { if (widgetCtx) void openOverlay(widgetCtx); } } : {}),
 			// The panel editor draws the alert above its rule while the IDE chrome
 			// hides the above-editor card (rail or mobile work row).
 			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined), alert: (width: number) => (agentsVisible ? renderAgentsAlert(visibleTasks(), theme, width) : []), spend: () => agentsSpend(visibleTasks()) } : {}),

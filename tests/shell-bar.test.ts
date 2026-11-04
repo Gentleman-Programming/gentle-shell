@@ -374,19 +374,64 @@ test("the rail Status orders Changes before Integrations and keeps the location 
 	assert.match(empty, /INTEGRATIONS/);
 });
 
-test("the rail Status never repeats the profile, and the profile leaves the compact bar unchanged", () => {
-	const profile = "team-" + "x".repeat(59);
+test("Integrations shows the effective agent profile without changing its count or status order", () => {
+	const data = model({
+		profile: "alpha (session)",
+		permission: { mode: "AUTO", detail: "confirm before action" },
+		statuses: ["compact status"],
+		integrations: ["MCP connected", "Engram ready"],
+	});
+	const rows = () => renderShellSidebarBar(data, plainTheme, 60).map((line) => line.trimEnd());
+	const initial = rows();
+	const at = initial.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(initial[at]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(initial.slice(at + 1), [
+		"  Agent profile: alpha (session)",
+		"  - permissions confirm before action",
+		"  - MCP connected",
+		"  - Engram ready",
+	]);
+	data.profile = "beta (repo)";
+	const updated = rows().join("\n");
+	assert.match(updated, /INTEGRATIONS[\s\S]*Agent profile: beta \(repo\)/);
+	assert.doesNotMatch(updated, /alpha \(session\)/);
+
+	data.profile = undefined;
+	const absent = rows();
+	const absentAt = absent.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(absent[absentAt]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(absent.slice(absentAt + 1), ["  - permissions confirm before action", "  - MCP connected", "  - Engram ready"]);
+	for (const profile of ["", " \t\n", "\x1b[31m\x1b[0m"]) {
+		data.profile = profile;
+		assert.deepEqual(rows(), absent, "an empty sanitized profile leaves prior output unchanged");
+	}
+	const onlyProfile = renderShellSidebarBar(model({ profile: "solo (local)" }), plainTheme, 60).map((line) => line.trimEnd());
+	const onlyAt = onlyProfile.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(onlyProfile[onlyAt]!, /INTEGRATIONS\s+none$/);
+	assert.deepEqual(onlyProfile.slice(onlyAt + 1), ["  Agent profile: solo (local)", "  no status reported"]);
+});
+
+test("the rail wraps and sanitizes long agent profiles, leaving the compact bar unchanged", () => {
+	const profile = `team-${"x".repeat(59)}\x1b[31m\nops\t界unit\x07\x1b[0m (repo)`;
 	const base = model();
 	const active = model({ profile });
-	for (const width of [24, 46]) {
-		const lines = renderShellSidebarBar(active, plainTheme, width);
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false } };
+	for (const width of [16, 24, 46]) {
+		const lines = renderShellSidebarBar(active, plainTheme, width, settings);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		assert.doesNotMatch(lines.join("\n"), /Profile|team-/);
+		assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line)), "profile controls must not reach the terminal");
+		const text = lines.slice(1).join("").replace(/\s/g, "");
+		assert.ok(text.includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`), "the complete sanitized profile survives wrapping");
 	}
+	const ansiTheme = { ...plainTheme, fg: (role: string, value: string) => `\x1b[${role === "muted" ? 90 : 37}m${value}\x1b[0m` };
+	const colored = renderShellSidebarBar(active, ansiTheme, 24, settings);
+	assert.ok(colored.every((line) => visibleWidth(line) <= 24));
+	assert.match(colored.join(""), /\x1b\[90mAgent profile:\x1b\[0m/);
+	assert.ok(colored.slice(1).map(stripAnsi).join("").replace(/\s/g, "").includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`));
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 
-test("the rail Status drops model, usage and identity, keeping Changes and Integrations", () => {
+test("the rail Status drops model, usage and session identity, keeping Changes and Integrations", () => {
 	const usage = {
 		provider: "openai-codex",
 		plan: "pro",
@@ -395,7 +440,7 @@ test("the rail Status drops model, usage and identity, keeping Changes and Integ
 	};
 	const data = model({ profile: "team", sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
 	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
-	for (const absent of [/Usage/, /Model/, /Effort/, /Context/, /Cost/, /\$9\.49/, /codex 5h/, /Branch/, /Session/, /Profile/]) assert.doesNotMatch(text, absent);
+	for (const absent of [/Usage/, /Model/, /Effort/, /Context/, /Cost/, /\$9\.49/, /codex 5h/, /Branch/, /Session/]) assert.doesNotMatch(text, absent);
 	for (const heading of ["CHANGES", "INTEGRATIONS"]) assert.match(text, new RegExp(heading));
 });
 

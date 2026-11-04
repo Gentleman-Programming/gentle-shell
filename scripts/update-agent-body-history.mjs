@@ -28,11 +28,11 @@ for (const file of readdirSync(agentsDir).filter((name) => name.endsWith(".md"))
 	const path = `assets/agents/${file}`;
 	const hashes = new Set([hash(readFileSync(join(agentsDir, file), "utf8"))]);
 	for (const commit of git("log", "--format=%H", "--", path).split("\n").filter(Boolean)) {
-		try {
-			hashes.add(hash(git("show", `${commit}:${path}`)));
-		} catch {
-			// The commit deleted or renamed the file; it has no body to record.
-		}
+		// A commit that deleted or renamed the file has no body to record. Any
+		// other git failure (missing objects in a partial clone) must fail loudly
+		// instead of writing a truncated history.
+		if (git("ls-tree", commit, "--", path).trim() === "") continue;
+		hashes.add(hash(git("show", `${commit}:${path}`)));
 	}
 	bodies[`agents/${file}`] = [...hashes].sort();
 }

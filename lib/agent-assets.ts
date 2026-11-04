@@ -509,9 +509,9 @@ function copyDirectoryFiles(
 			} else if (
 				installedContent !== undefined &&
 				installedHash !== managedHash &&
-				// A copy that differs from the packaged one only in routing has nothing
-				// stale to refresh, so it keeps the local-edit rules below.
-				comparableHash !== managedAssetHash(source) &&
+				// Only outdated instructions are refreshed; a frontmatter edit on the
+				// current agent (routing, tool allowlist) keeps the local-edit rules below.
+				agentBody(installedContent) !== agentBody(source) &&
 				hasShippedAgentBody(ownershipKey, installedContent, bodyHistory)
 			) {
 				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);

@@ -775,17 +775,40 @@ test("forced refresh updates a frozen package agent with a shipped body and keep
 	});
 });
 
-test("forced refresh restores a reformatted package agent without routing to the managed copy", () => {
+test("forced refresh restores an old shipped agent without routing to the managed copy", () => {
 	withIsolatedAssetHome((agentHome) => {
 		const key = "agents/gentle-ai-worker.md";
 		const installedPath = join(agentHome, key);
 		const packaged = readFileSync(join(PACKAGE_ROOT, "assets", key), "utf8");
+		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"), "utf8");
 		installPackageAssets(agentHome, false, ["delegation"]);
-		writeFileSync(installedPath, packaged.replace(/\ntools:\n(?:  - .*\n)+/, "\ntools: read, grep, find, edit, write, bash, mem_save\n"));
+		writeFileSync(installedPath, stale.replace(/\ntools:\n(?:  - .*\n)+/, "\ntools: read, grep, find, edit, write, bash, mem_save\n"));
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		manifest.assets[key] = sha256("stale");
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
-		installPackageAssets(agentHome, true, ["delegation"]);
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
 		assert.equal(readFileSync(installedPath, "utf8"), packaged);
 		assert.equal(installedAssetManifest(agentHome).assets[key], sha256(packaged));
+		assert.equal(result.skipped, 0);
+	});
+});
+
+// Only outdated instructions are refreshed: a frontmatter edit on the current
+// agent (here a restricted tool allowlist) stays a user override.
+test("forced refresh keeps a frontmatter edit on an agent with current instructions", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const key = "agents/gentle-ai-worker.md";
+		const installedPath = join(agentHome, key);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const restricted = readFileSync(installedPath, "utf8").replace("  - bash\n", "");
+		writeFileSync(installedPath, restricted);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), restricted);
+		assert.equal(installedAssetManifest(agentHome).assets[key], undefined);
+		assert.equal(result.skipped, 1);
 	});
 });
 

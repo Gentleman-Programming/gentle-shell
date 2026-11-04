@@ -76,7 +76,7 @@ The regular-mode compact bar replaces pi's three-line footer with a single line 
 
 - Context is a gauge, not a number. It turns amber at 80% and red at 95%; after compaction it shows `?%` until the next response.
 - Cost carries `sub` when the active model runs on a subscription login.
-- `pi-claude-bridge` records every turn at $0, so a `claude-bridge` turn is priced at the Anthropic list price of the same model when it ends. The cost (shown with `sub`), the Stats section and `/gentle:stats` then show what those tokens would cost on the API, not what the subscription bills. Sessions recorded before this stay at $0.
+- `pi-claude-bridge` records every turn at $0, so a `claude-bridge` turn is priced at the Anthropic list price of the same model when it ends. The cost (shown with `sub`), the Stats section and `/gentle:stats` then show what those tokens would cost on the API, not what the subscription bills. Subagents price their `claude-bridge` turns the same way, so the Stats `agents` row adds them to subagents on other providers. Sessions recorded before this stay at $0.
 - Statuses other extensions publish through `setStatus` are appended as trailing segments; the session name sits at the right edge.
 - On narrow terminals the session name is dropped first, then trailing segments, before the line is truncated.
 

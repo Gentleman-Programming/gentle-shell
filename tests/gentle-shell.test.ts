@@ -5704,6 +5704,23 @@ test("gentleShell prices claude-bridge turns at the Anthropic list price and lab
 	assert.match(renderFooter(ui), /\$6\.00 sub/);
 });
 
+test("gentleShell prices claude-bridge turns inside a subagent child, where the shell UI is off", () => {
+	// The parent sums each child's message_end cost over RPC, so a child that
+	// skipped the pricing hook made the Stats `agents` row read $0.000.
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_AGENTS_CHILD: "1" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const { ctx } = fakeContext({ entries: [], oauth: false });
+	(ctx.modelRegistry as unknown as { find: (provider: string, id: string) => unknown }).find = (provider, id) =>
+		provider === "anthropic" && id === "claude-opus-5-5" ? { cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } } : undefined;
+
+	const message = { role: "assistant", provider: "claude-bridge", model: "claude-opus-5-5",
+		usage: { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_100_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+	const results = (handlers.get("message_end") ?? []).map((handler) => handler({ type: "message_end", message }, ctx));
+	const replaced = results.find((result) => result !== undefined) as { message: typeof message } | undefined;
+	assert.equal(replaced?.message.usage.cost.total, 6, "1M input at $4 plus 100k output at $20");
+	assert.equal(handlers.has("model_select"), false, "the child still renders no shell UI");
+});
+
 test("gentleShell files header usage under the provider that served the response", async () => {
 	// pi-claude-bridge forwards Claude Code's usage as the Anthropic unified
 	// headers, so the headers alone name `anthropic` while the session runs on

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
+import {
+	createSessionProfileBind,
+	createSessionProfileClear,
+	createSessionProfileStartupBind,
+} from "../lib/session-profile-persistence.ts";
 import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
 
 // v1 compatibility (gentle-shell#2742, section 10): a session resumed by the
@@ -68,4 +73,49 @@ test("v1 replay of a legacy clear freezes the resume-time default", () => {
 	assert.equal(observed.kind, "inherited");
 	assert.equal(observed.label, "frontier");
 	assert.deepEqual(observed.routing, FRONTIER);
+});
+
+// A2 shapes, written by the current codec (section 5): the v1 observation is
+// asserted directly, since how the current version reads them is T3's job.
+const startupDefaults = {
+	local: { profiles, localPin: "local" },
+	repo: { profiles, repoDeclaration: "frontier" },
+	global: { profiles, active: "team" },
+} as const;
+
+for (const [origin, defaults] of Object.entries(startupDefaults) as Array<[keyof typeof startupDefaults, (typeof startupDefaults)["local"]]>) {
+	test(`v1 reads a ${origin} startup bind as bound, with the startup launch routing and no drift notice`, () => {
+		const name = { local: "local", repo: "frontier", global: "team" }[origin];
+		const definition = profiles[name];
+		const started = replay("v1", { records: [], defaults });
+		const observed = replay("v1", { records: [createSessionProfileStartupBind(origin, name, definition)], defaults });
+		assert.deepEqual(observed, {
+			authority: true,
+			kind: "explicit",
+			label: `${name} (session)`,
+			routing: definition,
+			foreignRouting: definition,
+			notice: undefined,
+		});
+		// Launch routing ignores the orchestrator key the record carries; the
+		// inherited path may hold an absent route field as `undefined`.
+		const { orchestrator: _, ...roles } = observed.routing!;
+		assert.deepEqual(roles, JSON.parse(JSON.stringify(started.routing)));
+	});
+}
+
+test("v1 reads a startup-none clear as a legacy clear", () => {
+	const defaults = { profiles, foreignPin: "team" };
+	const observed = replay("v1", { records: [userBind("local", LOCAL), createSessionProfileClear("none")], defaults });
+	assert.equal(observed.kind, "inherited");
+	assert.deepEqual(observed, replay("v1", { records: [userBind("local", LOCAL), { kind: "clear" }], defaults }));
+});
+
+test("v1 reads an explicit bind with a startup state as bound and ignores the startup state", () => {
+	const defaults = { profiles, active: "frontier" };
+	for (const startup of [{ origin: "global" as const, name: "team", modelProfiles: TEAM }, "none" as const]) {
+		const observed = replay("v1", { records: [createSessionProfileBind("local", LOCAL, startup)], defaults });
+		assert.equal(observed.kind, "explicit");
+		assert.deepEqual(observed, replay("v1", transcripts["explicit bind"]!));
+	}
 });

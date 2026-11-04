@@ -17,11 +17,24 @@
 // `Symbol.for` key, which every evaluation of this module in one process
 // resolves to the same symbol and therefore the same shared Map.
 import type { AgentModelConfig } from "./model-routing-authority.ts";
+import type { SessionProfileOrigin, SessionProfileStartupState } from "./session-profile-persistence.ts";
 
-/** A session's bound profile: its saved name plus the routing snapshot taken at bind time. */
+/**
+ * A session's bound profile: its saved name plus the routing snapshot taken at
+ * bind time, the origin of the record it came from (`user` for an explicit
+ * choice) and, when known, the startup state the record carried (gentle-shell#2742).
+ */
 export interface SessionProfileBinding {
 	readonly name: string;
+	readonly origin: SessionProfileOrigin;
 	readonly modelProfiles: AgentModelConfig;
+	readonly startup?: SessionProfileStartupState;
+}
+
+/** Record provenance for one binding; omitted fields keep today's explicit choice. */
+export interface SessionProfileBindingProvenance {
+	origin?: SessionProfileOrigin;
+	startup?: SessionProfileStartupState;
 }
 
 const bindingsRegistryKey = Symbol.for("gentle-pi:session-profile-bindings");
@@ -38,14 +51,27 @@ function cloneProfiles(profiles: AgentModelConfig): AgentModelConfig {
 	return Object.fromEntries(Object.entries(profiles).map(([agent, entry]) => [agent, { ...entry }]));
 }
 
+function cloneBinding(binding: SessionProfileBinding): SessionProfileBinding {
+	const { startup } = binding;
+	const copy = { name: binding.name, origin: binding.origin, modelProfiles: cloneProfiles(binding.modelProfiles) };
+	if (startup === undefined) return copy;
+	return { ...copy, startup: startup === "none" ? startup : { ...startup, modelProfiles: cloneProfiles(startup.modelProfiles) } };
+}
+
 /**
  * Bind (or rebind) one parent session to a profile. The routing snapshot is
  * copied, so later edits to the caller's object or to the saved profile
  * definition never mutate a session that already bound it; refreshing a bound
  * session requires an explicit re-selection.
  */
-export function bindSessionProfile(sessionId: string, name: string, modelProfiles: AgentModelConfig): void {
-	bindingsBySession().set(sessionId, { name, modelProfiles: cloneProfiles(modelProfiles) });
+export function bindSessionProfile(
+	sessionId: string,
+	name: string,
+	modelProfiles: AgentModelConfig,
+	provenance: SessionProfileBindingProvenance = {},
+): void {
+	const { origin = "user", startup } = provenance;
+	bindingsBySession().set(sessionId, cloneBinding({ name, origin, modelProfiles, ...(startup === undefined ? {} : { startup }) }));
 }
 
 /**
@@ -56,7 +82,7 @@ export function bindSessionProfile(sessionId: string, name: string, modelProfile
 export function readSessionProfileBinding(sessionId: string | undefined): SessionProfileBinding | undefined {
 	if (sessionId === undefined) return undefined;
 	const binding = bindingsBySession().get(sessionId);
-	return binding === undefined ? undefined : { name: binding.name, modelProfiles: cloneProfiles(binding.modelProfiles) };
+	return binding === undefined ? undefined : cloneBinding(binding);
 }
 
 /** Remove one session's binding without touching any other session's. */

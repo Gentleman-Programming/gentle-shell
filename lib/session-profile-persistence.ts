@@ -28,16 +28,30 @@ export function isSessionProfileFamilyEntry(entry: unknown): boolean {
 }
 
 export type SessionProfileOrigin = "user" | "local" | "repo" | "global";
+export type SessionProfileStartupOrigin = Exclude<SessionProfileOrigin, "user">;
+
+/** The profile a session took at startup, with the layer that supplied it. */
+export interface SessionProfileStartupProfile {
+	origin: SessionProfileStartupOrigin;
+	name: string;
+	modelProfiles: AgentModelConfig;
+}
+
+/** A known startup state (gentle-shell#2742, section 3): a profile, or none in any layer. */
+export type SessionProfileStartupState = SessionProfileStartupProfile | "none";
 
 export interface SessionProfileBindPayload {
 	kind: "bind";
 	origin: SessionProfileOrigin;
 	name: string;
 	modelProfiles: AgentModelConfig;
+	/** Only on an explicit choice (`origin: "user"`); a startup record is its own startup state. */
+	startup?: SessionProfileStartupState;
 }
 
 export interface SessionProfileClearPayload {
 	kind: "clear";
+	startup?: "none";
 }
 
 /** Public structural entry shape only; ordinary messages need no custom fields. */
@@ -50,7 +64,7 @@ export interface SessionProfileEntry {
 export type SessionProfileReadResult =
 	| { status: "absent" }
 	| { status: "bound"; binding: SessionProfileBindPayload }
-	| { status: "cleared" }
+	| { status: "cleared"; startup?: "none" }
 	| { status: "invalid" }
 	| { status: "unsupported" };
 
@@ -70,7 +84,12 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 
 function isOrigin(value: unknown): value is SessionProfileOrigin {
 	return (
-		value === "user" ||
+		value === "user" || isStartupOrigin(value)
+	);
+}
+
+function isStartupOrigin(value: unknown): value is SessionProfileStartupOrigin {
+	return (
 		value === "local" ||
 		value === "repo" ||
 		value === "global"
@@ -143,21 +162,52 @@ function readBind(
 	if (!isOrigin(data.origin) || !isValidProfileName(data.name)) return undefined;
 	const modelProfiles = readSnapshot(data.modelProfiles, encoderInput);
 	if (modelProfiles === undefined) return undefined;
-	return { kind: "bind", origin: data.origin, name: data.name, modelProfiles };
+	const binding: SessionProfileBindPayload = { kind: "bind", origin: data.origin, name: data.name, modelProfiles };
+	if (data.origin !== "user" || !hasOwn(data, "startup")) return binding;
+	// Older readers ignore the startup state, so a malformed one only leaves it
+	// unknown: it never invalidates the selection the record routes.
+	const startup = readStartup(data.startup, encoderInput);
+	return startup === undefined ? binding : { ...binding, startup };
+}
+
+function readStartup(
+	value: unknown,
+	encoderInput = false,
+): SessionProfileStartupState | undefined {
+	if (value === "none") return "none";
+	if (!isRecord(value) || !isStartupOrigin(value.origin)) return undefined;
+	const binding = readBind({ origin: value.origin, name: value.name, modelProfiles: value.modelProfiles }, encoderInput);
+	return binding && { origin: value.origin, name: binding.name, modelProfiles: binding.modelProfiles };
 }
 
 /** Create a detached user selection payload; never appends or claims durability. */
 export function createSessionProfileBind(
 	name: string,
 	modelProfiles: AgentModelConfig,
+	startup?: SessionProfileStartupState,
 ): SessionProfileBindPayload {
 	const binding = readBind({ origin: "user", name, modelProfiles }, true);
 	if (!binding) throw new TypeError("Invalid session profile binding");
-	return binding;
+	if (startup === undefined) return binding;
+	const state = readStartup(startup, true);
+	if (state === undefined) throw new TypeError("Invalid session profile startup state");
+	return { ...binding, startup: state };
 }
 
-export function createSessionProfileClear(): SessionProfileClearPayload {
-	return { kind: "clear" };
+/** Create a detached startup record: the full normalized definition, orchestrator included. */
+export function createSessionProfileStartupBind(
+	origin: SessionProfileStartupOrigin,
+	name: string,
+	modelProfiles: AgentModelConfig,
+): SessionProfileBindPayload {
+	const startup = isStartupOrigin(origin) ? readStartup({ origin, name, modelProfiles }, true) : undefined;
+	if (typeof startup !== "object") throw new TypeError("Invalid session profile startup binding");
+	return { kind: "bind", ...startup };
+}
+
+/** A legacy clear, or with `"none"` the record of a session started without a profile. */
+export function createSessionProfileClear(startup?: "none"): SessionProfileClearPayload {
+	return startup === "none" ? { kind: "clear", startup } : { kind: "clear" };
 }
 
 /** Unknown family identifiers are terminal unsupported states, regardless of data. */
@@ -169,7 +219,8 @@ export function readSessionProfileEntry(
 		return { status: "unsupported" };
 	const data = entry.data;
 	if (!isRecord(data) || !hasOwn(data, "kind")) return { status: "invalid" };
-	if (data.kind === "clear") return { status: "cleared" };
+	if (data.kind === "clear")
+		return data.startup === "none" ? { status: "cleared", startup: "none" } : { status: "cleared" };
 	if (data.kind !== "bind") return { status: "invalid" };
 	const binding = readBind(data);
 	return binding ? { status: "bound", binding } : { status: "invalid" };

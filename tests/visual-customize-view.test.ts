@@ -877,3 +877,38 @@ test("arrows never apply a setting while the card is too small to show its contr
 	assert.match(view.render(90).join("\n"), /↑\/↓ categories|→ open|Tab panes/, "the categories pane does not advertise setting keys");
 	assert.doesNotMatch(view.render(90).join("\n"), /←\/→ change/);
 });
+
+
+test("deferred choices share Layout's line without applying permissions on arrows", async () => {
+ const writes: string[] = [];
+ let current = "normal";
+ const rows: CustomizeRow[] = ["normal", "auto", "yolo", "super-yolo"].map(value => ({
+  category: "Editor", label: `Session permissions: ${value}`,
+  choice: { setting: "Session permissions", value, current: () => current === value, applyOnMove: false },
+  preview: () => ({ title: value, sample: value === "auto" ? "extra inference cost; hard safety and consent remain" : "session only" }),
+  action: () => { current = value; writes.push(value); },
+ }));
+ const view = new VisualCustomizeView({ rows, theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+ view.render(140); view.handleInput("\x1b[C"); view.handleInput("\x1b[C");
+ await settle();
+ assert.equal(current, "normal"); assert.deepEqual(writes, [], "navigation writes nothing");
+ const lines = view.render(140);
+ assert.equal(lines.filter(line => line.includes("Session permissions") && /[●○›]/.test(line)).length, 1);
+ assert.match(lines.join("\n"), /● normal.*› auto/);
+ assert.match(lines.join("\n"), /extra inference cost; hard safety and consent remain/);
+ assert.match(lines.join("\n"), /Enter apply/);
+ view.handleInput("\r"); await settle();
+ assert.equal(current, "auto"); assert.deepEqual(writes, ["auto"]);
+ view.handleInput("\x1b[C"); view.handleInput("\x1b"); await settle();
+ assert.deepEqual(writes, ["auto"], "canceling a different preview grants nothing");
+});
+
+test("inline notification choices retain their sound keys instead of advertising profiles", () => {
+ const view = new VisualCustomizeView({ rows: [{ category: "Notifications", label: "Success",
+  choice: { setting: "Success", value: "silence", current: () => true, applyOnMove: false },
+  keyhint: "←/→ choose · Enter apply · f sound · p test · Esc close", action() {},
+ }], theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+ view.render(120); view.handleInput("\x1b[C");
+ const rendered = view.render(120).join("\n");
+ assert.match(rendered, /f sound · p test/); assert.doesNotMatch(rendered, /p profiles/);
+});

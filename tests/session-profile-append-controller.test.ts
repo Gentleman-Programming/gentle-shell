@@ -751,3 +751,44 @@ test("the attachment appends the A2 startup bind, explicit startup state and sta
   { kind: "clear", startup: "none" },
  ]);
 });
+test("detached and reloaded attachments reject bindStartup, bind and clear without appending", () => {
+ const f = fixture();
+ f.mode = "disk";
+ let calls = 0;
+ const counted = (t: string, d: unknown) => {
+  calls++;
+  f.append(t, d);
+ };
+ const owner = createSessionProfileAppendController(f.source, counted, {
+  readFile: f.readFile,
+ }) as ReturnType<typeof createSessionProfileAppendController> & {
+  detach(): void;
+  attach(
+   source: typeof f.source,
+   appendEntry: (type: string, data: unknown) => void,
+   context: { reason: string },
+   options?: { readFile: typeof f.readFile },
+  ): typeof f.controller;
+ };
+ const team = { worker: { model: "provider/team" } };
+ const startup = { origin: "repo" as const, name: "team", modelProfiles: team };
+ assert.equal(owner.bindStartup("repo", "team", team).status, "persisted");
+ const rejected = {
+  status: "indeterminate",
+  state: { status: "indeterminate", reason: "detached-source" },
+ };
+ const attempt = () => [
+  owner.bindStartup("repo", "stale", team),
+  owner.bind("stale", {}, startup),
+  owner.clear("none"),
+ ];
+ const entries = structuredClone(f.rows);
+ owner.detach();
+ assert.deepEqual(attempt(), [rejected, rejected, rejected]);
+ assert.deepEqual(f.rows, entries);
+ assert.equal(calls, 1);
+ owner.attach(f.source, counted, { reason: "reload" }, { readFile: f.readFile });
+ assert.deepEqual(attempt(), [rejected, rejected, rejected]);
+ assert.deepEqual(f.rows, entries);
+ assert.equal(calls, 1);
+});

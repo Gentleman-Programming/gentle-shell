@@ -573,6 +573,9 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile, time
 // Pi dispatches its subcommands purely on the first argument, so only that
 // token decides. Flag values such as the package directory the Gentle Shell
 // launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+const GUIDE_COMMAND = "gentle:guide";
+export const GUIDE_REMINDER = "Tip: run /gentle:guide for a guided tour of Gentle Shell";
+
 export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
   const first = argv[2];
   return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
@@ -676,6 +679,8 @@ export default function (pi: ExtensionAPI) {
     let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
+    // A one-line reminder under the banner on every start, while the tour exists.
+    const guideReminder = allCommands.some((c) => c.name === GUIDE_COMMAND) ? GUIDE_REMINDER : undefined;
     const skills = allCommands.filter((c) => c.source === "skill");
     const allTools = pi.getAllTools();
     const customTools = allTools.filter(
@@ -1124,6 +1129,10 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            if (guideReminder) {
+              const pad = " ".repeat(Math.max(0, Math.floor((width - guideReminder.length) / 2)));
+              out.push(truncateToWidth(theme.fg("muted", pad + guideReminder), Math.max(1, width), ""));
+            }
             headerCache = { key: headerKey, out };
             return out;
           },

@@ -284,15 +284,25 @@ const BG_RESET = "\x1b[49m";
 // Full resets (pi-tui truncation inserts one) and background resets.
 const BG_CLEARING = /\x1b\[(?:0|49)?m/g;
 
-function panelOpener(theme: CardTheme, tone: CardTone): string {
+/** The SGR that opens `role` as a background, or "" when the theme cannot paint it. */
+export function surfaceOpener(theme: CardTheme, role: string): string {
 	if (typeof theme.bg !== "function") return "";
 	try {
-		const painted = theme.bg(FLOAT_BG_ROLE[tone], "");
+		const painted = theme.bg(role, "");
 		return painted.endsWith(BG_RESET) ? painted.slice(0, -BG_RESET.length) : "";
 	} catch {
-		// A theme without the tool background keeps the outlined card.
+		// A theme without the role keeps the row unpainted (the outlined card).
 		return "";
 	}
+}
+
+/** Paints `row` behind the background `open` starts, re-armed after every reset the row carries. */
+export function paintSurfaceRow(row: string, open: string): string {
+	return open ? `${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}` : row;
+}
+
+function panelOpener(theme: CardTheme, tone: CardTone): string {
+	return surfaceOpener(theme, FLOAT_BG_ROLE[tone]);
 }
 
 /**
@@ -332,7 +342,7 @@ function floatOpener(theme: CardTheme, tone: CardTone, width: number): string {
 // Padding rows keep their tone-coloured accent just like content rows.
 function paintFloat(rows: readonly string[], open: string): string[] {
 	const margin = " ".repeat(FLOAT_MARGIN);
-	return rows.map((row) => `${margin}${open}${row.replace(BG_CLEARING, (reset) => reset + open)}${BG_RESET}${margin}`);
+	return rows.map((row) => `${margin}${paintSurfaceRow(row, open)}${margin}`);
 }
 
 /**

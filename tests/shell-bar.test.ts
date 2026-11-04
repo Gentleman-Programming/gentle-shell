@@ -103,11 +103,11 @@ test("visual visibility hides only selected optional status segments", () => {
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false, modelDetails: false, usageCost: false } };
 	const data = model({ changes: { files: 2, added: 1, deleted: 1 } });
 	assert.doesNotMatch(renderShellBar(data, plainTheme, 160, settings).join(""), /gpt-5\.5|ctx|\$9\.49/);
-	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /Changes|2 files/);
+	assert.doesNotMatch(renderShellSidebarBar(data, plainTheme, 50, settings).join(""), /CHANGES|2 files/);
 	assert.doesNotMatch(renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160, undefined, settings).text, /gpt-5\.5|ctx|\$9\.49|usage/);
 });
 
-test("Status keeps RDD beside structured groups while running jobs moved to their own card", () => {
+test("Status keeps the Review section beside Changes while running jobs live in their own section", () => {
 	const data = model({ jobs: [
 		{ id: "job-2", label: "CI for PR 1860", startedAt: 2 },
 		{ id: "job-1", label: "Build runtime", startedAt: 1 },
@@ -115,10 +115,10 @@ test("Status keeps RDD beside structured groups while running jobs moved to thei
 	for (const width of [30, 60]) {
 		const lines = renderShellSidebarBar(data, plainTheme, width);
 		const text = lines.join("\n");
-		// Running jobs live in their own sidebar card; the Status card never
-		// prints them, so the two surfaces cannot duplicate one job.
-		assert.doesNotMatch(text, /Jobs|CI for PR 1860|Build runtime/);
-		assert.match(text, /🌹 RDD/);
+		// Running jobs live in their own rail section; Status never prints
+		// them, so the two surfaces cannot duplicate one job.
+		assert.doesNotMatch(text, /JOBS|CI for PR 1860|Build runtime/);
+		assert.match(text, /▾ REVIEW/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
 });
@@ -147,33 +147,33 @@ test("bottom-only and hidden below-input chrome retain a compact jobs count", (t
 	assert.ok(rows.every((line) => visibleWidth(line) <= 80));
 });
 
-test("Status title stays plain without an active review", () => {
+test("Status opens with Changes and shows no Review section without an active review", () => {
 	const lines = renderShellSidebarBar(model(), plainTheme, 60);
-	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
-	assert.doesNotMatch(lines.slice(1).join("\n"), /🌹 RDD/);
+	assert.match(lines[0], /^▾ CHANGES/);
+	assert.doesNotMatch(lines.slice(1).join("\n"), /REVIEW/);
 });
 
-test("Status title stays plain above the review lifecycle block", () => {
+test("the Review section lists the lifecycle state and the candidate scope", () => {
 	const lines = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), plainTheme, 60);
-	assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
-	assert.match(lines.slice(1).join("\n"), /🌹 RDD[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
+	assert.match(lines[0], /^▾ CHANGES/);
+	assert.match(lines.slice(1).join("\n"), /▾ REVIEW[\s\S]*Reviewers running…[\s\S]*first\.ts \+2 files/);
 });
 
 test("review lifecycle block omits the scope line when the candidate scope is unknown", () => {
 	const known = renderShellSidebarBar(model({ review: { state: "checking", scope: "first.ts" } }), plainTheme, 60);
 	const unknown = renderShellSidebarBar(model({ review: { state: "checking", scope: REVIEW_SCOPE_UNAVAILABLE } }), plainTheme, 60);
 	const text = unknown.join("\n");
-	assert.match(text, /🌹 RDD[\s\S]*Updating…/);
+	assert.match(text, /▾ REVIEW[\s\S]*Updating…/);
 	assert.doesNotMatch(text, /Candidate scope unavailable/);
 	assert.equal(unknown.length, known.length - 1);
 });
 
 test("rdd visibility hides only the review lifecycle block", () => {
 	const data = model({ review: { state: "reviewing", scope: "first.ts +2" }, changes: { files: 2, added: 1, deleted: 1 } });
-	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /🌹 RDD[\s\S]*Reviewers running…/);
+	assert.match(renderShellSidebarBar(data, plainTheme, 60, DEFAULT_VISUAL_SETTINGS).join("\n"), /▾ REVIEW[\s\S]*Reviewers running…/);
 	const hidden = renderShellSidebarBar(data, plainTheme, 60, { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }).join("\n");
-	assert.doesNotMatch(hidden, /🌹 RDD|Reviewers running|first\.ts \+2 files/);
-	assert.match(hidden, /Changes[\s\S]*2 files/);
+	assert.doesNotMatch(hidden, /REVIEW|Reviewers running|first\.ts \+2 files/);
+	assert.match(hidden, /CHANGES[\s\S]*2 files/);
 });
 
 test("Status and review lifecycle block respect terminal width", () => {
@@ -181,7 +181,7 @@ test("Status and review lifecycle block respect terminal width", () => {
 		for (const review of [undefined, { state: "reviewing" as const, scope: "first.ts +2 files" }, { state: "approved" as const, scope: REVIEW_SCOPE_UNAVAILABLE }]) {
 			const lines = renderShellSidebarBar(model({ review }), plainTheme, width);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${line}`);
-			if (width >= 20) assert.match(lines[0], /^╭─ ✿ Status ─+╮$/);
+			if (width >= 20) assert.match(lines[0], /^▾ CHANGES/);
 		}
 	}
 });
@@ -347,47 +347,91 @@ test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
 });
 
-test("renderShellSidebarBar paints the Status card frame with border and the title with accent", () => {
-	const lines = renderShellSidebarBar(model(), taggedTheme, 46);
-	assert.match(lines[0], /^<border>╭<\/border>/);
-	assert.match(lines[0], /<accent>✿ Status<\/accent>/);
-	assert.match(lines[lines.length - 1], /^<border>╰<\/border>/);
+test("renderShellSidebarBar draws panel section headers, never a card frame", () => {
+	const lines = renderShellSidebarBar(model(), taggedTheme, 160);
+	assert.match(lines[0], /^<muted>▾<\/muted> <text>.*CHANGES.*<\/text>/);
+	assert.doesNotMatch(lines.join("\n"), /[╭╮╰╯│]/u);
 });
 
-test("sidebar unifies project, captured changes and integrations in one frame", () => {
+test("the rail Status orders Changes before Integrations and keeps the location out", () => {
 	const data = model({ changes: { files: 2, added: 7, deleted: 3 }, statuses: ["MCP connected"] });
 	const lines = renderShellSidebarBar(data, plainTheme, 46);
 	const text = lines.join("\n");
-	assert.equal(lines.filter((line) => line.startsWith("╭")).length, 1);
 	let previous = -1;
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) {
+	for (const heading of ["CHANGES", "INTEGRATIONS"]) {
 		const index = text.indexOf(heading);
 		assert.ok(index > previous, heading);
 		previous = index;
 	}
-	assert.match(text, /2 files.*\+7.*−3/);
+	assert.match(text, /2 files/);
+	assert.match(text, /\+7 −3/);
 	assert.match(text, /\/gentle:changes/);
-	assert.match(text, /main/);
+	assert.match(text, /MCP connected/);
+	assert.doesNotMatch(text, /main|Branch|Project/, "location lives in the header row, once");
 	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
 	const empty = renderShellSidebarBar(model(), plainTheme, 46).join("\n");
-	assert.match(empty, /No captured changes/);
-	assert.match(empty, /Integrations/);
+	assert.match(empty, /no captured changes/);
+	assert.match(empty, /INTEGRATIONS/);
 });
 
-test("sidebar profile wraps long names without changing the compact bar", () => {
-	const profile = "team-" + "x".repeat(59);
+test("Integrations shows the effective agent profile without changing its count or status order", () => {
+	const data = model({
+		profile: "alpha (session)",
+		permission: { mode: "AUTO", detail: "confirm before action" },
+		statuses: ["compact status"],
+		integrations: ["MCP connected", "Engram ready"],
+	});
+	const rows = () => renderShellSidebarBar(data, plainTheme, 60).map((line) => line.trimEnd());
+	const initial = rows();
+	const at = initial.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(initial[at]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(initial.slice(at + 1), [
+		"  Agent profile: alpha (session)",
+		"  - permissions confirm before action",
+		"  - MCP connected",
+		"  - Engram ready",
+	]);
+	data.profile = "beta (repo)";
+	const updated = rows().join("\n");
+	assert.match(updated, /INTEGRATIONS[\s\S]*Agent profile: beta \(repo\)/);
+	assert.doesNotMatch(updated, /alpha \(session\)/);
+
+	data.profile = undefined;
+	const absent = rows();
+	const absentAt = absent.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(absent[absentAt]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(absent.slice(absentAt + 1), ["  - permissions confirm before action", "  - MCP connected", "  - Engram ready"]);
+	for (const profile of ["", " \t\n", "\x1b[31m\x1b[0m"]) {
+		data.profile = profile;
+		assert.deepEqual(rows(), absent, "an empty sanitized profile leaves prior output unchanged");
+	}
+	const onlyProfile = renderShellSidebarBar(model({ profile: "solo (local)" }), plainTheme, 60).map((line) => line.trimEnd());
+	const onlyAt = onlyProfile.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
+	assert.match(onlyProfile[onlyAt]!, /INTEGRATIONS\s+none$/);
+	assert.deepEqual(onlyProfile.slice(onlyAt + 1), ["  Agent profile: solo (local)", "  no status reported"]);
+});
+
+test("the rail wraps and sanitizes long agent profiles, leaving the compact bar unchanged", () => {
+	const profile = `team-${"x".repeat(59)}\x1b[31m\nops\t界unit\x07\x1b[0m (repo)`;
 	const base = model();
 	const active = model({ profile });
-	for (const width of [24, 46]) {
-		const lines = renderShellSidebarBar(active, plainTheme, width);
+	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false } };
+	for (const width of [16, 24, 46]) {
+		const lines = renderShellSidebarBar(active, plainTheme, width, settings);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		assert.match(lines.join("\n"), /Profile/);
-		assert.ok(lines.join("").replace(/[│\s]/g, "").includes(profile));
+		assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line)), "profile controls must not reach the terminal");
+		const text = lines.slice(1).join("").replace(/\s/g, "");
+		assert.ok(text.includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`), "the complete sanitized profile survives wrapping");
 	}
+	const ansiTheme = { ...plainTheme, fg: (role: string, value: string) => `\x1b[${role === "muted" ? 90 : 37}m${value}\x1b[0m` };
+	const colored = renderShellSidebarBar(active, ansiTheme, 24, settings);
+	assert.ok(colored.every((line) => visibleWidth(line) <= 24));
+	assert.match(colored.join(""), /\x1b\[90mAgent profile:\x1b\[0m/);
+	assert.ok(colored.slice(1).map(stripAnsi).join("").replace(/\s/g, "").includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`));
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 
-test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping Project, Changes and Integrations", () => {
+test("the rail Status drops model, usage and session identity, keeping Changes and Integrations", () => {
 	const usage = {
 		provider: "openai-codex",
 		plan: "pro",
@@ -396,17 +440,8 @@ test("sidebar Status card drops Model, Effort, Context, Cost and Usage, keeping 
 	};
 	const data = model({ profile: "team", sessionName: "session", usage, changes: { files: 1, added: 2, deleted: 1 }, statuses: ["MCP connected"] });
 	const text = renderShellSidebarBar(data, plainTheme, 60).join("\n");
-	assert.doesNotMatch(text, /Usage/);
-	assert.doesNotMatch(text, /Model/);
-	assert.doesNotMatch(text, /Effort/);
-	assert.doesNotMatch(text, /Context/);
-	assert.doesNotMatch(text, /Cost/);
-	assert.doesNotMatch(text, /\$9\.49/);
-	assert.doesNotMatch(text, /codex 5h/);
-	for (const heading of ["Status", "Project", "Changes", "Integrations"]) assert.match(text, new RegExp(heading));
-	assert.match(text, /Branch.*main/);
-	assert.match(text, /Session.*session/);
-	assert.match(text, /Profile.*team/);
+	for (const absent of [/Usage/, /Model/, /Effort/, /Context/, /Cost/, /\$9\.49/, /codex 5h/, /Branch/, /Session/]) assert.doesNotMatch(text, absent);
+	for (const heading of ["CHANGES", "INTEGRATIONS"]) assert.match(text, new RegExp(heading));
 });
 
 // The live header row above the fullscreen rail: identity on the left (brand,
@@ -598,16 +633,14 @@ test("renderShellHeaderRule paints one full-width line in the editor frame color
 	assert.equal(renderShellHeaderRule(plainTheme, -3), "", "negative widths clamp to an empty rule");
 });
 
-test("the sidebar Status card in the float style is a float panel two rows taller than neon, with a separator row after the header", (t) => {
+test("the rail Status is the same panel in the neon and float card styles", (t) => {
+	// Card styles dress transcript cards; the rail panel has its own surface.
 	const theme = withBackground(plainTheme);
-	const neon = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
+	const data = model({ review: { state: "reviewing", scope: "first.ts +2 files" } });
+	const neon = renderShellSidebarBar(data, theme, 60);
 	useCardStyle(t, CARD_STYLE.FLOAT);
-	const float = renderShellSidebarBar(model({ review: { state: "reviewing", scope: "first.ts +2 files" } }), theme, 60);
-	assert.equal(float.length, neon.length + 2);
-	assert.equal(stripAnsi(float[1]!), ` ▎ ✿ Status${" ".repeat(49)}`);
-	assert.equal(stripAnsi(float[2]!), ` ▎${" ".repeat(57)} `, "a blank separator row follows the header");
-	assertFloatRows(float, 60);
-	assert.deepEqual(float.slice(3, -1).map(bodyText), neon.slice(1, -1).map(bodyText));
+	assert.deepEqual(renderShellSidebarBar(data, theme, 60), neon);
+	assert.match(stripAnsi(neon[0]!), /^▾ CHANGES/);
 });
 
 // The float top bar has full-width painted padding above and below its

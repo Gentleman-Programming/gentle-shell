@@ -35,6 +35,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 	{
 		title: "Session",
 		items: [
+			{ command: "gentle:guide", label: "Guided tour of Gentle Shell" },
 			{ command: "gentle:yolo", label: "🚀 YOLO 🔥 session permission" },
 			{ command: "gentle:changes", label: "Browse changes" },
 			{ command: "gentle:agents", label: "Subagents" },

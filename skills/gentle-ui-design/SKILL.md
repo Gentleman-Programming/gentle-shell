@@ -9,7 +9,7 @@ metadata:
 
 ## Activation Contract
 
-Use for web and product interfaces when shaping, implementing, or assessing a user experience. Use `gentle-design` for its HTML artboard workflow and `gentle-ai-tui-design` for terminal interfaces.
+Use for web and product interfaces when shaping, implementing, or assessing a user experience. Pair with `gentle-design` when producing artboards: gentle-design owns delivery, this skill owns UX quality. Use `gentle-ai-tui-design` for terminal interfaces.
 
 ## Hard Rules
 

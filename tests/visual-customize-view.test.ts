@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { VisualCustomizeView, type CustomizeInline, type CustomizeRow } from "../lib/visual-customize-view.ts";
 import { CommandPalette } from "../lib/command-palette.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
@@ -1219,5 +1220,285 @@ test("inline consent accepts each painted yes cell but neither adjacent cell", a
 		frame = view.render(80); view.handleMouse(boundaryMouseEvent(frame, "y yes", delta)); await tick();
 		assert.deepEqual(answers, delta >= 0 && delta < 5 ? [true] : []);
 		view.dispose(); await tick();
+	}
+});
+
+const hoverTheme = {
+	fg: (role: string, text: string) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+	bg: (_role: string, text: string) => `\x1b[44m${text}\x1b[49m`,
+};
+const warning = (text: string) => `\x1b[33m${text}\x1b[39m`;
+function move(view: VisualCustomizeView, frame: string[], text: string): TuiMouseEventResult | undefined {
+	const { x, y } = point(frame, text);
+	return view.handleMouse(pointer(frame, x, y, "none", "move"));
+}
+function plain(frame: string[]): string[] { return frame.map(stripAnsi); }
+
+test("hover paints exactly the existing category, setting, value and plain-row targets without changing selection", () => {
+	const actions: string[] = [];
+	const rows: CustomizeRow[] = [
+		{ category: "Editor", label: "Reset settings", action: () => { actions.push("reset"); } },
+		... ["NORMAL", "AUTO"].map(value => ({ category: "Editor" as const, label: value,
+			choice: { setting: "Permissions", value, current: () => value === "NORMAL", applyOnMove: false },
+			action: () => { actions.push(value); } })),
+		{ category: "Layout", label: "Other", action: () => { actions.push("other"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(100);
+	const original = plain(frame);
+	for (const [target, painted] of [["Layout", "Layout"], ["Permissions", "Permissions"], ["AUTO", "○ AUTO"], ["Reset settings", "Reset settings"]]) {
+		assert.equal(move(view, frame, target!)?.render, true, target);
+		frame = view.render(100);
+		assert.ok(frame.join("\n").includes(warning(painted!)), `hover ${target} uses warning on its hit span`);
+		assert.deepEqual(plain(frame), original, "hover must not move focus, change preview, or alter text");
+		assert.deepEqual(actions, [], "hover must not apply any action or permission");
+		assert.equal(move(view, frame, target!)?.render, false, "repeated motion does not redraw");
+	}
+	const blank = pointer(frame, 2, 0, "none", "move");
+	assert.equal(view.handleMouse(blank)?.render, true);
+	frame = view.render(100);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "blank card cells clear hover");
+	assert.equal(view.handleMouse(blank)?.render, false);
+	assert.deepEqual(actions, []);
+	view.handleInput("\x1b[C"); view.handleInput("\r");
+	assert.deepEqual(actions, ["reset"], "keyboard activation remains unchanged");
+});
+
+test("compact arrows and values hover independently, while clipped choices and headings are not targets", () => {
+	const actions: string[] = [];
+	const view = new VisualCustomizeView({ rows: ["normal", "elevated"].map(value => ({
+		category: "Editor", label: value, choice: { setting: "Permission mode", value, current: () => value === "normal", applyOnMove: false },
+		action: () => { actions.push(value); },
+	})), theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(36);
+	assert.match(plain(frame).join("\n"), /‹ normal ›/);
+	assert.equal(move(view, frame, "normal")?.render, true);
+	frame = view.render(36);
+	assert.ok(frame.join("\n").includes(warning("normal")));
+	assert.equal(move(view, frame, "›")?.render, true);
+	frame = view.render(36);
+	assert.ok(frame.join("\n").includes(warning("›")));
+	assert.equal(move(view, frame, "Editor ·")?.render, true);
+	frame = view.render(36);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"));
+	assert.deepEqual(actions, []);
+	click(view, frame, "›");
+	frame = view.render(36);
+	assert.match(plain(frame).join("\n"), /‹ elevated ›/);
+	assert.deepEqual(actions, [], "the compact deferred arrow still previews only");
+
+	const clipped = new VisualCustomizeView({ rows: [{ category: "Editor", label: "long", choice: {
+		setting: "A long setting name", value: "an unseen permission", current: () => true,
+	}, action: () => { actions.push("hidden"); } }], theme: hoverTheme, rowsAvailable: () => 8, requestRender() {}, onClose() {} });
+	frame = clipped.render(22);
+	assert.doesNotMatch(plain(frame).join("\n"), /an unseen permission/);
+	const line = frame.findIndex(value => value.includes("A long"));
+	clipped.handleMouse(pointer(frame, 20, line, "none", "move"));
+	assert.ok(!clipped.render(22).join("\n").includes("\x1b[33m"));
+	assert.deepEqual(actions, []);
+});
+
+test("hover clears on keyboard, focus, resize, invalidation, disposal and stale row identity", () => {
+	let height = 12, visible = true;
+	const actions: string[] = [];
+	const rows: CustomizeRow[] = [
+		{ label: "First", action: () => { actions.push("first"); } },
+		{ label: "Second", visible: () => visible, action: () => { actions.push("second"); } },
+	];
+	const view = new VisualCustomizeView({ rows, theme: hoverTheme, rowsAvailable: () => height, requestRender() {}, onClose() {} });
+	let frame = view.render(80);
+	const hoverFirst = () => { move(view, frame, "First"); frame = view.render(80); assert.ok(frame.join("\n").includes(warning("First"))); };
+	hoverFirst(); view.handleInput("\x1b[B"); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"));
+	hoverFirst(); assert.equal(view.focus("Second"), true); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"));
+	hoverFirst(); frame = view.render(79);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "width resize clears hover");
+	frame = view.render(80); hoverFirst(); height = 11; frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "height resize clears hover");
+	height = 12; frame = view.render(80); hoverFirst(); view.invalidate(); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"));
+	hoverFirst(); const stale = pointer(frame, point(frame, "First").x, point(frame, "First").y, "none", "move");
+	rows[0] = { label: "Other", action: () => { actions.push("other"); } };
+	view.handleMouse(stale); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "a different row cannot inherit stale hover");
+	move(view, frame, "Second"); frame = view.render(80); visible = false;
+	view.handleMouse(pointer(frame, point(frame, "Second").x, point(frame, "Second").y, "none", "move"));
+	frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "hidden rows cannot retain hover");
+	move(view, frame, "Other"); view.dispose(); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"));
+	assert.deepEqual(actions, []);
+});
+
+test("inline consent hover is presentation only and its actual yes and cancel spans retain their guards", async () => {
+	const answers: boolean[] = [];
+	const view = new VisualCustomizeView({ rows: [
+		{ label: "Proceed", action: async inline => { answers.push(await inline.confirm("Change permission?")); } },
+		{ label: "Other action", action: () => { throw new Error("modal guard bypassed"); } },
+	], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(80); click(view, frame, "Proceed"); await tick();
+	frame = view.render(80);
+	const prompt = frame;
+	move(view, frame, "Other action"); frame = view.render(80);
+	assert.deepEqual(frame, prompt, "the blocked row is not hoverable during consent");
+	assert.equal(move(view, frame, "y yes")?.render, true);
+	frame = view.render(80);
+	assert.ok(frame.join("\n").includes(warning("y yes")));
+	assert.deepEqual(answers, []);
+	move(view, frame, "cancel"); frame = view.render(80);
+	assert.ok(frame.join("\n").includes(warning("cancel")));
+	assert.deepEqual(answers, []);
+	click(view, frame, "cancel"); await tick();
+	assert.deepEqual(answers, [false]);
+	frame = view.render(80); click(view, frame, "Proceed"); await tick();
+	frame = view.render(80); move(view, frame, "y yes"); frame = view.render(80);
+	click(view, frame, "y yes"); await tick();
+	assert.deepEqual(answers, [false, true]);
+});
+
+test("profile confirmation hover does not grant consent or defeat changed identity", async () => {
+	const profile = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	let catalog = [profile];
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {}, profiles: {
+		list: () => catalog, save() {}, apply: name => { effects.push(name); }, delete() {}, reset() {},
+	} });
+	view.handleInput("p"); view.handleInput("a");
+	let frame = view.render(80);
+	move(view, frame, "y yes"); frame = view.render(80);
+	assert.ok(frame.join("\n").includes(warning("y yes")));
+	assert.deepEqual(effects, []);
+	catalog = [{ ...profile, themeName: "light" }];
+	click(view, frame, "y yes"); await tick();
+	assert.deepEqual(effects, [], "hover and click cannot accept a changed fingerprint");
+	assert.match(plain(view.render(80)).join("\n"), /Profile changed/);
+});
+
+test("real fullscreen SGR motion clears inside the card, documents outside-overlay dispatch, and preserves clicks", async t => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const effects: string[] = [], received: TuiMouseEvent[] = [];
+	const view = new VisualCustomizeView({ rows: [{ label: "Apply this", action: () => { effects.push("applied"); } }], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	const wrapper = { render: (width: number) => view.render(width), invalidate: () => view.invalidate(), handleInput: (data: string) => view.handleInput(data), handleMouse: (event: TuiMouseEvent) => { received.push(event); return view.handleMouse(event); } };
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(wrapper, { anchor: "center", width: 80, maxHeight: 12 });
+	tui.start(); tui.renderNow(true);
+	try {
+		let frame = view.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const target = point(frame, "Apply this");
+		const send = (code: number, x: number, y: number, release = false) => input?.(`\x1b[<${code};${x + 1};${y + 1}${release ? "m" : "M"}`);
+		send(35, bounds.col + target.x, bounds.row + target.y);
+		frame = view.render(80);
+		assert.ok(frame.join("\n").includes(warning("Apply this")), "SGR motion reaches the view");
+		const beforeOutside = received.length;
+		send(35, bounds.col - 1, bounds.row + target.y);
+		assert.equal(received.length, beforeOutside, "the native driver does not send outside-overlay motion to the overlay");
+		frame = view.render(80);
+		assert.ok(frame.join("\n").includes(warning("Apply this")), "outside leave cannot be observed by this view");
+		t.diagnostic("TuiAltScreen outside-overlay SGR motion is not dispatched to the centered overlay; hover remains until re-entry or lifecycle clear.");
+		send(35, bounds.col + 1, bounds.row);
+		frame = view.render(80);
+		assert.ok(!frame.join("\n").includes("\x1b[33m"), "blank in-card motion clears hover");
+		send(0, bounds.col + target.x, bounds.row + target.y);
+		send(0, bounds.col + target.x, bounds.row + target.y, true);
+		await tick();
+		assert.deepEqual(effects, ["applied"]);
+	} finally { tui.stop(); }
+});
+
+test("inline and profile consent labels visibly change from text to warning only on hover", async () => {
+	const piTheme = getThemeByName("dark");
+	assert.ok(piTheme);
+	const answers: boolean[] = [];
+	const inline = new VisualCustomizeView({ rows: [{ label: "Proceed", action: async bridge => { answers.push(await bridge.confirm("Change permission?")); } }], theme: piTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = inline.render(80); click(inline, frame, "Proceed"); await tick();
+	frame = inline.render(80);
+	assert.ok(frame.join("\n").includes(piTheme.fg("text", "y yes")), "idle yes must differ from the warning prompt");
+	assert.ok(frame.join("\n").includes(piTheme.fg("text", "cancel")));
+	move(inline, frame, "y yes"); frame = inline.render(80);
+	assert.ok(frame.join("\n").includes(piTheme.fg("warning", "y yes")));
+	assert.ok(frame.join("\n").includes(piTheme.fg("text", "cancel")));
+	assert.deepEqual(answers, []);
+	inline.handleInput("n"); await tick();
+	assert.deepEqual(answers, [false]);
+
+	let resets = 0;
+	const profiles = new VisualCustomizeView({ rows: [], theme: piTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {}, profiles: {
+		list: () => [], save() {}, apply() {}, delete() {}, reset: () => { resets++; },
+	} });
+	profiles.handleInput("p"); profiles.handleInput("z"); frame = profiles.render(80);
+	assert.ok(frame.join("\n").includes(piTheme.fg("text", "cancel")));
+	move(profiles, frame, "cancel"); frame = profiles.render(80);
+	assert.ok(frame.join("\n").includes(piTheme.fg("warning", "cancel")));
+	assert.equal(resets, 0);
+	profiles.handleInput("n");
+	assert.equal(resets, 0);
+});
+
+test("hover preserves ANSI background and restores terminal color after the card border", () => {
+	const piTheme = getThemeByName("dark");
+	assert.ok(piTheme);
+	const view = new VisualCustomizeView({ rows: [{ label: "Selected", action() {} }], theme: piTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(80);
+	const row = point(frame, "Selected").y;
+	const before = frame[row]!;
+	assert.match(before, /\x1b\[48;2;/, "the focused row has a background");
+	move(view, frame, "Selected"); frame = view.render(80);
+	const after = frame[row]!;
+	assert.equal(stripAnsi(after), stripAnsi(before));
+	assert.ok(after.indexOf("\x1b[48;2;") < after.indexOf("Selected"));
+	assert.ok(after.indexOf("\x1b[49m", after.indexOf("Selected")) > after.indexOf("Selected"));
+	assert.ok(after.endsWith("\x1b[39m"), "the right border must not leak foreground color to the next line");
+});
+
+test("busy rows cannot acquire hover, and become hoverable after the task settles", async () => {
+	let release!: () => void;
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [
+		{ label: "Slow", action: () => { effects.push("slow"); return new Promise<void>(resolve => { release = resolve; }); } },
+		{ label: "Other", action: () => { effects.push("other"); } },
+	], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(80); click(view, frame, "Slow");
+	frame = view.render(80); move(view, frame, "Other"); frame = view.render(80);
+	assert.ok(!frame.join("\n").includes(warning("Other")));
+	assert.deepEqual(effects, ["slow"]);
+	release(); await tick(); frame = view.render(80);
+	move(view, frame, "Other"); frame = view.render(80);
+	assert.ok(frame.join("\n").includes(warning("Other")));
+	assert.deepEqual(effects, ["slow"]);
+});
+
+test("wide target cells and same-object label drift retain geometry and identity guards", () => {
+	let label = "界two";
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [{ label: () => label, action: () => { effects.push(label); } }], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(80);
+	const initial = plain(frame), location = point(frame, label);
+	view.handleMouse(pointer(frame, location.x + 1, location.y, "none", "move"));
+	frame = view.render(80);
+	assert.ok(frame.join("\n").includes(warning("界two")), "both cells of a wide grapheme share the target");
+	assert.deepEqual(plain(frame), initial);
+	label = "界six";
+	frame = view.render(80);
+	assert.ok(!frame.join("\n").includes("\x1b[33m"), "a changed label must not inherit hover at the same coordinates");
+	assert.deepEqual(effects, []);
+});
+
+test("actual Customize ANSI fixtures for parent visual capture", t => {
+	const piTheme = getThemeByName("dark");
+	assert.ok(piTheme);
+	for (const [width, height] of [[100, 24], [36, 12], [76, 5]] as const) {
+		const view = new VisualCustomizeView({ rows: [{ category: "Editor", label: "Permission mode", action() {} }], theme: piTheme, rowsAvailable: () => height, requestRender() {}, onClose() {} });
+		const before = view.render(width);
+		move(view, before, "Permission mode");
+		const after = view.render(width);
+		assert.deepEqual(plain(after), plain(before));
+		assert.notDeepEqual(after, before, "hover must change actual themed ANSI output");
+		t.diagnostic(`ANSI_FIXTURE ${JSON.stringify({ width, height, before, after })}`);
 	}
 });

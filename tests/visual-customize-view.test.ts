@@ -1447,11 +1447,12 @@ test("hover preserves ANSI background and restores terminal color after the card
 	let frame = view.render(80);
 	const row = point(frame, "Selected").y;
 	const before = frame[row]!;
-	assert.match(before, /\x1b\[48;2;/, "the focused row has a background");
+	const background = before.match(/\x1b\[48;(?:2;\d+;\d+;\d+|5;\d+)m/)?.[0];
+	assert.ok(background, "the focused row has a truecolor or 256-color background");
 	move(view, frame, "Selected"); frame = view.render(80);
 	const after = frame[row]!;
 	assert.equal(stripAnsi(after), stripAnsi(before));
-	assert.ok(after.indexOf("\x1b[48;2;") < after.indexOf("Selected"));
+	assert.ok(after.indexOf(background) >= 0 && after.indexOf(background) < after.indexOf("Selected"), "hover preserves the exact rendered background");
 	assert.ok(after.indexOf("\x1b[49m", after.indexOf("Selected")) > after.indexOf("Selected"));
 	assert.ok(after.endsWith("\x1b[39m"), "the right border must not leak foreground color to the next line");
 });

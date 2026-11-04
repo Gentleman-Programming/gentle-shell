@@ -5681,6 +5681,29 @@ test("gentleShell records SSE rate-limit headers from provider responses", async
 	assert.doesNotMatch(renderFooter(ui), /codex/);
 });
 
+test("gentleShell prices claude-bridge turns at the Anthropic list price and labels them as subscription", async () => {
+	// pi-claude-bridge registers every model with a zero price, so without this
+	// the footer and stats always read $0 on a Claude subscription.
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { fetch: fakeFetch({}, false).fetchFn, now: () => 0 });
+	const entries: unknown[] = [];
+	const { ctx, ui } = fakeContext({ entries, oauth: false });
+	(ctx as unknown as { model: { provider: string; id: string } }).model = { ...ctx.model!, provider: "claude-bridge", id: "claude-opus-5-5" };
+	(ctx.modelRegistry as unknown as { find: (provider: string, id: string) => unknown }).find = (provider, id) =>
+		provider === "anthropic" && id === "claude-opus-5-5" ? { cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 } } : undefined;
+	await fire(handlers, "session_start", ctx);
+
+	const message = { role: "assistant", provider: "claude-bridge", model: "claude-opus-5-5",
+		usage: { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_100_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+	const results = (handlers.get("message_end") ?? []).map((handler) => handler({ type: "message_end", message }, ctx));
+	const replaced = results.find((result) => result !== undefined) as { message: typeof message } | undefined;
+	assert.equal(replaced?.message.usage.cost.total, 6, "1M input at $4 plus 100k output at $20");
+
+	entries.push({ type: "message", message: replaced!.message });
+	for (const handler of handlers.get("turn_end") ?? []) await handler({}, ctx);
+	assert.match(renderFooter(ui), /\$6\.00 sub/);
+});
+
 test("gentleShell files header usage under the provider that served the response", async () => {
 	// pi-claude-bridge forwards Claude Code's usage as the Anthropic unified
 	// headers, so the headers alone name `anthropic` while the session runs on

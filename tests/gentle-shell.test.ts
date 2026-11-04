@@ -5845,7 +5845,7 @@ test("the palette shows saved keys, marks ones waiting for a reload, and assigns
 	assert.equal(ui.notices.at(-1), "/gentle:status: alt+x. Run /reload to apply it.");
 });
 
-test("assigning a reserved key from the palette is refused and saves nothing", async () => {
+test("assigning a typing key from the palette is refused and saves nothing", async () => {
 	const home = mkdtempSync(join(tmpdir(), "gentle-shell-keymaps-"));
 	isolatedConfigHomes.push(home);
 	const { pi, commands } = fakePi();

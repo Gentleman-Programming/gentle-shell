@@ -16,7 +16,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import gentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
@@ -35,6 +35,10 @@ import { taskHeader } from "../lib/agents-view.ts";
 import { readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { CHILD_METRICS_EVENT } from "../lib/runtime-metrics-children.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
+import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
+
+const gentleAgents: typeof installGentleAgents = (pi, env, overrides) => installGentleAgents(pi, isolatedConfigEnv(env), overrides);
+after(removeIsolatedConfigHomes);
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
 const initialCardStyle = cardStyle();
@@ -3716,6 +3720,20 @@ test("the agents task card shows the winning layer next to the model, and render
 	} as TaskRecord;
 	assert.equal(taskHeader({ ...record, modelSource: "binding" }, 61_000), "explore · running · nan/glm5.3 · binding · 1s");
 	assert.equal(taskHeader(record, 61_000), "explore · running · nan/glm5.3 · 1s", "absent modelSource renders exactly as today");
+});
+
+test("saved keymaps replace the agents shortcuts, and the environment still wins", () => {
+	const home = keymapsConfigHome({ "agents.view": "alt+v", "agents.stop": null, "agents.collapse": "alt+c" });
+	const { pi, shortcuts } = fakePi();
+	gentleAgents(pi, { GENTLE_PI_CONFIG_HOME: home }, deps().deps);
+	assert.ok(shortcuts.has("alt+v") && shortcuts.has("alt+c"));
+	for (const key of ["alt+a", "alt+s", "ctrl+shift+a"]) assert.equal(shortcuts.has(key), false, key);
+	const envWins = fakePi();
+	gentleAgents(envWins.pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_AGENTS_VIEW_KEY: "alt+w" }, deps().deps);
+	assert.ok(envWins.shortcuts.has("alt+w"));
+	assert.equal(envWins.shortcuts.has("alt+v"), false);
+	assert.equal(agentsViewKey({}, { "agents.view": "alt+v" }), "alt+v");
+	assert.equal(agentsStopKey({}, { "agents.stop": null }), undefined);
 });
 
 test("agentsEnabled and agentsCollapseKey read their flags and stay off inside a child", () => {

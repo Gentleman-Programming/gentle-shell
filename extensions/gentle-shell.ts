@@ -24,6 +24,7 @@ import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { buildKeymapRows } from "../lib/keymaps-customize.ts";
 import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
@@ -32,7 +33,7 @@ import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
-import { agentsViewKey } from "../lib/agents-keys.ts";
+import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -1568,7 +1569,6 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
-const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -1617,22 +1617,17 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 };
 
 export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
-export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
-	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+// Each key reads its environment variable, then keymaps.json, then its default (lib/keymaps.ts).
+export function changesShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("changes", env, bindings);
 }
 
-export function presetShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_PRESET_KEY?.trim();
-	if (value === undefined) return PRESET_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function presetShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("preset", env, bindings);
 }
 
-export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
-	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("usage", env, bindings);
 }
 
 function positiveMs(value: string | undefined, fallback: number): number {
@@ -1717,21 +1712,61 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 // entries that are actually registered, so a missing extension never shows
 // a dead row. Selecting an entry runs it exactly as if the user had typed
 // the underlying slash command.
-async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv): Promise<void> {
+// Each row shows the key saved now; one that differs from the key Pi loaded at
+// startup is marked "(reload)", since Pi only applies it after /reload.
+function paletteShortcuts(pi: ExtensionAPI, env: NodeJS.ProcessEnv, loaded: KeymapBindings): Record<string, string | undefined> {
+	const saved = loadKeymaps(env).bindings;
+	const shortcuts: Record<string, string | undefined> = {};
+	for (const { name } of pi.getCommands()) {
+		const id = commandKeymapId(name);
+		const now = effectiveKey(id, env, saved);
+		const active = effectiveKey(id, env, loaded);
+		shortcuts[name] = now === active ? now : `${now ?? "none"} (reload)`;
+	}
+	return shortcuts;
+}
+
+/**
+ * The palette commands Customize lists under Keymaps. The command list is an
+ * extra there: when Pi cannot report it yet (before its runtime is
+ * initialized), Customize still opens with the built-in actions only.
+ */
+function paletteCommandsForKeymaps(pi: ExtensionAPI): { command: string; label: string }[] {
+	try {
+		return buildCommandPaletteGroups(pi.getCommands(), {}).flatMap((group) => group.items);
+	} catch {
+		return [];
+	}
+}
+
+/** Tab in the palette: assign the captured key to the command, through the same checks as /gentle:customize. */
+async function bindFromPalette(ctx: ExtensionContext, env: NodeJS.ProcessEnv, command: string, data: string, keybindings: PiKeybindings | undefined): Promise<void> {
+	const id = commandKeymapId(command);
+	const file = loadKeymaps(env);
+	const change = prepareKeymapChange(id, data, env, file, keybindings);
+	if (change.kind === "refused") return ctx.ui.notify(change.message, change.type);
+	if (change.confirm && !(await ctx.ui.confirm("Keymaps", change.confirm))) return;
+	writeKeymaps(gentlePiConfigHome(env), change.bindings);
+	ctx.ui.notify(keymapSavedNotice(id, keymapLabel(id), env, change.bindings), "info");
+}
+
+async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv, loaded: KeymapBindings = {}): Promise<void> {
 	if (!ctx.hasUI) return;
-	const groups = buildCommandPaletteGroups(pi.getCommands(), {
-		"gentle:changes": changesShortcut(env),
-		"gentle:agents": agentsViewKey(env),
-	});
+	const groups = buildCommandPaletteGroups(pi.getCommands(), paletteShortcuts(pi, env, loaded));
 	if (groups.length === 0) {
 		ctx.ui.notify("No Gentle commands are registered.", "info");
 		return;
 	}
+	let piKeybindings: PiKeybindings | undefined;
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, keybindings, done) => {
+			if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
+			return new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
+		},
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
+	if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
 }
 
 function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true, grouped: (width: number) => boolean = () => false): void {
@@ -1755,8 +1790,6 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
-const USAGE_SHORTCUT_DEFAULT = "alt+u";
-const PRESET_SHORTCUT_DEFAULT = "alt+l";
 const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
 /** The order the preset shortcut walks; a hand-tuned mix starts it on Neutral. */
 const PRESET_CYCLE: readonly VisualPreset[] = [VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL, VISUAL_PRESET.POWER_USER];
@@ -1885,6 +1918,14 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
+	// Pi reads shortcuts once (startup and /reload), so the saved keymaps are read once too.
+	const keymaps = loadKeymaps(env);
+	let keymapsReported = false;
+	pi.on("session_start", (_event, ctx) => {
+		if (!keymaps.malformed || keymapsReported || !ctx.hasUI) return;
+		keymapsReported = true;
+		ctx.ui.notify(`Keymaps: ${keymaps.path} is unreadable or malformed; using the default keys.`, "warning");
+	});
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
@@ -2198,8 +2239,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
-	const usageShortcutKey = usageShortcut(env);
-	const todoKey = todoCollapseKey(env);
+	const usageShortcutKey = usageShortcut(env, keymaps.bindings);
+	const todoKey = todoCollapseKey(env, keymaps.bindings);
 	if (usageShortcutKey) {
 		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show subscription usage windows for the connected providers",
@@ -2752,7 +2793,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
 	});
-	const shortcut = changesShortcut(env);
+	const shortcut = changesShortcut(env, keymaps.bindings);
 	if (shortcut) {
 		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the session's uncommitted Git changes",
@@ -2761,16 +2802,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	}
 	pi.registerCommand(COMMANDS_COMMAND_NAME, {
 		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
-		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env),
+		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 	});
-	const commandsShortcut = commandsKey(env);
+	const commandsShortcut = commandsKey(env, keymaps.bindings);
 	if (commandsShortcut) {
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
-			handler: async (ctx) => showCommandPalette(pi, ctx, env),
+			handler: async (ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 		});
 	}
-	const jobsKey = jobsCollapseKey(env);
+	// A palette command the user gave a key runs exactly as if typed.
+	for (const id of commandKeymapIds(keymaps.bindings)) {
+		const key = effectiveKey(id, env, keymaps.bindings);
+		const command = keymapCommand(id);
+		if (!key || !command) continue;
+		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: `Run /${command}`,
+			handler: async (ctx) => {
+				if (!pi.getCommands().some((registered) => registered.name === command)) {
+					ctx.ui.notify(`${key} runs /${command}, which is not available in this session.`, "warning");
+					return;
+				}
+				pi.sendUserMessage(`/${command}`, { expandPromptTemplates: true });
+			},
+		});
+	}
+	const jobsKey = jobsCollapseKey(env, keymaps.bindings);
 	if (jobsKey) {
 		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the jobs card",
@@ -2781,7 +2838,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 		});
 	}
-	const presetKey = presetShortcut(env);
+	const presetKey = presetShortcut(env, keymaps.bindings);
 	if (presetKey) {
 		pi.registerShortcut(presetKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Cycle the visual preset: Light, Neutral, Power user",
@@ -3089,6 +3146,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				},
 				explicitChoice(key, shown ? "shown" : "hidden", () => visual().visibility[key] === shown),
 			);
+			let piKeybindings: PiKeybindings | undefined;
+			let reloadRequested = false;
+			rows.push(...buildKeymapRows({
+				env,
+				configHome: doubleEscCancelConfigHome,
+				keybindings: () => piKeybindings,
+				commands: paletteCommandsForKeymaps(pi),
+				notify: (message, type) => ctx.ui.notify(message, type),
+				// Pi reloads after this card closes, as the command's last step.
+				reload: () => { reloadRequested = true; close(); },
+			}));
 			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
 			category = "Profiles";
 			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
@@ -3170,7 +3238,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				unobserve = adapter?.observe(() => { void refreshYolo(); });
 				await refreshYolo();
 				if (closed) return;
-				await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				await ctx.ui.custom<null>((tui, theme, keys, done) => {
+					if (typeof (keys as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keys as PiKeybindings;
 					finish = () => done(null);
 					if (closed) done(null);
 					requestYoloRender = () => { if (!closed) tui.requestRender(); };
@@ -3187,6 +3256,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					};
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 			} finally { close(); }
+			if (reloadRequested) await ctx.reload();
 		},
 	});
 	pi.registerCommand("gentle:vim", {

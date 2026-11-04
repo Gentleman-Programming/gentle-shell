@@ -1,6 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./terminal-theme.ts";
 import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 // Pure prompt chrome: neon keeps Pi's rule/content/rule rows in a rounded
 // frame; float retains those indices as painted status/content/padding.
@@ -63,6 +64,9 @@ export interface PromptFrameOptions {
 	 * Ignored outside the WORKING state; undefined falls back to "working…".
 	 */
 	workingLabel?: string;
+	/** A working panel callback is available in fullscreen editor chrome. */
+	panelButton?: boolean;
+	panelHovered?: boolean;
 }
 
 // A terminal cell cannot grow, so the petal earns presence with weight and
@@ -218,11 +222,25 @@ function floatPromptHint(top: string, bottom: string, options: PromptFrameOption
 // scans while working and the right end carries the vim mode or esc hint.
 const PANEL_PROMPT = "› ";
 const PANEL_PROMPT_ROLE = "accent";
+export const PANEL_BUTTON = "[ Panel ]";
 
 function panelPromptRule(width: number, options: PromptFrameOptions, top: string | undefined, right: string | undefined): string {
 	const glyph = petalGlyph(options.state, options.tick);
 	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const label = top ?? stateLabel(options) ?? "waiting for input";
+	if (options.panelButton && width >= visibleWidth(PANEL_BUTTON)) {
+		const button = paintHoverable({ fg: options.fg }, PANEL_BUTTON, options.panelHovered ?? false, "accent");
+		if (width < visibleWidth(PANEL_BUTTON) + 3) return button + options.borderColor(rule(width - visibleWidth(PANEL_BUTTON)));
+		const hintWidth = Math.max(0, width - visibleWidth(PANEL_BUTTON) - 4);
+		const hint = right && hintWidth > 0 ? truncateToWidth(right, hintWidth, "…") : "";
+		const end = ` ${button}${hint ? ` ${options.fg(LABEL_ROLE, hint)}` : ""} ${options.borderColor("─")}`;
+		const available = width - visibleWidth(end);
+		if (available < 4) return options.borderColor(rule(available)) + end;
+		const clipped = truncateToWidth(label, Math.max(0, available - 5), "…");
+		const painted = options.state === PROMPT_STATE.WORKING && !top ? scanWorkingText(clipped, options.tick, options.fg) : options.fg(LABEL_ROLE, clipped);
+		const fill = available - 4 - visibleWidth(clipped);
+		return `${options.borderColor("─ ")}${petal} ${painted}${options.borderColor(rule(fill))}${end}`;
+	}
 	const painted = options.state === PROMPT_STATE.WORKING && !top ? scanWorkingText(label, options.tick, options.fg) : options.fg(LABEL_ROLE, label);
 	const end = right ? ` ${options.fg(LABEL_ROLE, right)} ` : "";
 	const titleWidth = 2 + visibleWidth(glyph) + 1 + visibleWidth(label) + 1;

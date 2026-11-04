@@ -294,6 +294,36 @@ test("the panel prompt layout gives the input a two-column prompt and no right b
 	assert.deepEqual({ width: layout.width, nativeWidth: layout.nativeWidth, prefixWidth: layout.prefixWidth, background: layout.background, panel: layout.panel }, { width: 60, nativeWidth: 58, prefixWidth: 2, background: "", panel: true });
 });
 
+test("the panel rule reserves a distinct, hoverable Panel control with and without Vim", () => {
+	const colors: Record<string, number> = { accent: 30, warning: 208, muted: 245 };
+	const fg = (role: string, text: string) => `\x1b[38;5;${colors[role] ?? 255}m${text}\x1b[39m`;
+	for (const width of [24, 40, 80, 139, 180]) {
+		const layout = resolvePromptLayout(width, "neon", undefined, true);
+		for (const escHint of [undefined, "INSERT"]) {
+			const render = (panelHovered: boolean) => framePromptLines(editorLines(width), width, options({ fg, escHint, panelButton: true, panelHovered }), layout);
+			const idle = render(false);
+			const hovered = render(true);
+			assert.equal(idle.length, 3);
+			assert.ok(idle.every((line) => visibleWidth(line) === width));
+			assert.ok(idle[0]!.includes("\x1b[38;5;30m[ Panel ]\x1b[39m"), `accent control at width ${width}`);
+			assert.ok(hovered[0]!.includes("\x1b[38;5;208m[ Panel ]\x1b[39m"), "hover uses the shared warning role");
+			if (escHint) assert.match(stripAnsi(idle[0]!), /\[ Panel \].*INSERT/);
+			assert.deepEqual(render(false), idle, "leaving returns the idle appearance");
+		}
+	}
+	const layout = resolvePromptLayout(80, "neon", undefined, true);
+	const withHint = framePromptLines(editorLines(80), 80, options({ fg, panelButton: true, escHint: "INSERT · esc again to cancel", state: PROMPT_STATE.WORKING, workingLabel: "exploring…" }), layout);
+	assert.match(stripAnsi(withHint[0]!), /exploring….*\[ Panel \].*INSERT · esc again to cancel/);
+	const queued = framePromptLines(editorLines(80), 80, options({ fg, panelButton: true, state: PROMPT_STATE.QUEUED }), layout);
+	assert.match(stripAnsi(queued[0]!), /queued.*\[ Panel \]/);
+	for (const width of [9, 10, 12, 16, 20]) {
+		const narrow = framePromptLines(editorLines(24), width, options({ fg, panelButton: true, escHint: "INSERT" }), resolvePromptLayout(width, "neon", undefined, true));
+		assert.ok(narrow.every((line) => visibleWidth(line) <= width), `width ${width}: ${narrow.map(visibleWidth).join(", ")}`);
+		assert.ok(stripAnsi(narrow[0]!).includes("[ Panel ]"));
+	}
+	assert.doesNotMatch(framePromptLines(editorLines(80), 80, options({ fg, panelButton: true })).join("\n"), /\[ Panel \]/, "regular chrome never promises an inert control");
+});
+
 test("the panel prompt frame titles its rule with state and mode and keeps the row count", () => {
 	const plain = (_color: string, text: string) => text;
 	const layout = resolvePromptLayout(40, "neon", undefined, true);

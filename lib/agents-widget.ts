@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
 import { paintHoverable } from "./shell-hover.ts";
-import { CARD_TONE, paintSurfaceRow, panelExtraRows, panelInnerWidth, renderCard, surfaceOpener, type CardTheme, type CardTone } from "./shell-card.ts";
+import { CARD_TONE, paintSurfaceRow, panelExtraRows, panelHeaderRow, panelInnerWidth, renderCard, surfaceOpener, type CardTheme, type CardTone } from "./shell-card.ts";
 import { fitPanelLine, PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 
 // Gentle Agents widget: the card above the editor. Reads task records only
@@ -23,6 +23,10 @@ export interface AgentsWidgetOptions {
 	// same control the Todos card carries; hovered paints its hover role.
 	collapseControl?: boolean;
 	hovered?: boolean;
+	/** Physical row under the pointer, including the header and panel chrome. */
+	hoveredRow?: number;
+	/** Publish the physical rows actually occupied by individual agents. */
+	onAgentRow?: (row: number) => void;
 }
 
 interface StatusLook {
@@ -253,26 +257,28 @@ function columns(tasks: readonly TaskRecord[], inner: number, now: number): Colu
 	return { inner, name, meta: Math.max(0, Math.min(inner - fixed, narrow)), task: 0, columnar: false };
 }
 
-function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean): string[] {
+function row(task: TaskRecord, theme: CardTheme, cols: Columns, now: number, allowMetadataRow: boolean, hoveredRow?: number): string[] {
 	const look = LOOK[task.status];
 	const name = clip(task.agent, cols.name);
-	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${theme.fg(NAME_ROLE, name)}${" ".repeat(cols.name - visibleWidth(name))}`;
+	const paint = (role: string, text: string, index: number) => paintHoverable(theme, text, hoveredRow === index, role);
+	const head = `${theme.fg(look.role, look.glyph)}${GLYPH_GAP}${paint(NAME_ROLE, name, 0)}${" ".repeat(cols.name - visibleWidth(name))}`;
 	const metadata = cols.columnar && cols.metaWidths ? metaRowText(task, now, cols.metaWidths) : task.status === TASK_STATUS.QUEUED ? clip("queued", cols.meta) : executionLabel(task, cols.meta);
-	const tail = theme.fg(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata);
+	const tail = paint(META_ROLE, " ".repeat(Math.max(0, cols.meta - visibleWidth(metadata))) + metadata, 0);
 	if (cols.inner < 3) return [theme.fg(look.role, clip(look.glyph, cols.inner))];
 	// The scrollable sidebar can preserve identity and execution metadata on
 	// separate rows. The height-capped above-editor widget keeps its row budget.
 	if (cols.task === 0) {
 		const separateMetadata = allowMetadataRow && !cols.columnar && task.status !== TASK_STATUS.QUEUED && visibleWidth(executionLabel(task)) > cols.meta;
-		const rows = separateMetadata
-			? [head, theme.fg(META_ROLE, executionLabel(task, cols.inner))]
-			: [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
 		const activity = clip(taskText(task), cols.inner);
-		if (allowMetadataRow && activity) rows.splice(1, 0, theme.fg(TASK_ROLE, activity));
+		const hasActivity = allowMetadataRow && Boolean(activity);
+		const rows = separateMetadata
+			? [head, paint(META_ROLE, executionLabel(task, cols.inner), hasActivity ? 2 : 1)]
+			: [`${head}${" ".repeat(Math.max(0, cols.inner - visibleWidth(head) - visibleWidth(tail)))}${tail}`];
+		if (hasActivity) rows.splice(1, 0, paint(TASK_ROLE, activity, 1));
 		return rows;
 	}
 	const text = clip(taskText(task), cols.task);
-	return [`${head}${COLUMN_GAP}${theme.fg(TASK_ROLE, text)}${" ".repeat(cols.task - visibleWidth(text))}${COLUMN_GAP}${tail}`];
+	return [`${head}${COLUMN_GAP}${paint(TASK_ROLE, text, 0)}${" ".repeat(cols.task - visibleWidth(text))}${COLUMN_GAP}${tail}`];
 }
 
 function counts(tasks: readonly TaskRecord[]): string {
@@ -324,7 +330,13 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 	const maxRows = options.maxRows === undefined ? undefined : options.maxRows - extraRows;
 	const { listed, hidden } = options.collapsed ? { listed: [shown[0]], hidden: 0 } : visibleRows(shown, maxRows, extraRows > 0);
 	const hint = options.collapsed && options.collapseKey ? `${options.collapseKey} expand` : shown.length > 1 ? batchElapsed(shown, now) : undefined;
-	const body = listed.flatMap((task) => row(task, theme, cols, now, options.maxRows === undefined));
+	let bodyRow = panelHeaderRow(theme, width, tone(shown)) + 1 + (extraRows > 0 ? 1 : 0);
+	const body = listed.flatMap((task) => {
+		const rows = row(task, theme, cols, now, options.maxRows === undefined, options.hoveredRow === undefined ? undefined : options.hoveredRow - bodyRow);
+		for (let index = 0; index < rows.length; index++) options.onAgentRow?.(bodyRow + index);
+		bodyRow += rows.length;
+		return rows;
+	});
 	if (hidden > 0) body.push(overflowRow(hidden, theme, options.viewKey));
 	const icon = options.collapsed ? "▸" : "▾";
 	const control = `${icon} ${width >= 28 ? (options.collapsed ? "Expand" : "Collapse") : ""}`.trimEnd();
@@ -370,7 +382,7 @@ function sectionCount(shown: readonly TaskRecord[]): string {
 	return rest.length > 0 ? rest.join(" · ") : "idle";
 }
 
-export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: Pick<AgentsWidgetOptions, "collapsed" | "hovered">): string[] {
+export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardTheme, width: number, now: number, options: Pick<AgentsWidgetOptions, "collapsed" | "hovered" | "hoveredRow" | "onAgentRow">): string[] {
 	const shown = widgetTasks(tasks, now);
 	const header = renderPanelHeader(theme, width, { title: "Agents", count: sectionCount(shown), open: !options.collapsed, hovered: options.hovered });
 	if (shown.length === 0) return [header, renderPanelRow(width, theme.fg(META_ROLE, `none running · ${AGENTS_VIEW}`))];
@@ -384,15 +396,18 @@ export function renderAgentsSection(tasks: readonly TaskRecord[], theme: CardThe
 	const kindWidth = Math.min(KIND_MAX, Math.max(0, ...listed.map((task) => visibleWidth(agentKind(task.agent)))));
 	const rightWidth = Math.max(0, ...listed.map((task) => visibleWidth(sectionRight(task, now))));
 	const taskWidth = Math.max(1, width - PANEL_ROW_INDENT - 2 - 1 - kindWidth - 1 - rightWidth);
-	const rows = listed.map((task) => {
+	const rows = listed.map((task, index) => {
+		if (!options.collapsed || index === 0) options.onAgentRow?.(index + 1);
 		const look = LOOK[task.status];
+		const hovered = options.hoveredRow === index + 1;
+		const paint = (role: string, text: string) => paintHoverable(theme, text, hovered, role);
 		// A run that moved to a fallback model is marked in its own task column,
 		// the flexible one, so the shared kind and right columns never change;
 		// the task stays first and the model follows when there is room.
 		const text = clip(task.fallbackFrom ? `↪ ${taskText(task)} · ${task.model.slice(task.model.lastIndexOf("/") + 1)}` : taskText(task), taskWidth);
 		const kind = clip(agentKind(task.agent), kindWidth);
-		const left = `${theme.fg(look.role, look.glyph)} ${theme.fg(SECTION_TEXT_ROLE[task.status] ?? NAME_ROLE, text)}${" ".repeat(taskWidth - visibleWidth(text))} ${theme.fg(TASK_ROLE, kind)}`;
-		return renderPanelRow(width, left, theme.fg(META_ROLE, sectionRight(task, now).padStart(rightWidth)));
+		const left = `${theme.fg(look.role, look.glyph)} ${paint(SECTION_TEXT_ROLE[task.status] ?? NAME_ROLE, text)}${" ".repeat(taskWidth - visibleWidth(text))} ${paint(TASK_ROLE, kind)}`;
+		return renderPanelRow(width, left, paint(META_ROLE, sectionRight(task, now).padStart(rightWidth)));
 	});
 	if (!fits) rows.push(renderPanelRow(width, theme.fg(META_ROLE, `${ELLIPSIS} ${ordered.length - listed.length} more · ${AGENTS_VIEW}`)));
 	const body = [...rows, ...summaries];

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, afterEach, type TestContext } from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type SlashCommandInfo, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiMainScreen, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, stripTerminalSequences as stripAnsi, TuiAltScreen, TuiMainScreen, VStack, visibleWidth, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import installGentleShell, { backgroundChangeRefreshesSettled, buildShellBarModel, createActiveProfileReader, changesShortcut, devBinaryCard, extractQueuedText, fetchCodexUsage, fetchNanUsage, loadFileDiff, shellGitRunner, openInExternalEditor, usageShortcut, GentlePromptEditor } from "../extensions/gentle-shell.ts";
 import { CODEX_USAGE_URL, NAN_QUOTA_URL, USAGE_SOURCE_EVENT, USAGE_SOURCE_SCHEMA } from "../lib/shell-usage.ts";
 import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
@@ -19,6 +19,7 @@ afterEach(() => resetFrozenInheritedProfilesForTesting());
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 import { sidebarPart, sidebarState, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 import { renderTodoCard } from "../lib/shell-todo.ts";
 import type { ShellBarTheme } from "../lib/shell-bar.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -966,6 +967,169 @@ test("gentleShell stays out of the way without a UI or when disabled", () => {
 const fakeTui = { terminal: { rows: 40, columns: 120 }, requestRender() {} };
 const editorTheme = { borderColor: (text: string) => text, selectList: {} };
 const fakeKeybindings = { matches: () => false };
+
+test("panel control owns its rendered mouse cells across top rows and Vim modes", () => {
+	for (const vim of [false, true]) {
+		const tui = fakeTui;
+		let opens = 0;
+		const fg = (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : role === "accent" ? 30 : 245}m${text}\x1b[39m`;
+		const topRows = vim ? ["work", "alert"] : [];
+		const editor = new GentlePromptEditor(tui as never, editorTheme as never, fakeKeybindings as never, {
+			fg, bold: (text) => text, requestRender() {}, pending: () => false, now: () => 0,
+			doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, tuiVersion: () => INSTALLED_PI,
+			panelChrome: () => true, topRows: () => topRows, onPanelClick: () => { opens++; },
+		});
+		try {
+			if (vim) editor.setVimPolicy("on");
+			editor.setText("draft");
+			const before = editor.getCursor();
+			const rule = topRows.length;
+			const initial = editor.render(80);
+			const start = stripAnsi(initial[rule]!).indexOf("[ Panel ]");
+			assert.ok(start >= 0, "the no-work prompt always shows a Panel control");
+			if (vim) assert.match(stripAnsi(initial[rule]!), /\[ Panel \].*INSERT/);
+			const event = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], x: number, y = rule): TuiMouseEvent => ({ type, button, x, y, screenX: x + 10, screenY: y + 20, width: 80, height: initial.length, shift: false, alt: false, ctrl: false });
+			editor.handleMouse(event("click", "right", start));
+			editor.handleMouse(event("click", "left", start - 1));
+			editor.handleMouse({ ...event("click", "left", start), width: 79 });
+			assert.equal(opens, 0);
+			assert.deepEqual(editor.getCursor(), before, "non-button rule clicks never move the editor");
+			editor.handleMouse(event("move", "none", start));
+			assert.ok(editor.render(80)[rule]!.includes("\x1b[38;5;208m[ Panel ]\x1b[39m"));
+			editor.handleMouse(event("move", "none", start - 1));
+			assert.ok(editor.render(80)[rule]!.includes("\x1b[38;5;30m[ Panel ]\x1b[39m"));
+			editor.handleMouse(event("move", "none", start));
+			editor.invalidate();
+			assert.ok(editor.render(80)[rule]!.includes("\x1b[38;5;30m[ Panel ]\x1b[39m"), "invalidation clears hover");
+			assert.equal(editor.handleMouse(event("press", "left", start))?.handled, true, "the native press owns the click gesture");
+			for (const x of [start, start + "[ Panel ]".length - 1]) editor.handleMouse(event("click", "left", x));
+			assert.equal(opens, 2, "both rendered bracket cells activate the control");
+			assert.deepEqual(editor.getCursor(), before, "button clicks never move the editor");
+		} finally { editor.dispose(); }
+	}
+	const regular = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_role, text) => text, bold: (text) => text, requestRender() {}, pending: () => false, now: () => 0,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, panelChrome: () => false, onPanelClick() { throw new Error("regular mode cannot open the button"); },
+	});
+	try { assert.doesNotMatch(regular.render(80).join("\n"), /\[ Panel \]/); }
+	finally { regular.dispose(); }
+});
+
+test("editor hover reports rendering on entry but not repeated motion", () => {
+	let renders = 0;
+	const editor = new GentlePromptEditor(fakeTui as never, editorTheme as never, fakeKeybindings as never, {
+		fg: (_role, text) => text, bold: (text) => text, requestRender() { renders++; }, pending: () => false, now: () => 0,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, panelChrome: () => true,
+		topRows: () => ["work"], onPanelClick() {},
+	});
+	try {
+		const rows = editor.render(80);
+		const event = (x: number, y: number): TuiMouseEvent => ({ type: "move", button: "none", x, y, screenX: x, screenY: y, width: 80, height: rows.length, shift: false, alt: false, ctrl: false });
+		assert.deepEqual(editor.handleMouse(event(3, 0)), { handled: true, render: true }, "first work-row hover requests a render");
+		const afterWork = renders;
+		assert.deepEqual(editor.handleMouse(event(3, 0)), { handled: true });
+		assert.equal(renders, afterWork, "repeated work-row motion does not repaint");
+		const x = stripAnsi(rows[1]!).indexOf("[ Panel ]");
+		assert.deepEqual(editor.handleMouse(event(x, 1)), { handled: true, render: true }, "entering Panel requests a render");
+		const afterPanel = renders;
+		assert.deepEqual(editor.handleMouse(event(x, 1)), { handled: true });
+		assert.equal(renders, afterPanel, "repeated Panel motion does not repaint");
+	} finally { editor.dispose(); }
+});
+
+test("fullscreen mouse dispatch clears Panel hover after leaving the editor", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, columns: 80, rows: 24, kittyProtocolActive: false,
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const fg = (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : role === "accent" ? 30 : 245}m${text}\x1b[39m`;
+	let opens = 0;
+	const editor = new GentlePromptEditor(tui, editorTheme as never, fakeKeybindings as never, {
+		fg, bold: (text) => text, requestRender: () => tui.requestRender(), pending: () => false, now: () => 0,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, panelChrome: () => true, onPanelClick() { opens++; },
+	});
+	const outside = { render: () => ["outside"], invalidate() {} };
+	tui.setLayoutRoot(new VStack([editor, outside]));
+	const uninstall = installSidebar(tui, plainTheme);
+	tui.start();
+	try {
+		tui.renderNow(true);
+		const x = stripAnsi(editor.render(80)[0]!).indexOf("[ Panel ]");
+		const cursor = editor.getCursor();
+		input?.(`\x1b[<0;${x + 1};1M`);
+		input?.(`\x1b[<0;${x + 1};1m`);
+		assert.equal(opens, 1, "native primary press and release open the panel");
+		assert.deepEqual(editor.getCursor(), cursor);
+		input?.(`\x1b[<35;${x + 1};1M`);
+		assert.ok(editor.render(80)[0]!.includes("\x1b[38;5;208m[ Panel ]\x1b[39m"), "native motion enters the control");
+		input?.("\x1b[<35;1;4M");
+		assert.ok(editor.render(80)[0]!.includes("\x1b[38;5;30m[ Panel ]\x1b[39m"), "native motion into a sibling clears hover");
+	} finally { uninstall(); editor.dispose(); tui.stop(); }
+});
+
+test("installed sidebar clears mobile Panel hover on unhandled native transcript motion", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, columns: 80, rows: 24, kittyProtocolActive: false,
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const fg = (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : role === "accent" ? 30 : 245}m${text}\x1b[39m`;
+	const editor = new GentlePromptEditor(tui, editorTheme as never, fakeKeybindings as never, {
+		fg, bold: (text) => text, requestRender: () => tui.requestRender(), pending: () => false, now: () => 0,
+		doubleEscCancelEnabled: () => false, dispatchQueuedText() {}, panelChrome: () => true, onPanelClick() {},
+	});
+	const outside = { render: () => ["transcript"], invalidate() {} };
+	tui.setLayoutRoot(new VStack([editor, outside]));
+	const uninstall = installSidebar(tui, plainTheme);
+	tui.start();
+	try {
+		tui.renderNow(true);
+		const x = stripAnsi(editor.render(80)[0]!).indexOf("[ Panel ]");
+		input?.(`\x1b[<35;${x + 1};1M`);
+		assert.ok(editor.render(80)[0]!.includes("\x1b[38;5;208m[ Panel ]\x1b[39m"));
+		input?.("\x1b[<35;1;4M");
+		assert.ok(editor.render(80)[0]!.includes("\x1b[38;5;30m[ Panel ]\x1b[39m"), "unhandled transcript motion clears the hover");
+	} finally { uninstall(); editor.dispose(); tui.stop(); }
+});
+
+test("installed fullscreen Panel button opens the panel sheet with no live work", async () => {
+	const previousStyle = cardStyle();
+	const { pi, handlers } = fakePi();
+	installGentleShell(pi, { GENTLE_PI_CONFIG_HOME: "/dev/null" }, {
+		activeProfile: () => undefined, resolveWorktree: () => undefined, rootExists: () => false,
+		gitRunner: () => async () => ({ stdout: "", stderr: "", code: 0 }),
+		fetch: async () => { throw new Error("network forbidden in test"); },
+	});
+	const { ctx, ui } = fakeContext();
+	const tui = { ...fakeTui, mode: "fullscreen", terminal: { rows: 24, columns: 80 } };
+	try {
+		await fire(handlers, "session_start", ctx);
+		const state = sidebarState(tui as unknown as TUI);
+		state.layoutAttached = () => true;
+		const factory = ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor;
+		const editor = factory(tui, editorTheme, fakeKeybindings);
+		try {
+			const rows = editor.render(80);
+			const x = stripAnsi(rows[0]!).indexOf("[ Panel ]");
+			assert.ok(x >= 0, "the button is visible without agents or todos");
+			editor.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: 80, height: rows.length, shift: false, alt: false, ctrl: false });
+			assert.ok(ui.overlayView, "the click opens the panel sheet");
+			assert.match(stripAnsi(ui.overlayView!.render(80).join("\n")), /PANEL/i);
+			ui.closeOverlay?.();
+			tui.terminal.columns = 160;
+			state.active = true;
+			state.ownsHost = () => true;
+			const wide = editor.render(107);
+			assert.doesNotMatch(stripAnsi(wide[0]!), /\[ Panel \]/, "desktop editor must not offer the mobile Panel control");
+		} finally { editor.dispose(); }
+	} finally {
+		await fire(handlers, "session_shutdown", ctx);
+		setCardStyle(previousStyle);
+	}
+});
 
 function installedPrompt(
 	ctx: ExtensionContext,

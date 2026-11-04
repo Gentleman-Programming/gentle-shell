@@ -63,7 +63,7 @@ test("AC3: small work runs its checks inline and keeps test-first", () => {
 	for (const clause of [
 		"run the focused test and the suite inline in one command",
 		"observe RED inline before the fix",
-		"No explore, worker, or verifier",
+		"No explore, worker, or verifier unless a trigger fires",
 		"no feature document, mirror, or commits unless the user asks",
 		"needs no lazy asset",
 	]) {
@@ -292,6 +292,50 @@ test("T6: each delegation module carries its own clauses and names the modules i
 	assert.ok(!/Lossless Blocking Prompts rules above/.test(writer), "the writer module must not point at rules 'above' that live in another module");
 	assert.ok(writer.includes("`orchestrator-prompts.md`"), "the writer module must name the module that holds the blocking-prompt rules");
 	assert.ok(!delegation.includes("precedence in rule 2"), "cross-references name rules, not ambiguous numbers");
+});
+
+// These assertions exercise the shipped core rendering, not model behavior.
+const renderedCore = __testing.renderOrchestratorPrompt(join(REPO_ROOT, "assets"));
+
+test("S1: a fired evidence trigger overrides an initial size classification", () => {
+	assert.match(renderedCore, /A fired trigger overrides initial size/);
+	assert.match(renderedCore, /stop and delegate/);
+});
+
+test("S1: iterative discovery reassesses cumulative evidence without resetting batches", () => {
+	assert.match(renderedCore, /Reassess cumulative discovery each batch, never reset/);
+	assert.match(renderedCore, /more than one read batch or >~5 sequential lookups/);
+});
+
+test("S1: task size uses only small and large", () => {
+	const size = sectionOf(renderedCore, "## Task Size");
+	assert.match(size, /Task size: small or large/);
+	assert.doesNotMatch(size, /small-ish/);
+});
+
+test("S1: read-only authorization does not exempt exploration from the budget", () => {
+	assert.match(renderedCore, /including read-only: it limits mutation, not routing/);
+	assert.match(renderedCore, /Exempt only preparation for an understood inline write, not discovery/);
+});
+
+test("S1: routing guidance mirrors cumulative precedence and the narrow preparation exception", () => {
+	const card = read("assets/orchestrator-delegation.md");
+	for (const clause of [
+		"Reassess cumulative discovery after each batch; never reset it",
+		"the trigger overrides initial size, including for read-only work",
+		"Preparation for an already understood inline write stays inline, not further discovery",
+	]) assert.ok(card.includes(clause), `delegation card is missing: ${clause}`);
+	assert.ok(skill.includes("A fired trigger overrides initial task size; read-only restricts mutation, not exploration"));
+	assert.ok(read("docs/readme-reference.md").includes("a fired evidence-budget trigger takes precedence over initial size"));
+	assert.match(sectionOf(core, "## Task Size"), /No explore, worker, or verifier unless a trigger fires/);
+	assert.doesNotMatch(sectionOf(core, "## Mechanisms"), /when in doubt work inline(?! within the evidence budget)/);
+});
+
+test("S1: a known small targeted request within budget keeps the inline path", () => {
+	const size = sectionOf(renderedCore, "## Task Size");
+	assert.match(size, /Small path: inline/);
+	assert.match(size, /one bounded read batch \(at most 3 calls, ~10k tokens\)/);
+	assert.match(size, /run the focused test and the suite inline in one command/);
 });
 
 test("T6: the readme no longer sends every suite to a verifier or tracks 'substantial' work", () => {

@@ -13,9 +13,16 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+export type ServiceTier = "standard" | "fast";
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return value === "standard" || value === "fast";
+}
+
 export interface AgentRoutingEntry {
 	model?: string;
 	thinking?: ThinkingLevel;
+	tier?: ServiceTier;
 }
 
 export type AgentModelConfig = Record<string, AgentRoutingEntry>;
@@ -73,10 +80,11 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 		: isThinkingLevel(value.effort)
 			? value.effort
 			: undefined;
-	if (!model && !thinking) {
+	const tier = isServiceTier(value.tier) ? value.tier : undefined;
+	if (!model && !thinking && !tier) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}
-	return { model, thinking };
+	return { model, thinking, ...(tier === undefined ? {} : { tier }) };
 }
 
 export function normalizeModelConfig(value: unknown): AgentModelConfig | undefined {

@@ -346,7 +346,7 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 // once its condition truly holds; none holds by default, inline when in doubt.
 test("delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {
 	for (const clause of [
-		"Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline.",
+		"Each trigger holds only when its condition truly holds; none holds by default. Inline stays within the evidence budget.",
 		"stop and delegate through the runtime's subagent mechanism before continuing",
 		"executing past a fired trigger inline is a routing defect even if the work succeeds",
 		"**Mapping trigger",

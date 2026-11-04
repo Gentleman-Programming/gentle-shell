@@ -3343,6 +3343,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return {
 						render: (width) => closed ? [] : view.render(width),
 						handleInput: (data) => { if (!closed) view.handleInput(data); },
+						handleMouse: (event) => closed ? undefined : view.handleMouse(event),
 						focus: (label: string) => !closed && view.focus(label),
 						invalidate: () => { if (!closed) view.invalidate(); },
 						dispose: close,

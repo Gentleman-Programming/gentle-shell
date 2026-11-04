@@ -1,0 +1,25 @@
+# Modal mouse and orange hover
+Objective: Complete mouse affordances in the selected everyday modal interfaces while preserving keyboard behavior. Branch: `feat/modal-mouse-hover`; baseline: `174adc4c92bcaf61be72c70546ec1af70c481c35` plus the already-verified Customize click diff.
+Delivery: local work-unit commits, `auto-chain` / `feature-branch-chain` for future review slices; no remote delivery. Forecast: ~1200–1800 authored lines including tests. Runner: `node --experimental-strip-types --test <focused paths>`, `pnpm run typecheck`, one final `pnpm test`.
+
+## Specs
+S1. "quiero dar posibilidad de utilizar el raton para hacer click en las diferentes opciones de /gentle:customize, ahora es solo con teclado" — Preserve the already-implemented fullscreen click support and keyboard fallback. Check: existing Customize tests, real SGR dispatch, permission and confirmation boundaries.
+S2. "no no pasa nada, identifica otros modales y demas para agregar soporte a mouse tambien, te falta el hover en naranja cdomo el resto de interactuables" — Match the existing shared `paintHoverable` / warning hover role for actionable visible cells; hovering must not select, apply or grant anything. Check: RED/GREEN pointer motion and native modal dispatch; rendered visual evidence before/after where feasible.
+S3. "Menús habituales (recomendado)" — Selected scope is the exact presented option: "Customize, Commands y Jobs; unificar también el hover de cuestionarios y selectores de respuestas. Sin tocar consentimiento de review." Add Commands/Jobs mouse support, align Questionnaire/NativeChoice hover, and preserve existing behavior. Check: focused component and wrapper tests, stale geometry/identity and keyboard compatibility. Review consent and SDK/dependencies are excluded.
+S4. "no no pasa nada" — Do not investigate or fix unrelated general-suite failures. Report observed failures honestly. Existing previous-suite result: 8321 tests, 8205 passed, 38 failed, 78 skipped; four baseline matches, 34 unattributed. Check: scoped checks plus one final full-suite observation, no unrelated fixes.
+
+## Tasks
+T0 | S1 | inline | in_progress | Preserve previously verified Customize clicks as a coherent baseline work unit; commit pending; prior focused 382/382, typecheck 0, diffcheck 0; independent security verification PASS.
+T1 | S1,S2,S3 | delegated (context backstop; independent behavior unit) | pending | Customize orange hover and pointer lifecycle; preserve click/consent semantics; commit pending.
+T2 | S2,S3 | delegated (parallel independent Commands behavior) | pending | Commands palette native clicks/hover and keyboard preservation; commit pending.
+T3 | S2,S3 | delegated (parallel independent Jobs behavior) | pending | Jobs native selection/controls/hover with current job identity/status validation; commit pending.
+T4 | S2,S3 | delegated (context backstop; independent question affordances) | pending | Questionnaire and NativeChoice orange hover without changing answer semantics; commit pending.
+T5 | S1-S4 | inline orchestration + independent high-risk verifier | pending | Docs, visual evidence, focused/type/full checks, security/identity verification and final work-unit evidence; commit pending.
+
+## Log
+L1. Original request, verbatim: "quiero dar posibilidad de utilizar el raton para hacer click en las diferentes opciones de /gentle:customize, ahora es solo con teclado"
+L2. Scope extension, verbatim: "no no pasa nada, identifica otros modales y demas para agregar soporte a mouse tambien, te falta el hover en naranja cdomo el resto de interactuables"
+L3. User selected "Menús habituales (recomendado)" with description "Customize, Commands y Jobs; unificar también el hover de cuestionarios y selectores de respuestas. Sin tocar consentimiento de review."
+L4. Classified tracked because selected multi-unit scope, exclusion boundaries, prior task ownership and per-unit proof cannot be reconstructed reliably from the broad request and diff alone. Writer trigger: independent several-minute behavior units and runtime-reported context backstop. Parent owns git and shared docs/wrappers. Existing unrelated edits: lib/shell-sidebar-layout.ts, pnpm-lock.yaml, .worktrees/, odd/work/, skills/gentle-ui-design/.
+L5. Delivery choice made under session standing implementation-choice permission: local feature branch work-unit slices; no PR creation/push. Prior Customize coherent click unit is 473 authored lines including durable security regressions; retain tests rather than shrink to the ~400 advisory target. Preserve its diff at /tmp/gentle-modal-baseline.ikFX0l/prior-customize.patch.
+L6. Required safety: reuse existing action/busy/modal/confirmation paths and shared hover token. Do not modify review consent or SDK dependencies. Existing shell snapshot reads live sessions; use isolated synthetic actual components for any new visual capture, never private sessions/credentials. Native outside-card hover leave needs real integration evidence, not unsupported timers/private listener manipulation.

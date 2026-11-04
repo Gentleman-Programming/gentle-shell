@@ -44,6 +44,10 @@ The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI 
 
 Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, rose for whatever is alive.
 
+### Customize with a mouse
+
+In fullscreen, `/gentle:customize` supports left-click on visible categories, setting rows and values. Clicking a value applies it; compact `‹`/`›` arrows follow the same immediate or preview-first behavior as the keyboard arrows. Confirmations still require an explicit click on `y yes` (or the `y` key); click `cancel` to decline when it is visible. In regular mode the terminal owns mouse input, so use the keyboard instead.
+
 ### Fullscreen layout
 
 At 140 columns or wider, fullscreen with the header on top draws an IDE inside the terminal (design: [`design/shell-rework`](../design/shell-rework/02-proposal.html)), driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):

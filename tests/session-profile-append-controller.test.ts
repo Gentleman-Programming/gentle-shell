@@ -729,3 +729,25 @@ for (const changed of ["data", "timestamp", "parentId", "extra"] as const) {
   assert.equal(current.refresh().status, "indeterminate");
  });
 }
+
+test("the attachment appends the A2 startup bind, explicit startup state and startup-none clear", () => {
+ const f = fixture();
+ f.mode = "disk";
+ const team = { worker: { model: "provider/team" }, orchestrator: { model: "provider/main" } };
+ const startup = { origin: "repo" as const, name: "team", modelProfiles: team };
+ const outcomes = [
+  f.controller.bindStartup("repo", "team", team),
+  f.controller.bind("chosen", {}, startup),
+  f.controller.clear("none"),
+ ];
+ assert.deepEqual(outcomes, [
+  { status: "persisted", state: { status: "bound", binding: { kind: "bind", ...startup }, entryIndex: 0, lineNumber: 2 } },
+  { status: "persisted", state: { status: "bound", binding: { kind: "bind", origin: "user", name: "chosen", modelProfiles: {}, startup }, entryIndex: 1, lineNumber: 3 } },
+  { status: "persisted", state: { status: "cleared", startup: "none", entryIndex: 2, lineNumber: 4 } },
+ ]);
+ assert.deepEqual(f.rows.map((row) => row.data), [
+  { kind: "bind", ...startup },
+  { kind: "bind", origin: "user", name: "chosen", modelProfiles: {}, startup },
+  { kind: "clear", startup: "none" },
+ ]);
+});

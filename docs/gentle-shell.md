@@ -154,6 +154,16 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 
 `/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its current key where it has one (a key saved but not yet applied reads `(reload)`); a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, `tab` assigns a key to it (press the key next; escape cancels), escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.
 
+### Guided tour
+
+`/gentle:guide` gives a guided tour of Gentle Shell, one step at a time, in the style of [driver.js](https://driverjs.com/). Each step is a popover beside the part of the screen it describes (the prompt, the sidebar or the middle of the screen) with a step counter and the command and key to try it.
+
+- **With a model**, the agent drives the tour through its `gentle_guide` tool and explains each step in the chat. The popover never takes the prompt's focus: reply to continue, or ask anything and the agent answers before moving on.
+- **Without a model**, or with `/gentle:guide local`, you step through it yourself: `→`, `Enter` or `Space` next, `←` back, `Esc` ends.
+- `/gentle:guide stop` closes the tour at any point.
+
+Steps only appear for features the session has (for example, Design only when `/gentle:design` is registered). The startup banner ends with a one-line reminder of `/gentle:guide` on every start, while the command exists.
+
 ### Keymaps
 
 Every Gentle shortcut, and any command in the palette, can get a key of your choice:

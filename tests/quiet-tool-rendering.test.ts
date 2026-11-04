@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
 import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
+// The real host row: pi builds the call and result components and wraps each in
+// the click region that owns expansion, so click behaviour is only proven by
+// driving that component. The package export map does not expose it, so the test
+// reads the shipped file directly (other suites do the same for pi internals).
+import { ToolExecutionComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
@@ -1626,9 +1631,179 @@ test("a narrow bash card keeps its heading and wraps the call detail below it", 
 	assert.match(frameLines(bash.renderCall({ command }, passthroughTheme, context), 44)[0] ?? "", /to expand/);
 });
 
+// A quiet card expands through the host, not beside it. pi wraps the call and the
+// result of one row in click regions that toggle the row's own `expanded`, which
+// is also what the card paints and what the expand key moves. So a click has to
+// work through the real host: these fixtures drive pi's ToolExecutionComponent.
+const hostUi = { requestRender() {} };
+
+function hostMouse(type: string, line: number, width: number, button = "left") {
+	return { type, button, x: 4, y: line, screenX: 4, screenY: line, width, height: 40, shift: false, alt: false, ctrl: false };
+}
+
+/** The parts of a drawn host row the click tests act on, shared by Gentle cards and pi's own rows. */
+function hostView(component: any, width: number) {
+	const render = () => component.render(width).map((row: string) => stripAnsi(row).trimEnd());
+	const lineOf = (pattern: RegExp) => render().findIndex((row: string) => pattern.test(row));
+	return {
+		component,
+		rows: render,
+		expanded: () => component.expanded === true,
+		/** The drawn row that carries the call (`▎ ◎ exploring · git status ── …`). */
+		heading: () => {
+			const marked = lineOf(/[◎≡$✎☷⌕⌖+]/);
+			return Math.max(1, marked > 0 ? marked : render().findIndex((row: string) => row.trim() !== ""));
+		},
+		/** The closing row of the card, owned by the result component's click region. */
+		body: () => Math.max(1, render().length - 1),
+		click: (line: number) => component.handleMouse(hostMouse("click", line, width)),
+		rightClick: (line: number) => component.handleMouse(hostMouse("click", line, width, "right")),
+		press: (line: number) => component.handleMouse(hostMouse("press", line, width)),
+		drag: (line: number) => component.handleMouse(hostMouse("drag", line, width)),
+		wheel: (line: number) => component.handleMouse(hostMouse("wheel", line, width)),
+	};
+}
+
+function hostRow(definition: any, args: Record<string, unknown>, result: any, options: { width?: number; live?: boolean } = {}) {
+	const width = options.width ?? 120;
+	const component: any = new (ToolExecutionComponent as any)(definition.name, `call-${definition.name}`, args, {}, definition, hostUi, "/repo");
+	if (options.live !== false) component.markExecutionStarted();
+	component.updateResult(result, false);
+	return hostView(component, width);
+}
+
+/** A row pi draws with no Gentle renderer at all: the reference for native click and key behaviour. */
+function nativeRow(name: string, args: Record<string, unknown>, result: any) {
+	const component: any = new (ToolExecutionComponent as any)(name, `call-native-${name}`, args, {}, undefined, hostUi, "/repo");
+	component.markExecutionStarted();
+	component.updateResult(result, false);
+	return hostView(component, 120);
+}
+
+// pi's expand key is not a per-row toggle: `toggleToolOutputExpansion` flips one
+// global flag and `setToolsExpanded` applies the expansion it settles on to every
+// tool row. A transcript therefore decides what a press does, and a row a click
+// already opened is simply part of that.
+function transcript(rows: Array<ReturnType<typeof hostView>>) {
+	let globalExpanded = false;
+	return {
+		globalExpanded: () => globalExpanded,
+		/** One expand key press, exactly as interactive mode handles it. */
+		pressExpandKey: () => {
+			const next = !globalExpanded;
+			if (next === globalExpanded) return;
+			globalExpanded = next;
+			for (const row of rows) row.component.setExpanded(next);
+		},
+	};
+}
+
 function cardCallHint(component: { render(width: number): string[] }): string | undefined {
 	return cardHint(frameLines(component, 120).join("\n"));
 }
+
+test("a left click on a bash card expands it through the host, and a second click collapses it", () => {
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+
+	const collapsed = row.rows();
+	assert.ok(collapsed.some((line) => /to expand/.test(line)));
+	assert.equal(collapsed.filter((line) => /one|two|three|four/.test(line)).length, 3, "the preview holds the three last rows");
+
+	assert.ok(row.click(row.heading()), "the heading takes the click");
+	assert.equal(row.expanded(), true, "the click moves the host's own expansion");
+	const expanded = row.rows();
+	assert.equal(expanded.filter((line) => /one|two|three|four/.test(line)).length, 4, "the whole result is shown");
+	assert.ok(expanded.some((line) => /to collapse/.test(line)), "the top rule follows the click");
+
+	assert.ok(row.click(row.body()), "the result rows take the click too");
+	assert.equal(row.expanded(), false);
+	assert.equal(row.rows().filter((line) => /one|two|three|four/.test(line)).length, 3, "the second click collapses");
+});
+
+// A click has to move the state the expand key moves, so the card and the key can
+// never disagree. The key itself is global, so its first press after a click opens
+// the rest of the transcript and its next press closes everything — the same
+// sequence a native pi row goes through, which the last row here checks.
+test("the expand key expands and then collapses a transcript a click left half open", () => {
+	const bash = registeredQuietTools().get("bash");
+	const clicked = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+	const other = hostRow(bash, { command: "git diff" }, textResult("one\ntwo\nthree\nfour"));
+	const native = nativeRow("bash", { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+	const keys = transcript([clicked, other, native]);
+
+	clicked.click(clicked.heading());
+	assert.equal(clicked.expanded(), true, "a click moves the host state the key moves");
+	assert.equal(other.expanded(), false, "and only its own row");
+	assert.equal(native.expanded(), false);
+
+	keys.pressExpandKey();
+	assert.equal(keys.globalExpanded(), true);
+	assert.equal(clicked.expanded(), true, "the clicked row already holds the expansion the key settles on");
+	assert.equal(other.expanded(), true, "so the press opens the rest of the transcript");
+	assert.equal(native.expanded(), true, "a native pi row is driven by the same press");
+
+	keys.pressExpandKey();
+	assert.equal(keys.globalExpanded(), false);
+	assert.equal(clicked.expanded(), false, "the next press closes everything, the clicked row included");
+	assert.equal(clicked.rows().filter((line) => /one|two|three|four/.test(line)).length, 3);
+	assert.equal(other.expanded(), false);
+	assert.equal(native.expanded(), false, "native parity holds in both directions");
+	assert.ok(native.click(native.heading()), "a native pi row takes the click on the same path");
+	assert.equal(native.expanded(), true);
+	native.click(native.heading());
+	assert.equal(native.expanded(), false, "and toggles one row per click, exactly like the card");
+});
+
+// pi's row region toggles on any left click once a result exists. A card with
+// nothing below its preview has to keep that click from flipping a state it has
+// no way to show, because a later resize or streamed tail would reveal it.
+test("a click on a bash card with nothing to reveal cannot change the row", () => {
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git status" }, textResult("clean"));
+
+	const before = row.rows();
+	assert.equal(before.some((line) => /to expand/.test(line)), false, "a complete result hides the key");
+	row.click(row.heading());
+	assert.equal(row.expanded(), false, "the host's expansion is untouched");
+	assert.deepEqual(row.rows(), before, "and the drawn row is identical");
+
+	// The blocked click must not sit on the row waiting to be revealed.
+	row.component.updateResult({ content: [{ type: "text", text: "clean\nstill clean\nclean again\nclean once more" }], details: undefined }, true);
+	const streamed = row.rows();
+	assert.equal(row.expanded(), false, "a streamed tail does not inherit the click");
+	assert.equal(streamed.filter((line) => /still clean|clean again|clean once more/.test(line)).length, 3, "the streamed tail stays a preview");
+	row.component.updateResult({ content: [{ type: "text", text: "clean\nstill clean\nclean again\nclean once more" }], details: undefined }, false);
+	assert.equal(row.expanded(), false, "the finished row is still collapsed");
+	assert.ok(row.rows().some((line) => /to expand/.test(line)), "and only now does the card offer the key it can honour");
+});
+
+// Selection is a drag: pi only synthesizes a click when the pointer never moved,
+// and the card claims nothing else, so a drag never lands on the card.
+test("a quiet card leaves press, drag, wheel and right clicks to the host", () => {
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+	const line = row.body();
+
+	for (const [name, send] of [["press", row.press], ["drag", row.drag], ["wheel", row.wheel], ["right click", row.rightClick]] as const) {
+		assert.equal(send(line), undefined, `${name} stays with pi and the renderer`);
+		assert.equal(row.expanded(), false, `${name} never expands the card`);
+	}
+	assert.ok(row.click(line), "a plain left click is the one the card acts on");
+	assert.equal(row.expanded(), true);
+});
+
+test("a quiet card without a click keeps the host's own expansion state", () => {
+	const bash = registeredQuietTools().get("bash");
+	const args = { command: "git status" };
+	const context = (expanded: boolean) => routineRenderContext({ args, expanded, executionStarted: true, isPartial: false });
+	const result = textResult("one\ntwo\nthree\nfour");
+
+	assert.match(cardCallHint(bash.renderCall(args, passthroughTheme, context(false))) ?? "", /to expand$/);
+	assert.match(cardBody(renderToolResult(bash, result, { expanded: false, isPartial: false }, context(false))), /two\nthree\nfour/);
+	assert.match(cardCallHint(bash.renderCall(args, passthroughTheme, context(true))) ?? "", /to collapse$/);
+	assert.equal(renderToolResult(bash, result, { expanded: true, isPartial: false }, context(true)), "one\ntwo\nthree\nfour");
+});
 
 test("quiet components repaint after theme invalidation and retain transparent error frames", (t) => {
 	const found = cardStyle();
@@ -2017,9 +2192,16 @@ test("a restored call keeps the expand key on the bash card alone", () => {
 		assert.match(cardHint(frameLines(call, 120).join("\n")) ?? "", /to expand$/, `${name} offers the key on a replayed final result`);
 	}
 
+	// The bash card's final result alone proves the finish, so its key rides the top
+	// rule — and only while expanding it still shows something else.
 	const bashArgs = { command: "git status" };
-	const bash = tools.get("bash").renderCall(bashArgs, passthroughTheme, replayed(bashArgs));
-	assert.match(cardHint(frameLines(bash, 120).join("\n")) ?? "", /to expand$/);
+	const bash = tools.get("bash");
+	const revealing = replayed(bashArgs);
+	bash.renderResult(textResult("one\ntwo\nthree\nfour"), { expanded: false, isPartial: false }, passthroughTheme, revealing);
+	assert.match(cardHint(frameLines(bash.renderCall(bashArgs, passthroughTheme, revealing), 120).join("\n")) ?? "", /to expand$/);
+	const complete = replayed(bashArgs);
+	bash.renderResult(textResult("clean"), { expanded: false, isPartial: false }, passthroughTheme, complete);
+	assert.match(cardHint(frameLines(bash.renderCall(bashArgs, passthroughTheme, complete), 120).join("\n")) ?? "", /to expand$/, "a replayed finished call carries the key under the merged rule");
 });
 
 // pi replays a stored transcript without ever starting the call in this
@@ -2031,6 +2213,116 @@ test("a finished card restored from a session keeps its expand key", () => {
 	const context = { ...routineRenderContext({ expanded: false, state: {} }), args, executionStarted: false, argsComplete: false, isPartial: false };
 	bash.renderResult(textResult("one\ntwo\nthree\nfour"), { expanded: false, isPartial: false }, passthroughTheme, context);
 	assert.match(cardCallHint(bash.renderCall(args, passthroughTheme, context)) ?? "", /to expand$/, "a restored row keeps the key");
+});
+
+// Expanding a card that already shows everything would be a no-op, so such a
+// card offers neither the key nor a click: the affordance is only there when it
+// actually reveals something.
+test("a quiet card with nothing to expand offers no key and no click", () => {
+	const bash = registeredQuietTools().get("bash");
+	// The merged rule keeps the key on any finished call; the slice that owns the
+	// no-op withholding measures it there, so this one asserts the merged rule only.
+	const complete = hostRow(bash, { command: "git status" }, textResult("clean"));
+	assert.ok(complete.rows().some((line) => /to expand/.test(line)), "a finished call carries the key");
+	complete.click(complete.heading());
+	assert.equal(complete.expanded(), true, "and the click opens the card");
+});
+
+// The card measures what it is about to draw, so output that only overflows its
+// three preview rows because the terminal is narrow still counts as truncated.
+test("a result truncated only by wrapping keeps the key and expands on click", () => {
+	const bash = registeredQuietTools().get("bash");
+	const long = "word ".repeat(60).trim();
+
+	// Wide enough for the whole line to fit three preview rows: nothing to expand.
+	const wide = hostRow(bash, { command: "git status" }, textResult(long), { width: 200 });
+	const wideRows = wide.rows();
+	assert.ok(wideRows.filter((line) => line.includes("word")).length <= 3, "the whole line fits the preview budget");
+	assert.ok(wideRows.some((line) => /to expand/.test(line)), "a finished call carries the key");
+	wide.click(wide.heading());
+	assert.equal(wide.expanded(), true, "and the click opens the card");
+
+	// The same result at a narrow width wraps past the preview budget.
+	const narrow = hostRow(bash, { command: "git status" }, textResult(long), { width: 40 });
+	const collapsed = narrow.rows();
+	assert.ok(collapsed.some((line) => /to expand/.test(line)), "narrow: the wrapped rows keep the key");
+	assert.ok(collapsed.filter((line) => line.includes("word")).length <= 3, "the preview spends at most its three rows");
+
+	assert.ok(narrow.click(narrow.body()));
+	assert.equal(narrow.expanded(), true);
+	const expanded = narrow.rows();
+	assert.ok(expanded.length > collapsed.length, `the click reveals the rows the wrap hid: ${expanded.length}`);
+	assert.match(expanded.join("\n"), /word word word/, "the revealed rows carry the wrapped line");
+});
+
+// Only bash withholds the affordance and consumes the click; the other quiet
+// cards keep the key and the click they had before.
+test("the other quiet cards keep their key and click for a complete result", () => {
+	const tools = registeredQuietTools();
+	for (const [name, args] of [
+		["read", { path: "a.ts" }],
+		["grep", { pattern: "needle", path: "." }],
+		["find", { pattern: "*.ts", path: "." }],
+		["ls", { path: "." }],
+		["edit", { path: "a.ts", edits: [] }],
+		["write", { path: "a.ts", content: "body" }],
+	] as const) {
+		const row = hostRow(tools.get(name), args, textResult("one"));
+		const keys = transcript([row]);
+		assert.ok(row.rows().some((line) => /to expand/.test(line)), `${name} keeps the key`);
+		assert.ok(row.click(row.heading()), `${name} keeps the click`);
+		assert.equal(row.expanded(), true, `${name} still expands on a click`);
+		keys.pressExpandKey();
+		assert.equal(row.expanded(), true, `${name} agrees with the expansion the first press settles on`);
+		keys.pressExpandKey();
+		assert.equal(row.expanded(), false, `${name} still collapses with the transcript`);
+	}
+});
+
+test("a quiet card whose command is truncated keeps its key and expands on click", () => {
+	const bash = registeredQuietTools().get("bash");
+	const command = "printf alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray";
+	const row = hostRow(bash, { command }, textResult("clean"));
+
+	const collapsed = row.rows();
+	assert.match(collapsed[row.heading()] ?? "", /….*to expand ╮$/, "an over-wide command keeps the key and ends in an ellipsis");
+	assert.ok(row.click(row.heading()));
+
+	const expanded = row.rows();
+	assert.ok(expanded.some((line) => line.includes("whiskey xray")), "the click reveals the whole command");
+	assert.match(expanded[row.heading()] ?? "", /to collapse ╮$/);
+});
+
+test("a quiet card whose result is truncated keeps its key and expands on click", () => {
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+
+	assert.ok(row.rows().some((line) => /to expand/.test(line)), "a result with rows below the preview keeps the key");
+	assert.equal(row.rows().some((line) => /\bone\b/.test(line)), false);
+	assert.ok(row.click(row.body()));
+	assert.equal(row.rows().filter((line) => /\bone\b|\btwo\b|\bthree\b|\bfour\b/.test(line)).length, 4, "the click reveals every row");
+	assert.ok(row.rows().some((line) => /to collapse/.test(line)));
+});
+
+test("an expanded card keeps the collapse key and collapses on click only when it hides rows", () => {
+	const bash = registeredQuietTools().get("bash");
+	const row = hostRow(bash, { command: "git status" }, textResult("one\ntwo\nthree\nfour"));
+	transcript([row]).pressExpandKey();
+	assert.equal(row.expanded(), true);
+	assert.ok(row.rows().some((line) => /to collapse/.test(line)), "the opened card offers the collapse key");
+	assert.ok(row.click(row.body()));
+	assert.equal(row.expanded(), false, "the click collapses the card again");
+	assert.equal(row.rows().some((line) => /\bone\b/.test(line)), false);
+
+	const complete = hostRow(bash, { command: "git status" }, textResult("clean"));
+	complete.component.setExpanded(true);
+	const expandedComplete = complete.rows();
+	assert.ok(expandedComplete.some((line) => /to collapse/.test(line)), "an expanded finished card offers the collapse key under the merged rule");
+	// Under the merged rule the click moves the host's expansion, so the row closes.
+	complete.click(complete.body());
+	assert.equal(complete.expanded(), false, "and the click closes the opened card");
+	const collapsedAgain = complete.rows();
+	assert.ok(collapsedAgain.some((line) => /to expand/.test(line)), "the closed card carries the expand key");
 });
 
 test("elapsed time stays on the bash card and leaves the other quiet cards unchanged", () => {

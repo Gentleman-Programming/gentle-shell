@@ -46,6 +46,15 @@ function bindingsBySession(): Map<string, SessionProfileBinding> {
 	return holder[bindingsRegistryKey]!;
 }
 
+// Sessions whose newest record says they started without a profile
+// (gentle-shell#2742), kept apart from the bindings because no profile is bound.
+const startupNoneRegistryKey = Symbol.for("gentle-pi:session-profile-startup-none");
+
+function startupNoneSessions(): Set<string> {
+	const holder = globalThis as { [startupNoneRegistryKey]?: Set<string> };
+	return (holder[startupNoneRegistryKey] ??= new Set());
+}
+
 /** Copy one routing snapshot level deep — the layer a defensive copy needs, so a binding never aliases its source or its readers. */
 function cloneProfiles(profiles: AgentModelConfig): AgentModelConfig {
 	return Object.fromEntries(Object.entries(profiles).map(([agent, entry]) => [agent, { ...entry }]));
@@ -71,6 +80,7 @@ export function bindSessionProfile(
 	provenance: SessionProfileBindingProvenance = {},
 ): void {
 	const { origin = "user", startup } = provenance;
+	startupNoneSessions().delete(sessionId);
 	bindingsBySession().set(sessionId, cloneBinding({ name, origin, modelProfiles, ...(startup === undefined ? {} : { startup }) }));
 }
 
@@ -85,14 +95,27 @@ export function readSessionProfileBinding(sessionId: string | undefined): Sessio
 	return binding === undefined ? undefined : cloneBinding(binding);
 }
 
-/** Remove one session's binding without touching any other session's. */
+/** Remove one session's binding, and any recorded startup without a profile, without touching any other session's. */
 export function clearSessionProfileBinding(sessionId: string): void {
 	bindingsBySession().delete(sessionId);
+	startupNoneSessions().delete(sessionId);
+}
+
+/** Record that the session's newest record says it started with no profile in any layer; replaces its binding. */
+export function recordSessionProfileStartupNone(sessionId: string): void {
+	bindingsBySession().delete(sessionId);
+	startupNoneSessions().add(sessionId);
+}
+
+/** Whether the session's newest record says it started with no profile in any layer. */
+export function readSessionProfileStartupNone(sessionId: string | undefined): boolean {
+	return sessionId !== undefined && startupNoneSessions().has(sessionId);
 }
 
 /** Testing-only reset of every binding. */
 export function resetSessionProfileBindingsForTesting(): void {
 	bindingsBySession().clear();
+	startupNoneSessions().clear();
 }
 
 /**

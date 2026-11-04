@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { profileRoleEntries } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
 	createSessionProfileBind,
@@ -118,4 +119,77 @@ test("v1 reads an explicit bind with a startup state as bound and ignores the st
 		assert.equal(observed.kind, "explicit");
 		assert.deepEqual(observed, replay("v1", transcripts["explicit bind"]!));
 	}
+});
+
+// How the current version reads the A2 shapes (section 4) against v1 (section
+// 5). Launch routing ignores the orchestrator key, so routing compares role
+// entries; kind, label and notices are asserted per version.
+const roles = (config: AgentModelConfig | undefined) =>
+	config === undefined ? undefined : JSON.parse(JSON.stringify(Object.fromEntries(profileRoleEntries(config))));
+const launchRouting = (version: "v1" | "current", transcript: Transcript) => {
+	const observed = replay(version, transcript);
+	return { authority: observed.authority, routing: roles(observed.routing), foreignRouting: roles(observed.foreignRouting) };
+};
+
+for (const [origin, defaults] of Object.entries(startupDefaults) as Array<[keyof typeof startupDefaults, (typeof startupDefaults)["local"]]>) {
+	const name = { local: "local", repo: "frontier", global: "team" }[origin];
+	const label = origin === "global" ? name : `${name} (${origin})`;
+	const record = createSessionProfileStartupBind(origin, name, profiles[name]);
+	test(`current reads a ${origin} startup bind as the inherited ${label}, with v1 launch routing`, () => {
+		const transcript = { records: [record], defaults: { ...defaults, foreignPin: "local" } };
+		const observed = replay("current", transcript);
+		assert.deepEqual([observed.kind, observed.label, observed.notice], ["inherited", label, undefined]);
+		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
+	});
+	test(`resume of a ${origin} startup bind keeps it after the defaults changed, in both versions`, () => {
+		const transcript = { records: [record], defaults: { profiles, active: "local", localPin: name === "local" ? "frontier" : undefined } };
+		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
+		assert.deepEqual(launchRouting("current", transcript).routing, roles(profiles[name]));
+		const notice = replay("current", transcript).notice;
+		assert.ok(notice?.includes(`this session keeps "${name}" (${origin})`), "the inherited drift notice");
+		assert.equal(replay("v1", transcript).notice, undefined, "v1 finds no definition drift");
+	});
+	test(`follow mode routes a ${origin} startup bind as v1 does`, () => {
+		const transcript = { records: [record], defaults: { profiles, active: "local", foreignPin: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
+		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
+		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(profiles[name]));
+	});
+}
+
+test("current reads a startup-none clear as no session profile, routing as v1 while the defaults did not change", () => {
+	const transcript = { records: [userBind("local", LOCAL), createSessionProfileClear("none")], defaults: { profiles, foreignPin: "team" } };
+	const observed = replay("current", transcript);
+	assert.deepEqual([observed.kind, observed.label, observed.routing, observed.notice], ["inherited", undefined, undefined, undefined]);
+	assert.deepEqual(roles(observed.foreignRouting), roles(TEAM), "a foreign repository uses its own pin");
+	assert.deepEqual(observed, replay("v1", transcript));
+});
+
+test("gap (section 10): a startup-none clear resumed after an active profile appeared diverges from v1", () => {
+	const transcript = { records: [createSessionProfileClear("none")], defaults: { profiles, active: "frontier" } };
+	const current = replay("current", transcript);
+	assert.deepEqual([current.kind, current.label, current.routing], ["inherited", undefined, undefined], "current keeps no session profile");
+	const v1 = replay("v1", transcript);
+	assert.deepEqual([v1.kind, v1.label, v1.routing], ["inherited", "frontier", FRONTIER], "v1 routes to the new active profile");
+});
+
+test("follow mode resolves the current defaults after a startup-none or legacy clear, as v1 does", () => {
+	for (const clear of [createSessionProfileClear("none"), createSessionProfileClear()]) {
+		const transcript = { records: [clear], defaults: { profiles, active: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
+		assert.deepEqual(replay("current", transcript), replay("v1", transcript));
+		assert.deepEqual(replay("current", transcript).routing, FRONTIER);
+	}
+});
+
+test("current reads an explicit bind with or without a startup state exactly as v1", () => {
+	for (const startup of [{ origin: "global" as const, name: "team", modelProfiles: TEAM }, "none" as const, undefined]) {
+		const transcript = { records: [createSessionProfileBind("local", LOCAL, startup)], defaults: { profiles, active: "frontier", foreignPin: "team" } };
+		assert.deepEqual(replay("current", transcript), replay("v1", transcript));
+	}
+});
+
+test("a legacy clear after an explicit choice that carried its startup state freezes the defaults at resume, as v1", () => {
+	const startup = { origin: "global" as const, name: "team", modelProfiles: TEAM };
+	const transcript = { records: [createSessionProfileBind("local", LOCAL, startup), createSessionProfileClear()], defaults: { profiles, active: "frontier" } };
+	assert.deepEqual(replay("current", transcript), replay("v1", transcript));
+	assert.equal(replay("current", transcript).label, "frontier");
 });

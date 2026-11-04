@@ -30,6 +30,8 @@ export interface Transcript {
 	/** Session-profile record payloads, oldest first, as Pi appends them. */
 	records: unknown[];
 	defaults: TranscriptDefaults;
+	/** The resumed process environment, e.g. follow mode; empty by default. */
+	env?: NodeJS.ProcessEnv;
 }
 
 export interface ReplayObservation {
@@ -105,7 +107,7 @@ export function replay(version: Version, transcript: Transcript): ReplayObservat
 		const { configHome, home, foreign } = writeDefaults(base, transcript.defaults);
 		const manager = writeSession(base, transcript.records);
 		const authority = modules.authority.readSessionProfileAuthority(manager);
-		const options = { sessionId: SESSION_ID, cwd: home.root, configHome, resolveWorktree: () => home, env: {} };
+		const options = { sessionId: SESSION_ID, cwd: home.root, configHome, resolveWorktree: () => home, env: transcript.env ?? {} };
 		modules.freeze.freezeSessionProfileAtStartup(options);
 		const resolution = modules.freeze.resolveSessionProfile(options);
 		const foreignTarget = { cwd: foreign.root, configHome, resolveWorktree: () => foreign, foreignRepository: true };

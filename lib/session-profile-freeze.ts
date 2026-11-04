@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { normalizeModelConfig, normalizeRoutingEntry, readModelConfigFile, type AgentModelConfig, type AgentRoutingEntry } from "./model-routing-authority.ts";
 import { profileRoleEntries, profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { readProfilePinStatus, resolveProfilePin, resolveUnversionedProjectProfile } from "./agent-profile-pin.ts";
-import { readSessionProfileBinding } from "./session-profile-binding.ts";
+import { readSessionProfileBinding, readSessionProfileStartupNone } from "./session-profile-binding.ts";
 import type { WorktreeIdentity, WorktreeResolver } from "./session-worktree-registry.ts";
 
 /** Opt-in that keeps the live `p → P → G` resolution instead of freezing it at startup. */
@@ -212,8 +212,14 @@ export function freezeSessionProfileAtStartup(options: SessionProfileOptions): v
  * extension's `session_start` ran first.
  */
 export function resolveSessionProfile(options: SessionProfileOptions): SessionProfileResolution {
-	const explicit = readSessionProfileBinding(options.sessionId);
-	if (explicit !== undefined) return { kind: "explicit", name: explicit.name, modelProfiles: explicit.modelProfiles };
+	const recorded = readSessionProfileBinding(options.sessionId);
+	if (recorded?.origin === "user") return { kind: "explicit", name: recorded.name, modelProfiles: recorded.modelProfiles };
+	// gentle-shell#2742: a startup record is the session's inherited profile,
+	// taken as recorded instead of freezing again, and routed in `follow` mode
+	// too, as v1 routes any bind. Like the freeze, it keeps role routing only.
+	if (recorded !== undefined)
+		return { kind: "inherited", profile: { name: recorded.name, origin: recorded.origin, modelProfiles: roleRouting(recorded.modelProfiles) } };
+	if (freezes(options) && readSessionProfileStartupNone(options.sessionId)) return { kind: "inherited", profile: undefined };
 	if (freezes(options)) return { kind: "inherited", profile: frozenOrFreeze(options).profile };
 	const env = options.env ?? process.env;
 	const profile = resolveInheritedProfile(options);
@@ -260,7 +266,9 @@ export function sessionProfileLabel(resolution: SessionProfileResolution): strin
 function stableJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
 	if (value !== null && typeof value === "object") {
-		return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+		// Absent and `undefined` fields are the same route: a recorded snapshot
+		// (gentle-shell#2742) omits what a live resolution may hold as `undefined`.
+		return `{${Object.keys(value).filter((key) => (value as Record<string, unknown>)[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
 	}
 	return JSON.stringify(value) ?? "null";
 }

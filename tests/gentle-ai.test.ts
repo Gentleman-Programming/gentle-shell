@@ -21,6 +21,7 @@ import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExten
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
@@ -1386,7 +1387,8 @@ test("models screen shows profiles as tabs with their scope, the orchestrator fi
 	assert.match(plain[5] ?? "", /▸ Orchestrator\s+openai-codex\/gpt-6\.1-sol\s+max/);
 	assert.match(plain.join("\n"), /Agent\s+Model ▾\s+Effort ▾\s+set every agent/);
 	assert.match(plain.join("\n"), /\[ u · Use in this session \]  \[ d · Make default \]  \[ s · Save \]\s+Saved/);
-	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}s save {2}u use {2}d default {2}n new {2}m menu {2}esc close/);
+	// The profile tabs and buttons remain available when lower-priority hints yield.
+	assert.match(plain.join("\n"), /←→ profile {2}↑↓ agent {2}enter model {2}e effort {2}f fallbacks {2}t tier {2}s save {2}u use(?: {2}d default)? {2}esc close/);
 	assert.doesNotMatch(plain.join("\n"), /⋯/, "no ellipsis-like glyph: it reads as cut text");
 });
 
@@ -4599,9 +4601,13 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	resetSessionProfileBindingsForTesting();
 	t.after(() => resetSessionProfileBindingsForTesting());
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 	const liveCalls: string[] = [];
+	// Like Pi, `appendEntry` writes to the session the last start ran on.
+	let started: SessionManager | undefined;
 	createGentleAiExtension({ nativeReviewCli: null })({
-		on() {},
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) { handlers.set(name, handler); },
+		appendEntry(type: string, data: unknown) { started!.appendCustomEntry(type, data); },
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async () => { liveCalls.push("model"); return true; },
@@ -4628,6 +4634,10 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	return {
 		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
 		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
+		start: (event: unknown, startCtx: ExtensionContext = ctx) => {
+			started = startCtx.sessionManager as SessionManager;
+			return handlers.get("session_start")!(event, startCtx);
+		},
 		last: () => notifications.at(-1) ?? { message: "", severity: "" },
 	};
 }
@@ -4726,6 +4736,120 @@ test("/gentle:profiles clear on an already-cleared session writes nothing and sa
 	assert.match(h.last().message, /session profile is already cleared; nothing to clear/);
 });
 
+// gentle-shell#2742, section 3: the newest record carries the startup state.
+const TEAM_DEFINITION = { orchestrator: { model: "openai/beta", thinking: "high" as const }, worker: { model: "openai/alpha" } };
+const withFast = { team: TEAM_DEFINITION, fast: { worker: { model: "openai/gamma" } } };
+const useInSession = (h: ReturnType<typeof profilesCommandHarness>, name: string) =>
+	__testing.runProfilesPanelAction(h.ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name }, {});
+const newest = (h: ReturnType<typeof profilesCommandHarness>) => (h.family().at(-1) as { data?: unknown }).data;
+
+test("Use in this session carries a recorded startup profile and clear goes back to it", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	const startup = createSessionProfileStartupBind("local", "team", TEAM_DEFINITION);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, startup);
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, { origin: "local", name: "team", modelProfiles: TEAM_DEFINITION }));
+	await h.run("clear");
+	assert.equal(h.family().length, 3);
+	assert.deepEqual(newest(h), startup, "the startup bind is written again, orchestrator included");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.origin, "local");
+	assert.equal(h.last().severity, "info");
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to the profile this session started with, "team (local)", and use it. The live orchestrator is unchanged.');
+	await h.run("clear");
+	assert.equal(h.family().length, 3, "a startup record is already there: nothing is written");
+	assert.equal(h.last().message, 'el Gentleman: this session is already on the profile it started with, "team (local)"; nothing to clear.');
+	h.assertSharedUntouched();
+});
+
+test("clear goes back to no profile when the newest record says the session started without one", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear("none"));
+	await h.run("clear");
+	assert.equal(h.family().length, 1, "a startup-none record is already there: nothing is written");
+	assert.equal(h.last().message, "el Gentleman: this session is already on no profile, as it started; nothing to clear.");
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, "none"));
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear", startup: "none" });
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined);
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to no profile, as this session started. The live orchestrator is unchanged.');
+});
+
+test("clear in follow mode writes a legacy clear even when the newest record carries the startup state", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast, "none"));
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear" });
+	assert.match(h.last().message, /New launches use the routing without a session profile/);
+});
+
+// gentle-shell#2742, section 6: follow mode has no startup state, so a startup
+// record on the newest entry is cleared like any bind, back to the current defaults.
+// The separator after the cleared subject is matched with `.`.
+for (const [record, subject] of [
+	["startup bind", 'session profile "team"'],
+	["clear with startup none", "the recorded startup state"],
+] as const)
+	test(`clear in follow mode appends a legacy clear when the newest record is a ${record}`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, record === "startup bind" ? createSessionProfileStartupBind("local", "team", TEAM_DEFINITION) : createSessionProfileClear("none"));
+		process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+		t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+		await h.run("clear");
+		assert.equal(h.family().length, 2, "one legacy clear follows the startup record");
+		assert.deepEqual(newest(h), { kind: "clear" });
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, new RegExp(`^el Gentleman cleared ${subject} . persisted in this session\\. New launches use the routing without a session profile \\(pins, repository declaration, global\\)\\. The live orchestrator is unchanged\\.$`));
+		h.assertSharedUntouched();
+	});
+
+// gentle-shell#2742, section 3: a resume is not the session's own start, even
+// with no conversation on its branch, so the defaults current at resume time are
+// not its startup state and a legacy user bind still clears to a legacy clear.
+test("clear after a resume with no conversation writes a legacy clear, not the resume-time defaults", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const sessions = join(h.ctx.cwd, "resumed-sessions");
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast));
+	source.appendMessage({ role: "user", content: "flush the resumed fixture", timestamp: 1 });
+	const file = source.getSessionFile()!;
+	writeFileSync(file, `${readFileSync(file, "utf8").trim().split("\n").filter((line) => JSON.parse(line).type !== "message").join("\n")}\n`);
+	const manager = SessionManager.open(file, sessions);
+	assert.equal(manager.getBranch().some((entry) => entry.type === "message"), false, "the resumed branch has no conversation");
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	const family = () => manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family().length, 1, "the resume writes no record");
+	await h.run("clear", ctx);
+	assert.equal(family().length, 2, "one record follows the legacy bind");
+	assert.deepEqual((family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
+	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /^el Gentleman cleared session profile "fast" . persisted in this session\. New launches use the routing without a session profile \(pins, repository declaration, global\)\. The live orchestrator is unchanged\.$/);
+});
+
+test("clear after a session's own start goes back to the defaults it started with", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "own-start-sessions"));
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "startup" }, ctx);
+	manager.appendMessage({ role: "user", content: "flush the own-start fixture", timestamp: 1 });
+	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
+	await h.run("clear", ctx);
+	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family.length, 2, "the clear follows the Use in this session bind");
+	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
+	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
+});
+
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);
 	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };
@@ -4751,6 +4875,7 @@ for (const [customType, kind] of [["gentle-pi.session-profile/v1", "invalid"], [
 		await h.run("clear");
 		assert.equal(h.last().severity, "info");
 		assert.match(h.last().message, /cleared the unreadable session profile record/);
+		assert.deepEqual((h.family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
 		const count = h.notifications.length;
 		__testing.notifySessionProfileProblem(h.ctx);
 		assert.equal(h.notifications.length, count, "a recovered session raises no warning");
@@ -5127,4 +5252,65 @@ test("switching profile tabs redraws in place: the overlay never closes and reop
 	assert.match(saved ?? "", /worker\s+openai\/alpha/);
 	assert.match(profilesPanelFooter(saved ?? ""), /Saved "other"\. Showing "team"\./);
 	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles.other, { worker: { model: "openai/alpha", thinking: "high" } });
+});
+
+test("models screen edits each agent's fallback chain: f opens it, f adds, e sets effort, shift+↑ moves, x removes", () => {
+	const saved = new Map<string, Array<{ model: string; thinking?: string }>>();
+	const writes: string[] = [];
+	const fallbacks = {
+		chain: (profile: string, key: string) => saved.get(`${profile}:${key}`) ?? [],
+		save: (profile: string, key: string, chain: ReadonlyArray<{ model: string; thinking?: string }>) => {
+			saved.set(`${profile}:${key}`, chain.map((step) => ({ ...step })));
+			writes.push(`${key}=${chain.map((step) => step.model + (step.thinking ? `:${step.thinking}` : "")).join(",")}`);
+			return undefined;
+		},
+	};
+	const down = "\x1b[B";
+	const right = "\x1b[C";
+	const shiftUp = "\x1b[1;2A";
+	const lines = __testing.routingTablePanel(screenConfig(), SCREEN_MODELS, SCREEN_AGENTS, 100, undefined, 30,
+		[down, down, "f", "f", "\r", "f", "\r", "e", right, right, right, "\r", shiftUp, "x", "\x1b"], [], [],
+		{ file: screenFile(), sessionBoundName: "current", fallbacks } as never);
+	assert.deepEqual(writes, [
+		"gentle-ai-explore=nan/glm5.3",
+		"gentle-ai-explore=nan/glm5.3,openai/gpt-5.5",
+		"gentle-ai-explore=nan/glm5.3,openai/gpt-5.5:low",
+		"gentle-ai-explore=openai/gpt-5.5:low,nan/glm5.3",
+		"gentle-ai-explore=nan/glm5.3",
+	], "the agent's own model and models already in the chain are not offered");
+	const plain = lines.map(stripAnsi).join("\n");
+	assert.match(plain, /gentle-ai-explore\s+nan\/deepseek-v4-flash\s+high\s+↪ nan\/glm5\.3/, "the row shows its chain");
+	assert.match(plain, /f fallbacks/, "the key is advertised");
+});
+
+test("models screen fallback card explains itself and the * chain belongs to the every-agent row", () => {
+	const saved = new Map<string, Array<{ model: string }>>([["current:*", [{ model: "openai/gpt-5.5" }]]]);
+	const fallbacks = { chain: (profile: string, key: string) => saved.get(`${profile}:${key}`) ?? [], save: () => undefined };
+	const card = __testing.routingTablePanel(screenConfig(), SCREEN_MODELS, SCREEN_AGENTS, 100, undefined, 30, ["\x1b[B", "f"], [], [], { file: screenFile(), sessionBoundName: "current", fallbacks } as never).map(stripAnsi).join("\n");
+	assert.match(card, /Fallbacks for every agent/);
+	assert.match(card, /1\. openai\/gpt-5\.5/);
+	assert.match(card, /used in order when the model runs out or keeps failing/i);
+	assert.match(card, /f add · e effort · shift\+↑↓ move · x remove · esc back/);
+	const failing = { chain: () => [], save: () => "profile-fallbacks.json is malformed; fix or remove it first." };
+	const refused = __testing.routingTablePanel(screenConfig(), SCREEN_MODELS, SCREEN_AGENTS, 100, undefined, 30, ["\x1b[B", "\x1b[B", "f", "f", "\r"], [], [], { file: screenFile(), sessionBoundName: "current", fallbacks: failing } as never).map(stripAnsi).join("\n");
+	assert.match(refused, /malformed; fix or remove it first/, "a refused write is reported, not hidden");
+});
+
+test("models screen keeps ↑↓ agent at 72 columns; the fallbacks key yields first", () => {
+	const plain = renderScreen([], [], [], { width: 72 }).map(stripAnsi).join("\n");
+	assert.match(plain, /↑↓ agent/);
+});
+
+test("fallback chains are saved only for profiles that exist on disk", () => {
+	const home = mkdtempSync(join(tmpdir(), "fallbacks-saved-only-"));
+	try {
+		writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {} } }));
+		const fallbacks = __testing.fileRoutingFallbacks(home);
+		assert.match(fallbacks.save("draft", "*", [{ model: "openai/gpt-5.5" }]) ?? "", /Save the profile first/);
+		assert.equal(existsSync(join(home, "profile-fallbacks.json")), false, "nothing is written for an unsaved profile");
+		assert.equal(fallbacks.save("home", "*", [{ model: "openai/gpt-5.5" }]), undefined);
+		assert.deepEqual(fallbacks.chain("home", "*"), [{ model: "openai/gpt-5.5" }]);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 });

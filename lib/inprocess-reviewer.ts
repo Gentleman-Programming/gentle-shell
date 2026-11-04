@@ -23,7 +23,8 @@
 import { randomUUID } from "node:crypto";
 import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeaders, SimpleStreamOptions, TextContent, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
-import { SAFE_MODEL_ID_PATTERN } from "./model-routing-authority.ts";
+import { SAFE_MODEL_ID_PATTERN, type ServiceTier } from "./model-routing-authority.ts";
+import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
@@ -74,6 +75,7 @@ export interface InProcessReviewerRequest {
 	readonly selection: string;
 	/** Routing thinking label: off | minimal | low | medium | high | xhigh | max. Omitted is treated as "off". */
 	readonly thinking?: string;
+	readonly tier?: ServiceTier;
 	/** Effective Pi transport preference; absent preserves the provider default. */
 	readonly transport?: SimpleStreamOptions["transport"];
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
@@ -320,6 +322,9 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		...(auth.headers === undefined && attributionHeaders === undefined ? {} : { headers: attributionHeaders === undefined ? auth.headers : { ...attributionHeaders, ...auth.headers } }),
 		...(reasoning.reasoning === undefined ? {} : { reasoning: reasoning.reasoning }),
 		...(request.transport === undefined ? {} : { transport: request.transport }),
+		...(request.tier !== undefined && supportsOpenAIFast(requestModel)
+			? { onPayload: (payload: unknown) => applyOpenAITier(payload, request.tier, requestModel) }
+			: {}),
 	};
 
 	// An abort is classified by which signal actually fired, never by the

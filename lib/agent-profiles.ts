@@ -423,7 +423,7 @@ export function formatOrchestratorSelection(entry: AgentRoutingEntry | undefined
 			? INHERIT_MODEL_LABEL
 			: `${INHERIT_MODEL_LABEL} · ${entry.thinking}`;
 	}
-	return entry.thinking === undefined ? entry.model : `${entry.model} · ${entry.thinking}`;
+	return [entry.model, entry.thinking, entry.tier === "fast" ? "Fast" : entry.tier === "standard" ? "Standard" : undefined].filter(Boolean).join(" · ");
 }
 
 export interface ProfileListItem {

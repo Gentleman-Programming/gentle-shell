@@ -29,10 +29,11 @@ import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
 
 // Actual SDK factory loader, AgentSession and replacement runtime. Only resource,
 // auth and UI boundaries are fixture-owned. No prompts, provider streams or Git.
-async function fixture(t: test.TestContext, memory = false, flushed = true) {
+async function fixture(t: test.TestContext, memory = false, flushed = true, active?: string) {
  const root = mkdtempSync(join(tmpdir(), "u3-public-"));
  const config = join(root, "config"),
   agentDir = join(root, "agent");
@@ -53,6 +54,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true) {
     kind: "gentle-pi.agent_model_profiles",
     version: 1,
     profiles,
+    ...(active === undefined ? {} : { active }),
    }),
   );
  saveProfiles();
@@ -270,6 +272,10 @@ async function fixture(t: test.TestContext, memory = false, flushed = true) {
   assert.ok(command);
   await command.handler("", session.extensionRunner.createCommandContext());
  };
+ const clear = () =>
+  runtime.session.extensionRunner
+   .getCommand("gentle:profiles")!
+   .handler("clear", runtime.session.extensionRunner.createCommandContext());
  const binding = () =>
   readSessionProfileBinding(runtime.session.sessionManager.getSessionId());
  const family = () =>
@@ -294,6 +300,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true) {
   profiles,
   saveProfiles,
   enter,
+  clear,
   binding,
   family,
   protectedBytes,
@@ -568,3 +575,41 @@ for (const transition of ["fork", "tree", "reload", "new"] as const)
   );
   assert.equal(f.authCalls(), 1);
  });
+
+// gentle-shell#2742, section 3: a new session knows the startup state it froze.
+const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;
+for (const active of ["live", undefined] as const)
+ test(`A2 clear in a new session goes back to the startup ${active ?? "no profile"} and v1 replays it the same`, async (t) => {
+  const f = await fixture(t, false, false, active);
+  f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+  await f.enter("team");
+  const startup = active === undefined ? "none" : { origin: "global", name: active, modelProfiles: f.profiles[active] };
+  assert.deepEqual(data(f.family().at(-1)), { kind: "bind", origin: "user", name: "team", modelProfiles: f.profiles.team, startup });
+  await f.clear();
+  assert.deepEqual(data(f.family().at(-1)), startup === "none" ? { kind: "clear", startup } : { kind: "bind", ...startup }, "the orchestrator key travels with the startup bind");
+  assert.match(f.notices.at(-1)?.text ?? "", active === undefined ? /go back to no profile, as this session started/ : /go back to the profile this session started with, "live", and use it/);
+  assert.equal(f.runtime.session.model?.id, "gpt-4o", "the live orchestrator is unchanged");
+  const transcript: Transcript = { records: f.family().map(data), defaults: { profiles: f.profiles as Transcript["defaults"]["profiles"], ...(active ? { active } : {}) } };
+  const [current, v1] = [replay("current", transcript), replay("v1", transcript)];
+  assert.equal(v1.notice, undefined, "v1 finds no definition drift");
+  assert.deepEqual([current.routing, current.foreignRouting], [v1.routing, v1.foreignRouting].map((r) => r && Object.fromEntries(Object.entries(r).filter(([k]) => k !== "orchestrator"))));
+ });
+
+test("A2 clear in a resumed session without a recorded startup state writes a legacy clear", async (t) => {
+ const f = await fixture(t, false, true, "live");
+ await f.enter("team");
+ assert.equal(Object.hasOwn(data(f.family().at(-1)) as object, "startup"), false);
+ await f.clear();
+ assert.deepEqual(data(f.family().at(-1)), { kind: "clear" });
+ assert.match(f.notices.at(-1)?.text ?? "", /New launches use the routing without a session profile/);
+});
+
+test("A2 clear of an invalid newest entry in a new session writes the startup profile", async (t) => {
+ const f = await fixture(t, false, false, "live");
+ f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+ f.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, { invalid: true });
+ await f.clear();
+ assert.deepEqual(data(f.family().at(-1)), { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live });
+ assert.match(f.notices.at(-1)?.text ?? "", /cleared the unreadable session profile record \(persisted in this session\)\. New launches go back to the profile this session started with, "live"/);
+ assert.equal(f.binding()?.origin, "global");
+});

@@ -2864,7 +2864,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 
 	pi.registerCommand(JOBS_COMMAND_NAME, {
-		description: "Show background jobs: running first, newest first within each group; status, command, output tail; s stops the selected job.",
+		description: "Show background jobs: running first, newest first within each group; status, command, output tail. Click a job to inspect it; click Stop or press s to stop the selected running job.",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {

@@ -1,8 +1,9 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
-import { decodeKittyPrintable, isKeyRelease, matchesKey, Key, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, isKeyRelease, matchesKey, Key, sliceByColumn, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { VisualProfile } from "./visual-profiles.ts";
 import { CARD_PADDING, renderPaletteCard, renderPaletteSelection } from "./command-palette.ts";
 import { stripAnsi } from "./terminal-theme.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 const MAX_INPUT_CODEPOINTS = 512;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -47,6 +48,59 @@ function rowVisible(row: CustomizeRow): boolean {
 }
 
 type LineEntry = { first: number; count: number; setting?: string };
+
+interface PointerHit {
+	id: string;
+	x: number;
+	end: number;
+	y: number;
+	text?: string;
+	activate(): void;
+}
+interface HoveredHit {
+	id: string;
+	x: number;
+	end: number;
+	y: number;
+	text: string;
+}
+interface PointerFrame {
+	width: number;
+	height: number;
+	available: number;
+	profile: boolean;
+	category: string;
+	rows: CustomizeRow[];
+	hits: PointerHit[];
+}
+interface ChoiceSpan {
+	start: number;
+	end: number;
+	index: number;
+	step?: number;
+}
+interface SettingLine {
+	text: string;
+	nameEnd: number;
+	spans: ChoiceSpan[];
+}
+
+/** Only complete, painted consent labels are pointer targets. */
+function confirmationHits(hits: PointerHit[], lines: readonly string[], firstRow: number, answer: (yes: boolean) => void): void {
+	const instruction = "y yes · any other key cancel";
+	const start = lines.join("").lastIndexOf(instruction);
+	if (start < 0) return;
+	let offset = 0;
+	lines.forEach((line, index) => {
+		for (const [label, position, yes] of [["y yes", start, true], ["cancel", start + instruction.length - "cancel".length, false]] as const) {
+			const at = position - offset;
+			if (at < 0 || at + label.length > line.length) continue;
+			const x = 2 + visibleWidth(line.slice(0, at));
+			hits.push({ id: yes ? "confirm:yes" : "confirm:cancel", x, end: x + visibleWidth(label), y: firstRow + index, activate: () => answer(yes) });
+		}
+		offset += line.length;
+	});
+}
 
 export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Keymaps" | "Profiles" | "Reset";
 
@@ -111,6 +165,8 @@ export class VisualCustomizeView {
 	private closed = false;
 	private busy = false;
 	private readonly options: CustomizeViewOptions;
+	private pointerFrame?: PointerFrame;
+	private hovered?: HoveredHit;
 	private error?: string;
 	private profileOpen = false;
 	private profileIndex = 0;
@@ -132,7 +188,7 @@ export class VisualCustomizeView {
 	/** Header and diagnostic context for the active pane; Notifications is explicitly audio. */
 	title(): string { return (this.categories[this.categoryIndex] ?? "Settings") === "Notifications" ? "Audio notifications" : "Customization"; }
 	/** Ends the interaction and resolves any pending inline field/consent as cancelled. */
-	dispose(): void { this.closed = true; this.inline.disposed = true; this.cancelInline(); }
+	dispose(): void { this.closed = true; this.clearPointer(); this.inline.disposed = true; this.cancelInline(); }
 	private cancelInline(): void {
 		const input = this.inlineInput;
 		if (input) { this.inlineInput = undefined; input.resolve(undefined); }
@@ -171,7 +227,7 @@ export class VisualCustomizeView {
 		try {
 			void Promise.resolve(run()).catch((error: unknown) => {
 				this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
-			}).finally(() => { this.busy = false; if (!this.closed) this.options.requestRender(); });
+			}).finally(() => { this.busy = false; this.clearPointer(); if (!this.closed) this.options.requestRender(); });
 		} catch (error) {
 			this.busy = false;
 			this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -232,7 +288,7 @@ export class VisualCustomizeView {
 		confirm.resolve(matchesKey(data, "y") && confirm.visible);
 		this.options.requestRender();
 	}
-	openProfiles(): void { this.profileOpen = true; this.error = undefined; this.options.requestRender(); }
+	openProfiles(): void { this.clearPointer(); this.profileOpen = true; this.error = undefined; this.options.requestRender(); }
 	private profileAction(action: () => void | Promise<void>): void {
 		if (this.profileBusy) return;
 		this.profileBusy = true;
@@ -240,7 +296,7 @@ export class VisualCustomizeView {
 			void Promise.resolve(action()).catch((error: unknown) => {
 				this.error = error instanceof Error ? error.message : String(error);
 				this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
-			}).finally(() => { this.profileBusy = false; this.options.requestRender(); });
+			}).finally(() => { this.profileBusy = false; this.clearPointer(); this.options.requestRender(); });
 		} catch (error) {
 			this.profileBusy = false;
 			this.error = error instanceof Error ? error.message : String(error);
@@ -376,6 +432,7 @@ export class VisualCustomizeView {
 			this.categoryIndex = index;
 			const found = this.categoryRows().findIndex(row => (typeof row.label === "function" ? row.label() : row.label).includes(label));
 			if (found >= 0) {
+				this.clearPointer();
 				this.pane = "controls";
 				this.controls.set(this.categories[index]!, found);
 				this.options.requestRender();
@@ -386,8 +443,81 @@ export class VisualCustomizeView {
 		return false;
 	}
 
+	private clearPointer(): void {
+		this.pointerFrame = undefined;
+		this.hovered = undefined;
+	}
+
+	/** Install only painted hits and retain hover solely across an identical target and geometry. */
+	private installPointerFrame(lines: string[], next: PointerFrame): string[] {
+		const previous = this.pointerFrame;
+		for (const hit of next.hits) hit.text = stripAnsi(sliceByColumn(lines[hit.y]!, hit.x, hit.end - hit.x, true));
+		const hover = this.hovered;
+		const sameFrame = previous && previous.width === next.width && previous.height === next.height
+			&& previous.available === next.available && previous.profile === next.profile && previous.category === next.category
+			&& previous.rows.length === next.rows.length && previous.rows.every((row, index) => row === next.rows[index]);
+		const hit = hover && sameFrame && next.hits.find(item => item.id === hover.id && item.x === hover.x
+			&& item.end === hover.end && item.y === hover.y && item.text === hover.text);
+		if (!hit) this.hovered = undefined;
+		const paintHit = (target: PointerHit, hovered: boolean, idleRole?: string) => {
+			const line = lines[target.y]!;
+			// Keep existing background and neighboring colors; recolor only the hit's painted cells.
+			// Column slices omit codes after the last cell, including the border's reset.
+			const trailingSgr = line.match(/(?:\x1b\[[0-9;:]*m)+$/)?.[0] ?? "";
+			lines[target.y] = sliceByColumn(line, 0, target.x, true)
+				+ paintHoverable(this.options.theme, target.text!, hovered, idleRole)
+				+ sliceByColumn(line, target.end, next.width - target.end, true) + trailingSgr;
+		};
+		// The surrounding confirmation is already warning-colored. Give its actionable
+		// cells an idle text role so the warning hover is a visible change.
+		for (const target of next.hits) if (target.id.startsWith("confirm:")) paintHit(target, target === hit, "text");
+		if (hit && !hit.id.startsWith("confirm:")) paintHit(hit, true);
+		this.pointerFrame = next;
+		return lines;
+	}
+
+	/** Mouse coordinates are local to the rendered card, including its border. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.closed) return undefined;
+		const moving = event.type === "move" && event.button === "none";
+		if (!moving && (event.button !== "left" || (event.type !== "press" && event.type !== "click"))) return undefined;
+		const frame = this.pointerFrame;
+		const available = this.options.rowsAvailable?.() ?? 24;
+		const height = Number.isFinite(available) ? Math.max(0, Math.min(24, Math.floor(available))) : 0;
+		let valid = Boolean(frame && event.width === frame.width && event.height === frame.height && height === frame.available
+			&& this.profileOpen === frame.profile && (this.categories[this.categoryIndex] ?? "Settings") === frame.category);
+		if (valid && frame && !frame.profile) {
+			const rows = this.categoryRows();
+			valid = rows.length === frame.rows.length && rows.every((row, index) => row === frame.rows[index]);
+		}
+		if (!valid || !frame) {
+			if (!moving) return undefined;
+			const changed = this.hovered !== undefined;
+			this.clearPointer();
+			return changed ? { handled: true, render: true } : undefined;
+		}
+		const hit = frame.hits.find(item => item.y === event.y && event.x >= item.x && event.x < item.end);
+		if (moving) {
+			const target = (this.busy && !this.inlineConfirm || this.profileBusy) ? undefined : hit;
+			const previous = this.hovered;
+			const changed = target ? !previous || previous.id !== target.id || previous.x !== target.x || previous.end !== target.end
+				|| previous.y !== target.y || previous.text !== target.text : previous !== undefined;
+			this.hovered = target && target.text !== undefined ? { id: target.id, x: target.x, end: target.end, y: target.y, text: target.text } : undefined;
+			return { handled: true, render: changed };
+		}
+		if (!hit) return undefined;
+		if (event.type === "press") return { handled: true, capture: true, render: false };
+		this.clearPointer();
+		hit.activate();
+		if (!this.closed) this.options.requestRender();
+		return { handled: true, render: true };
+	}
+
 	handleInput(data: string): void {
 		if (this.closed || isKeyRelease(data)) return;
+		const hovered = this.hovered !== undefined;
+		this.clearPointer();
+		if (hovered) this.options.requestRender();
 		if (this.inlineInput) { this.handleInlineInput(data); return; }
 		if (this.inlineConfirm) { this.handleInlineConfirm(data); return; }
 		if (this.inlineCapture) { this.handleInlineCapture(data); return; }
@@ -450,7 +580,7 @@ export class VisualCustomizeView {
 	}
 
 	/** One setting with its values inline (● current, ○ other); too wide, only the selected value with arrows. */
-	private renderSettingLine(rows: readonly CustomizeRow[], entry: LineEntry, width: number, nameWidth: number, focused: boolean, theme: CustomizeViewOptions["theme"]): string {
+	private renderSettingLine(rows: readonly CustomizeRow[], entry: LineEntry, width: number, nameWidth: number, focused: boolean, theme: CustomizeViewOptions["theme"]): SettingLine {
 		const choices = rows.slice(entry.first, entry.first + entry.count).map(row => row.choice!);
 		const isCurrent = (choice: NonNullable<CustomizeRow["choice"]>) => { try { return choice.current(); } catch { return false; } };
 		const name = sanitizeTerminalText(entry.setting!);
@@ -463,27 +593,50 @@ export class VisualCustomizeView {
 			return theme.fg(isCurrent(choice) || cursor ? "accent" : "muted", text);
 		};
 		let body = choices.map(mark).join("  ");
-		if (2 + visibleWidth(lead) + visibleWidth(body) > width) {
-			body = `${theme.fg("accent", `‹ ${sanitizeTerminalText(shown.value)} ›`)} ${theme.fg("muted", `${choices.indexOf(shown) + 1}/${choices.length}`)}`;
+		const bodyStart = 2 + visibleWidth(lead);
+		const spans: ChoiceSpan[] = [];
+		if (bodyStart + visibleWidth(body) > width) {
+			const value = sanitizeTerminalText(shown.value);
+			const index = choices.indexOf(shown);
+			const compact = `‹ ${value} ›`;
+			body = `${theme.fg("accent", compact)} ${theme.fg("muted", `${index + 1}/${choices.length}`)}`;
+			// Truncation replaces the last column with an ellipsis: never expose a
+			// partial value or arrows that would step from an unseen identity.
+			const limit = bodyStart + visibleWidth(body) > width ? width - 1 : width;
+			if (bodyStart + visibleWidth(compact) <= limit) {
+				if (index > 0) spans.push({ start: bodyStart, end: bodyStart + 1, index, step: -1 });
+				spans.push({ start: bodyStart + 2, end: bodyStart + 2 + visibleWidth(value), index });
+				if (index + 1 < choices.length) spans.push({ start: bodyStart + 3 + visibleWidth(value), end: bodyStart + 4 + visibleWidth(value), index, step: 1 });
+			}
+		} else {
+			let start = bodyStart;
+			choices.forEach((choice, index) => {
+				const length = visibleWidth(`○ ${sanitizeTerminalText(choice.value)}`);
+				spans.push({ start, end: start + length, index });
+				start += length + 2;
+			});
 		}
 		const text = truncateToWidth(`${focused ? theme.fg("accent", "▸ ") : "  "}${theme.fg(focused ? "text" : "muted", lead)}${body}`, width, "…");
 		const padded = text + " ".repeat(Math.max(0, width - visibleWidth(text)));
-		return focused && theme.bg ? theme.bg("selectedBg", padded) : padded;
+		return { text: focused && theme.bg ? theme.bg("selectedBg", padded) : padded, nameEnd: Math.min(width, 2 + visibleWidth(name)), spans };
 	}
 
 	render(width: number): string[] {
 		if (this.profileOpen && this.options.profiles) {
-			if (width <= 0) { this.confirmationVisible = false; return []; }
+			if (width <= 0) { this.confirmationVisible = false; this.clearPointer(); return []; }
 			return this.renderProfiles(width);
 		}
 		this.mainWidth = width;
-		if (width <= 0) { this.confirmationVisible = false; return []; }
+		if (width <= 0) { this.confirmationVisible = false; this.clearPointer(); return []; }
 		const available = this.options.rowsAvailable?.() ?? 24;
 		const height = Number.isFinite(available) ? Math.max(0, Math.min(24, Math.floor(available))) : 0;
-		if (!height) return [];
+		if (!height) { this.clearPointer(); return []; }
 		// A card needs two border rows. At extreme dimensions keep the old
 		// read-only heading rather than letting invisible controls be activated.
-		if (width < CARD_PADDING + 1 || height < 4) return Array.from({ length: Math.min(height, 2) }, (_, i) => truncateToWidth(i ? "Enlarge terminal" : this.title(), width, ""));
+		if (width < CARD_PADDING + 1 || height < 4) {
+			this.clearPointer();
+			return Array.from({ length: Math.min(height, 2) }, (_, i) => truncateToWidth(i ? "Enlarge terminal" : this.title(), width, ""));
+		}
 		const inner = width - CARD_PADDING;
 		const category = this.categories[this.categoryIndex] ?? "Settings";
 		const rows = this.categoryRows();
@@ -513,6 +666,23 @@ export class VisualCustomizeView {
 		const join = (left: string, right: string) => leftWidth ? `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(stripAnsi(left))))} ${paint("│", 1, "border")} ${right}` : right;
 		const heading = navOnly ? "Categories · choose a category →" : `${category} · ${rows.length ? `${line + 1}/${entries.length}` : "empty"}`;
 		const lines: string[] = [paint(this.title(), inner, "accent")];
+		const hits: PointerHit[] = [];
+		const modal = Boolean(this.inlineInput || this.inlineConfirm || this.inlineCapture);
+		const categoryHit = (name: string, index: number, x: number, y: number, size: number) => {
+			const end = x + Math.min(visibleWidth(name), Math.max(0, size));
+			if (!modal && end > x) hits.push({ id: `category:${index}`, x, end, y, activate: () => {
+				if (this.busy) return;
+				this.categoryIndex = index;
+				this.pane = "categories";
+				if (narrow) this.enterControls();
+			} });
+		};
+		const select = (index: number, apply: boolean) => {
+			if (this.busy) return;
+			this.pane = "controls";
+			this.controls.set(category, index);
+			if (apply) this.withBusy(() => rows[index]!.action(this.inline));
+		};
 		// Commands uses a header, grouped section labels, whitespace and a footer.
 		if (showHeading) lines.push(join(leftWidth ? paint("CATEGORIES", leftWidth, "accent") : "", paint(heading, rightWidth, "accent")));
 		if (showTopGap) lines.push("");
@@ -523,14 +693,34 @@ export class VisualCustomizeView {
 			const row = entry ? rows[entry.first] : undefined;
 			const item = navOnly ? this.categories[start + i] : row ? typeof row.label === "function" ? row.label() : row.label : undefined;
 			const rowTheme = navOnly || this.pane === "controls" ? this.options.theme : { fg: this.options.theme.fg.bind(this.options.theme) };
-			const right = entry?.setting ? this.renderSettingLine(rows, entry, rightWidth, nameWidth, start + i === position, rowTheme)
-				: item ? renderPaletteSelection(item, rightWidth, start + i === position, rowTheme) : rows.length ? "" : paint("No settings available", rightWidth, "muted");
+			const setting = entry?.setting ? this.renderSettingLine(rows, entry, rightWidth, nameWidth, start + i === position, rowTheme) : undefined;
+			const right = setting?.text ?? (item ? renderPaletteSelection(item, rightWidth, start + i === position, rowTheme) : rows.length ? "" : paint("No settings available", rightWidth, "muted"));
+			const y = lines.length + 1; // card adds its top border
+			const rightX = 2 + (leftWidth ? leftWidth + 3 : 0);
+			if (leftWidth && nav) categoryHit(nav, navStart + i, 4, y, leftWidth - 2);
+			if (navOnly && item) categoryHit(item, start + i, rightX + 2, y, rightWidth - 2);
+			else if (!modal && entry && row) {
+				if (setting) {
+					if (setting.nameEnd > 2) hits.push({ id: `setting:${entry.first}`, x: rightX + 2, end: rightX + setting.nameEnd, y, activate: () => select(this.landOn(rows, entry), false) });
+					for (const span of setting.spans) hits.push({ id: `choice:${entry.first}:${span.index}:${span.step ?? 0}`, x: rightX + span.start, end: rightX + span.end, y, activate: () => {
+						if (this.busy) return;
+						select(entry.first + span.index, span.step === undefined);
+						if (span.step) this.handleInput(span.step < 0 ? "\x1b[D" : "\x1b[C");
+					} });
+				} else {
+					const end = rightX + visibleWidth(stripAnsi(right).trimEnd());
+					if (end > rightX + 2) hits.push({ id: `row:${entry.first}`, x: rightX + 2, end, y, activate: () => select(entry.first, true) });
+				}
+			}
 			lines.push(join(left, right));
 		}
 		if (this.inlineConfirm) {
 			const shows = !navOnly && previewLines > 0 ? this.wrapInline(`${this.inlineConfirm.message} y yes · any other key cancel`, inner, previewLines) : undefined;
 			this.inlineConfirm.visible = shows !== undefined;
-			if (shows) for (const line of shows) lines.push(paint(line, inner, "warning"));
+			if (shows) {
+				confirmationHits(hits, shows, lines.length + 1, yes => this.handleInput(yes ? "y" : "n"));
+				for (const line of shows) lines.push(paint(line, inner, "warning"));
+			}
 			else if (previewLines > 0) lines.push(paint("Confirmation needs more space · enlarge terminal", inner, "warning"));
 		} else if (this.inlineCapture) {
 			const shows = !navOnly && previewLines > 0 ? this.wrapInline(`${this.inlineCapture.prompt} · Esc cancel`, inner, previewLines) : undefined;
@@ -558,11 +748,12 @@ export class VisualCustomizeView {
 			for (let i = 0; i < previewLines - 2; i++) lines.push(paint(sample[i] ?? "", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false), inner, "muted"));
+		if (showHeading) lines.push(paint(`Click · ${footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false)}`, inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
 		const title = this.title();
 		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");
-		return renderPaletteCard(lines.slice(0, height - 2), width, this.options.theme);
+		const frame = renderPaletteCard(lines.slice(0, height - 2), width, this.options.theme);
+		return this.installPointerFrame(frame, { width, height: frame.length, available: height, profile: false, category, rows, hits: hits.filter(hit => hit.y < frame.length - 1) });
 	}
 	private detailSize(width: number): { height: number; inner: number; capacity: number } {
 		const available = this.options.rowsAvailable?.() ?? 24;
@@ -580,10 +771,11 @@ export class VisualCustomizeView {
 		this.profileWidth = width;
 		this.profileInputVisible = false;
 		const { height, inner, capacity } = this.detailSize(width);
-		if (height < 3 || inner < 1) { this.confirmationVisible = false; return this.detailFrame(["Visual profiles", "Enlarge terminal"], width, height); }
+		if (height < 3 || inner < 1) { this.confirmationVisible = false; this.clearPointer(); return this.detailFrame(["Visual profiles", "Enlarge terminal"], width, height); }
 		let items: VisualProfile[];
 		try { items = this.options.profiles!.list(); } catch (error) {
 			this.confirmationVisible = false;
+			this.clearPointer();
 			return this.detailFrame([this.options.theme.fg("accent", "Visual profiles"), `Profiles unavailable: ${error instanceof Error ? error.message : String(error)}`, "Esc back"], width, height);
 		}
 		this.profileIndex = Math.min(this.profileIndex, Math.max(0, items.length - 1));
@@ -591,6 +783,8 @@ export class VisualCustomizeView {
 		const choice = this.confirmation;
 		const promptLines = choice ? this.confirmationLines(choice, inner, capacity) : undefined;
 		this.confirmationVisible = promptLines !== undefined;
+		const hits: PointerHit[] = [];
+		if (promptLines) confirmationHits(hits, promptLines, 1, yes => this.handleInput(yes ? "y" : "n"));
 		const lines: string[] = promptLines ? promptLines.map(line => this.options.theme.fg("warning", line)) : choice ? [this.options.theme.fg("warning", "Confirmation unavailable · Esc back")] : [];
 		// Input outranks the error, header and preview on tiny terminals.
 		const input = this.profileInput !== undefined ? `New profile name: ${this.profileInput}▏` : undefined;
@@ -612,8 +806,9 @@ export class VisualCustomizeView {
 		lines.push(...details.slice(0, free).map(line => this.options.theme.fg("text", line)));
 		for (const line of tail) if (lines.length < capacity) lines.push(this.options.theme.fg(line.startsWith("Error:") ? "error" : "accent", line));
 		if (lines.length < capacity) lines.push(this.options.theme.fg("muted", footer));
-		return this.detailFrame(lines, width, height);
+		const frame = this.detailFrame(lines, width, height);
+		return this.installPointerFrame(frame, { width, height: frame.length, available: height, profile: true, category: this.categories[this.categoryIndex] ?? "Settings", rows: [], hits: hits.filter(hit => hit.y < frame.length - 1) });
 	}
 
-	invalidate(): void { this.options.requestRender(); }
+	invalidate(): void { this.clearPointer(); this.options.requestRender(); }
 }

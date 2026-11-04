@@ -4,12 +4,15 @@ import {
 	isKeyRelease,
 	Key,
 	matchesKey,
+	stripTerminalSequences,
 	Text,
 	visibleWidth,
 	type Focusable,
 	type KeybindingsManager,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
+import { NativePointerScope } from "../native-pointer-region.ts";
+import { paintHoverable } from "../shell-hover.ts";
 import { CUSTOM_ROW_LABEL, type QuestionData } from "./schema.ts";
 
 /** Minimum terminal width at which the preview pane splits beside the list. */
@@ -63,6 +66,19 @@ interface QuestionState {
 interface LineOwner {
 	questionIndex: number;
 	rowIndex: number;
+}
+
+interface HoverTarget {
+	owner: LineOwner;
+	endX: number;
+}
+
+interface PressTarget {
+	owner: LineOwner;
+	x: number;
+	y: number;
+	width: number;
+	rows: number;
 }
 
 /** Small inline text editor for the free-text row; owns an {@link Input}. */
@@ -150,6 +166,18 @@ export class QuestionnaireView extends Container implements Focusable {
 	private completed = false;
 	private result: QuestionnaireResult | undefined;
 	private lineOwners: Array<LineOwner | undefined> = [];
+	private hoverTargets: Array<HoverTarget | undefined> = [];
+	private hovered: LineOwner | undefined;
+	private pressed: PressTarget | undefined;
+	private readonly pointerScope = new NativePointerScope();
+	// The view builds its own rows, so one region tracks motion over its rendered label targets.
+	private readonly hoverRegion = this.pointerScope.wrap({ render: () => [], invalidate: () => {} }, {
+		onHover: (event) => this.hoverLabel(event),
+		onLeave: () => { this.hovered = undefined; },
+	});
+	private renderedWidth: number | undefined;
+	private renderedRows: number | undefined;
+	private disposed = false;
 	private _focused = false;
 	private previewScroll = 0;
 	private previewScrollable = false;
@@ -184,7 +212,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	set focused(value: boolean) {
 		this._focused = value;
 		this.editor.setFocused(value);
-		this.invalidate();
+		if (this.editingQuestion !== undefined) this.invalidate();
 	}
 
 	/** Current committed result. Safe to call before completion. */
@@ -198,7 +226,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (this.completed || isKeyRelease(data)) return;
+		if (this.disposed || this.completed || isKeyRelease(data)) return;
 
 		if (this.editingQuestion !== undefined) {
 			// Tab still switches questions while editing; the draft is preserved.
@@ -264,9 +292,30 @@ export class QuestionnaireView extends Container implements Focusable {
 		}
 	}
 
+	createMouseObserver(requestRender: () => void) {
+		return this.pointerScope.createMouseObserver(requestRender);
+	}
+
 	override handleMouse(event: TuiMouseEvent) {
-		if (this.completed) return undefined;
+		if (this.disposed || this.completed) return undefined;
+		const rows = this.terminalRows();
+		const pressed = event.type === "click" && this.pressed && this.pressed.width === event.width &&
+			this.pressed.rows === rows && this.pressed.x === event.x && this.pressed.y === event.y
+			? this.pressed.owner : undefined;
+		if (!pressed && (this.renderedWidth !== event.width || this.renderedRows !== rows)) return undefined;
+		if (!Number.isFinite(event.x) || !Number.isFinite(event.y) ||
+			event.x < 0 || event.x >= event.width || event.y < 0 || event.y >= event.height) return undefined;
 		if (this.editingQuestion !== undefined) return this.editor.handleMouse(event);
+
+		if (event.type === "move" && event.button === "none") {
+			const target = this.hoverTargets[event.y];
+			if (target && event.x < target.endX) {
+				const result = this.hoverRegion.handleMouse(event);
+				return result ? { ...result, handled: true as const, target: this.mouseTarget(event) } : undefined;
+			}
+			const changed = this.hoverRegion.clearHover(event);
+			return changed ? { handled: true as const, render: true, target: this.mouseTarget(event) } : undefined;
+		}
 
 		if (event.type === "wheel") {
 			const delta = event.wheelDelta ?? 0;
@@ -276,15 +325,17 @@ export class QuestionnaireView extends Container implements Focusable {
 			}
 		}
 
-		const owner = this.lineOwners[event.y];
+		const owner = pressed ?? this.lineOwners[event.y];
 		if (!owner || owner.rowIndex < 0 || event.button !== "left") return undefined;
 
 		if (event.type === "press") {
 			const changed = this.focusRow(owner.questionIndex, owner.rowIndex);
+			this.pressed = { owner, x: event.x, y: event.y, width: event.width, rows };
 			return { handled: true as const, focus: true, render: changed, target: this.mouseTarget(event) };
 		}
 
 		if (event.type === "click") {
+			this.pressed = undefined;
 			const question = this.questions[owner.questionIndex];
 			this.focusRow(owner.questionIndex, owner.rowIndex);
 			// A multiSelect option toggles in place; only single-select (or the
@@ -303,12 +354,17 @@ export class QuestionnaireView extends Container implements Focusable {
 
 	override render(width: number): string[] {
 		const viewport = Math.max(1, width);
+		const terminalRows = this.terminalRows();
+		if (this.renderedWidth !== width || this.renderedRows !== terminalRows) this.pointerScope.invalidate();
+		if (this.pressed && (this.pressed.width !== width || this.pressed.rows !== terminalRows)) this.pressed = undefined;
 		const lines: string[] = [];
 		const owners: Array<LineOwner | undefined> = [];
+		const hoverTargets: Array<HoverTarget | undefined> = [];
 		const push = (text: string, owner?: LineOwner) => {
 			for (const line of this.wrap(text, viewport)) {
 				lines.push(line);
 				owners.push(owner);
+				hoverTargets.push(undefined);
 			}
 		};
 
@@ -320,7 +376,6 @@ export class QuestionnaireView extends Container implements Focusable {
 		push(this.renderTabs());
 		push("");
 
-		const terminalRows = this.terminalRows();
 		const maxBodyRows = Math.max(6, terminalRows - 6);
 
 		this.previewScrollable = false;
@@ -356,25 +411,41 @@ export class QuestionnaireView extends Container implements Focusable {
 			for (let index = 0; index < rows; index++) {
 				lines.push(`${padTo(left.lines[index] ?? "", leftWidth)}${PREVIEW_GAP}${visibleRight[index] ?? ""}`);
 				owners.push(left.owners[index]);
+				hoverTargets.push(left.hoverTargets[index]);
 			}
 		}
 		else {
 			const body = this.renderBody(viewport, preview !== undefined);
 			lines.push(...body.lines);
 			owners.push(...body.owners);
+			hoverTargets.push(...body.hoverTargets);
 		}
 
 		push("");
 		push(this.hint());
 
 		this.lineOwners = owners;
+		this.hoverTargets = hoverTargets;
+		this.renderedWidth = width;
+		this.renderedRows = terminalRows;
 		return lines;
 	}
 
 	override invalidate(): void {
 		this.lineOwners = [];
+		this.hoverTargets = [];
+		this.pointerScope.invalidate();
+		this.pressed = undefined;
+		this.renderedWidth = undefined;
+		this.renderedRows = undefined;
 		super.invalidate();
 		this.editor.setFocused(this._focused);
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.pointerScope.dispose();
+		this.invalidate();
 	}
 
 	/** Compact tab strip: every question is a chip, exactly one is active. */
@@ -392,19 +463,26 @@ export class QuestionnaireView extends Container implements Focusable {
 	}
 
 	/** Body for the active question only. */
-	private renderBody(width: number, inlinePreview: boolean): { lines: string[]; owners: Array<LineOwner | undefined> } {
+	private renderBody(width: number, inlinePreview: boolean): {
+		lines: string[];
+		owners: Array<LineOwner | undefined>;
+		hoverTargets: Array<HoverTarget | undefined>;
+	} {
 		const lines: string[] = [];
 		const owners: Array<LineOwner | undefined> = [];
-		const push = (text: string, owner?: LineOwner) => {
+		const hoverTargets: Array<HoverTarget | undefined> = [];
+		const push = (text: string, owner?: LineOwner, hoverable = false) => {
 			for (const line of this.wrap(text, width)) {
 				lines.push(line);
 				owners.push(owner);
+				const visible = stripTerminalSequences(line).trimEnd();
+				hoverTargets.push(hoverable && owner && visible.trim() ? { owner, endX: visibleWidth(visible) } : undefined);
 			}
 		};
 
 		const question = this.questions[this.focusedQuestion];
 		const state = this.states[this.focusedQuestion];
-		if (!question || !state) return { lines, owners };
+		if (!question || !state) return { lines, owners, hoverTargets };
 
 		const headerOwner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: -1 };
 		push(this.accent(question.question), headerOwner);
@@ -413,8 +491,9 @@ export class QuestionnaireView extends Container implements Focusable {
 			for (const line of this.editor.render(width)) {
 				lines.push(line);
 				owners.push(headerOwner);
+				hoverTargets.push(undefined);
 			}
-			return { lines, owners };
+			return { lines, owners, hoverTargets };
 		}
 
 		const customIndex = question.options.length;
@@ -437,7 +516,8 @@ export class QuestionnaireView extends Container implements Focusable {
 			const owner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: optionIndex };
 			const cursor = state.cursor === optionIndex ? this.accent("❯ ") : "  ";
 			const marker = question.multiSelect ? `${state.toggled.has(optionIndex) ? "[x]" : "[ ]"} ` : "";
-			push(`${cursor}${marker}${option.label}`, owner);
+			const label = paintHoverable(this.theme, option.label, this.isHovered(owner));
+			push(`${cursor}${marker}${label}`, owner, true);
 			push(`    ${this.theme.fg("dim", option.description)}`, owner);
 			if (inlinePreview && state.cursor === optionIndex && option.preview !== undefined) {
 				const wrapped = this.wrap(this.theme.fg("dim", option.preview), Math.max(1, width - 4));
@@ -466,9 +546,22 @@ export class QuestionnaireView extends Container implements Focusable {
 		const customOwner: LineOwner = { questionIndex: this.focusedQuestion, rowIndex: customIndex };
 		const customCursor = state.cursor === customIndex ? this.accent("❯ ") : "  ";
 		const customDone = state.answer?.kind === "custom" ? "✓ " : "";
-		push(`${customCursor}${customDone}${CUSTOM_ROW_LABEL}`, customOwner);
+		const customLabel = paintHoverable(this.theme, CUSTOM_ROW_LABEL, this.isHovered(customOwner));
+		push(`${customCursor}${customDone}${customLabel}`, customOwner, true);
 
-		return { lines, owners };
+		return { lines, owners, hoverTargets };
+	}
+
+	private hoverLabel(event: TuiMouseEvent) {
+		const owner = this.hoverTargets[event.y]?.owner;
+		if (!owner) return undefined;
+		const changed = this.hovered?.questionIndex !== owner.questionIndex || this.hovered?.rowIndex !== owner.rowIndex;
+		this.hovered = owner;
+		return { handled: true as const, render: changed };
+	}
+
+	private isHovered(owner: LineOwner): boolean {
+		return this.hovered?.questionIndex === owner.questionIndex && this.hovered.rowIndex === owner.rowIndex;
 	}
 
 	/** Bottom hint for the active question's interaction model. */

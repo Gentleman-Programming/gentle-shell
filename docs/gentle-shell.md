@@ -48,6 +48,21 @@ The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI 
 
 Gentle Shell is the Pi workspace experience provided by the `gentle-pi` package. It follows the Gentle themes: one border language, rose for whatever is alive.
 
+### Modal mouse controls
+
+In fullscreen, visible click targets use the shared orange hover role (`warning` in the active theme). Hover is presentation only: it does not run a command, change a setting, choose an answer, or stop a job. Keyboard navigation remains available.
+
+| Surface | Mouse behavior |
+| --- | --- |
+| `/gentle:customize` | Click a category, setting row or value. Clicking a value applies it; compact `‹`/`›` arrows follow the same immediate or preview-first behavior as the keyboard arrows. Confirmations still require an explicit click on `y yes` (or the `y` key); click `cancel` to decline when visible. |
+| `/gentle:commands` | Click a visible command to run it; use the wheel to navigate the filtered list. Headers and clipped rows are not targets, and mouse activation is disabled during shortcut capture. |
+| `/gentle:jobs` | Click a visible job to select it, and use the visible list/details, Stop and close controls. Stop applies only to a currently running job; hovering never changes the selected job or stops it. |
+| Questionnaires and response selectors | Existing option clicks keep their single-select, multi-select and custom-answer behavior; selectable labels now use the same hover role. Questionnaire tabs remain keyboard-controlled. |
+
+Moving to blank space inside a modal, keyboard navigation, resizing and disposal clear its hover. Native centered-overlay routing does not deliver motion outside the card, so the previous highlight can remain until the pointer returns or the view changes. Hover also depends on the terminal forwarding motion events; clicks remain usable when a multiplexer does not forward plain motion.
+
+In regular mode the terminal owns mouse input, so use the keyboard instead. Review-consent dialogs are not changed by these modal controls.
+
 ### Fullscreen layout
 
 At 140 columns or wider, fullscreen with the header on top draws an IDE inside the terminal (design: [`design/shell-rework`](../design/shell-rework/02-proposal.html)), driven by [`lib/shell-sidebar-layout.ts`](../lib/shell-sidebar-layout.ts):
@@ -362,7 +377,7 @@ until curl -sf localhost:3000/health; do sleep 1; done     # server is up
 - While the orchestrator has background work running (a subagent task or a background job), a `bash` call that only sleeps (`sleep 10`, `sleep 2m`, or several such sleeps joined by `&&`/`;`) is refused with a message to end the turn, because each completion already arrives as its own message. Wait conditions such as `until ...; do sleep 1; done`, sleeps mixed with real commands, `bash_background`, and `monitor` are never refused, and `sleep` is unrestricted when nothing runs in the background.
 - Jobs live in memory, belong to the session that started them, and are stopped when the session shuts down. At most 25 run at once.
 - `monitor` is a background job whose every output line is an event, delivered while the command keeps running — for example `tail -f app.log | grep --line-buffered ERROR`, or a loop that prints each CI check as it finishes. Lines within 200 ms share one notice of at most 20 lines (the rest are counted, and stay in the log); notices waiting for a busy agent coalesce. `timeout_seconds` is mandatory (1–1800): the monitor is stopped when it expires and reports its event count. One that prints more than 120 lines within 60 seconds is stopped as a flood, so filter its output. When the command exits, a final notice reports the exit code and event count. It goes through the same command guards as `bash`.
-- `/gentle:jobs` opens a full-terminal overlay with this session's jobs beside the selected job's command, status, output file, and live output tail; `↑`/`↓` or `j`/`k` move, `s` stops the selected running job, `q` closes (narrow terminals: `Tab` toggles details, `Escape` goes back). The footer shows `⧗ N jobs` while any run. In fullscreen at 140 columns or wider, running jobs also get their own collapsible sidebar card (`⧗ Jobs`), one row per job with its elapsed time, newest first; it paints nothing only while nothing is current — no running jobs and no finished result still inside its 60-second tail, the Status card never repeats it, and `ctrl+shift+j` (or clicking the card's header) collapses it; `GENTLE_PI_JOBS_KEY` remaps the shortcut, with an empty value or `off` disabling it.
+- `/gentle:jobs` opens a full-terminal overlay with this session's jobs beside the selected job's command, status, output file, and live output tail; `↑`/`↓` or `j`/`k` move, `s` stops the selected running job, `q` closes (narrow terminals: `Tab` toggles details, `Escape` goes back). In fullscreen, click a visible job or the details, Stop and close controls; hovered targets use the shared orange role, and Stop rechecks the selected job's current identity and running status. The footer shows `⧗ N jobs` while any run. In fullscreen at 140 columns or wider, running jobs also get their own collapsible sidebar card (`⧗ Jobs`), one row per job with its elapsed time, newest first; it paints nothing only while nothing is current — no running jobs and no finished result still inside its 60-second tail, the Status card never repeats it, and `ctrl+shift+j` (or clicking the card's header) collapses it; `GENTLE_PI_JOBS_KEY` remaps the shortcut, with an empty value or `off` disabling it.
 
 ### Gentle Todo
 

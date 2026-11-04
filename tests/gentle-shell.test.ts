@@ -2393,6 +2393,26 @@ test("visual customization and Vim register once and remain independently discov
 	assert.equal(JSON.parse(readFileSync(join(home, "vim.json"), "utf8")).policy, "on");
 });
 
+test("/gentle:customize forwards a mouse click through its command overlay", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	const view = ui.overlayView as unknown as { render(width: number): string[]; handleMouse(event: TuiMouseEvent): { handled?: boolean } | undefined; handleInput(data: string): void };
+	try {
+		const frame = view.render(100);
+		const y = frame.findIndex(row => row.includes("performance"));
+		assert.ok(y >= 0);
+		const x = visibleWidth(frame[y]!.slice(0, frame[y]!.indexOf("performance")));
+		assert.equal(resolveAnimationPolicy({ gentlePiConfigHome: home }).policy, "quality");
+		assert.equal(view.handleMouse({ type: "click", button: "left", x, y, screenX: x + 10, screenY: y + 5, width: 100, height: frame.length, shift: false, alt: false, ctrl: false })?.handled, true);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(resolveAnimationPolicy({ gentlePiConfigHome: home }).policy, "performance");
+	} finally { view.handleInput("\x1b"); await pending; }
+});
+
 test("/gentle:customize has a Keymaps category that saves a key and reloads on request", async () => {
 	const home = mkdtempSync(join(tmpdir(), "gentle-shell-keymaps-"));
 	isolatedConfigHomes.push(home);

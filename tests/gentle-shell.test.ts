@@ -5740,6 +5740,40 @@ test("GENTLE_PI_COMMANDS_KEY=off registers no command-palette shortcut", () => {
 	assert.ok(shortcuts.has("alt+g"), "the unrelated changes shortcut still registers");
 });
 
+test("saved keymaps replace the shell shortcuts, bind palette commands, and the environment still wins", async () => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-shell-keymaps-"));
+	isolatedConfigHomes.push(home);
+	writeFileSync(join(home, "keymaps.json"), JSON.stringify({ schema: 1, bindings: { commands: "alt+j", changes: null, usage: "alt+y", preset: "alt+p", "jobs.collapse": "alt+b", "command:gentle:profiles": "alt+o", "command:gentle:design": "alt+d" } }));
+	const { pi, shortcuts, sentMessages } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	for (const key of ["alt+j", "alt+y", "alt+p", "alt+b", "alt+o", "alt+d"]) assert.ok(shortcuts.has(key), key);
+	for (const key of ["alt+k", "alt+g", "alt+u", "alt+l", "ctrl+shift+j"]) assert.equal(shortcuts.has(key), false, key);
+	const { ctx, ui } = fakeContext();
+	await shortcuts.get("alt+o")!.handler(ctx);
+	assert.deepEqual(sentMessages.at(-1), { content: "/gentle:profiles", options: { expandPromptTemplates: true } });
+	await shortcuts.get("alt+d")!.handler(ctx);
+	assert.equal(sentMessages.length, 1, "a key bound to a command that is not registered runs nothing");
+	assert.deepEqual(ui.notices.at(-1), "alt+d runs /gentle:design, which is not available in this session.");
+	const envWins = fakePi();
+	gentleShell(envWins.pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_COMMANDS_KEY: "ctrl+p" });
+	assert.ok(envWins.shortcuts.has("ctrl+p"));
+	assert.equal(envWins.shortcuts.has("alt+j"), false);
+});
+
+test("a malformed keymaps.json keeps every default key and is reported once at startup", async () => {
+	const home = mkdtempSync(join(tmpdir(), "gentle-shell-keymaps-"));
+	isolatedConfigHomes.push(home);
+	writeFileSync(join(home, "keymaps.json"), "{");
+	const { pi, shortcuts, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	assert.ok(shortcuts.has("alt+k") && shortcuts.has("alt+g"));
+	const { ctx, ui } = fakeContext();
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+	assert.deepEqual(ui.notices.filter((notice) => notice.includes("keymaps.json")), [`Keymaps: ${join(home, "keymaps.json")} is unreadable or malformed; using the default keys.`]);
+	assert.equal(readFileSync(join(home, "keymaps.json"), "utf8"), "{");
+});
+
 test("/gentle:commands shows only curated, registered commands, grouped, by their labels", async () => {
 	const { pi, commands } = fakePi();
 	gentleShell(pi, {});

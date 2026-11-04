@@ -33,6 +33,7 @@ import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { agentsViewKey } from "../lib/agents-keys.ts";
+import { commandKeymapIds, effectiveKey, keymapCommand, loadKeymaps, type KeymapBindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
@@ -1568,7 +1569,6 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
-const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
@@ -1617,22 +1617,17 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 };
 
 export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
-export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
-	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+// Each key reads its environment variable, then keymaps.json, then its default (lib/keymaps.ts).
+export function changesShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("changes", env, bindings);
 }
 
-export function presetShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_PRESET_KEY?.trim();
-	if (value === undefined) return PRESET_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function presetShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("preset", env, bindings);
 }
 
-export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
-	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("usage", env, bindings);
 }
 
 function positiveMs(value: string | undefined, fallback: number): number {
@@ -1755,8 +1750,6 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
-const USAGE_SHORTCUT_DEFAULT = "alt+u";
-const PRESET_SHORTCUT_DEFAULT = "alt+l";
 const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
 /** The order the preset shortcut walks; a hand-tuned mix starts it on Neutral. */
 const PRESET_CYCLE: readonly VisualPreset[] = [VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL, VISUAL_PRESET.POWER_USER];
@@ -1885,6 +1878,14 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
 	if (!shellEnabled(env)) return;
+	// Pi reads shortcuts once (startup and /reload), so the saved keymaps are read once too.
+	const keymaps = loadKeymaps(env);
+	let keymapsReported = false;
+	pi.on("session_start", (_event, ctx) => {
+		if (!keymaps.malformed || keymapsReported || !ctx.hasUI) return;
+		keymapsReported = true;
+		ctx.ui.notify(`Keymaps: ${keymaps.path} is unreadable or malformed; using the default keys.`, "warning");
+	});
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
@@ -2198,8 +2199,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
-	const usageShortcutKey = usageShortcut(env);
-	const todoKey = todoCollapseKey(env);
+	const usageShortcutKey = usageShortcut(env, keymaps.bindings);
+	const todoKey = todoCollapseKey(env, keymaps.bindings);
 	if (usageShortcutKey) {
 		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show subscription usage windows for the connected providers",
@@ -2724,7 +2725,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
 	});
-	const shortcut = changesShortcut(env);
+	const shortcut = changesShortcut(env, keymaps.bindings);
 	if (shortcut) {
 		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the session's uncommitted Git changes",
@@ -2735,14 +2736,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
 		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env),
 	});
-	const commandsShortcut = commandsKey(env);
+	const commandsShortcut = commandsKey(env, keymaps.bindings);
 	if (commandsShortcut) {
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
 			handler: async (ctx) => showCommandPalette(pi, ctx, env),
 		});
 	}
-	const jobsKey = jobsCollapseKey(env);
+	// A palette command the user gave a key runs exactly as if typed.
+	for (const id of commandKeymapIds(keymaps.bindings)) {
+		const key = effectiveKey(id, env, keymaps.bindings);
+		const command = keymapCommand(id);
+		if (!key || !command) continue;
+		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: `Run /${command}`,
+			handler: async (ctx) => {
+				if (!pi.getCommands().some((registered) => registered.name === command)) {
+					ctx.ui.notify(`${key} runs /${command}, which is not available in this session.`, "warning");
+					return;
+				}
+				pi.sendUserMessage(`/${command}`, { expandPromptTemplates: true });
+			},
+		});
+	}
+	const jobsKey = jobsCollapseKey(env, keymaps.bindings);
 	if (jobsKey) {
 		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the jobs card",
@@ -2753,7 +2770,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 		});
 	}
-	const presetKey = presetShortcut(env);
+	const presetKey = presetShortcut(env, keymaps.bindings);
 	if (presetKey) {
 		pi.registerShortcut(presetKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Cycle the visual preset: Light, Neutral, Power user",

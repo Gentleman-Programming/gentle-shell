@@ -1,4 +1,5 @@
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 import { stripAnsi } from "./terminal-theme.ts";
 
 // Command palette: a pure, curated, grouped overlay component for
@@ -347,11 +348,9 @@ export class CommandPalette {
  * defaults to "alt+k" (ctrl+k is reserved by Pi's editor for
  * delete-to-line-end, so an extension shortcut on it is skipped); an empty
  * value or "off" (case-insensitive) disables the shortcut; anything else is
- * used as-is (trimmed). Same shape as changesShortcut in
- * extensions/gentle-shell.ts.
+ * used as-is (trimmed). Unset, a key saved in keymaps.json wins over the
+ * default (lib/keymaps.ts).
  */
-export function commandsKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_COMMANDS_KEY?.trim();
-	if (value === undefined) return "alt+k";
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function commandsKey(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("commands", env, bindings);
 }

@@ -134,7 +134,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
 	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
-	const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
+	const commands = new Map<string, { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
 	// `delivery` records custom messages and user wakes in dispatch order.
 	const userMessages: Array<{ content: unknown; options: Record<string, unknown> | undefined }> = [];
@@ -168,7 +168,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 		on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 		registerTool: (tool: Registered) => tools.set(tool.name, tool),
 		registerShortcut: (key: string, registration: { description: string; handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, registration),
-		registerCommand: (name: string, registration: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
+		registerCommand: (name: string, registration: { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
 	} as unknown as ExtensionAPI;
 	let activeSession: ExtensionContext | undefined;
 	const teardown = async () => {
@@ -6940,6 +6940,48 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 		await opened;
 	} finally {
 		unsubscribe();
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
+test("/gentle:jobs mouse controls route the chosen running job through the existing stop and notice path", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	try {
+		assert.match(commands.get("gentle:jobs")?.description ?? "", /click.*Stop/i, "command help advertises the explicit mouse control");
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "first command", label: "first job" }, undefined, undefined, ctx);
+		await tools.get("bash_background")!.execute("b2", { command: "second command", label: "second job" }, undefined, undefined, ctx);
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		const overlay = overlays.at(-1)!;
+		const eventFor = (text: string, type: TuiMouseEvent["type"]) => {
+			const lines = overlay.render(100).map(stripAnsi);
+			const y = lines.findIndex((line) => line.includes(text));
+			assert.ok(y >= 0, `Missing ${text}`);
+			const x = visibleWidth(lines[y]!.slice(0, lines[y]!.indexOf(text)));
+			return mouse(type, type === "move" ? "none" : "left", x, y, 100, lines.length);
+		};
+		overlay.handleMouse?.(eventFor("second job", "move"));
+		assert.equal(jobs.runs[0]!.signal?.aborted, false);
+		assert.equal(jobs.runs[1]!.signal?.aborted, false);
+		overlay.handleMouse?.(eventFor("second job", "press"));
+		overlay.handleMouse?.(eventFor("second job", "click"));
+		assert.equal(jobs.runs[1]!.signal?.aborted, false, "selecting a row does not stop it");
+		overlay.handleMouse?.(eventFor("s Stop", "press"));
+		overlay.handleMouse?.(eventFor("s Stop", "click"));
+		assert.equal(jobs.runs[0]!.signal?.aborted, false);
+		assert.equal(jobs.runs[1]!.signal?.aborted, true, "the selected job alone is stopped");
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1);
+		assert.match(String(notices[0]!.message.content), /job-2 \("second job"\) was stopped by the user/);
+		overlay.handleInput("q");
+		await opened;
+	} finally {
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();
 	}

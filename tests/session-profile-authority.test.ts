@@ -24,8 +24,9 @@ import gentleAgents, {
 } from "../extensions/gentle-agents.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
-import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { bindSessionProfile, readSessionProfileBinding, readSessionProfileStartupNone } from "../lib/session-profile-binding.ts";
+import type { SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 
 // Admission tests use actual factory loader/runner and manager. They do not
 // claim runtime lifecycle or visual evidence: those are separate fixtures.
@@ -230,4 +231,29 @@ test("a profile-less saved branch drops a binding left from another branch", (t)
  bindSessionProfile(manager.getSessionId(), "other-branch", { worker: { model: "openai/gpt-4o" } });
  assert.deepEqual(readSessionProfileAuthority(manager), { available: true });
  assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
+});
+
+// A2 (gentle-shell#2742, section 4): the newest corroborated record publishes
+// its origin and startup state, and a startup-none clear stays distinct from a
+// legacy clear; each later record replaces it, as on /tree.
+test("publishing keeps the record's origin and startup state, and the newest record replaces them", () => {
+ const manager = { getSessionId: () => "a2-publish" } as SessionProfileLifecycleManager;
+ const publish = (state: unknown) => publishSessionProfileOutcome(manager, { status: "persisted", state } as never);
+ const team = { worker: { model: "openai/gpt-5" }, orchestrator: { model: "openai/gpt-5" } };
+ const startup = publish({ status: "bound", binding: { kind: "bind", origin: "repo", name: "team", modelProfiles: team } });
+ assert.deepEqual(startup, { available: true, binding: { name: "team", origin: "repo", modelProfiles: team } });
+ const known = { origin: "global" as const, name: "team", modelProfiles: team };
+ publish({ status: "bound", binding: { kind: "bind", origin: "user", name: "fast", modelProfiles: team, startup: known } });
+ assert.deepEqual(readSessionProfileBinding("a2-publish")?.startup, known);
+ assert.deepEqual(publish({ status: "cleared", startup: "none" }), { available: true });
+ assert.equal(readSessionProfileBinding("a2-publish"), undefined);
+ assert.equal(readSessionProfileStartupNone("a2-publish"), true);
+ publish({ status: "cleared" });
+ assert.equal(readSessionProfileStartupNone("a2-publish"), false, "a legacy clear carries no startup state");
+ publish({ status: "cleared", startup: "none" });
+ publish({ status: "bound", binding: { kind: "bind", origin: "user", name: "fast", modelProfiles: team } });
+ assert.equal(readSessionProfileStartupNone("a2-publish"), false, "a newer bind wins");
+ publish({ status: "cleared", startup: "none" });
+ assert.deepEqual(publish({ status: "invalid" }), { available: false });
+ assert.equal(readSessionProfileStartupNone("a2-publish"), false, "an unreadable record keeps no startup state");
 });

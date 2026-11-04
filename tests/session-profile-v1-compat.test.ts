@@ -187,6 +187,32 @@ test("current reads an explicit bind with or without a startup state exactly as 
 	}
 });
 
+// Clear (section 10): the record sequences the A2 clear writes, by newest entry.
+const teamStartup = { origin: "global" as const, name: "team", modelProfiles: TEAM };
+const invalid = { kind: "bind", origin: "user", name: "" };
+const clearTranscripts: Record<string, Transcript> = {
+	"known startup profile": { records: [createSessionProfileBind("local", LOCAL, teamStartup), createSessionProfileStartupBind("global", "team", TEAM)], defaults: { profiles, active: "team", foreignPin: "frontier" } },
+	"known no profile": { records: [createSessionProfileBind("local", LOCAL, "none"), createSessionProfileClear("none")], defaults: { profiles, foreignPin: "team" } },
+	"unknown startup state": { records: [userBind("local", LOCAL), createSessionProfileClear()], defaults: { profiles, active: "frontier" } },
+	"invalid newest entry, startup known": { records: [userBind("local", LOCAL), invalid, createSessionProfileStartupBind("global", "team", TEAM)], defaults: { profiles, active: "team" } },
+	"invalid newest entry, startup unknown": { records: [userBind("local", LOCAL), invalid, createSessionProfileClear()], defaults: { profiles, active: "frontier" } },
+	"follow mode": { records: [createSessionProfileBind("local", LOCAL, teamStartup), createSessionProfileClear()], defaults: { profiles, active: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } },
+};
+
+for (const [name, transcript] of Object.entries(clearTranscripts)) {
+	test(`a clear routes the same in v1 and current: ${name}`, () => {
+		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
+		assert.equal(replay("current", transcript).authority, true, "the clear restores authority");
+	});
+}
+
+test("a clear back to a startup profile with an orchestrator raises no v1 definition drift notice", () => {
+	const transcript = clearTranscripts["known startup profile"]!;
+	const v1 = replay("v1", transcript);
+	assert.deepEqual([v1.notice, roles(v1.routing)], [undefined, roles(TEAM)]);
+	assert.deepEqual([replay("current", transcript).label, replay("current", transcript).notice], ["team", undefined]);
+});
+
 test("a legacy clear after an explicit choice that carried its startup state freezes the defaults at resume, as v1", () => {
 	const startup = { origin: "global" as const, name: "team", modelProfiles: TEAM };
 	const transcript = { records: [createSessionProfileBind("local", LOCAL, startup), createSessionProfileClear()], defaults: { profiles, active: "frontier" } };

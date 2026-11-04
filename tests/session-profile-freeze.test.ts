@@ -9,12 +9,14 @@ import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { bindSessionProfile, recordSessionProfileStartupNone, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import {
 	PROFILE_FOLLOW_ENV,
+	freezeSessionProfileAtOwnStart,
 	freezeSessionProfileAtStartup,
 	inheritedProfileDriftNotice,
 	profileFollowEnabled,
 	sessionProfileRoutingAt,
 	readFrozenInheritedProfile,
 	resetFrozenInheritedProfilesForTesting,
+	readSessionProfileOwnStartup,
 	resolveInheritedProfile,
 	resolveSessionProfile,
 	sessionProfileLabel,
@@ -470,6 +472,45 @@ test("follow mode routes a recorded startup profile and resolves the current def
 	assert.deepEqual(sessionProfileModelProfiles(resolveSessionProfile(options(f, "s-bind", env))), { worker: TEAM.worker });
 	recordSessionProfileStartupNone("s-none");
 	assert.deepEqual(resolveSessionProfile(options(f, "s-none", env)), { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } });
+});
+
+// A2 (gentle-shell#2742, section 3): only a freeze at the session's own start
+// knows the startup state, with the profile's full definition.
+test("own start captures the startup profile with its full definition, orchestrator included", () => {
+	const f = fixture();
+	f.setActive("team");
+	freezeSessionProfileAtOwnStart(options(f, "session-a"));
+	assert.deepEqual(JSON.parse(JSON.stringify(readSessionProfileOwnStartup("session-a"))), { origin: "global", name: "team", modelProfiles: TEAM });
+});
+
+test("a session frozen by a plain resume has no known startup state", () => {
+	const f = fixture();
+	f.setActive("team");
+	freezeSessionProfileAtStartup(options(f, "session-a"));
+	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "team", "the resume froze the default");
+	assert.equal(readSessionProfileOwnStartup("session-a"), undefined);
+});
+
+test("own start with no profile anywhere records the startup state as none", () => {
+	const f = fixture();
+	freezeSessionProfileAtOwnStart(options(f, "session-a"));
+	assert.equal(readSessionProfileOwnStartup("session-a"), "none");
+});
+
+test("own start leaves the startup state unknown when the stored definition no longer matches the frozen routing", () => {
+	const f = fixture();
+	f.setActive("team");
+	const edited = fixture({ team: { worker: { model: "ollama/qwen" }, orchestrator: { model: "openai/gpt-5" } } });
+	// The freeze reads profiles.json twice: once to resolve the default, once for
+	// its definition. A configHome that moves to an edited store between the two
+	// reads stands in for an edit landing in between, without racing a writer.
+	let reads = 0;
+	const opts = { ...options(f, "session-a"), readDefaultOrchestrator: () => undefined };
+	Object.defineProperty(opts, "configHome", { get: () => (reads++ < 2 ? f.configHome : edited.configHome) });
+	freezeSessionProfileAtOwnStart(opts);
+	assert.equal(reads, 3, "two reads resolve the default, the third reads its definition");
+	assert.deepEqual(JSON.parse(JSON.stringify(readFrozenInheritedProfile("session-a")?.profile)), { name: "team", origin: "global", modelProfiles: { worker: TEAM.worker } });
+	assert.equal(readSessionProfileOwnStartup("session-a"), undefined);
 });
 
 test("drift notice after a resume that took a startup record is the inherited notice", () => {

@@ -32,6 +32,7 @@ import { normalizeModelConfig, normalizeRoutingEntry, readModelConfigFile, type 
 import { profileRoleEntries, profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { readProfilePinStatus, resolveProfilePin, resolveUnversionedProjectProfile } from "./agent-profile-pin.ts";
 import { readSessionProfileBinding, readSessionProfileStartupNone } from "./session-profile-binding.ts";
+import type { SessionProfileStartupState } from "./session-profile-persistence.ts";
 import type { WorktreeIdentity, WorktreeResolver } from "./session-worktree-registry.ts";
 
 /** Opt-in that keeps the live `p → P → G` resolution instead of freezing it at startup. */
@@ -79,6 +80,11 @@ export interface SessionProfileOptions extends InheritedProfileOptions {
 
 interface FreezeRegistry {
 	frozen: Map<string, FrozenInheritedProfile>;
+	// The frozen profile's full definition, orchestrator included, read in the
+	// same freeze step; launch routing keeps the role-only `frozen` copy.
+	definitions: Map<string, AgentModelConfig>;
+	// Sessions this process froze at their own start, not at a resume.
+	ownStart: Set<string>;
 	orchestrators: Map<string, AgentRoutingEntry | null>;
 	// Drift fingerprints already reported, per session.
 	notified: Map<string, Set<string>>;
@@ -88,9 +94,12 @@ const freezeRegistryKey = Symbol.for("gentle-pi:session-profile-freeze");
 
 function registry(): FreezeRegistry {
 	const holder = globalThis as { [freezeRegistryKey]?: FreezeRegistry };
-	(holder[freezeRegistryKey] ??= { frozen: new Map(), orchestrators: new Map(), notified: new Map() });
+	(holder[freezeRegistryKey] ??= { frozen: new Map(), definitions: new Map(), ownStart: new Set(), orchestrators: new Map(), notified: new Map() });
 	const store = holder[freezeRegistryKey]!;
 	store.orchestrators ??= new Map();
+	// An older evaluation of this module may have created the shared registry.
+	store.definitions ??= new Map();
+	store.ownStart ??= new Set();
 	return store;
 }
 
@@ -192,8 +201,41 @@ function frozenOrFreeze(options: SessionProfileOptions): FrozenInheritedProfile 
 	if (frozen === undefined) {
 		frozen = { profile: cloneProfile(resolveInheritedProfile(options)) };
 		store.set(sessionId, frozen);
+		const definition = frozen.profile && startupDefinition(options, frozen.profile);
+		if (definition !== undefined) registry().definitions.set(sessionId, definition);
 	}
 	return { profile: cloneProfile(frozen.profile) };
+}
+
+// The full definition behind a profile just frozen; `undefined` when the store
+// no longer holds the role routing the freeze resolved.
+function startupDefinition(options: SessionProfileOptions, profile: InheritedProfile): AgentModelConfig | undefined {
+	const store = readProfilesFileResult(profilesFilePath(options.configHome));
+	if (store.status !== "valid" || !Object.hasOwn(store.file.profiles, profile.name)) return undefined;
+	const definition = store.file.profiles[profile.name]!;
+	return stableJson(roleRouting(definition)) === stableJson(profile.modelProfiles) ? cloneProfiles(definition) : undefined;
+}
+
+/**
+ * Freeze at the session's own start, a new session rather than a resume, so
+ * this process knows its startup state (gentle-shell#2742, section 3).
+ */
+export function freezeSessionProfileAtOwnStart(options: SessionProfileOptions): void {
+	freezeSessionProfileAtStartup(options);
+	if (freezes(options)) registry().ownStart.add(options.sessionId!);
+}
+
+/**
+ * The startup state this process froze at the session's own start, with the
+ * profile's full definition; `undefined` when unknown, including a profile
+ * whose definition the freeze could not capture.
+ */
+export function readSessionProfileOwnStartup(sessionId: string | undefined): SessionProfileStartupState | undefined {
+	const frozen = sessionId === undefined ? undefined : registry().frozen.get(sessionId);
+	if (frozen === undefined || !registry().ownStart.has(sessionId!)) return undefined;
+	if (frozen.profile === undefined) return "none";
+	const definition = registry().definitions.get(sessionId!);
+	return definition && { origin: frozen.profile.origin, name: frozen.profile.name, modelProfiles: cloneProfiles(definition) };
 }
 
 /**
@@ -337,6 +379,8 @@ function bindingDefinitionDriftNotice(
 /** Testing-only reset of every frozen snapshot and drift memory. */
 export function resetFrozenInheritedProfilesForTesting(): void {
 	registry().frozen.clear();
+	registry().definitions.clear();
+	registry().ownStart.clear();
 	registry().orchestrators.clear();
 	registry().notified.clear();
 }

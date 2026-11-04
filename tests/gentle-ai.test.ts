@@ -21,6 +21,7 @@ import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExten
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
@@ -4566,6 +4567,55 @@ test("/gentle:profiles clear on an already-cleared session writes nothing and sa
 	assert.match(h.last().message, /session profile is already cleared; nothing to clear/);
 });
 
+// gentle-shell#2742, section 3: the newest record carries the startup state.
+const TEAM_DEFINITION = { orchestrator: { model: "openai/beta", thinking: "high" as const }, worker: { model: "openai/alpha" } };
+const withFast = { team: TEAM_DEFINITION, fast: { worker: { model: "openai/gamma" } } };
+const useInSession = (h: ReturnType<typeof profilesCommandHarness>, name: string) =>
+	__testing.runProfilesPanelAction(h.ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name }, {});
+const newest = (h: ReturnType<typeof profilesCommandHarness>) => (h.family().at(-1) as { data?: unknown }).data;
+
+test("Use in this session carries a recorded startup profile and clear goes back to it", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	const startup = createSessionProfileStartupBind("local", "team", TEAM_DEFINITION);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, startup);
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, { origin: "local", name: "team", modelProfiles: TEAM_DEFINITION }));
+	await h.run("clear");
+	assert.equal(h.family().length, 3);
+	assert.deepEqual(newest(h), startup, "the startup bind is written again, orchestrator included");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.origin, "local");
+	assert.equal(h.last().severity, "info");
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to the profile this session started with, "team (local)", and use it. The live orchestrator is unchanged.');
+	await h.run("clear");
+	assert.equal(h.family().length, 3, "a startup record is already there: nothing is written");
+	assert.equal(h.last().message, 'el Gentleman: this session is already on the profile it started with, "team (local)"; nothing to clear.');
+	h.assertSharedUntouched();
+});
+
+test("clear goes back to no profile when the newest record says the session started without one", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear("none"));
+	await h.run("clear");
+	assert.equal(h.family().length, 1, "a startup-none record is already there: nothing is written");
+	assert.equal(h.last().message, "el Gentleman: this session is already on no profile, as it started; nothing to clear.");
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, "none"));
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear", startup: "none" });
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined);
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to no profile, as this session started. The live orchestrator is unchanged.');
+});
+
+test("clear in follow mode writes a legacy clear even when the newest record carries the startup state", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast, "none"));
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear" });
+	assert.match(h.last().message, /New launches use the routing without a session profile/);
+});
+
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);
 	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };
@@ -4591,6 +4641,7 @@ for (const [customType, kind] of [["gentle-pi.session-profile/v1", "invalid"], [
 		await h.run("clear");
 		assert.equal(h.last().severity, "info");
 		assert.match(h.last().message, /cleared the unreadable session profile record/);
+		assert.deepEqual((h.family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
 		const count = h.notifications.length;
 		__testing.notifySessionProfileProblem(h.ctx);
 		assert.equal(h.notifications.length, count, "a recovered session raises no warning");

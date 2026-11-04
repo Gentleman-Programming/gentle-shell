@@ -128,8 +128,9 @@ import {
 import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
-import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
-import { resolveSessionProfile, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
+import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -5239,7 +5240,8 @@ async function runProfilesPanelAction(
 				return file;
 			}
 			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
-				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {});
+				const startup = knownSessionProfileStartup(attachment.refresh().state, sessionId);
+				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {}, startup);
 				if (!owned()) return false;
 				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
 				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
@@ -6136,10 +6138,31 @@ async function openProfilesPanelLoop(
 }
 
 /**
- * `/gentle:profiles clear`: append an explicit clear record for this session and
- * publish only the returned state. Never-bound and already-cleared sessions write
- * nothing; an unreadable record is the recovery case and is cleared. The live
- * orchestrator and every shared default stay untouched.
+ * The startup state this session knows (gentle-shell#2742, section 3): the one
+ * the newest corroborated record carries, else the profile this process froze
+ * at the session's own start. Follow mode has none.
+ */
+function knownSessionProfileStartup(state: SessionProfileAppendOutcome["state"], sessionId: string): SessionProfileStartupState | undefined {
+	if (profileFollowEnabled()) return undefined;
+	if (state.status === "bound") {
+		const { origin, name, modelProfiles, startup } = state.binding;
+		if (origin !== "user") return { origin, name, modelProfiles };
+		if (startup !== undefined) return startup;
+	} else if (state.status === "cleared" && state.startup === "none") return "none";
+	return readSessionProfileOwnStartup(sessionId);
+}
+
+/** Where a clear goes back to, named with the status label convention. */
+function startupStateText(startup: SessionProfileStartupState): string {
+	return startup === "none" ? "no profile, as this session started" : `the profile this session started with, "${sessionProfileLabel({ kind: "inherited", profile: startup })}", and use it`;
+}
+
+/**
+ * `/gentle:profiles clear`: go back to the startup state when it is known
+ * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
+ * only the returned state. Never-bound, already-cleared and startup sessions
+ * write nothing; an unreadable record is the recovery case and is replaced. The
+ * live orchestrator and every shared default stay untouched.
  */
 async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -6156,14 +6179,21 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
 			return true;
 		}
+		const startupOrigin = prior.status === "bound" && prior.binding.origin !== "user" ? prior.binding.origin : undefined;
+		if (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none")) {
+			const label = prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined;
+			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
+			return true;
+		}
 		if (prior.status === "cleared") {
 			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
 			return true;
 		}
-		const outcome = attachment.clear();
+		const startup = knownSessionProfileStartup(prior, sessionId);
+		const outcome = typeof startup === "object" ? attachment.bindStartup(startup.origin, startup.name, startup.modelProfiles) : attachment.clear(startup);
 		if (!owned()) return false;
 		const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
-		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "cleared" || !authority.available) {
+		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== (typeof startup === "object" ? "bound" : "cleared") || !authority.available) {
 			ctx.ui.notify(
 				`el Gentleman could not clear the session profile. ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."}`,
 				"warning",
@@ -6171,6 +6201,11 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 			return false;
 		}
 		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : "the unreadable session profile record";
+		const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+		if (startup !== undefined) {
+			ctx.ui.notify(`el Gentleman cleared ${what} (${persistence}). New launches go back to ${startupStateText(startup)}. The live orchestrator is unchanged.`, "info");
+			return true;
+		}
 		ctx.ui.notify(
 			`el Gentleman cleared ${what} — ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. New launches use the routing without a session profile (pins, repository declaration, global). The live orchestrator is unchanged.`,
 			"info",
@@ -11439,6 +11474,12 @@ function createGentleAiExtensionForTesting(
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		// gentle-shell#2742: a start with no conversation on its branch is the
+		// session's own start, so this process knows its startup state.
+		try {
+			if (profileSessionId && event.reason !== "fork" && !ctx.sessionManager.getBranch().some((entry) => entry.type === "message"))
+				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+		} catch { /* The startup state stays unknown. */ }
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();

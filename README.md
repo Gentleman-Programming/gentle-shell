@@ -222,7 +222,7 @@ Extension commands are only useful if you can find them. `alt+k` opens a curated
 
 ### Customize — Look, layout, and editor in one panel
 
-`/gentle:customize` opens an interactive panel to set animation quality, startup banner rose, text logo and color, or choose an installed Pi theme. Settings with a few values (animations, banner color, preset, status, header, density, card style and content) take one line each with their values inline: `●` marks the current one, `↑`/`↓` move between settings, and `←`/`→` change the value and apply it at once (`←` past the first value returns to the categories). The focused setting says what it does, and Layout previews a schematic of the result. Permission and history rows still apply only on Enter.
+`/gentle:customize` uses one line per setting with its options inline across appearance, themes, Editor, History, Notifications, Layout, Cards, and Sections. `●` marks the current value and `›` a different highlighted option; `↑`/`↓` move between settings. The footer tells you whether `←`/`→` applies a live appearance change immediately or previews an option for **Enter** to apply. Themes, permissions, privacy, audio, and the newly grouped toggles require Enter: browsing never changes authority or saves those preferences. `←` past the first value returns to the categories; Tab also switches panes. Focused previews retain warnings, effective-state diagnostics and Layout's schematic. Profile and reset actions keep their explicit controls and confirmations.
 
 <details>
 <summary><kbd>More</kbd> <strong>Everything <code>/gentle:customize</code> controls</strong> — themes, status layout, Vim, history, and visual profiles</summary>
@@ -254,7 +254,7 @@ Open `/gentle:customize` → **Notifications** (the card header reads **Audio no
 
 <br>
 
-- **Controls:** Enter toggles the master switch or cycles a type/event through silence/success/error/attention, `f` assigns a literal absolute local WAV/OGG/FLAC sound (≤2 MiB, ≤10 seconds) to the highlighted **Success**, **Error** or **Attention** type (each type keeps its own sound), and `p` previews its assigned sound. **Advanced** folds per-event exceptions; the type choices stay independent.
+- **Controls:** Each audio setting has inline options: use `←`/`→` to choose and Enter to apply the master switch, process mute, type/event sound or Advanced visibility. Sound options include silence, the builtin tones and custom audio. `f` assigns a literal absolute local WAV/OGG/FLAC sound (≤2 MiB, ≤10 seconds) to the highlighted **Success**, **Error** or **Attention** type (each keeps its own sound); `p` previews its currently configured sound. **Advanced** folds per-event exceptions; the type choices stay independent. Navigation alone never writes audio preferences.
 
 - **Quick answer (Linux/WSLg):** on plain Linux the installed package prefers the native WAV backend and needs no external player — it talks to a local PulseAudio/PipeWire-Pulse Unix socket and requires a running server with a default sink.
 - Inside **WSL** the Windows system `SoundPlayer` is preferred instead: the validated WAV snapshot is mapped to a `\\wsl.localhost\<distro>\...` UNC path, so no Pulse server or RDP audio dependency is required; it does depend on the default `/mnt/c` automount and the standard `C:\Windows` root and otherwise falls back to the trusted Linux CLI before any playback.
@@ -327,7 +327,7 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 - **Status:** Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**.
 - **Still mandatory:** Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
-- **From Customize:** Or open `/gentle:customize` → **Editor** and select **YOLO: OFF · session only**, immediately below Vim. Enter or Space toggles the same live-session permission as `/gentle:yolo`; browsing and previews never activate it. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
+- **From Customize:** Or open `/gentle:customize` → **Editor**, choose **ON** or **OFF** on the **YOLO** line below Vim, then press Enter or Space to apply that live-session value. Browsing and previews never activate it; the native permission and consent boundaries remain the same as `/gentle:yolo`. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.
 
 </details>
 

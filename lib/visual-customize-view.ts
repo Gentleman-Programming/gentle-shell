@@ -31,9 +31,10 @@ function dropLastGrapheme(text: string): string {
 }
 
 /** Category-aware footer; the audio card advertises audio keys, never the visual profiles pane. */
-function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string, setting = false): string {
+function footerHint(category: string, navOnly: boolean, previewLines: number, keyhint?: string, setting = false, applyOnMove = true): string {
 	if (navOnly) return "↑/↓ categories · → open · Esc close";
-	if (setting) return "↑/↓ settings · ←/→ change · Tab categories · p profiles · Esc close";
+	if (setting && category === "Notifications") return keyhint ?? "←/→ choose · Enter apply · Tab panes · Esc close";
+	if (setting) return applyOnMove ? "↑/↓ settings · ←/→ change · Tab categories · p profiles · Esc close" : "←/→ choose · Enter apply · ↑/↓ settings · Tab panes · Esc close";
 	if (category === "Notifications") return keyhint ?? "Tab panes · Enter change · p test · Esc close";
 	return previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close";
 }
@@ -55,10 +56,10 @@ export interface CustomizeRow {
 	preview?: () => { title: string; sample: string };
 	/**
 	 * One value of a setting. Consecutive rows of the same `setting` render as one
-	 * line with their values inline; ←/→ moves between them and applies at once.
-	 * Leave it off for rows that must never apply on an arrow key (permissions, privacy).
+	 * line with their values inline. Layout choices apply on ←/→; set applyOnMove
+	 * to false for preview-first, permission or privacy settings that need Enter.
 	 */
-	choice?: { setting: string; value: string; current(): boolean; hint?: string };
+	choice?: { setting: string; value: string; current(): boolean; hint?: string; applyOnMove?: boolean };
 	/** When present and it returns false the row is hidden from its category; an exception fails closed. */
 	visible?: () => boolean;
 	/** Audio-footer hint for this row; omitted rows use the category default (never advertising `f WAV`). */
@@ -399,7 +400,8 @@ export class VisualCustomizeView {
 		const line = this.lineOf(entries, this.selected);
 		const entry = entries[line];
 		const category = this.categories[this.categoryIndex]!;
-		// On a setting line ←/→ walk its values and apply each at once; ← past the first returns to the categories.
+		// Walk inline values; live choices apply immediately, deferred choices wait for Enter.
+		// Moving left past the first value returns to the categories.
 		const step = this.pane === "controls" && entry?.setting ? matchesKey(data, Key.left) ? -1 : matchesKey(data, Key.right) ? 1 : 0 : 0;
 		if (step === -1 && this.selected === entry!.first) this.pane = "categories";
 		else if (step) {
@@ -407,7 +409,7 @@ export class VisualCustomizeView {
 			// Same guard as Enter: never apply a value the card is too small to show.
 			if (next >= entry!.first && next < entry!.first + entry!.count && !this.busy && this.controlsShown()) {
 				this.controls.set(category, next);
-				this.withBusy(() => rows[next]!.action(this.inline));
+				if (rows[next]!.choice?.applyOnMove !== false) this.withBusy(() => rows[next]!.action(this.inline));
 			}
 		} else if (matchesKey(data, Key.left) || matchesKey(data, Key.tab) && this.pane === "controls") this.pane = "categories";
 		else if (matchesKey(data, Key.right) || matchesKey(data, Key.tab) && this.pane === "categories") this.enterControls();
@@ -528,7 +530,7 @@ export class VisualCustomizeView {
 			for (let i = 0; i < previewLines - 2; i++) lines.push(paint(sample[i] ?? "", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined), inner, "muted"));
+		if (showHeading) lines.push(paint(footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false), inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
 		const title = this.title();
 		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");

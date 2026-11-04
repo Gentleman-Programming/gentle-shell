@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3196,12 +3196,15 @@ test("customize Notifications applies audio controls directly in the same overla
 		assert.equal(settled, false, "the overlay never closes to open a panel");
 		// Per-event exceptions stay folded until Advanced is expanded in the same overlay.
 		assert.ok(findCustomizeRow(ui, "Advanced:"), "Advanced toggle is a direct row");
+		ui.overlayView!.handleInput("\x1b[C");
 		assert.doesNotMatch(ui.overlayView!.render(90).join("\n"), /agent\.failed:/, "per-event rows stay folded by default");
 		ui.overlayView!.handleInput("\r");
 		// Let the toggle's busy microtask settle before activating a revealed row.
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		const notices = ui.notices.length;
 		assert.ok(findCustomizeRow(ui, "agent.failed:"));
+		for (let i = 0; i < 3; i++) ui.overlayView!.handleInput("\x1b[C");
+		assert.equal(writes, 0, "navigation never saves a sound");
 		ui.overlayView!.handleInput("\r");
 		for (let attempt = 0; attempt < 100 && ui.notices.length === notices; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 		assert.ok(ui.notices.length > notices, "direct Enter action finished");
@@ -3249,7 +3252,7 @@ test("customize History rows persist prompt history capture and keep stored hist
 	const pending = commands.get("gentle:customize")!.handler("", ctx);
 	await overlayReady;
 	assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
-	assert.match(ui.overlayView!.render(90).join("\n"), /History · 1\/2/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /History · 1\/1/);
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preview · Prompt history capture[\s\S]*preference: off · effective: off/i);
 	assert.equal(existsSync(join(home, "history-capture.json")), false, "highlighting never applies");
 	await customizeAction(ui, "Prompt history capture: enable");
@@ -3625,9 +3628,9 @@ test("customize command updates displayed settings and applies layout immediatel
 	assert.equal(resolveAnimationPolicy({ gentlePiConfigHome: home }).policy, "performance");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Animations\s+○ quality\s+● performance/);
 	assert.match(ui.notices.at(-1)!, /Prompt applies now.*banner.*next startup/i);
-	await customizeAction(ui, "Banner rose");
+	await customizeAction(ui, "Banner rose: off");
 	assert.equal((await readBannerConfig(home)).showRose, false);
-	assert.match(ui.overlayView!.render(90).join("\n"), /Banner rose: off/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Banner rose\s+○ on\s+● off/);
 	assert.match(ui.notices.at(-1)!, /next startup/i);
 	await customizeAction(ui, "Status placement: hidden");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.statusPlacement, "hidden");
@@ -3816,10 +3819,10 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		assert.deepEqual(footer.render(240), [""], "hidden float status retains exterior dock spacing");
 		assert.equal(header.render(240).length, 5);
 		assert.doesNotMatch(stripAnsi(header.render(240).join("\n")), /MCP updated/);
-		await customizeAction(ui, "Section changes: shown");
+		await customizeAction(ui, "Section changes: hidden");
 		assert.equal(header.render(240).length, 4);
 		assert.equal(ui.widgets.has("gentle-shell-changes"), false);
-		await customizeAction(ui, "Section changes: hidden");
+		await customizeAction(ui, "Section changes: shown");
 		await customizeAction(ui, "Header placement: top");
 		assert.deepEqual(header.render(240), []);
 		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "top placement restores standalone Changes");
@@ -6743,7 +6746,7 @@ test("customize presets set density and visibility together, mark the current on
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "comfortable", "Power user keeps Neutral's spacing");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.stats, true, "and adds Stats");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+○ Neutral\s+● Power user/);
-	await customizeAction(ui, "Section stats: shown");
+	await customizeAction(ui, "Section stats: hidden");
 	assert.ok(findCustomizeRow(ui, "Preset: Neutral"));
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral/, "Power user without Stats is Neutral again");
 	await customizeAction(ui, "Density: minimal");
@@ -7051,4 +7054,26 @@ test("Stats reads what subagents spent from the Agents rail section", async (t) 
 		agents.dispose();
 		footer.dispose();
 	}
+});
+
+
+test("Customize groups every setting like Layout while navigation keeps stores unchanged", async (t) => {
+ const home = scopedDoubleEscCancelConfigHome(t);
+ const { pi, commands } = fakePi();
+ gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+ const { ctx, ui, overlayReady } = fakeContext();
+ const pending = commands.get("gentle:customize")!.handler("", ctx);
+ await overlayReady;
+ const snapshot = () => JSON.stringify(readdirSync(home).sort().map(name => [name, readFileSync(join(home, name), "utf8")]));
+ const before = snapshot();
+ for (const [label, setting] of [["Banner rose:", "Banner rose"], ["Banner text logo:", "Banner text logo"], ["Theme:", "Theme"], ["Vim:", "Vim"], ["YOLO:", "YOLO"], ["Session permissions:", "Session permissions"], ["Default permissions:", "Default permissions"], ["Prompt history capture:", "History capture"], ["Audio notifications:", "Enabled"], ["Success:", "Success"], ["Section changes:", "changes"]]) {
+  assert.ok(findCustomizeRow(ui, label), label);
+  const lines = ui.overlayView!.render(180);
+  assert.equal(lines.filter(line => line.split("│").some(part => part.trimStart().replace(/^▸\s*/, "").startsWith(`${setting} `) && /[●○]/.test(part))).length, 1, `${setting} has one options line`);
+ }
+ assert.ok(findCustomizeRow(ui, "Prompt history capture: enable"));
+ ui.overlayView!.render(120); ui.overlayView!.handleInput("\x1b[C");
+ await new Promise<void>(resolve => setImmediate(resolve));
+ assert.equal(snapshot(), before, "browsing an off/on option cannot write a preference");
+ ui.overlayView!.handleInput("\x1b"); await pending;
 });

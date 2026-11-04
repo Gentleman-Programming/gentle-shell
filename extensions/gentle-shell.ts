@@ -2804,6 +2804,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				if (await action() === false) return;
 				ctx.ui.notify(notice, "info");
 			} });
+			const explicitChoice = (setting: string, value: string, current: () => boolean): CustomizeRow["choice"] => ({ setting, value, current, applyOnMove: false });
 			for (const policy of ["quality", "performance", "potato"] as const) add(
 				() => `Animations: ${policy}${resolveAnimationPolicy(animationOptions).policy === policy ? " (current)" : ""}`,
 				"Animation saved. Prompt applies now; startup banner applies at next startup.",
@@ -2821,18 +2822,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const [r, g, b] = bannerColors[next.color];
 				return { title: `Banner · ${next.color} (static)`, sample: `${next.showRose ? `\x1b[38;2;${r};${g};${b}m🌹\x1b[0m` : "·"}  ${next.showTextLogo ? "GENTLE SHELL" : "(logo hidden)"}` };
 			};
-			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showRose = !next.showRose;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showRose: !banner.showRose }));
-			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showTextLogo = !next.showTextLogo;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showTextLogo: !banner.showTextLogo }));
+			for (const [setting, key] of [["Banner rose", "showRose"], ["Banner text logo", "showTextLogo"]] as const) {
+				for (const enabled of [true, false]) add(
+					() => `${setting}: ${enabled ? "on" : "off"}${banner[key] === enabled ? " (current)" : ""}`,
+					"Banner saved; applies at next startup.",
+					async () => {
+						const next = { ...await readBannerConfigForEdit(bannerHome), [key]: enabled };
+						await writeBannerConfig(next, bannerHome);
+						banner = next;
+					},
+					() => bannerPreview({ ...banner, [key]: enabled }),
+					explicitChoice(setting, enabled ? "on" : "off", () => banner[key] === enabled),
+				);
+			}
 			for (const color of BANNER_COLORS) add(
 				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
 				"Banner saved; applies at next startup.",
@@ -2850,6 +2852,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				for (const name of names) rows.push({
 					category,
 					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
+					choice: explicitChoice("Theme", name, () => activeTheme === name),
 					preview: () => {
 						const selected = ctx.ui.getTheme(name);
 						if (selected?.name !== name) throw new Error("Selected theme is unavailable.");
@@ -2885,6 +2888,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
 				category,
 				label: () => `Vim: ${label}${resolveVimPolicy(animationOptions).policy === policy ? " (current preference)" : ""}`,
+				choice: explicitChoice("Vim", policy, () => resolveVimPolicy(animationOptions).policy === policy),
 				preview: () => {
 					const result = resolveVimPolicy(animationOptions);
 					const effective = prompt?.effectiveVimPolicy ?? "no active prompt";
@@ -2928,23 +2932,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				})().finally(() => { refreshing = undefined; });
 				return refreshing;
 			};
-			rows.push({
+			for (const value of [YOLO_DISPLAY.on, YOLO_DISPLAY.off]) rows.push({
 				category,
-				label: () => `YOLO: ${yoloDisplay} · session only`,
-				preview: () => ({ title: "YOLO · session permission", sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
+				label: () => `YOLO: ${value} · session only`,
+				choice: explicitChoice("YOLO", value, () => yoloDisplay === value),
+				preview: () => ({ title: `YOLO: ${yoloDisplay} · session only`, sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
 				action: async () => {
 					if (closed) return;
 					if (!adapter || yoloDisplay === YOLO_DISPLAY.unavailable) {
 						ctx.ui.notify("YOLO is unavailable in this live primary session.", "warning");
 						return;
 					}
-					await adapter.toggle();
+					if (yoloDisplay !== value) await adapter.toggle();
 					await refreshYolo();
 				},
 			});
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Session permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDisplay === mode ? " (current)" : ""}`,
+				choice: explicitChoice("Session permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDisplay === mode),
 				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
 					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
 					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain"
@@ -2959,6 +2965,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Default permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDefault === mode ? " (saved)" : ""}`,
+				choice: explicitChoice("Default permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDefault === mode),
 				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),
 				action: async () => {
 					if (closed) return;
@@ -2977,6 +2984,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const result = historyCapture();
 					return `Prompt history capture: ${label}${result.preference === policy && !result.malformed ? " (current)" : ""}${result.envOverride ? " · env override" : ""}`;
 				},
+				choice: explicitChoice("History capture", policy, () => { const result = historyCapture(); return result.preference === policy && !result.malformed; }),
 				preview: () => {
 					const result = historyCapture();
 					const effective = result.enabled ? "on" : "off";
@@ -3043,14 +3051,15 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
 			);
 			category = "Sections";
-			for (const key of VISUAL_SECTION_KEYS) add(
-				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
+			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(
+				() => `Section ${key}: ${shown ? "shown" : "hidden"}`,
 				pending,
-				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: shown } })),
 				() => {
-					const visibility = { ...visual().visibility, [key]: !visual().visibility[key] };
-					return { title: `Sections · ${key} ${visibility[key] ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, shown]) => shown).map(([section]) => section).join("] [") || "no optional sections"}]` };
+					const visibility = { ...visual().visibility, [key]: shown };
+					return { title: `Sections · ${key} ${shown ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, value]) => value).map(([section]) => section).join("] [") || "no optional sections"}]` };
 				},
+				explicitChoice(key, shown ? "shown" : "hidden", () => visual().visibility[key] === shown),
 			);
 			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
 			category = "Profiles";

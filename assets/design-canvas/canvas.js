@@ -237,16 +237,25 @@
 		handleWheel(event.deltaX, event.deltaY, event.deltaMode, event.ctrlKey || event.metaKey, event.shiftKey, event.clientX, event.clientY);
 	}, { passive: false });
 
+	function interactiveTarget(target) {
+		const editable = target.closest("[contenteditable]");
+		return Boolean(target.closest("button, a, input, select, textarea, iframe") || (editable && editable.isContentEditable));
+	}
+
 	// A press on a shield pans like the background; released without moving, it is a
 	// click on that artboard: a routed pick in comment mode, else focus mode.
 	let drag = null;
 	els.viewport.addEventListener("pointerdown", (event) => {
-		if (state.focus || event.button !== 0 || event.target.closest("button")) return;
+		if (state.focus || event.button !== 0 || interactiveTarget(event.target)) return;
 		const shield = event.target.closest(".gd-shield");
-		if (!shield && event.target !== els.viewport && event.target !== els.world && !event.target.closest(".gd-artboard-label")) return;
+		event.preventDefault();
 		drag = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false, board: shield ? boardOfShield(shield) : null };
 		els.viewport.setPointerCapture(event.pointerId);
 		els.viewport.classList.add("gd-panning");
+	});
+	// An old text selection can still initiate a native drag and cancel the pan.
+	els.viewport.addEventListener("dragstart", (event) => {
+		if (!state.focus && !interactiveTarget(event.target)) event.preventDefault();
 	});
 	els.viewport.addEventListener("pointermove", (event) => {
 		if (!drag || drag.id !== event.pointerId) {

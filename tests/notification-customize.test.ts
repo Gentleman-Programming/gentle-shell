@@ -76,7 +76,7 @@ function visibleRows(rows: CustomizeRow[]): CustomizeRow[] {
 function keyhintOf(row: CustomizeRow): string { return (row as CustomizeRow & { keyhint?: string }).keyhint ?? ""; }
 
 function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = []): CustomizeInline {
-	return { input: async () => inputs.shift(), confirm: async () => confirms.shift() ?? false, disposed: false };
+	return { input: async () => inputs.shift(), capture: async () => undefined, confirm: async () => confirms.shift() ?? false, disposed: false };
 }
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
@@ -579,7 +579,7 @@ test("a uniform file group shows the basename, prefills its path and previews th
 		assert.doesNotMatch(label(success), /builtin:|file:|agent\.|subagent\./, "the main label stays human and raw-reference free");
 		getNotificationService()!.validateFile = async () => true;
 		const requests: string[] = [];
-		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return WAV_FIXTURES.success; }, confirm: async () => false, disposed: false };
+		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return WAV_FIXTURES.success; }, capture: async () => undefined, confirm: async () => false, disposed: false };
 		await Promise.resolve(success.key!("f", inline));
 		await tick(); await tick();
 		assert.deepEqual(requests, [WAV_FIXTURES.success], "the field is prefilled with the current file path");

@@ -36,6 +36,7 @@ function footerHint(category: string, navOnly: boolean, previewLines: number, ke
 	if (setting && category === "Notifications") return keyhint ?? "←/→ choose · Enter apply · Tab panes · Esc close";
 	if (setting) return applyOnMove ? "↑/↓ settings · ←/→ change · Tab categories · p profiles · Esc close" : "←/→ choose · Enter apply · ↑/↓ settings · Tab panes · Esc close";
 	if (category === "Notifications") return keyhint ?? "Tab panes · Enter change · p test · Esc close";
+	if (category === "Keymaps") return keyhint ?? "Enter assign · Tab panes · Esc close";
 	return previewLines ? "←/→ or Tab panes · ↑/↓ move · Enter apply · p profiles · Esc close" : "Preview omitted · ←/→ panes · ↑/↓ move · Enter apply · Esc close";
 }
 
@@ -47,7 +48,7 @@ function rowVisible(row: CustomizeRow): boolean {
 
 type LineEntry = { first: number; count: number; setting?: string };
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Profiles" | "Reset";
+export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Keymaps" | "Profiles" | "Reset";
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;
@@ -75,6 +76,8 @@ export interface CustomizeRow {
 export interface CustomizeInline {
 	/** Opens an inline field on the highlighted row; resolves on submit or undefined when cancelled. */
 	input(request: { prompt: string; value: string }): Promise<string | undefined>;
+	/** Waits for the next raw key press on the highlighted row; resolves undefined on Esc or when the prompt is not fully visible. */
+	capture(prompt: string): Promise<string | undefined>;
 	/** Opens an inline confirmation; resolves true only after an explicit, fully visible yes. */
 	confirm(message: string): Promise<boolean>;
 	/** Set once the owning card is disposed; a row must never persist after this. */
@@ -119,8 +122,10 @@ export class VisualCustomizeView {
 	private profileBusy = false;
 	private inlineInput?: { prompt: string; value: string; resolve: (value: string | undefined) => void; visible: boolean };
 	private inlineConfirm?: { message: string; resolve: (value: boolean) => void; visible: boolean };
+	private inlineCapture?: { prompt: string; resolve: (value: string | undefined) => void; visible: boolean };
 	private readonly inline: CustomizeInline = {
 		input: request => this.openInlineInput(request),
+		capture: prompt => this.openInlineCapture(prompt),
 		confirm: message => this.openInlineConfirm(message),
 		disposed: false,
 	};
@@ -133,6 +138,23 @@ export class VisualCustomizeView {
 		if (input) { this.inlineInput = undefined; input.resolve(undefined); }
 		const confirm = this.inlineConfirm;
 		if (confirm) { this.inlineConfirm = undefined; confirm.resolve(false); }
+		const capture = this.inlineCapture;
+		if (capture) { this.inlineCapture = undefined; capture.resolve(undefined); }
+	}
+	private openInlineCapture(prompt: string): Promise<string | undefined> {
+		if (this.closed) return Promise.resolve(undefined);
+		return new Promise(resolve => { this.inlineCapture = { prompt, resolve, visible: false }; });
+	}
+	/** The next key answers the capture; Esc, or a prompt the card could not show, cancels it. */
+	private handleInlineCapture(data: string): void {
+		const capture = this.inlineCapture!;
+		// Same guard as the inline confirmation: a resize that hides the prompt cancels it.
+		const area = this.previewCapacity();
+		capture.visible = area !== undefined && !area.navOnly && area.lines > 0
+			&& this.wrapInline(`${capture.prompt} · Esc cancel`, area.inner, area.lines) !== undefined;
+		this.inlineCapture = undefined;
+		capture.resolve(matchesKey(data, Key.escape) || !capture.visible ? undefined : data);
+		this.options.requestRender();
 	}
 	private openInlineInput(request: { prompt: string; value: string }): Promise<string | undefined> {
 		if (this.closed) return Promise.resolve(undefined);
@@ -368,6 +390,7 @@ export class VisualCustomizeView {
 		if (this.closed || isKeyRelease(data)) return;
 		if (this.inlineInput) { this.handleInlineInput(data); return; }
 		if (this.inlineConfirm) { this.handleInlineConfirm(data); return; }
+		if (this.inlineCapture) { this.handleInlineCapture(data); return; }
 		if (this.profileOpen && this.options.profiles) { this.handleProfiles(data); return; }
 		if (matchesKey(data, Key.escape)) { this.dispose(); this.options.onClose(); return; }
 		const rows = this.categoryRows();
@@ -509,6 +532,11 @@ export class VisualCustomizeView {
 			this.inlineConfirm.visible = shows !== undefined;
 			if (shows) for (const line of shows) lines.push(paint(line, inner, "warning"));
 			else if (previewLines > 0) lines.push(paint("Confirmation needs more space · enlarge terminal", inner, "warning"));
+		} else if (this.inlineCapture) {
+			const shows = !navOnly && previewLines > 0 ? this.wrapInline(`${this.inlineCapture.prompt} · Esc cancel`, inner, previewLines) : undefined;
+			this.inlineCapture.visible = shows !== undefined;
+			if (shows) for (const line of shows) lines.push(paint(line, inner, "accent"));
+			else if (previewLines > 0) lines.push(paint("Key capture needs more space · enlarge terminal", inner, "warning"));
 		} else if (this.inlineInput) {
 			const field = `${this.inlineInput.prompt}: ${this.inlineInput.value}▏`;
 			const shows = !navOnly ? this.wrapInline(field, inner, previewLines) : undefined;

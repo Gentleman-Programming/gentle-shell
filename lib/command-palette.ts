@@ -22,7 +22,8 @@ export interface CommandPaletteGroup {
 	items: CommandPaletteItem[];
 }
 
-export type CommandPaletteResult = { type: "run"; name: string } | { type: "close" };
+/** `bind` carries the raw key pressed after Tab, for the caller to assign to `name`. */
+export type CommandPaletteResult = { type: "run"; name: string } | { type: "bind"; name: string; data: string } | { type: "close" };
 
 export interface CommandPaletteTheme {
 	fg(color: string, text: string): string;
@@ -167,6 +168,7 @@ export class CommandPalette {
 	private query = "";
 	private selected = 0;
 	private completed = false;
+	private capturing: CommandPaletteItem | undefined;
 	private readonly groups: readonly CommandPaletteGroup[];
 	private readonly done: (result: CommandPaletteResult) => void;
 	private readonly theme: CommandPaletteTheme | undefined;
@@ -183,6 +185,17 @@ export class CommandPalette {
 
 	handleInput(data: string): void {
 		if (this.completed || isKeyRelease(data)) return;
+		// After Tab the next key is the one to assign, whatever it is; esc only cancels.
+		if (this.capturing) {
+			const item = this.capturing;
+			this.capturing = undefined;
+			if (!matchesKey(data, "escape")) this.finish({ type: "bind", name: item.command, data });
+			return;
+		}
+		if (matchesKey(data, "tab")) {
+			this.capturing = itemAt(this.matches(), this.selected);
+			return;
+		}
 		// A bare line feed ("\n") is both ctrl+j and, on non-Kitty terminals,
 		// a synonym for Enter: check the scroll/move keys first so ctrl+j
 		// always scrolls instead of running the highlighted command (same
@@ -268,7 +281,8 @@ export class CommandPalette {
 			lines.push(...this.renderGroups(groups, width, budget));
 		}
 		lines.push("");
-		lines.push(this.renderLine("type to search • ↑/↓ move • enter run • esc close", width, "muted"));
+		if (this.capturing) lines.push(this.renderLine(`Press the new key for ${this.capturing.label} · esc cancel`, width, "accent"));
+		else lines.push(this.renderLine("↑/↓ move • enter run • tab set key • esc close", width, "muted"));
 		return lines;
 	}
 

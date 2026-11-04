@@ -1,7 +1,7 @@
 # User keymaps
 
 Objective: let the user assign a keybinding to every Gentle action and palette command, edited in `/gentle:customize` and shown in the `alt+k` palette, applied on reload.
-Branch: `feat/keymaps-and-guide` (worktree `../gentle-pi-keymaps-guide`). Delivery: ask-on-risk. Runner: `node --experimental-strip-types --test tests/<file>.test.ts`, suite `npm test`.
+Branch: `feat/keymaps-and-guide` (worktree `../gentle-pi-keymaps-guide`). Delivery: single PR with a size exception (user choice, L6). Runner: `node --experimental-strip-types --test tests/<file>.test.ts`, suite `npm test`.
 
 ## Specs
 
@@ -15,10 +15,10 @@ Branch: `feat/keymaps-and-guide` (worktree `../gentle-pi-keymaps-guide`). Delive
 
 ## Tasks
 
-- T1 [S1,S6,S7] Keymap registry `lib/keymaps.ts` (actions, resolution, read/write, validation) + tests. Route: inline. Status: pending.
-- T2 [S1,S6] Shortcut registration reads the registry (gentle-shell, gentle-agents, jobs, todo; command bindings run `/<command>`) + tests. Route: inline. Status: pending.
-- T3 [S2,S4,S5] `Keymaps` category in `/gentle:customize` with key capture, conflicts, clear/reset, reload notice + tests. Route: inline. Status: pending.
-- T4 [S3,S4,S5] Palette shows every effective key and can assign a key to the selected command + tests; docs/help. Route: inline. Status: pending.
+- T1 [S1,S6,S7] Keymap registry `lib/keymaps.ts` (actions, resolution, read/write, validation) + tests. Route: inline. Status: done, commit 5bea02b4a (tests written after code: no observed RED).
+- T2 [S1,S6] Shortcut registration reads the registry (gentle-shell, gentle-agents, jobs, todo, stats; command bindings run `/<command>`) + tests. Route: inline. Status: done, commit 5bea02b4a (RED 5 failing assertions → GREEN; regression files keymaps 7, todo 30, stats 9, agents 282, shell 301, palette 37 pass).
+- T3 [S2,S4,S5] `Keymaps` category in `/gentle:customize` with key capture, conflicts, clear/reset, reload notice + tests. Route: inline. Status: done (RED: missing module + 2 view assertions + integration; GREEN keymaps-customize 6, visual-customize-view 52, gentle-shell customize 22).
+- T4 [S3,S4,S5] Palette shows every effective key and can assign a key to the selected command + tests; docs/help. Route: inline. Status: done (RED: component assertions + extension hang; GREEN command-palette 38, gentle-shell palette/keymap 10; docs/gentle-shell.md Keymaps section).
 
 Route evidence: no Writer trigger reason (units depend on T1, same files); parent works inline.
 
@@ -29,3 +29,5 @@ Route evidence: no Writer trigger reason (units depend on T1, same files); paren
 - L3 User first chose "al instante", then: "ah entonces con reload si es mas trabajo no pasa nada, siempre que se lo digamos al user". Decision: reload-to-apply, reuse Pi's shortcut registration.
 - L4 Evidence: Pi reads `pi.registerShortcut` only at startup/reload (`interactive-mode.js` `setupExtensionShortcuts`); reserved ids in `core/extensions/runner.js:9-28` (not exported, mirrored in lib/keymaps.ts); `parseKey` from pi-tui converts raw input to a key id; `alt+k` palette in `lib/command-palette.ts:346-357`; customize rows support raw key capture (`lib/visual-customize-view.ts:71`).
 - L5 Work happens in a separate worktree because another session has uncommitted sidebar changes in the main checkout.
+- L7 Verification for T1-T4: typecheck 0 diagnostics; unit 8155 pass, 4 fail in tests/agent-home.test.ts only because the session runs inside Gentle Shell (GENTLE_SHELL_CONFIG_HOME exported); with GENTLE_* unset agent-home passes 6/6. provider-contract and runtime-harness pass when run with node directly; `pnpm run` fails on `pnpm install` in this worktree (node_modules is a symlink). Fix found by the suite: Customize no longer fails when Pi cannot list commands before its runtime is initialized (yolo-customize, yolo-mode-runtime). Palette footer shortened to fit 60 columns: "↑/↓ move • enter run • tab set key • esc close". Risk: item 3 (shared shortcut helpers and env-var resolution changed; existing env behavior pinned by tests).
+- L6 (2026-11-04) Commit 5bea02b4a reached 664 authored lines. Asked for the chain strategy; user first picked feature-branch-chain, then: "un solo pr con size exception". Decision: one PR for keymaps + guide, size exception declared in the PR.

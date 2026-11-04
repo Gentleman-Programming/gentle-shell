@@ -1,7 +1,7 @@
 # Gentle guide tour
 
 Objective: `/gentle:guide` runs a driver.js-style tour of Gentle Shell driven by the agent, plus a reminder under the startup banner.
-Branch: `feat/keymaps-and-guide` (after user keymaps). Delivery: ask-on-risk. Runner: `node --experimental-strip-types --test tests/<file>.test.ts`, suite `npm test`.
+Branch: `feat/keymaps-and-guide` (after user keymaps). Delivery: same single PR as user keymaps, with a size exception (user: "un solo pr con size exception"). Runner: `node --experimental-strip-types --test tests/<file>.test.ts`, suite `npm test`.
 
 ## Specs
 

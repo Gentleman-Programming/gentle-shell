@@ -164,6 +164,12 @@ export function keymapOwner(key: string, env: NodeJS.ProcessEnv, bindings: Keyma
 	return ids.find((id) => id !== ownId && sameKey(effectiveKey(id, env, bindings), key));
 }
 
+/** Why `id` cannot be changed here: its environment variable controls it. */
+export function keymapEnvLock(id: string, env: NodeJS.ProcessEnv): string | undefined {
+	const action = keymapAction(id);
+	return action && envValue(action, env) !== undefined ? `${action.label} is set by ${action.env}; unset it to change the key here.` : undefined;
+}
+
 /**
  * Whether `key` can go on `id`: blocked when the action is controlled by its
  * environment variable or the key is one Pi reserves; a confirmation when the
@@ -171,8 +177,8 @@ export function keymapOwner(key: string, env: NodeJS.ProcessEnv, bindings: Keyma
  * non-reserved Pi keybinding.
  */
 export function checkKeymap(id: string, key: string, env: NodeJS.ProcessEnv, bindings: KeymapBindings, keybindings?: PiKeybindings): KeymapCheck {
-	const action = keymapAction(id);
-	if (action && envValue(action, env) !== undefined) return { kind: "blocked", message: `${action.label} is set by ${action.env}; unset it to change the key here.` };
+	const locked = keymapEnvLock(id, env);
+	if (locked) return { kind: "blocked", message: locked };
 	if (keybindings) {
 		const reserved = RESERVED_PI_KEYBINDINGS.find((binding) => keybindings.getKeys(binding).some((piKey) => sameKey(piKey, key)));
 		if (reserved) return { kind: "blocked", message: `${key} is reserved by Pi (${reserved}); choose another key.` };
@@ -187,6 +193,38 @@ export function checkKeymap(id: string, key: string, env: NodeJS.ProcessEnv, bin
 	const builtin = Object.keys(resolved).find((binding) => keysOf(resolved[binding]).some((piKey) => sameKey(piKey, key)));
 	if (builtin) return { kind: "confirm", message: `${key} is Pi's ${builtin}. Use it for ${keymapLabel(id)} instead?` };
 	return { kind: "ok" };
+}
+
+/** Why `file` cannot be rewritten; undefined when it can. */
+export function keymapsUnwritable(file: KeymapFile): string | undefined {
+	return file.malformed ? `Keymaps: ${file.path} is unreadable or malformed; fix or delete it to change keys.` : undefined;
+}
+
+export type KeymapChange =
+	| { kind: "refused"; message: string; type: "warning" | "error" }
+	| { kind: "ready"; key: string; bindings: Record<string, string | null>; confirm?: string };
+
+/**
+ * The change one raw key press makes to `id`: refused (environment lock,
+ * unwritable file, typing key, reserved key) or the new bindings, with the
+ * question to ask first when the key moves from another action.
+ */
+export function prepareKeymapChange(id: string, data: string, env: NodeJS.ProcessEnv, file: KeymapFile, keybindings?: PiKeybindings): KeymapChange {
+	const locked = keymapEnvLock(id, env);
+	if (locked) return { kind: "refused", message: locked, type: "warning" };
+	const unwritable = keymapsUnwritable(file);
+	if (unwritable) return { kind: "refused", message: unwritable, type: "error" };
+	const parsed = keyFromInput(data);
+	if ("error" in parsed) return { kind: "refused", message: parsed.error, type: "warning" };
+	const check = checkKeymap(id, parsed.key, env, file.bindings, keybindings);
+	if (check.kind === "blocked") return { kind: "refused", message: check.message, type: "warning" };
+	const confirm = check.kind === "confirm" ? check : undefined;
+	return { kind: "ready", key: parsed.key, bindings: assignKeymap(file.bindings, id, parsed.key, confirm?.displaces), confirm: confirm?.message };
+}
+
+/** What the user is told after a saved change. */
+export function keymapSavedNotice(id: string, name: string, env: NodeJS.ProcessEnv, bindings: KeymapBindings): string {
+	return `${name}: ${effectiveKey(id, env, bindings) ?? "none"}. ${KEYMAP_RELOAD_NOTICE}`;
 }
 
 /** A copy of `bindings` with `id` on `key` (null disables it) and `displaces`, when given, disabled. */

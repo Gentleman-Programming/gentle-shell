@@ -573,6 +573,33 @@ test("inline wrapping keeps wide graphemes intact and single-line submission unc
 	}
 });
 
+test("inline key capture returns the next raw key, and Esc cancels it without closing the card", async () => {
+	const seen: (string | undefined)[] = [];
+	let closed = false;
+	const view = inlineView(async inline => { seen.push(await inline.capture("Press the new key for Command palette")); }, { onClose: () => { closed = true; } });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(view.render(76).join("\n"), /Press the new key for Command palette · Esc cancel/);
+	view.handleInput("\x1bj");
+	await tick();
+	assert.deepEqual(seen, ["\x1bj"]);
+	view.handleInput("\r");
+	await tick();
+	view.handleInput("\x1b");
+	await tick();
+	assert.deepEqual(seen, ["\x1bj", undefined]);
+	assert.equal(closed, false, "Esc only cancels the capture");
+	view.handleInput("\x1b");
+	assert.equal(closed, true, "a second Esc closes the card as usual");
+});
+
+test("a Keymaps row shows its own footer hint", () => {
+	const view = new VisualCustomizeView({ rows: [{ category: "Keymaps", label: "Command palette: alt+k", keyhint: "Enter assign · ⌫ disable · r default · Esc close", action: () => {} }], theme, rowsAvailable: () => 14, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("\r");
+	assert.match(view.render(90).join("\n"), /Enter assign · ⌫ disable · r default · Esc close/);
+});
+
 test("inline confirmation accepts only a fully visible yes and resolves false otherwise", async () => {
 	let height = 12;
 	const seen: boolean[] = [];

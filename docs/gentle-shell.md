@@ -152,7 +152,24 @@ Captured evidence (`gentle-pi.session-change/v1`) is still stored for session st
 
 ### Command palette
 
-`/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its shortcut hint where it has one; a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.
+`/gentle:commands` or `alt+k` opens a curated, grouped command menu, OpenCode-style — not a raw listing of every registered extension command. Entries are grouped under Configuration, Session, Diagnostics, and Skills, each shown by a human label with its current key where it has one (a key saved but not yet applied reads `(reload)`); a command only appears when it is both in the curated set and actually registered. The Search row filters by label, by the underlying command name, and by description; arrows or `ctrl+j`/`ctrl+k` move, enter runs the highlighted entry exactly as if its command had been typed, `tab` assigns a key to it (press the key next; escape cancels), escape closes. `GENTLE_PI_COMMANDS_KEY` rebinds the shortcut; `off` disables it. Built-in Pi commands are not listed. The default is `alt+k`, not `ctrl+k`, because Pi reserves `ctrl+k` for the editor's delete-to-line-end action.
+
+### Keymaps
+
+Every Gentle shortcut, and any command in the palette, can get a key of your choice:
+
+- `/gentle:customize` → **Keymaps** lists each action with its current key. `Enter` waits for the new key, `⌫` disables the key, `r` restores the default, and the last row reloads.
+- In the command palette, `tab` assigns a key to the highlighted command.
+
+Keys are saved in `keymaps.json` in the Gentle config home and **apply after `/reload`**, because Pi reads shortcuts only at startup and on reload; the shell says so after every change.
+
+| Rule | Behavior |
+|---|---|
+| Typing keys | Only keys with `ctrl` or `alt` (with or without `shift`), or `f1`-`f12`, can be assigned. |
+| Keys Pi reserves | Refused with the Pi action that owns them (for example `ctrl+k`, delete to line end). |
+| A key another action uses | Asks first; confirming moves the key and leaves the other action without one. |
+| Environment variables | A `GENTLE_PI_*_KEY` variable still wins; its row shows the variable and cannot be changed there. |
+| Unreadable `keymaps.json` | The default keys apply, startup warns once, and the file is never overwritten. |
 
 To use `ctrl+p` like OpenCode, rebind Pi's `app.model.cycleForward` in `~/.pi/agent/keybindings.json` (Pi reserves that action, so an extension cannot take `ctrl+p` while it holds it) and set `GENTLE_PI_COMMANDS_KEY=ctrl+p`.
 

@@ -28,7 +28,6 @@ test("star prompt state: a missing file reads as fresh defaults and stays usable
 		assert.equal(read.unusable, false);
 		assert.equal(read.state.sent, 0);
 		assert.equal(read.state.dismissed, false);
-		assert.equal(read.state.directStar, true);
 	} finally {
 		rm(dir, { recursive: true, force: true }).catch(() => {});
 	}
@@ -49,13 +48,12 @@ test("star prompt state: malformed JSON fails closed as unusable", async () => {
 test("star prompt state: valid content round-trips", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "star-prompt-"));
 	try {
-		writeStarPromptState(dir, { schema: "gentle-shell.star-prompt/v1", sent: 7, dismissed: true, directStar: true });
+		writeStarPromptState(dir, { schema: "gentle-shell.star-prompt/v1", sent: 7, dismissed: true });
 		const raw = JSON.parse(await readFile(join(dir, "star-prompt.json"), "utf8"));
 		assert.equal(raw.sent, 7);
 		const read = readStarPromptState(dir);
 		assert.equal(read.unusable, false);
 		assert.equal(read.state.sent, 7);
-		assert.equal(read.state.directStar, true);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -93,7 +91,7 @@ interface HarnessOptions {
 	state?: unknown;
 	unusable?: boolean;
 	writeState?: (_configHome: string, state: StarPromptState) => void;
-	directStar?: boolean;
+	ghStarOutcome?: "yes" | "unknown";
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -133,7 +131,7 @@ function harness(options: HarnessOptions = {}) {
 		},
 	} as unknown as ExtensionContext;
 
-	const written: Array<{ sent: number; dismissed: boolean; directStar: boolean }> = [];
+	const written: Array<{ sent: number; dismissed: boolean }> = [];
 	let clock = 1_000_000;
 	const scheduled: Array<{ ms: number; fn: () => void; cancelled: boolean }> = [];
 	const schedule = (ms: number, fn: () => void) => {
@@ -147,7 +145,7 @@ function harness(options: HarnessOptions = {}) {
 	const openedUrls: string[] = [];
 	const deps = {
 		configHome: "/unused",
-		readState: () => ({ state: (options.state ?? { schema: "gentle-shell.star-prompt/v1", sent: 0, dismissed: false, directStar: options.directStar ?? false }) as StarPromptState, unusable: options.unusable ?? false }),
+		readState: () => ({ state: (options.state ?? { schema: "gentle-shell.star-prompt/v1", sent: 0, dismissed: false }) as StarPromptState, unusable: options.unusable ?? false }),
 		writeState: options.writeState ?? ((_configHome: string, state: StarPromptState) => {
 			written.push(state);
 		}),
@@ -159,7 +157,7 @@ function harness(options: HarnessOptions = {}) {
 		},
 		ghStar: () => {
 			gh.star++;
-			return Promise.resolve("yes" as const);
+			return Promise.resolve(options.ghStarOutcome ?? "yes");
 		},
 		openRepository: (url: string) => {
 			openedUrls.push(url);
@@ -178,7 +176,7 @@ function harness(options: HarnessOptions = {}) {
 	return { fire, send, key, statuses, notes, written, scheduled, advance, gh, openedUrls, get terminalHandler() { return terminalHandler; }, get widget() { return widget; }, get renders() { return renders; } };
 }
 
-const stateWith = (sent: number, extra: Record<string, unknown> = {}) => ({ schema: "gentle-shell.star-prompt/v1", sent, dismissed: false, directStar: false, ...extra });
+const stateWith = (sent: number, extra: Record<string, unknown> = {}) => ({ schema: "gentle-shell.star-prompt/v1", sent, dismissed: false, ...extra });
 
 // ---------- extension ----------
 
@@ -243,12 +241,12 @@ test("extension: a second agent_end while an idle wait is pending schedules noth
 	assert.equal(h.scheduled.filter((t) => t.ms === STAR_PROMPT_IDLE_MS).length, 1);
 });
 
-test("extension: Ctrl+G with directStar stars via gh, thanks, and dismisses forever", async () => {
-	const h = harness({ state: stateWith(9, { directStar: true }) });
+test("extension: Ctrl+G stars via gh, thanks, and dismisses forever", async () => {
+	const h = harness({ state: stateWith(9) });
 	await h.fire("agent_end");
 	h.advance(STAR_PROMPT_IDLE_MS);
 	h.scheduled[0].fn();
-	assert.equal(h.gh.starred, 1); // direct flow may read starred state
+	assert.equal(h.gh.starred, 1); // users who already starred are never asked
 	assert.equal(typeof h.statuses.at(-1), "string");
 
 	const consumed = h.key(STAR_CHORD);
@@ -259,12 +257,12 @@ test("extension: Ctrl+G with directStar stars via gh, thanks, and dismisses fore
 	assert.equal(h.written.at(-1)?.dismissed, true);
 });
 
-test("extension: by default Ctrl+G stars both repos via gh without opening the browser", async () => {
-	const h = harness({ state: { ...DEFAULT_STAR_PROMPT_STATE, sent: 9 } });
+test("extension: a state file from the removed directStar opt-in still stars through gh, never the browser", async () => {
+	const h = harness({ state: stateWith(9, { directStar: false }) });
 	await h.fire("agent_end");
 	h.advance(STAR_PROMPT_IDLE_MS);
 	h.scheduled[0].fn();
-	assert.equal(h.gh.starred, 1); // the default flow skips users who already starred
+	assert.equal(h.gh.starred, 1);
 	assert.deepEqual(h.key(STAR_CHORD), { consume: true });
 	assert.equal(h.gh.star, 1);
 	await drain();
@@ -333,17 +331,17 @@ test("extension: a narrow terminal truncates the offer text, never the [star] bu
 	assert.ok(row.replace(/<\/?[a-z]+>/g, "").length <= 60);
 });
 
-test("extension: Ctrl+G with directStar false opens the browser instead of using credentials", async () => {
-	const h = harness({ state: stateWith(9) });
+test("extension: when gh cannot star, Ctrl+G falls back to opening both repos in the browser", async () => {
+	const h = harness({ state: stateWith(9), ghStarOutcome: "unknown" });
 	await h.fire("agent_end");
 	h.advance(STAR_PROMPT_IDLE_MS);
 	h.scheduled[0].fn();
 	const consumed = h.key(STAR_CHORD);
 	assert.deepEqual(consumed, { consume: true });
-	assert.equal(h.gh.starred, 0);
-	assert.equal(h.gh.star, 0);
+	assert.equal(h.gh.star, 1);
 	await drain();
-	// Both sibling repos open; the chord is a two-star action.
+	assert.deepEqual(h.notes, []);
+	// Both sibling repos open so the chord never dead-ends.
 	assert.deepEqual(h.openedUrls, [
 		"https://github.com/Gentleman-Programming/gentle-shell",
 		"https://github.com/Gentleman-Programming/gentle-ai",
@@ -394,7 +392,7 @@ test("extension: unusable state never offers", async () => {
 	assert.equal(h.scheduled.length, 0);
 });
 
-test("extension: already-starred skips the offer and marks dismissed (direct flow only)", async () => {
+test("extension: already-starred skips the offer and marks dismissed", async () => {
 	const handlers = new Map<string, Set<(event: any, ctx: ExtensionContext) => unknown>>();
 	const pi = { on: (event: string, handler: (event: any, ctx: ExtensionContext) => unknown) => {
 		if (!handlers.has(event)) handlers.set(event, new Set());
@@ -411,7 +409,7 @@ test("extension: already-starred skips the offer and marks dismissed (direct flo
 	const written: Array<{ dismissed: boolean }> = [];
 	createStarPromptExtension(pi, {
 		configHome: "/unused",
-		readState: () => ({ state: stateWith(50, { directStar: true }) as StarPromptState, unusable: false }),
+		readState: () => ({ state: stateWith(50) as StarPromptState, unusable: false }),
 		writeState: (_: string, state: { dismissed: boolean }) => written.push(state),
 		schedule: () => ({ cancel: () => {} }),
 		now: () => 0,

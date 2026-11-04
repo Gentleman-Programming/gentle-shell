@@ -30,16 +30,3 @@ The `[star]` button uses the shell's shared hover treatment, like the sidebar's 
 ## Starring
 
 `Ctrl+G` stars **both sibling repositories**, `Gentleman-Programming/gentle-shell` and `Gentleman-Programming/gentle-ai`, right from the terminal through the authenticated `gh` account, only after that explicit keypress (each PUT is an idempotent no-op when already starred). If `gh` is missing or fails, it falls back to opening both URLs in the browser instead of dead-ending.
-
-To open the browser instead of using `gh` credentials, set `directStar` to `false` in `star-prompt.json` inside the gentle config home:
-
-```json
-{
-	"schema": "gentle-shell.star-prompt/v1",
-	"sent": 12,
-	"dismissed": false,
-	"directStar": false
-}
-```
-
-With `directStar: false`, the extension never reads starred state or touches stored credentials.

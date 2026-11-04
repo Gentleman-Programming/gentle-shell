@@ -27,15 +27,12 @@ export interface StarPromptState {
 	sent: number;
 	/** Set by any dismissal; once true the prompt never asks again. */
 	dismissed: boolean;
-	/** Default true: the star chord stars through the authenticated gh account; false opens the browser instead. */
-	directStar: boolean;
 }
 
 export const DEFAULT_STAR_PROMPT_STATE: StarPromptState = {
 	schema: STAR_PROMPT_SCHEMA,
 	sent: 0,
 	dismissed: false,
-	directStar: true,
 };
 
 export interface StarPromptStateRead {
@@ -55,8 +52,7 @@ export function isStarPromptState(value: unknown): value is StarPromptState {
 	if (!record(value) || value.schema !== STAR_PROMPT_SCHEMA) return false;
 	return (
 		typeof value.sent === "number" && Number.isInteger(value.sent) && value.sent >= 0 &&
-		typeof value.dismissed === "boolean" &&
-		typeof value.directStar === "boolean"
+		typeof value.dismissed === "boolean"
 	);
 }
 

@@ -111,9 +111,9 @@ function defaultSchedule(ms: number, fn: () => void): Timer {
 /** Non-blocking GitHub star offer, cloned from t3code's GitHubStarPrompt courtesies:
  * asks only engaged users (after 5 sent prompts), only while idle with no agent
  * running, at most once per session, and never again after any dismissal — and
- * when state cannot be persisted it never asks at all. The star chord stars
- * through the authenticated gh account after the explicit keypress (`directStar`,
- * default true); `directStar: false` opens the repository URLs instead. */
+ * when state cannot be persisted it never asks at all. The star chord (or the
+ * [star] button) stars through the authenticated gh account after that explicit
+ * action, and opens the repository URLs only when gh cannot star. */
 export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps = {}): void {
 	const configHome = deps.configHome ?? gentlePiConfigHome();
 	const schedule = deps.schedule ?? defaultSchedule;
@@ -186,15 +186,12 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 		const current = readCurrent();
 		hide(ctx);
 		current.offeredThisSession = true;
-		if (current.state.directStar) {
-			const outcome = await runGhStar();
-			if (outcome === "yes") {
-				persist(ctx, { ...current.state, dismissed: true });
-				ctx.ui.notify("Thanks for the stars! They really help both repos grow.", "info");
-				return;
-			}
-			// Unknown or failed gh: fall through to the browser so the chord never dead-ends.
+		if (await runGhStar() === "yes") {
+			persist(ctx, { ...current.state, dismissed: true });
+			ctx.ui.notify("Thanks for the stars! They really help both repos grow.", "info");
+			return;
 		}
+		// Unknown or failed gh: fall through to the browser so the chord never dead-ends.
 		const results = await Promise.all(STAR_PROMPT_REPOSITORY_URLS.map((url) => openRepository(url)));
 		if (results.every((result) => result.opened)) persist(ctx, { ...current.state, dismissed: true });
 		else ctx.ui.notify(`Could not open the browser (${results.find((r) => !r.opened)?.error ?? "unknown error"}). Star us at ${STAR_PROMPT_REPOSITORY_URLS.join(" and ")}`, "info");
@@ -240,9 +237,7 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 		current.waitingIdle = true;
 		current.lastInputAt = now();
 		if (!unsubscribeInput) unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput(ctx));
-		// Only the direct flow (the default) reads starred state with stored credentials.
-		const starredCheck: Promise<GhOutcome> = current.state.directStar ? runGhStarred() : Promise.resolve("no");
-		void starredCheck.then((starred) => {
+		void runGhStarred().then((starred) => {
 			if (runtime !== current) return;
 			current.waitingIdle = false;
 			if (starred === "yes") {

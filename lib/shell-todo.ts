@@ -2,6 +2,7 @@ import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
+import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow, type PanelSummary } from "./shell-panel.ts";
 
 // Gentle Todo: the task list the model keeps while it works. Everything here
 // is pure. The state lives in the session branch (every tool result carries
@@ -123,6 +124,14 @@ const NOTE_ROLE = "muted";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
+const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
+
+/** The key that folds the Todos card and section; GENTLE_PI_TODO_KEY overrides it, "" or "off" disables it. */
+export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const value = env.GENTLE_PI_TODO_KEY?.trim();
+	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
+	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+}
 
 export function emptyTodo(): TodoState {
 	return { tasks: [], nextId: 1, updatedTurn: null };
@@ -384,4 +393,69 @@ export function renderTodoCard(state: TodoState, theme: TodoTheme, width: number
 		width,
 		{ expanded: true, hint, panel: true },
 	);
+}
+
+export interface TodoSection {
+	/** The `▾ TODOS … done/planned` header row, the section's collapse control; "" without tasks. */
+	header: string;
+	/** One row per entry under the header, every row exactly `width` columns. */
+	body: string[];
+}
+
+// The fullscreen rail's panel section: finished and dropped work fold into one
+// row each, every open task takes one clipped row, and the note of the task in
+// progress (or blocked) hangs under it, e.g. the job it launched.
+// The task in progress or blocked is the one you read in full: its title and
+// note wrap, so nothing about the current work is lost to a clip; every other
+// task is one clipped row.
+function sectionTaskRows(task: TodoTask, theme: TodoTheme, width: number): string[] {
+	const glyph = theme.fg(GLYPH_ROLE[task.status], STATUS_GLYPH[task.status]);
+	const focus = task.status === TODO_STATUS.IN_PROGRESS || task.status === TODO_STATUS.BLOCKED;
+	if (!focus) return [renderPanelRow(width, `${glyph} ${theme.fg(STATUS_ROLE[task.status], task.title)}`)];
+	const titleWidth = Math.max(1, width - PANEL_ROW_INDENT - 2);
+	const rows = wrapTextWithAnsi(task.title, titleWidth).map((line, index) => renderPanelRow(width, `${index === 0 ? glyph : " "} ${theme.fg(STATUS_ROLE[task.status], line)}`));
+	if (!task.note) return rows;
+	const noteWidth = Math.max(1, width - PANEL_ROW_INDENT - 4);
+	return [...rows, ...wrapTextWithAnsi(task.note, noteWidth).map((line, index) => renderPanelRow(width, `${index === 0 ? theme.fg("dim", "└") : " "} ${theme.fg(NOTE_ROLE, line)}`, "", PANEL_ROW_INDENT + 2))];
+}
+
+export function renderTodoSection(state: TodoState, theme: TodoTheme, width: number, options: Pick<TodoRenderOptions, "collapsed" | "staleTurns" | "hovered">): TodoSection {
+	if (state.tasks.length === 0) return { header: "", body: [] };
+	const { done, total } = todoSummary(state);
+	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
+	const stale = options.staleTurns >= STALE_AFTER_TURNS;
+	const header = renderPanelHeader(theme, width, {
+		title: "Todos",
+		count: `${stale ? `stale · ${options.staleTurns} turns · ` : ""}${done}/${planned}`,
+		countRole: stale ? "warning" : "muted",
+		open: !options.collapsed,
+		hovered: options.hovered,
+	});
+	const open = state.tasks.filter((task) => task.status !== TODO_STATUS.DONE && task.status !== TODO_STATUS.DROPPED);
+	if (options.collapsed) {
+		const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.PENDING, TODO_STATUS.BLOCKED].map((status) => open.find((task) => task.status === status)).find(Boolean);
+		const row = current
+			? `${theme.fg(GLYPH_ROLE[current.status], STATUS_GLYPH[current.status])} ${theme.fg(STATUS_ROLE[current.status], current.title)}`
+			: `${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`;
+		return { header, body: [renderPanelRow(width, row)] };
+	}
+	const body: string[] = [];
+	for (const [status, label] of [[TODO_STATUS.DONE, "done"], [TODO_STATUS.DROPPED, "dropped"]] as const) {
+		const count = countStatus(state, status);
+		if (count > 0) body.push(renderPanelRow(width, `${theme.fg(GLYPH_ROLE[status], STATUS_GLYPH[status])} ${theme.fg(NOTE_ROLE, `${count} ${label}`)}`));
+	}
+	for (const task of open) body.push(...sectionTaskRows(task, theme, width));
+	return { header, body };
+}
+
+/** The mobile work row's digest of the list: the task in progress (or next), and `done/planned`. */
+export function todoWorkSummary(state: TodoState, theme: TodoTheme): PanelSummary | undefined {
+	if (state.tasks.length === 0) return undefined;
+	const { done, total } = todoSummary(state);
+	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
+	const current = [TODO_STATUS.IN_PROGRESS, TODO_STATUS.PENDING, TODO_STATUS.BLOCKED].map((status) => state.tasks.find((task) => task.status === status)).find(Boolean);
+	const left = current
+		? `${theme.fg(GLYPH_ROLE[current.status], STATUS_GLYPH[current.status])} ${theme.fg(STATUS_ROLE[current.status], current.title)}`
+		: `${theme.fg(GLYPH_ROLE[TODO_STATUS.DONE], STATUS_GLYPH[TODO_STATUS.DONE])} ${theme.fg(NOTE_ROLE, `${done} done`)}`;
+	return { left, right: `${done}/${planned}`, rightLabel: "todos" };
 }

@@ -16,6 +16,8 @@ Inspect relevant evidence and execute only exact test, build, lint, or spec exam
 
 For behavior changes with applicable runnable deterministic tests and a clear expected outcome, test-first is the default: assess observed RED before implementation, observed GREEN afterward, and focused checks after refactor. Do not infer RED from a test file existing or claim GREEN without observed execution. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, assess the stated exception and proportionate ordinary functional or structural verification. Test presence alone is not applicability; never demand a TUI or chat toggle, invent lifecycle evidence, or skip checks.
 
+**Search bounds:** prefer the dedicated `grep`/`find` tools over raw `bash` grep — they honour `.gitignore`. Never run an unbounded recursive scan (`grep -r … .`, `find .` from the workspace root); bound to source directories and pass `--exclude-dir={.git,vendor,node_modules}` (gentle-shell#2686).
+
 When the parent supplies an ODD feature document, read all of it, including the verbatim user entries in `## Log`, and return a verdict per `S#` with evidence (item 5 below). Run the spec's example commands on your first launch; when an example mutates state, run it only against isolated state (your scratch copy or a temporary data file the parent named), then compare the exact output and error text with the spec. Passing tests never prove an `S#` whose example was not executed.
 
 ## Spec-derived probes

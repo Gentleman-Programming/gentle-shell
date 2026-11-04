@@ -140,11 +140,14 @@ export interface PromptLayout {
 	nativeWidth: number;
 	prefixWidth: number;
 	background: string;
+	/** The wide IDE chrome's editor: a titled rule and a `›` prompt, no frame. */
+	panel?: boolean;
 }
 
 /** Resolve fallback before native wrapping, selection, completion and mouse geometry. */
-export function resolvePromptLayout(width: number, style?: CardStyle, bg?: PromptFrameOptions["bg"]): PromptLayout {
+export function resolvePromptLayout(width: number, style?: CardStyle, bg?: PromptFrameOptions["bg"], panel = false): PromptLayout {
 	width = Math.max(0, Math.floor(width));
+	if (panel && width >= 4) return { width, nativeWidth: Math.max(1, width - PANEL_PROMPT.length), prefixWidth: PANEL_PROMPT.length, background: "", panel: true };
 	let background = "";
 	if (style === CARD_STYLE.FLOAT && width >= 10 && bg) {
 		try {
@@ -211,8 +214,39 @@ function floatPromptHint(top: string, bottom: string, options: PromptFrameOption
 	return hint + " ".repeat(Math.max(0, width - visibleWidth(hint)));
 }
 
+// The panel editor: `─ ✿ state ──── mode ─` above the input, where the state
+// scans while working and the right end carries the vim mode or esc hint.
+const PANEL_PROMPT = "› ";
+const PANEL_PROMPT_ROLE = "accent";
+
+function panelPromptRule(width: number, options: PromptFrameOptions, top: string | undefined, right: string | undefined): string {
+	const glyph = petalGlyph(options.state, options.tick);
+	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
+	const label = top ?? stateLabel(options) ?? "waiting for input";
+	const painted = options.state === PROMPT_STATE.WORKING && !top ? scanWorkingText(label, options.tick, options.fg) : options.fg(LABEL_ROLE, label);
+	const end = right ? ` ${options.fg(LABEL_ROLE, right)} ` : "";
+	const titleWidth = 2 + visibleWidth(glyph) + 1 + visibleWidth(label) + 1;
+	const endWidth = right ? visibleWidth(right) + 2 : 0;
+	const fill = width - titleWidth - endWidth - 1;
+	if (fill < 1) return options.borderColor(rule(width));
+	return `${options.borderColor("─ ")}${petal} ${painted} ${options.borderColor(rule(fill))}${end}${options.borderColor("─")}`;
+}
+
+/** One input row behind the `›` prompt (or its indent), clipped and padded to the layout width. */
+export function panelPromptRow(line: string, layout: PromptLayout, prefix: string): string {
+	const clipped = truncateToWidth(line, layout.nativeWidth, "");
+	return prefix + clipped + " ".repeat(Math.max(0, layout.nativeWidth - visibleWidth(clipped)));
+}
+
 export function framePromptLines(lines: string[], width: number, options: PromptFrameOptions, layout = resolvePromptLayout(width, options.style, options.bg)): string[] {
 	width = Math.max(0, Math.floor(width));
+	if (layout.panel && lines.length >= 2) {
+		return [
+			panelPromptRule(width, options, scrollIndicator(lines[0]), options.escHint ?? scrollIndicator(lines[lines.length - 1])),
+			...lines.slice(1, -1).map((line, index) => panelPromptRow(line, layout, index === 0 ? options.fg(PANEL_PROMPT_ROLE, options.bold ? options.bold(PANEL_PROMPT.trim()) : PANEL_PROMPT.trim()) + " " : " ".repeat(PANEL_PROMPT.length))),
+			" ".repeat(width),
+		];
+	}
 	if (layout.background && lines.length >= 2) {
 		return [
 			floatPromptRow(floatPromptHint(lines[0], lines[lines.length - 1], options, layout.nativeWidth).slice(2), layout, options.borderColor),

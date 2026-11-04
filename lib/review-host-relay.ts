@@ -387,6 +387,8 @@ export interface ReviewHostRelayRequest {
 	readonly selection?: string;
 	/** The routing entry's thinking label, forwarded verbatim to the completion. */
 	readonly thinking?: string;
+	/** Requested profile tier; the provider decides whether it is supported. */
+	readonly tier?: "standard" | "fast";
 	/** Effective Pi transport preference, forwarded without forcing a provider default. */
 	readonly reviewerTransport?: InProcessReviewerRequest["transport"];
 	/**
@@ -600,7 +602,7 @@ function assertTokens(name: string, tokens: readonly string[]): void {
  * an ambient default model (gentle-ai#4611; gentle-pi#311 P2, superseding
  * gentle-shell#1158 / #1136's child-process launch configuration).
  */
-function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; routingKey: string } {
+function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; tier?: "standard" | "fast"; routingKey: string } {
 	const routingKey = typeof request.routingKey === "string" && request.routingKey.length > 0 ? request.routingKey : "review capture";
 	if (request.reviewerRegistry === undefined) {
 		throw new ReviewHostRelayError(
@@ -620,6 +622,7 @@ function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest)
 		reviewerRegistry: request.reviewerRegistry,
 		selection: request.selection,
 		...(request.thinking === undefined ? {} : { thinking: request.thinking }),
+		...(request.tier === undefined ? {} : { tier: request.tier }),
 		...(request.reviewerSessionId === undefined ? {} : { reviewerSessionId: request.reviewerSessionId }),
 		routingKey,
 	};
@@ -750,6 +753,7 @@ export async function prepareReviewHostRelaySlot(
 			{
 				selection: preparedRequest.selection!,
 				...(preparedRequest.thinking === undefined ? {} : { thinking: preparedRequest.thinking }),
+				...(preparedRequest.tier === undefined ? {} : { tier: preparedRequest.tier }),
 				...(preparedRequest.reviewerTransport === undefined ? {} : { transport: preparedRequest.reviewerTransport }),
 				...(preparedRequest.reviewerSessionId === undefined ? {} : { sessionId: preparedRequest.reviewerSessionId }),
 				prompt: promptBytes,

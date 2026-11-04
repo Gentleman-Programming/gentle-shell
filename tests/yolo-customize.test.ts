@@ -13,7 +13,7 @@ import { VisualCustomizeView } from "../lib/visual-customize-view.ts";
 
 initTheme("dark");
 const theme = getThemeByName("dark")!;
-interface View { render(width: number): string[]; handleInput(data: string): void; invalidate(): void; dispose?(): void }
+interface View { focus(label: string): boolean; render(width: number): string[]; handleInput(data: string): void; invalidate(): void; dispose?(): void }
 
 function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.ProcessEnv = {}, observeActionReady = false) {
 	const home = mkdtempSync(join(tmpdir(), "yolo-customize-"));
@@ -100,9 +100,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 	};
 }
 function selectYolo(view: View) {
-	for (let i = 0; i < 3; i++) view.handleInput("j");
-	view.handleInput("\x1b[C");
-	view.handleInput("j"); view.handleInput("j");
+	assert.ok(view.focus("YOLO: ON"));
 	view.render(140);
 }
 async function settle(check: () => boolean) {
@@ -111,18 +109,36 @@ async function settle(check: () => boolean) {
 }
 function text(view: View) { return view.render(140).map(stripAnsi).join("\n"); }
 
+test("deferred Editor choices browse authority modes without activation or persistence", async t => {
+	const h = fixture(t);
+	const before = h.snapshot();
+	const open = await h.open();
+	const view = h.view();
+	for (const setting of ["YOLO: ON", "Session permissions: NORMAL", "Default permissions: NORMAL"]) {
+		assert.ok(view.focus(setting));
+		view.render(140);
+		for (let i = 0; i < 3; i++) { view.handleInput("\x1b[C"); view.render(140); }
+		assert.equal(await h.controller().mode(h.ctx), "normal", setting);
+		assert.equal(h.controller().defaultMode(), "normal", setting);
+		assert.deepEqual(h.snapshot(), before, setting);
+	}
+	open.close(); await open.result;
+	assert.equal(await h.controller().active(h.ctx), false, "Escape grants nothing");
+	assert.deepEqual(h.snapshot(), before);
+});
+
 test("Customize selects Auto for this session and saves either elevated default without changing current mode", async t => {
  const h=fixture(t,"owner-first",{},true);const open=await h.open();const view=h.view();selectYolo(view);
- view.handleInput("j");view.handleInput("j");view.render(140);
- assert.match(text(view),/Session permissions: AUTO/);
+ assert.ok(view.focus("Session permissions: AUTO"));view.render(140);
+ assert.match(text(view),/Session permissions\s+● NORMAL\s+› AUTO/);
  await h.apply("\r");assert.equal(await h.controller().mode(h.ctx),"auto");
- view.handleInput("j");view.handleInput("j");view.handleInput("j");view.handleInput("j");view.render(140);
- assert.match(text(view),/Default permissions: AUTO/);
+ assert.ok(view.focus("Default permissions: AUTO"));view.render(140);
+ assert.match(text(view),/Default permissions\s+● NORMAL\s+› AUTO/);
  await h.apply("\r");assert.equal(h.controller().defaultMode(),"auto");assert.equal(await h.controller().mode(h.ctx),"auto");
- view.handleInput("j");view.render(140);await h.apply("\r");
+ view.handleInput("\x1b[C");view.render(140);await h.apply("\r");
  assert.equal(h.controller().defaultMode(),"yolo");assert.equal(await h.controller().mode(h.ctx),"auto");
  assert.equal(JSON.parse(readFileSync(join(h.home,"permission-mode.json"),"utf8")).mode,"yolo");
- view.handleInput("j");view.render(140);await h.apply("\r");
+ view.handleInput("\x1b[C");view.render(140);await h.apply("\r");
  assert.equal(h.controller().defaultMode(),"super-yolo");assert.equal(await h.controller().mode(h.ctx),"auto");
  assert.equal(JSON.parse(readFileSync(join(h.home,"permission-mode.json"),"utf8")).mode,"super-yolo");
  for(const width of [1,20,60,140])assert.ok(view.render(width).every(line=>visibleWidth(line)<=width));
@@ -135,7 +151,7 @@ for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and s
 	const before = h.snapshot();
 	const open = await h.open(); const view = h.view(); selectYolo(view);
 	const initial = text(view);
-	assert.match(initial, /Vim: disable[\s\S]*YOLO: OFF · session only/);
+	assert.match(initial, /Vim\s+○ on\s+● off[\s\S]*YOLO: OFF · session only/);
 	assert.match(initial, /ordinary scoped commits\/push\/PR/);
 	assert.match(initial, /destructive confirmations remain/);
 	assert.match(initial, /review consent unchanged/);
@@ -144,9 +160,12 @@ for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and s
 	await h.apply("\r");
 	assert.match(text(view), /YOLO: ON · session only/);
 	assert.equal(h.statuses.get(yolo.YOLO_STATUS_KEY), yolo.YOLO_STATUS_TEXT);
+	await h.apply("\r");
+	assert.equal(await h.controller().active(h.ctx), true, "applying ON again is idempotent");
 	await h.command("disable"); await settle(() => /YOLO: OFF/.test(text(view)));
 	assert.equal(h.widgets.get(yolo.YOLO_STATUS_KEY), undefined);
 	await h.command("enable"); await settle(() => /YOLO: ON/.test(text(view)));
+	assert.ok(view.focus("YOLO: OFF"));view.render(140);
 	await h.apply(" "); assert.match(text(view), /YOLO: OFF/);
 	assert.equal(await h.controller().active(h.ctx), false);
 	assert.deepEqual(h.snapshot(), before, "YOLO never writes configuration or profile snapshots");

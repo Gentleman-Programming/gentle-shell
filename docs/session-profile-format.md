@@ -1,8 +1,8 @@
 # Session profile record format
 
 `lib/session-profile-persistence.ts` defines the optional session profile v1
-codec and pure replay contract. Adding this module does not change Enter,
-startup, routing, shared defaults, or live orchestrator behavior.
+codec and pure replay contract. The record shapes and how each version reads
+them are specified in gentle-shell#2742.
 
 ## Payloads
 
@@ -10,12 +10,27 @@ A custom entry uses `customType: "gentle-pi.session-profile/v1"` and one payload
 
 ```json
 {"kind":"bind","origin":"user","name":"work","modelProfiles":{"worker":{"model":"provider/model"},"orchestrator":{"thinking":"high"}}}
+{"kind":"bind","origin":"user","name":"work","modelProfiles":{"worker":{"model":"provider/model"}},"startup":"none"}
+{"kind":"bind","origin":"local","name":"team","modelProfiles":{"worker":{"model":"provider/model"},"orchestrator":{"model":"provider/model"}}}
 {"kind":"clear"}
+{"kind":"clear","startup":"none"}
 ```
 
-The encoder creates only explicit `user` selections. The decoder accepts the
-closed origin set `user`, `local`, `repo`, and `global`; this does not implement
-inherited startup persistence or follow mode. A bound empty snapshot is not a
+| Payload | Meaning |
+| --- | --- |
+| `bind`, origin `user` | An explicit choice (Use in this session). An optional `startup` field holds the session's startup state: `{"origin","name","modelProfiles"}` with origin `local`, `repo` or `global`, or `"none"`. |
+| `bind`, origin `local`, `repo` or `global` | A startup record: the profile the session started with and the layer it came from. `modelProfiles` is the full normalized definition, `orchestrator` included; launch routing uses its role entries only. |
+| `clear` | A legacy clear: no session profile, startup state unknown. |
+| `clear` with `startup: "none"` | The session started with no profile in any layer. |
+
+The decoder accepts the closed origin set `user`, `local`, `repo`, and `global`.
+A malformed `startup` field is dropped, so the record keeps the routing a v1
+reader gives it, and a `startup` on a clear other than `"none"` reads as a
+legacy clear. A v1 reader ignores `startup`, reads a startup record as an
+explicit choice and a clear with `startup: "none"` as a clear; launch routing
+is the same except in the case gentle-shell#2742 section 2 documents (a session
+that started with no profile, resumed by a v1 version after a default
+appeared). A bound empty snapshot is not a
 clear. Snapshots are detached, known invalid fields reject the whole binding,
 and unknown extra fields carry no routing meaning. Existing route normalization
 supports legacy model strings and `effort`; valid `thinking` takes precedence.

@@ -17,7 +17,7 @@ import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import { applyModelConfig } from "../extensions/gentle-ai.ts";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
-import { getPackageAssetOwner, installPackageAssets, type PackageAssetOwner } from "../lib/agent-assets.ts";
+import { agentBody, getPackageAssetOwner, installPackageAssets, readAgentBodyHistory, type PackageAssetOwner } from "../lib/agent-assets.ts";
 import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
 import { resolveProjectPiSdkVersion, runNpmWithEnv } from "../scripts/test-packed-runner.mjs";
@@ -742,6 +742,79 @@ test("ODD delegation assets retain applicable test-first checks and independent 
 	assert.match(worker, /allowed edit surfaces/i);
 	assert.match(worker, /work-unit commit/i);
 	assert.match(worker, /review lifecycle.*parent/i);
+});
+
+// A package agent whose frontmatter another tool rewrote (inline tools, model
+// routing) once fell out of the manifest and froze on an outdated contract,
+// such as the retired Strict TDD mode prompt.
+test("forced refresh updates a frozen package agent with a shipped body and keeps its routing", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const key = "agents/gentle-ai-worker.md";
+		const installedPath = join(agentHome, key);
+		const packaged = readFileSync(join(PACKAGE_ROOT, "assets", key), "utf8");
+		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"), "utf8");
+		const foreignFrontmatter = "---\nname: gentle-ai-worker\ndescription: Old description.\nmodel: openai/test-model\nthinking: max\ntools: read, grep, find, edit, write, bash, mem_save, mcp";
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, `${foreignFrontmatter}${agentBody(stale)}`);
+		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifest = installedAssetManifest(agentHome);
+		delete manifest.assets[key];
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		const refreshed = readFileSync(installedPath, "utf8");
+		assert.doesNotMatch(refreshed, /effective TDD mode/);
+		assert.equal(
+			refreshed,
+			packaged.replace(/^(description:.*)$/m, "$1\nmodel: openai/test-model\nthinking: max"),
+		);
+		assert.equal(installedAssetManifest(agentHome).assets[key], undefined, "a locally routed copy stays unmanaged");
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), refreshed, "a second refresh must keep the routing");
+	});
+});
+
+test("forced refresh restores a reformatted package agent without routing to the managed copy", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const key = "agents/gentle-ai-worker.md";
+		const installedPath = join(agentHome, key);
+		const packaged = readFileSync(join(PACKAGE_ROOT, "assets", key), "utf8");
+		installPackageAssets(agentHome, false, ["delegation"]);
+		writeFileSync(installedPath, packaged.replace(/\ntools:\n(?:  - .*\n)+/, "\ntools: read, grep, find, edit, write, bash, mem_save\n"));
+
+		installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), packaged);
+		assert.equal(installedAssetManifest(agentHome).assets[key], sha256(packaged));
+	});
+});
+
+test("agent body history records the body of every packaged agent", () => {
+	const history = readAgentBodyHistory();
+	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
+	for (const file of readdirSync(agentsDir).filter((name) => name.endsWith(".md"))) {
+		assert.ok(
+			history[`agents/${file}`]?.includes(sha256(agentBody(readFileSync(join(agentsDir, file), "utf8")))),
+			`assets/agents/${file} changed: run node scripts/update-agent-body-history.mjs`,
+		);
+	}
+});
+
+test("forced refresh still leaves agents with user-edited bodies in place", () => {
+	withIsolatedAssetHome((agentHome) => {
+		const key = "agents/gentle-ai-worker.md";
+		const installedPath = join(agentHome, key);
+		installPackageAssets(agentHome, false, ["delegation"]);
+		const edited = readFileSync(installedPath, "utf8")
+			.replace(/^(description:.*)$/m, "$1\nmodel: openai/test-model")
+			.concat("\nUser-authored instruction.\n");
+		writeFileSync(installedPath, edited);
+
+		const result = installPackageAssets(agentHome, true, ["delegation"]);
+		assert.equal(readFileSync(installedPath, "utf8"), edited);
+		assert.equal(installedAssetManifest(agentHome).assets[key], undefined);
+		assert.equal(result.skipped, 1);
+	});
 });
 
 test("delegation installation retains strict TDD support without installing SDD assets", () => {

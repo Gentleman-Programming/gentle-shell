@@ -18,7 +18,7 @@ When idle conditions are met, a one-line offer appears below the editor, painted
 Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again [star]
 ```
 
-On narrow terminals the offer text is truncated with `…`; the `[star]` button always stays visible. The button exists only while the offer is visible.
+The row is responsive: it shows the longest wording that fits whole, from the full text above down to `Enjoying Gentle Shell? Ctrl+G stars us on GitHub, Alt+D never asks again`, `Ctrl+G star, Alt+D dismiss`, and `Ctrl+G star`, so no word is ever cut. The `[star]` button stays right-aligned at every width, like the changes row's `/gentle:changes` hint, and exists only while the offer is visible.
 
 Only two control chords are intercepted while the offer is visible — plain typing is passed through untouched, so the prompt can never eat a character:
 

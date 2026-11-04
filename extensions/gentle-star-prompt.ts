@@ -53,22 +53,37 @@ const STATUS_KEY = "star-prompt";
 const OFFER_TEXT = `Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (${STAR_PROMPT_REPOSITORY_URLS.map((url) => url.replace("https://", "")).join(" and ")}) on GitHub, Alt+D never asks again`;
 
 const STAR_BUTTON = "[star]";
+/** Longest first: the row shows the longest wording that fits whole, so no word
+ * is ever cut, and the [star] button keeps working even when none fits. */
+const OFFER_WORDINGS = [
+	OFFER_TEXT,
+	"Enjoying Gentle Shell? Ctrl+G stars gentle-shell and gentle-ai on GitHub, Alt+D never asks again",
+	"Enjoying Gentle Shell? Ctrl+G stars us on GitHub, Alt+D never asks again",
+	"Ctrl+G stars us on GitHub, Alt+D never asks again",
+	"Ctrl+G star, Alt+D dismiss",
+	"Ctrl+G star",
+];
 
-/** The one-row offer below the editor: the green offer text, truncated first so
- * the trailing [star] button always fits, then the button with the shell's
- * shared hover treatment. Clicking it does exactly what Ctrl+G does. Mouse
- * reports only arrive in fullscreen; elsewhere the chords keep working. */
+/** The one-row offer below the editor: the green offer text in the longest
+ * wording that fits, then the [star] button right-aligned like the changes
+ * row's /gentle:changes hint, with the shell's shared hover treatment.
+ * Clicking it does exactly what Ctrl+G does. Mouse reports only arrive in
+ * fullscreen; elsewhere the chords keep working. */
 function offerRow(theme: HoverTheme, tui: { requestRender(): void }, onStar: () => void): Component & { handleMouse(event: TuiMouseEvent): unknown; dispose(): void } {
 	let hovered = false;
 	let buttonStart = -1;
 	const row: Component = {
 		render(width) {
-			// OFFER_TEXT is plain ASCII, so slicing is exact; pi-tui's truncateToWidth
-			// would insert an SGR reset before the ellipsis and drop the green there.
-			const room = Math.max(0, width - visibleWidth(STAR_BUTTON) - 1);
-			const text = OFFER_TEXT.length <= room ? OFFER_TEXT : room > 0 ? `${OFFER_TEXT.slice(0, room - 1)}…` : "";
-			buttonStart = visibleWidth(text) + 1;
-			return [`${theme.fg("success", text)} ${paintHoverable(theme, STAR_BUTTON, hovered, "accent")}`];
+			const buttonWidth = visibleWidth(STAR_BUTTON);
+			if (width < buttonWidth) {
+				buttonStart = -1;
+				return [""];
+			}
+			const room = width - buttonWidth - 1;
+			const text = OFFER_WORDINGS.find((wording) => visibleWidth(wording) <= room) ?? "";
+			buttonStart = width - buttonWidth;
+			const gap = " ".repeat(buttonStart - visibleWidth(text));
+			return [`${text ? theme.fg("success", text) : ""}${gap}${paintHoverable(theme, STAR_BUTTON, hovered, "accent")}`];
 		},
 		invalidate() {
 			hovered = false;

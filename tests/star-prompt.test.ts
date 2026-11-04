@@ -296,7 +296,7 @@ async function visibleOffer(state = stateWith(9)) {
 test("extension: the offer row ends with a [star] button painted like the sidebar's clickable controls", async () => {
 	const { h, buttonX } = await visibleOffer();
 	assert.ok(buttonX > 0);
-	assert.ok(h.widget!.render(400)[0]!.endsWith("</success> <accent>[star]</accent>"));
+	assert.match(h.widget!.render(400)[0]!, /<\/success> +<accent>\[star\]<\/accent>$/);
 
 	assert.deepEqual(h.widget!.handleMouse(mouse("move", buttonX + 2)), { handled: true, render: true });
 	assert.ok(h.widget!.render(400)[0]!.endsWith("<warning>[star]</warning>"), "hover uses the shared hover role");
@@ -323,12 +323,34 @@ test("extension: a left click on [star] stars exactly like Ctrl+G and removes th
 	assert.equal(h.written.at(-1)?.dismissed, true);
 });
 
-test("extension: a narrow terminal truncates the offer text, never the [star] button", async () => {
+test("extension: the offer is responsive: the longest whole wording that fits, with [star] right-aligned", async () => {
 	const { h } = await visibleOffer();
-	const row = h.widget!.render(60)[0]!;
-	assert.ok(row.includes("…"));
-	assert.ok(row.endsWith(" <accent>[star]</accent>"));
-	assert.ok(row.replace(/<\/?[a-z]+>/g, "").length <= 60);
+	const plain = (width: number) => h.widget!.render(width)[0]!.replace(/<\/?[a-z]+>/g, "");
+	const wording = (width: number) => plain(width).slice(0, -"[star]".length).trimEnd();
+	const cases: Array<[number, string]> = [
+		[400, "Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again"],
+		[120, "Enjoying Gentle Shell? Ctrl+G stars gentle-shell and gentle-ai on GitHub, Alt+D never asks again"],
+		[90, "Enjoying Gentle Shell? Ctrl+G stars us on GitHub, Alt+D never asks again"],
+		[60, "Ctrl+G stars us on GitHub, Alt+D never asks again"],
+		[36, "Ctrl+G star, Alt+D dismiss"],
+		[20, "Ctrl+G star"],
+		[8, ""],
+	];
+	for (const [width, expected] of cases) {
+		assert.equal(wording(width), expected, `width ${width}`);
+		assert.equal(plain(width).length, width, `width ${width} fills the row exactly`);
+		assert.ok(plain(width).endsWith("[star]"), `width ${width} keeps the button at the right edge`);
+		assert.ok(!plain(width).includes("…"), `width ${width} never cuts a word`);
+	}
+	assert.ok(plain(4).length <= 4, "a row narrower than the button never overflows");
+});
+
+test("extension: the right-aligned [star] stays clickable at any width", async () => {
+	const { h } = await visibleOffer({ ...DEFAULT_STAR_PROMPT_STATE, sent: 9 });
+	h.widget!.render(60);
+	const click = { type: "click", button: "left", x: 60 - "[star]".length, y: 0, screenX: 54, screenY: 0, width: 60, height: 1, shift: false, alt: false, ctrl: false } as never;
+	assert.deepEqual(h.widget!.handleMouse(click), { handled: true, render: true });
+	assert.equal(h.gh.star, 1);
 });
 
 test("extension: when gh cannot star, Ctrl+G falls back to opening both repos in the browser", async () => {

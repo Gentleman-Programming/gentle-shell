@@ -386,7 +386,8 @@ test("sessionProfileRoutingAt: explicit and frozen profiles apply to any target,
 	const target = { cwd: foreign.cwd, configHome: foreign.configHome, resolveWorktree: foreign.resolveWorktree, foreignRepository: true };
 	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-a")), target), FRONTIER);
 	bindSessionProfile("session-b", "team", TEAM);
-	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-b")), target), TEAM);
+	// The binding keeps the whole profile; routing carries its role keys, never the reserved orchestrator key.
+	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-b")), target), { worker: TEAM.worker });
 });
 
 test("sessionProfileRoutingAt: a session frozen without a profile keeps a foreign repository's own defaults", () => {

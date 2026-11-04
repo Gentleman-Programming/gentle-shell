@@ -239,7 +239,9 @@ export function sessionProfileRoutingAt(
 	resolution: SessionProfileResolution,
 	target: InheritedProfileOptions & { foreignRepository?: boolean },
 ): AgentModelConfig | undefined {
-	if (resolution.kind === "explicit") return resolution.modelProfiles;
+	// A binding keeps the whole profile, the reserved orchestrator key included;
+	// subagent routing carries only role keys, like the pin and global layers.
+	if (resolution.kind === "explicit") return roleRouting(resolution.modelProfiles);
 	if (resolution.kind === "inherited") {
 		if (resolution.profile !== undefined || target.foreignRepository !== true) return resolution.profile?.modelProfiles;
 		return resolveProfilePin(target)?.modelProfiles;

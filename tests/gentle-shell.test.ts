@@ -6968,6 +6968,39 @@ test("mobile folds live work into one row above the editor that opens /gentle:pa
 	}
 });
 
+test("a tap on a mobile work row led by an agent opens /gentle:agents instead of the panel sheet", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const tui = { mode: "fullscreen", terminal: { rows: 34, columns: 56 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	const state = sidebarState(tui as unknown as TUI);
+	state.layoutAttached = () => true;
+	let opened = 0;
+	const agentsCard = sidebarPart(tui as unknown as TUI, "agents", { render: (_width: number) => ["AGENTS CARD"], invalidate() {}, dispose() {} }, {
+		render: (width: number) => ["▾ AGENTS".padEnd(width), "  ◐ map lib modules".padEnd(width)],
+		summary: () => ({ left: "◐ map lib modules", right: "1", rightLabel: "running", priority: 1 }),
+		open: () => { opened += 1; },
+		invalidate() {},
+	});
+	try {
+		assert.equal(state.compactWork?.(), true, "a narrow fullscreen terminal folds live work");
+		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+		const editorRows = editor.render(56).map(stripAnsi);
+		assert.match(editorRows[0]!, /^ ▸ ◐ map lib modules +1 $/);
+		assert.equal(editor.handleMouse?.({ type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 56, height: editorRows.length, shift: false, alt: false, ctrl: false })?.handled, true, "a tap on the work row is handled");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(opened, 1, "the tap opens the agents view");
+		assert.equal(ui.overlayView, undefined, "the tap never opens the panel sheet");
+		editor.dispose();
+	} finally {
+		agentsCard.dispose();
+		footer.dispose();
+	}
+});
+
 test("customize presets set density and visibility together, mark the current one, and keep the placements", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();

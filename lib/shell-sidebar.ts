@@ -47,6 +47,8 @@ export interface SidebarRail extends Component {
 	surface?: "panel";
 	/** A one-row digest for the mobile work row; undefined when the section has nothing live. */
 	summary?(): PanelSummary | undefined;
+	/** Opens the section's own view (Agents: /gentle:agents); a tap on the mobile work row runs it when this section leads the row. */
+	open?(): void;
 	/** "Needs you" rows the panel editor draws right above its rule (an agent asking the user); [] when none. */
 	alert?(width: number): string[];
 	/** What this section's work spent (the Agents section: started subagents), for the Stats section. */

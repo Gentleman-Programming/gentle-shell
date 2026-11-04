@@ -4440,9 +4440,13 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	resetSessionProfileBindingsForTesting();
 	t.after(() => resetSessionProfileBindingsForTesting());
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 	const liveCalls: string[] = [];
+	// Like Pi, `appendEntry` writes to the session the last start ran on.
+	let started: SessionManager | undefined;
 	createGentleAiExtension({ nativeReviewCli: null })({
-		on() {},
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) { handlers.set(name, handler); },
+		appendEntry(type: string, data: unknown) { started!.appendCustomEntry(type, data); },
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async () => { liveCalls.push("model"); return true; },
@@ -4469,6 +4473,10 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	return {
 		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
 		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
+		start: (event: unknown, startCtx: ExtensionContext = ctx) => {
+			started = startCtx.sessionManager as SessionManager;
+			return handlers.get("session_start")!(event, startCtx);
+		},
 		last: () => notifications.at(-1) ?? { message: "", severity: "" },
 	};
 }
@@ -4635,6 +4643,51 @@ for (const [record, subject] of [
 		assert.match(h.last().message, new RegExp(`^el Gentleman cleared ${subject} . persisted in this session\\. New launches use the routing without a session profile \\(pins, repository declaration, global\\)\\. The live orchestrator is unchanged\\.$`));
 		h.assertSharedUntouched();
 	});
+
+// gentle-shell#2742, section 3: a resume is not the session's own start, even
+// with no conversation on its branch, so the defaults current at resume time are
+// not its startup state and a legacy user bind still clears to a legacy clear.
+test("clear after a resume with no conversation writes a legacy clear, not the resume-time defaults", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const sessions = join(h.ctx.cwd, "resumed-sessions");
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast));
+	source.appendMessage({ role: "user", content: "flush the resumed fixture", timestamp: 1 });
+	const file = source.getSessionFile()!;
+	writeFileSync(file, `${readFileSync(file, "utf8").trim().split("\n").filter((line) => JSON.parse(line).type !== "message").join("\n")}\n`);
+	const manager = SessionManager.open(file, sessions);
+	assert.equal(manager.getBranch().some((entry) => entry.type === "message"), false, "the resumed branch has no conversation");
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	const family = () => manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family().length, 1, "the resume writes no record");
+	await h.run("clear", ctx);
+	assert.equal(family().length, 2, "one record follows the legacy bind");
+	assert.deepEqual((family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
+	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /^el Gentleman cleared session profile "fast" . persisted in this session\. New launches use the routing without a session profile \(pins, repository declaration, global\)\. The live orchestrator is unchanged\.$/);
+});
+
+test("clear after a session's own start goes back to the defaults it started with", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "own-start-sessions"));
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "startup" }, ctx);
+	manager.appendMessage({ role: "user", content: "flush the own-start fixture", timestamp: 1 });
+	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
+	await h.run("clear", ctx);
+	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family.length, 2, "the clear follows the Use in this session bind");
+	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
+	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
+});
 
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);

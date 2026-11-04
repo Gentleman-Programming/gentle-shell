@@ -11478,7 +11478,7 @@ function createGentleAiExtensionForTesting(
 		// gentle-shell#2742: a start with no conversation on its branch is the
 		// session's own start, so this process knows its startup state.
 		try {
-			if (profileSessionId && event.reason !== "fork" && !ctx.sessionManager.getBranch().some((entry) => entry.type === "message"))
+			if (profileSessionId && event.reason !== "fork" && event.reason !== "resume" && !ctx.sessionManager.getBranch().some((entry) => entry.type === "message"))
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
 		} catch { /* The startup state stays unknown. */ }
 		readSessionProfileAuthority(ctx.sessionManager);

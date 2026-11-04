@@ -122,8 +122,9 @@ function execGh(deps: GhDeps, args: readonly string[]): Promise<{ code: number; 
 	const exec = deps.exec ?? nodeExecFile;
 	return new Promise((resolve) => {
 		exec(deps.ghPath ?? "gh", [...args], { timeout: 15_000 }, (error, _stdout, stderr) => {
-			const rawCode: unknown = error === undefined ? 0 : (error as NodeJS.ErrnoException).code;
-			const code = typeof rawCode === "number" ? rawCode : error === undefined ? 0 : 1;
+			// execFile passes null (not undefined) on success; both mean exit 0.
+			const rawCode: unknown = error == null ? 0 : (error as NodeJS.ErrnoException).code;
+			const code = typeof rawCode === "number" ? rawCode : 1;
 			resolve({ code, stderr: typeof stderr === "string" ? stderr : "" });
 		});
 	});

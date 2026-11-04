@@ -335,3 +335,11 @@ test("lib: ghStarred classifies 404 as no and other failures as unknown", async 
 	const broken = await ghStarred({ exec: ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | undefined) => void) => cb(new Error("boom"))) as never, repository: "x/y" });
 	assert.equal(broken, "unknown");
 });
+
+test("lib: execFile's null error (exit 0) means starred, and a null error on PUT means starred", async () => {
+	// Real child_process passes error = null on success; that must not crash (found in TUI smoke).
+	const ok = ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, _o: string, _s: string) => void) => cb(null, "", "")) as never;
+	assert.equal(await ghStarred({ exec: ok, repository: "x/y" }), "yes");
+	const { ghStar } = await import("../lib/star-prompt.ts");
+	assert.equal(await ghStar({ exec: ok, repository: "x/y" }), "yes");
+});

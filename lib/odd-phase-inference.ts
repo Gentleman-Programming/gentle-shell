@@ -76,18 +76,78 @@ const SHELL_TOOLS = new Set(["bash", "powershell"]);
 
 // Test, typecheck, lint, and build runners. Matched per shell segment.
 const CHECKING_COMMANDS: readonly RegExp[] = [
-	/^(pnpm|npm|yarn|bun)\s+(run\s+)?(test|typecheck|lint|build|check)\b/,
 	/^node\b.*\s--test\b/,
 	/^node\s+\S*(test|check|lint|typecheck)[\w-]*\.m?[jt]s\b/,
-	/^((npx|pnpx|bunx)\s+|(pnpm|yarn)\s+exec\s+)?(vitest|jest|mocha|tsc|eslint|pytest)\b/,
-	/^python3?\s+-m\s+pytest\b/,
+	/^((npx|pnpx|bunx)\s+|(pnpm|yarn)\s+exec\s+)?(vitest|jest|mocha|tsc|pytest)\b/,
+	/^python(3(\.\d+)?)?\s+-m\s+(pytest|unittest)\b/,
 	/^go\s+(test|build|vet)\b/,
-	/^cargo\s+(test|build|check|clippy)\b/,
-	/^make\b/,
+	/^cargo\s+(test|build|check|clippy|nextest)\b/,
+	// `cargo fmt` rewrites code, so only the check form verifies anything.
+	/^cargo\s+fmt\b.*\s--check\b/,
+	/^ruff\s+format\s+--check\b/,
+	/^deno\s+(test|check)\b/,
+	/^deno\s+fmt\s+--check\b/,
+	/^deno\s+task\s+(test|typecheck|lint|build|check)\b/,
 	// Waiting on or reading CI results verifies work; it is not exploration.
 	/^gh\s+pr\s+checks\b/,
 	/^gh\s+run\s+(view|watch|list)\b/,
 ];
+
+// These runners verify only when they are not asked to rewrite files: `eslint
+// --fix`, `ruff check --fix` and `deno lint --fix` repair code, so they are not
+// checks. The flag has to be the whole flag: `eslint --fix-dry-run` writes
+// nothing and stays a check.
+const FIXABLE_CHECKING_COMMANDS: readonly RegExp[] = [
+	/^((npx|pnpx|bunx)\s+|(pnpm|yarn)\s+exec\s+)?eslint\b/,
+	/^ruff\s+check\b/,
+	/^deno\s+lint\b/,
+];
+const FIX_FLAGS = /(^|\s)--(fix|fix-only|unsafe-fixes)(?=\s|=|$)/;
+
+// A formatter verifies only when it is told to report. The report flag is the
+// tool's own: `-l` lists files for gofmt, gofumpt and shfmt but is the line
+// length for black, and a write flag rewrites what a report flag would only
+// name, so `gofmt -l -w .` reforms code instead of verifying it.
+const FORMATTER_FLAGS: Readonly<Record<string, { report: readonly string[]; write: readonly string[] }>> = {
+	prettier: { report: ["--check", "-l", "--list-different"], write: ["--write", "-w"] },
+	black: { report: ["--check", "--diff"], write: [] },
+	rustfmt: { report: ["--check"], write: [] },
+	gofmt: { report: ["-l", "-d"], write: ["-w"] },
+	gofumpt: { report: ["-l", "-d"], write: ["-w"] },
+	shfmt: { report: ["-l", "-d"], write: ["-w"] },
+	"clang-format": { report: ["--dry-run", "-n"], write: ["-i", "--in-place"] },
+	swiftformat: { report: ["--lint", "--dryrun"], write: [] },
+};
+// `timeout` options that take the word after them; every other flag stands alone.
+const TIMEOUT_VALUE_OPTIONS = new Set(["-s", "--signal", "-k", "--kill-after"]);
+
+// Package managers that run a script by name, and the scripts that verify work.
+// `install`, `deploy`, `publish`, `start` and a dev server are not checks, and an
+// unlisted script leaves the label unchanged.
+const PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn", "bun"]);
+const CHECK_SCRIPTS = new Set(["test", "typecheck", "lint", "build", "check"]);
+// Options that take the token after them, so `pnpm -C pkg test` names its script
+// after the workspace directory instead of reading that directory as the script.
+const PACKAGE_MANAGER_VALUE_OPTIONS = new Set(["-C", "--dir", "--prefix", "-F", "--filter", "--cwd"]);
+// Options that take no value and change nothing about which script runs.
+const PACKAGE_MANAGER_FLAGS = new Set(["-w", "--workspace-root", "-r", "--recursive", "-s", "--silent"]);
+
+// `make` targets that verify work. Any other target — `install`, `deploy`,
+// `clean`, `release`, an unknown recipe — changes the machine or does something
+// this classifier cannot name, so it leaves the label unchanged.
+const MAKE_CHECK_TARGETS = new Set(["test", "tests", "check", "checks", "build"]);
+// Options that take their value as the next word.
+const MAKE_VALUE_OPTIONS = new Set([
+	"-C", "--directory", "-f", "--file", "--makefile", "-I", "--include-dir",
+	"-o", "--old-file", "--assume-old", "-W", "--what-if", "--new-file", "--assume-new",
+]);
+// Options whose value is attached (`-j4`, `-Oline`) or, for the job and load
+// limits, may also be the next word when it is a bare count (`-j 4`).
+const MAKE_COUNTED_OPTIONS = new Set(["-j", "--jobs", "-l", "--load-average", "-O", "--output-sync"]);
+
+// `gh api` writes whenever it is given a method, a field, or an input body, so
+// only the plain GET form is a query.
+const GH_API_WRITE_FLAGS = new Set(["-X", "--method", "-f", "--raw-field", "-F", "--field", "--input"]);
 
 // Git listing flags that may take one non-flag argument (`--contains <rev>`)
 // without turning `git branch`/`git tag` into a create.
@@ -100,7 +160,14 @@ const EXPLORING_COMMANDS: readonly RegExp[] = [
 	/^git\s+remote(\s+(-v|--verbose|show|get-url)\b.*)?$/,
 	/^git\s+(worktree|stash)\s+list\b/,
 	/^git\s+config\s+(--get|--get-all|--get-regexp|-l|--list)\b/,
+	// `git config <key>` without a value reports what is stored.
+	/^git\s+config\s+[^-\s]+\s*$/,
 	/^gh\s+(pr|issue|repo|release)\s+(view|list|diff|status)\b/,
+	/^gh\s+(auth\s+status|search\s+\w+|label\s+list|workflow\s+(list|view))\b/,
+	// Metadata probes: what is installed, configured, or resolved here.
+	/^locale\b/,
+	/^cargo\s+tree\b/,
+	/^go\s+version\b/,
 	/^(ls|cat|head|tail|grep|egrep|rg|wc|pwd|tree|stat|file|which|type|readlink|realpath|dirname|basename|cut|uniq|tr|nl|column|strings|diff|cmp|od|xxd|hexdump|shasum|sha256sum|md5|md5sum|du|df|date|uname|whoami|ps|pgrep|lsof|jq|awk)\b/,
 	/^command\s+-v\b/,
 	/^(\[\[?|test)\s/,
@@ -203,9 +270,126 @@ function shellSegments(command: string | undefined): string[] {
  * redirect — carries no activity this classifier can name.
  */
 function segmentActivity(segment: string): ShellActivity | undefined {
-	if (matchesAny(CHECKING_COMMANDS, segment)) return "checking";
+	if (isCheckingSegment(segment)) return "checking";
 	if (isReadOnlyInspection(segment)) return "exploring";
 	return undefined;
+}
+
+/** A segment verifies work when it runs one of the check families below. */
+function isCheckingSegment(segment: string): boolean {
+	if (matchesAny(CHECKING_COMMANDS, segment)) return true;
+	if (matchesAny(FIXABLE_CHECKING_COMMANDS, segment)) return !FIX_FLAGS.test(segment);
+	if (isFormatterCheck(segment) || isPackageManagerCheck(segment) || isMakeCheck(segment)) return true;
+	// A watchdog bounds how long a check may run without changing what it does, so a
+	// runner behind `timeout` still checks. Only the check families are unwrapped:
+	// `timeout 5 git status` is not a check and is not inspection either.
+	const bounded = timeoutCommand(segment);
+	return bounded !== undefined && isCheckingSegment(bounded);
+}
+
+/**
+ * The command a segment's `timeout` wrapper bounds, or undefined when the segment
+ * is not a timeout call. The wrapper's flags, their values and the duration it
+ * bounds all precede the command that runs.
+ */
+function timeoutCommand(segment: string): string | undefined {
+	const words = segment.split(/\s+/);
+	if (words[0] !== "timeout") return undefined;
+	let index = 1;
+	while (index < words.length && (words[index] ?? "").startsWith("-")) {
+		const flag = words[index++];
+		if (flag === "--") break;
+		if (TIMEOUT_VALUE_OPTIONS.has(flag ?? "")) index++;
+	}
+	// The duration is required and is not part of the command it bounds.
+	index++;
+	return index < words.length ? words.slice(index).join(" ") : undefined;
+}
+
+/**
+ * A formatter invocation whose flags ask it to report rather than rewrite,
+ * behind an `npx`/`pnpx`/`bunx` or `pnpm exec` style wrapper when it has one.
+ * A flag carries its name up to any attached `=value`, and a separately written
+ * value (`black -l 100`) is never a flag of its own.
+ */
+function isFormatterCheck(segment: string): boolean {
+	const words = segment.split(/\s+/);
+	let index = 0;
+	if (["npx", "pnpx", "bunx"].includes(words[0] ?? "")) index = 1;
+	else if (PACKAGE_MANAGERS.has(words[0] ?? "") && /^(exec|run)$/.test(words[1] ?? "")) index = 2;
+	const formatter = FORMATTER_FLAGS[words[index] ?? ""];
+	if (formatter === undefined) return false;
+	const given = words.slice(index + 1).map((word) => word.split("=")[0] ?? word);
+	if (given.some((flag) => formatter.write.includes(flag))) return false;
+	return given.some((flag) => formatter.report.includes(flag));
+}
+
+/**
+ * `pnpm -C pkg test` runs the same script as `pnpm test`, so the workspace flags
+ * a monorepo needs must not hide it. Only a listed check script counts:
+ * `pnpm install`, `pnpm deploy`, and an unlisted script stay ambiguous.
+ */
+function isPackageManagerCheck(segment: string): boolean {
+	const script = packageManagerCommand(segment);
+	return script !== undefined && isCheckScript(script);
+}
+
+/** The package-manager subcommand the segment runs, after its workspace flags. */
+function packageManagerCommand(segment: string): string | undefined {
+	const words = segment.split(/\s+/);
+	if (!PACKAGE_MANAGERS.has(words[0] ?? "")) return undefined;
+	for (let i = 1; i < words.length; i++) {
+		const word = words[i] ?? "";
+		if (PACKAGE_MANAGER_FLAGS.has(word) || word === "run") continue;
+		if (PACKAGE_MANAGER_VALUE_OPTIONS.has(word)) {
+			i++;
+			continue;
+		}
+		const option = /^(--[a-z-]+)=/.exec(word);
+		if (option && PACKAGE_MANAGER_VALUE_OPTIONS.has(option[1] ?? "")) continue;
+		return word;
+	}
+	return undefined;
+}
+
+/**
+ * `pnpm run test:unit` and `pnpm check:provider-contract` are the same check
+ * families under a namespace, so a `:` suffix keeps its base script's meaning.
+ */
+function isCheckScript(word: string): boolean {
+	return CHECK_SCRIPTS.has(word.split(":")[0] ?? "");
+}
+
+/**
+ * Only a check recipe counts. A bare `make`, and one whose options name no
+ * recipe, builds the default target and stays a check, while every recipe named
+ * on the command line must be one of them: `make install`, `make deploy` and
+ * `make test install` leave the label alone.
+ */
+function isMakeCheck(segment: string): boolean {
+	const words = segment.split(/\s+/);
+	if (words[0] !== "make") return false;
+	for (let i = 1; i < words.length; i++) {
+		const word = words[i] ?? "";
+		// `make VAR=1 test` passes a variable, not a recipe.
+		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+		if (MAKE_VALUE_OPTIONS.has(word)) {
+			i++;
+			continue;
+		}
+		// A job or load limit takes a count, never a recipe: `make -j 4 test` still
+		// names `test`, while `make -j install` names `install`.
+		if (MAKE_COUNTED_OPTIONS.has(word)) {
+			if (/^\d+$/.test(words[i + 1] ?? "")) i++;
+			continue;
+		}
+		// Any other option changes how make runs rather than which recipe it runs,
+		// so it names no recipe — including an option this list does not know,
+		// which is still an option and never a recipe.
+		if (word.startsWith("-")) continue;
+		if (!MAKE_CHECK_TARGETS.has(word)) return false;
+	}
+	return true;
 }
 
 /**
@@ -293,7 +477,31 @@ function isNeutral(segment: string): boolean {
 }
 
 function isReadOnlyInspection(segment: string): boolean {
-	return !writesFile(segment) && matchesAny(EXPLORING_COMMANDS, segment);
+	return !writesFile(segment)
+		&& !HIDDEN_SUBSTITUTION.test(segment)
+		&& (matchesAny(EXPLORING_COMMANDS, segment) || isGhApiRead(segment) || isGoEnvRead(segment));
+}
+
+// The splitter follows `$(...)` but not backticks or `<(...)`, so a command
+// hidden in one of those never reaches this classifier; `>(...)` is already a
+// file write. A segment carrying one is ambiguous rather than inspection.
+const HIDDEN_SUBSTITUTION = /`|<\(/;
+
+/** `gh api` without a method, field, or input body reads; with one it writes. */
+function isGhApiRead(segment: string): boolean {
+	const words = segment.split(/\s+/);
+	if (words[0] !== "gh" || words[1] !== "api") return false;
+	return !words.slice(2).some((word) => GH_API_WRITE_FLAGS.has(word.split("=")[0] ?? "") || /^-[XfF]./.test(word));
+}
+
+/**
+ * `go env` reports the Go configuration, but `-w` stores a value in the env
+ * config file and `-u` unsets one: both write, so neither is inspection.
+ */
+function isGoEnvRead(segment: string): boolean {
+	const words = segment.split(/\s+/);
+	if (words[0] !== "go" || words[1] !== "env") return false;
+	return !words.slice(2).some((word) => /^-[wu]$/.test(word));
 }
 
 // Stream merges and discarded output; neither writes a file.

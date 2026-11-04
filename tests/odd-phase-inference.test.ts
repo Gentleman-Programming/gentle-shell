@@ -64,6 +64,112 @@ test("shell test, typecheck, lint, and build commands infer checking", () => {
 	assert.equal(inferOddPhase("powershell", { command: "npm test" }), "checking");
 });
 
+// A monorepo flags the workspace before the script, and every language has a
+// deterministic runner of its own; each of these verifies work.
+test("workspace flags and language check families infer checking", () => {
+	for (const command of [
+		"pnpm -C pkg test",
+		"pnpm -C packages/app run test",
+		"pnpm --filter app test",
+		"pnpm --filter=app build",
+		"pnpm -w typecheck",
+		// A namespaced script keeps its base family, so a repo's `test:unit` and
+		// `check:runtime-modules` still verify work.
+		"pnpm run test:unit",
+		"npm run test:e2e",
+		"pnpm run check:runtime-modules",
+		"pnpm check:provider-contract",
+		"yarn test:ci",
+		"npm --prefix pkg run test:e2e",
+		"npm --prefix pkg test",
+		"yarn --cwd pkg test",
+		"python -m unittest",
+		"python3 -m unittest discover -s tests",
+		"python3.12 -m pytest -q",
+		"ruff check .",
+		"ruff format --check .",
+		"cargo fmt --check",
+		"cargo fmt -- --check",
+		"cargo nextest run",
+		"cargo nextest run --workspace",
+		"deno test",
+		"deno test -A tests/",
+		"deno check mod.ts",
+		"deno lint",
+		"deno fmt --check",
+		"deno task test",
+		"make test",
+		"make check",
+		"make build",
+		"make -j4 test",
+		"make -j 4 test",
+		"make VAR=1 check",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// The same runners mutate when asked to rewrite files or install dependencies,
+// and an unlisted `make` recipe is an unknown action rather than a check.
+test("installing, rewriting and unknown make recipes never infer checking", () => {
+	for (const command of [
+		"cargo fmt",
+		"ruff check --fix .",
+		"ruff check --fix-only .",
+		"deno lint --fix",
+		"deno fmt",
+		"deno task deploy",
+		"pnpm install",
+		"pnpm -C pkg install",
+		"npm run deploy",
+		"yarn add left-pad",
+		"make install",
+		"make deploy",
+		"make clean",
+		"make release",
+		"make test install",
+		"make ci",
+		// `-j` takes an optional job count, so it must never swallow the recipe.
+		"make -j install",
+		"make -j clean",
+		"make -j release",
+		"make --jobs install",
+		"make -j2 deploy",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// A watchdog bounds how long a check may run; it does not change what the check
+// does, so the runner behind it still names the call. Only the check families are
+// unwrapped: any other command behind a `timeout` keeps the reading it had.
+test("a verification runner behind timeout still infers checking", () => {
+	for (const command of [
+		"timeout 900 pnpm typecheck 2>&1 | tail -20",
+		"timeout 900 pnpm typecheck",
+		"timeout 30 pnpm test",
+		"timeout 5 npx vitest run",
+		"timeout 60 pnpm -C packages/app run test",
+		"timeout 30 make test",
+		"timeout -k 5 60 pnpm test",
+		"timeout --foreground 900 make check",
+		"timeout --signal=KILL 30 cargo test",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+		assert.equal(inferShellActivity(command), "checking", command);
+	}
+	// A timeout around anything else is not a check, and not inspection either.
+	for (const command of [
+		"timeout 5 node scripts/release.mjs",
+		"timeout 5 git status",
+		"timeout 300 unknown-script --watch",
+		"timeout 5",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+		assert.equal(inferShellActivity(command), undefined, command);
+	}
+});
+
 test("waiting on or reading CI results infers checking", () => {
 	for (const command of [
 		"gh pr checks 1511",
@@ -98,6 +204,170 @@ test("read-only shell inspection infers exploring", () => {
 		"pwd",
 	]) {
 		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+});
+
+// Metadata probes answer "what is here?" without resolving, building or
+// mutating anything.
+test("read-only metadata probes infer exploring", () => {
+	for (const command of [
+		"locale",
+		"locale -a",
+		"locale | head -4",
+		"cargo tree",
+		"cargo tree -e normal --depth 1",
+		"go env",
+		"go env GOPATH",
+		"go version",
+		"gh auth status",
+		"gh search prs --repo owner/name login",
+		"gh label list",
+		"gh workflow list",
+		"gh workflow view ci.yml",
+		"gh api repos/owner/name/pulls",
+		"gh api --paginate repos/owner/name/commits",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+});
+
+// `go env` reads the Go configuration; `-w` and `-u` write it.
+test("go env writes never infer exploring", () => {
+	for (const command of [
+		"go env -w GOPATH=/tmp/go",
+		"go env -u GOPATH",
+		"go env -w GOFLAGS=-mod=mod GOPATH=/tmp/go",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// `gh api` writes whenever it is given a method or a field, so only the plain
+// GET form is a query.
+test("gh api calls that write never infer exploring", () => {
+	for (const command of [
+		"gh api repos/o/n -X POST",
+		"gh api repos/o/n --method POST",
+		"gh api repos/o/n/issues -f title=x",
+		"gh api repos/o/n/issues --raw-field title=x",
+		"gh api graphql -F query=@q.graphql",
+		"gh api repos/o/n/issues --input body.json",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// Reconstructed from one live session: reading a job log and the locale is
+// inspection, and the composition must not fall back to an unchanged label.
+test("a log-and-locale inspection composition infers exploring", () => {
+	const command = `rg -n 'i (tests|pass|fail|skipped)|\u2717 failing|\u2717 ' /tmp/pi/job-1.log | tail -20; git diff --stat; locale | head -4`;
+	assert.equal(inferOddPhase("bash", { command }), "exploring");
+});
+
+// The splitter follows `$(...)` but not backticks or `<(...)`, so their inner
+// commands are invisible; a segment carrying one is never read as inspection.
+test("hidden backtick and process substitutions never infer exploring", () => {
+	for (const command of [
+		"git log --oneline `git rev-parse HEAD`",
+		"rg foo `cat files.txt`",
+		"cat <(touch marker)",
+		"diff <(sort a) <(sort b)",
+		"ls <(rm -rf dist)",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// The read-only half of the same families verifies work and stays a check.
+test("read-only lint and --check runs still infer checking", () => {
+	for (const command of [
+		"prettier --check .",
+		"prettier -l src/app.ts",
+		"eslint .",
+		"eslint src/app.ts",
+		"eslint --fix-dry-run src/app.ts",
+		"cargo fmt --check",
+		"ruff format --check .",
+		"ruff check .",
+		"deno fmt --check",
+		"deno lint",
+		"black --check .",
+		"rustfmt --check src/main.rs",
+	]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// A formatter reports instead of rewriting only when it is told to, and the
+// report flag belongs to the tool that defines it: `-l` lists files for gofmt
+// and shfmt but is the line length for black, and a write flag next to a report
+// flag rewrites anyway, so `gofmt -l -w .` is a reformat rather than a check.
+test("formatter report modes infer checking while rewrites never do", () => {
+	for (const command of [
+		"gofmt -l .",
+		"gofmt -d cmd/app",
+		"gofumpt -l .",
+		"shfmt -l scripts",
+		"shfmt -d scripts/build.sh",
+		"black --check .",
+		"black --diff src/app.py",
+		"black --line-length=100 --check .",
+		"prettier --check .",
+		"prettier -l src/app.ts",
+		"clang-format --dry-run src/app.c",
+		"swiftformat --lint .",
+		"npx prettier -l src/app.ts",
+		"pnpm exec prettier --check .",
+		"timeout 60 gofmt -l .",
+	]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+	for (const command of [
+		"gofmt -l -w .",
+		"gofmt -w -l .",
+		"gofumpt -w -l .",
+		"shfmt -w -l scripts",
+		"gofmt -w .",
+		"black -l 100 .",
+		"black --line-length 100 src/app.py",
+		"prettier --write .",
+		"clang-format -i src/app.c",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// make reads its options before the recipe, so an option that never changes
+// which recipe runs must not hide the check. A recipe this classifier cannot
+// name still leaves the label alone, alone or beside a check.
+test("make options before the recipe keep a check while unknown recipes do not", () => {
+	for (const command of [
+		"make -B test",
+		"make -e -i -O test",
+		"make --no-print-directory check",
+		"make --always-make -j4 test",
+		"make -B -j 4 test",
+		"make -rR build",
+		"make -s -k check",
+		"make -C pkg -B test",
+		"make -f Makefile.ci --no-print-directory test",
+	]) {
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+		assert.equal(inferShellActivity(command), "checking", command);
+	}
+	for (const command of [
+		"make -B install",
+		"make --no-print-directory deploy",
+		"make -e test install",
+		"make -C pkg ci",
+		"make -f Makefile.ci clean",
+		"make -O install",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
 	}
 });
 

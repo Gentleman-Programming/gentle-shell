@@ -77,6 +77,23 @@ test("known shell inspections reuse phase inference without counting checks, wri
 	}
 });
 
+// A metadata probe the widened inspection families now name counts as a tracked
+// lookup like any read, while a bounded check stays excluded from the budget.
+test("newly classified metadata probes count while a bounded check never does", () => {
+	const budget = createExplorationBudget();
+	budget.start("s");
+	for (const check of ["timeout 30 make test", "make -B test", "gofmt -l .", "black -l 100 ."]) {
+		budget.call("s", check, "bash");
+		assert.equal(budget.result("s", event(check, "bash", "x".repeat(50000), false, { command: check })), undefined);
+	}
+	for (const [i, command] of ["gh auth status", "go version", "cargo tree", "locale"].entries()) {
+		budget.call("s", command, "bash");
+		const notice = budget.result("s", event(command, "bash", "x", false, { command }));
+		if (i < 3) assert.equal(notice, undefined);
+		else assert.match(notice ?? "", /Exploration budget:.*4 tracked lookups/);
+	}
+});
+
 test("read-only memory recall counts and memory mutation or diagnostics never count", () => {
 	const budget = createExplorationBudget();
 	budget.start("s");

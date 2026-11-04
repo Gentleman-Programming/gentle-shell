@@ -1919,6 +1919,13 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
+	// Replaced before persistence, so the footer, /gentle:stats and the session file
+	// all carry the API-equivalent cost of claude-bridge turns instead of $0. It runs
+	// in subagent children too: the parent sums their message_end cost over RPC.
+	pi.on("message_end", (event, ctx) => {
+		const priced = priceBridgeMessage(event.message, (provider, id) => ctx.modelRegistry.find(provider, id)?.cost);
+		return priced ? { message: priced } : undefined;
+	});
 	if (!shellEnabled(env)) return;
 	// Pi reads shortcuts once (startup and /reload), so the saved keymaps are read once too.
 	const keymaps = loadKeymaps(env);
@@ -2108,12 +2115,6 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// the session's own or a subagent route of the active profile — and then
 		// only that provider is forced, never the whole scope.
 		if (resolveUsageScope(currentContext).includes(source.provider)) void refreshUsage(currentContext, true, source.provider);
-	});
-	// Replaced before persistence, so the footer, /gentle:stats and the session file
-	// all carry the API-equivalent cost of claude-bridge turns instead of $0.
-	pi.on("message_end", (event, ctx) => {
-		const priced = priceBridgeMessage(event.message, (provider, id) => ctx.modelRegistry.find(provider, id)?.cost);
-		return priced ? { message: priced } : undefined;
 	});
 	pi.on("after_provider_response", (event, ctx) => {
 		const headerUsage = parseUsageHeaders(event.headers, deps.now());

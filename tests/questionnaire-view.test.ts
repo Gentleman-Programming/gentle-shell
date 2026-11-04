@@ -4,7 +4,10 @@ import {
 	CURSOR_MARKER,
 	KeybindingsManager,
 	TUI_KEYBINDINGS,
+	TuiAltScreen,
+	stripTerminalSequences,
 	visibleWidth,
+	type Terminal,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import {
@@ -580,6 +583,118 @@ test("the custom row is always appended after the authored options", () => {
 	const customRow = lines.findIndex((line) => line.includes(CUSTOM_ROW_LABEL));
 	assert.ok(betaRow >= 0 && customRow >= 0);
 	assert.ok(customRow > betaRow);
+});
+
+const hoverTheme: QuestionnaireTheme = {
+	fg: (role, text) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+	bold: (text) => text,
+};
+
+function move(lines: string[], x: number, y: number, width: number): TuiMouseEvent {
+	return { ...mouseEvent(lines, y, "move"), button: "none", x, screenX: x, width };
+}
+
+function textRow(lines: string[], text: string): number {
+	const row = lines.findIndex((line) => stripTerminalSequences(line).includes(text));
+	assert.ok(row >= 0, `missing ${text}`);
+	return row;
+}
+
+test("questionnaire hovers only selectable labels in the shared warning role, without changing answers", () => {
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({
+		questions: [question("Pick?", [option("Alpha", "First detail", "Preview body"), option("Beta", "Second detail")], { multiSelect: true })],
+		theme: hoverTheme,
+		onComplete: (result) => completed.push(result),
+	});
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+	assert.match(lines[textRow(lines, "Alpha")]!, /❯ \[ \] Alpha/);
+	assert.doesNotMatch(lines[textRow(lines, "Second detail")]!, /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, false, "repeated motion does not redraw");
+	assert.deepEqual(view.getResult(), { cancelled: false, answers: [] });
+	assert.deepEqual(completed, []);
+
+	const description = textRow(lines, "Second detail");
+	assert.equal(view.handleMouse(move(lines, 5, description, 100))?.render, true);
+	lines = view.render(100);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	const alpha = textRow(lines, "Alpha");
+	assert.equal(view.handleMouse(move(lines, 60, alpha, 100)), undefined, "preview cells are not label targets");
+	assert.equal(view.handleMouse(move(lines, 3, alpha, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[alpha]!, /\x1b\[33mAlpha\x1b\[39m/);
+	assert.doesNotMatch(lines[alpha]!, /\x1b\[33mPreview/);
+	assert.equal(view.handleMouse(move(lines, 2, 0, 100))?.render, true, "the tab heading is not a pointer-actionable target");
+	lines = view.render(100);
+	const custom = textRow(lines, CUSTOM_ROW_LABEL);
+	assert.equal(view.handleMouse(move(lines, 3, custom, 100))?.render, true);
+	assert.match(view.render(100)[custom]!, /\x1b\[33mType something\.\x1b\[39m/);
+	assert.deepEqual(completed, []);
+	view.handleInput(KEY.space);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["Alpha"] },
+	]);
+});
+
+test("questionnaire rejects stale, clipped and disposed hover geometry", () => {
+	let rows = 24;
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, rows: () => rows });
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	const old = move(lines, 3, beta, 100);
+	assert.equal(view.handleMouse(old)?.render, true);
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(old), undefined, "old width cannot target the new layout");
+	assert.equal(view.handleMouse({ ...move(lines, 3, textRow(lines, "Beta"), 80), height: 2 }), undefined, "clipped rows are not targets");
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	view.invalidate();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined, "invalidation rejects geometry until render");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	rows = 10;
+	assert.notEqual(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.handled, true, "height changes reject the old layout");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	view.dispose();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, []);
+});
+
+test("questionnaire receives SGR hover and click through a centered TuiAltScreen overlay", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+		setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, onComplete: (result) => completed.push(result) });
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(view, { anchor: "center", width: 80, maxHeight: 20 });
+	tui.start(); tui.renderNow(true);
+	try {
+		let lines = view.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const beta = textRow(lines, "Beta");
+		const x = bounds.col + 4, y = bounds.row + beta + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		lines = view.render(80);
+		assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+		assert.deepEqual(completed, []);
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.equal(completed[0]?.answers[0]?.answer, "Beta");
+	} finally { tui.stop(); }
 });
 
 test("every rendered line fits the width across 1-4 questions", () => {

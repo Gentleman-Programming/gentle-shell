@@ -1,5 +1,5 @@
 import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { sidebarState, type SidebarRail } from "./shell-sidebar.ts";
+import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, paintSurfaceRow, surfaceOpener, type CardStyle } from "./shell-card.ts";
 import { PANEL_SURFACE_ROLE } from "./shell-panel.ts";
@@ -174,14 +174,20 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const header: Component = {
 		render: () => headerLines,
 		invalidate() {},
-		handleMouse: (event) => state.parts.get("header")?.handleMouse?.(event),
+		handleMouse: (event) => {
+			if (event.type === "move" && event.button === "none") setSidebarHover(tui);
+			return state.parts.get("header")?.handleMouse?.(event);
+		},
 	};
 	// The status bar row: a leaf like the header, painted full-width below the
 	// hstack while the rail is shown, delegating its mouse to the registered part.
 	const statusBar: Component = {
 		render: () => statusLines,
 		invalidate() {},
-		handleMouse: (event) => state.parts.get("statusbar")?.handleMouse?.(event),
+		handleMouse: (event) => {
+			if (event.type === "move" && event.button === "none") setSidebarHover(tui);
+			return state.parts.get("statusbar")?.handleMouse?.(event);
+		},
 	};
 	const scroll = new ScrollView(rail, {
 		follow: "none",
@@ -227,7 +233,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				target: { component: scroll, originX: event.screenX - event.x, originY: event.screenY - event.y, width: event.width, height: event.height },
 			};
 		}
-		return dispatchPartMouse(event) ?? nativeMouse(event);
+		const result = dispatchPartMouse(event);
+		if (!result && event.type === "move" && event.button === "none") setSidebarHover(tui);
+		return result ?? nativeMouse(event);
 	};
 	const prepare = (width: number, root: LayoutRoot): boolean => {
 		state.active = false;
@@ -356,6 +364,12 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			if (roots.has(root)) return;
 			const original = root[NODE]!;
 			const descriptor = Object.getOwnPropertyDescriptor(root, NODE);
+			const mouseDescriptor = Object.getOwnPropertyDescriptor(root, "handleMouse");
+			const originalMouse = root.handleMouse;
+			const fallbackMouse: NonNullable<Component["handleMouse"]> = (event) => {
+				if (event.type === "move" && event.button === "none") setSidebarHover(tui);
+				return originalMouse?.call(root, event);
+			};
 			// Fullscreen gives this stretched stack an explicit viewport height.
 			// Its intrinsic-height probe is unused; real painting traverses NODE.
 			// Delegating that probe to root.render would render the transcript twice.
@@ -426,12 +440,18 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				return (current.presentation = { scrollTop: scroll.scrollTop, output }).output;
 			};
 			root[NODE] = replacement;
+			root.handleMouse = fallbackMouse;
 			roots.add(root);
 			tui.requestRender();
 			cleanups.push(() => {
-				if (root[NODE] !== replacement) return;
-				if (descriptor) Object.defineProperty(root, NODE, descriptor);
-				else Reflect.deleteProperty(root, NODE);
+				if (root[NODE] === replacement) {
+					if (descriptor) Object.defineProperty(root, NODE, descriptor);
+					else Reflect.deleteProperty(root, NODE);
+				}
+				if (root.handleMouse === fallbackMouse) {
+					if (mouseDescriptor) Object.defineProperty(root, "handleMouse", mouseDescriptor);
+					else Reflect.deleteProperty(root, "handleMouse");
+				}
 			});
 		} catch {
 			failed = true;
@@ -445,6 +465,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	timer.unref();
 	return () => {
 		stopped = true;
+		setSidebarHover(tui);
 		state.active = false;
 		clearInterval(timer);
 		scroll.setScrollbar("hidden");

@@ -29,7 +29,7 @@ import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
@@ -1924,12 +1924,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// on an agent row below it opens /gentle:agents.
 	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[]; open?(): void } => {
 		let hovered = false;
+		let hoveredRow: number | undefined;
 		let headerRow = 0;
+		const agentRows = new Set<number>();
 		// The rows the card drew last, so a click past them (the card's spacer) opens nothing.
 		let drawnRows = 0;
 		const card: Component = {
 			render(width: number) {
 				drawnRows = 0;
+				agentRows.clear();
 				if (!agentsVisible) return [];
 				const tasks = visibleTasks();
 				const now = deps.now();
@@ -1937,33 +1940,41 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// stays as one idle row without tasks; above the editor it is a card.
 				if (rail) {
 					headerRow = 0;
-					const rows = renderAgentsSection(tasks, theme, width, now, { collapsed, hovered });
+					const rows = renderAgentsSection(tasks, theme, width, now, { collapsed, hovered, hoveredRow, onAgentRow: (row) => agentRows.add(row) });
 					drawnRows = tasks.length === 0 ? 0 : rows.length;
 					return rows;
 				}
 				headerRow = panelHeaderRow(theme, width, agentsCardTone(tasks, now));
-				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered });
+				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered, hoveredRow, onAgentRow: (row) => agentRows.add(row) });
 				drawnRows = tasks.length === 0 ? 0 : lines.length;
 				return lines.length === 0 ? lines : [...lines, ""];
 			},
 			invalidate() {
 				hovered = false;
+				hoveredRow = undefined;
 			},
 		};
 		const region = new NativePointerRegion(card, {
 			onHover(event) {
 				const next = event.y === headerRow;
-				if (next === hovered) return { handled: true };
+				const nextRow = agentRows.has(event.y) ? event.y : undefined;
+				if (next || nextRow !== undefined) setSidebarHover(tui, region, () => region.clearHover());
+				else setSidebarHover(tui);
+				if (next === hovered && nextRow === hoveredRow) return { handled: true };
 				hovered = next;
+				hoveredRow = nextRow;
 				return { handled: true, render: true };
 			},
 			onLeave() {
-				if (!hovered) return;
+				releaseSidebarHover(tui, region);
+				if (!hovered && hoveredRow === undefined) return;
 				hovered = false;
+				hoveredRow = undefined;
 				host?.requestRender();
 			},
 			onClick(event) {
 				if (event.button !== "left") return undefined;
+				region.clearHover();
 				if (event.y === headerRow) {
 					toggleCollapsed();
 					return { handled: true, render: true };
@@ -1986,7 +1997,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			digest: () => {
 				const tasks = visibleTasks();
 				const clock = tasks.some((task) => !isFinished(task.status)) ? Math.floor(deps.now() / 1000) : 0;
-				return JSON.stringify([agentsVisible, collapsed, hovered, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
+				return JSON.stringify([agentsVisible, collapsed, hovered, hoveredRow, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
 			},
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),

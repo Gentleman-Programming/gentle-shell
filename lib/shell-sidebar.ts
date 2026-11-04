@@ -27,6 +27,8 @@ export interface SidebarState {
 	statusBarShowsMode?: () => boolean;
 	/** True while the fullscreen layout is installed on the host's root, so its title row and status bar can actually draw. */
 	layoutAttached?: () => boolean;
+	/** Current shell-owned pointer hover; shared across separately loaded extensions. */
+	hover?: { owner: object; clear: () => void };
 	parts: Map<string, SidebarRail>;
 }
 
@@ -57,6 +59,21 @@ export interface SidebarRail extends Component {
 export function sidebarState(tui: TUI): SidebarState {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarState>;
 	return terminal[STATE] ??= { active: false, parts: new Map() };
+}
+
+/** Transfer shell hover ownership without clearing an unchanged owner. */
+export function setSidebarHover(tui: TUI, owner?: object, clear?: () => void): void {
+	if (!tui.terminal) return;
+	const state = sidebarState(tui);
+	if (state.hover?.owner === owner) return;
+	const previous = state.hover;
+	state.hover = owner && clear ? { owner, clear } : undefined;
+	previous?.clear();
+}
+
+/** Forget a disposed or invalidated owner without disturbing another surface. */
+export function releaseSidebarHover(tui: TUI, owner: object): void {
+	if (tui.terminal && sidebarState(tui).hover?.owner === owner) sidebarState(tui).hover = undefined;
 }
 
 /** Keep the original bottom component mounted, suppressing only its paint. */

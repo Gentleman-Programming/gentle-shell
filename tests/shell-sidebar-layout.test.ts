@@ -3,7 +3,7 @@ import test from "node:test";
 import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
-import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
+import { setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
 import { renderShellSidebarBar } from "../lib/shell-bar.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
@@ -69,6 +69,28 @@ test("scrollable TODO keeps every task while bottom and collapsed cards stay bou
 test("installation on a missing-terminal host is a harmless no-op", () => {
 	const dispose = installSidebar({} as TUI, theme);
 	assert.doesNotThrow(dispose);
+});
+
+test("root hover fallback preserves the original mouse result and restores ownership", () => {
+	const f = fixture("fullscreen", 80);
+	const root = f.root as typeof f.root & { handleMouse?: (event: TuiMouseEvent) => { handled: boolean } | undefined };
+	let calls = 0;
+	const result = { handled: true };
+	const original = (event: TuiMouseEvent) => { calls++; return event.type === "click" ? result : undefined; };
+	root.handleMouse = original;
+	const dispose = installSidebar(f.tui, theme);
+	const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 80, height: 24, shift: false, alt: false, ctrl: false };
+	let clears = 0;
+	setSidebarHover(f.tui, {}, () => { clears++; });
+	assert.equal(root.handleMouse!(event), undefined);
+	assert.equal(clears, 1);
+	setSidebarHover(f.tui, {}, () => { clears++; });
+	assert.equal(root.handleMouse!({ ...event, type: "click", button: "left" }), result);
+	assert.equal(clears, 1, "non-move events retain ownership");
+	assert.equal(calls, 2);
+	dispose();
+	assert.equal(root.handleMouse, original);
+	assert.equal(clears, 2, "dispose clears remaining shell hover");
 });
 
 test("only fullscreen at 140 columns activates; shrinking restores bottom paint", (t) => {

@@ -35,7 +35,8 @@ import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, 
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -125,7 +126,7 @@ import {
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
 import { panelSheetBackHit, renderPanelSheet, renderWorkRow, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
@@ -516,10 +517,14 @@ interface PromptEditorDeps {
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
+	/** The Panel action is available only in the shell's narrow chrome. */
+	panelButton?: () => boolean;
 	/** Rows the editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input; `hovered` is the top row under the pointer. */
 	topRows?: (width: number, hovered?: number) => string[];
 	/** A left click on one of the top rows (index into topRows). */
 	onTopRowClick?: (index: number) => void;
+	/** Open the same sheet as /gentle:panel. */
+	onPanelClick?: () => void;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -579,9 +584,12 @@ export class GentlePromptEditor extends CustomEditor {
 	// quality watchdog repaints only when now() drifts past its window.
 	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
+	private readonly pointerTui: TUI;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
 	private topRowCount = 0;
 	private hoveredTopRow: number | undefined;
+	private hoveredPanel = false;
+	private panelStart: number | undefined;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
 	// from pi-select-del so the petal prompt owns the feature without factory
 	// composition. Constructed with `this`; the internals probe degrades to
@@ -611,6 +619,7 @@ export class GentlePromptEditor extends CustomEditor {
 		super(tui, theme, keybindings);
 		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
+		this.pointerTui = tui;
 		this.keybindingsManager = keybindings;
 		const attachments = deps.attachments;
 		if (!attachments || !deps.readClipboardImage) return;
@@ -1303,15 +1312,53 @@ export class GentlePromptEditor extends CustomEditor {
 		this.deps.dispatchQueuedText(queued);
 	}
 
+	private clearPanelHover(): void {
+		if (!this.hoveredPanel) return;
+		this.hoveredPanel = false;
+		this.deps.requestRender();
+	}
+
+	private clearEditorHover(): void {
+		this.clearPanelHover();
+		if (this.hoveredTopRow !== undefined) {
+			this.hoveredTopRow = undefined;
+			this.deps.requestRender();
+		}
+		releaseSidebarHover(this.pointerTui, this);
+	}
+
 	handleMouse(event: Parameters<CustomEditor["handleMouse"]>[0]): ReturnType<CustomEditor["handleMouse"]> {
+		const onPanel = (this.deps.panelButton?.() ?? true) && this.panelStart !== undefined && this.floatMouseLayout?.panel && event.width === this.floatMouseLayout.width && event.y === this.topRowCount &&
+			event.x >= this.panelStart && event.x < this.panelStart + visibleWidth(PANEL_BUTTON);
+		if (event.type === "move" && event.button === "none") {
+			if (onPanel || (event.y >= 0 && event.y < this.topRowCount)) setSidebarHover(this.pointerTui, this, () => this.clearEditorHover());
+			else setSidebarHover(this.pointerTui);
+			if (onPanel) {
+				const changed = this.hoveredTopRow !== undefined || !this.hoveredPanel;
+				if (this.hoveredTopRow !== undefined) { this.hoveredTopRow = undefined; this.deps.requestRender(); }
+				if (!this.hoveredPanel) { this.hoveredPanel = true; this.deps.requestRender(); }
+				return changed ? { handled: true, render: true } : { handled: true };
+			}
+			this.clearPanelHover();
+		}
+		if (onPanel && (event.type === "press" || event.type === "click")) {
+			if (event.type === "click" && event.button === "left") {
+				this.clearEditorHover();
+				this.deps.onPanelClick?.();
+			}
+			return { handled: true, render: event.type === "click" };
+		}
 		// Rows drawn above the panel rule belong to the shell, not to Pi's editor.
 		if (this.topRowCount > 0) {
 			if (event.y < this.topRowCount) {
 				// Hovering a top row paints it as clickable, like every other control.
-				if (event.type === "move" && this.hoveredTopRow !== event.y) {
-					this.hoveredTopRow = event.y;
-					this.deps.requestRender();
-					return { handled: true, render: true };
+				if (event.type === "move" && event.button === "none") {
+					if (this.hoveredTopRow !== event.y) {
+						this.hoveredTopRow = event.y;
+						this.deps.requestRender();
+						return { handled: true, render: true };
+					}
+					return { handled: true };
 				}
 				if (event.type !== "click" || event.button !== "left") return undefined;
 				this.deps.onTopRowClick?.(event.y);
@@ -1370,6 +1417,8 @@ export class GentlePromptEditor extends CustomEditor {
 			fg: this.deps.fg,
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
+			panelButton: Boolean(layout.panel && this.deps.onPanelClick && (this.deps.panelButton?.() ?? true)),
+			panelHovered: this.hoveredPanel,
 			escHint: [
 				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
@@ -1390,6 +1439,10 @@ export class GentlePromptEditor extends CustomEditor {
 		const topRows = this.deps.topRows?.(width, this.hoveredTopRow) ?? [];
 		if (this.hoveredTopRow !== undefined && this.hoveredTopRow >= topRows.length) this.hoveredTopRow = undefined;
 		this.topRowCount = topRows.length;
+		const plainRule = stripAnsi(framed[0] ?? "");
+		const panelAt = layout.panel && this.deps.onPanelClick && (this.deps.panelButton?.() ?? true) ? plainRule.lastIndexOf(PANEL_BUTTON) : -1;
+		this.panelStart = panelAt < 0 ? undefined : visibleWidth(plainRule.slice(0, panelAt));
+		if (this.panelStart === undefined && this.hoveredPanel) this.clearEditorHover();
 		framed.unshift(...topRows);
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
@@ -1412,8 +1465,15 @@ export class GentlePromptEditor extends CustomEditor {
 		return framed;
 	}
 
+	invalidate(): void {
+		super.invalidate();
+		this.panelStart = undefined;
+		this.clearEditorHover();
+	}
+
 	dispose(): void {
 		this.disposed = true;
+		this.clearEditorHover();
 		this.stopWatchdog();
 	}
 
@@ -1492,7 +1552,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; panelButton?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void; onPanelClick?: () => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1512,8 +1572,10 @@ function installPrompt(
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
+			panelButton: promptDeps.panelButton ? () => promptDeps.panelButton!(tui) : undefined,
 			topRows: promptDeps.topRows ? (width, hovered) => promptDeps.topRows!(tui, width, hovered) : undefined,
 			onTopRowClick: promptDeps.onTopRowClick ? (index) => promptDeps.onTopRowClick!(tui, index) : undefined,
+			onPanelClick: promptDeps.onPanelClick,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
@@ -2513,11 +2575,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				onHover(event) {
 					const target = targetAt(event.y, event.width);
 					const next = !target ? undefined : target.kind === "toggle" ? target.section : "open-changes";
+					if (next) setSidebarHover(tui, statusRegion, () => statusRegion.clearHover());
+					else setSidebarHover(tui);
 					if (next === statusHover) return { handled: true };
 					statusHover = next;
 					return { handled: true, render: true };
 				},
 				onLeave() {
+					releaseSidebarHover(tui, statusRegion);
 					if (!statusHover) return;
 					statusHover = undefined;
 					tui.requestRender();
@@ -2567,11 +2632,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const jobsRegion = new NativePointerRegion(jobsRailCard, {
 				onHover(event) {
 					const next = event.y === jobsHeaderRow;
+					if (next) setSidebarHover(tui, jobsRegion, () => jobsRegion.clearHover());
+					else setSidebarHover(tui);
 					if (next === jobsHovered) return { handled: true };
 					jobsHovered = next;
 					return { handled: true, render: true };
 				},
 				onLeave() {
+					releaseSidebarHover(tui, jobsRegion);
 					if (!jobsHovered) return;
 					jobsHovered = false;
 					tui.requestRender();
@@ -2721,9 +2789,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
 				panelChrome: (tui) => chromeMode(tui) !== undefined,
+				panelButton: (tui) => chromeMode(tui) === "narrow",
 				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
 				// The mobile work row is the first top row; a tap on it opens the leading section's view.
-				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0) openWorkRow(tui, ctx); } },
+				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0) openWorkRow(tui, ctx); },
+				onPanelClick: () => { void openPanelSheet(ctx); } },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt

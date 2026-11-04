@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
+import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import installGentleAgents from "../extensions/gentle-agents.ts";
+import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
+import { installSidebar } from "../lib/shell-sidebar-layout.ts";
+import { TuiAltScreen, VStack, type Component, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { agentsSpend, agentsSummary, formatElapsed, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
 import { formatTokens } from "../lib/shell-bar.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
@@ -443,6 +448,126 @@ test("the Agents section orders rows by what needs you and aligns kind and time 
 	]);
 	const kindColumn = rows.slice(1, 6).map((row) => [...row.matchAll(/(explore|worker|verify)(?= )/g)].at(-1)!.index);
 	assert.equal(new Set(kindColumn).size, 1, `agent kinds line up in one column: ${kindColumn}`);
+});
+
+test("agent row hover paints only the pointed task text in the shared warning role", () => {
+	const roles: Record<string, number> = { warning: 208, accent: 30, text: 250, muted: 245, dim: 240, error: 160, border: 238 };
+	const theme = { fg: (role: string, text: string) => `\x1b[38;5;${roles[role] ?? 255}m${text}\x1b[39m` };
+	const tasks = [task({ id: "a", agent: "scout", label: "map files" }), task({ id: "b", agent: "writer", label: "write tests", status: TASK_STATUS.FAILED, endedAt: 4_000 })];
+	const warning = "\x1b[38;5;208m";
+	const error = "\x1b[38;5;160m✗";
+	for (const render of [
+		(hoveredRow?: number) => renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, hoveredRow }),
+		(hoveredRow?: number) => renderAgentsSection(tasks, theme, 80, 5_000, { collapsed: false, hoveredRow }),
+	]) {
+		const idle = render();
+		const hovered = render(2);
+		assert.equal(hovered[1], idle[1], "the neighboring task is not highlighted");
+		assert.match(hovered[2]!, new RegExp(`${warning.replaceAll("[", "\\[")}[^\\x1b]*write tests`));
+		assert.ok(hovered[2]!.includes(error), "the failed status glyph keeps its error role");
+		assert.deepEqual(render(), idle, "leaving restores every original role");
+	}
+});
+
+test("agent hover geometry excludes float padding, overflow and idle rows", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground({ fg: (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : 250}m${text}\x1b[39m` });
+	const tasks = Array.from({ length: 4 }, (_, index) => task({ id: String(index), agent: `worker-${index}`, label: `task-${index}` }));
+	const agentRows: number[] = [];
+	const idle = renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, maxRows: 4, onAgentRow: (row) => agentRows.push(row) });
+	assert.deepEqual(agentRows, [3]);
+	assert.match(stripAnsi(idle[4]!), /… 3 more/);
+	const hovered = renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, maxRows: 4, hoveredRow: 3 });
+	assert.ok(hovered[3]!.includes("\x1b[38;5;208m"));
+	assert.equal(hovered[2], idle[2], "float separator stays unpainted");
+	assert.equal(hovered[4], idle[4], "overflow stays unpainted");
+	const idleRows: number[] = [];
+	renderAgentsSection([], theme, 50, 5_000, { collapsed: false, onAgentRow: (row) => idleRows.push(row) });
+	assert.deepEqual(idleRows, []);
+});
+
+test("agent widget routes row hover, reset, collapse and clicks through its public component", async (t) => {
+	const tasks = [task({ id: "a", agent: "scout", label: "map files" }), task({ id: "b", agent: "writer", label: "write tests" })];
+	t.mock.method(TaskStore.prototype, "list", () => tasks);
+	t.mock.method(PresencePublisher, "start", () => { throw new Error("presence disabled in this test"); });
+	const handlers = new Map<string, Array<(event: { reason: string }, ctx: unknown) => unknown>>();
+	const pi = {
+		on(name: string, handler: (event: { reason: string }, ctx: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		events: { on: () => () => {}, emit() {} },
+		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMarkdownTransformer() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+	};
+	installGentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: "/dev/null" }, {
+		home: "/dev/null", agentHome: "/dev/null", env: { GENTLE_PI_CONFIG_HOME: "/dev/null" },
+		now: () => 5_000, schedule: () => () => {}, resolveWorktree: () => undefined,
+	});
+	let factory: ((tui: unknown, theme: unknown) => Component) | undefined;
+	let opens = 0;
+	const ctx = {
+		hasUI: true, mode: "tui", cwd: "/repo", modelRegistry: {},
+		sessionManager: { getSessionId: () => "bad id", getCwd: () => "/repo", getEntries: () => [], getBranch: () => [] },
+		ui: { setWidget: (_key: string, value: typeof factory) => { factory = value; }, custom: async () => { opens++; return null; }, notify() {} },
+	};
+	await handlers.get("session_start")!.at(-1)!({ reason: "new" }, ctx);
+	const tui = { terminal: { columns: 160, rows: 40 }, requestRender() {} };
+	const theme = { fg: (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : 250}m${text}\x1b[39m` };
+	const component = factory!(tui, theme);
+	const rows = component.render(80);
+	const event = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], y: number): TuiMouseEvent => ({ type, button, x: 5, y, screenX: 15, screenY: 20 + y, width: 80, height: rows.length, shift: false, alt: false, ctrl: false });
+	const rail = sidebarState(tui as unknown as TUI).parts.get("agents")!;
+	const before = rail.digest!();
+	component.handleMouse?.(event("move", "none", 1));
+	assert.ok(component.render(80)[1]!.includes("\x1b[38;5;208m"), "the pointed agent row uses the hover role");
+	component.handleMouse?.(event("move", "none", 2));
+	assert.ok(component.render(80)[2]!.includes("\x1b[38;5;208m"), "moving selects the other row");
+	component.handleMouse?.(event("move", "none", rows.length - 1));
+	assert.ok(!component.render(80)[2]!.includes("\x1b[38;5;208m"), "moving to the spacer clears row hover");
+	assert.equal(rail.digest!(), before, "hover is cleared from the cache digest");
+	const railRows = rail.render(46);
+	const railEvent = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], y: number): TuiMouseEvent => ({ type, button, x: 5, y, screenX: 105, screenY: 5 + y, width: 46, height: railRows.length, shift: false, alt: false, ctrl: false });
+	rail.handleMouse?.(railEvent("move", "none", 1));
+	assert.notEqual(rail.digest!(), before, "rail hover invalidates the section digest");
+	assert.ok(rail.render(46)[1]!.includes("\x1b[38;5;208m"));
+	rail.invalidate();
+	assert.equal(rail.digest!(), before);
+	component.handleMouse?.(event("move", "none", rows.length - 1));
+	assert.ok(!component.render(80).at(-1)!.includes("\x1b[38;5;208m"), "spacer and border never light up");
+	component.handleMouse?.(event("click", "right", 1));
+	assert.equal(opens, 0);
+	component.handleMouse?.(event("click", "left", 1));
+	assert.equal(opens, 1, "an agent row still opens the agents view");
+	component.handleMouse?.(event("click", "left", 0));
+	assert.match(stripAnsi(component.render(80)[0]!), /Expand/, "the header still collapses");
+	assert.equal(opens, 1);
+	await t.test("native fullscreen motion into a sibling clears agent hover", () => {
+		let input: ((data: string) => void) | undefined;
+		const terminal: Terminal = {
+			start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, columns: 80, rows: 24, kittyProtocolActive: false,
+			moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+		};
+		const nativeTui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+		const nativeCard = factory!(nativeTui, theme);
+		const outside = { render: () => ["outside"], invalidate() {} };
+		nativeTui.setLayoutRoot(new VStack([nativeCard, outside]));
+		const uninstall = installSidebar(nativeTui, { fg: theme.fg, bold: (text) => text });
+		nativeTui.start();
+		try {
+			nativeTui.renderNow(true);
+			const rendered = nativeCard.render(80);
+			input?.("\x1b[<35;6;2M");
+			assert.ok(nativeCard.render(80)[1]!.includes("\x1b[38;5;208m"), "native motion enters an agent row");
+			input?.(`\x1b[<35;1;${rendered.length + 1}M`);
+			assert.ok(!nativeCard.render(80)[1]!.includes("\x1b[38;5;208m"), "native motion into a sibling clears hover");
+		} finally {
+			uninstall();
+			(nativeCard as Component & { dispose?(): void }).dispose?.();
+			nativeTui.stop();
+		}
+	});
+	tasks.length = 0;
+	const idle = rail.render(46);
+	rail.handleMouse?.(railEvent("move", "none", 1));
+	assert.equal(rail.render(46)[1], idle[1], "the idle row is not an agent hover target");
+	(component as Component & { dispose?(): void }).dispose?.();
 });
 
 test("an idle Agents section keeps one muted row pointing at /gentle:agents", () => {

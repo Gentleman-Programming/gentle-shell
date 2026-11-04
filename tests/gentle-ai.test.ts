@@ -4953,6 +4953,43 @@ for (const reason of ["startup", "new"] as const) {
 	});
 }
 
+// gentle-shell#2742, section 3: a session still on the startup state its own
+// start froze is already where a clear would go, even with no profile record.
+for (const [subject, active, notice] of [
+	["a startup profile", "team", 'el Gentleman: this session is already on the profile it started with, "team"; nothing to clear.'],
+	["no startup profile", undefined, "el Gentleman: this session is already on no profile, as it started; nothing to clear."],
+] as const) {
+	test(`clear right after a session's own start with ${subject} says it is already there and writes nothing`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, ...(active ? { active } : {}) }, null, 2)}\n`);
+		const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "own-start-noop-sessions"));
+		const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+		await h.start({ type: "session_start", reason: "startup" }, ctx);
+		const entries = manager.getEntries().length;
+		await h.run("clear", ctx);
+		assert.equal(manager.getEntries().length, entries, "the transcript gains no entry");
+		assert.equal(h.last().severity, "info");
+		assert.equal(h.last().message, notice);
+	});
+}
+
+test("clear on a never-bound session whose startup state is unknown keeps the never-selected notice", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "resumed-noop-sessions"));
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	const entries = manager.getEntries().length;
+	await h.run("clear", ctx);
+	assert.equal(manager.getEntries().length, entries, "the transcript gains no entry");
+	assert.equal(h.last().severity, "info");
+	assert.equal(h.last().message, "el Gentleman: no session profile was ever selected in this session; nothing to clear.");
+});
+
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);
 	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };

@@ -9,6 +9,7 @@ import {
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { NativePointerScope } from "./native-pointer-region.ts";
+import { paintHoverable } from "./shell-hover.ts";
 
 export interface NativeChoiceItem {
 	id: string;
@@ -20,6 +21,8 @@ export interface NativeChoiceListTheme {
 	selectedPrefix(text: string): string;
 	selectedText(text: string): string;
 	description(text: string): string;
+	/** Semantic foreground from the host theme; older callers may still supply a background. */
+	fg?(role: string, text: string): string;
 	hoverBackground(text: string): string;
 }
 
@@ -64,6 +67,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 
 	/** Refresh rendered rows after callers update the existing item records. */
 	refreshItems(): void {
+		this.invalidate();
 		this.refreshRows();
 	}
 
@@ -85,6 +89,9 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent) {
+		if (this.disabled || this.renderedWidth !== event.width ||
+			!Number.isFinite(event.x) || !Number.isFinite(event.y) ||
+			event.x < 0 || event.x >= event.width || event.y < 0 || event.y >= event.height) return undefined;
 		const result = super.handleMouse(event);
 		if (result || this.disabled || event.type !== "wheel" || !event.wheelDelta) return result;
 		const before = this.selected;
@@ -114,6 +121,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 	}
 
 	override render(width: number): string[] {
+		if (!Number.isFinite(width)) return [];
 		if (this.renderedWidth !== width) {
 			this.renderedWidth = width;
 			this.pointerScope.invalidate();
@@ -127,9 +135,17 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 		super.invalidate();
 	}
 
+	dispose(): void {
+		this.setDisabled(true);
+		this.pointerScope.dispose();
+		this.invalidate();
+	}
+
 	private addRow(item: T): void {
 		const text = new Text("", 1, 0);
-		const box = new Box(0, 0, (value) => this.hovered === item.id ? this.theme.hoverBackground(value) : value);
+		const box = new Box(0, 0, (value) =>
+			!this.theme.fg && this.hovered === item.id ? this.theme.hoverBackground(value) : value,
+		);
 		box.addChild(text);
 		this.rows.push({ item, text, box });
 		this.addChild(this.pointerScope.wrap(box, {
@@ -188,7 +204,9 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 	private refreshRows(): void {
 		for (const [index, row] of this.rows.entries()) {
 			const prefix = index === this.selected ? this.theme.selectedPrefix("→ ") : "  ";
-			const label = index === this.selected ? this.theme.selectedText(row.item.label) : row.item.label;
+			const label = this.theme.fg && this.hovered === row.item.id
+				? paintHoverable({ fg: this.theme.fg }, row.item.label, true)
+				: index === this.selected ? this.theme.selectedText(row.item.label) : row.item.label;
 			const text = row.item.description
 				? `${prefix}${label}\n   ${this.theme.description(row.item.description)}`
 				: `${prefix}${label}`;

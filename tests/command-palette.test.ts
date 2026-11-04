@@ -188,6 +188,20 @@ test("ctrl+j and ctrl+k also move the selection", () => {
 	assert.deepEqual(results, [{ type: "run", name: "gentle:models" }]);
 });
 
+test("tab captures the next key for the highlighted command, and esc cancels the capture", () => {
+	const results: CommandPaletteResult[] = [];
+	const palette = new CommandPalette([{ title: "Session", items: [{ command: "gentle:design", label: "Design" }, { command: "gentle:voice", label: "Voice" }] }], (result) => results.push(result));
+	palette.handleInput("\x1b[B");
+	palette.handleInput("\t");
+	assert.match(palette.render(80).join("\n"), /Press the new key for Voice · esc cancel/);
+	palette.handleInput("\x1b");
+	assert.deepEqual(results, [], "esc only cancels the capture");
+	assert.match(palette.render(80).join("\n"), /tab set key/);
+	palette.handleInput("\t");
+	palette.handleInput("\x1bv");
+	assert.deepEqual(results, [{ type: "bind", name: "gentle:voice", data: "\x1bv" }]);
+});
+
 test("enter runs the highlighted item and is a no-op with no match", () => {
 	const { palette, results } = createPalette(GROUPS);
 	type(palette, "nothing-like-this");
@@ -296,7 +310,7 @@ test("render escapes control characters in labels and shortcuts", () => {
 
 test("render footer lists the key bindings", () => {
 	const lines = render(GROUPS, "").join("\n");
-	assert.match(lines, /type to search • ↑\/↓ move • enter run • esc close/);
+	assert.match(lines, /↑\/↓ move • enter run • tab set key • esc close/);
 });
 
 test("render keeps the right border aligned when a label has wide characters", () => {
@@ -373,7 +387,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:telemetry",
 		"gentle:dev-binary",
 	]);
-	assert.deepEqual(byTitle("Session"), ["gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission", "gentle:voice", "gentle:design"]);
+	assert.deepEqual(byTitle("Session"), ["gentle:guide", "gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission", "gentle:voice", "gentle:design"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);

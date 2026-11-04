@@ -310,16 +310,16 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const hits: RailHit[] = [];
 			railLines = [];
 			fillRow = "";
+			const surface = surfaceOpener(theme, PANEL_SURFACE_ROLE);
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive && density() === "comfortable" && style === CARD_STYLE.NEON) {
-				// Preserve neon's header gap. Float's painted top padding starts
-				// on the same body row as the transcript, without an external gap.
-				railLines.push("");
+			} else if (sections.length && headerActive && (headerPlacement() === "top" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
+				// Pad the first section beneath the header without breaking its surface.
+				// Keep neon's existing comfortable gap for below-input headers too.
+				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
 			}
 			// Panel sections share one tinted surface: their rows, padding
 			// included, and the gap between two of them are painted alike.
-			const surface = surfaceOpener(theme, PANEL_SURFACE_ROLE);
 			let previousPanel = false;
 			for (const section of sections) {
 				const panel = (section.component as SidebarRail).surface === "panel";

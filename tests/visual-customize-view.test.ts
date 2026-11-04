@@ -573,6 +573,33 @@ test("inline wrapping keeps wide graphemes intact and single-line submission unc
 	}
 });
 
+test("inline key capture returns the next raw key, and Esc cancels it without closing the card", async () => {
+	const seen: (string | undefined)[] = [];
+	let closed = false;
+	const view = inlineView(async inline => { seen.push(await inline.capture("Press the new key for Command palette")); }, { onClose: () => { closed = true; } });
+	view.render(76);
+	view.handleInput("\r");
+	await tick();
+	assert.match(view.render(76).join("\n"), /Press the new key for Command palette · Esc cancel/);
+	view.handleInput("\x1bj");
+	await tick();
+	assert.deepEqual(seen, ["\x1bj"]);
+	view.handleInput("\r");
+	await tick();
+	view.handleInput("\x1b");
+	await tick();
+	assert.deepEqual(seen, ["\x1bj", undefined]);
+	assert.equal(closed, false, "Esc only cancels the capture");
+	view.handleInput("\x1b");
+	assert.equal(closed, true, "a second Esc closes the card as usual");
+});
+
+test("a Keymaps row shows its own footer hint", () => {
+	const view = new VisualCustomizeView({ rows: [{ category: "Keymaps", label: "Command palette: alt+k", keyhint: "Enter assign · ⌫ disable · r default · Esc close", action: () => {} }], theme, rowsAvailable: () => 14, requestRender: () => {}, onClose: () => {} });
+	view.handleInput("\r");
+	assert.match(view.render(90).join("\n"), /Enter assign · ⌫ disable · r default · Esc close/);
+});
+
 test("inline confirmation accepts only a fully visible yes and resolves false otherwise", async () => {
 	let height = 12;
 	const seen: boolean[] = [];
@@ -876,4 +903,39 @@ test("arrows never apply a setting while the card is too small to show its contr
 	view.handleInput("\t");
 	assert.match(view.render(90).join("\n"), /↑\/↓ categories|→ open|Tab panes/, "the categories pane does not advertise setting keys");
 	assert.doesNotMatch(view.render(90).join("\n"), /←\/→ change/);
+});
+
+
+test("deferred choices share Layout's line without applying permissions on arrows", async () => {
+ const writes: string[] = [];
+ let current = "normal";
+ const rows: CustomizeRow[] = ["normal", "auto", "yolo", "super-yolo"].map(value => ({
+  category: "Editor", label: `Session permissions: ${value}`,
+  choice: { setting: "Session permissions", value, current: () => current === value, applyOnMove: false },
+  preview: () => ({ title: value, sample: value === "auto" ? "extra inference cost; hard safety and consent remain" : "session only" }),
+  action: () => { current = value; writes.push(value); },
+ }));
+ const view = new VisualCustomizeView({ rows, theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+ view.render(140); view.handleInput("\x1b[C"); view.handleInput("\x1b[C");
+ await settle();
+ assert.equal(current, "normal"); assert.deepEqual(writes, [], "navigation writes nothing");
+ const lines = view.render(140);
+ assert.equal(lines.filter(line => line.includes("Session permissions") && /[●○›]/.test(line)).length, 1);
+ assert.match(lines.join("\n"), /● normal.*› auto/);
+ assert.match(lines.join("\n"), /extra inference cost; hard safety and consent remain/);
+ assert.match(lines.join("\n"), /Enter apply/);
+ view.handleInput("\r"); await settle();
+ assert.equal(current, "auto"); assert.deepEqual(writes, ["auto"]);
+ view.handleInput("\x1b[C"); view.handleInput("\x1b"); await settle();
+ assert.deepEqual(writes, ["auto"], "canceling a different preview grants nothing");
+});
+
+test("inline notification choices retain their sound keys instead of advertising profiles", () => {
+ const view = new VisualCustomizeView({ rows: [{ category: "Notifications", label: "Success",
+  choice: { setting: "Success", value: "silence", current: () => true, applyOnMove: false },
+  keyhint: "←/→ choose · Enter apply · f sound · p test · Esc close", action() {},
+ }], theme, requestRender() {}, rowsAvailable: () => 24, onClose() {} });
+ view.render(120); view.handleInput("\x1b[C");
+ const rendered = view.render(120).join("\n");
+ assert.match(rendered, /f sound · p test/); assert.doesNotMatch(rendered, /p profiles/);
 });

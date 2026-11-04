@@ -144,20 +144,27 @@ export function replay(version: Version, transcript: Transcript): ReplayObservat
 /**
  * The routing snapshot a reviewer reads after resuming `transcript` in the
  * session's own repository: v1 is the selection before A1 (#2720). Both read
- * the replay's config home and worktree through the process-wide defaults.
+ * the replay's config home, worktree and environment through the process-wide
+ * defaults, so the environment the tests run in never leaks into the replay.
  */
 export function replayReviewerRouting(version: Version, transcript: Transcript): AgentModelConfig {
 	return resume(version, transcript, ({ options }) => {
-		const previous = process.env.GENTLE_PI_CONFIG_HOME;
-		process.env.GENTLE_PI_CONFIG_HOME = options.configHome;
+		const replayed: NodeJS.ProcessEnv = { GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_PROFILE_FOLLOW: undefined, ...options.env, GENTLE_PI_CONFIG_HOME: options.configHome };
+		const previous = Object.fromEntries(Object.keys(replayed).map((key) => [key, process.env[key]]));
+		const assign = (values: NodeJS.ProcessEnv) => {
+			for (const [key, value] of Object.entries(values)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		};
+		assign(replayed);
 		setProfilePinWorktreeResolverForTesting(options.resolveWorktree);
 		try {
 			const read = version === "v1" ? v1Reviewer.readReviewerModelConfig : __testing.readReviewerModelConfig;
 			return JSON.parse(JSON.stringify(read(options.cwd, options.sessionId)));
 		} finally {
 			setProfilePinWorktreeResolverForTesting();
-			if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-			else process.env.GENTLE_PI_CONFIG_HOME = previous;
+			assign(previous);
 		}
 	});
 }

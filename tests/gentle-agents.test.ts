@@ -3952,7 +3952,7 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	// (a host with no .terminal is already a passthrough); this is the host
 	// shape the fullscreen layout actually uses.
 	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
-	const { ctx, widgetComponent } = fakeContext(terminalTui);
+	const { ctx, widgetComponent, overlays } = fakeContext(terminalTui);
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
 	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Map tests/", label: "map test suites", mode: "background" }, undefined, undefined, ctx);
@@ -3984,7 +3984,10 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 		type, button, x: 1, y, screenX: 1, screenY: y, width: 72, height: bottom.length, shift: false, alt: false, ctrl: false,
 	});
 	assert.equal(component.handleMouse?.(event("click", "right")), undefined);
-	assert.equal(component.handleMouse?.(event("click", "left", 1)), undefined);
+	assert.equal(component.handleMouse?.(event("click", "right", 1)), undefined, "a right click on an agent row does nothing");
+	assert.equal(component.handleMouse?.(event("click", "left", 1))?.handled, true, "a left click on an agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 1, "a left click on an agent row opens /gentle:agents");
 	assert.match(stripAnsi(component.render(72)[0]!), /Agents ▾ Collapse/, "only a left click on the header toggles");
 	assert.equal(component.handleMouse?.(event("click", "left"))?.handled, true);
 	const collapsed = component.render(72).map(stripAnsi);
@@ -3995,6 +3998,11 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	const railClick = { type: "click" as const, button: "left" as const, x: 1, y: 0, screenX: 1, screenY: 0, width: 46, height: 2, shift: false, alt: false, ctrl: false };
 	assert.equal(rail.handleMouse?.(railClick)?.handled, true, "the rail header row 0 is the collapse control");
 	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/);
+	assert.equal(rail.handleMouse?.({ ...railClick, y: 1, screenY: 1 })?.handled, true, "a left click on a rail agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 2, "a left click on a rail agent row opens /gentle:agents, never the panel");
+	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/, "an agent row click never toggles the section");
+	assert.equal(typeof (rail as { open?: unknown }).open, "function", "the rail part exposes the agents view for the mobile work row");
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {

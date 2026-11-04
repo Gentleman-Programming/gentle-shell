@@ -127,7 +127,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { panelSheetBackHit, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { panelSheetBackHit, renderPanelSheet, renderWorkRow, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
@@ -2153,9 +2153,23 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return tui.terminal.columns < SIDEBAR_BREAKPOINT && (placement === "auto" || placement === "right") ? "narrow" : undefined;
 	};
 	// The live-work digests the mobile work row folds, honoring the Todos switch.
-	const workSummaries = (tui: TUI) => {
+	const workParts = (tui: TUI) => {
 		const state = sidebarState(tui);
-		return ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => state.parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
+		return ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).flatMap((key) => {
+			const part = state.parts.get(key);
+			const summary = part?.summary?.();
+			return part && summary ? [{ part, summary }] : [];
+		});
+	};
+	const workSummaries = (tui: TUI) => workParts(tui).map((work) => work.summary);
+	// A tap on the work row opens the leading section's own view (an agent opens
+	// /gentle:agents); a section without one, such as Todos, opens the panel sheet.
+	const openWorkRow = (tui: TUI, ctx: ExtensionContext) => {
+		const parts = workParts(tui);
+		const lead = parts[workRowLead(parts.map((work) => work.summary))];
+		if (!lead) return;
+		if (lead.part.open) lead.part.open();
+		else void openPanelSheet(ctx);
 	};
 	// What the panel editor draws above its rule: the mobile work row, then any
 	// agent question, so nothing another widget adds can land between them and the input.
@@ -2707,8 +2721,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
 				panelChrome: (tui) => chromeMode(tui) !== undefined,
 				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
-				// The mobile work row is the first top row; a tap on it opens the panel sheet.
-				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0 && workSummaries(tui).length > 0) void openPanelSheet(ctx); } },
+				// The mobile work row is the first top row; a tap on it opens the leading section's view.
+				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0) openWorkRow(tui, ctx); } },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt

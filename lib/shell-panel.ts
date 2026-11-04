@@ -83,9 +83,18 @@ export interface PanelSummary {
 }
 
 /** ` ▸ <lead> … <count>`: the section that matters most, plus the todo count; undefined without live work. */
+/** The index of the summary that leads the mobile work row (highest priority, first on ties); -1 when there is none. */
+export function workRowLead(summaries: readonly PanelSummary[]): number {
+	let lead = -1;
+	summaries.forEach((summary, index) => {
+		if (lead === -1 || (summary.priority ?? 0) > (summaries[lead]!.priority ?? 0)) lead = index;
+	});
+	return lead;
+}
+
 export function renderWorkRow(summaries: readonly PanelSummary[], theme: PanelTheme, width: number, hovered = false): string | undefined {
 	if (summaries.length === 0) return undefined;
-	const lead = [...summaries].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0]!;
+	const lead = summaries[workRowLead(summaries)]!;
 	const counted = lead.right ? lead : summaries.find((summary) => summary.right);
 	const right = !counted ? "" : counted === lead ? counted.right! : `${counted.right} ${counted.rightLabel ?? ""}`.trimEnd();
 	// The ▸ is the row's tap affordance; hovering paints it like every other clickable surface.

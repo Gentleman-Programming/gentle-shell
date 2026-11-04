@@ -4848,6 +4848,26 @@ test("clear after a resume with no conversation writes a legacy clear, not the r
 	assert.match(h.last().message, /^el Gentleman cleared session profile "fast" . persisted in this session\. New launches use the routing without a session profile \(pins, repository declaration, global\)\. The live orchestrator is unchanged\.$/);
 });
 
+// gentle-shell#2742, section 8: the startup record carries the orchestrator for
+// the reviewers, but an inherited profile still does not switch the live one.
+test("a resume on a startup record with an orchestrator leaves the live orchestrator alone; Use in this session switches it", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const sessions = join(h.ctx.cwd, "resumed-startup-sessions");
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileStartupBind("local", "team", TEAM_DEFINITION));
+	source.appendMessage({ role: "user", content: "flush the resumed fixture", timestamp: 1 });
+	const manager = SessionManager.open(source.getSessionFile()!, sessions);
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	assert.deepEqual(readSessionProfileBinding(manager.getSessionId())?.modelProfiles.orchestrator, TEAM_DEFINITION.orchestrator, "the resumed record carries the orchestrator");
+	assert.deepEqual(h.liveCalls, [], "the inherited profile does not switch the live orchestrator");
+	const live = { setModel: async () => { h.liveCalls.push("model"); return true; }, setThinkingLevel() { h.liveCalls.push("thinking"); }, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	assert.ok(h.liveCalls.includes("model"), "Use in this session does switch it");
+});
+
 test("clear after a session's own start goes back to the defaults it started with", async (t) => {
 	const h = profilesCommandHarness(t, withFast);
 	resetFrozenInheritedProfilesForTesting();

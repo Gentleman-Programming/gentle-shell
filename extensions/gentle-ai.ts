@@ -9732,6 +9732,9 @@ async function executeReviewCaptureOperation(
 		if (parameters.reviewerRunAcknowledged !== undefined || parameters.correctionLines !== undefined) {
 			return captureBindingRejected("reviewerRunAcknowledged and correctionLines are not valid for a provider role capture");
 		}
+		// Go spawns its own pi for the role, so this is a reviewer run too.
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
 		return withCorrectionTarget(await executeProviderRoleVectorCapture(providerRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, implicitWorkspaceRoot));
 	}
 	return captureBindingRejected(`unsupported provider capture operation: ${selected.input.captureOperation}`);

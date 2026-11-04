@@ -112,7 +112,7 @@ test("codemode keeps upstream prompt guidelines first and appends the thin-orche
 	assert.deepEqual(tools[0]!.promptGuidelines, [...upstream, ...CODEMODE_GUIDELINES]);
 	assert.deepEqual(registeredCodemode().promptGuidelines?.slice(-CODEMODE_GUIDELINES.length), [...CODEMODE_GUIDELINES]);
 	const rules = CODEMODE_GUIDELINES.join("\n");
-	for (const rule of [/one coherent objective/, /Promise\.allSettled\(\)/, /exit_code/, /isError/, /not transactional/, /never repeat a side effect/, /background tools/, /searchTools\(\)/, /describeTool\(\)/, /direct tool call/]) {
+	for (const rule of [/one coherent objective/, /Promise\.allSettled\(\)/, /exit_code/, /isError/, /not transactional/, /never repeat a side effect/, /background tools when they are available/, /bounded direct foreground call with an explicit timeout/, /searchTools\(\)/, /describeTool\(\)/, /direct tool call/]) {
 		assert.match(rules, rule);
 	}
 });

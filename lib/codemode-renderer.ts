@@ -135,7 +135,7 @@ export const CODEMODE_GUIDELINES: readonly string[] = [
 	"In codemode, a fulfilled promise is not success: check each result's own failure fields (bash exit_code, MCP isError, truncation flags) and throw or report the failure instead of assuming the call worked. Await every tool call before the script ends.",
 	"Codemode side effects are not transactional: a change made before a later failure stays made. Validate prerequisites before mutating, never repeat a side effect merely because the script failed afterward, and inspect the real state after a partial failure.",
 	"From codemode, return decision-relevant evidence: affected files, exit codes, test totals, relevant errors, truncation indicators, and full-log paths. Filter noise, never evidence; a summary must never turn a failure into success.",
-	"Keep long waits out of codemode: run builds, CI, servers, and long suites with the background tools and continue on their completion event, never polling inside a script.",
+	"Keep long waits out of codemode: run builds, CI, servers, and long suites with the background tools when they are available and continue on their completion event; when they are not, use one bounded direct foreground call with an explicit timeout. Never poll inside a script.",
 	"In codemode, discover unfamiliar tools with searchTools() and describeTool() before calling them instead of inventing names or arguments; respect direct-only tools, permissions, consent, and sandbox boundaries, which codemode never bypasses; prefer a direct tool call when a script adds no real benefit.",
 ];
 

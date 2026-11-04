@@ -145,11 +145,12 @@ export async function ghStarred(deps: GhDeps = {}): Promise<GhOutcome> {
 }
 
 /** Stars every repository with the authenticated gh account; each PUT is an
- * idempotent no-op when already starred. */
+ * idempotent no-op when already starred. Any failure, a 404 included (missing
+ * repository or a token that cannot star), is unknown so the caller never thanks. */
 export async function ghStar(deps: GhDeps = {}): Promise<GhOutcome> {
 	for (const repository of deps.repositories ?? STAR_PROMPT_REPOSITORIES) {
-		const { code, stderr } = await execGh(deps, ["api", "--method", "PUT", `user/starred/${repository}`]);
-		if (code !== 0 && !stderr.includes("HTTP 404")) return "unknown";
+		const { code } = await execGh(deps, ["api", "--method", "PUT", `user/starred/${repository}`]);
+		if (code !== 0) return "unknown";
 	}
 	return "yes";
 }

@@ -365,6 +365,14 @@ test("lib: ghStarred classifies 404 as no and other failures as unknown", async 
 	assert.equal(broken, "unknown");
 });
 
+test("lib: a failed PUT, including HTTP 404, is never reported as starred", async () => {
+	const { ghStar } = await import("../lib/star-prompt.ts");
+	const failWith = (stderr: string) => ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | undefined, _o: string, stderr: string) => void) => cb(new Error("failed"), "", stderr));
+	// A 404 on PUT means the repository is missing or the token cannot star it: thanking would be a lie.
+	assert.equal(await ghStar({ exec: failWith("gh: Not Found (HTTP 404)") as never, repositories: ["x/y"] }), "unknown");
+	assert.equal(await ghStar({ exec: failWith("boom") as never, repositories: ["x/y"] }), "unknown");
+});
+
 test("lib: execFile's null error (exit 0) means starred, and a null error on PUT means starred", async () => {
 	// Real child_process passes error = null on success; that must not crash (found in TUI smoke).
 	const ok = ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, _o: string, _s: string) => void) => cb(null, "", "")) as never;

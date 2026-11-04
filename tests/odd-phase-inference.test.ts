@@ -330,12 +330,15 @@ test("formatter report modes infer checking while rewrites never do", () => {
 		"gofumpt -w -l .",
 		"shfmt -w -l scripts",
 		"gofmt -w .",
+		"prettier --write .",
+		// `-l` is black's line length, and black rewrites in place by default.
 		"black -l 100 .",
 		"black --line-length 100 src/app.py",
-		"prettier --write .",
 		"clang-format -i src/app.c",
 	]) {
-		assert.equal(inferShellActivity(command), undefined, command);
+		// A write flag wins over a report flag, so the call reforms code: the card
+		// names the rewrite, and a rewrite verifies nothing so the phase stays unset.
+		assert.equal(inferShellActivity(command), "formatting", command);
 		assert.equal(inferOddPhase("bash", { command }), undefined, command);
 	}
 });
@@ -556,4 +559,312 @@ test("a neutral or empty command names no activity", () => {
 		assert.equal(inferShellActivity(command), command === "CI=1 pnpm test" ? "checking" : undefined, command);
 	}
 	for (const command of [undefined, "", "   "]) assert.equal(inferShellActivity(command), undefined, String(command));
+});
+
+// Four of the six activities are card-only: preparing, formatting, versioning
+// and publishing are not steps of the ODD protocol, so the working label and the
+// exploration budget read inferOddPhase, which never returns them. Every family
+// is asserted through both readers so a card identity can never move the label.
+test("installations, scaffolding and stored configuration name the preparing activity", () => {
+	for (const command of [
+		"pnpm install",
+		"pnpm install --frozen-lockfile",
+		"npm ci",
+		"npm install left-pad",
+		"pnpm -C packages/app install",
+		"yarn add left-pad",
+		"bun install",
+		"pip install -r requirements.txt",
+		"python3 -m pip install -e .",
+		"uv sync",
+		"uv pip install pytest",
+		"poetry install",
+		"bundle install",
+		"composer install",
+		"brew install jq",
+		"apt-get install -y jq",
+		"apk add jq",
+		"pacman -S jq",
+		"go mod download",
+		"go install ./cmd/tool",
+		"cargo install cargo-nextest",
+		"dotnet restore",
+		"git init",
+		"git clone https://example.com/repo.git",
+		"cargo new crate",
+		"mkdir -p tmp/scratch",
+		"touch tmp/scratch/file",
+		"cp package.json package.json.bak",
+		"ln -s ../lib/odd-phase.ts odd-phase.ts",
+		"git config user.name 'A B'",
+		"npm config set fund false",
+		"go env -w GOFLAGS=-mod=mod",
+	]) {
+		assert.equal(inferShellActivity(command), "preparing", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+test("formatters and lint fixers that rewrite files name the formatting activity", () => {
+	for (const command of [
+		"prettier --write .",
+		"prettier -w src/app.ts",
+		"npx prettier --write src/app.ts",
+		"pnpm exec prettier --write .",
+		"cargo fmt",
+		"ruff format .",
+		"ruff check --fix .",
+		"deno fmt",
+		"deno lint --fix",
+		"gofmt -w main.go",
+		"go fmt ./...",
+		"black .",
+		"black -l 100 .",
+		"rustfmt src/main.rs",
+		"biome format --write .",
+		"stylelint --fix '**/*.css'",
+	]) {
+		assert.equal(inferShellActivity(command), "formatting", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	// A formatter told to report is the check it really is, and one whose flags
+	// this classifier cannot read names nothing at all rather than claiming a
+	// rewrite that never happened.
+	for (const command of ["prettier --check .", "eslint .", "cargo fmt --check", "black --check .", "gofmt -l ."]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+	}
+	for (const command of ["prettier 'a --write b.ts'"]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+	}
+});
+
+// A flag keeps its meaning when it is quoted, while quoted text that only
+// contains a flag is one argument: `black "--check" .` asks black to report, and
+// `prettier --check "a --write b.ts"` names a file whose text says `--write`.
+test("a quoted flag keeps its mode while quoted text never becomes one", () => {
+	for (const command of [
+		`black "--check" .`,
+		"black '--check' .",
+		`black "--diff" src/app.py`,
+		`prettier "--check" .`,
+		`gofmt "-l" .`,
+		`black "--line-length=100" --check .`,
+		`prettier --check "a --write b.ts"`,
+	]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+	// A quoted non-flag argument rewrites when the formatter writes by default, and
+	// leaves the card generic when it merely names a file whose text looks like a flag.
+	for (const command of [`black "--line-length=100" .`, `gofmt "-w" main.go`]) {
+		assert.equal(inferShellActivity(command), "formatting", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	for (const command of [`prettier "a --write b.ts"`, `prettier 'a --check b.ts'`]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// eslint keeps verifying work whatever write flag it carries, quoted or not, so
+// a fix flag never turns it into a rewrite. The other fixers still repair what
+// they read, so `ruff check '--fix'` and `deno lint "--fix"` are no more a check
+// than their unquoted forms, while a quoted file name that only carries the
+// flag's spelling stays a file.
+test("eslint with a fix flag verifies work, quoted or not", () => {
+	for (const command of [
+		"eslint --fix .",
+		"eslint . --fix",
+		"eslint src --fix --max-warnings 0",
+		`eslint "--fix" .`,
+		"eslint '--fix' .",
+		`eslint "--fix" src/app.ts`,
+		`npx eslint "--fix" src`,
+		"pnpm exec eslint '--fix' src",
+		"npm exec eslint --fix .",
+		`timeout 60 eslint "--fix" .`,
+		// A quoted argument whose text merely carries the flag names a file, and a
+		// dry run writes nothing: both stay the check they were.
+		`eslint "src/--fix.ts"`,
+		"eslint 'a --fix b.js'",
+		`eslint "--fix-dry-run" src/app.ts`,
+	]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+test("a quoted fix flag on the other fixers never verifies work", () => {
+	for (const command of [`ruff check "--fix" .`, "ruff check '--fix' .", "ruff check '--fix-only' .", `deno lint "--fix" .`, "deno lint '--fix' ."]) {
+		assert.equal(inferShellActivity(command), "formatting", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	for (const command of [`ruff check "src/--fix.py"`, `deno lint "src/--fix.ts"`]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// An installer told to report prepares nothing: `cargo install --list` lists what
+// is already installed and `--dry-run` resolves a tree without writing it, so
+// neither is a build-up, neither names a card identity, and neither moves the
+// phase. The writing forms keep that identity, including a report-shaped argument.
+test("an installer told to list or dry-run prepares nothing", () => {
+	for (const command of [
+		"cargo install --list",
+		"cargo install --list --quiet",
+		"npm install --dry-run",
+		"npm install --dry-run left-pad",
+		"npm ci --dry-run",
+		"npm install --dry-run=true",
+		"pip install --dry-run .",
+		"pip install -e . --dry-run",
+		"uv pip install --dry-run pytest",
+		"brew install --dry-run jq",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+	for (const command of [
+		"npm install",
+		"npm install --save-dev left-pad",
+		"cargo install cargo-nextest",
+		"pip install --no-deps .",
+		"brew install jq",
+	]) {
+		assert.equal(inferShellActivity(command), "preparing", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+test("local history changes name the versioning activity", () => {
+	for (const command of [
+		"git add -A",
+		"git add lib/odd-phase-inference.ts",
+		"git -C /repo add .",
+		"git commit -m 'feat: x'",
+		"git commit --amend --no-edit",
+		`git commit -m "$(cat msg.txt)"`,
+		"git commit -m x && git log --oneline -3",
+		"git rebase main",
+		"git rebase -i origin/main",
+		"git rebase --continue",
+		"git rebase --abort",
+		"git cherry-pick abc1234",
+		"git cherry-pick --continue",
+		"git cherry-pick --abort",
+		"git add -A && git commit -m x",
+		// A stack's local half touches branches on this machine only.
+		"gh stack init",
+		"gh stack init --base feat/tracker feat/one feat/two",
+		"gh stack add feat/three",
+		"gh stack rebase --upstack",
+	]) {
+		assert.equal(inferShellActivity(command), "versioning", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+test("remote writes name the publishing activity", () => {
+	for (const command of [
+		"git push",
+		"git push -u origin HEAD",
+		"git push origin feat/x",
+		"gh pr create --title x --body y",
+		"gh pr edit 12 --add-label bug --add-assignee octocat",
+		"gh pr close 12",
+		"gh pr reopen 12",
+		"gh pr merge 12 --squash",
+		"gh pr ready 12",
+		"gh pr review 12 --approve",
+		"gh pr update-branch 12",
+		"gh pr comment 12 --body hi",
+		"gh issue create --title x --label bug --assignee octocat",
+		"gh issue edit 7 --add-label bug --remove-label wip --add-assignee octocat",
+		"gh issue close 7",
+		"gh issue reopen 7",
+		"gh issue comment 7 --body hi",
+		"gh issue pin 7",
+		"gh issue transfer 7 owner/other",
+		"gh label create bug --color ff0000",
+		"gh label edit bug --new-name defect",
+		"gh label delete bug --yes",
+		"gh label clone owner/other",
+		"gh release create v1.0.0 --generate-notes",
+		"gh release edit v1.0.0 --draft=false",
+		"gh release upload v1.0.0 dist/app.tgz",
+		// A stack's remote half pushes branches and rewrites its PRs.
+		"gh stack submit",
+		"gh stack submit --auto --open",
+		"gh stack push",
+		"gh stack sync",
+		"gh stack merge",
+		"gh stack link",
+		"gh stack unstack",
+	]) {
+		assert.equal(inferShellActivity(command), "publishing", command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// Moving between branches and aliasing a command publish nothing and read
+// nothing, so those stack subcommands name no activity at all.
+test("a stack view is inspection and the rest of the stack subcommands name nothing", () => {
+	for (const command of ["gh stack view", "gh stack view --json", "gh stack view | jq -r .name"]) {
+		assert.equal(inferShellActivity(command), "exploring", command);
+		assert.equal(inferOddPhase("bash", { command }), "exploring", command);
+	}
+	for (const command of [
+		"gh stack checkout",
+		"gh stack bottom",
+		"gh stack top",
+		"gh stack up",
+		"gh stack down",
+		"gh stack trunk",
+		"gh stack switch",
+		"gh stack modify",
+		"gh stack alias co",
+		"gh stack feedback",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+	}
+});
+
+// The ladder ranks the identities under the check that already ranked first, so
+// the strongest named segment names the card while the phase still follows the
+// check that ran.
+test("the strongest named activity ranks the card under a check", () => {
+	assert.equal(inferShellActivity("git push && git commit -m x"), "publishing");
+	assert.equal(inferShellActivity("git commit -m x && prettier --write ."), "versioning");
+	assert.equal(inferShellActivity("pnpm install && git config user.name x"), "preparing");
+	assert.equal(inferShellActivity("prettier --write . && pnpm install"), "formatting");
+	assert.equal(inferShellActivity("git status && pnpm install"), "preparing");
+	for (const command of ["pnpm install && pnpm test", "git push && pnpm test", "git commit -m x && make test"]) {
+		assert.equal(inferShellActivity(command), "checking", command);
+		assert.equal(inferOddPhase("bash", { command }), "checking", command);
+	}
+});
+
+// A segment whose output lands in a file, or that hides a command in a
+// substitution the splitter cannot follow, is a write this classifier cannot
+// name: it keeps the whole card generic rather than claiming a clean identity.
+test("a redirect or an unreadable substitution keeps a card-only identity generic", () => {
+	for (const command of ["git push > out.txt", "npm install > install.log", "git commit -m `cat msg`", "git add <(cat list)"]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
+});
+
+// `systemd-run` starts a transient unit, so it invokes a process rather than
+// reading anything. Nothing about it is known, so it names no activity and
+// leaves the label alone until a bounded recognizer has proof for it.
+test("systemd-run names no activity and infers no phase", () => {
+	for (const command of [
+		"systemd-run --unit=probe --wait curl https://example.com",
+		"systemd-run --user --scope sleep 5",
+		"systemd-run --pty bash",
+	]) {
+		assert.equal(inferShellActivity(command), undefined, command);
+		assert.equal(inferOddPhase("bash", { command }), undefined, command);
+	}
 });

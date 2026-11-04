@@ -94,6 +94,28 @@ test("newly classified metadata probes count while a bounded check never does", 
 	}
 });
 
+// The four card-only identities are display only: an install, a reformat, a
+// commit and a push are not discovery, so none of them is counted. `gh stack
+// view` is the one read this classifier newly names, and it counts like any
+// other recognized read.
+test("card-only identities never count while a named stack view reads", () => {
+	const budget = createExplorationBudget();
+	budget.start("s");
+	for (const command of ["pnpm install", "prettier --write .", "git commit -m x", "git push", "git add -A", "black -l 100 .", "npm install --dry-run"]) {
+		budget.call("s", command, "bash");
+		assert.equal(budget.result("s", event(command, "bash", "x".repeat(50_000), false, { command })), undefined, command);
+	}
+	for (const command of ["gh stack view", "git status", "gh pr view 12"]) {
+		budget.call("s", command, "bash");
+		assert.equal(budget.result("s", event(command, "bash", "x", false, { command })), undefined, command);
+	}
+	budget.call("s", "locale", "bash");
+	assert.match(
+		budget.result("s", event("locale", "bash", "x", false, { command: "locale" })) ?? "",
+		/Exploration budget:.*4 tracked lookups/,
+	);
+});
+
 test("read-only memory recall counts and memory mutation or diagnostics never count", () => {
 	const budget = createExplorationBudget();
 	budget.start("s");

@@ -432,14 +432,32 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 	return { key, model };
 }
 
+/**
+ * Pi's runner throws on any access to a ctx made stale by reload or session
+ * replacement (pi 0.69+/0.70+). Render-path closures installed at setup outlive
+ * the ctx: pi's render timer can tick once more after the session is replaced,
+ * and an unguarded read inside that frame escapes as an uncaught exception and
+ * kills the process. A stale frame must degrade to the fallback instead.
+ * Same intent as isCommandContextActive in gentle-ai.ts.
+ */
+function staleCtxSafe<T>(read: () => T, fallback: T): T {
+	try {
+		return read();
+	} catch {
+		return fallback;
+	}
+}
+
 // Gauge-specific theme roles (issue #2222): resolved from the installed theme
 // source and memoized by gauge-theme.ts, so the render hot path only stats the
 // theme file. Undefined — and therefore today's shared roles — whenever the theme
 // source is unavailable.
 function gaugePaint(ctx: ExtensionContext): GaugePaint | undefined {
-	const themeName = ctx.ui.theme.name;
-	const source = ctx.ui.theme.sourcePath ?? ctx.ui.getAllThemes?.().find((item) => item?.name === themeName)?.path;
-	return gaugePaintFor(typeof source === "string" ? source : undefined);
+	return staleCtxSafe(() => {
+		const themeName = ctx.ui.theme.name;
+		const source = ctx.ui.theme.sourcePath ?? ctx.ui.getAllThemes?.().find((item) => item?.name === themeName)?.path;
+		return gaugePaintFor(typeof source === "string" ? source : undefined);
+	}, undefined);
 }
 
 export function createShellBarComponent(
@@ -458,7 +476,9 @@ export function createShellBarComponent(
 	});
 	return {
 		render(width: number) {
-			return renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.(), gaugePaint(ctx));
+			// A stale ctx (reload or session replacement) must degrade this frame, never
+			// escape from pi's render timer as an uncaughtException (gentle-shell#745).
+			return staleCtxSafe(() => renderShellBar(buildShellBarModel(pi, ctx, footerData, { dirty: dirty(), usage: usage() }), theme, width, presentation?.(), gaugePaint(ctx)), []);
 		},
 		invalidate() {},
 		dispose() {
@@ -1477,9 +1497,9 @@ function installPrompt(
 	if (previous && !previous[PROMPT_OWNER]) return false;
 	const factory: PromptFactory = (tui, theme, keybindings) => {
 		const prompt = new GentlePromptEditor(tui, theme, keybindings, {
-			fg: (color, text) => ctx.ui.theme.fg(color as Parameters<typeof ctx.ui.theme.fg>[0], text),
-			bg: (color, text) => ctx.ui.theme.bg(color as Parameters<typeof ctx.ui.theme.bg>[0], text),
-			bold: (text) => ctx.ui.theme.bold(text),
+			fg: (color, text) => staleCtxSafe(() => ctx.ui.theme.fg(color as Parameters<typeof ctx.ui.theme.fg>[0], text), text),
+			bg: (color, text) => staleCtxSafe(() => ctx.ui.theme.bg(color as Parameters<typeof ctx.ui.theme.bg>[0], text), text),
+			bold: (text) => staleCtxSafe(() => ctx.ui.theme.bold(text), text),
 			requestRender: () => tui.requestRender(),
 			pending: () => ctx.hasPendingMessages(),
 			now: promptDeps.now,
@@ -1487,7 +1507,7 @@ function installPrompt(
 			dispatchQueuedText: promptDeps.dispatchQueuedText,
 			notifyCompatibility: (message) => ctx.ui.notify(message, "warning"),
 			tuiVersion: promptDeps.vimRuntimeVersion,
-			workingLabel: () => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()),
+			workingLabel: () => staleCtxSafe(() => oddPhaseRegistry.label(ctx.sessionManager.getSessionId()), undefined),
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
@@ -2328,7 +2348,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
 			const sessionId = ctx.sessionManager.getSessionId();
 			profilePoll = setInterval(() => {
-				if (currentContext !== ctx || ctx.sessionManager.getSessionId() !== sessionId) return;
+				if (!staleCtxSafe(() => currentContext === ctx && ctx.sessionManager.getSessionId() === sessionId, false)) return;
 				if (!profileReader.refresh()) return;
 				renderHost?.invalidateSidebar?.();
 				renderHost?.requestRender();
@@ -2544,7 +2564,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : headerBar(width).rows,
+				render: (width) => staleCtxSafe(() => (ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : headerBar(width).rows), []),
 				invalidate() {},
 				handleMouse(event) {
 					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
@@ -2555,7 +2575,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
+				render: (width) => staleCtxSafe(() => (ideChrome() || narrowChrome() ? statusBarChrome(width).rows : []), []),
 				invalidate() {},
 				handleMouse(event) {
 					if (!(ideChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
@@ -2567,14 +2587,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const uninstall = installSidebar(tui, theme, () => visualSettings.statusPlacement, () => visualSettings.headerPlacement, () => visualSettings.density);
 			// A light theme paints the whole fullscreen frame (prose, gaps, the
 			// column beside the rail) instead of leaving the terminal's dark cells.
-			const unpaintPage = installPagePaint(tui as never, () => ((tui as TUI & { mode?: string }).mode === "fullscreen" ? ctx.ui.theme as PageTheme : {}));
+			const unpaintPage = installPagePaint(tui as never, () => ((tui as TUI & { mode?: string }).mode === "fullscreen" ? staleCtxSafe(() => ctx.ui.theme as PageTheme, {}) : {}));
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
-					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
-					return belowHeader() ? headerBar(width).rows : [];
+					return staleCtxSafe(() => {
+						if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
+						return belowHeader() ? headerBar(width).rows : [];
+					}, []);
 				},
 				invalidate() {},
 				handleMouse(event) {
@@ -2611,7 +2633,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
 				panelChrome: (tui) => chromeMode(tui) !== undefined,
-				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
+				topRows: (tui, width, hovered) => staleCtxSafe(() => panelTopRows(tui, width, ctx.ui.theme, hovered), []),
 				// The mobile work row is the first top row; a tap on it opens the panel sheet.
 				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0 && workSummaries(tui).length > 0) void openPanelSheet(ctx); } },
 		);

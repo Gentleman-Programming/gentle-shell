@@ -126,8 +126,8 @@ import {
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
 import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
-import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
-import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
 import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
 import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
@@ -2532,10 +2532,13 @@ function readReviewerModelConfig(cwd: string, sessionId: string | undefined, ses
 		: resolution.kind === "explicit" ? resolution.modelProfiles
 		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
 	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
-	// Only a profile chosen with Use in this session carries its orchestrator to
-	// the provider review roles; inherited, pinned and global routing leave them on
-	// Pi's persisted default (gentle-shell#2716 A1).
+	// Only a profile chosen with Use in this session, or recorded as the session's
+	// startup profile, carries its orchestrator to the provider review roles; an
+	// in-memory freeze, pinned and global routing leave them on Pi's persisted
+	// default (gentle-shell#2716 A1, gentle-shell#2742 section 8).
 	if (resolution.kind !== "explicit") delete config.orchestrator;
+	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
+	if (recorded !== undefined) config.orchestrator = { ...recorded };
 	return config;
 }
 
@@ -8873,6 +8876,23 @@ async function reconcileUnknownReviewCaptureFailure(
 	}
 }
 
+/**
+ * Reviewers check session profile authority as launches do (gentle-shell#2742,
+ * section 7): an unreadable record blocks before any reviewer run starts, so the
+ * review state stays untouched and the same capture resumes once authority is
+ * available. A review without a session id has no record to distrust.
+ */
+function reviewerAuthorityBlocked(tool: string, manager: SessionProfileLifecycleManager | undefined): Record<string, unknown> | undefined {
+	if (manager === undefined) return undefined;
+	try {
+		if (!manager.getSessionId()) return undefined;
+		requireSessionProfileAuthority(manager);
+		return undefined;
+	} catch (error) {
+		return { tool, status: "blocked", outcome: "session-profile-authority-unavailable", reason: error instanceof Error ? error.message : String(error), mutation_performed: false, mutation_outcome: "none" };
+	}
+}
+
 async function executeReviewHostRelayCapture(
 	slot: ReviewHostRelaySlot,
 	nativeReviewCli: NativeReviewCli,
@@ -9572,6 +9592,8 @@ async function executeReviewCaptureOperation(
 	reviewerSessionId?: string,
 	// Read effective settings only when the acknowledged capture actually runs.
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	// The caller's session, whose profile authority a reviewer run requires.
+	sessionManager?: SessionProfileLifecycleManager,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -9636,6 +9658,8 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
 		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
@@ -9662,6 +9686,8 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
 		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
@@ -9751,6 +9777,7 @@ async function executeReviewCaptureGroupOperation(
 	// header. Appended last for the same positional-call-site reason as above.
 	reviewerSessionId?: string,
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	sessionManager?: SessionProfileLifecycleManager,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -9790,6 +9817,8 @@ async function executeReviewCaptureGroupOperation(
 			mutation_outcome: "none",
 		};
 	}
+	const blocked = reviewerAuthorityBlocked("gentle_review_capture_group", sessionManager);
+	if (blocked !== undefined) return blocked;
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
 	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd);
@@ -11343,6 +11372,7 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 				() => pi.getSettings?.().transport,
+				reviewSessionManagerAndId(ctx)?.manager as SessionProfileLifecycleManager | undefined,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -11387,6 +11417,7 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 				() => pi.getSettings?.().transport,
+				reviewSessionManagerAndId(ctx)?.manager as SessionProfileLifecycleManager | undefined,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],

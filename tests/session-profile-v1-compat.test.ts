@@ -7,7 +7,7 @@ import {
 	createSessionProfileClear,
 	createSessionProfileStartupBind,
 } from "../lib/session-profile-persistence.ts";
-import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
+import { replay, replayReviewerRouting, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
 
 // v1 compatibility (gentle-shell#2742, section 10): a session resumed by the
 // vendored v1 chain routes like the current modules. This file pins today's
@@ -218,4 +218,20 @@ test("a legacy clear after an explicit choice that carried its startup state fre
 	const transcript = { records: [createSessionProfileBind("local", LOCAL, startup), createSessionProfileClear()], defaults: { profiles, active: "frontier" } };
 	assert.deepEqual(replay("current", transcript), replay("v1", transcript));
 	assert.equal(replay("current", transcript).label, "frontier");
+});
+
+// Reviewers (section 10): the reviewer selection of a version without A1 reads
+// the binding, then a live pin, then models.json.
+const PINNED: AgentModelConfig = { "review-risk": { model: "openai/pinned-risk" } };
+
+test("gap (section 10): after a startup-none clear a pin appears; a reviewer without A1 follows it, the current one does not", () => {
+	const transcript = { records: [createSessionProfileClear("none")], defaults: { profiles: { ...profiles, pinned: PINNED }, localPin: "pinned" } };
+	assert.deepEqual(replayReviewerRouting("v1", transcript), PINNED, "v1 without A1 follows the new pin");
+	assert.deepEqual(replayReviewerRouting("current", transcript), {}, "current keeps no session profile");
+});
+
+test("a startup record's orchestrator reaches the current reviewer routing, as a reviewer without A1 reads the binding", () => {
+	const transcript = { records: [createSessionProfileStartupBind("global", "team", TEAM)], defaults: { profiles, active: "frontier" } };
+	assert.deepEqual(replayReviewerRouting("current", transcript), TEAM);
+	assert.deepEqual(replayReviewerRouting("v1", transcript), TEAM);
 });

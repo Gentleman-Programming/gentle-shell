@@ -20,7 +20,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -4327,6 +4327,21 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 	const routing = __testing.readReviewerModelConfig(fixture.root, "inherited-session");
 	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+});
+
+// gentle-shell#2742, section 8: only a startup record carries the orchestrator;
+// a freeze at the session's own start knows the definition but records nothing.
+test("provider review roles skip the orchestrator fallback for a profile frozen at the session's own start", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
 });
 
 test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {

@@ -2525,7 +2525,12 @@ function readReviewerModelConfig(cwd: string, sessionId: string | undefined, ses
 	// A session outside Git has no repository of its own, so any Git target is foreign.
 	const foreignRepository = target !== undefined && target !== home;
 	// A caller without a session keeps the routing it read before session profiles.
-	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd) : sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
+	// An explicit binding carries its full modelProfiles (orchestrator included) to
+	// the fallback below; sessionProfileRoutingAt role-routes it, and launches must
+	// never see the orchestrator key (gentle-shell#2742, section 8).
+	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd)
+		: resolution.kind === "explicit" ? resolution.modelProfiles
+		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
 	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
 	// Only a profile chosen with Use in this session carries its orchestrator to
 	// the provider review roles; inherited, pinned and global routing leave them on

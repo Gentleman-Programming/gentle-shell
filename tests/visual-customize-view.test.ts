@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { VisualCustomizeView, type CustomizeInline, type CustomizeRow } from "../lib/visual-customize-view.ts";
 import { CommandPalette } from "../lib/command-palette.ts";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { getThemeByName, Theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const theme = { fg: (_role: string, text: string) => text };
@@ -938,4 +942,282 @@ test("inline notification choices retain their sound keys instead of advertising
  view.render(120); view.handleInput("\x1b[C");
  const rendered = view.render(120).join("\n");
  assert.match(rendered, /f sound · p test/); assert.doesNotMatch(rendered, /p profiles/);
+});
+
+// Pointer coordinates are component-local terminal cells, not string indices.
+function point(frame: string[], text: string): { x: number; y: number } {
+	const y = frame.findIndex(line => line.includes(text));
+	assert.ok(y >= 0, `missing ${JSON.stringify(text)} in ${frame.join("\n")}`);
+	const line = frame[y]!;
+	return { x: visibleWidth(line.slice(0, line.indexOf(text))), y };
+}
+function pointer(frame: string[], x: number, y: number, button: TuiMouseEvent["button"] = "left", type: TuiMouseEvent["type"] = "click"): TuiMouseEvent {
+	return { type, button, x, y, screenX: x + 9, screenY: y + 4, width: visibleWidth(frame[0]!), height: frame.length, shift: false, alt: false, ctrl: false };
+}
+function click(view: VisualCustomizeView, frame: string[], text: string, button: TuiMouseEvent["button"] = "left"): TuiMouseEventResult | undefined {
+	const { x, y } = point(frame, text);
+	return (view as unknown as { handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined }).handleMouse(pointer(frame, x, y, button));
+}
+
+test("mouse selects categories, activates plain rows and explicitly applies visible choices", async () => {
+	const effects: string[] = [];
+	let selected = "one";
+	const rows: CustomizeRow[] = [
+		{ category: "Animations", label: "Speed", action: () => { effects.push("speed"); } },
+		{ category: "Layout", label: "Reset layout", action: () => { effects.push("reset"); } },
+		...["one", "界two", "three"].map(value => ({ category: "Layout" as const, label: value,
+			choice: { setting: "Mode", value, current: () => selected === value, applyOnMove: false },
+			action: () => { selected = value; effects.push(value); } })),
+	];
+	const view = new VisualCustomizeView({ rows, theme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	let frame = view.render(110);
+	assert.equal(click(view, frame, "Layout")?.handled, true);
+	assert.deepEqual(effects, [], "category selection never applies");
+	frame = view.render(110);
+	assert.equal(click(view, frame, "Reset layout")?.handled, true);
+	await tick();
+	assert.deepEqual(effects, ["reset"]);
+	frame = view.render(110);
+	assert.equal(click(view, frame, "界two")?.handled, true);
+	await tick();
+	assert.equal(selected, "界two");
+	assert.deepEqual(effects, ["reset", "界two"], "click is an explicit apply even for deferred choices");
+	frame = view.render(110);
+	for (const button of ["right", "middle"] as const) click(view, frame, "three", button);
+	const handler = view as unknown as { handleMouse(event: TuiMouseEvent): unknown };
+	for (const [x, y] of [[0, 0], [109, 0], [109, frame.length - 1], [2, 2], [108, 4]]) handler.handleMouse(pointer(frame, x!, y!));
+	await tick();
+	assert.deepEqual(effects, ["reset", "界two"], "non-primary clicks and blank or border cells do nothing");
+});
+
+test("mouse tracks scrolled rows and narrow categories and choices without hitting clipped values", async () => {
+	const effects: string[] = [];
+	const choices: CustomizeRow[] = ["auto", "right", "bottom"].map(value => ({ category: "Layout", label: value,
+		choice: { setting: "Status placement", value, current: () => value === "auto", applyOnMove: false }, action: () => { effects.push(value); } }));
+	const view = new VisualCustomizeView({ rows: [
+		{ category: "Animations", label: "Speed", action() {} },
+		...choices,
+		...Array.from({ length: 9 }, (_, index): CustomizeRow => ({ category: "Layout", label: `Row ${index}`, action: () => { effects.push(`row:${index}`); } })),
+	], theme, rowsAvailable: () => 8, requestRender() {}, onClose() {} });
+	let frame = view.render(36);
+	click(view, frame, "Layout");
+	frame = view.render(36);
+	assert.match(frame.join("\n"), /‹ auto ›/);
+	click(view, frame, "›");
+	await tick();
+	assert.deepEqual(effects, [], "narrow arrows retain deferred keyboard navigation");
+	frame = view.render(36);
+	assert.match(frame.join("\n"), /‹ right ›/);
+	click(view, frame, "right");
+	await tick();
+	assert.deepEqual(effects, ["right"], "only the visible value is explicitly applied");
+	assert.equal(view.focus("Row 8"), true);
+	frame = view.render(36);
+	assert.match(frame.join("\n"), /Row 7[\s\S]*Row 8/);
+	click(view, frame, "Row 7");
+	await tick();
+	assert.deepEqual(effects, ["right", "row:7"], "the painted scrolled row, not its original index, runs");
+
+	const clipped: CustomizeRow = { category: "Layout", label: "wide", choice: { setting: "a very long setting name", value: "unseen choice value", current: () => true }, action: () => { effects.push("clipped"); } };
+	const small = new VisualCustomizeView({ rows: [clipped], theme, rowsAvailable: () => 8, requestRender() {}, onClose() {} });
+	frame = small.render(22);
+	assert.doesNotMatch(frame.join("\n"), /unseen choice value/);
+	const line = frame.findIndex(value => value.includes("a very"));
+	const handler = small as unknown as { handleMouse(event: TuiMouseEvent): unknown };
+	handler.handleMouse(pointer(frame, 20, line));
+	await tick();
+	assert.deepEqual(effects, ["right", "row:7"], "a clipped value cannot be activated");
+});
+
+test("mouse ignores stale dimensions, hidden rows, invalidation and pending tasks", async () => {
+	let height = 12, visible = true;
+	let release!: () => void;
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [
+		{ label: "Slow", action: () => { effects.push("slow"); return new Promise<void>(resolve => { release = resolve; }); } },
+		{ label: "Hidden later", visible: () => visible, action: () => { effects.push("hidden"); } },
+	], theme, rowsAvailable: () => height, requestRender() {}, onClose() {} });
+	let frame = view.render(80);
+	const handler = view as unknown as { handleMouse(event: TuiMouseEvent): unknown };
+	const target = point(frame, "Hidden later");
+	height = 5;
+	handler.handleMouse(pointer(frame, target.x, target.y));
+	height = 12;
+	handler.handleMouse({ ...pointer(frame, target.x, target.y), width: 79 });
+	visible = false;
+	handler.handleMouse(pointer(frame, target.x, target.y));
+	assert.deepEqual(effects, [], "a resized or hidden target cannot act using a stale frame");
+	visible = true;
+	frame = view.render(80);
+	view.invalidate();
+	click(view, frame, "Hidden later");
+	assert.deepEqual(effects, [], "invalidated geometry cannot act");
+	frame = view.render(80);
+	click(view, frame, "Slow");
+	frame = view.render(80);
+	click(view, frame, "Hidden later");
+	assert.deepEqual(effects, ["slow"], "an unfinished action owns the view");
+	release(); await tick();
+	frame = view.render(80);
+	click(view, frame, "Hidden later"); await tick();
+	assert.deepEqual(effects, ["slow", "hidden"]);
+});
+
+test("mouse confirms only the visible yes control, never another row or a hidden prompt", async () => {
+	let height = 12;
+	const answers: boolean[] = [];
+	const view = inlineView(async inline => { answers.push(await inline.confirm("Proceed?")); }, { rowsAvailable: () => height });
+	let frame = view.render(80);
+	click(view, frame, "Field row"); await tick();
+	frame = view.render(80);
+	click(view, frame, "Field row");
+	click(view, frame, "y yes", "right");
+	assert.deepEqual(answers, [], "neither another row nor a right click answers consent");
+	click(view, frame, "y yes"); await tick();
+	assert.deepEqual(answers, [true]);
+	frame = view.render(80); click(view, frame, "Field row"); await tick();
+	frame = view.render(80);
+	height = 4;
+	click(view, frame, "y yes"); await tick();
+	assert.deepEqual(answers, [true], "a confirmation hidden by an unrendered resize cannot be accepted");
+	view.handleInput("n"); await tick();
+	assert.deepEqual(answers, [true, false]);
+});
+
+test("confirmation message text is not mistaken for its yes or cancel controls", async () => {
+	const answers: boolean[] = [];
+	const view = inlineView(async inline => { answers.push(await inline.confirm("Does y yes mean cancel?")); });
+	let frame = view.render(80);
+	click(view, frame, "Field row"); await tick();
+	frame = view.render(80);
+	click(view, frame, "y yes");
+	click(view, frame, "cancel");
+	await tick();
+	assert.deepEqual(answers, [], "the words in the question are not consent controls");
+	const y = frame.findIndex(line => line.includes("Does y yes"));
+	const x = visibleWidth(frame[y]!.slice(0, frame[y]!.lastIndexOf("y yes")));
+	(view as unknown as { handleMouse(event: TuiMouseEvent): unknown }).handleMouse(pointer(frame, x, y));
+	await tick();
+	assert.deepEqual(answers, [true], "only the actual yes instruction grants consent");
+});
+
+test("profile confirmation mouse yes retains target fingerprint and visible-prompt guards", async () => {
+	const profile = { name: "Desk y yes", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	let catalog = [profile];
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender() {}, onClose() {}, profiles: {
+		list: () => catalog, save() {}, apply: name => { effects.push(name); }, delete() {}, reset() {},
+	} });
+	view.handleInput("p"); view.handleInput("a");
+	let frame = view.render(80);
+	click(view, frame, "y yes"); await tick();
+	assert.deepEqual(effects, [], "a profile name containing yes cannot authorize itself");
+	const confirm = () => {
+		const y = frame.findIndex(line => line.includes("Confirm apply"));
+		const x = visibleWidth(frame[y]!.slice(0, frame[y]!.lastIndexOf("y yes")));
+		(view as unknown as { handleMouse(event: TuiMouseEvent): unknown }).handleMouse(pointer(frame, x, y));
+	};
+	catalog = [{ ...profile, themeName: "light" }];
+	confirm(); await tick();
+	assert.deepEqual(effects, [], "changed profile content is refused");
+	catalog = [profile]; view.handleInput("a"); frame = view.render(80);
+	confirm(); await tick();
+	assert.deepEqual(effects, ["Desk y yes"]);
+});
+
+test("centered fullscreen overlay receives a real SGR click in local coordinates", async () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const effects: string[] = [];
+	const view = new VisualCustomizeView({ rows: [{ label: "Apply this", action: () => { effects.push("applied"); } }], theme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(view, { anchor: "center", width: 80, maxHeight: 12 });
+	tui.start(); tui.renderNow(true);
+	try {
+		const frame = view.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const target = point(frame, "Apply this");
+		const x = bounds.col + target.x + 1, y = bounds.row + target.y + 1;
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		await tick();
+		assert.deepEqual(effects, ["applied"]);
+	} finally { tui.stop(); }
+});
+
+// Independent permission and consent boundary regressions.
+function boundaryMouseEvent(frame: string[], text: string, delta = 0, type: TuiMouseEvent["type"] = "click"): TuiMouseEvent {
+	const y = frame.findIndex(line => line.includes(text));
+	assert.ok(y >= 0, `Missing ${text}: ${frame.join("\n")}`);
+	const x = visibleWidth(frame[y]!.slice(0, frame[y]!.indexOf(text))) + delta;
+	return { type, button: "left", x, y, screenX: x, screenY: y, width: visibleWidth(frame[0]!), height: frame.length, shift: false, alt: false, ctrl: false };
+}
+
+test("permission mouse press, preview arrows, explicit values, and hidden stale targets preserve write boundaries", async t => {
+	const directory = mkdtempSync(join(tmpdir(), "mouse-permission-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	for (const width of [44, 80, 160]) {
+		const path = join(directory, `state-${width}.json`);
+		writeFileSync(path, '{"mode":"NORMAL"}\n');
+		const hash = () => createHash("sha256").update(readFileSync(path)).digest("hex");
+		const before = hash();
+		let mode = "NORMAL", visible = true, height = 12;
+		const rows: CustomizeRow[] = ["NORMAL", "AUTO (beta)", "YOLO", "SUPER-YOLO"].map(value => ({
+			category: "Editor", label: `Session permissions: ${value}`, visible: () => visible,
+			choice: { setting: "Session permissions", value, current: () => value === mode, applyOnMove: false },
+			action: () => { mode = value; writeFileSync(path, JSON.stringify({ mode })); },
+		}));
+		const view = new VisualCustomizeView({ rows, theme, rowsAvailable: () => height, requestRender() {}, onClose() {} });
+		view.render(width); view.focus("Session permissions: NORMAL");
+		let frame = view.render(width);
+		view.handleMouse(boundaryMouseEvent(frame, "NORMAL", 0, "press"));
+		assert.equal(hash(), before, "press alone grants nothing");
+		if (frame.some(line => line.includes("‹ NORMAL ›"))) view.handleMouse(boundaryMouseEvent(frame, "›"));
+		else { view.handleMouse(boundaryMouseEvent(frame, "Session permissions")); view.handleInput("\x1b[C"); }
+		await tick(); assert.equal(hash(), before, "preview movement grants nothing");
+		frame = view.render(width);
+		view.handleMouse(boundaryMouseEvent(frame, "AUTO (beta)")); await tick();
+		assert.equal(mode, "AUTO (beta)");
+		const committed = hash();
+		frame = view.render(width);
+		const stale = boundaryMouseEvent(frame, "AUTO (beta)");
+		visible = false; view.handleMouse(stale); assert.equal(hash(), committed);
+		visible = true; height = 3; view.handleMouse(stale); assert.equal(hash(), committed);
+		height = 12; view.dispose(); view.handleMouse(stale); assert.equal(hash(), committed);
+	}
+});
+
+test("inline input and capture block permission mouse targets until keyboard cancellation", async () => {
+	for (const kind of ["input", "capture"] as const) {
+		let applied = 0;
+		const view = new VisualCustomizeView({ rows: [
+			{ label: "Open modal", action: async inline => {
+				if (kind === "input") await inline.input({ prompt: "Name", value: "sample" });
+				else await inline.capture("Press a key");
+			} },
+			{ label: "Elevate permission", action: () => { applied++; } },
+		], theme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+		let frame = view.render(80);
+		view.handleMouse(boundaryMouseEvent(frame, "Open modal")); await tick();
+		frame = view.render(80);
+		assert.equal(view.handleMouse(boundaryMouseEvent(frame, "Elevate permission")), undefined);
+		assert.equal(applied, 0);
+		view.handleInput("\x1b"); await tick();
+		frame = view.render(80); view.handleMouse(boundaryMouseEvent(frame, "Elevate permission")); await tick();
+		assert.equal(applied, 1);
+	}
+});
+
+test("inline consent accepts each painted yes cell but neither adjacent cell", async () => {
+	for (const delta of [-1, 0, 1, 2, 3, 4, 5]) {
+		const answers: boolean[] = [];
+		const view = new VisualCustomizeView({ rows: [{ label: "Proceed", action: async inline => { answers.push(await inline.confirm("Change permission?")); } }], theme, rowsAvailable: () => 12, requestRender() {}, onClose() {} });
+		let frame = view.render(80); view.handleMouse(boundaryMouseEvent(frame, "Proceed")); await tick();
+		frame = view.render(80); view.handleMouse(boundaryMouseEvent(frame, "y yes", delta)); await tick();
+		assert.deepEqual(answers, delta >= 0 && delta < 5 ? [true] : []);
+		view.dispose(); await tick();
+	}
 });

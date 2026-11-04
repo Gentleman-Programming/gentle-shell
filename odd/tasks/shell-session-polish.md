@@ -12,11 +12,11 @@ Branches: fix/shell-reload-lifecycle, then fix/shell-panel-agent-profile; delive
 
 ## Tasks
 - T1 [S1,S3] delegated (runtime context backstop): implemented; renderer checks pass; live mobile-boundary/PNG proof unavailable; commit pending, slice 2.
-- T2 [S2] delegated (runtime context backstop): blocked on actual runtime facts; isolated restart/session-switch tests pass but reported loss was not reproduced; regression tests pending slice 2; no production persistence fix claimed.
-- T3 [S4] delegated (runtime context backstop), parent seam correction inline: implemented; 143 focused tests pass; joint run 452/454 plus corrected two-test recheck 2/2; commit pending, slice 2.
-- T4 [S5] delegated (runtime context backstop): verified; meaningful RED to 311/311 real-worktree GREEN, types/runtime pass, independent bounded PASS; Risk item 4; commit pending, slice 1.
-- T5 [S6] inline parent Git ownership: local main updated 2d8ced2ad to 6865058f6, codemode 33/33, all ten WIP hashes preserved; commit/PR/CI/merge for slice 1 in progress.
-- T6 [S6] inline parent Git ownership: slice 2 commit/PR/CI/merge pending slice 1; keep unknown odd/work and ignored local-plugin tests untouched.
+- T2 [S2] delegated (runtime context backstop): blocked on actual runtime facts; isolated restart/session-switch tests pass but reported loss was not reproduced; regression tests committed as 588658564 for slice 2; no production persistence fix claimed.
+- T3 [S4] delegated (runtime context backstop), parent seam correction inline: verified; 143 focused tests pass; joint run 452/454 plus corrected two-test recheck 2/2; commit pending, slice 2.
+- T4 [S5] delegated (runtime context backstop): verified; meaningful RED to 311/311 real-worktree GREEN, types/runtime pass, independent bounded PASS; Risk item 4; commit 547d3e31c, slice 1.
+- T5 [S6] inline parent Git ownership: local main updated 2d8ced2ad to 6865058f6, codemode 33/33, all ten WIP hashes preserved; slice 1 committed as 547d3e31c (231 authored lines), PR #2837 opened; exact-head CI pending.
+- T6 [S6] inline parent Git ownership: slice 2 local preparation in progress on fix/shell-panel-agent-profile; preset-test commit 588658564, panel/profile commit next; publish/rebase after slice 1 merges. Keep unknown odd/work and ignored local-plugin tests untouched.
 
 ## Log
 - L1 Original request: "cosas a arreglar [Image#1] podemos dar un poco de padding entre el header y el sidebar? se pega mucho el todos, y en mobile el panel no ocupa hasta el input o donde dice actualizar el checkout a mian y comprobar el resultado, lo que molesta un poco [Image#2]"
@@ -29,3 +29,6 @@ Branches: fix/shell-reload-lifecycle, then fix/shell-panel-agent-profile; delive
 - L8 Existing full-suite run exited 1; provider-contract and runtime-harness passed. Ignored local-sidebar-plugin tests fail at baseline and are not tracked. Other config/socket failures are not claimed resolved. No broad local retry or dependency installation.
 - L9 Delivery decision: two independently reviewable slices under approximately 400 authored lines each, no size exception or protected-label mutation. Slice 1 contains only reload behavior/tests plus this recovery document; slice 2 contains panel/profile changes and preset-restoration tests. Related approved issues #995 and #1064 use nonclosing references.
 - L10 Preservation: .git/gentle-main-update-lwhwt988 contains the validated pre-update WIP patch/manifests. No reset/stash was needed; unknown odd/work and dependency provenance remain untouched. RDD is off; native assessment was unavailable, no review lifecycle was run.
+- L11 Slice 1: commit 547d3e31c26c8e0963d148c91dfaf754d404e26d isolates exactly three reload-test hunks from tests/gentle-shell.test.ts; preset and profile expectations remain for slice 2. Staged whitespace check passed, 231 authored lines. Explicit HTTPS push uses the authorized gh credential helper, never ambient SSH; related approved #995 is referenced without closing it.
+- L12 PR #2837 opened successfully at https://github.com/Gentleman-Programming/gentle-shell/pull/2837 with type:bug. Wait for all target CI workflows on head 547d3e31c before merging; CodeRabbit is optional unless branch policy requires it. Prepare slice 2 locally without publishing a polluted diff.
+- L13 Slice 2 preset coverage is isolated in 588658564 (92 authored lines). This is a test-only evidence unit, not a claim to fix the unreplicated persistence report. First PR CI run 41821918814 is being watched with --exit-status; Windows Hidden Internal Processes already succeeded on the same head.

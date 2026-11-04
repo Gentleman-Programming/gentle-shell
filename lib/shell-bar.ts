@@ -224,9 +224,9 @@ function joinSegments(segments: string[], theme: ShellBarTheme): string {
 // or inferred meanings from opaque extension status strings.
 // The fullscreen rail's Status, drawn as panel sections (design/shell-rework/02-proposal.html):
 // Changes, Review (only with current-session RDD evidence) and Integrations.
-// Location, model and profile live in the header row, so they never repeat
-// here. Opaque integration statuses wrap so none of their meaning is clipped,
-// and the optional key hints close the rail.
+// Location and model live in the header row; Integrations also identifies the
+// effective agent profile. Opaque integration statuses wrap so none of their
+// meaning is clipped, and the optional key hints close the rail.
 export function renderShellSidebarBar(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): string[] {
 	return renderShellStatusSections(model, theme, width, presentation, hints, options).lines;
 }
@@ -286,11 +286,15 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	const integrationRows = (text: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT - 2))
 		.map((line, index) => renderPanelRow(width, `${label(index === 0 ? "- " : "  ")}${line}`));
 	const permission = model.permission?.detail ? integrationRows(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`) : [];
+	const profile = model.profile ? sanitizeStatus(model.profile) : "";
+	const profileRows = profile
+		? wrapTextWithAnsi(`${label("Agent profile:")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line))
+		: [];
 	const count = integrations.length + (permission.length ? 1 : 0);
 	sections.push({
 		key: "integrations",
 		header: header("integrations", "Integrations", count ? String(count) : "none"),
-		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+		rows: [...profileRows, ...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
 	});
 	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
 	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];

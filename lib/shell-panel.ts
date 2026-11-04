@@ -135,5 +135,6 @@ export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: numb
 		const remaining = content.length - top - shown.length;
 		shown.push(` ${fitPanelLine(`${theme.fg("accent", "↓")} ${theme.fg("muted", `${remaining} more · scroll`)}`, "", inner)} `);
 	}
+	while (shown.length < viewport) shown.push(fitPanelLine("", "", target));
 	return { lines: paintPanelSurface(theme, [title, ...shown]), maxScroll };
 }

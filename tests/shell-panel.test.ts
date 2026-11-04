@@ -106,9 +106,9 @@ test("the Jobs section lists each job with its id, label and elapsed time", () =
 /** `left` and `right` on one row of `width` columns, the way a panel row aligns them. */
 const edge = (left: string, right: string, width: number) => left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
 
-test("the rail Status draws Changes, Review and Integrations as panel sections and never repeats the header", () => {
+test("the rail Status draws Changes, Review and Integrations with the agent profile", () => {
 	const model = {
-		cwd: "/project", branch: "main", dirty: 2, sessionName: "session", profile: "claude (session)",
+		cwd: "/project", branch: "main", dirty: 2, sessionName: "my unique session", profile: "claude (session)",
 		modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000,
 		costTotal: 1, subscription: false, usage: undefined,
 		changes: { files: 22, added: 802, deleted: 352 },
@@ -127,13 +127,14 @@ test("the rail Status draws Changes, Review and Integrations as panel sections a
 		"  app.ts +2 files",
 		"",
 		edge("▾ INTEGRATIONS", "2", 48),
+		"  Agent profile: claude (session)",
 		"  - 🧠 gentle-pi · ready",
 		"  - 💥 SUPER YOLO ON — no permission prompts;",
 		"    private paths stay blocked",
 		"",
 		"  ctrl+shift+t todos · alt+u usage",
 	]);
-	assert.doesNotMatch(rows.join("\n"), /project|Branch|Profile|session/, "location and profile live in the header, once");
+	assert.doesNotMatch(rows.join("\n"), /project|Branch|my unique session/, "location and session identity stay in the header");
 });
 
 test("the rail Status keeps an empty Changes row, hides Review without evidence and honors its toggles", () => {
@@ -199,9 +200,13 @@ test("Integrations bullets distinguish items from continuations without losing d
   const result = renderShellStatusSections(model, plain, width, { density: "compact", visibility });
   const [header, ...body] = result.lines.map(line => stripAnsi(line).trimEnd());
   assert.match(header, /INTEGRATIONS\s+3$/);
-  assert.equal(body.filter(line => line.startsWith("  - ")).length, 3);
-  assert.ok(body.every(line => line.startsWith("  - ") || line.startsWith("    ")), "wrapped lines align beneath the item's text");
-  const content = body.map(line => line.replace(/^  - /, "").trim()).join(" ");
+  const firstBullet = body.findIndex(line => line.startsWith("  - "));
+  assert.ok(firstBullet > 0, "the profile is contextual metadata before the status bullets");
+  assert.equal(body.slice(0, firstBullet).map(line => line.trim()).join(" "), "Agent profile: claude (session)");
+  const bullets = body.slice(firstBullet);
+  assert.equal(bullets.filter(line => line.startsWith("  - ")).length, 3);
+  assert.ok(bullets.every(line => line.startsWith("  - ") || line.startsWith("    ")), "wrapped lines align beneath the item's text");
+  const content = bullets.map(line => line.replace(/^  - /, "").trim()).join(" ");
   assert.match(content, /no permission prompts; private paths stay blocked/);
   assert.match(content, /Fast requested; last response from server: Standard \(default\)/);
   for (const line of result.lines) assert.equal(visibleWidth(line), width);
@@ -215,7 +220,7 @@ test("Integrations bullets distinguish items from continuations without losing d
 test("Integrations explains the permission mode without repeating it", () => {
 	const rows = renderShellSidebarBar(chromeModel, plain as never, 48).map((line) => line.trimEnd());
 	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
-	assert.deepEqual(rows.slice(at + 1), ["  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
+	assert.deepEqual(rows.slice(at + 1), ["  Agent profile: claude (session)", "  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
 	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
 });
 
@@ -242,7 +247,7 @@ test("the panel sheet stacks the rail sections under a title row and scrolls wit
 	]);
 	const sheet = renderPanelSheet(parts as never, plain, 30, { rows: 20, scrollTop: 0 });
 	const rows = sheet.lines.map((line) => stripAnsi(line).trimEnd());
-	assert.deepEqual(rows, [edge(" ✿ Panel", "esc back ", 30).trimEnd(), "", " ▾ TODOS", "   ○ one", "", " ▾ AGENTS", "", " ▾ CHANGES", "   clean"]);
+	assert.deepEqual(rows, [edge(" ✿ Panel", "esc back ", 30).trimEnd(), "", " ▾ TODOS", "   ○ one", "", " ▾ AGENTS", "", " ▾ CHANGES", "   clean", ...Array(11).fill("")]);
 	for (const line of sheet.lines) assert.equal(visibleWidth(stripAnsi(line)), 30);
 	const clipped = renderPanelSheet(parts as never, plain, 30, { rows: 5, scrollTop: 2 });
 	assert.equal(clipped.lines.length, 5, "title row plus four content rows");
@@ -251,6 +256,34 @@ test("the panel sheet stacks the rail sections under a title row and scrolls wit
 	assert.match(stripAnsi(clipped.lines.at(-1)!), /↓ 3 more · scroll/);
 	const end = renderPanelSheet(parts as never, plain, 30, { rows: 5, scrollTop: 4 }).lines.map((line) => stripAnsi(line).trimEnd());
 	assert.deepEqual(end.slice(1), [" ▾ AGENTS", "", " ▾ CHANGES", "   clean"], "the last page shows the last rows without a more row");
+});
+
+test("the mobile sheet wraps and scrolls the Integrations agent profile", () => {
+	const model = { ...chromeModel, profile: "mobile-agent-with-a-long-name (local)", permission: undefined, integrations: ["MCP connected"] };
+	const visibility = { changes: false, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
+	const parts = new Map([["footer", { render: (width: number) => renderShellSidebarBar(model, plain, width, { density: "compact", visibility }) }]]);
+	const full = renderPanelSheet(parts, plain, 28, { rows: 15, scrollTop: 0 });
+	assert.match(full.lines.join("").replace(/\s/g, ""), /Agentprofile:mobile-agent-with-a-long-name\(local\)/);
+	assert.match(full.lines.join("\n"), /INTEGRATIONS\s+1/);
+	const top = renderPanelSheet(parts, plain, 28, { rows: 5, scrollTop: 0 });
+	assert.ok(top.maxScroll > 0);
+	assert.match(top.lines.join("\n"), /INTEGRATIONS/);
+	assert.match(top.lines.join("\n"), /Agent profile:/);
+	const end = renderPanelSheet(parts, plain, 28, { rows: 5, scrollTop: top.maxScroll });
+	assert.match(end.lines.join("\n"), /MCP connected/);
+	for (const line of [...top.lines, ...end.lines]) assert.equal(visibleWidth(line), 28);
+});
+
+test("a short sheet fills the resized viewport with painted rows without adding scroll content", () => {
+	const painted = { ...plain, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	const parts = new Map([["todo", { render: (width: number) => ["▾ TODOS".padEnd(width)] }]]);
+	for (const rows of [12, 6]) {
+		const sheet = renderPanelSheet(parts, painted, 30, { rows, scrollTop: 99 });
+		assert.equal(sheet.lines.length, rows);
+		assert.equal(sheet.maxScroll, 0, "padding does not extend the scroll range");
+		assert.ok(sheet.lines.every((line) => visibleWidth(line) === 30 && line.includes("\x1b[48;5;22m")), "every row fills and paints the surface");
+		assert.equal(stripAnsi(sheet.lines.at(-1)!), " ".repeat(30));
+	}
 });
 
 test("the mobile title row carries the model, since the narrow status bar leaves it out", () => {

@@ -700,7 +700,7 @@ test("hidden Status leaves only a jobs count in regular bottom and fullscreen he
 	} finally { component.dispose(); await fire(handlers, "session_shutdown", ctx); }
 });
 
-test("the fullscreen Status rail carries a live digest, and a profile switch refreshes the header that shows it", async () => {
+test("the fullscreen Status rail and header refresh the effective agent profile together", async () => {
 	const { pi, handlers } = fakePi();
 	let profile: string | undefined = "team";
 	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => profile });
@@ -718,16 +718,20 @@ test("the fullscreen Status rail carries a live digest, and a profile switch ref
 		assert.equal(typeof rail.digest, "function", "the Status card paints live state and must declare a digest");
 		assert.doesNotMatch(rail.render(46).join("\n"), /gpt-5\.5/, "model now lives in the header, not the Status card");
 
-		// The profile lives in the header row, once; the rail never repeats it.
+		// Integrations exposes the same effective agent profile as the header.
 		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
-		assert.doesNotMatch(rail.render(46).join("\n"), /Profile|team/);
+		assert.match(rail.render(46).join("\n"), /Agent profile: team/);
 		assert.match(header.render(160).join("\n"), /team/);
 		const beforeProfile = header.digest?.();
+		const beforeRailProfile = live();
 		profile = "other";
 		assert.notEqual(header.digest?.(), beforeProfile, "a profile switch changes the header digest");
+		assert.notEqual(live(), beforeRailProfile, "a profile switch changes the Status digest");
 		assert.match(header.render(160).join("\n"), /other/);
+		assert.match(rail.render(46).join("\n"), /Agent profile: other/);
 		profile = undefined;
 		assert.doesNotMatch(header.render(160).join("\n"), /team|other/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Agent profile:/);
 
 		const beforeStatus = live();
 		statuses.set("mcp", "MCP: 3 servers enabled");
@@ -912,7 +916,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	try {
 		const timer = intervals.find((entry) => entry.delay === 2000);
 		assert.ok(timer, "UI session installs the 2000ms profile refresh");
-		assert.doesNotMatch(status(), /Profile|team/, "the rail never repeats the header's profile");
+		assert.match(status(), /Agent profile: team/, "Integrations shows the effective agent profile");
 		assert.match(header(), /team/);
 		const before = tui.requestRender.mock.callCount();
 		timer.tick();
@@ -922,6 +926,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		assert.match(header(), /other \(local\)/);
+		assert.match(status(), /Agent profile: other \(local\)/, "profile polling also refreshes Integrations");
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		const afterBind = resolutions;

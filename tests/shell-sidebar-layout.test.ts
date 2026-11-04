@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CURSOR_MARKER, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Container, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
 import { setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
@@ -91,6 +91,28 @@ test("root hover fallback preserves the original mouse result and restores owner
 	dispose();
 	assert.equal(root.handleMouse, original);
 	assert.equal(clears, 2, "dispose clears remaining shell hover");
+});
+
+test("root hover fallback never re-renders the transcript for wheel or move events", () => {
+	// pi-tui skips layout roots that keep Container.prototype.handleMouse: its
+	// fallback measures every child by rendering it, O(transcript) per event.
+	const f = fixture("fullscreen", 140);
+	let childRenders = 0;
+	const root = new Container() as Container & { [NODE]: () => unknown };
+	root.addChild({ render: () => { childRenders++; return ["message"]; }, invalidate() {} });
+	root[NODE] = f.original;
+	(f.host as { layoutRoot: unknown }).layoutRoot = root;
+	const dispose = installSidebar(f.tui, theme);
+	assert.notEqual(root.handleMouse, Container.prototype.handleMouse, "the hover fallback is installed");
+	const base: TuiMouseEvent = { type: "wheel", button: "none", wheelDelta: -1, x: 1, y: 0, screenX: 1, screenY: 0, width: 80, height: 24, shift: false, alt: false, ctrl: false };
+	let clears = 0;
+	setSidebarHover(f.tui, {}, () => { clears++; });
+	assert.equal(root.handleMouse(base), undefined);
+	assert.equal(root.handleMouse({ ...base, type: "move" }), undefined);
+	assert.equal(clears, 1, "move still clears shell hover");
+	assert.equal(childRenders, 0, "mouse events must not render transcript children");
+	dispose();
+	assert.equal(root.handleMouse, Container.prototype.handleMouse);
 });
 
 test("only fullscreen at 140 columns activates; shrinking restores bottom paint", (t) => {

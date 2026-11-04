@@ -1,4 +1,4 @@
-import { ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Container, ScrollView, VStack, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, cardStyle, paintSurfaceRow, surfaceOpener, type CardStyle } from "./shell-card.ts";
@@ -365,7 +365,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const original = root[NODE]!;
 			const descriptor = Object.getOwnPropertyDescriptor(root, NODE);
 			const mouseDescriptor = Object.getOwnPropertyDescriptor(root, "handleMouse");
-			const originalMouse = root.handleMouse;
+			// pi-tui skips layout roots that keep Container.prototype.handleMouse:
+			// without a mouse layout cache it renders every child to measure it,
+			// which re-renders the whole transcript on each wheel or move event.
+			// Replacing it must not re-enable that path, so only own handlers run.
+			const originalMouse = root.handleMouse === Container.prototype.handleMouse ? undefined : root.handleMouse;
 			const fallbackMouse: NonNullable<Component["handleMouse"]> = (event) => {
 				if (event.type === "move" && event.button === "none") setSidebarHover(tui);
 				return originalMouse?.call(root, event);

@@ -8,14 +8,14 @@ Gentle Shell can thank engaged users with a single, non-blocking invitation to s
 - **Idle only.** The offer waits for 30 seconds without any keyboard activity and for no running agent before showing anything. Typing at any moment restarts the wait and is never consumed.
 - **Once per session.** If the offer goes unanswered, it auto-hides after five minutes and does not return until the next session.
 - **Dismissal is forever.** `Alt+D` (or any dismissal path) persists a never-ask-again flag. If state cannot be read or written, the extension never asks at all: a dismissal that cannot be saved must not be replaced by nagging.
-- **Already starred.** When the opt-in direct flow is enabled and the authenticated `gh` account already starred the repository, the offer marks itself dismissed without ever showing.
+- **Already starred.** When the authenticated `gh` account already starred the repositories, the offer marks itself dismissed without ever showing. If `gh` cannot answer, the offer stays silent for that session.
 
 ## The offer
 
-When idle conditions are met, a footer status line appears:
+When idle conditions are met, a footer status line appears, painted in the theme's `success` green (the color of added lines in the changes view) so it stands out:
 
 ```
-Enjoying Gentle Shell? Ctrl+G stars github.com/Gentleman-Programming/gentle-shell on GitHub, Alt+D never asks again
+Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again
 ```
 
 Only two control chords are intercepted while the offer is visible — plain typing is passed through untouched, so the prompt can never eat a character:
@@ -25,17 +25,17 @@ Only two control chords are intercepted while the offer is visible — plain typ
 
 ## Starring
 
-By default `Ctrl+G` stars **both sibling repositories** — it opens `https://github.com/Gentleman-Programming/gentle-shell` and `https://github.com/Gentleman-Programming/gentle-ai` in the browser; nothing touches stored credentials.
+`Ctrl+G` stars **both sibling repositories**, `Gentleman-Programming/gentle-shell` and `Gentleman-Programming/gentle-ai`, right from the terminal through the authenticated `gh` account, only after that explicit keypress (each PUT is an idempotent no-op when already starred). If `gh` is missing or fails, it falls back to opening both URLs in the browser instead of dead-ending.
 
-To enable the one-chord flow (star directly with the authenticated `gh` account, t3code-style), set `directStar` in `star-prompt.json` inside the gentle config home:
+To open the browser instead of using `gh` credentials, set `directStar` to `false` in `star-prompt.json` inside the gentle config home:
 
 ```json
 {
 	"schema": "gentle-shell.star-prompt/v1",
 	"sent": 12,
 	"dismissed": false,
-	"directStar": true
+	"directStar": false
 }
 ```
 
-With `directStar: true`, the extension reads starred state and stars both repositories through `gh api` after the explicit `Ctrl+G` keypress (each PUT is an idempotent no-op when already starred); if `gh` is missing or fails, it falls back to opening both URLs in the browser instead of dead-ending.
+With `directStar: false`, the extension never reads starred state or touches stored credentials.

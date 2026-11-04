@@ -27,7 +27,7 @@ export interface StarPromptState {
 	sent: number;
 	/** Set by any dismissal; once true the prompt never asks again. */
 	dismissed: boolean;
-	/** Opt-in (default false): the star chord uses stored gh credentials instead of opening the browser. */
+	/** Default true: the star chord stars through the authenticated gh account; false opens the browser instead. */
 	directStar: boolean;
 }
 
@@ -35,7 +35,7 @@ export const DEFAULT_STAR_PROMPT_STATE: StarPromptState = {
 	schema: STAR_PROMPT_SCHEMA,
 	sent: 0,
 	dismissed: false,
-	directStar: false,
+	directStar: true,
 };
 
 export interface StarPromptStateRead {

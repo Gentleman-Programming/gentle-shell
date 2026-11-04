@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createStarPromptExtension } from "../extensions/gentle-star-prompt.ts";
 import {
+	DEFAULT_STAR_PROMPT_STATE,
 	DISMISS_CHORD,
 	PROMPTS_BEFORE_ASKING,
 	STAR_CHORD,
@@ -27,7 +28,7 @@ test("star prompt state: a missing file reads as fresh defaults and stays usable
 		assert.equal(read.unusable, false);
 		assert.equal(read.state.sent, 0);
 		assert.equal(read.state.dismissed, false);
-		assert.equal(read.state.directStar, false);
+		assert.equal(read.state.directStar, true);
 	} finally {
 		rm(dir, { recursive: true, force: true }).catch(() => {});
 	}
@@ -103,6 +104,7 @@ function harness(options: HarnessOptions = {}) {
 	let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined;
 	const ctx = {
 		ui: {
+			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			setStatus: (_key: string, text: string | undefined) => statuses.push(text),
 			notify: (message: string) => notes.push(message),
 			onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => {
@@ -240,7 +242,30 @@ test("extension: Ctrl+G with directStar stars via gh, thanks, and dismisses fore
 	assert.equal(h.written.at(-1)?.dismissed, true);
 });
 
-test("extension: Ctrl+G without directStar opens the browser instead of using credentials", async () => {
+test("extension: by default Ctrl+G stars both repos via gh without opening the browser", async () => {
+	const h = harness({ state: { ...DEFAULT_STAR_PROMPT_STATE, sent: 9 } });
+	await h.fire("agent_end");
+	h.advance(STAR_PROMPT_IDLE_MS);
+	h.scheduled[0].fn();
+	assert.equal(h.gh.starred, 1); // the default flow skips users who already starred
+	assert.deepEqual(h.key(STAR_CHORD), { consume: true });
+	assert.equal(h.gh.star, 1);
+	await drain();
+	assert.deepEqual(h.openedUrls, []);
+	assert.ok(h.notes[0].includes("Thanks for the star"));
+	assert.equal(h.written.at(-1)?.dismissed, true);
+});
+
+test("extension: the offer is painted in the theme's success green, like added lines in the changes view", async () => {
+	const h = harness({ state: stateWith(9) });
+	await h.fire("agent_end");
+	h.advance(STAR_PROMPT_IDLE_MS);
+	h.scheduled[0].fn();
+	const offer = h.statuses.at(-1);
+	assert.ok(typeof offer === "string" && offer.startsWith("<success>Enjoying Gentle Shell?") && offer.endsWith("</success>"));
+});
+
+test("extension: Ctrl+G with directStar false opens the browser instead of using credentials", async () => {
 	const h = harness({ state: stateWith(9) });
 	await h.fire("agent_end");
 	h.advance(STAR_PROMPT_IDLE_MS);

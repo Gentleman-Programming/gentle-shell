@@ -57,9 +57,9 @@ function defaultSchedule(ms: number, fn: () => void): Timer {
 /** Non-blocking GitHub star offer, cloned from t3code's GitHubStarPrompt courtesies:
  * asks only engaged users (after 5 sent prompts), only while idle with no agent
  * running, at most once per session, and never again after any dismissal — and
- * when state cannot be persisted it never asks at all. The star chord writes a
- * public endorsement with stored gh credentials, so that flow is opt-in
- * (`directStar`, default false); the default action opens the repository URL. */
+ * when state cannot be persisted it never asks at all. The star chord stars
+ * through the authenticated gh account after the explicit keypress (`directStar`,
+ * default true); `directStar: false` opens the repository URLs instead. */
 export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps = {}): void {
 	const configHome = deps.configHome ?? gentlePiConfigHome();
 	const schedule = deps.schedule ?? defaultSchedule;
@@ -186,7 +186,7 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 		current.waitingIdle = true;
 		current.lastInputAt = now();
 		if (!unsubscribeInput) unsubscribeInput = ctx.ui.onTerminalInput(handleTerminalInput(ctx));
-		// Only the opt-in direct flow may read starred state with stored credentials.
+		// Only the direct flow (the default) reads starred state with stored credentials.
 		const starredCheck: Promise<GhOutcome> = current.state.directStar ? runGhStarred() : Promise.resolve("no");
 		void starredCheck.then((starred) => {
 			if (runtime !== current) return;
@@ -218,7 +218,8 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 				return;
 			}
 			current.visible = true;
-			ctx.ui.setStatus(STATUS_KEY, OFFER_TEXT);
+			// The success green of added lines in the changes view, so the offer stands out.
+			ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("success", OFFER_TEXT));
 			visibleTimer = schedule(STAR_PROMPT_VISIBLE_MS, () => {
 				if (runtime !== current) return;
 				current.visible = false;

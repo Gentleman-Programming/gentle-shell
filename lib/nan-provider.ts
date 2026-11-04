@@ -20,7 +20,8 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 // Decimal bounds conservatively interpret the documented 1M/262K/131K labels.
 // Pi models text/image inputs only; documented audio/video inputs are not advertised.
 // Reasoning shares max_tokens with the answer: 65,536 leaves answer room after a
-// 32,768 reasoning budget; DeepSeek uses NaN's 16,384 floor. Qwen 3.8 retains its
+// 32,768 reasoning budget; DeepSeek gets a generous 131,072 output budget: NaN counts reasoning
+// against max_tokens and dense review prompts exceed 16K reasoning tokens (gentle-shell#2840). Qwen 3.8 retains its
 // published 131K output maximum. The remaining 32,768 caps are configured, not NaN-published limits.
 // Pi requires explicit max mappings to offer that level; a null hides a level Pi would otherwise
 // offer, and missing ordinary levels pass through. Each map exposes exactly the efforts NaN's
@@ -56,7 +57,7 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 16_384,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_072,
 		// NaN's DeepSeek route enforces this field, not max_completion_tokens.
 		compat: { maxTokensField: "max_tokens" },
 	},

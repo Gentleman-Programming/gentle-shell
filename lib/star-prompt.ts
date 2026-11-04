@@ -6,8 +6,9 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 
 export const STAR_PROMPT_SCHEMA = "gentle-shell.star-prompt/v1";
 export const STAR_PROMPT_FILE = "star-prompt.json";
-export const STAR_PROMPT_REPOSITORY = "Gentleman-Programming/gentle-shell";
-export const STAR_PROMPT_REPOSITORY_URL = `https://github.com/${STAR_PROMPT_REPOSITORY}`;
+/** Both Gentleman-Programming repos get the star: the one in use and its sibling. */
+export const STAR_PROMPT_REPOSITORIES = ["Gentleman-Programming/gentle-shell", "Gentleman-Programming/gentle-ai"] as const;
+export const STAR_PROMPT_REPOSITORY_URLS = STAR_PROMPT_REPOSITORIES.map((repository) => `https://github.com/${repository}`);
 /** Prompts 1..N stay silent; the offer may appear from N+1 on (t3code parity). */
 export const PROMPTS_BEFORE_ASKING = 5;
 /** Idle wait before offering, so the nudge never interrupts active typing. */
@@ -115,7 +116,7 @@ export type GhOutcome = "yes" | "no" | "unknown";
 export interface GhDeps {
 	exec?: typeof nodeExecFile;
 	ghPath?: string;
-	repository?: string;
+	repositories?: readonly string[];
 }
 
 function execGh(deps: GhDeps, args: readonly string[]): Promise<{ code: number; stderr: string }> {
@@ -130,22 +131,27 @@ function execGh(deps: GhDeps, args: readonly string[]): Promise<{ code: number; 
 	});
 }
 
-/** Resolves whether the authenticated gh account starred the repository; unknown on any ambiguity. */
+/** Resolves whether the authenticated gh account has starred every repository;
+ * unknown on any ambiguity (the PUT is idempotent, so partial knowledge is fine). */
 export async function ghStarred(deps: GhDeps = {}): Promise<GhOutcome> {
-	const repository = deps.repository ?? STAR_PROMPT_REPOSITORY;
-	const { code, stderr } = await execGh(deps, ["api", `user/starred/${repository}`]);
-	if (code === 0) return "yes";
-	if (stderr.includes("HTTP 404")) return "no";
-	return "unknown";
+	let sawUnknown = false;
+	for (const repository of deps.repositories ?? STAR_PROMPT_REPOSITORIES) {
+		const { code, stderr } = await execGh(deps, ["api", `user/starred/${repository}`]);
+		if (code === 0) continue;
+		if (stderr.includes("HTTP 404")) return "no";
+		sawUnknown = true;
+	}
+	return sawUnknown ? "unknown" : "yes";
 }
 
-/** Stars the repository with the authenticated gh account. */
+/** Stars every repository with the authenticated gh account; each PUT is an
+ * idempotent no-op when already starred. */
 export async function ghStar(deps: GhDeps = {}): Promise<GhOutcome> {
-	const repository = deps.repository ?? STAR_PROMPT_REPOSITORY;
-	const { code, stderr } = await execGh(deps, ["api", "--method", "PUT", `user/starred/${repository}`]);
-	if (code === 0) return "yes";
-	if (stderr.includes("HTTP 404")) return "no";
-	return "unknown";
+	for (const repository of deps.repositories ?? STAR_PROMPT_REPOSITORIES) {
+		const { code, stderr } = await execGh(deps, ["api", "--method", "PUT", `user/starred/${repository}`]);
+		if (code !== 0 && !stderr.includes("HTTP 404")) return "unknown";
+	}
+	return "yes";
 }
 
 type SpawnedChild = {

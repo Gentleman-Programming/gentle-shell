@@ -6,7 +6,7 @@ import {
 	PROMPTS_BEFORE_ASKING,
 	STAR_CHORD,
 	STAR_PROMPT_IDLE_MS,
-	STAR_PROMPT_REPOSITORY_URL,
+	STAR_PROMPT_REPOSITORY_URLS,
 	STAR_PROMPT_VISIBLE_MS,
 	ghStar,
 	ghStarred,
@@ -47,8 +47,7 @@ interface SessionRuntime {
 }
 
 const STATUS_KEY = "star-prompt";
-const HOST_PATH = STAR_PROMPT_REPOSITORY_URL.replace("https://", "");
-const OFFER_TEXT = `Enjoying Gentle Shell? Ctrl+G stars ${HOST_PATH} on GitHub, Alt+D never asks again`;
+const OFFER_TEXT = `Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (${STAR_PROMPT_REPOSITORY_URLS.map((url) => url.replace("https://", "")).join(" and ")}) on GitHub, Alt+D never asks again`;
 
 function defaultSchedule(ms: number, fn: () => void): Timer {
 	const id = setTimeout(fn, ms);
@@ -137,14 +136,14 @@ export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps
 			const outcome = await runGhStar();
 			if (outcome === "yes") {
 				persist(ctx, { ...current.state, dismissed: true });
-				ctx.ui.notify(`Thanks for the star! It really helps ${HOST_PATH} grow.`, "info");
+				ctx.ui.notify("Thanks for the stars! They really help both repos grow.", "info");
 				return;
 			}
 			// Unknown or failed gh: fall through to the browser so the chord never dead-ends.
 		}
-		const result = await openRepository(STAR_PROMPT_REPOSITORY_URL);
-		if (result.opened) persist(ctx, { ...current.state, dismissed: true });
-		else ctx.ui.notify(`Could not open the browser (${result.error ?? "unknown error"}). Star us at ${STAR_PROMPT_REPOSITORY_URL}`, "info");
+		const results = await Promise.all(STAR_PROMPT_REPOSITORY_URLS.map((url) => openRepository(url)));
+		if (results.every((result) => result.opened)) persist(ctx, { ...current.state, dismissed: true });
+		else ctx.ui.notify(`Could not open the browser (${results.find((r) => !r.opened)?.error ?? "unknown error"}). Star us at ${STAR_PROMPT_REPOSITORY_URLS.join(" and ")}`, "info");
 	};
 
 	const dismissForever = (ctx: ExtensionContext) => {

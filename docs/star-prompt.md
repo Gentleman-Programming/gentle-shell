@@ -25,7 +25,7 @@ Only two control chords are intercepted while the offer is visible — plain typ
 
 ## Starring
 
-By default `Ctrl+G` opens `https://github.com/Gentleman-Programming/gentle-shell` in the browser; nothing touches stored credentials.
+By default `Ctrl+G` stars **both sibling repositories** — it opens `https://github.com/Gentleman-Programming/gentle-shell` and `https://github.com/Gentleman-Programming/gentle-ai` in the browser; nothing touches stored credentials.
 
 To enable the one-chord flow (star directly with the authenticated `gh` account, t3code-style), set `directStar` in `star-prompt.json` inside the gentle config home:
 
@@ -38,4 +38,4 @@ To enable the one-chord flow (star directly with the authenticated `gh` account,
 }
 ```
 
-With `directStar: true`, the extension reads starred state and stars through `gh api` after the explicit `Ctrl+G` keypress; if `gh` is missing or fails, it falls back to opening the browser instead of dead-ending.
+With `directStar: true`, the extension reads starred state and stars both repositories through `gh api` after the explicit `Ctrl+G` keypress (each PUT is an idempotent no-op when already starred); if `gh` is missing or fails, it falls back to opening both URLs in the browser instead of dead-ending.

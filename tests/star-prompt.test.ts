@@ -250,7 +250,11 @@ test("extension: Ctrl+G without directStar opens the browser instead of using cr
 	assert.equal(h.gh.starred, 0);
 	assert.equal(h.gh.star, 0);
 	await drain();
-	assert.deepEqual(h.openedUrls, ["https://github.com/Gentleman-Programming/gentle-shell"]);
+	// Both sibling repos open; the chord is a two-star action.
+	assert.deepEqual(h.openedUrls, [
+		"https://github.com/Gentleman-Programming/gentle-shell",
+		"https://github.com/Gentleman-Programming/gentle-ai",
+	]);
 	assert.equal(h.written.at(-1)?.dismissed, true);
 });
 
@@ -330,16 +334,16 @@ test("extension: already-starred skips the offer and marks dismissed (direct flo
 
 test("lib: ghStarred classifies 404 as no and other failures as unknown", async () => {
 	const failWith = (stderr: string) => ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | undefined, _o: string, stderr: string) => void) => cb(new Error("failed"), "", stderr));
-	const notStarred = await ghStarred({ exec: failWith("HTTP 404") as never, repository: "x/y" });
+	const notStarred = await ghStarred({ exec: failWith("HTTP 404") as never, repositories: ["x/y"] });
 	assert.equal(notStarred, "no");
-	const broken = await ghStarred({ exec: ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | undefined) => void) => cb(new Error("boom"))) as never, repository: "x/y" });
+	const broken = await ghStarred({ exec: ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | undefined) => void) => cb(new Error("boom"))) as never, repositories: ["x/y"] });
 	assert.equal(broken, "unknown");
 });
 
 test("lib: execFile's null error (exit 0) means starred, and a null error on PUT means starred", async () => {
 	// Real child_process passes error = null on success; that must not crash (found in TUI smoke).
 	const ok = ((_command: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, _o: string, _s: string) => void) => cb(null, "", "")) as never;
-	assert.equal(await ghStarred({ exec: ok, repository: "x/y" }), "yes");
+	assert.equal(await ghStarred({ exec: ok, repositories: ["x/y"] }), "yes");
 	const { ghStar } = await import("../lib/star-prompt.ts");
-	assert.equal(await ghStar({ exec: ok, repository: "x/y" }), "yes");
+	assert.equal(await ghStar({ exec: ok, repositories: ["x/y"] }), "yes");
 });

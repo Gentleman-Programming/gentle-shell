@@ -130,7 +130,7 @@ import { createSessionProfileIntegration, hasPendingSessionProfileSelection, rea
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
 import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
-import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2510,9 +2510,33 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
 }
 
-/** Resolve one complete reviewer routing snapshot without per-role fallback. */
-function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
-	return readSessionProfileBinding(sessionId)?.modelProfiles ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+/**
+ * Resolve one complete reviewer routing snapshot without per-role fallback,
+ * through the same rule launches read (gentle-shell#1064): the Enter binding,
+ * else the profile the session froze at startup (a session frozen without one
+ * never adopts a later pin), else in follow mode the profile the target
+ * resolves now. A reviewer never runs on routing the session no longer uses.
+ */
+function readReviewerModelConfig(cwd: string, sessionId: string | undefined, sessionCwd: string = cwd): AgentModelConfig {
+	const resolution = resolveSessionProfile({ sessionId, cwd: sessionCwd, configHome: gentleAiConfigHome() });
+	// A target in another Git repository keeps its own pin layers, as launches do.
+	const target = readProfilePinStatus(cwd)?.commonDir;
+	const home = readProfilePinStatus(sessionCwd)?.commonDir;
+	// A session outside Git has no repository of its own, so any Git target is foreign.
+	const foreignRepository = target !== undefined && target !== home;
+	// A caller without a session keeps the routing it read before session profiles.
+	// An explicit binding carries its full modelProfiles (orchestrator included) to
+	// the fallback below; sessionProfileRoutingAt role-routes it, and launches must
+	// never see the orchestrator key (gentle-shell#2742, section 8).
+	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd)
+		: resolution.kind === "explicit" ? resolution.modelProfiles
+		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
+	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
+	// Only a profile chosen with Use in this session carries its orchestrator to
+	// the provider review roles; inherited, pinned and global routing leave them on
+	// Pi's persisted default (gentle-shell#2716 A1).
+	if (resolution.kind !== "explicit") delete config.orchestrator;
+	return config;
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */
@@ -8701,6 +8725,16 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
 	let thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
 	if (model === undefined && isProviderReviewRole(routingKey)) {
+		// These roles default to the orchestrator: the session profile's own one
+		// first, so a session that switched profile never reviews on the model it
+		// started with (gentle-shell#1064).
+		const orchestrator = readProfileOrchestrator(config);
+		if (orchestrator?.model !== undefined) {
+			model = orchestrator.model;
+			thinking ??= orchestrator.thinking;
+		}
+	}
+	if (model === undefined && isProviderReviewRole(routingKey)) {
 		const persisted = readOrchestratorSettings(orchestratorSettingsPath());
 		if (persisted.status === "valid" && persisted.entry?.model !== undefined) {
 			model = persisted.entry.model;
@@ -8836,6 +8870,8 @@ async function executeReviewHostRelayCapture(
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	// The session's own directory, so a review of another repository routes like a launch there.
+	sessionCwd: string = cwd,
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -8858,7 +8894,7 @@ async function executeReviewHostRelayCapture(
 			// global routing. A pin that omits a required role stays omitted: the
 			// typed reviewer-config-invalid refusal below is fail-closed, never a
 			// silent per-role fallback to another account's routing.
-			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId));
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd));
 			return {
 				captureArgumentTokens: slot.captureArgumentTokens,
 				targetCwd: cwd,
@@ -9581,7 +9617,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -9607,7 +9643,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -9737,7 +9773,7 @@ async function executeReviewCaptureGroupOperation(
 	}
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
-	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
+	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd);
 	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
@@ -10895,6 +10931,7 @@ export const __testing = {
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
+	reviewHostRelaySelection,
 	readEffectiveModelConfigAsync,
 	followRenamedPin,
 	profilePinScopeNote,

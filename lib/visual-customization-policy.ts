@@ -151,12 +151,12 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 		return { settings: structuredClone(DEFAULT_VISUAL_SETTINGS), source: missing ? "default" : "global_file", malformed: false, readError: !missing, globalFile };
 	}
 }
-/** Same-directory rename keeps partial JSON invisible to readers. */
 /** The stored shape: the tinted surface is the default and stays out of the file, so older versions keep reading it. */
 export function storedVisualSettings(settings: VisualSettings): Omit<VisualSettings, "surface"> & { surface?: ChromeSurface } {
 	const { surface, ...stored } = settings;
 	return surface === CHROME_SURFACE.TINTED ? stored : { ...stored, surface };
 }
+/** Same-directory rename keeps partial JSON invisible to readers. */
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
 	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
 	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();

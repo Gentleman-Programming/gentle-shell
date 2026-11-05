@@ -160,7 +160,7 @@ test("characterize settled native fullscreen scroll frames with and without the 
 					assert.equal(visible[0], `ROW-${String(result.positions[frame % result.positions.length]).padStart(5, "0")} settled transcript`, "visible scroll anchor matches requested position");
 					if (fixture.sidebar && fixture.columns === 140) {
 						assert.ok(screen.some((line) => line.includes("Status card")), "desktop rail is painted");
-						assert.equal(screen[0], "HEADER 138");
+						assert.equal(screen[0], "HEADER 140", "the header bar reaches the window edge");
 					} else {
 						if (fixture.columns === 100) assert.equal(screen[0], "HEADER 100", "narrow fallback retains the full-width header");
 						else assert.ok(!screen.some((line) => line.startsWith("HEADER ")), "desktop sidebar-off control has no header");

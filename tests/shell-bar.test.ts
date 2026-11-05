@@ -848,7 +848,7 @@ test("below-input placement preserves neon and float fallback bytes", (t) => {
 	}
 });
 
-test("below-input bottom-only float bar retains mirrored padding and extension statuses", (t) => {
+test("below-input bottom-only float bar retains mirrored padding and leaves extension statuses to the rail", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const theme = withBackground(plainTheme);
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
@@ -858,18 +858,15 @@ test("below-input bottom-only float bar retains mirrored padding and extension s
 			const rows = renderShellBottomOnlyBar(data, theme, width, "alt+u", presentation);
 			const chrome = renderShellHeaderChrome(buildShellHeaderModel(data), theme, width, "alt+u", presentation);
 			assert.deepEqual(rows.slice(0, 3), chrome.rows.slice(0, 3));
-			assert.equal(rows.length, statuses.length ? 5 : 4);
+			assert.equal(rows.length, 4, "integrations live only in the rail, so no statuses row");
 			assert.equal(rows.at(-1), chrome.rows.at(-1), "padding closes the entire group");
-			if (statuses.length) {
-				assert.match(stripAnsi(rows[3]!), width === 10 ? /^  mcp o…/ : /^  mcp ok/);
-				assert.ok(rows[3]!.startsWith(BG_OPEN), "statuses share the full-width background");
-			}
+			assert.doesNotMatch(rows.map(stripAnsi).join("\n"), /mcp ok|notice/);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
 		}
 	}
 });
 
-test("unified below-input float includes optional Changes and sanitized statuses inside one painted group", (t) => {
+test("unified below-input float includes optional Changes inside one painted group and leaves statuses to the rail", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const theme = withBackground({ ...plainTheme, fg: (_role: string, text: string) => `\x1b[31m${text}\x1b[0m` });
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
@@ -880,7 +877,7 @@ test("unified below-input float includes optional Changes and sanitized statuses
 				const chrome = renderShellBelowInputFloat(model({ statuses }), theme, width, "alt+u", presentation, captured)!;
 				const hasChanges = Boolean(captured?.files.length);
 				assert.equal(chrome.headerRow, hasChanges ? 3 : 2);
-				assert.equal(chrome.rows.length, 4 + Number(hasChanges) + Number(statuses.length > 0));
+				assert.equal(chrome.rows.length, 4 + Number(hasChanges), "integrations live only in the rail");
 				assert.equal(stripAnsi(chrome.rows[0]!), "▁".repeat(width));
 				for (const row of chrome.rows.slice(1)) {
 					let painted = false;
@@ -892,7 +889,7 @@ test("unified below-input float includes optional Changes and sanitized statuses
 					assert.equal(visibleWidth(row), width);
 				}
 				if (width === 240 && hasChanges) assert.match(stripAnsi(chrome.rows[2]!), /^  .*lib\/live.ts/);
-				if (width >= 40 && statuses.length) assert.match(stripAnsi(chrome.rows.at(-2)!), /^  MCP ready now ⟡ notice/);
+				assert.doesNotMatch(chrome.rows.map(stripAnsi).join("\n"), /MCP ready|notice/);
 				if (chrome.usageSpan) {
 					assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow), true);
 					for (let y = 0; y < chrome.rows.length; y++) if (y !== chrome.headerRow) assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, y), false);
@@ -932,4 +929,21 @@ test("the narrow-layout bottom-only bar stays unchanged in the float style", (t)
 	const neon = renderShellBottomOnlyBar(data, theme, 100, "alt+u");
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	assert.deepEqual(renderShellBottomOnlyBar(data, theme, 100, "alt+u"), neon);
+});
+
+test("fullscreen bars outside the rail never list the integrations: they live only in the rail", (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	const painted = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	const data = model({ statuses: ["🧠 gentle-pi · ready", "MCP connected"] });
+	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		const rows = renderShellBottomOnlyBar(data, painted as never, 120, "alt+u", presentation).map(stripAnsi).join("\n");
+		assert.doesNotMatch(rows, /gentle-pi · ready|MCP connected/, `${style}: no integrations in the bottom bar`);
+		assert.match(rows, /ctx/, `${style}: the bar itself stays`);
+	}
+	setCardStyle(CARD_STYLE.FLOAT);
+	const float = renderShellBelowInputFloat(data, painted as never, 120, "alt+u", presentation)!;
+	assert.doesNotMatch(float.rows.map(stripAnsi).join("\n"), /gentle-pi · ready|MCP connected/, "no integrations under the input");
 });

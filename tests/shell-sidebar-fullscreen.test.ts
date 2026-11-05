@@ -47,21 +47,20 @@ async function renderViewport(columns: number, rows: number, sidebar: boolean): 
 
 test("fullscreen with the sidebar leaves no blank row between the editor and the terminal edge", async () => {
 	const screen = await renderViewport(140, 24, true);
-	assert.equal(screen[0], "HEADER 138", "the header owns the first row");
+	assert.equal(screen[0], "HEADER 140", "the header owns the first row");
 	assert.match(screen[screen.length - 1] ?? "", /^╰/, `the editor's bottom border sits on the last row, got ${JSON.stringify(screen.slice(-3))}`);
 	assert.ok(screen.some((row) => row.startsWith("╭─ editor")), "the editor is still painted");
 	assert.ok(screen.some((row) => row.includes("Status card")), "the rail is still painted");
 });
 
-test("float rail leaves a body row between the global header and its first section", async (t) => {
+test("under a split header the rail starts right below the title block, which carries the margin row", async (t) => {
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	setCardStyle(CARD_STYLE.FLOAT);
 	const screen = await renderViewport(140, 24, true);
-	assert.equal(screen[0], "HEADER 138");
+	assert.equal(screen[0], "HEADER 140");
 	assert.match(screen[1]!, /^transcript /, "the transcript starts immediately below the header");
-	assert.doesNotMatch(screen[1]!, /Status card/, "the rail has its own top inset");
-	assert.match(screen[2]!, /Status card/);
+	assert.match(screen[1]!, /Status card/, "the rail adds no inset of its own");
 });
 
 test("fullscreen without the sidebar keeps Pi's bottom bar on the last row", async () => {

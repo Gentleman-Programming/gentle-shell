@@ -5,7 +5,7 @@ import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { HOVER_ROLE } from "./shell-hover.ts";
 import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
 import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard } from "./shell-card.ts";
-import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
+import { chromeSurface, clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -243,7 +243,7 @@ export interface StatusSectionsOptions {
 }
 
 /** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
-export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[] } {
+export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[]; groups: Array<{ start: number; end: number }>; loose: number[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
 	type Section = { key?: StatusSection; header?: string; rows: string[]; openChangesRow?: number };
@@ -301,17 +301,24 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	const gap = sectionGap(presentation?.density) ? [" ".repeat(Math.max(0, width))] : [];
 	const lines: string[] = [];
 	const targets: StatusTarget[] = [];
+	// Each headed section's row range, and the unheaded rows (key hints), so a
+	// transparent rail can draw every section as its own card.
+	const groups: Array<{ start: number; end: number }> = [];
+	const loose: number[] = [];
 	sections.forEach((section, index) => {
 		if (index) lines.push(...gap);
+		const start = lines.length;
 		if (section.key && section.header) {
 			targets.push({ row: lines.length, kind: "toggle", section: section.key });
 			lines.push(section.header);
-			if (options.collapsed?.has(section.key)) return;
+			if (options.collapsed?.has(section.key)) { groups.push({ start, end: lines.length }); return; }
 		}
 		if (section.openChangesRow !== undefined) targets.push({ row: lines.length + section.openChangesRow, kind: "open-changes" });
 		lines.push(...section.rows);
+		if (section.key && section.header) groups.push({ start, end: lines.length });
+		else for (let row = start; row < lines.length; row++) loose.push(row);
 	});
-	return { lines, targets };
+	return { lines, targets, groups, loose };
 }
 
 // The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
@@ -490,6 +497,26 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
 }
 
+/** One blank row on the chrome surface: the margin a chrome bar keeps toward the content in comfortable density. */
+export function renderShellChromePad(theme: ShellBarTheme, width: number): string {
+	return paintChromeRow(theme, " ".repeat(Math.max(0, Math.floor(width))));
+}
+
+/**
+ * A chrome bar: the split status bar row (branch, permission mode, model,
+ * context, cost, usage). In comfortable density it is centered between two
+ * margin rows on the chrome surface; compact and minimal draw the bar row
+ * alone. The top, below-input and split bars all draw it, so every bar shares
+ * the status bar's design; a transparent surface leaves it unpainted.
+ */
+export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint, extras);
+	if (presentation !== undefined && presentation.density !== "comfortable") return bar;
+	// Comfortable centers the text: one margin row on each side of the bar row.
+	const pad = renderShellChromePad(theme, width);
+	return { ...bar, rows: [pad, ...bar.rows, pad], headerRow: bar.headerRow + 1 };
+}
+
 /** The usage segment is interactive only on the content row, never padding or the edge. */
 export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: number): boolean {
 	const { usageSpan } = chrome;
@@ -551,9 +578,9 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
+	// Integrations live only in the rail; this row keeps the running jobs count.
 	const statuses = presentation.statusPlacement === "hidden" ? [] : [
 		...(model.jobs?.length ? [shellJobsCount(model.jobs.length)] : []),
-		...model.statuses.map(sanitizeStatus).filter(Boolean),
 	];
 	const statusRow = statuses.length
 		? floatHeaderRow(theme, targetWidth, () => joinSegments(statuses.map((status) => theme.fg(ROLE.STATUS, status)), theme))
@@ -582,9 +609,8 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 	if (grouped) return grouped.rows;
 	const headerModel = buildShellHeaderModel(model, true);
 	// Neon, missing backgrounds and sub-minimum widths keep the old row count.
-	const rows = [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
-	const statuses = model.statuses.map(sanitizeStatus).filter((status) => status.length > 0).map((status) => theme.fg(ROLE.STATUS, status));
-	return statuses.length ? [...rows, truncateToWidth(joinSegments(statuses, theme), Math.max(0, Math.floor(width)), "…")] : rows;
+	// Integrations live only in the rail (and the [ Panel ] sheet), never in this bar.
+	return [headerContent(headerModel, theme, width, usageHint, presentation, paint).text];
 }
 
 // The rule row painted directly under the header bar: one full-width horizontal
@@ -601,7 +627,8 @@ const BG_RESET = "\x1b[49m";
 // Paints the header content with floatRows and returns the row without its
 // transparent margins plus the background opener. The painted row is
 // `<open> <content> <reset>`; the opener has no spaces, so the first space ends
-// it. Undefined when the float style does not apply.
+// it. Undefined when the float style does not apply. A transparent chrome
+// surface keeps the same geometry with an empty opener and no background.
 function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: number) => string): { inner: string; open: string } | undefined {
 	let floated = false;
 	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
@@ -610,8 +637,12 @@ function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: 
 	});
 	if (!floated || row === undefined) return undefined;
 	const inner = row.slice(1, -1);
+	// Callers slice the trailing reset off `inner`, so the unpainted row keeps one.
+	if (chromeSurface() === "transparent") return { inner: `${inner.replace(BG_SGR, "")}${BG_RESET}`, open: "" };
 	return { inner, open: inner.slice(0, inner.indexOf(" ")) };
 }
+// Background openers (`48;…`) and resets (`49`), which a transparent surface drops.
+const BG_SGR = /\x1b\[(?:48(?:;[0-9]+)*|49)m/g;
 
 // In the float style the rule closes the hanging header tab with an upper
 // one-eighth block line. Box-drawing lines sit mid-cell: a transparent `└──┘`

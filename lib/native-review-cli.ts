@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +10,7 @@ import { decodeReviewAssessmentV1, type ReviewAssessmentV1 } from "./review-risk
 import {
 	REVIEW_INTEGRATION_CONTRACT,
 	decodeReviewAcknowledgedV1,
+	decodeReviewCapabilitiesV2,
 	decodeReviewConsentV2,
 	decodeReviewConsentV3,
 	decodeReviewFailureV2,
@@ -2403,6 +2405,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	}
 
 	private async observedTargetStatus(request: NativeTargetStatusRequest): Promise<ReviewStatusV3> {
+		// Validate locally before discovery; never probe support by sending an
+		// unknown flag or retrying the review without its requested intent.
+		const requestContextArguments = nativeRequestContextArguments(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native STATUS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native STATUS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
@@ -2438,6 +2443,18 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
 		];
 		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
+		let contextExecutable: string | undefined;
+		if (requestContextArguments.length > 0) {
+			contextExecutable = this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false);
+			const digest = createHash("sha256").update(await readFile(contextExecutable)).digest("hex");
+			const discovery = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd,
+				["review", "capabilities", "--contract", REVIEW_INTEGRATION_CONTRACT], false, request.signal, contextExecutable);
+			const capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
+			if (!["start_request_context", "start_options_preflight"].every(feature => capabilities.optionalFeatures.has(feature))) {
+				throw nativeError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false,
+					"provider does not support request context", undefined, false);
+			}
+		}
 		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
@@ -2446,10 +2463,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
-			...nativeRequestContextArguments(request),
+			...requestContextArguments,
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...nativeRequestContextArguments(request)];
-		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
+		const execution = contextExecutable === undefined
+			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}

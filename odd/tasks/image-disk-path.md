@@ -41,6 +41,26 @@ un cambio deliberado del contrato sino por el cableado faltante.
 Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 `tests/image-paste-chips.test.ts` 18/18 en verde después de revertir.
 
+## Decisiones tomadas (2026-11-05)
+
+1. **Retención**: la vida de la sesión. El directorio se borra en el cierre; un barrido al arrancar limpia restos de sesiones que crashearon (más de 7 días).
+2. **Activación**: apagada por defecto, opt-in por configuración (`images.diskCache: off | session`). Nadie persiste imágenes sin pedirlo.
+3. **Exposición**: solo por comando (`/gentle:images`). El path **nunca** se inyecta en el prompt ni viaja al proveedor.
+4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images/<session>/`, directorio `0700`, archivos `0600`.
+
+## Hecho
+
+- `lib/image-disk-cache.ts`: `ImageDiskCache` (`write`, `dispose`, `sweepStale` estático), `defaultCacheRoot()` con XDG, y saneamiento del id de sesión (un `../../etc` cae dentro del root). El barrido solo toca directorios que contienen archivos propios (`image-<id>.<ext>`), así que un root equivocado no puede borrar datos ajenos.
+- `lib/image-attachments.ts`: constructor opcional `constructor(cache?: ImageDiskCache)`, campo `diskPath?` y `dispose()`. Sin cache el comportamiento es **idéntico** al anterior (los 9 tests de contrato y los 18 de chips siguen verdes).
+- `tests/image-disk-cache.test.ts`: 9 tests (root XDG, escape de sesión, bytes y permisos, extensión por mime, degradación sin disco, dispose aislado, barrido, barrido seguro, contrato de la clase).
+
+## Falta (bloqueado por anclas, no por diseño)
+
+- Construir el cache en el arranque de la extensión con el id de sesión real, leyendo `images.diskCache`.
+- Registrar `/gentle:images`, que lista los paths de la sesión actual (el handler puede cerrar sobre `imageAttachments` si se declara junto a los otros `registerCommand`).
+- Llamar `imageAttachments.dispose()` en el cierre de sesión y ejecutar el barrido al arrancar.
+- Las anclas para hacerlo: import de `resolveDoubleEscCancelPolicy` en `extensions/gentle-shell.ts` (patrón de config por resolver), `pi.registerCommand(<NAME>, { description, handler })` cerca de la línea 2022, y el hook de cierre de sesión (por localizar).
+
 ## Tasks (todas pendientes)
 
 - T1: S1/S4 — decidir retención y limpieza (las 6 decisiones abiertas) y dejarlas escritas acá.

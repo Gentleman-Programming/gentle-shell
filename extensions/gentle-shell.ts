@@ -2565,9 +2565,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusTargets = new Map<number, StatusTarget[]>();
 			const statusCard: Component = {
 				render(width: number) {
-					// The rail drops what the wide chrome's title row and status bar show
-					// (session, permission mode) only while that chrome actually draws.
-					const view = statusCardVisible() && visualSettings.headerPlacement === "split"
+					// Beside the rail every header placement draws a chrome bar that shows
+					// the permission mode with its icon, so the rail never repeats the raw
+					// mode statuses; the session-and-statuses view stays for other hosts.
+					const view = statusCardVisible()
 						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
 						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
 					statusTargets.set(width, view.targets);
@@ -2706,6 +2707,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
 			// The split title row and status bar also stay with Status hidden.
 			const splitChrome = () => ideChrome() || (barChrome() && visualSettings.headerPlacement === "split");
+			// Beside the rail the below-input bar is the full-width bottom row, like
+			// split's status bar; the widget under the input steps aside while the
+			// rail is actually drawn.
+			const belowRail = () => fullscreen() && visualSettings.headerPlacement === "below-input" && statusCardVisible();
 			// Beside the rail, the top and below-input headers draw the split status
 			// bar's design (a chrome bar) with a margin row toward the content.
 			// They apply beside the rail and with Status hidden (no rail at all); the
@@ -2756,11 +2761,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => splitChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
+				render: (width) => splitChrome() || narrowChrome() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width, "above").rows : [],
 				invalidate() {},
 				handleMouse(event) {
-					if (!(splitChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
-					if (!shellHeaderUsageHit(statusBarChrome(event.width), event.x, event.y)) return undefined;
+					if (!(splitChrome() || narrowChrome() || belowRail()) || event.type !== "click" || event.button !== "left") return undefined;
+					if (!shellHeaderUsageHit(belowRail() ? chromeBar(event.width, "above") : statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
@@ -2776,6 +2781,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
 					if (disposed) return [];
+					if (belowRail() && sidebarState(tui).active) return [];
 					if (belowChrome()) return chromeBar(width, "above").rows;
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
 					return belowHeader() ? headerBar(width).rows : [];
@@ -2783,6 +2789,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				invalidate() {},
 				handleMouse(event) {
 					if (disposed) return undefined;
+					if (belowRail() && sidebarState(tui).active) return undefined;
 					if (belowChrome()) {
 						if (event.type !== "click" || event.button !== "left" || !shellHeaderUsageHit(chromeBar(event.width, "above"), event.x, event.y)) return undefined;
 						void openUsage(ctx);

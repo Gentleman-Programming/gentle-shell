@@ -4106,14 +4106,18 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		setCardStyle(CARD_STYLE.NEON);
 		assert.deepEqual(footer.render(240), [], "neon retains the legacy dock");
 		setCardStyle(CARD_STYLE.FLOAT);
-		// Beside the rail the below-input header is a chrome bar: a margin row, then the status bar row.
-		const grouped = header.render(240);
-		assert.equal(grouped.length, 2, "rail owns statuses and Changes; the widget draws the chrome bar");
+		// Beside the rail the below-input bar is the full-width bottom row, like split's
+		// status bar: the widget under the input steps aside.
+		assert.deepEqual(header.render(240), [], "the widget under the input steps aside");
+		assert.equal(header.handleMouse?.(click(2, 0, 240)), undefined);
+		const statusbar = state.parts.get("statusbar")!;
+		const grouped = statusbar.render(240);
+		assert.equal(grouped.length, 2, "rail owns statuses and Changes; the bottom row draws the chrome bar");
 		assert.doesNotMatch(stripAnsi(grouped.join("\n")), /MCP updated/);
 		assert.deepEqual(widget("gentle-shell-changes").render(240), []);
 		const usageX = stripAnsi(grouped[1]!).indexOf("usage");
-		assert.equal(header.handleMouse?.(click(usageX, 0, 240)), undefined, "the margin row is not a target");
-		assert.equal(header.handleMouse?.(click(usageX, 1, 240))?.handled, true);
+		assert.equal(statusbar.handleMouse?.(click(usageX, 0, 240)), undefined, "the margin row is not a target");
+		assert.equal(statusbar.handleMouse?.(click(usageX, 1, 240))?.handled, true);
 		ui.closeOverlay?.();
 		state.active = false;
 		for (const width of [9, 10]) {
@@ -7671,7 +7675,7 @@ test("#2890: a wide top header shows the whole header row above the conversation
 	assert.match(header, /\$/, "cost sits in the top header");
 	assert.equal(sidebarState(tui as unknown as TUI).statusBarShowsMode?.(), true, "the bar shows the permission mode with its icon, so the banner steps aside");
 	const status = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(48).join("\n"));
-	assert.match(status, /SESSION|Session/i, "without a title row the rail keeps the session");
+	assert.doesNotMatch(status, /▾ SESSION/, "the bar replaces the session block; the rail keeps its sections");
 });
 
 test("customize Layout → Surface switches the chrome between tinted and transparent live and persists it", async (t) => {
@@ -7759,8 +7763,9 @@ test("a wide top header is the split title row's panel row with the whole header
 		}
 		if (header === "below-input" && status === "auto") {
 			const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => { render(width: number): string[] })();
-			const rows = widget.render(110);
-			assert.equal(rows.length, 2, "a margin row, then the status bar row");
+			assert.deepEqual(widget.render(110), [], "beside the rail the widget under the input steps aside");
+			const rows = state.parts.get("statusbar")!.render(160);
+			assert.equal(rows.length, 2, "the full-width bottom row: a margin row, then the status bar row");
 			assert.match(stripAnsi(rows[1]!), /^ main .*ctx .*usage/);
 		}
 		assert.deepEqual(footer.render(160), exterior ? [""] : [], `${header}/${status}: ${exterior ? "the float prompt ends the dock" : "no extra row under the input"}`);
@@ -7805,5 +7810,28 @@ test("Status bottom at a wide width keeps the bar design, shows Agents and Todos
 			assert.ok(statusRow(rows), `${header}: the bottom Status row lists the integrations`);
 			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, `${header}: on the chrome surface`);
 		}
+	}
+});
+
+test("beside the rail no header placement repeats the raw permission-mode statuses in Integrations", async (t) => {
+	for (const header of ["top", "below-input", "split"] as const) {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const statuses = new Map([["gentle:mode", "Permissions: SUPER-YOLO"], ["gentle:yolo", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"], ["gentle-pi", "🧠 gentle-pi · ready"]]);
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, plainTheme as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		root[node]();
+		const rail = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(48).join("\n"));
+		assert.doesNotMatch(rail, /Permissions: SUPER-YOLO|SUPER YOLO ON/, `${header}: the bar shows the mode; the rail does not repeat it`);
+		assert.match(rail, /gentle-pi · ready/, `${header}: other integrations stay`);
+		assert.match(rail, /no permission prompts/, `${header}: the rail still says what the mode means`);
 	}
 });

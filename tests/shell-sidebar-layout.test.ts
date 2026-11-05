@@ -1302,11 +1302,12 @@ test("a top header sits inside the conversation column, and it and the rail both
 		});
 		const transcript = { render: () => ["CONVERSATION".padEnd(107, "x")], invalidate() {} };
 		const dock = { render: () => ["EDITOR".padEnd(110, "e")], invalidate() {} };
-		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
+		f.root[NODE] = () => ({ type: "vstack", gap: 0, entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
 		t.after(installSidebar(f.tui, theme, () => "auto", () => "top", () => density));
 		assert.equal(f.root[NODE]().type, "hstack", `${density}: no full-width row spans the rail`);
 		const lines = renderLayoutFrame(f.root, 160, 6, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
-		assert.match(lines[5]!, /^EDITORe{104}/, `${density}: the dock (editor and below-input bar) also runs up to the rail`);
+		assert.match(lines[5]!, /^EDITORe{101}/, `${density}: the editor stays in the conversation column`);
+		assert.equal(lines[5]!.slice(107, 110), "   ", `${density}: the editor keeps the 3-column gap from the rail`);
 		// 160 columns minus the 50-column rail: the header reaches the rail, with no gap.
 		assert.match(lines[0]!, /^HEADER 110 /, `${density}: the header runs up to the rail`);
 		assert.equal(lines[1]!.slice(107, 110), "   ", `${density}: the conversation keeps its 3-column gap from the rail`);
@@ -1392,17 +1393,16 @@ test("a split title row's margin row spans the rail, so the rail adds no top pad
 	assert.match(railWithHeader(f).render(50)[0]!, /Status/, "the first section starts right under the title block");
 });
 
-test("beside the rail a below-input layout lets the dock run up to the rail while the transcript keeps its gap", (t) => {
+test("beside the rail a below-input layout keeps the transcript and the dock in the gapped column", (t) => {
 	const f = fixture("fullscreen", 160);
 	sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 	const transcript = { render: () => ["T".repeat(120)], invalidate() {} };
 	const dock = { render: () => ["D".repeat(120)], invalidate() {} };
-	f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
+	f.root[NODE] = () => ({ type: "vstack", gap: 0, entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
 	t.after(installSidebar(f.tui, theme, () => "auto", () => "below-input"));
 	const lines = renderLayoutFrame(f.root, 160, 4, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
 	assert.match(lines[0]!, /^T{107} {3}/, "the transcript keeps its 3-column gap from the rail");
-	assert.match(lines[3]!, /^D{110}/, "the dock reaches the rail");
-	assert.match(lines[0]!, /Status/, "the rail still starts on the first row");
+	assert.match(lines[3]!, /^D{107} {3}/, "so does the dock with the editor");
 });
 
 test("a compact or minimal split title row has no margin row, so the rail keeps its own top gap", (t) => {

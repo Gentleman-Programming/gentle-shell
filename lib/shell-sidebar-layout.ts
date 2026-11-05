@@ -54,8 +54,6 @@ type PreparedRail = {
 	headerActive: boolean;
 	/** A `top` header painted inside the conversation column, beside the rail, instead of above both. */
 	headerInColumn: boolean;
-	/** The column's dock (editor and below-input bar) runs up to the rail; only the transcript keeps the gap. */
-	dockToRail: boolean;
 	presentation?: SidebarPresentation;
 };
 const CACHE = Symbol.for("gentle-pi.experimental-sidebar.cache");
@@ -362,7 +360,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0, headerInColumn: inColumn && active && headerLines.length > 0, dockToRail: active && (inColumn || headerPlacement() === "below-input") };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0, headerInColumn: inColumn && active && headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -427,47 +425,32 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already
 			// recurses into a nested layout via [NODE].
-			// Beside a top or below-input header the column runs up to the rail:
-			// its header and dock (editor, below-input bar) touch the rail, and only
-			// the native transcript entries keep the gap through a blank spacer.
-			// Each wrapper is stable per component, so the transcript keeps its
-			// native scroll and Pi's layout measurement.
+			// A top header heads the conversation column and runs up to the rail;
+			// the transcript and the editor keep their gap through a blank spacer.
+			// The same stable `left` sits underneath, so the transcript keeps its
+			// native scroll.
 			const gapSpacer: Component = { render: () => [], invalidate() {} };
-			const spaced = new WeakMap<Component, Component & { [NODE](): LayoutNode }>();
-			const withGap = (component: Component) => {
-				let wrapped = spaced.get(component);
-				if (!wrapped) {
-					wrapped = { render: () => [], invalidate() {}, [NODE]: () => ({ type: "hstack", gap: 0, align: "stretch", entries: [
-						{ component, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-						{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
-					] }) };
-					spaced.set(component, wrapped);
-				}
-				return wrapped;
-			};
-			const leftToRail = {
+			const leftWithGap = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: (): LayoutNode => {
-					const node = reclaimFooterRow(original.call(root));
-					if (node.type !== "vstack" || !node.entries?.length) return node;
-					const entries = node.entries as StackLayoutEntry[];
-					return { ...node, gap: node.gap ?? 0, entries: entries.map((entry, index) => index === entries.length - 1 ? entry : { ...entry, component: withGap(entry.component) }) };
-				},
+				[NODE]: (): LayoutNode => ({ type: "hstack", gap: 0, align: "stretch", entries: [
+					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
+				] }),
 			};
 			const leftWithHeader = {
 				render: () => [],
 				invalidate() {},
 				[NODE]: (): LayoutNode => ({ type: "vstack", gap: 0, align: "stretch", entries: [
 					{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 },
-					{ component: leftToRail, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: leftWithGap, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 				] }),
 			};
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: () => ({ type: "hstack", gap: prepared?.dockToRail ? 0 : GAP, align: "stretch", entries: [
-					{ component: prepared?.headerInColumn ? leftWithHeader : prepared?.dockToRail ? leftToRail : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+				[NODE]: () => ({ type: "hstack", gap: prepared?.headerInColumn ? 0 : GAP, align: "stretch", entries: [
+					{ component: prepared?.headerInColumn ? leftWithHeader : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),
 			};

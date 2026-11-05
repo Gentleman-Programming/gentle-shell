@@ -26,3 +26,11 @@ test("the layout schematic draws where the header, Status and sections go", () =
 	assert.doesNotMatch(below.join("\n"), /Status|status bar/, "hidden shows no Status at all");
 	for (const line of below) assert.equal(visibleWidth(line), visibleWidth(below[0]!));
 });
+
+test("the layout schematic draws a split header as a title row over the rail and a status bar under it", () => {
+	const split = layoutSchematic({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }).split("\n");
+	assert.match(split[0]!, /^┌─ title ─+┐$/, "the title row spans the rail");
+	assert.match(split[split.length - 1]!, /status bar/);
+	assert.match(split.join("\n"), /todos/, "the rail sections stay");
+	for (const line of split) assert.equal(visibleWidth(line), visibleWidth(split[0]!), "a closed box");
+});

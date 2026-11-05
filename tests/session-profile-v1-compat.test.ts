@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
 import { profileRoleEntries } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
@@ -7,7 +11,8 @@ import {
 	createSessionProfileClear,
 	createSessionProfileStartupBind,
 } from "../lib/session-profile-persistence.ts";
-import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
+import { replay, replayReviewerRouting, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
+import { reviewHostRelaySelection as v1ReviewHostRelaySelection } from "./fixtures/session-profile-v1/gentle-ai-reviewer.ts";
 
 // v1 compatibility (gentle-shell#2742, section 10): a session resumed by the
 // vendored v1 chain routes like the current modules. This file pins today's
@@ -218,4 +223,33 @@ test("a legacy clear after an explicit choice that carried its startup state fre
 	const transcript = { records: [createSessionProfileBind("local", LOCAL, startup), createSessionProfileClear()], defaults: { profiles, active: "frontier" } };
 	assert.deepEqual(replay("current", transcript), replay("v1", transcript));
 	assert.equal(replay("current", transcript).label, "frontier");
+});
+
+// Reviewers (section 10): the reviewer selection of a version without A1 reads
+// the binding, then a live pin, then models.json.
+const PINNED: AgentModelConfig = { "review-risk": { model: "openai/pinned-risk" } };
+
+test("gap (section 10): after a startup-none clear a pin appears; a reviewer without A1 follows it, the current one does not", () => {
+	const transcript = { records: [createSessionProfileClear("none")], defaults: { profiles: { ...profiles, pinned: PINNED }, localPin: "pinned" } };
+	assert.deepEqual(replayReviewerRouting("v1", transcript), PINNED, "v1 without A1 follows the new pin");
+	assert.deepEqual(replayReviewerRouting("current", transcript), {}, "current keeps no session profile");
+});
+
+test("a startup record's orchestrator feeds the current refuter and validator; a reviewer without A1 falls back to settings.json", (t) => {
+	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-agent-home-"));
+	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		rmSync(agentHome, { recursive: true, force: true });
+	});
+	writeFileSync(join(agentHome, "settings.json"), JSON.stringify({ defaultProvider: "pidefault", defaultModel: "settings-model" }));
+	const transcript = { records: [createSessionProfileStartupBind("global", "team", TEAM)], defaults: { profiles, active: "frontier" } };
+	const current = replayReviewerRouting("current", transcript), v1 = replayReviewerRouting("v1", transcript);
+	assert.deepEqual([current, v1], [TEAM, TEAM], "both read the recorded definition, orchestrator included");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.equal(__testing.reviewHostRelaySelection(role, current).selection, "openai/gpt-5", `current ${role} uses the startup record's orchestrator`);
+		assert.equal(v1ReviewHostRelaySelection(role, v1).selection, "pidefault/settings-model", `v1 ${role} without A1 falls back to settings.json`);
+	}
 });

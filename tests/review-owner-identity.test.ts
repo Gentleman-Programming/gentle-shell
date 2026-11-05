@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { createCandidateOwner, prepareCandidateOwnerParent } from "../lib/review-candidate-view-owner.ts";
+import { createCandidateOwner, prepareCandidateOwnerParent, WindowsOwnerValidationError } from "../lib/review-candidate-view-owner.ts";
 
 function fixture(t: test.TestContext) {
 	fs.mkdirSync(resolve("tmp"), { recursive: true });
@@ -37,6 +37,20 @@ function fixture(t: test.TestContext) {
 		}
 		if (name === "powershell.exe") {
 			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
+			if (script.includes("gentle-pi.windows-acl-probe/v1")) {
+				probes.user++;
+				if (identityFailure === "user") throw Object.assign(new Error("fixture user unavailable"), { code: "EACCES" });
+				probes.administrator++;
+				if (identityFailure === "administrator") throw Object.assign(new Error("fixture administrator unavailable"), { code: "EACCES" });
+				const requests = JSON.parse(options.input) as { path: string; kind: string }[];
+				return JSON.stringify({ schema: "gentle-pi.windows-acl-probe/v1", user, localAdministrator: "S-1-5-21-1-2-3-500", entries: requests.map((request, index) => {
+					probes.owner.push(request.path); probes.dacl.push(request.path);
+					const directory = request.kind === "directory";
+					const flags = directory ? "OICI" : "ID";
+					return { index, owner: replacedMarker && request.path.endsWith(".owner.json") ? "S-1-5-21-9-8-7-1002" : user,
+						dacl: `D:${directory ? "P" : ""}(A;${flags};FA;;;${user})(A;${flags};FA;;;SY)(A;${flags};FA;;;BA)` };
+				}) });
+			}
 			if (script.includes("RawSecurityDescriptor")) {
 				probes.administrator++;
 				return identityFailure === "administrator" ? "unavailable" : "S-1-5-21-1-2-3-500";
@@ -63,7 +77,7 @@ function fixture(t: test.TestContext) {
 		replaceMarker: () => { replacedMarker = true; } };
 }
 
-test("Windows creation reuses identity only within one operation and preserves every filesystem probe", (t) => {
+test("Windows creation refreshes identity at each boundary and preserves every filesystem probe", (t) => {
 	const f = fixture(t);
 	for (let operation = 1; operation <= 2; operation++) {
 		if (operation === 2) f.changeUser();
@@ -73,8 +87,8 @@ test("Windows creation reuses identity only within one operation and preserves e
 		assert.equal(owner.root, root);
 		assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), owner);
 		assert.equal(fs.existsSync(root), false);
-		assert.equal(f.probes.user, operation, "one fresh user SID per creation");
-		assert.equal(f.probes.administrator, operation, "one fresh administrator SID per creation");
+		assert.equal(f.probes.user, operation * 2, "fresh user SID at the parent batch and marker boundary");
+		assert.equal(f.probes.administrator, operation * 2, "fresh administrator SID at the parent batch and marker boundary");
 		assert.deepEqual(f.probes.owner.slice((operation - 1) * 4), [...f.boundary, marker]);
 		assert.deepEqual(f.probes.dacl.slice((operation - 1) * 4), [...f.boundary, marker]);
 		assert.deepEqual(f.probes.enforce, []);
@@ -84,8 +98,8 @@ test("Windows creation reuses identity only within one operation and preserves e
 test("Windows preparation retains fresh pre-write and post-write owner/DACL checks", (t) => {
 	const f = fixture(t);
 	assert.equal(prepareCandidateOwnerParent(f.commonDir, "win32"), f.parent);
-	assert.equal(f.probes.user, 1);
-	assert.equal(f.probes.administrator, 1);
+	assert.equal(f.probes.user, 4);
+	assert.equal(f.probes.administrator, 4);
 	assert.deepEqual(f.probes.owner, [...f.boundary, ...f.boundary.flatMap(path => [path, path])]);
 	assert.deepEqual(f.probes.dacl, f.boundary);
 	assert.deepEqual(f.probes.enforce, f.boundary);
@@ -99,7 +113,7 @@ for (const kind of ["user", "administrator"]) test(`Windows creation fails close
 	const stored = fs.readdirSync(f.parent);
 	f.failIdentity(kind);
 	const root = join(f.parent, randomUUID());
-	assert.throws(() => createCandidateOwner(f.commonDir, root, "win32"), /SID is unavailable/);
+	assert.throws(() => createCandidateOwner(f.commonDir, root, "win32"), WindowsOwnerValidationError);
 	assert.equal(fs.existsSync(root), false);
 	assert.equal(fs.existsSync(`${root}.owner.json`), false);
 	assert.equal(fs.readFileSync(marker, "utf8"), before);
@@ -122,10 +136,10 @@ test("Windows creation rollback rechecks a replaced marker owner before removal"
 	});
 	syncBuiltinESMExports();
 	assert.throws(() => createCandidateOwner(f.commonDir, root, "win32"), /fixture write failure/);
-	assert.equal(f.probes.user, 1);
-	assert.equal(f.probes.administrator, 1);
+	assert.equal(f.probes.user, 3, "rollback obtains another fresh identity observation");
+	assert.equal(f.probes.administrator, 3);
 	assert.deepEqual(f.probes.owner, [...f.boundary, marker, marker]);
-	assert.deepEqual(f.probes.dacl, [...f.boundary, marker]);
+	assert.deepEqual(f.probes.dacl, [...f.boundary, marker, marker]);
 	assert.equal(fs.existsSync(marker), true, "unproven marker survives rollback");
 	assert.equal(fs.readFileSync(marker, "utf8"), "");
 	assert.equal(fs.existsSync(root), false);

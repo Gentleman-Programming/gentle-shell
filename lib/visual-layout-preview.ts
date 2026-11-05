@@ -14,7 +14,9 @@ const rule = (label: string, width: number) => (label ? `─ ${label} ` : "").pa
 
 export function layoutSchematic(settings: VisualSettings): string {
 	const rail = settings.statusPlacement === "right" || settings.statusPlacement === "auto";
-	const top = settings.headerPlacement === "top";
+	// A split header draws its title row on top and its counters in a bottom status bar.
+	const split = settings.headerPlacement === "split";
+	const top = settings.headerPlacement === "top" || split;
 	// Two rail rows, filled word by word in rail order.
 	const railRows = ["", ""];
 	let row = 0;
@@ -27,10 +29,10 @@ export function layoutSchematic(settings: VisualSettings): string {
 	const input = top ? "› input" : "› input · header";
 	const main = ["conversation", input];
 	const width = MAIN + (rail ? RAIL + 1 : 0);
-	const bottom = settings.statusPlacement === "bottom" ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
+	const bottom = settings.statusPlacement === "bottom" || (split && rail) ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
 	if (rail) {
 		return [
-			`┌${rule(top ? "header" : "", MAIN)}┬${rule("Status", RAIL)}┐`,
+			split ? `┌${rule("title", MAIN + RAIL + 1)}┐` : `┌${rule(top ? "header" : "", MAIN)}┬${rule("Status", RAIL)}┐`,
 			...main.map((text, line) => `│ ${fill(text, MAIN - 1)}│ ${fill(railRows[line] ?? "", RAIL - 1)}│`),
 			`└${rule(bottom, MAIN)}┴${"─".repeat(RAIL)}┘`,
 		].join("\n");

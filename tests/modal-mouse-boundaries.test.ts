@@ -110,7 +110,7 @@ test("hovered inline yes/cancel spans preserve exact stored bytes until delibera
 // S1/S2: same-name content drift must still fail after all confirmation paints.
 test("hover cannot make a changed profile fingerprint apply replace or delete", async () => {
     for (const key of ["a", "r", "d"]) {
-        const profile = { name: "Desk y yes", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+        const profile = { name: "Desk y yes", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
         let catalog = [profile];
         const effects: string[] = [];
         const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender() { }, onClose() { }, profiles: { list: () => catalog, save: () => { effects.push("replace"); }, apply: () => { effects.push("apply"); }, delete: () => { effects.push("delete"); }, reset() { } } });

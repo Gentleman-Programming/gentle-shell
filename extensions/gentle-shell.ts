@@ -31,7 +31,7 @@ import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualP
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
-import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
+import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
 import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
@@ -128,7 +128,7 @@ import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { panelSheetBackHit, renderPanelSheet, renderWorkRow, workRowLead } from "../lib/shell-panel.ts";
+import { panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
@@ -2200,13 +2200,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
 	// Which IDE chrome the fullscreen shell draws: "wide" while the rail owns the
-	// host, "narrow" (mobile) below the rail breakpoint or with Status at the
-	// bottom (the minimal edition), undefined for the below-input header, a
-	// hidden Status, and regular mode.
+	// host with a split header, "narrow" (mobile) below the rail breakpoint or
+	// with Status at the bottom (the minimal edition) for a top or split header,
+	// undefined for the below-input header, a wide top header (the whole header
+	// row heads the conversation column), a hidden Status, and regular mode.
 	const chromeMode = (tui: TUI): "wide" | "narrow" | undefined => {
-		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
+		if (visualSettings.headerPlacement === "below-input" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
 		const state = sidebarState(tui);
-		if (state.active && state.ownsHost?.()) return "wide";
+		if (state.active && state.ownsHost?.()) return visualSettings.headerPlacement === "split" ? "wide" : undefined;
 		// The compact chrome replaces the bottom bar, so it only applies while the
 		// layout that draws its title row and status bar is installed.
 		if (!state.layoutAttached?.()) return undefined;
@@ -2214,6 +2215,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// "bottom" (the Light preset) is the minimal edition: the phone layout at any width, no rail.
 		if (placement === "bottom") return "narrow";
 		return tui.terminal.columns < SIDEBAR_BREAKPOINT && (placement === "auto" || placement === "right") ? "narrow" : undefined;
+	};
+	// A wide top header heads the conversation column; the editor keeps the
+	// same titled rule as the IDE chrome there.
+	const topHeaderInColumn = (tui: TUI): boolean => {
+		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return false;
+		const state = sidebarState(tui);
+		return Boolean(state.active && state.ownsHost?.());
 	};
 	// The live-work digests the mobile work row folds, honoring the Todos switch.
 	const workParts = (tui: TUI) => {
@@ -2369,10 +2377,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		ctx.ui.notify(`vim: ${result.policy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to off" : ""}. ${state}.`, result.malformed || (effective !== undefined && effective !== result.policy) ? "warning" : "info");
 	};
 	let visualSettings = resolveVisualSettings(animationOptions).settings;
+	setChromeSurface(visualSettings.surface);
 	let sidebarTui: TUI | undefined;
 	let groupedChangesOwner: (width: number) => boolean = () => false;
 	const refreshVisual = () => {
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		setChromeSurface(visualSettings.surface);
 		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
 		renderHost?.invalidateSidebar?.();
@@ -2469,6 +2479,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyCardContent();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		setChromeSurface(visualSettings.surface);
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
 			const sessionId = ctx.sessionManager.getSessionId();
@@ -2547,7 +2558,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render(width: number) {
 					// The rail drops what the wide chrome's title row and status bar show
 					// (session, permission mode) only while that chrome actually draws.
-					const view = statusCardVisible() && visualSettings.headerPlacement === "top"
+					const view = statusCardVisible() && visualSettings.headerPlacement === "split"
 						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
 						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
 					statusTargets.set(width, view.targets);
@@ -2679,10 +2690,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
 			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
-			// With the rail shown and the header on top, the chrome splits like an
+			// With the rail shown and a split header, the chrome splits like an
 			// IDE: a title row with the project identity above, and a status bar
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
-			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
+			// A top header instead keeps the whole header row above the conversation.
+			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
 			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
 			// same split stays, with the model in the title row and live work folded
 			// into one row above the editor.
@@ -2788,7 +2800,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
-				panelChrome: (tui) => chromeMode(tui) !== undefined,
+				panelChrome: (tui) => chromeMode(tui) !== undefined || topHeaderInColumn(tui),
 				panelButton: (tui) => chromeMode(tui) === "narrow",
 				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
 				// The mobile work row is the first top row; a tap on it opens the leading section's view.
@@ -3185,9 +3197,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }),
 				layoutChoice("Status", value, () => visual().statusPlacement === value, "Where Status lives; auto uses the rail from 140 columns"));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }),
-				layoutChoice("Header", value, () => visual().headerPlacement === value, "The model, context and cost row: above the conversation or under the input"));
+				layoutChoice("Header", value, () => visual().headerPlacement === value, "The model, context and cost row: top above the conversation, below-input under the input, split into a title row and a bottom status bar"));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }),
-				layoutChoice("Density", value, () => visual().density === value, "Space between rail sections"));
+				layoutChoice("Density", value, () => visual().density === value, "Spacing: comfortable adds gaps between rail sections and under a top header; compact removes them; minimal also drops the brand, the rail top margin and the key hints"));
+			for (const value of Object.values(CHROME_SURFACE)) add(() => `Surface: ${value}${visual().surface === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, surface: value })), () => layoutPreview({ ...visual(), surface: value }),
+				layoutChoice("Surface", value, () => visual().surface === value, "Chrome background: tinted paints the rail, header rows and panel; transparent lets the terminal background show through"));
 			category = "Cards";
 			// One live style for conversation cards, panels, header/footer and prompt.
 			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read ─╮  outlined chrome + prompt", [CARD_STYLE.FLOAT]: "▎ ✿ read  painted chrome + prompt" };
@@ -3254,7 +3268,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			category = "Profiles";
 			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
 				const saved = catalog()[0];
-				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
+				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : saved.visual.headerPlacement === "split" ? "[Title] → [Input] → [Status bar]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
 			}, action: () => {
 				catalog();
 				customizeView?.openProfiles();

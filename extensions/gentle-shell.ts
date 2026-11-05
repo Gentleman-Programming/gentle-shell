@@ -2262,7 +2262,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return [...(row ? [row] : []), ...(cardHidden ? (state.parts.get("agents")?.alert?.(width) ?? []) : [])];
 	};
 	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
-	const openPanelSheet = (ctx: ExtensionContext) =>
+	// The sheet leaves the editor's [ Panel ] clickable, so an open sheet is reused
+	// instead of stacking another overlay per click.
+	let openSheet: Promise<null | undefined> | undefined;
+	const openPanelSheet = (ctx: ExtensionContext) => {
+		if (openSheet) return openSheet;
+		const opened = showPanelSheet(ctx).finally(() => { if (openSheet === opened) openSheet = undefined; });
+		openSheet = opened;
+		return opened;
+	};
+	const showPanelSheet = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);

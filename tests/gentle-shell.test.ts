@@ -7833,3 +7833,22 @@ test("beside the rail no header placement repeats the raw permission-mode status
 		assert.match(rail, /no permission prompts/, `${header}: the rail still says what the mode means`);
 	}
 });
+
+test("repeated [ Panel ] or /gentle:panel opens never stack sheets: one stays open until it closes", async () => {
+	const { pi, commands } = fakePi();
+	gentleShell(pi, {});
+	const { ctx, ui } = fakeContext();
+	const open = () => commands.get("gentle:panel")!.handler("", ctx);
+	const before = ui.customOptions!.length;
+	const first = open();
+	const again = [open(), open(), open()];
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(ui.customOptions!.length, before + 1, "four clicks open one sheet");
+	ui.overlayView!.handleInput("\x1b");
+	await Promise.all([first, ...again]);
+	const reopened = open();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(ui.customOptions!.length, before + 2, "after one escape the sheet opens again");
+	ui.overlayView!.handleInput("\x1b");
+	await reopened;
+});

@@ -322,9 +322,9 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 <br>
 
 - **Default:** **OFF** unless selected or saved as the global default, with interactive primary TUI controls and live session/workspace binding; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it.
-- **Menu:** With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status.
+- **Menu:** With no argument, `/gentle:yolo` chooses Normal, Auto, YOLO or Super Yolo for this session. Cancelling grants nothing; outside an interactive primary TUI it reports status. Session choices never save defaults.
 - **Lifetime:** Reload and session replacement revoke live grants; new primary instances may apply the saved global default.
-- **Status:** Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**.
+- **Status:** Active YOLO status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**; Super Yolo is identified separately.
 - **Still mandatory:** Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
 - **From Customize:** Or open `/gentle:customize` → **Editor**, choose **ON** or **OFF** on the **YOLO** line below Vim, then press Enter or Space to apply that live-session value. Browsing and previews never activate it; the native permission and consent boundaries remain the same as `/gentle:yolo`. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.

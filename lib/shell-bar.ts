@@ -365,22 +365,20 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
 	const left = join([branch, tail]);
 	const showCounters = presentation?.visibility.usageCost !== false;
-	// The agent profile and its tier follow the model; they give way before the model does.
+	// The configured tier stays beside the effort and yields only at the end; the
+	// agent profile follows it and gives way before the usage does.
+	const tier = model.profileTier ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(model.profileTier === "fast" ? "warning" : ROLE.LABEL, model.profileTier === "fast" ? "Fast" : "Standard")}` : "";
 	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
-	const tier = [
-		profileName ? theme.fg(ROLE.LABEL, profileName) : "",
-		model.profileTier ? theme.fg(model.profileTier === "fast" ? "warning" : ROLE.LABEL, model.profileTier === "fast" ? "Fast" : "Standard") : "",
-	].filter(Boolean).map((segment) => ` ${theme.fg(ROLE.LABEL, "·")} ${segment}`).join("");
+	const profile = profileName ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
 	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
-	// At each usage stage the profile and tier give way before usage degrades further.
-	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true }, ...(tier ? [{ stage, withExec: true, withTier: false }] : [])]),
-		{ stage: undefined, withExec: false, withTier: false }];
-	for (const { stage, withExec, withTier } of attempts) {
+	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true, withProfile: true }, ...(profile ? [{ stage, withExec: true, withTier: true, withProfile: false }] : [])]),
+		...(tier ? [{ stage: undefined, withExec: true, withTier: false, withProfile: false }] : []), { stage: undefined, withExec: false, withTier: false, withProfile: false }];
+	for (const { stage, withExec, withTier, withProfile } of attempts) {
 		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
-		const right = join([withExec ? exec + (exec && withTier ? tier : "") : "", ...counters, usage]);
+		const right = join([withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters, usage]);
 		const room = target - 2;
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
 		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;

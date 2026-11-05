@@ -545,6 +545,8 @@ interface NativeRequestContextSelection {
 	requestContextPath?: string;
 }
 
+export const NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE = "provider does not support request context";
+
 function nativeRequestContextArguments(request: NativeRequestContextSelection): readonly string[] {
 	if (request.requestContextPath === undefined) return [];
 	if (!isCanonicalProcessString(request.requestContextPath)) throw new TypeError("Native requestContextPath must be a non-empty, trimmed, NUL-free string");
@@ -2452,7 +2454,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			const capabilities = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewCapabilitiesV2(discovery.body, digest));
 			if (!["start_request_context", "start_options_preflight"].every(feature => capabilities.optionalFeatures.has(feature))) {
 				throw nativeError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false,
-					"provider does not support request context", undefined, false);
+					NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, undefined, false);
 			}
 		}
 		const statusArguments = submittedTokens === undefined ? [

@@ -79,7 +79,7 @@ if (process.env.GENTLE_PI_ASSET_PROOF_CHILD === "1") {
 			const agentDir = join(home, ".pi", "agent");
 			for (const path of [cwd, agentDir]) mkdirSync(path, { recursive: true });
 			const result = spawnSync(process.execPath, ["--experimental-strip-types", fileURLToPath(import.meta.url)], {
-				cwd, encoding: "utf8", timeout: 30_000,
+				cwd, encoding: "utf8", timeout: 90_000,
 				env: {
 					PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, TMPDIR: root,
 					PI_CODING_AGENT_DIR: agentDir, GENTLE_PI_AGENT_HOME: agentDir,

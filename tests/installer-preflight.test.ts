@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { artifactFor } from "../scripts/installer-downloads.mjs";
 import test from "node:test";
-import { PI_INSTALL_VERSION, collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
+import { collectInventory, goAcquisition, planPreflight, pnpmGlobalBin, requirements } from "../scripts/installer-preflight.mjs";
 
 const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
@@ -32,7 +33,7 @@ test("requirements follow repository metadata and native installer pin", () => {
 });
 
 test("preflight imports a packed manifest without packageManager using the verified pnpm pin", () => {
-	const root = mkdtempSync(fileURLToPath(new URL("./.preflight-packed-", import.meta.url)));
+	const root = mkdtempSync(join(tmpdir(), "gentle-preflight-packed-"));
 	try {
 		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 		delete pkg.packageManager;
@@ -295,7 +296,7 @@ test("an older Pi that pnpm or npm owns is updated before Gentle Shell is instal
 		assert.deepEqual(plan.blockers, [], owner);
 		assert.deepEqual(plan.tools.pi, { status: "needs-update", required: requirements.pi, version: "0.87.1", owner });
 		assert.deepEqual(updateIds(plan), ["update-pi", "install-shell", "setup-shell", "verify-readiness"]);
-		assert.deepEqual(plan.actions[0], { id: "update-pi", kind: "upgrade", target: "pi", version: PI_INSTALL_VERSION });
+		assert.deepEqual(plan.actions[0], { id: "update-pi", kind: "upgrade", target: "pi", version: "latest" });
 		assert.equal(plan.ready, false);
 	}
 });

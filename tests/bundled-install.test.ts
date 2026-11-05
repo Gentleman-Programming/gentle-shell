@@ -1342,13 +1342,38 @@ posixTest("upgradeBundled never downgrades a newer Pi installed with update --la
 	const lines: string[] = [];
 	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: same.adapters, out: (line: string) => lines.push(line) });
 	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: false });
-	assert.deepEqual(lines, ["Gentle Shell 4.1.0 is current; Pi 1.0.5 (installed with 'gentle-shell update --latest') is newer than this release's verified Pi 1.0.1."]);
+	assert.deepEqual(lines, ["Gentle Shell 4.1.0 is current; Pi 1.0.5 is newer than this release's verified Pi 1.0.1."]);
 	assert.deepEqual([same.calls.ensureRuntime.length, same.calls.verify.length, same.calls.loaded.length], [0, 0, 0]);
 	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
-	const newer = upgradeAdapters(layout);
-	const upgraded = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: newer.adapters });
-	assert.equal(upgraded.id, "4.2.0-1.0.2");
-	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
+	const newer = upgradeAdapters(layout, { reported: { shell: "4.2.0", pi: "1.0.5" } });
+	const pnpm = fakePnpm({ shell: "4.2.0", pi: "1.0.5" });
+	newer.adapters.install.run = pnpm.run;
+	const output: string[] = [];
+	const upgraded = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: newer.adapters, out: (line: string) => output.push(line) });
+	assert.deepEqual(upgraded, { id: "4.2.0-1.0.5", changed: true, previous: "4.1.0-1.0.5", removed: ["4.0.0-1.0.0", "4.1.0-1.0.1"] });
+	assert.equal(activeVersion(layout), "4.2.0-1.0.5");
+	assert.deepEqual(pnpm.runs[0].args.slice(1), ["install", "--no-frozen-lockfile"]);
+	assert.equal(existsSync(join(layout.versions, upgraded.id, "pnpm-lock.yaml")), false);
+	assert.match(output[0], /warning:.*Pi 1\.0\.5.*verified Pi 1\.0\.2.*without.*lockfile/);
+	assert.match(output[1], /Upgraded to Gentle Shell 4\.2\.0 with Pi 1\.0\.5/);
+});
+
+posixTest("a failed new Shell installation with preserved newer Pi leaves current unchanged", async () => {
+	const { user, layout } = await activeInstall();
+	await installed(layout, [["4.1.0", "1.0.5"]]);
+	activateVersion(layout, "4.1.0-1.0.5");
+	const { adapters, calls } = upgradeAdapters(layout);
+	const attempts: string[][] = [];
+	adapters.install.run = (_command: string, args: string[]) => { attempts.push(args); return { status: 1, stdout: "fixture failed", stderr: "" }; };
+	const output: string[] = [];
+	await assert.rejects(upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => output.push(line) }),
+		{ message: "pnpm install failed (exit 1)" });
+	assert.deepEqual(attempts.map((args) => args.slice(1)), [["install", "--no-frozen-lockfile"]]);
+	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
+	assert.equal(existsSync(join(layout.versions, "4.2.0-1.0.5")), false);
+	assert.deepEqual(calls.verify, []);
+	assert.equal(output.length, 1);
+	assert.match(output[0], /warning:/);
 });
 
 function latestAdapters(layout: ReturnType<typeof prefixLayout>, { latestPi = "1.0.5", reported = { shell: "4.1.0", pi: latestPi } } = {}) {

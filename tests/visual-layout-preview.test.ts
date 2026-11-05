@@ -8,7 +8,8 @@ test("the layout schematic draws where the header, Status and sections go", () =
 	const neutral = layoutSchematic(DEFAULT_VISUAL_SETTINGS).split("\n");
 	assert.equal(neutral.length, 4);
 	for (const line of neutral) assert.equal(visibleWidth(line), visibleWidth(neutral[0]!), "a closed box");
-	assert.match(neutral[0]!, /^┌─ header ─+┬─ Status ─+┐$/);
+	assert.match(neutral[0]!, /^┌─ header ─+┐$/, "the top header spans the conversation and rail");
+	assert.doesNotMatch(neutral[0]!, /┬|Status/);
 	assert.match(neutral.join("\n"), /todos/);
 	assert.doesNotMatch(neutral.join("\n"), /stats/);
 	assert.match(neutral[3]!, /bar under 140 cols/, "auto explains its fallback");
@@ -19,6 +20,11 @@ test("the layout schematic draws where the header, Status and sections go", () =
 	const light = layoutSchematic(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT)).split("\n");
 	assert.doesNotMatch(light.join("\n"), /Status ─|todos/, "Light has no rail");
 	assert.match(light[3]!, /status bar/);
+
+	const belowRail = layoutSchematic({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" }).split("\n");
+	assert.match(belowRail[0]!, /┬─ Status/);
+	assert.match(belowRail[3]!, /^└─ status bar ─+┘$/, "the bottom bar spans both columns");
+	for (const line of belowRail) assert.equal(visibleWidth(line), visibleWidth(belowRail[0]!));
 
 	const below = layoutSchematic({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input", statusPlacement: "hidden" }).split("\n");
 	assert.doesNotMatch(below[0]!, /header/);

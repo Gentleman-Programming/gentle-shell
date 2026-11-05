@@ -6,7 +6,7 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 export const VISUAL_SCHEMA = "gentle-pi.visual-customization/v1";
 export const STATUS_PLACEMENT = { AUTO: "auto", RIGHT: "right", BOTTOM: "bottom", HIDDEN: "hidden" } as const;
 /**
- * Where the header row goes: `top` above the conversation, inside its column;
+ * Where the header row goes: `top` spans both conversation and rail above them;
  * `below-input` under the editor; `split` the IDE chrome, a full-width title
  * row on top and the per-frame counters in a status bar at the bottom.
  */

@@ -9,10 +9,7 @@ import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customi
 export const SIDEBAR_BREAKPOINT = 140;
 const RAIL_WIDTH = 50;
 const RAIL_PADDING = 1;
-// The rail's ScrollView keeps one column for its scrollbar; with the rail
-// padding that puts the card's right border two columns in from the edge.
-// The header row stops at the same column so its right group lines up with
-// the card instead of touching the terminal edge.
+// The conversation and rail keep a gap below the full-width header.
 const GAP = 3;
 /** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
 export const SIDEBAR_RAIL_COLUMNS = RAIL_WIDTH + GAP;
@@ -95,8 +92,6 @@ type PreparedRail = {
 	/** The tinted blank row that fills the rail below a trailing panel section, or "" when the rail ends on a card. */
 	fillRow: string;
 	headerActive: boolean;
-	/** A `top` header painted inside the conversation column, beside the rail, instead of above both. */
-	headerInColumn: boolean;
 	presentation?: SidebarPresentation;
 };
 const CACHE = Symbol.for("gentle-pi.experimental-sidebar.cache");
@@ -332,15 +327,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		}
 		try {
 			const digestByPart = new Map(parts.map(([key], index) => [key, digests[index]]));
-			// The header is not a rail section: a split header is a full-width
-			// sibling row reading the terminal width (minus the rail's right
-			// inset), while a top header heads the conversation column beside the
-			// rail. Neither reads the 50-column rail's content width.
+			// Top and split headers are full-width siblings above the conversation
+			// and rail; the registered part still chooses which content to render.
 			const headerPart = state.parts.get("header");
-			const inColumn = headerPlacement() === "top";
-			// The column header runs up to the rail: the gap belongs to the transcript only.
-			const columnWidth = Math.max(0, width - RAIL_WIDTH);
-			let preparedHeaderLines = [...(headerPart?.render(inColumn ? columnWidth : Math.max(0, width)) ?? [])];
+			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			const carded = chromeSurface() === "transparent";
@@ -378,21 +368,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			railLines = [];
 			fillRow = "";
 			const surface = panelSurfaceOpener(theme);
-			if (carded) {
-				// Cards carry their own top row (an outline or a padding row), which
-				// lines the first section up with a centered bar's text.
-				if (sections.length && branding.length) railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && branding.length) {
+			if (sections.length && headerActive && headerPlacement() !== "below-input") {
+				// Tinted spacing continues the rail background; transparent spacing
+				// leaves a clear row above the first card. Count it before recording hits.
+				railLines.push(paintSurfaceRow(" ".repeat(contentWidth), surface));
+			}
+			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive && inColumn) {
-				// Beside a top header the first section sits level with its text row: a
-				// comfortable top bar is centered between two margin rows, so the rail
-				// keeps one top padding row on its surface; compact and minimal bars are one row.
-				if (density() === "comfortable") railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
-			} else if (sections.length && headerActive && (headerPlacement() === "split" ? density() !== "comfortable" : density() === "comfortable" && style === CARD_STYLE.NEON)) {
-				// A comfortable split title block carries its own margin row across the
-				// rail; in compact and minimal the rail keeps its own top padding.
-				// Pad the first section beneath the header without breaking its surface.
+			} else if (!carded && sections.length && headerActive && headerPlacement() === "below-input" && density() === "comfortable" && style === CARD_STYLE.NEON) {
 				// Keep neon's existing comfortable gap for below-input headers too.
 				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
 			}
@@ -433,13 +416,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
-			// Without the rail a top header falls back to the full-width row.
-			if (inColumn && headerActive && !active) preparedHeaderLines = [...(headerPart?.render(Math.max(0, width)) ?? [])];
 			headerLines = headerActive && headerPlacement() !== "below-input" ? preparedHeaderLines : [];
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0, headerInColumn: inColumn && active && headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -500,36 +481,14 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const nativeLayout = () => placement() === "hidden" || headerOwnsStatus() || state.compactWork?.() ? reclaimFooterRow(original.call(root)) : original.call(root);
 			const nativeHost = { render: () => [], invalidate() {}, [NODE]: nativeLayout };
 			const left = { render: () => [], invalidate() {}, [NODE]: () => reclaimFooterRow(original.call(root)) };
-			// Stable component wrapping the [left, scroll] hstack behind its own
-			// NODE, exactly like `left` wraps the native transcript: the header
-			// vstack's second entry recurses into it the same way pi-tui already
-			// recurses into a nested layout via [NODE].
-			// A top header heads the conversation column and runs up to the rail;
-			// the transcript and the editor keep their gap through a blank spacer.
-			// The same stable `left` sits underneath, so the transcript keeps its
-			// native scroll.
-			const gapSpacer: Component = { render: () => [], invalidate() {} };
-			const leftWithGap = {
-				render: () => [],
-				invalidate() {},
-				[NODE]: (): LayoutNode => ({ type: "hstack", gap: 0, align: "stretch", entries: [
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
-				] }),
-			};
-			const leftWithHeader = {
-				render: () => [],
-				invalidate() {},
-				[NODE]: (): LayoutNode => ({ type: "vstack", gap: 0, align: "stretch", entries: [
-					{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 },
-					{ component: leftWithGap, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-				] }),
-			};
+			// The full-width header is a sibling above this stable conversation/rail
+			// hstack. Pi keeps native transcript scrolling and dispatches header and
+			// rail mouse events in their respective boxes.
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: () => ({ type: "hstack", gap: prepared?.headerInColumn ? 0 : GAP, align: "stretch", entries: [
-					{ component: prepared?.headerInColumn ? leftWithHeader : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+				[NODE]: () => ({ type: "hstack", gap: GAP, align: "stretch", entries: [
+					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),
 			};
@@ -545,7 +504,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				}
 				const current = prepared!;
 				if (current.presentation?.scrollTop === scroll.scrollTop) return current.presentation.output;
-				const withHeader = current.headerActive && !current.headerInColumn && headerPlacement() !== "below-input";
+				const withHeader = current.headerActive && headerPlacement() !== "below-input";
 				const withStatus = current.statusLines.length > 0;
 				const output: LayoutNode = withHeader || withStatus
 					? { type: "vstack", gap: 0, align: "stretch", entries: [

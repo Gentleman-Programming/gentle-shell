@@ -7199,7 +7199,7 @@ test("a tap on a mobile work row led by an agent opens /gentle:agents instead of
 	}
 });
 
-test("customize presets set density and visibility together, mark the current one, and keep the placements", async (t) => {
+test("customize presets set the visibility, mark the current one, and keep the placements and the density", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
@@ -7210,21 +7210,25 @@ test("customize presets set density and visibility together, mark the current on
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral\s+○ Power user/, "the default density and visibility are the Neutral preset");
 	await customizeAction(ui, "Preset: Light");
 	const light = resolveVisualSettings({ gentlePiConfigHome: home }).settings;
-	assert.equal(light.density, "minimal");
+	assert.equal(light.density, "comfortable", "a preset never changes the density");
 	assert.equal(light.visibility.todo, false);
 	assert.equal(light.visibility.changes, false);
 	assert.equal(light.headerPlacement, "below-input", "the preset keeps the chosen header placement");
 	assert.equal(light.statusPlacement, "bottom", "Light is the minimal edition without the rail");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+● Light/);
 	await customizeAction(ui, "Preset: Power user");
-	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "comfortable", "Power user keeps Neutral's spacing");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "comfortable", "Power user keeps the density");
 	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.stats, true, "and adds Stats");
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+○ Neutral\s+● Power user/);
 	await customizeAction(ui, "Section stats: hidden");
 	assert.ok(findCustomizeRow(ui, "Preset: Neutral"));
 	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral/, "Power user without Stats is Neutral again");
 	await customizeAction(ui, "Density: minimal");
-	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+○ Neutral\s+○ Power user/, "a hand-tuned mix matches no preset");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral/, "changing the density keeps the preset selected");
+	await customizeAction(ui, "Preset: Power user");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.density, "minimal", "switching presets keeps the chosen density");
+	await customizeAction(ui, "Section todo: hidden");
+	assert.equal(visualPresetOf(resolveVisualSettings({ gentlePiConfigHome: home }).settings), undefined, "a hand-tuned visibility mix matches no preset");
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 });
@@ -7232,7 +7236,7 @@ test("customize presets set density and visibility together, mark the current on
 test("customize presets survive session switches and a fresh extension with the same config home", async (t) => {
 	const shared = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
 	const cases = [
-		{ name: "Light", actions: ["Preset: Light"], settings: { ...shared, statusPlacement: "bottom" as const, density: DENSITY.MINIMAL, visibility: { ...shared.visibility, changes: false, todo: false } }, marker: /Preset\s+● Light\s+○ Neutral\s+○ Power user/ },
+		{ name: "Light", actions: ["Preset: Light"], settings: { ...shared, statusPlacement: "bottom" as const, visibility: { ...shared.visibility, changes: false, todo: false } }, marker: /Preset\s+● Light\s+○ Neutral\s+○ Power user/ },
 		{ name: "Neutral after Light", actions: ["Preset: Light", "Preset: Neutral"], settings: { ...shared, visibility: { ...shared.visibility } }, marker: /Preset\s+○ Light\s+● Neutral\s+○ Power user/ },
 		{ name: "Power user", actions: ["Preset: Power user"], settings: { ...shared, visibility: { ...shared.visibility, stats: true } }, marker: /Preset\s+○ Light\s+○ Neutral\s+● Power user/ },
 		{ name: "Power user by arrow with launcher config home", actions: ["Preset: Power user"], settings: { ...shared, visibility: { ...shared.visibility, stats: true } }, marker: /Preset\s+○ Light\s+○ Neutral\s+● Power user/, launcher: true, move: true },
@@ -7255,7 +7259,7 @@ test("customize presets survive session switches and a fresh extension with the 
 			assert.equal(resolved.malformed, false);
 			assert.equal(resolved.readError, false);
 			assert.deepEqual(resolved.settings, scenario.settings);
-			// The tinted surface is the default and is not stored.
+			// The default surface is not stored.
 			const { surface: _surface, ...stored } = scenario.settings;
 			assert.deepEqual(JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8")), { schema: VISUAL_SCHEMA, ...stored });
 		};
@@ -7569,8 +7573,8 @@ test("alt+l cycles the visual presets Light → Neutral → Power user → Light
 	}
 	assert.deepEqual(seen, [VISUAL_PRESET.POWER_USER, VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL]);
 	assert.match(ui.notices.at(-1) ?? "", /Preset: Neutral/);
-	// A hand-tuned mix starts the cycle from Neutral.
-	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, density: DENSITY.MINIMAL }, { gentlePiConfigHome: home });
+	// A hand-tuned visibility mix starts the cycle from Neutral; the density never decides the preset.
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }, { gentlePiConfigHome: home });
 	await shortcut.handler(ctx);
 	assert.equal(preset(), VISUAL_PRESET.NEUTRAL);
 

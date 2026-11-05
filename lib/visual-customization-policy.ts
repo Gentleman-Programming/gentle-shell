@@ -47,19 +47,20 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false },
 };
 /**
- * Presets bundle the density and visibility switches (design/shell-rework/inventory.md):
+ * Presets bundle the visibility switches (design/shell-rework/inventory.md):
  * Light is the minimal edition: Status at the bottom (no rail) and priority 1
  * only (model, context, agent questions, review); Neutral is the default;
- * Power user adds session Stats at Neutral's spacing. They keep the header
- * placement; the active preset is whichever bundle the current settings match.
+ * Power user adds session Stats. Density is its own axis, like the header
+ * placement and the surface: a preset neither sets nor compares it. The active
+ * preset is whichever bundle the current settings match.
  */
 export const VISUAL_PRESET = { LIGHT: "light", NEUTRAL: "neutral", POWER_USER: "power-user" } as const;
 export type VisualPreset = (typeof VISUAL_PRESET)[keyof typeof VISUAL_PRESET];
-const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "density" | "visibility">> = {
-	[VISUAL_PRESET.LIGHT]: { density: DENSITY.MINIMAL, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true, stats: false } },
-	[VISUAL_PRESET.NEUTRAL]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility } },
-	// Same spacing as Neutral: what Power user adds is content (Stats), not density.
-	[VISUAL_PRESET.POWER_USER]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: true } },
+const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "visibility">> = {
+	[VISUAL_PRESET.LIGHT]: { visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true, stats: false } },
+	[VISUAL_PRESET.NEUTRAL]: { visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility } },
+	// What Power user adds is content (Stats).
+	[VISUAL_PRESET.POWER_USER]: { visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: true } },
 };
 export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset): VisualSettings {
 	const bundle = PRESET_BUNDLES[preset];
@@ -68,14 +69,14 @@ export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset
 	const leavingLight = visualPresetOf(settings) === VISUAL_PRESET.LIGHT;
 	const statusPlacement = preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM
 		: leavingLight ? STATUS_PLACEMENT.AUTO : settings.statusPlacement;
-	return { ...settings, statusPlacement, density: bundle.density, visibility: { ...bundle.visibility } };
+	return { ...settings, statusPlacement, visibility: { ...bundle.visibility } };
 }
 /** The preset the settings match, or undefined for a hand-tuned mix. */
 export function visualPresetOf(settings: VisualSettings): VisualPreset | undefined {
 	return (Object.values(VISUAL_PRESET) as VisualPreset[]).find((preset) => {
 		const bundle = PRESET_BUNDLES[preset];
 		if ((settings.statusPlacement === STATUS_PLACEMENT.BOTTOM) !== (preset === VISUAL_PRESET.LIGHT)) return false;
-		return bundle.density === settings.density && (Object.keys(bundle.visibility) as (keyof VisualVisibility)[]).every((key) => bundle.visibility[key] === settings.visibility[key]);
+		return (Object.keys(bundle.visibility) as (keyof VisualVisibility)[]).every((key) => bundle.visibility[key] === settings.visibility[key]);
 	});
 }
 /** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */

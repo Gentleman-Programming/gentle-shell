@@ -139,8 +139,9 @@ test("atomic write round trips and invalid existing files fall back without over
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-// Presets (/gentle:customize → Layout → Preset) bundle the existing density and
-// visibility switches; they never add a key, so every binary keeps reading the file.
+// Presets (/gentle:customize → Layout → Preset) bundle the visibility switches
+// (and Light's bottom Status); density is its own axis, like the header and the
+// surface. They never add a key, so every binary keeps reading the file.
 test("presets are valid settings that keep the file format and the header placement; Light drops the rail", () => {
 	assert.deepEqual(Object.values(VISUAL_PRESET), ["light", "neutral", "power-user"]);
 	const custom = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.RIGHT, headerPlacement: HEADER_PLACEMENT.BELOW_INPUT };
@@ -157,10 +158,10 @@ test("presets are valid settings that keep the file format and the header placem
 	assert.equal(visualPresetOf({ ...applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), statusPlacement: STATUS_PLACEMENT.AUTO }), undefined, "Light switches with a rail are a custom mix");
 	assert.deepEqual(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.NEUTRAL), DEFAULT_VISUAL_SETTINGS, "Neutral is today's default");
 	const light = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT);
-	assert.equal(light.density, DENSITY.MINIMAL);
+	assert.equal(light.density, DEFAULT_VISUAL_SETTINGS.density, "a preset never changes the density");
 	assert.deepEqual({ changes: light.visibility.changes, todo: light.visibility.todo, agents: light.visibility.agents, modelDetails: light.visibility.modelDetails, usageCost: light.visibility.usageCost }, { changes: false, todo: false, agents: true, modelDetails: true, usageCost: true }, "Light keeps priority 1: model, context, agent questions");
 	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
-	assert.equal(power.density, DENSITY.COMFORTABLE, "Power user keeps Neutral's spacing");
+	assert.equal(power.density, DENSITY.COMFORTABLE, "Power user keeps the density");
 	assert.ok(Object.values(power.visibility).every(Boolean), "Power user shows everything");
 	assert.equal(visualPresetOf({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }), undefined, "a hand-tuned mix is custom");
 	const home = mkdtempSync(join(tmpdir(), "visual-preset-"));
@@ -212,4 +213,14 @@ test("the chrome surface defaults to transparent, is stored only when tinted, an
 		assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, surface: "glass" })), undefined);
 		assert.equal(isVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }), true);
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("density is independent of the presets: changing it keeps the preset, and applying a preset keeps it", () => {
+	for (const preset of Object.values(VISUAL_PRESET)) {
+		for (const density of Object.values(DENSITY)) {
+			const applied = { ...applyVisualPreset(DEFAULT_VISUAL_SETTINGS, preset), density };
+			assert.equal(visualPresetOf(applied), preset, `${preset}/${density}: the preset stays selected`);
+			for (const next of Object.values(VISUAL_PRESET)) assert.equal(applyVisualPreset(applied, next).density, density, `${preset}→${next}: the chosen density stays`);
+		}
+	}
 });

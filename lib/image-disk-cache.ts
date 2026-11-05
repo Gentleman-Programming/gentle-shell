@@ -1,6 +1,6 @@
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { isAbsolute, basename, join } from "node:path";
 
 // Pasted images normally live only in memory (see lib/image-attachments.ts).
 // This module is the opt-in disk cache: it gives tools that need a filesystem
@@ -25,7 +25,9 @@ const OWN_FILE = /^image-\d+\.(png|jpg|webp|gif)$/;
 /** `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images`, where sessions are created. */
 export function defaultCacheRoot(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
 	const xdg = env.XDG_CACHE_HOME;
-	const base = xdg && xdg.trim() ? xdg : join(home, ".cache");
+	// XDG says a relative value must be ignored: a cache path that depends on the
+	// working directory cannot be handed to a tool as an absolute file path.
+	const base = xdg && xdg.trim() && isAbsolute(xdg) ? xdg : join(home, ".cache");
 	return join(base, "gentle-shell", "images");
 }
 

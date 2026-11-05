@@ -53,8 +53,11 @@ export class ImageAttachments {
 	}
 
 	/** Cached files for the chips still in the draft; empty when no cache is active. */
-	cachedPaths(): Array<{ token: string; path: string }> {
-		return [...this.entries.values()].flatMap((entry) => (entry.diskPath ? [{ token: entry.token, path: entry.diskPath }] : []));
+	cachedPaths(draftText?: string): Array<{ token: string; path: string }> {
+		const inDraft = draftText === undefined ? undefined : new Set(this.referenced(draftText).map((entry) => entry.id));
+		return [...this.entries.values()].flatMap((entry) =>
+			entry.diskPath && (inDraft === undefined || inDraft.has(entry.id)) ? [{ token: entry.token, path: entry.diskPath }] : [],
+		);
 	}
 
 	/**

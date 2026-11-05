@@ -2340,7 +2340,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// Opt-in disk cache for tools that need a real file path. Off unless the user
 	// asks for it: `GENTLE_PI_IMAGES_DISK_CACHE=session`. The path is never put in
 	// the prompt; it is readable through /gentle:images only.
-	const imagesDiskCachePolicy = (process.env.GENTLE_PI_IMAGES_DISK_CACHE ?? "off").trim().toLowerCase() === "session" ? "session" : "off";
+	const imagesDiskCachePolicy = (env.GENTLE_PI_IMAGES_DISK_CACHE ?? "off").trim().toLowerCase() === "session" ? "session" : "off";
 	// Set by abortAndDispatchQueued via dispatchQueuedText when an Esc aborts
 	// a turn with a non-empty queue; sent exactly once, from agent_settled,
 	// once the aborted run has fully settled (issue #1218). Several aborts
@@ -2847,8 +2847,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		disposeFooter?.();
-		imageAttachments.setCache(undefined);
 		imageAttachments.dispose();
+		imageAttachments.setCache(undefined);
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2905,7 +2905,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				ctx.ui.notify("Image disk cache is off. Set GENTLE_PI_IMAGES_DISK_CACHE=session to enable it.", "info");
 				return;
 			}
-			const cached = imageAttachments.cachedPaths();
+			const cached = imageAttachments.cachedPaths(prompt?.getText() ?? "");
 			if (cached.length === 0) {
 				ctx.ui.notify("No pasted images are cached in this draft.", "info");
 				return;

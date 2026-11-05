@@ -32,8 +32,11 @@ test("writing stores the exact bytes with a private directory and file", () => {
 
 	assert.ok(path, "write must return the file path");
 	assert.deepEqual(new Uint8Array(readFileSync(path)), PNG);
-	assert.equal(statSync(cache.directory).mode & 0o777, 0o700, "session directory is private");
-	assert.equal(statSync(path).mode & 0o777, 0o600, "image file is private");
+	if (process.platform !== "win32") {
+		// Windows has no POSIX owner/group/other bits; the mode is accepted but not enforced.
+		assert.equal(statSync(cache.directory).mode & 0o777, 0o700, "session directory is private");
+		assert.equal(statSync(path).mode & 0o777, 0o600, "image file is private");
+	}
 });
 
 test("the file extension follows the mime type", () => {
@@ -76,6 +79,47 @@ test("the sweep removes stale sessions and keeps fresh ones", () => {
 	assert.equal(removed, 1);
 	assert.equal(existsSync(stale.directory), false, "old session removed");
 	assert.ok(existsSync(fresh.directory), "fresh session kept");
+});
+
+test("a relative XDG_CACHE_HOME is ignored, as the spec requires", () => {
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "cache" }, "/home/u"), "/home/u/.cache/gentle-shell/images");
+});
+
+test("runtime cache changes work: setCache reports paths, dropping it stops them", () => {
+	const root = tempRoot();
+	const attachments = new ImageAttachments();
+	assert.equal(attachments.cachedPaths().length, 0, "no cache, nothing to report");
+
+	attachments.setCache(new ImageDiskCache({ root, sessionId: "s1" }));
+	const withCache = attachments.add({ bytes: PNG, mimeType: "image/png" } as never);
+	assert.deepEqual(attachments.cachedPaths(), [{ token: withCache.token, path: withCache.diskPath }]);
+
+	attachments.setCache(undefined);
+	const withoutCache = attachments.add({ bytes: PNG, mimeType: "image/png" } as never);
+	assert.equal(withoutCache.diskPath, undefined, "dropping the cache stops new paths");
+	assert.equal(attachments.cachedPaths().length, 1, "earlier paths still registered");
+});
+
+test("cachedPaths only reports chips the draft still references", () => {
+	const root = tempRoot();
+	const attachments = new ImageAttachments(new ImageDiskCache({ root, sessionId: "s1" }));
+	const first = attachments.add({ bytes: PNG, mimeType: "image/png" } as never);
+	const second = attachments.add({ bytes: PNG, mimeType: "image/png" } as never);
+
+	assert.equal(attachments.cachedPaths(`${first.token} ${second.token}`).length, 2);
+	const kept = attachments.cachedPaths(`only ${second.token} survives`);
+	assert.deepEqual(kept, [{ token: second.token, path: second.diskPath }], "a deleted chip is not reported");
+	attachments.dispose();
+});
+
+test("a failed cache write leaves the chip usable without a path", () => {
+	const blocked = join(tempRoot(), "not-a-directory");
+	writeFileSync(blocked, "x");
+	const attachments = new ImageAttachments(new ImageDiskCache({ root: blocked, sessionId: "s1" }));
+	const attachment = attachments.add({ bytes: PNG, mimeType: "image/png" } as never);
+	assert.equal(attachment.diskPath, undefined);
+	assert.ok(attachment.base64.length > 0, "the payload is still intact");
+	assert.deepEqual(attachments.cachedPaths(), [], "nothing to report");
 });
 
 test("the sweep never deletes outside the cache root", () => {

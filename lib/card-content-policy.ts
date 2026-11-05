@@ -18,6 +18,8 @@ export const CARD_CONTENT = {
 } as const;
 
 export type CardContent = (typeof CARD_CONTENT)[keyof typeof CARD_CONTENT];
+/** What a missing or unreadable preference means: command-only cards. `default` names the preview level. */
+export const DEFAULT_CARD_CONTENT: CardContent = CARD_CONTENT.MINIMAL;
 
 interface CardContentOptions { gentlePiConfigHome?: string }
 
@@ -45,10 +47,10 @@ export function resolveCardContent(options: CardContentOptions = {}): CardConten
 	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_CONTENT_FILE);
 	try {
 		const content = parseCardContentFile(readFileSync(globalFile, "utf8"));
-		return { content: content ?? CARD_CONTENT.DEFAULT, source: "global_file", malformed: content === undefined, globalFile };
+		return { content: content ?? DEFAULT_CARD_CONTENT, source: "global_file", malformed: content === undefined, globalFile };
 	} catch (error) {
 		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-		return { content: CARD_CONTENT.DEFAULT, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
+		return { content: DEFAULT_CARD_CONTENT, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
 	}
 }
 

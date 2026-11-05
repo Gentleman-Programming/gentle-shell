@@ -286,12 +286,12 @@ Pick the conversation-card and shell-chrome style in `/gentle:customize` → **C
 
 ### Card content
 
-Pick how much a collapsed quiet-tool card shows in `/gentle:customize` → **Cards** → **Card content**. The choice is saved in `card-content.json` in the Gentle Pi config home; a missing, malformed, or unreadable file reads as `default`, and a malformed file is never overwritten.
+Pick how much a collapsed quiet-tool card shows in `/gentle:customize` → **Cards** → **Card content**. The choice is saved in `card-content.json` in the Gentle Pi config home; a missing, malformed, or unreadable file reads as `minimal` (the default), and a malformed file is never overwritten. Pick `default` for the result previews.
 
 | Level | Collapsed quiet-tool cards |
 |-------|----------------------------|
 | `default` | Result previews, counts, and summaries, as described above. Bash rows keep pi's native drawing. |
-| `minimal` | Only the command row for `read`, `write`, `bash`, `grep`, `find`, `ls`, and `edit`; the expand key still reveals the full result. Failed calls keep their bounded error tail. Bash rows draw as a Gentle card when the host supports `pi.registerToolRenderer`, with the bare command as the title. |
+| `minimal` | Only the command row for `read`, `write`, `bash`, `grep`, `find`, `ls`, and `edit`; the expand key still reveals the full result. Failed calls keep their bounded error tail. Bash rows draw as a Gentle card when the host supports `pi.registerToolRenderer`, with the bare command as the title. Collapsed, that title is one row saying what the command does: its first line without leading `cd <dir> &&` hops, clipped to the row, with `… +N lines` when more lines fold behind it; expanding shows the whole command. |
 
 Quiet tool cards redraw immediately after a change; bash rows follow on new calls. Gentle AI cards keep their full card and elapsed time at both levels.
 

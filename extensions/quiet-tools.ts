@@ -8,7 +8,7 @@ import {
 	createWriteTool,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
@@ -485,7 +485,22 @@ interface ToolRenderContextLike {
 	durationMs?: number;
 }
 
-function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike): string {
+// Columns of the card's top rule around the call: `╭─ <glyph> ` before it and ` ─ … ╮` after.
+const CARD_TOP_CHROME = 8;
+// A collapsed minimal bash card says what the command does in one row: its
+// first line without leading `cd <dir> &&` hops, and how many lines fold behind.
+function bashSummary(command: string, width: number): string {
+	const lines = command.replace(/\s+$/, "").split("\n");
+	const first = lines.findIndex((line) => line.trim() !== "");
+	const line = lines[first] ?? "";
+	const action = line.replace(/^\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/, "").trim() || line.trim();
+	const folded = lines.length - first - 1;
+	const suffix = folded > 0 ? ` … +${folded} line${folded === 1 ? "" : "s"}` : "";
+	const room = Math.max(1, width - visibleWidth(suffix));
+	return `${visibleWidth(action) > room ? truncateToWidth(action, room, "…") : action}${suffix}`;
+}
+
+function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike, summary?: { width: number }): string {
 	switch (toolName) {
 		case "read": {
 			const path = safeText(shortenPath(args.path) || "...");
@@ -495,7 +510,9 @@ function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, 
 			const command = safeText(asString(args.command, "..."));
 			const timeout = typeof args.timeout === "number" ? theme.fg("muted", ` (timeout ${args.timeout}s)`) : "";
 			// Minimal cards title bash with the bare command; the card glyph supplies the `$` prompt.
-			const title = cardContent() === CARD_CONTENT.MINIMAL ? command : `bash $ ${command}`;
+			// Collapsed, they keep it to one summary row; expanding shows every line.
+			const title = cardContent() !== CARD_CONTENT.MINIMAL ? `bash $ ${command}`
+				: summary ? bashSummary(command, Math.max(1, summary.width - visibleWidth(timeout))) : command;
 			return `${theme.fg("toolTitle", theme.bold(title))}${timeout}`;
 		}
 		case "grep": {
@@ -599,14 +616,14 @@ class ToolCardRows {
 
 class ToolCardTop implements Component {
 	private readonly rows = new ToolCardRows();
-	private readonly header: () => string;
+	private readonly header: (inner: number) => string;
 	private readonly glyph: string;
 	private readonly tone: ToolTone;
 	private readonly theme: CardTheme;
 	private readonly hint: string | undefined;
 	private readonly row: CardRowContext | undefined;
 
-	constructor(header: () => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
+	constructor(header: (inner: number) => string, tone: ToolTone, theme: CardTheme, glyph: string, hint?: string, row?: CardRowContext) {
 		this.header = header;
 		this.glyph = glyph;
 		this.tone = tone;
@@ -621,7 +638,7 @@ class ToolCardTop implements Component {
 		if (target === 0) return [];
 		const running = this.row !== undefined && cardAwaitingResult(this.row);
 		return this.rows.render(target, running, () => floatRows(this.tone, this.theme, target, (inner) => ({
-			head: cardTopRows({ title: this.header(), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
+			head: cardTopRows({ title: this.header(inner), glyph: this.glyph, body: [], tone: this.tone }, this.theme, inner, this.hint),
 			body: running ? [cardRunningLine(this.tone, this.theme, inner)] : undefined,
 			bottom: running ? cardBottom(this.tone, this.theme, inner) : undefined,
 		})));
@@ -751,7 +768,9 @@ export function createQuietToolRenderer(
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
 			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
-			return new ToolCardTop(() => formatToolCall(toolName, callArgs, theme), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
+			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
+			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 1 : 0) });
+			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {

@@ -1766,3 +1766,20 @@ test("the production factory takes over native bash drawing through a tool rende
 	assert.match(renderToString(call), /printf hi \(timeout 5s\)/);
 });
 
+
+test("a minimal bash card titles a long or multi-line command with one summary row and expands to the whole command", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = registeredQuietTools().get("bash");
+	const command = "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF";
+	const rows = (expanded: boolean) => bash.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, isPartial: false, executionStarted: true, expanded })).render(100).map(stripAnsi);
+	const collapsed = rows(false);
+	const title = collapsed.filter((row) => /python3/.test(row));
+	assert.equal(title.length, 1, "one row says what the command does");
+	assert.match(title[0]!, /python3 - <<'EOF' … \+3 lines/, "the first line, without the cd hop, and how much is folded");
+	assert.doesNotMatch(collapsed.join("\n"), /print\('one'\)|\/Users\/me\/work\/project/, "no heredoc body or working-directory hop while collapsed");
+	const long = `npm run build -- --filter ${"package-".repeat(30)}`;
+	const longRows = bash.renderCall({ command: long }, passthroughTheme, routineRenderContext({ args: { command: long }, isPartial: false, executionStarted: true })).render(100).map(stripAnsi);
+	assert.equal(longRows.filter((row) => /npm run build/.test(row)).length, 1);
+	assert.equal(longRows.filter((row) => /package-/.test(row)).length, 1, "a long single line is clipped to its row, not wrapped");
+	assert.match(rows(true).join("\n"), /print\('two'\)/, "expanding shows the whole command");
+});

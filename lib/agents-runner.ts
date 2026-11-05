@@ -18,6 +18,8 @@ import { ParentStandingReviewPermissionBroker } from "./review-session-standing-
 import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_STATUS, taskLabel, type AskRequest, type ChildResponseObservation, type TaskRecord, type TaskStore, type TerminalErrorCategory } from "./agents-protocol.ts";
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
+import { ResponseDiagnostics } from "./agents-response-diagnostics.ts";
+import { responseDiagnosticRecord, type ObservedResponses, type ResponseDiagnosticRecord } from "./agents-response-diagnostics-store.ts";
 
 // Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
@@ -119,6 +121,10 @@ export interface RunnerHooks {
 	 * Parent must check task.status AND agentSettled; observations are not success.
 	 */
 	onFinish?(task: TaskRecord, observations?: ChildObservationSnapshot): void;
+	/** Content-free local record, delivered once for a task that did not complete.
+	 * Independent of response-observation telemetry; never an outcome or approval.
+	 */
+	onResponseDiagnostic?(task: TaskRecord, record: ResponseDiagnosticRecord): void;
 	// Accepts a child notification only while the originating parent session is active.
 	onNotification?(task: TaskRecord, message: string): boolean | void;
 	onQuery?(task: TaskRecord, requestId: string, message: string): boolean | void;
@@ -240,6 +246,8 @@ interface LiveTask {
 	// silence budget. Keyed by call id, holding the announced tool name.
 	inFlightTools: Map<string, string>;
 	argumentProgress: ToolArgumentProgress;
+	// Counts only, kept until finish because the projection resets at agent_end.
+	responseDiagnostics: ObservedResponses & { observer: ResponseDiagnostics };
 	// Bounded ring buffer of the child's raw stderr output, capped to the last
 	// STDERR_TAIL_MAX characters. Only surfaced on the stall and pre-settle exit
 	// terminal paths, never on completed, cancelled, or other failure reasons.
@@ -638,7 +646,7 @@ export class AgentRunner {
 		}
 		launch.announce?.();
 		const processGroup = detached && typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
-		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
+		const live: LiveTask = { child, sawRunEvent: false, mutationStarts: new Map(), inFlightTools: new Map(), argumentProgress: new ToolArgumentProgress(), responseDiagnostics: { observer: new ResponseDiagnostics(), responses: 0, settled: false, last: null }, pending: new Map(), queries: new Map(), replies: new Map(), cancelStall: () => {}, cancelGrace: () => {}, processGroup, terminal: undefined, childExit: undefined, childExitSignal: undefined, instructionsTransportDir, scratchDir, cleanupDeadlineAt: undefined, quarantined: false, nextId: 0, ipcClosed: false, acknowledgedIpcIds: new Set(), acknowledgedIpcOrder: [], stderrTail: "" };
 		if (request.prepareResponseObservations) {
 			let ready = false;
 			live.observationPreparation = () => ready;
@@ -971,6 +979,15 @@ export class AgentRunner {
 			}
 			return;
 		}
+		try {
+			const observed = live.responseDiagnostics;
+			const diagnostic = observed.observer.observe(raw);
+			if (diagnostic) {
+				observed.last = diagnostic;
+				observed.responses = Math.min(Number.MAX_SAFE_INTEGER, observed.responses + 1);
+			}
+			if (raw.type === "agent_settled") observed.settled = true;
+		} catch { /* Diagnostics never affect the child or its outcome. */ }
 		this.checkObservationGrant(live);
 		const events = normalizeRpcEvent(raw, { observeResponses: live.observations !== undefined });
 		// A parsed object is not progress by itself. Only a recognized run event
@@ -1266,6 +1283,10 @@ export class AgentRunner {
 				live.observations = undefined; // Also release quarantined buffers.
 				live.observationGuard = undefined;
 			}
+			try {
+				const record = responseDiagnosticRecord(finished, (live ?? this.live.get(id))?.responseDiagnostics);
+				if (record) this.hooks.onResponseDiagnostic?.(finished, record);
+			} catch { /* A diagnostic failure never changes status or blocks waiters. */ }
 			this.hooks.onFinish?.(finished, snapshot);
 			for (const resolve of this.waiters.get(id) ?? []) resolve(finished);
 			this.waiters.delete(id);

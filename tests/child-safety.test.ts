@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createChildSafetyExtension } from "../extensions/child-safety.ts";
+import { createBashTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CHILD_BASH_DEFAULT_TIMEOUT_SECONDS, CHILD_BASH_MAX_TIMEOUT_SECONDS, createChildSafetyExtension } from "../extensions/child-safety.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
 type Handler = (event: { toolName: string; input: { command: string } }, ctx: ExtensionContext) => unknown;
@@ -26,6 +26,49 @@ const event = (command: string) => ({ toolName: "bash", input: { command } });
 
 test("child-only safety is inert in primary auto-discovery", () => {
 	assert.equal(harness(false).handlers.length, 0);
+	for (const value of [undefined, "true"]) {
+		const handlers: unknown[] = [];
+		createChildSafetyExtension({ GENTLE_PI_AGENTS_CHILD: value })({ on: (_name: string, handler: unknown) => handlers.push(handler) } as unknown as ExtensionAPI);
+		assert.equal(handlers.length, 0, String(value));
+	}
+});
+
+test("child bash calls always run with an explicit deadline below the runner's tool stall budget", async () => {
+	assert.ok(CHILD_BASH_MAX_TIMEOUT_SECONDS * 1000 < 30 * 60_000);
+	const [handler] = harness(true).handlers;
+	const ctx = context(async () => { throw new Error("child must never prompt"); }, false);
+	for (const [input, expected] of [
+		[{ command: "pnpm test" }, CHILD_BASH_DEFAULT_TIMEOUT_SECONDS],
+		[{ command: "pnpm test", timeout: 30 }, 30],
+		[{ command: "pnpm test", timeout: CHILD_BASH_MAX_TIMEOUT_SECONDS }, CHILD_BASH_MAX_TIMEOUT_SECONDS],
+		[{ command: "pnpm test", timeout: 86_400 }, CHILD_BASH_MAX_TIMEOUT_SECONDS],
+		[{ command: "pnpm test", timeout: 0 }, 0],
+	] as const) {
+		const event = { toolName: "bash", input: { ...input } as { command: string; timeout?: number } };
+		assert.equal(await handler(event, ctx), undefined);
+		assert.deepEqual(event.input, { command: "pnpm test", timeout: expected }, JSON.stringify(input));
+	}
+	for (const toolName of ["bash_background", "monitor", "read"]) {
+		const event = { toolName, input: { command: "pnpm test" } };
+		assert.equal(await handler(event, ctx), undefined);
+		assert.deepEqual(event.input, { command: "pnpm test" }, toolName);
+	}
+	const destructive = { toolName: "bash", input: { command: "git push -f" } as { command: string; timeout?: number } };
+	assert.equal((await handler(destructive, ctx) as { block?: boolean })?.block, true);
+});
+
+test("the bash deadline is enforced in real time, keeping output and not retrying", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "cs-"));
+	try {
+		const started = Date.now();
+		await assert.rejects(createBashTool(dir).execute("t1", { command: "echo run >> runs; echo started; sleep 30; echo late", timeout: 1 }),
+			(error: Error) => /started/.test(error.message) && /timed out after 1 seconds/.test(error.message) && !/late/.test(error.message));
+		assert.ok(Date.now() - started < 15_000, "the command's own process group is stopped promptly");
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		assert.equal(readFileSync(join(dir, "runs"), "utf8"), "run\n", "the timed-out command ran exactly once");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("children block recognized data loss and destructive git even with UI", async () => {

@@ -117,14 +117,14 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
 		),
 		"core Verification rule changed",
 	);
 	assert.ok(
 		delegation.includes(
 			// S9 canon change (gentle-ai 6b9a71ef): only a named high-risk item adds the verifier.
-			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
+			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
 		),
 		"lazy Verification rule changed",
 	);
@@ -248,7 +248,7 @@ test("AC4/S4: the normative verification rule text is unchanged by the review pr
 	// Re-pinned on purpose: the runtime admission now also accepts a `Risk: item N` sentence (verifier-admission.ts).
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"f052518b2905e4560d629397876057079aa71b45352272646261a611fb4a1e17",
+		"48fb27b1e4af2f133861a2ba909fc5b5ed310fd1ca00e060f39f9208ab2cf022",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

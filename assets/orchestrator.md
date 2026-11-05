@@ -54,7 +54,7 @@ Delegation Triggers — each mechanism turns on only when its own trigger condit
 
 1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Evidence-budget rule** — understanding needs more than one read batch or >~5 sequential lookups → stop and delegate one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence; one spot check only. Reassess cumulative discovery each batch, never reset. A fired trigger overrides initial size, including read-only: it limits mutation, not routing. Exempt only preparation for an understood inline write, not discovery.
-3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.
+3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.
 4. **Track** — large task → feature document, Engram mirror, `todo`, work-unit commits (`orchestrator-tracking.md`, `orchestrator-memory.md`).
 5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units of behavior, each heavier than a subagent start (several minutes of work: several files or roughly 100+ changed lines), launched together in background, else inline; Context backstop. Small module or command changes stay inline, even when independent. Tests, docs, and code of the same behavior are one unit, never separate writers; dependent deliveries are not independent.
 6. **Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately before resuming.

@@ -11803,12 +11803,20 @@ function createGentleAiExtensionForTesting(
 		// same deadline instead of spawning the same STATUS a second time.
 		const inFlightModeRead = isPrimarySession ? startupModeReads.get(promptCwd) : undefined;
 		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
-		if (!currentPrompt()) return undefined;
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
 		const promptGeneration = rddStatusGeneration(promptCwd);
 		const nextRddStatusLine = isPrimarySession
 			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx)
 			: undefined;
-		if (!currentPrompt()) return undefined;
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
 		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
 		const pinned = pinnedRddStatusLines.get(subagentDepthKey);
 		const rddStatusLine = nextRddStatusLine === undefined ? undefined : staleRead

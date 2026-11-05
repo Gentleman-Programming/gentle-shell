@@ -5,11 +5,19 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 
 export const VISUAL_SCHEMA = "gentle-pi.visual-customization/v1";
 export const STATUS_PLACEMENT = { AUTO: "auto", RIGHT: "right", BOTTOM: "bottom", HIDDEN: "hidden" } as const;
-export const HEADER_PLACEMENT = { TOP: "top", BELOW_INPUT: "below-input" } as const;
+/**
+ * Where the header row goes: `top` above the conversation, inside its column;
+ * `below-input` under the editor; `split` the IDE chrome, a full-width title
+ * row on top and the per-frame counters in a status bar at the bottom.
+ */
+export const HEADER_PLACEMENT = { TOP: "top", BELOW_INPUT: "below-input", SPLIT: "split" } as const;
 export const DENSITY = { COMFORTABLE: "comfortable", COMPACT: "compact", MINIMAL: "minimal" } as const;
+/** The chrome background: `tinted` paints the rail, title row, status bar and panel sheet; `transparent` lets the terminal show through. */
+export const CHROME_SURFACE = { TINTED: "tinted", TRANSPARENT: "transparent" } as const;
 export type StatusPlacement = (typeof STATUS_PLACEMENT)[keyof typeof STATUS_PLACEMENT];
 export type HeaderPlacement = (typeof HEADER_PLACEMENT)[keyof typeof HEADER_PLACEMENT];
 export type Density = (typeof DENSITY)[keyof typeof DENSITY];
+export type ChromeSurface = (typeof CHROME_SURFACE)[keyof typeof CHROME_SURFACE];
 
 export interface VisualVisibility {
 	changes: boolean;
@@ -20,23 +28,61 @@ export interface VisualVisibility {
 	modelDetails: boolean;
 	/** High-context warning notice; independent from audio notifications. */
 	contextWarning: boolean;
+	/** Session statistics in the Status rail (spend, tokens, cache, tools, per model); the Power user preset turns it on. */
+	stats: boolean;
 }
 export interface VisualSettings {
 	statusPlacement: StatusPlacement;
 	headerPlacement: HeaderPlacement;
 	density: Density;
+	/** Stored only when transparent, so files that keep the default stay readable by older versions. */
+	surface: ChromeSurface;
 	visibility: VisualVisibility;
 }
 export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
-	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true },
+	surface: CHROME_SURFACE.TINTED,
+	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false },
 };
+/**
+ * Presets bundle the density and visibility switches (design/shell-rework/inventory.md):
+ * Light is the minimal edition: Status at the bottom (no rail) and priority 1
+ * only (model, context, agent questions, review); Neutral is the default;
+ * Power user adds session Stats at Neutral's spacing. They keep the header
+ * placement; the active preset is whichever bundle the current settings match.
+ */
+export const VISUAL_PRESET = { LIGHT: "light", NEUTRAL: "neutral", POWER_USER: "power-user" } as const;
+export type VisualPreset = (typeof VISUAL_PRESET)[keyof typeof VISUAL_PRESET];
+const PRESET_BUNDLES: Record<VisualPreset, Pick<VisualSettings, "density" | "visibility">> = {
+	[VISUAL_PRESET.LIGHT]: { density: DENSITY.MINIMAL, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: true, contextWarning: true, stats: false } },
+	[VISUAL_PRESET.NEUTRAL]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility } },
+	// Same spacing as Neutral: what Power user adds is content (Stats), not density.
+	[VISUAL_PRESET.POWER_USER]: { density: DEFAULT_VISUAL_SETTINGS.density, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: true } },
+};
+export function applyVisualPreset(settings: VisualSettings, preset: VisualPreset): VisualSettings {
+	const bundle = PRESET_BUNDLES[preset];
+	// Light is the minimal edition without the rail (Status at the bottom);
+	// leaving it brings the rail back, and the other presets keep any placement.
+	const leavingLight = visualPresetOf(settings) === VISUAL_PRESET.LIGHT;
+	const statusPlacement = preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM
+		: leavingLight ? STATUS_PLACEMENT.AUTO : settings.statusPlacement;
+	return { ...settings, statusPlacement, density: bundle.density, visibility: { ...bundle.visibility } };
+}
+/** The preset the settings match, or undefined for a hand-tuned mix. */
+export function visualPresetOf(settings: VisualSettings): VisualPreset | undefined {
+	return (Object.values(VISUAL_PRESET) as VisualPreset[]).find((preset) => {
+		const bundle = PRESET_BUNDLES[preset];
+		if ((settings.statusPlacement === STATUS_PLACEMENT.BOTTOM) !== (preset === VISUAL_PRESET.LIGHT)) return false;
+		return bundle.density === settings.density && (Object.keys(bundle.visibility) as (keyof VisualVisibility)[]).every((key) => bundle.visibility[key] === settings.visibility[key]);
+	});
+}
 /** Sections row order; `rdd` follows `changes` as the RDD group follows Changes in the Status card. */
-export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"] as const satisfies readonly (keyof VisualVisibility)[];
-/** Keys added after v1 shipped: stored settings may omit them together or one at a time, and they default to shown. */
-const ADDED_SECTION_KEYS: readonly (keyof VisualVisibility)[] = ["rdd", "contextWarning"];
+export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning", "stats"] as const satisfies readonly (keyof VisualVisibility)[];
+/** Keys added after v1 shipped, with the value a stored file that omits them loads as. */
+const ADDED_SECTION_DEFAULTS: Partial<Record<keyof VisualVisibility, boolean>> = { rdd: true, contextWarning: true, stats: false };
+const ADDED_SECTION_KEYS = Object.keys(ADDED_SECTION_DEFAULTS) as (keyof VisualVisibility)[];
 const BASE_SECTION_KEYS = VISUAL_SECTION_KEYS.filter((key) => !ADDED_SECTION_KEYS.includes(key));
 interface VisualOptions { gentlePiConfigHome?: string }
 export interface VisualResolution {
@@ -57,11 +103,12 @@ function member<T extends string>(value: unknown, choices: Record<string, T>): v
 	return typeof value === "string" && Object.values(choices).includes(value as T);
 }
 export function isVisualSettings(value: unknown): value is VisualSettings {
-	if (!record(value) || !keysMatch(value, ["statusPlacement", "headerPlacement", "density", "visibility"])) return false;
+	if (!record(value) || !keysMatch(value, ["statusPlacement", "headerPlacement", "density", "surface", "visibility"])) return false;
 	const visibility = value.visibility;
 	return member(value.statusPlacement, STATUS_PLACEMENT)
 		&& member(value.headerPlacement, HEADER_PLACEMENT)
 		&& member(value.density, DENSITY)
+		&& member(value.surface, CHROME_SURFACE)
 		&& record(visibility)
 		&& keysMatch(visibility, VISUAL_SECTION_KEYS)
 		&& Object.values(visibility).every((item) => typeof item === "boolean");
@@ -69,19 +116,21 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
 /**
  * Reader-side validation: accepts the current shape plus every historical one.
  * Every key must be known, every base key present, and every present value a
- * boolean; missing added keys (`rdd`, `contextWarning`) then default to shown,
+ * boolean; missing added keys then take their default (`rdd`, `contextWarning` shown, `stats` hidden),
  * while present values (including `rdd: false`) are preserved. Writers stay strict.
  */
-export function normalizeVisualSettings(value: unknown): VisualSettings | undefined {
-	if (!record(value) || !record(value.visibility)) return undefined;
-	const visibility = value.visibility;
+export function normalizeVisualSettings(raw: unknown): VisualSettings | undefined {
+	if (!record(raw) || !record(raw.visibility)) return undefined;
+	// A file without `surface` (older versions, or the tinted default) reads as tinted.
+	const value = Object.hasOwn(raw, "surface") ? raw : { ...raw, surface: CHROME_SURFACE.TINTED };
+	const visibility = raw.visibility;
 	if (!Object.keys(visibility).every((key) => (VISUAL_SECTION_KEYS as readonly string[]).includes(key))) return undefined;
 	if (!BASE_SECTION_KEYS.every((key) => Object.hasOwn(visibility, key))) return undefined;
 	// A key that is present is authoritative: only a missing added key may default to shown.
 	if (!Object.keys(visibility).every((key) => typeof visibility[key] === "boolean")) return undefined;
 	const candidate = keysMatch(visibility, VISUAL_SECTION_KEYS)
 		? value
-		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? true])) };
+		: { ...value, visibility: Object.fromEntries(VISUAL_SECTION_KEYS.map((key) => [key, visibility[key] ?? ADDED_SECTION_DEFAULTS[key] ?? true])) };
 	return isVisualSettings(candidate) ? candidate : undefined;
 }
 export function parseVisualSettingsFile(raw: string): VisualSettings | undefined {
@@ -103,6 +152,11 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 	}
 }
 /** Same-directory rename keeps partial JSON invisible to readers. */
+/** The stored shape: the tinted surface is the default and stays out of the file, so older versions keep reading it. */
+export function storedVisualSettings(settings: VisualSettings): Omit<VisualSettings, "surface"> & { surface?: ChromeSurface } {
+	const { surface, ...stored } = settings;
+	return surface === CHROME_SURFACE.TINTED ? stored : { ...stored, surface };
+}
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
 	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
 	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
@@ -110,7 +164,7 @@ export function writeVisualSettings(settings: VisualSettings, options: VisualOpt
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });
 	try {
-		writeFileSync(temporary, `${JSON.stringify({ schema: VISUAL_SCHEMA, ...settings })}\n`, { flag: "wx", mode: 0o600 });
+		writeFileSync(temporary, `${JSON.stringify({ schema: VISUAL_SCHEMA, ...storedVisualSettings(settings) })}\n`, { flag: "wx", mode: 0o600 });
 		renameSync(temporary, path);
 	} finally {
 		try { unlinkSync(temporary); } catch { /* Rename consumed the temporary file. */ }

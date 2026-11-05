@@ -64,7 +64,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		label: "triggers hold only when their condition truly holds",
 		canonical: "Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline.",
 		mirrors: [
-			{ surface: DELEGATION, includes: "Each trigger holds only when its condition truly holds, and only then is it mandatory, not advisory; no trigger holds by default, and when in doubt work inline." },
+			{ surface: DELEGATION, includes: "Each trigger holds only when its condition truly holds; none holds by default. Inline stays within the evidence budget." },
 			{ surface: EXTENSION, includes: "No trigger holds by default and, when in doubt, work inline" },
 		],
 	},
@@ -98,8 +98,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		label: "never explore to read files an inline write reads anyway",
 		canonical: "Never explore to read files you will read anyway before writing inline.",
 		mirrors: [
-			{ surface: DELEGATION, includes: "Never explore to read files you will read anyway before writing inline." },
-			{ surface: CORE, includes: "never for reading before an inline write" },
+			{ surface: DELEGATION, includes: "Preparation for an already understood inline write stays inline, not further discovery." },
+			{ surface: CORE, includes: "Exempt only preparation for an understood inline write, not discovery" },
 		],
 	},
 	{

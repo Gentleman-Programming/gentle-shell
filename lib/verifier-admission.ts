@@ -6,23 +6,33 @@ import { contextBackstopReached, type MeasuredContext } from "./context-backstop
 // verifier launch is admitted only when its task or context declares a named high-risk item, carries a task of an
 // existing feature document (the same lines writer admission accepts), or the parent's measured context reaches the
 // context backstop. The agent catalog has no generic verifier alias, so only `gentle-ai-verify` is gated.
-const VERIFIER_NAMES = ["gentle-ai-verify"];
+export const VERIFIER_NAMES = ["gentle-ai-verify"];
 // A declaration that starts a line (optionally as a list item) or a sentence (after `.`, `!` or `?` and a space) with
 // `Risk:` whose first entry is `item N` with N in 1-6, for example `Risk: item 3 (shared parser)`, `- Risk: item 2,
 // item 3 (reason)` or `... on top of ebf3f35. Risk: item 1 (migration)`. `Risk: none` and a mention inside a
-// sentence ("Do not write Risk: item 3") do not start one.
-const HIGH_RISK_ITEM_LINE = /(?:^[ \t]*(?:[-*+][ \t]+)?|[.!?][ \t]+)Risk:[ \t]*item[ \t]+[1-6](?!\d)/m;
+// sentence ("Do not write Risk: item 3") do not start one. The capture is the first named item.
+const HIGH_RISK_ITEM_LINE = /(?:^[ \t]*(?:[-*+][ \t]+)?|[.!?][ \t]+)Risk:[ \t]*item[ \t]+([1-6])(?!\d)/m;
 export const VERIFIER_RISK_REJECTION =
-	"An independent verifier runs only for a change that declares a named high-risk item (`Risk: item N` from the Task Size list in the task). This change declares none: run its focused test and suite inline yourself now; do not retry the launch, and never add a Risk line or create a feature document only to get a verifier admitted.";
+	"An independent verifier runs only for a change that declares a named high-risk item (`Risk: item N` from the Task Size list in the task). No supported `Risk: item N` declaration was recognized in the launch `task` or `context`: run its focused test and suite inline yourself now; do not retry the launch, and never add a Risk line or create a feature document only to get a verifier admitted.";
+
+// The first high-risk item a text declares with the admission grammar, or undefined when it declares none.
+export function declaredHighRiskItem(text: string): number | undefined {
+	const match = HIGH_RISK_ITEM_LINE.exec(text);
+	return match ? Number(match[1]) : undefined;
+}
+
+export function isVerifierLaunch(input: unknown): input is Record<string, unknown> {
+	if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+	const agent = (input as Record<string, unknown>).agent;
+	return typeof agent === "string" && VERIFIER_NAMES.includes(agent);
+}
 
 export function rejectUnriskedVerifierLaunch(
 	input: unknown,
 	options: { root: string; contextUsage: MeasuredContext | undefined; env?: Readonly<Record<string, string | undefined>> },
 ): { block: true; reason: string } | undefined {
-	if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
-	const record = input as Record<string, unknown>;
-	if (typeof record.agent !== "string" || !VERIFIER_NAMES.includes(record.agent)) return undefined;
-	const values = [record.task, record.context];
+	if (!isVerifierLaunch(input)) return undefined;
+	const values = [input.task, input.context];
 	if (values.some(value => typeof value === "string" && HIGH_RISK_ITEM_LINE.test(value))) return undefined;
 	if (namesExistingFeatureDocumentTask(values, options.root)) return undefined;
 	if (contextBackstopReached(options.contextUsage, options.env)) return undefined;

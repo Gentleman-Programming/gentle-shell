@@ -234,7 +234,7 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 		ui: { custom: async (factory: ChoiceCustomFactory) => {
 			let completed: unknown;
 			const component = factory({ requestRender() {} }, {
-				fg: (_color, text) => `\u001b[38;5;39m${text}\u001b[39m`,
+				fg: (color, text) => color === "warning" ? `\u001b[33m${text}\u001b[39m` : `\u001b[38;5;39m${text}\u001b[39m`,
 				bg: (_color, text) => `\u001b[48;5;236m${text}\u001b[49m`, bold: (text) => text,
 			}, {}, (value) => { completionCalls++; completed = value; });
 			const lines = component.render(80);
@@ -249,9 +249,10 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 			assert.equal(component.handleMouse?.(hover)?.render, true);
 			assert.equal(completed, undefined, "hover never submits");
 			const hovered = component.render(80);
-			assert.ok(hovered[second]?.includes("\u001b[48;5;236m"), "only the second option is hovered");
+			assert.ok(hovered[second]?.includes("\u001b[33m"), "the second option uses the shared warning foreground");
+			assert.ok(!hovered[second]?.includes("\u001b[48;5;236m"), "hover does not use toolPendingBg");
 			assert.ok(
-				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[48;5;236m"),
+				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[33m"),
 				"hover does not change keyboard selection",
 			);
 			component.handleInput("\r");

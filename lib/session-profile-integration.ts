@@ -64,7 +64,12 @@ function unavailable(): SessionProfileAppendOutcome {
  };
 }
 function inactive(): SessionProfileAttachment {
- return { bind: unavailable, clear: unavailable, refresh: unavailable };
+ return {
+  bind: unavailable,
+  bindStartup: unavailable,
+  clear: unavailable,
+  refresh: unavailable,
+ };
 }
 /** Read/revalidate the existing owner without adopting its adapter identity. */
 export function readCurrentSessionProfileOutcome(
@@ -88,7 +93,13 @@ export async function runCurrentSessionProfileSelection<T>(
   current: () => boolean,
  ) => Promise<T>,
 ): Promise<T | undefined> {
- const owner = registry().owners.get(manager);
+ let owner: Owner | undefined;
+ try {
+  owner = registry().owners.get(manager);
+ } catch {
+  // An incompatible registry has no authority to select against.
+  return undefined;
+ }
  if (!owner?.attachment) return undefined;
  const attachment = owner.attachment,
   adapter = owner.adapter;
@@ -115,12 +126,29 @@ export async function runCurrentSessionProfileSelection<T>(
  }
 }
 
+/** Whether an Enter selection is still settling, so callers wait only when needed.
+ * A registry protocol failure means nothing of ours is pending.
+ */
+export function hasPendingSessionProfileSelection(
+ manager: SessionProfileLifecycleManager,
+): boolean {
+ try {
+  return registry().owners.get(manager)?.pending !== undefined;
+ } catch {
+  return false;
+ }
+}
+
 /** Await before fork-copy/tree movement and before detach/invalidation. */
 export async function waitCurrentSessionProfileSelection(
  manager: SessionProfileLifecycleManager,
 ): Promise<void> {
- let pending: Promise<void> | undefined;
- while ((pending = registry().owners.get(manager)?.pending)) await pending;
+ try {
+  let pending: Promise<void> | undefined;
+  while ((pending = registry().owners.get(manager)?.pending)) await pending;
+ } catch {
+  // Protocol failure: there is no owner queue of ours to drain.
+ }
 }
 
 /** The registry retains controller evidence, never old ctx/pi or append handles.

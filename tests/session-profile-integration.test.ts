@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
  createSessionProfileIntegration,
+ hasPendingSessionProfileSelection,
  readCurrentSessionProfileOutcome,
  runCurrentSessionProfileSelection,
  waitCurrentSessionProfileSelection,
@@ -643,6 +644,7 @@ for (const incompatible of [false, true]) {
    const live = createSessionProfileIntegration().start(manager, () => { calls++; }, { reason: "startup" });
    assert.equal(live.outcome.status, "indeterminate");
    ${incompatible ? 'assert.equal(live.attachment.bind("rejected", {}).status, "indeterminate");' : ""}
+   ${incompatible ? 'assert.deepEqual(live.attachment.bindStartup("repo", "rejected", {}), { status: "indeterminate", state: { status: "indeterminate", reason: "unavailable-lifecycle" } });' : ""}
    assert.equal(JSON.stringify(manager.getEntries()), before);
    process.stdout.write(JSON.stringify({ status: live.outcome.status, calls, unchanged: true }));
   `;
@@ -814,4 +816,42 @@ test("helpers report no owner as undefined", async () => {
  assert.equal(readCurrentSessionProfileOutcome(f.manager), undefined);
  assert.equal(await runCurrentSessionProfileSelection(f.manager, async () => "never"), undefined);
  await waitCurrentSessionProfileSelection(f.manager);
+});
+
+test("selection helpers treat an incompatible registry protocol as nothing pending or selectable", () => {
+ const moduleUrl = new URL(
+  "../lib/session-profile-integration.ts",
+  import.meta.url,
+ ).href;
+ const script = `
+  import assert from "node:assert/strict";
+  import { SessionManager } from "@earendil-works/pi-coding-agent";
+  import {
+   hasPendingSessionProfileSelection,
+   runCurrentSessionProfileSelection,
+   waitCurrentSessionProfileSelection,
+  } from ${JSON.stringify(moduleUrl)};
+  globalThis[Symbol.for("gentle-pi.session-profile.lifecycle")] = { version: 2 };
+  const manager = SessionManager.inMemory(${JSON.stringify(tmpdir())});
+  assert.equal(hasPendingSessionProfileSelection(manager), false);
+  assert.equal(await waitCurrentSessionProfileSelection(manager), undefined);
+  let ran = false;
+  assert.equal(
+   await runCurrentSessionProfileSelection(manager, async () => {
+    ran = true;
+    return "never";
+   }),
+   undefined,
+  );
+  assert.equal(ran, false);
+  process.stdout.write("ok");
+ `;
+ const result = spawnSync(
+  process.execPath,
+  ["--experimental-strip-types", "--input-type=module", "-e", script],
+  { encoding: "utf8", cwd: process.cwd(), env: process.env },
+ );
+ assert.equal(result.stderr, "");
+ assert.equal(result.status, 0);
+ assert.equal(result.stdout, "ok");
 });

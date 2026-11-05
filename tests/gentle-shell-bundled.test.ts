@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import test, { type TestContext } from "node:test";
 import {
 	BUNDLED_VERIFY_ENV,
@@ -12,7 +13,6 @@ import {
 	bundledPi,
 	bundledSetupEnv,
 	bundledUpdateNext,
-	bundledUpdateNotice,
 	bundledUpdatePlan,
 	parseBundledUpgradeArgs,
 	withBundledNpmCommand,
@@ -294,22 +294,10 @@ test("bundledUpdateNext still updates extensions when the upgrade did not comple
 	assert.deepEqual(bundledUpdateNext({ self: true, piArgs: ["update", "--extensions"] }, 0), { piArgs: ["update", "--extensions"] });
 	const failed = bundledUpdateNext({ self: true, piArgs: ["update", "--extensions"] }, 1);
 	assert.deepEqual("piArgs" in failed ? failed.piArgs : [], ["update", "--extensions"]);
-	assert.match("note" in failed ? String(failed.note) : "", /upgrade did not complete.*extensions/);
+	assert.match("note" in failed ? String(failed.note) : "", /latest Pi update did not complete.*extensions/);
 	const latest = bundledUpdateNext({ self: true, latest: true, piArgs: ["update", "--extensions"] }, 1);
 	assert.match("note" in latest ? String(latest.note) : "", /latest Pi update did not complete.*extensions/);
 	assert.deepEqual(bundledUpdateNext({ self: true, latest: true }, 1), { exitCode: 1 });
-});
-
-test("bundledUpdateNotice explains the pinned Pi and runs or names gentle-shell upgrade", () => {
-	const interactive = bundledUpdateNotice({ piVersion: "1.2.0", interactive: true }).join("\n");
-	assert.match(interactive, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
-	assert.match(interactive, /Running 'gentle-shell upgrade'/);
-	assert.match(bundledUpdateNotice({ piVersion: "1.2.0", interactive: false }).join("\n"), /Run 'gentle-shell upgrade'/);
-	for (const interactive of [true, false]) {
-		const lines = bundledUpdateNotice({ piVersion: "1.2.0", interactive });
-		assert.equal(lines[0], "Pi ships pinned with Gentle Shell (Pi 1.2.0): a newer Pi arrives with a Gentle Shell release.");
-		assert.equal(lines.at(-1), "Run 'gentle-shell update --latest' to install the newest published Pi now, without the release's verified lockfile.");
-	}
 });
 
 test("parseBundledUpgradeArgs accepts the release channel and --rollback and refuses the main channel", () => {
@@ -338,7 +326,7 @@ const FIXTURE_ID = `${SHELL}-1.2.0`;
 const FAKE_PI = [
 	"import {mkdirSync, readFileSync, writeFileSync} from 'node:fs'; import {join, dirname} from 'node:path';",
 	"const args = process.argv.slice(2);",
-	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram@0.4.2' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
+	"if (args[0] === 'install' && args[1] === 'npm:gentle-engram' && process.env.FIXTURE_INSTALL_CAPABILITY !== '0') {",
 	" const home = process.env.PI_CODING_AGENT_DIR; const metadata = join(home, 'npm/node_modules/gentle-engram/package.json'); mkdirSync(dirname(metadata), {recursive:true});",
 	" writeFileSync(metadata, JSON.stringify({name:'gentle-engram',version:'0.4.2',engram:{startupPolicy:1}}));",
 	" const path = join(home,'settings.json'); let settings={}; try {settings=JSON.parse(readFileSync(path,'utf8'));} catch {}",
@@ -427,6 +415,12 @@ function bundledPrefix(t: TestContext, { pi = "1.2.0", core = true } = {}) {
 	writeFileSync(publisher, `export * from ${JSON.stringify(pathToFileURL(join(repository, "scripts", "bundled-install.mjs")).href)};
 		import { artifactFor } from ${JSON.stringify(pathToFileURL(join(repository, "scripts", "installer-downloads.mjs")).href)};
 		import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+		export async function publishedPi() { return '1.3.0'; }
+		export async function upgradePiLatest({ adapters, out }) {
+			const latest = await adapters.latestPi();
+			if (process.env.FIXTURE_PI_UPDATE_FAIL === '1') throw new Error('fixture Pi installation failed');
+			out('fixture latest Pi ' + latest);
+		}
 		export async function ensureEngram({ layout, platform, arch }) {
 			if (existsSync(layout.engram)) return false;
 			mkdirSync(layout.engramDir, { recursive: true });
@@ -914,18 +908,18 @@ test("a gentle-pi version change reruns setup once and keeps memory on the share
 	assert.equal(installer.runs(), 2);
 });
 
-test("an unsupported companion is pinned through Pi configuration; a failed readback warns and the guard still protects memory", { skip: posixHost }, (t) => {
+test("a missing companion is registered through Pi configuration; a failed readback warns and the guard still protects memory", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	writeFileSync(prefix.metadata, '{"name":"gentle-engram","version":"0.4.1"}');
 	mkdirSync(join(prefix.home, ".engram"));
 	const result = prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "0" });
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stderr, /install.*npm:gentle-engram@0.4.2/s);
+	assert.match(result.stderr, /installing policy-capable companion npm:gentle-engram through Pi\n/);
 	assert.match(result.stderr, /startupPolicy/);
 	assert.equal(lastLaunch(result).env.ENGRAM_BIN, prefix.guard);
 });
 
-test("capability readback also requires Pi to declare the selected pinned companion", { skip: posixHost }, (t) => {
+test("capability readback also requires Pi to declare the selected companion", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const result = prefix.run([], { FIXTURE_INSTALL_CAPABILITY: "metadata-only" });
 	assert.equal(result.status, 0, result.stderr);
@@ -933,7 +927,7 @@ test("capability readback also requires Pi to declare the selected pinned compan
 	assert.equal(lastLaunch(result).env.ENGRAM_BIN, prefix.guard);
 });
 
-test("pinning preserves resource filters and unrelated settings and does not reinstall next launch", { skip: posixHost }, (t) => {
+test("a user-selected companion pin preserves filters and unrelated settings and is not reinstalled", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
 	const settings = join(prefix.home, ".gentle-shell", "agent", "settings.json");
 	const other = { source: "npm:unrelated", extensions: ["keep.ts"] };
@@ -942,7 +936,8 @@ test("pinning preserves resource filters and unrelated settings and does not rei
 	assert.equal(first.status, 0, first.stderr);
 	const updated = JSON.parse(readFileSync(settings, "utf8"));
 	assert.equal(updated.theme, "chosen");
-	assert.deepEqual(updated.packages, [other, { source: "npm:gentle-engram@0.4.2", autoload: false, extensions: [] }]);
+	assert.deepEqual(updated.packages, [other, { source: "npm:gentle-engram@0.4.1", autoload: false, extensions: [] }]);
+	assert.match(first.stderr, /selected gentle-engram does not match its installed version/);
 	assert.doesNotMatch(prefix.run([]).stderr, /installing policy-capable companion/);
 });
 
@@ -1180,22 +1175,203 @@ test("the bundled launcher refuses a Pi that is not the pinned one", { skip: pos
 	assert.doesNotMatch(result.stdout, /9\.9\.9/);
 });
 
-test("gentle-shell update in a bundled install explains the pinned Pi instead of updating it", { skip: posixHost }, (t) => {
-	const result = bundledPrefix(t).run(["update"]);
-	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
-	assert.match(result.stdout, /Run 'gentle-shell upgrade'/);
-	assert.doesNotMatch(result.stdout, /"args"/);
+// Exercise Pi's actual package manager, update command and interactive notice
+// with an isolated fake npm registry/installer; no network or user home is used.
+function nativeCompanionFixture(t: TestContext) {
+	const prefix = bundledPrefix(t);
+	const piDist = join(repository, "node_modules", "@earendil-works", "pi-coding-agent", "dist");
+	const sdk = pathToFileURL(join(piDist, "index.js")).href;
+	const interactive = pathToFileURL(join(piDist, "modes", "interactive", "interactive-mode.js")).href;
+	const theme = pathToFileURL(join(piDist, "modes", "interactive", "theme", "theme.js")).href;
+	const commands = pathToFileURL(join(piDist, "package-manager-cli.js")).href;
+	const agent = join(prefix.home, ".gentle-shell", "agent");
+	const settings = join(agent, "settings.json");
+	const calls = join(prefix.home, "npm-calls.jsonl");
+	const node = join(prefix.root, "runtime", "node-24.21.0", "bin", "node");
+	mkdirSync(dirname(node), { recursive: true });
+	symlinkSync(process.execPath, node);
+	const packagePath = join(prefix.piDir, "package.json");
+	writeFileSync(packagePath, JSON.stringify({ ...JSON.parse(readFileSync(packagePath, "utf8")), main: "./dist/index.js" }));
+	writeFileSync(join(prefix.piDir, "dist", "index.js"), `export * from ${JSON.stringify(sdk)};\n`);
+	writeFileSync(join(prefix.piDir, "dist", "bundle", "cli.js"), `
+		import { SettingsManager } from ${JSON.stringify(sdk)};
+		import { InteractiveMode } from ${JSON.stringify(interactive)};
+		import { initTheme } from ${JSON.stringify(theme)};
+		import { handlePackageCommand } from ${JSON.stringify(commands)};
+		const args = process.argv.slice(2);
+		if (args.includes('--version')) { console.log('1.2.0'); process.exit(0); }
+		if (args[0] === 'update') { await handlePackageCommand(args); }
+		else {
+			const settingsManager = SettingsManager.create(process.cwd(), process.env.PI_CODING_AGENT_DIR, { projectTrusted: false });
+			const names = await InteractiveMode.prototype.checkForPackageUpdates.call({ settingsManager, sessionManager: { getCwd: () => process.cwd() } });
+			const lines = [];
+			if (names.length) {
+				initTheme('dark');
+				InteractiveMode.prototype.showPackageUpdateNotification.call({ chatContainer: { addChild: (component) => lines.push(...component.render(100)) }, ui: { requestRender() {} } }, names);
+			}
+			console.log(JSON.stringify({ names, notice: lines.join('\\n') }));
+		}`);
+	writeFileSync(prefix.npmCli, `
+		const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
+		const args = process.argv.slice(2); appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
+		if (args.includes('view')) { console.log(JSON.stringify(process.env.FIXTURE_PACKAGE_LATEST)); }
+		else if (args.includes('install')) {
+			if (process.env.FIXTURE_PACKAGE_FAIL === '1') { console.error('fixture package install failed'); process.exit(7); }
+			if (!args.includes('gentle-engram@latest')) { console.error('unexpected package spec'); process.exit(8); }
+			const metadata = ${JSON.stringify(prefix.metadata)}; const pkg = JSON.parse(readFileSync(metadata, 'utf8'));
+			pkg.version = process.env.FIXTURE_PACKAGE_LATEST; writeFileSync(metadata, JSON.stringify(pkg));
+		} else { console.error('unexpected npm call'); process.exit(9); }
+	`);
+	const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, [prefix.entry, ...args], {
+		cwd: prefix.home, env: { ...prefix.env, FORCE_COLOR: "0", FIXTURE_PACKAGE_LATEST: "0.5.0", ...extra }, encoding: "utf8", input: "", timeout: 15000,
+	});
+	const npmCalls = (): string[][] => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+	return { ...prefix, agent, settings, run, npmCalls };
+}
+
+test("native startup notice discovers a newer Shell-managed companion without installing it", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const other = { source: "npm:other-extension@2.0.0", extensions: ["chosen.ts"] };
+	const companion = { source: "npm:gentle-engram@0.4.2", autoload: false, extensions: ["index.ts"] };
+	writeFileSync(fixture.settings, JSON.stringify({ theme: "chosen", packages: [other, companion] }));
+	const before = readFileSync(fixture.metadata, "utf8");
+	const newer = fixture.run([]);
+	assert.equal(newer.status, 0, newer.stderr);
+	const shown = JSON.parse(newer.stdout.trim().split("\n").at(-1)!);
+	assert.deepEqual(shown.names, ["gentle-engram"]);
+	const notice = stripVTControlCharacters(shown.notice);
+	assert.match(notice, /Package Updates Available/);
+	assert.match(notice, /Package updates are available\. Run pi update --extensions/);
+	assert.match(notice, /- gentle-engram/);
+	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, [other, { ...companion, source: "npm:gentle-engram" }]);
+	assert.equal(fixture.npmCalls().some((args) => args.includes("install")), false);
+	for (const latest of ["0.4.2", "0.3.9"]) {
+		const current = fixture.run([], { FIXTURE_PACKAGE_LATEST: latest });
+		assert.equal(current.status, 0, current.stderr);
+		assert.deepEqual(JSON.parse(current.stdout.trim().split("\n").at(-1)!), { names: [], notice: "" });
+		assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	}
+	assert.equal(fixture.npmCalls().some((args) => args.includes("install")), false);
 });
 
-test("gentle-shell update pi --extensions in a bundled install redirects Pi's part and still updates the extensions with the bundled npm", { skip: posixHost }, (t) => {
+test("extension update migrates the old managed companion and propagates failure before succeeding", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const other = "npm:other-extension@2.0.0";
+	writeFileSync(fixture.settings, JSON.stringify({ packages: ["npm:gentle-engram@0.4.2", other] }));
+	const before = readFileSync(fixture.metadata, "utf8");
+	const invalid = fixture.run(["update", "--extensions", "--nope"]);
+	assert.equal(invalid.status, 1);
+	assert.equal(invalid.stdout, "");
+	assert.match(invalid.stderr, /Unknown option --nope/);
+	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram@0.4.2", other]);
+	assert.deepEqual(fixture.npmCalls(), []);
+	const failed = fixture.run(["update", "--extensions"], { FIXTURE_PACKAGE_FAIL: "1" });
+	assert.equal(failed.status, 1);
+	assert.match(failed.stderr, /fixture package install failed|exited with code 7/);
+	assert.doesNotMatch(failed.stdout, /Updated packages/);
+	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
+	const updated = fixture.run(["update", "--extensions"]);
+	assert.equal(updated.status, 0, updated.stderr);
+	assert.match(updated.stdout, /Updated packages/);
+	assert.equal(updated.stderr, "");
+	assert.equal(JSON.parse(readFileSync(fixture.metadata, "utf8")).version, "0.5.0");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
+	assert.equal(fixture.npmCalls().filter((args) => args.includes("install") && args.includes("gentle-engram@latest")).length, 2);
+	assert.equal(fixture.npmCalls().some((args) => args.includes("other-extension@latest")), false);
+	const current = fixture.run([]);
+	assert.equal(current.status, 0, current.stderr);
+	assert.deepEqual(JSON.parse(current.stdout.trim().split("\n").at(-1)!), { names: [], notice: "" });
+});
+
+test("extension update refuses success if the selected Pi cannot migrate the legacy companion", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const packages = ["npm:gentle-engram@0.4.2", "npm:other-extension@2.0.0"];
+	writeFileSync(fixture.settings, JSON.stringify({ packages }));
+	const before = readFileSync(fixture.metadata, "utf8");
+	writeFileSync(join(fixture.piDir, "dist", "index.js"), "throw new Error('fixture SDK unavailable');\n");
+	const result = fixture.run(["update", "--extensions"]);
+	assert.equal(result.status, 1);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /could not prepare the managed gentle-engram package for updates \(fixture SDK unavailable\)/);
+	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, packages);
+	assert.deepEqual(fixture.npmCalls(), []);
+});
+
+test("an unverified legacy companion cannot be reported as an extension-update success", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const packages = ["npm:gentle-engram@0.4.2", "npm:other-extension@2.0.0"];
+	writeFileSync(fixture.settings, JSON.stringify({ packages }));
+	writeFileSync(fixture.metadata, JSON.stringify({ name: "gentle-engram", version: "0.4.1" }));
+	const before = readFileSync(fixture.metadata, "utf8");
+	const result = fixture.run(["update", "--extensions"]);
+	assert.equal(result.status, 1);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /legacy companion installation could not be verified/);
+	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, packages);
+	assert.deepEqual(fixture.npmCalls(), []);
+});
+
+test("companion selections in linked and foreign homes remain untouched", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	for (const [args, home] of [
+		[["--link"], join(fixture.home, ".pi", "agent")],
+		[["--home", join(fixture.home, "foreign")], join(fixture.home, "foreign")],
+	] as Array<[string[], string]>) {
+		const metadata = join(home, "npm", "node_modules", "gentle-engram", "package.json");
+		mkdirSync(dirname(metadata), { recursive: true });
+		writeFileSync(metadata, JSON.stringify({ name: "gentle-engram", version: "0.4.2", engram: { startupPolicy: 1 } }));
+		const settings = join(home, "settings.json");
+		const text = JSON.stringify({ packages: ["npm:gentle-engram@0.4.2", "npm:other-extension@2.0.0"] });
+		writeFileSync(settings, text);
+		const result = fixture.run(args, { FIXTURE_NO_PROBE: "1", ENGRAM_STARTUP_POLICY: "disabled" });
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout.trim().split("\n").at(-1)!), { names: [], notice: "" });
+		assert.equal(readFileSync(settings, "utf8"), text);
+	}
+	assert.deepEqual(fixture.npmCalls(), []);
+});
+
+test("bundled update defaults to latest and --latest remains an alias", { skip: posixHost }, (t) => {
 	const prefix = bundledPrefix(t);
-	const result = prefix.run(["update", "pi", "--extensions"]);
-	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Pi ships pinned with Gentle Shell \(Pi 1\.2\.0\)/);
+	for (const args of [["update"], ["update", "--latest"]]) {
+		const result = prefix.run(args);
+		assert.deepEqual([result.status, result.stdout, result.stderr], [0, "fixture latest Pi 1.3.0\n", ""]);
+		assert.equal(readlinkSync(join(prefix.root, "current")), `versions/${FIXTURE_ID}`);
+	}
+});
+
+test("bundled all forwards extensions and reports a failed Pi update", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run(["update", "pi", "--extensions"], { FIXTURE_PI_UPDATE_FAIL: "1" });
+	assert.equal(result.status, 1);
+	assert.equal(result.stderr.split("\n")[0], "gentle-shell update: fixture Pi installation failed");
+	assert.match(result.stderr, /latest Pi update did not complete; updating the extensions anyway/);
 	const seen = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
 	assert.deepEqual(seen.args, ["update", "--extensions"]);
-	assert.ok(JSON.parse(readFileSync(join(prefix.home, ".gentle-shell", "agent", "settings.json"), "utf8")).npmCommand);
+	assert.equal(readlinkSync(join(prefix.root, "current")), `versions/${FIXTURE_ID}`);
+});
+
+test("bundled update rejects unsupported force without changing the active version", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run(["update", "--force"]);
+	assert.deepEqual([result.status, result.stdout, result.stderr], [2, "", "gentle-shell update: --force is not supported for managed Pi updates.\n"]);
+	assert.equal(readlinkSync(join(prefix.root, "current")), `versions/${FIXTURE_ID}`);
+});
+
+test("bundled extension and model updates still reach Pi without a self update", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	for (const args of [["update", "--extensions"], ["update", "--models"]]) {
+		const result = prefix.run(args);
+		assert.equal(result.status, 0, result.stderr);
+		assert.deepEqual(JSON.parse(result.stdout.trim()).args, args);
+		assert.doesNotMatch(result.stdout, /fixture latest Pi/);
+		assert.equal(readlinkSync(join(prefix.root, "current")), `versions/${FIXTURE_ID}`);
+	}
 });
 
 test("a kept version that current does not name keeps the ordinary Pi override and refuses an unowned update", { skip: posixHost }, (t) => {

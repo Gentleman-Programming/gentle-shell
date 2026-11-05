@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_SECTION_KEYS, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
+import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, isVisualSettings, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, visualPresetOf, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
 
 test("missing settings use responsive defaults and return independent copies", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
@@ -13,7 +13,7 @@ test("missing settings use responsive defaults and return independent copies", (
 		assert.equal(DEFAULT_VISUAL_SETTINGS.statusPlacement, "auto");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.headerPlacement, "top");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.density, "comfortable");
-		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true });
+		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false });
 		resolved.settings.visibility.agents = false;
 		assert.equal(DEFAULT_VISUAL_SETTINGS.visibility.agents, true);
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.agents, true);
@@ -29,13 +29,13 @@ test("strict versioned parsing rejects malformed and partial settings", () => {
 });
 
 test("Sections rows follow one ordered key list that covers every visibility key", () => {
-	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning"]);
+	assert.deepEqual(VISUAL_SECTION_KEYS, ["changes", "rdd", "agents", "todo", "usageCost", "modelDetails", "contextWarning", "stats"]);
 	assert.deepEqual([...VISUAL_SECTION_KEYS].sort(), Object.keys(DEFAULT_VISUAL_SETTINGS.visibility).sort());
 });
 
 test("settings saved before the rdd section existed load as valid with rdd shown", () => {
 	const legacy = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
-	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } };
+	const expected = { ...DEFAULT_VISUAL_SETTINGS, visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(legacy)), expected);
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ ...legacy, visibility: { ...expected.visibility, rdd: false } })), { ...expected, visibility: { ...expected.visibility, rdd: false } });
 	for (const visibility of [{ ...legacy.visibility, extra: true }, { ...legacy.visibility, rdd: "no" }, { ...legacy.visibility, todo: "yes" }, { agents: true, todo: true, usageCost: true, modelDetails: true, rdd: true }]) {
@@ -58,13 +58,13 @@ test("settings saved before contextWarning existed load it shown and preserve rd
 	const shared = { schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS };
 	const preRdd = { ...shared, visibility: { changes: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preRdd)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+		visibility: { changes: false, rdd: true, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } });
 	const preContext = { ...shared, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(preContext)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true } });
+		visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: true, stats: false } });
 	const withoutRdd = { ...shared, visibility: { changes: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } };
 	assert.deepEqual(parseVisualSettingsFile(JSON.stringify(withoutRdd)), { ...DEFAULT_VISUAL_SETTINGS,
-		visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false } });
+		visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: false, stats: false } });
 });
 
 test("a present non-boolean added key in a partial legacy shape is rejected before default fill", () => {
@@ -127,7 +127,8 @@ test("atomic write round trips and invalid existing files fall back without over
 		assert.equal(path, join(home, "visual-customization.json"));
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, settings);
-		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VISUAL_SCHEMA, ...settings });
+		const { surface: _surface, ...stored } = settings;
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VISUAL_SCHEMA, ...stored }, "the tinted default is not stored");
 		const validFile = readFileSync(path, "utf8");
 		assert.throws(() => writeVisualSettings({ ...settings, density: "bad" as typeof settings.density }, { gentlePiConfigHome: home }));
 		assert.equal(readFileSync(path, "utf8"), validFile);
@@ -135,5 +136,80 @@ test("atomic write round trips and invalid existing files fall back without over
 		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
 		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).malformed, true);
 		assert.equal(readFileSync(path, "utf8"), "broken");
+	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// Presets (/gentle:customize → Layout → Preset) bundle the existing density and
+// visibility switches; they never add a key, so every binary keeps reading the file.
+test("presets are valid settings that keep the file format and the header placement; Light drops the rail", () => {
+	assert.deepEqual(Object.values(VISUAL_PRESET), ["light", "neutral", "power-user"]);
+	const custom = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.RIGHT, headerPlacement: HEADER_PLACEMENT.BELOW_INPUT };
+	for (const preset of Object.values(VISUAL_PRESET)) {
+		const applied = applyVisualPreset(custom, preset);
+		assert.ok(isVisualSettings(applied), `${preset} is a valid settings object`);
+		assert.equal(applied.headerPlacement, HEADER_PLACEMENT.BELOW_INPUT, "a preset keeps the header placement");
+		assert.equal(applied.statusPlacement, preset === VISUAL_PRESET.LIGHT ? STATUS_PLACEMENT.BOTTOM : STATUS_PLACEMENT.RIGHT, "Light moves Status to the bottom bar (no rail); the others keep the placement");
+		assert.equal(visualPresetOf(applied), preset);
+	}
+	const fromLight = applyVisualPreset(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), VISUAL_PRESET.NEUTRAL);
+	assert.equal(fromLight.statusPlacement, STATUS_PLACEMENT.AUTO, "leaving Light brings the rail back");
+	assert.equal(applyVisualPreset({ ...DEFAULT_VISUAL_SETTINGS, statusPlacement: STATUS_PLACEMENT.BOTTOM }, VISUAL_PRESET.NEUTRAL).statusPlacement, STATUS_PLACEMENT.BOTTOM, "a bottom placement chosen by hand stays");
+	assert.equal(visualPresetOf({ ...applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT), statusPlacement: STATUS_PLACEMENT.AUTO }), undefined, "Light switches with a rail are a custom mix");
+	assert.deepEqual(applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.NEUTRAL), DEFAULT_VISUAL_SETTINGS, "Neutral is today's default");
+	const light = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.LIGHT);
+	assert.equal(light.density, DENSITY.MINIMAL);
+	assert.deepEqual({ changes: light.visibility.changes, todo: light.visibility.todo, agents: light.visibility.agents, modelDetails: light.visibility.modelDetails, usageCost: light.visibility.usageCost }, { changes: false, todo: false, agents: true, modelDetails: true, usageCost: true }, "Light keeps priority 1: model, context, agent questions");
+	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
+	assert.equal(power.density, DENSITY.COMFORTABLE, "Power user keeps Neutral's spacing");
+	assert.ok(Object.values(power.visibility).every(Boolean), "Power user shows everything");
+	assert.equal(visualPresetOf({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }), undefined, "a hand-tuned mix is custom");
+	const home = mkdtempSync(join(tmpdir(), "visual-preset-"));
+	try {
+		writeVisualSettings(light, { gentlePiConfigHome: home });
+		const stored = JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8"));
+		assert.deepEqual(Object.keys(stored).sort(), ["density", "headerPlacement", "schema", "statusPlacement", "visibility"], "no preset key is stored");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, light);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("settings saved before the stats section existed load as valid with Stats hidden", () => {
+	const { stats: _stats, ...visibility } = DEFAULT_VISUAL_SETTINGS.visibility;
+	const parsed = parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { ...visibility, rdd: false } }));
+	assert.equal(parsed?.visibility.stats, false, "a missing stats key stays hidden, unlike rdd and contextWarning");
+	assert.equal(parsed?.visibility.rdd, false, "present keys are preserved");
+	const shown = parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, visibility: { ...visibility, stats: true } }));
+	assert.equal(shown?.visibility.stats, true);
+});
+
+test("Power user keeps Neutral's spacing and adds Stats; Neutral and Light leave Stats off", () => {
+	const power = applyVisualPreset(DEFAULT_VISUAL_SETTINGS, VISUAL_PRESET.POWER_USER);
+	assert.equal(power.density, DEFAULT_VISUAL_SETTINGS.density, "same spacing as Neutral");
+	assert.equal(power.visibility.stats, true);
+	assert.equal(visualPresetOf(power), VISUAL_PRESET.POWER_USER);
+	assert.equal(visualPresetOf(DEFAULT_VISUAL_SETTINGS), VISUAL_PRESET.NEUTRAL);
+	assert.equal(applyVisualPreset(power, VISUAL_PRESET.NEUTRAL).visibility.stats, false);
+	assert.equal(applyVisualPreset(power, VISUAL_PRESET.LIGHT).visibility.stats, false);
+});
+
+test("the chrome surface defaults to tinted, is stored only when transparent, and older files read as tinted", () => {
+	assert.equal(DEFAULT_VISUAL_SETTINGS.surface, CHROME_SURFACE.TINTED);
+	const home = mkdtempSync(join(tmpdir(), "visual-surface-"));
+	try {
+		const file = join(home, "visual-customization.json");
+		writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { gentlePiConfigHome: home });
+		assert.equal(Object.hasOwn(JSON.parse(readFileSync(file, "utf8")), "surface"), false, "tinted keeps the file readable by older versions");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
+		const transparent = { ...DEFAULT_VISUAL_SETTINGS, surface: CHROME_SURFACE.TRANSPARENT };
+		writeVisualSettings(transparent, { gentlePiConfigHome: home });
+		assert.equal(JSON.parse(readFileSync(file, "utf8")).surface, "transparent");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, transparent);
+		assert.equal(visualPresetOf(transparent), VISUAL_PRESET.NEUTRAL, "presets ignore the surface");
+		assert.equal(applyVisualPreset(transparent, VISUAL_PRESET.POWER_USER).surface, CHROME_SURFACE.TRANSPARENT, "a preset keeps the surface");
+		const { surface: _surface, ...legacy } = DEFAULT_VISUAL_SETTINGS;
+		assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...legacy })), DEFAULT_VISUAL_SETTINGS);
+		assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, surface: "glass" })), undefined);
+		assert.equal(isVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }), true);
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });

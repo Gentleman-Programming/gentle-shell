@@ -4,6 +4,14 @@ An interactive RPC host — a client that runs `pi --mode rpc` itself, such as t
 
 Source map: [publisher](../lib/agents-rpc-publisher.ts), [wiring](../extensions/gentle-agents.ts), [store](../lib/agents-protocol.ts).
 
+## Activity labels
+
+The scrollable TUI sidebar shows each task's existing label below its agent when
+there is no room for the inline task column. The line is clipped to the card
+width; waiting questions and errors retain their existing display priority. The
+height-capped card above the editor retains its existing layout. The RPC payload
+carries the task label for hosts to display.
+
 ## Same-profile orchestrator discovery (Refs #1701)
 
 `orchestrator_list` keeps stable raw routing session IDs and adds recorded display

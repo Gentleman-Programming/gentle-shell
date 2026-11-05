@@ -261,6 +261,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						selectedPrefix: (text) => theme.fg("accent", text),
 						selectedText: (text) => theme.fg("accent", text),
 						description: (text) => theme.fg("muted", text),
+						fg: (_role, text) => theme.fg("warning", text),
 						hoverBackground: (text) => theme.bg("toolPendingBg", text),
 					}, keybindings);
 					let completed = false;

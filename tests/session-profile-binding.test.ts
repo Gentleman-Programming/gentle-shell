@@ -161,3 +161,18 @@ test("each entrypoint still hands out private copies of the shared store", (t) =
 	);
 	resetSessionProfileBindingsForTesting();
 });
+
+test("the store keeps a binding's origin and startup state as private copies", () => {
+	resetSessionProfileBindingsForTesting();
+	bindSessionProfile("session-a", "work", ROUTING);
+	assert.deepEqual(readSessionProfileBinding("session-a"), { name: "work", origin: "user", modelProfiles: ROUTING });
+	const startup = { origin: "repo" as const, name: "team", modelProfiles: ROUTING };
+	bindSessionProfile("session-b", "work", ROUTING, { startup });
+	bindSessionProfile("session-c", "team", ROUTING, { origin: "global" });
+	startup.modelProfiles = {};
+	const read = readSessionProfileBinding("session-b");
+	assert.deepEqual(read, { name: "work", origin: "user", modelProfiles: ROUTING, startup: { origin: "repo", name: "team", modelProfiles: ROUTING } });
+	if (typeof read?.startup === "object") read.startup.modelProfiles.worker!.model = "edited/model";
+	assert.deepEqual(readSessionProfileBinding("session-b")?.startup, { origin: "repo", name: "team", modelProfiles: ROUTING });
+	assert.deepEqual(readSessionProfileBinding("session-c"), { name: "team", origin: "global", modelProfiles: ROUTING });
+});

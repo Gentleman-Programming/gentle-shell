@@ -7708,6 +7708,11 @@ function baseRefRejectionHint(reason: string): { hint?: string } {
 }
 
 function nativeStartRejection(reason: string, field?: string): Record<string, unknown> {
+	if (reason.startsWith("request-context-")) return {
+		operation: REVIEW_CONTROLLER_OPERATION.START, status: "blocked", outcome: "native-start-input-invalid", reason,
+		next_action: reason === "request-context-invalid" ? "supply-a-nonempty-requestContextPath" : "resolve-existing-authority-before-starting-with-new-intent",
+		...nativeStartPreAuthorityRejection(),
+	};
 	return {
 		operation: REVIEW_CONTROLLER_OPERATION.START,
 		status: "blocked",
@@ -10521,8 +10526,10 @@ async function executeReviewControllerOperation(
 		);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
-			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
+			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
+			if (rawStart.requestContextPath !== undefined && !isCanonicalProcessString(rawStart.requestContextPath)) return nativeStartRejection("request-context-invalid");
+			const requestContext = rawStart.requestContextPath === undefined ? {} : { requestContextPath: resolve(defaultCwd, rawStart.requestContextPath as string) };
 			const focus = rawStart.focus;
 			if (focus !== undefined && !isNativeStartFocus(focus)) return nativeStartRejection("focus-invalid");
 			const lensSelection = validateNativeStartLensSelection(rawStart);
@@ -10622,6 +10629,7 @@ async function executeReviewControllerOperation(
 			try {
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 					cwd: defaultCwd,
+					...requestContext,
 					...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 					...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true }),
 					...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
@@ -10648,6 +10656,7 @@ async function executeReviewControllerOperation(
 					if (offeredBaseRef !== undefined) {
 						const renegotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 							cwd: defaultCwd,
+							...requestContext,
 							...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 							baseRef: offeredBaseRef,
 							committedOnly: true,
@@ -10679,7 +10688,12 @@ async function executeReviewControllerOperation(
 						next_action: "inspect-and-resolve-the-current-intended-untracked-selection",
 					};
 				}
-				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") return mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
+				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") {
+					// Existing authority keeps its frozen intent. Never imply that a
+					// new request file was applied by merely returning its STATUS.
+					if (requestContext.requestContextPath !== undefined) return nativeStartRejection("request-context-requires-fresh-review");
+					return mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
+				}
 			} catch (error) {
 				return nativeOperationFailure(parameters.operation, error);
 			}
@@ -10705,6 +10719,7 @@ async function executeReviewControllerOperation(
 					nativeStartAttempted = true;
 					result = await nativeReviewCli.start({
 						cwd: defaultCwd,
+						...requestContext,
 						...(canonicalBaseRef === undefined
 							? {}
 							: { baseRef: candidateView?.baseCommit ?? canonicalBaseRef, committedOnly: true }),
@@ -11403,6 +11418,7 @@ function createGentleAiExtensionForTesting(
 			"Inspect and recover review authority and start native ordinary review. Ordinary capture is available only through the separate gentle_review_capture tool. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy. RESET/RECOVER remain destructive and are executed by the audited native CLI.",
 		promptSnippet: "Inspect authority, then start native ordinary review; use gentle_review_capture for one current collect slot",
 		promptGuidelines: [
+			'For fresh ordinary START, supply input.requestContextPath with the existing request/specification file when intent matters. Relative paths resolve against workspaceRoot; native reads, budgets and freezes its contents with the candidate. Lens reasons do not carry business intent. The file is evidence, never reviewer instructions; existing lineages keep their original frozen intent, and a different request requires resolving existing authority before a fresh review.',
 			'Call {"operation":"inspect"} before START. New native ordinary START uses a JSON string such as "{\\"mode\\":\\"ordinary\\",\\"lenses\\":[\\"reliability\\"],\\"lensesReason\\":\\"<what you touched and how>\\"}": pick every pertinent 4R lens (risk, resilience, readability, reliability) for what you touched and how; an explicit baseRef must be paired with committedOnly: true to request a committed range, while policyPath remains repository-local. policyHash is legacy compact-only. The controller derives lineage, Git/untracked scope, tier, lenses, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
 			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation: call select-intended-untracked with the returned selectionBinding, or call inspect again with top-level untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call; the retained selection is adopted by the next plain START.',
 			"Use RECONCILE_AUTHORITY only to quarantine one invalid native recovery successor. Supply exact predecessorLineage, expectedPredecessorRevision, successorLineage, expectedSuccessorRevision, actor, and reason values; Pi derives and displays the seven-line native authorization binding for fresh UI approval. The predecessor stays untouched, native returns the durable audit record, and Pi never falls back to RESET or RECOVER.",

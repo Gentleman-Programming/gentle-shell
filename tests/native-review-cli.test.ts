@@ -431,6 +431,36 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
 };
 
+test("START preserves the explicit request file in STATUS and the provider-issued START", async () => {
+	const path = "/repo/spec with spaces.md";
+	const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`, "--projection=workspace", "--agent=pi", "--consent=relay", `--request-context=${path}`];
+	const queue = queuedAdapter([
+		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+	]);
+	await client(queue.adapter).start({ cwd: "/repo", requestContextPath: path });
+	assert.deepEqual(queue.calls[0].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
+	assert.deepEqual(queue.calls[1].arguments, ["review", "start", ...tokens]);
+});
+
+test("START never drops request context for an older provider or a malformed transition", async () => {
+	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: "flag provided but not defined: -request-context" };
+	const older = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
+	await assert.rejects(client(older.adapter).start({ cwd: "/repo", requestContextPath: "/spec.md", lenses: ["review-risk"], lensesReason: "why" }), NativeReviewIntegrationError);
+	assert.equal(older.calls.length, 1);
+	const dropped = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
+	await assert.rejects(client(dropped.adapter).start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
+	assert.equal(dropped.calls.length, 1);
+});
+
+test("invalid request context paths are refused before any native invocation", async () => {
+	for (const path of ["", " spaced ", "bad\0path"]) {
+		const queue = queuedAdapter([]);
+		await assert.rejects(client(queue.adapter).start({ cwd: "/repo", requestContextPath: path }), /requestContextPath/);
+		assert.equal(queue.calls.length, 0);
+	}
+});
+
 test("native START preflights the agent lens selection through STATUS", async () => {
 	const tokens = [
 		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,

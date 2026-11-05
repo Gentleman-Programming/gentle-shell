@@ -539,6 +539,17 @@ export const NATIVE_UNTRACKED_SCOPE = {
 
 
 
+/** Explicit request file; native owns reading, freezing, sizing and identity. */
+
+
+
+
+function nativeRequestContextArguments(request                               )                    {
+	if (request.requestContextPath === undefined) return [];
+	if (!isCanonicalProcessString(request.requestContextPath)) throw new TypeError("Native requestContextPath must be a non-empty, trimmed, NUL-free string");
+	return ["--request-context", request.requestContextPath];
+}
+
 
 
 
@@ -2268,6 +2279,7 @@ export class NativeReviewCliV216                            {
 		const selection = nativeUntrackedSelection(request);
 		const statusRequest                            = {
 			cwd: request.cwd,
+			...(request.requestContextPath === undefined ? {} : { requestContextPath: request.requestContextPath }),
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
 			...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }),
@@ -2301,6 +2313,10 @@ export class NativeReviewCliV216                            {
 			return argument.token;
 		});
 		const targetIdentity = status.targetIdentity;
+		if (request.requestContextPath !== undefined) {
+			const values = transitionTokens.flatMap((token, index) => token === "--request-context" ? [transitionTokens[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+			if (values.length !== 1 || values[0] !== request.requestContextPath) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the requested context file", undefined, false);
+		}
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.START, request.cwd, ["review", "start", ...transitionTokens], true, request.signal);
 		// A negotiated v2 START may answer a consent question (action:
 		// "consent_required") instead of `start/v3` when the provider needs an
@@ -2431,8 +2447,9 @@ export class NativeReviewCliV216                            {
 			...(request.lineageId === undefined ? [] : ["--lineage", request.lineageId]),
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
+			...nativeRequestContextArguments(request),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request)];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...nativeRequestContextArguments(request)];
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));

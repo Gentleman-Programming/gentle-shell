@@ -233,6 +233,33 @@ test("START forwards the agent lens selection in canonical order and rejects mal
 	assert.equal(statusCalls, 0);
 });
 
+test("START resolves an explicit request file against the selected workspace", async (t) => {
+	const cwd = repository(t);
+	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
+	const starts: Parameters<NativeReviewCli["start"]>[0][] = [];
+	const { controller } = runtime(fakeNative({ start: async request => {
+		starts.push(request);
+		return { lineageId: "intent-lineage", state: "reviewing", riskLevel: "medium", selectedLenses: ["review-risk"], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: true };
+	} }));
+	await controller.execute("request-start", { operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec with spaces.md" }) }, undefined, undefined, context(cwd));
+	assert.equal(starts.length, 1);
+	assert.equal(starts[0].requestContextPath, join(cwd, "spec with spaces.md"));
+	for (const requestContextPath of [42, "", " spaced ", "nul\0path"]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath }) }, cwd, fakeNative());
+		assert.equal(result.reason, "request-context-invalid");
+	}
+});
+
+test("START with explicit intent never silently adopts existing authority", async (t) => {
+	const cwd = repository(t);
+	const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "new-spec.md" }) }, cwd, fakeNative({
+		targetStatus: async () => targetStatusFixture(),
+		start: async () => { throw new Error("existing intent must not be replaced"); },
+	}));
+	assert.equal(result.reason, "request-context-requires-fresh-review");
+	assert.equal(result.mutation_performed, false);
+});
+
 test("repository discovery ignores ambient Git root overrides", async (t) => {
 	const sessionRoot = repository(t);
 	const targetRoot = repository(t, "gentle-pi-isolated-target-");

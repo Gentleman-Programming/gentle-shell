@@ -490,6 +490,19 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
 }
 
+/**
+ * The bottom Status row (Status placed at the bottom on a wide terminal): the
+ * other extensions' statuses on the chrome surface, divided like the status
+ * bar and clipped to one row. Undefined when no integration reports anything.
+ */
+export function renderShellIntegrationsRow(model: ShellBarModel, theme: ShellBarTheme, width: number): string | undefined {
+	const target = Math.max(0, Math.floor(width));
+	const statuses = (model.integrations ?? model.statuses).map(sanitizeStatus).filter(Boolean);
+	if (statuses.length === 0 || target < 4) return undefined;
+	const text = statuses.map((status) => theme.fg(ROLE.STATUS, status)).join(` ${theme.fg(ROLE.SEPARATOR, STATUS_BAR_DIVIDER)} `);
+	return paintChromeRow(theme, ` ${fitPanelLine(text, "", target - 2)} `);
+}
+
 /** One blank row on the chrome surface: the margin a chrome bar keeps toward the content in comfortable density. */
 export function renderShellChromePad(theme: ShellBarTheme, width: number): string {
 	return paintChromeRow(theme, " ".repeat(Math.max(0, Math.floor(width))));

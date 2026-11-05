@@ -7377,7 +7377,7 @@ test("a hidden Todos section stays hidden in the mobile work row and the panel s
 	}
 });
 
-test("Status at the bottom with the header on top draws the minimal IDE chrome on a wide terminal, without the rail", async () => {
+test("Status at the bottom keeps Agents and Todos as cards and the chrome bars on a wide terminal, and the minimal edition below the rail breakpoint", async () => {
 	const { pi, handlers } = fakePi();
 	const home = mkdtempSync(join(tmpdir(), "shell-light-"));
 	try {
@@ -7397,12 +7397,18 @@ test("Status at the bottom with the header on top draws the minimal IDE chrome o
 		});
 		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
 		try {
-			assert.equal(state.compactWork?.(), true, "the minimal edition folds live work like a phone");
-			assert.deepEqual(footer.render(180), [], "the old compact bottom bar steps aside for the status bar");
-			assert.deepEqual(todo.render(180), [], "the Todos card folds into the work row");
-			assert.match(stripAnsi(state.parts.get("header")!.render(180).join("\n")), /^ ✿ repo /, "the title row draws");
-			assert.match(stripAnsi(state.parts.get("statusbar")!.render(180).join("\n")), /^ main /, "the status bar draws");
-			assert.match(stripAnsi(editor.render(180)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
+			assert.notEqual(state.compactWork?.(), true, "a wide bottom Status does not fold live work behind [ Panel ]");
+			assert.deepEqual(todo.render(180), ["TODO CARD"], "the Todos card stays");
+			assert.match(stripAnsi(state.parts.get("header")!.render(180)[0]!), /^ main .*ctx/, "the top chrome bar draws");
+			assert.deepEqual(state.parts.get("statusbar")!.render(180), [], "no split status bar");
+			assert.deepEqual(footer.render(180), [], "no integration reports anything, so there is no bottom Status row");
+			assert.doesNotMatch(stripAnsi(editor.render(180)[0]!), /▸ ◐ Run the suite/, "no work row above the editor");
+			tui.terminal.columns = 120;
+			assert.equal(state.compactWork?.(), true, "below the rail breakpoint the minimal edition folds live work like a phone");
+			assert.deepEqual(todo.render(120), [], "the Todos card folds into the work row");
+			assert.match(stripAnsi(state.parts.get("header")!.render(120).join("\n")), /^ ✿ repo /, "the title row draws");
+			assert.match(stripAnsi(state.parts.get("statusbar")!.render(120).join("\n")), /^ main /, "the status bar draws");
+			assert.match(stripAnsi(editor.render(120)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
 		} finally {
 			editor.dispose();
 			todo.dispose();
@@ -7694,7 +7700,7 @@ test("a wide top header is the split title row's panel row with the whole header
 		{ header: "below-input", status: "auto", exterior: false },
 		{ header: "top", status: "hidden", exterior: true },
 		{ header: "below-input", status: "hidden", exterior: false },
-		{ header: "split", status: "hidden", exterior: true },
+		{ header: "split", status: "hidden", exterior: false },
 	] as const;
 	for (const { header, status, exterior } of cases) {
 		const home = scopedDoubleEscCancelConfigHome(t);
@@ -7754,5 +7760,41 @@ test("a wide top header is the split title row's panel row with the whole header
 			assert.match(stripAnsi(rows[1]!), /^ main .*ctx .*usage/);
 		}
 		assert.deepEqual(footer.render(160), exterior ? [""] : [], `${header}/${status}: ${exterior ? "the float prompt ends the dock" : "no extra row under the input"}`);
+	}
+});
+
+test("Status bottom at a wide width keeps the bar design, shows Agents and Todos as cards, and adds a bottom Status row with the integrations", async (t) => {
+	for (const header of ["top", "below-input", "split"] as const) {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header, statusPlacement: "bottom" }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const painted = { ...plainTheme, bg: (role: string, text: string) => `\x1b[48;5;${role === "customMessageBg" ? 171 : 120}m${text}\x1b[49m` };
+		(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const statuses = new Map([["gentle-pi", "🧠 gentle-pi · ready"]]);
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		root[node]();
+		const state = sidebarState(tui as unknown as TUI);
+		assert.notEqual(state.compactWork?.(), true, `${header}: no minimal-edition fold; Agents and Todos keep their cards`);
+		assert.equal(state.statusBarShowsMode?.(), true, `${header}: a chrome bar shows the permission mode`);
+		const statusRow = (rows: string[]) => rows.map(stripAnsi).find((row) => row.includes("gentle-pi · ready"));
+		if (header === "split") {
+			const bar = state.parts.get("statusbar")!.render(160).map(stripAnsi);
+			assert.match(bar.join("\n"), /ctx .*usage/, "split: the status bar");
+			assert.ok(statusRow(state.parts.get("statusbar")!.render(160)), "split: the integrations row joins the status block");
+			assert.deepEqual(footer.render(160), [], "split: the previous compact bottom bar steps aside");
+		} else {
+			if (header === "top") assert.match(stripAnsi(state.parts.get("header")!.render(160)[0]!), /^ main .*ctx .*usage/, "top: the chrome bar");
+			const rows = footer.render(160);
+			assert.ok(statusRow(rows), `${header}: the bottom Status row lists the integrations`);
+			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, `${header}: on the chrome surface`);
+		}
 	}
 });

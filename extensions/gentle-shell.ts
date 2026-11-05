@@ -26,6 +26,8 @@ import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/c
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
 import { buildKeymapRows } from "../lib/keymaps-customize.ts";
 import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
+import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-control.ts";
+import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
@@ -2000,6 +2002,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
+	let customizeGeneration = 0;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
 		if (profilePoll) clearInterval(profilePoll);
@@ -2449,6 +2452,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		customizeGeneration++;
 		closeCustomize?.();
 		runningJobs = undefined;
 		adaptiveReasoningNotices.clear();
@@ -2832,6 +2836,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return { action: "transform", text: submitted.text, images: [...(event.images ?? []), ...submitted.images] };
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		customizeGeneration++;
 		disposeFooter?.();
 		closeCustomize?.();
 		if (review) {
@@ -2950,13 +2955,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, Vim editing, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
 				return;
 			}
 			closeCustomize?.();
+			const generation = ++customizeGeneration;
+			// The owner also checks its lifecycle; this binds this particular card
+			// to its caller before discovery and again before handing off the UI.
+			const currentRddSession = (() => {
+				try {
+					const manager = ctx.sessionManager, id = manager.getSessionId(), cwd = ctx.cwd, ui = ctx.ui;
+					if (env.GENTLE_PI_AGENTS_CHILD === "1" || !id || !cwd || (manager.getCwd?.() ?? cwd) !== cwd) return () => false;
+					return () => {
+						try { return customizeGeneration === generation && ctx.mode === "tui" && ctx.hasUI && ctx.ui === ui && ctx.cwd === cwd && ctx.sessionManager === manager && manager.getSessionId() === id && (manager.getCwd?.() ?? cwd) === cwd; }
+						catch { return false; }
+					};
+				} catch { return () => false; }
+			})();
 			let closed = false;
 			let adapter: YoloUiAdapter | undefined;
 			let unobserve: (() => void) | undefined;
@@ -3080,6 +3098,40 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					vimPolicy = result.policy;
 					prompt?.setVimPolicy(vimPolicy);
 					reportVim(ctx, result);
+				},
+			});
+			let rddControl: RddModeControl | undefined;
+			let rddSnapshot: Awaited<ReturnType<RddModeControl["read"]>>;
+			let rddLoading = true;
+			let rddHandoff: RddModeControl | undefined;
+			// Never block the rest of Customize on an unavailable or slow provider.
+			// Rendering only consumes the snapshot, which is refreshed on each open.
+			const refreshRdd = async () => {
+				let control: RddModeControl | undefined;
+				let snapshot: Awaited<ReturnType<RddModeControl["read"]>>;
+				try {
+					control = currentRddSession() ? await discoverRddModeControl(pi) : undefined;
+					snapshot = !closed && currentRddSession() ? await control?.read() : undefined;
+				} catch { /* An incompatible or failing bridge is unavailable. */ }
+				if (closed) return;
+				rddSnapshot = currentRddSession() && snapshot && (snapshot.effective === "on" || snapshot.effective === "off") && Object.values(NATIVE_REVIEW_MODE_SOURCE).includes(snapshot.source) ? snapshot : undefined;
+				rddControl = rddSnapshot ? control : undefined;
+				rddLoading = false;
+				requestCustomizeRender?.();
+			};
+			rows.push({
+				category,
+				label: () => rddSnapshot ? `RDD: ${rddSnapshot.effective} (decided by ${rddSnapshot.source}) · checked on open` : `RDD: ${rddLoading ? "checking" : "unavailable"}`,
+				preview: () => ({ title: "RDD selector", sample: "Enter for fresh status and repository or explicitly machine-wide choices; review consent unchanged." }),
+				action: () => {
+					if (closed || !currentRddSession()) return;
+					if (!rddControl || !rddSnapshot) {
+						ctx.ui.notify(rddLoading ? "RDD status is still being checked." : "RDD is unavailable in this live primary session.", "warning");
+						return;
+					}
+					// The owner's native selector must not sit underneath our overlay.
+					rddHandoff = rddControl;
+					close();
 				},
 			});
 			let yoloDisplay: YoloDisplay = YOLO_DISPLAY.unavailable;
@@ -3339,6 +3391,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					requestCustomizeRender = requestYoloRender;
 					customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: requestYoloRender, rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => { if (!closed) ctx.ui.notify(`${customizeView?.title() ?? "Customization"}: ${error.message}`, "error"); }, onClose: close });
 					const view = customizeView;
+					void refreshRdd();
 					// Own interaction lifetime here, leaving the shared view unchanged.
 					return {
 						render: (width) => closed ? [] : view.render(width),
@@ -3350,6 +3403,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					};
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 			} finally { close(); }
+			if (rddHandoff && currentRddSession()) await rddHandoff.open();
 			if (reloadRequested) await ctx.reload();
 		},
 	});

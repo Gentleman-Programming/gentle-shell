@@ -124,6 +124,7 @@ console.log("ENV_PROBE=" + JSON.stringify({
   gitGlobal: gitGlobalPath ? { exists: existsSync(gitGlobalPath), content: existsSync(gitGlobalPath) ? readFileSync(gitGlobalPath, "utf8") : null } : null,
   xdg: xdgPath ?? null,
   agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GENTLE_PI_AGENTS_"))),
+  inherited: Object.fromEntries(Object.entries(process.env).filter(([key]) => ["GENTLE_SHELL_CONFIG_HOME", "PI_CODING_AGENT_DIR", "GENTLE_PI_AGENT_HOME", "GENTLE_SHELL_USER_PI_HOME", "GENTLE_SHELL_CHILD_PACKAGE_INJECTION"].includes(key))),
   home,
   files: home && existsSync(home) ? readdirSync(home) : null,
   sentinel: process.env.TEST_ENV_SENTINEL,
@@ -161,6 +162,25 @@ test("unit stage strips inherited Git configuration without changing later stage
 	assert.equal(unit.git.GIT_AUTHOR_NAME, undefined);
 	assert.equal(unit.git.GIT_CONFIG_COUNT, undefined);
 	for (const [key, value] of Object.entries(env)) assert.equal(provider.git[key], value);
+});
+
+// The developer's installed Gentle Shell exports its own homes and child
+// injection into every shell. Inherited, they redirected fixtures to the real
+// installation (agent-home and asset-runtime failures), so the unit stage must
+// strip them while later stages keep them.
+test("unit stage strips inherited Gentle Shell and Pi home overrides; later stages keep them", (t) => {
+	const env = {
+		GENTLE_SHELL_CONFIG_HOME: "/inherited/gentle-shell-config",
+		PI_CODING_AGENT_DIR: "/inherited/pi-agent",
+		GENTLE_PI_AGENT_HOME: "/inherited/agent-home",
+		GENTLE_SHELL_USER_PI_HOME: "/inherited/user-pi-home",
+		GENTLE_SHELL_CHILD_PACKAGE_INJECTION: "{\"version\":1}",
+	};
+	const [unit, provider] = probeStageEnvironment(t, env);
+	for (const key of Object.keys(env)) {
+		assert.equal(unit.inherited[key], undefined, `${key} must not reach the unit stage`);
+		assert.equal(provider.inherited[key], env[key], `${key} must reach later stages`);
+	}
 });
 
 // gentle-shell#2552: Git reads its global/system config files by path, so

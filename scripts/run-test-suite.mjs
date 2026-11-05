@@ -21,13 +21,18 @@ export const DEFAULT_STAGES = Object.freeze([
 	{ name: "runtime-harness", command: "pnpm run test:harness" },
 ]);
 
+const UNIT_STRIPPED_HOME_ENV = new Set(["GENTLE_SHELL_CONFIG_HOME", "PI_CODING_AGENT_DIR", "GENTLE_PI_AGENT_HOME", "GENTLE_SHELL_USER_PI_HOME", "GENTLE_SHELL_CHILD_PACKAGE_INJECTION"]);
+
 export async function runStage(stage) {
 	// Unit fixtures must not inherit the terminal's Git overrides, child-session
-	// identity, or personal guardrails. Other stages retain their existing env.
+	// identity, personal guardrails, or an installed Gentle Shell's own homes and
+	// child injection (those redirect fixtures to the real installation). Other
+	// stages retain their existing env.
 	const configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-config-")) : undefined;
 	const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
 		const normalizedKey = key.toUpperCase();
-		return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") && normalizedKey !== "GENTLE_PI_CONFIG_HOME";
+		return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") && normalizedKey !== "GENTLE_PI_CONFIG_HOME"
+			&& !UNIT_STRIPPED_HOME_ENV.has(normalizedKey);
 	})) : process.env;
 	if (configHome) env.GENTLE_PI_CONFIG_HOME = configHome;
 	// Unit fixtures also get a private temp dir, removed with the stage, so a

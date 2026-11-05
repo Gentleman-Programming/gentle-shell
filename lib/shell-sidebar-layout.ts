@@ -338,6 +338,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			const carded = chromeSurface() === "transparent";
+			// Float cards are tinted from edge to edge, so two of them would fuse into one
+			// slab: like the conversation cards, they always keep a blank row between them.
+			// Neon cards close with their own rule, so the density decides their gap.
+			const cardGap = () => (carded && style === CARD_STYLE.FLOAT) || sectionGap(density());
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
@@ -394,13 +398,13 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				const paint = (row: string) => (panel ? paintSurfaceRow(row, surface) : row);
 				// One blank row separates a section from the banner or the
 				// previous section; neon's header gap above is not a section.
-				if ((hits.length > 0 || branding.length > 0) && sectionGap(density())) railLines.push(!carded && panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
+				if ((hits.length > 0 || branding.length > 0) && (carded ? cardGap() : sectionGap(density()))) railLines.push(!carded && panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
 				if (carded) {
 					const layout = (section.component as SidebarRail).cardGroups?.(renderWidth) ?? { groups: [{ start: 0, end: section.lines.length }] };
 					const geometry = cardGeometry(theme, contentWidth, style);
 					const indent = " ".repeat(PANEL_ROW_INDENT);
 					layout.groups.forEach((group, index) => {
-						if (index > 0 && sectionGap(density())) railLines.push("");
+						if (index > 0 && cardGap()) railLines.push("");
 						const body = section.lines.slice(group.start + 1, group.end).map((row) => row.startsWith(indent) ? row.slice(PANEL_ROW_INDENT) : row);
 						while (body.length && body[body.length - 1]?.trim() === "") body.pop();
 						const top = railLines.length;

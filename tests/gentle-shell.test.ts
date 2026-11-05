@@ -720,9 +720,9 @@ test("the fullscreen Status rail and header refresh the effective agent profile 
 		assert.equal(typeof rail.digest, "function", "the Status card paints live state and must declare a digest");
 		assert.doesNotMatch(rail.render(46).join("\n"), /gpt-5\.5/, "model now lives in the header, not the Status card");
 
-		// Integrations exposes the same effective agent profile as the header.
+		// The bar carries the effective agent profile next to the model; Integrations no longer lists it.
 		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
-		assert.match(rail.render(46).join("\n"), /Agent profile: team/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Agent profile/);
 		assert.match(header.render(160).join("\n"), /team/);
 		const beforeProfile = header.digest?.();
 		const beforeRailProfile = live();
@@ -730,7 +730,6 @@ test("the fullscreen Status rail and header refresh the effective agent profile 
 		assert.notEqual(header.digest?.(), beforeProfile, "a profile switch changes the header digest");
 		assert.notEqual(live(), beforeRailProfile, "a profile switch changes the Status digest");
 		assert.match(header.render(160).join("\n"), /other/);
-		assert.match(rail.render(46).join("\n"), /Agent profile: other/);
 		profile = undefined;
 		assert.doesNotMatch(header.render(160).join("\n"), /team|other/);
 		assert.doesNotMatch(rail.render(46).join("\n"), /Agent profile:/);
@@ -918,7 +917,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	try {
 		const timer = intervals.find((entry) => entry.delay === 2000);
 		assert.ok(timer, "UI session installs the 2000ms profile refresh");
-		assert.match(status(), /Agent profile: team/, "Integrations shows the effective agent profile");
+		assert.doesNotMatch(status(), /Agent profile/, "Integrations no longer lists the profile; the bar does");
 		assert.match(header(), /team/);
 		const before = tui.requestRender.mock.callCount();
 		timer.tick();
@@ -928,7 +927,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		assert.match(header(), /other \(local\)/);
-		assert.match(status(), /Agent profile: other \(local\)/, "profile polling also refreshes Integrations");
+
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		const afterBind = resolutions;
@@ -3699,7 +3698,7 @@ test("T3 live style Cards action refreshes cached TODO and Status in both direct
 	const wide = root[node]() as unknown as { entries: { component: { render(width: number): string[] } }[] };
 	assert.equal(wide.entries.length, 3, "title row, transcript with the rail, status bar");
 	const [titleAbove, titleRow, titleBelow] = stripAnsi(frame.header).split("\n");
-	assert.match(titleRow!, /^ ✿ repo  \/repo .*team $/);
+	assert.match(titleRow!, /^ ✿ repo  \/repo .*Release notes $/, "the title row keeps the session; the profile rides the status bar");
 	assert.equal(titleAbove!.trim() + titleBelow!.trim(), "", "comfortable centers the title row between two margin rows");
 	const [statusMargin, statusRow, statusBelow] = stripAnsi(wide.entries[2]!.component.render(160).join("\n")).split("\n");
 	assert.equal(statusMargin!.trim() + statusBelow!.trim(), "", "and the status bar too");

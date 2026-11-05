@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildShellHeaderModel, renderShellHeaderChrome } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellHeaderChrome, renderShellTopHeader, shellHeaderUsageHit } from "../lib/shell-bar.ts";
 import { chromeSurface, renderPanelSheet, setChromeSurface } from "../lib/shell-panel.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { DEFAULT_VISUAL_SETTINGS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
@@ -11,16 +11,50 @@ import { DEFAULT_VISUAL_SETTINGS, resolveVisualSettings, writeVisualSettings } f
 const painted = { fg: (_role: string, text: string) => text, bold: (text: string) => text, bg: (role: string, text: string) => `\x1b[48;5;${role === "customMessageBg" ? 171 : 120}m${text}\x1b[49m` };
 const model = { cwd: "/repo", branch: "main", dirty: 0, sessionName: "s", modelId: "gpt-5.5", effort: "medium", contextPercent: 45, contextWindow: 1000, costTotal: 0, subscription: true, usage: undefined, statuses: [] };
 
-test("a transparent surface leaves the float header bar unpainted, and tinted keeps it", (t) => {
+const unstyled = (rows: string[]) => rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+
+test("a transparent surface keeps the float header's margins and drops only its background", (t) => {
 	const [style, surface] = [cardStyle(), chromeSurface()];
 	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
 	setCardStyle(CARD_STYLE.FLOAT);
-	const header = () => renderShellHeaderChrome(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS).rows.join("\n");
-	setChromeSurface("tinted");
-	assert.match(header(), /\x1b\[48;5;\d+m/, "the tinted float header keeps its card");
-	setChromeSurface("transparent");
-	assert.doesNotMatch(header(), /\x1b\[48;5;\d+m/);
-	assert.match(header(), /gpt-5\.5/, "the header content stays");
+	for (const headerPlacement of ["top", "below-input"] as const) {
+		const header = () => renderShellHeaderChrome(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, headerPlacement });
+		setChromeSurface("tinted");
+		const tinted = header();
+		assert.match(tinted.rows.join("\n"), /\x1b\[48;5;\d+m/, `${headerPlacement}: the tinted float header keeps its card`);
+		setChromeSurface("transparent");
+		const clear = header();
+		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${headerPlacement}: no background`);
+		assert.deepEqual(unstyled(clear.rows), unstyled(tinted.rows), `${headerPlacement}: same rows, margins and text`);
+		assert.equal(clear.headerRow, tinted.headerRow);
+		assert.deepEqual(clear.usageSpan, tinted.usageSpan, `${headerPlacement}: the usage click target does not move`);
+	}
+});
+
+test("the top header has the split title row's look: the panel surface, a padding row around the whole header row, one row when minimal", (t) => {
+	const [style, surface] = [cardStyle(), chromeSurface()];
+	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
+	for (const cards of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
+		setCardStyle(cards);
+		setChromeSurface("tinted");
+		const chrome = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
+		assert.equal(chrome.rows.length, 3, `${cards}: padding, header row, padding`);
+		assert.equal(chrome.headerRow, 1);
+		for (const row of chrome.rows) assert.match(row, /\x1b\[48;5;171m/, `${cards}: every row on the panel surface, like the rail`);
+		assert.doesNotMatch(chrome.rows.join("\n"), /\x1b\[48;5;120m|▔|▁/, `${cards}: no float card or edge line`);
+		const text = unstyled(chrome.rows)[1]!;
+		assert.match(text, /gpt-5\.5/);
+		assert.match(text, /ctx/);
+		assert.match(text, /usage · alt\+u/);
+		assert.ok(shellHeaderUsageHit(chrome, text.indexOf("usage"), 1), "usage stays clickable on the header row");
+		assert.equal(shellHeaderUsageHit(chrome, text.indexOf("usage"), 0), false, "padding is not a target");
+		const minimal = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" });
+		assert.equal(minimal.rows.length, 1, `${cards}: minimal keeps only the header row`);
+		setChromeSurface("transparent");
+		const clear = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
+		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${cards}: transparent floats it`);
+		assert.deepEqual(unstyled(clear.rows), unstyled(chrome.rows), `${cards}: same margins without the tint`);
+	}
 });
 
 test("the panel sheet follows the chrome surface", (t) => {

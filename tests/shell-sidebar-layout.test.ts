@@ -1316,7 +1316,7 @@ test("a top header sits inside the conversation column, and the rail keeps a pla
 		(f.root[NODE]() as unknown as { entries: { component: { [key: symbol]: () => { entries: { component: Component }[] } } }[] }).entries[0]!.component[NODE]().entries[0]!.component.handleMouse?.(click);
 		assert.equal(received.at(-1)?.x, 3, `${density}: the header leaf still routes its clicks`);
 		const railRows = railWithHeader(f).render(50);
-		assert.deepEqual(railRows, density === "minimal" ? [" Status "] : ["", " Status "], `${density}: plain top margin`);
+		assert.deepEqual(railRows, density === "minimal" ? [" Status "] : ["", " Status "], `${density}: top margin row`);
 		assert.equal(sidebarState(f.tui).active, true);
 	}
 });
@@ -1364,4 +1364,22 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 	assert.doesNotMatch(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted, "the status bar floats");
 	setChromeSurface("tinted");
 	assert.match(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted);
+});
+
+test("beside a top header the rail's panel starts on the header's padding row, like split", (t) => {
+	const previous = chromeSurface();
+	t.after(() => setChromeSurface(previous));
+	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	for (const surface of ["tinted", "transparent"] as const) {
+		setChromeSurface(surface);
+		const f = fixture("fullscreen", 160);
+		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
+		sidebarHeader(f.tui, { render: () => ["PAD", "HEADER", "PAD"], invalidate() {} });
+		t.after(installSidebar(f.tui, painted, () => "auto", () => "top"));
+		const rows = railWithHeader(f).render(50);
+		assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${surface}: the first rail row is the panel's top padding`);
+		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "painted like the header padding, so both start on the same row");
+		else assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;22m/);
+		assert.match(rows[1]!, /Status/, `${surface}: the first section sits on the header row`);
+	}
 });

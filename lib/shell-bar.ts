@@ -490,6 +490,22 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
 }
 
+/**
+ * The top header heading the conversation column: the split title row's look
+ * (the rail's panel surface, inset one column) carrying the whole header row,
+ * between two padding rows that line up with the rail's top padding. Minimal
+ * density keeps only the header row; a transparent surface leaves it unpainted.
+ */
+export function renderShellTopHeader(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint): ShellHeaderChrome {
+	const target = Math.max(0, Math.floor(width));
+	const content = headerContent(model, theme, Math.max(0, target - 2), usageHint, presentation, paint);
+	const row = paintChromeRow(theme, ` ${content.text} `);
+	const usageSpan = content.usageSpan ? { start: content.usageSpan.start + 1, end: content.usageSpan.end + 1 } : undefined;
+	if (presentation?.density === "minimal") return { rows: [row], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
+	const padding = paintChromeRow(theme, " ".repeat(target));
+	return { rows: [padding, row, padding], headerRow: 1, ...(usageSpan ? { usageSpan } : {}) };
+}
+
 /** The usage segment is interactive only on the content row, never padding or the edge. */
 export function shellHeaderUsageHit(chrome: ShellHeaderChrome, x: number, y: number): boolean {
 	const { usageSpan } = chrome;
@@ -601,10 +617,9 @@ const BG_RESET = "\x1b[49m";
 // Paints the header content with floatRows and returns the row without its
 // transparent margins plus the background opener. The painted row is
 // `<open> <content> <reset>`; the opener has no spaces, so the first space ends
-// it. Undefined when the float style does not apply, and under a transparent
-// chrome surface, which draws the header unpainted like the outlined style.
+// it. Undefined when the float style does not apply. A transparent chrome
+// surface keeps the same geometry with an empty opener and no background.
 function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: number) => string): { inner: string; open: string } | undefined {
-	if (chromeSurface() === "transparent") return undefined;
 	let floated = false;
 	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
 		floated = inner !== width;
@@ -612,8 +627,12 @@ function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: 
 	});
 	if (!floated || row === undefined) return undefined;
 	const inner = row.slice(1, -1);
+	// Callers slice the trailing reset off `inner`, so the unpainted row keeps one.
+	if (chromeSurface() === "transparent") return { inner: `${inner.replace(BG_SGR, "")}${BG_RESET}`, open: "" };
 	return { inner, open: inner.slice(0, inner.indexOf(" ")) };
 }
+// Background openers (`48;…`) and resets (`49`), which a transparent surface drops.
+const BG_SGR = /\x1b\[(?:48(?:;[0-9]+)*|49)m/g;
 
 // In the float style the rule closes the hanging header tab with an upper
 // one-eighth block line. Box-drawing lines sit mid-cell: a transparent `└──┘`

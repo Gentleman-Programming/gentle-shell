@@ -328,11 +328,11 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const surface = panelSurfaceOpener(theme);
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive && inColumn) {
-				// Beside a top header the rail keeps a plain top margin, so the panel
-				// starts level with the conversation; minimal density drops it.
-				if (density() !== "minimal") railLines.push("");
-			} else if (sections.length && headerActive && (headerPlacement() === "split" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
+			} else if (sections.length && headerActive && inColumn && density() === "minimal") {
+				// A minimal top header is one row: the first section sits level with it.
+			} else if (sections.length && headerActive && (inColumn || headerPlacement() === "split" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
+				// Beside a top header this is the panel's top padding, level with the
+				// header's own padding row, exactly as under a split title row.
 				// Pad the first section beneath the header without breaking its surface.
 				// Keep neon's existing comfortable gap for below-input headers too.
 				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");

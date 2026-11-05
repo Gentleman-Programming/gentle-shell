@@ -7677,3 +7677,35 @@ test("customize Layout → Surface switches the chrome between tinted and transp
 	ui.overlayView!.handleInput("\x1b");
 	await pending;
 });
+
+test("a wide top header is the split title row's panel block with the whole header row, and the float footer keeps no extra row under the input", async (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	for (const header of ["top", "split"] as const) {
+		const home = scopedDoubleEscCancelConfigHome(t);
+		writeCardStyle(CARD_STYLE.FLOAT, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const painted = { ...plainTheme, bg: (role: string, text: string) => `\x1b[48;5;${role === "customMessageBg" ? 171 : 120}m${text}\x1b[49m` };
+		(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		root[node]();
+		if (header === "top") {
+			const rows = sidebarState(tui as unknown as TUI).parts.get("header")!.render(107);
+			assert.equal(rows.length, 3, "padding, the whole header row, padding");
+			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, "the rail's panel surface, not the float card");
+			assert.match(stripAnsi(rows[1]!), /ctx .*usage/);
+			assert.deepEqual(footer.render(160), [], "no exterior dock row under the input");
+		} else {
+			assert.deepEqual(footer.render(160), [""], "split keeps its rows");
+		}
+	}
+});

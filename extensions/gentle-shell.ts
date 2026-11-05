@@ -14,7 +14,7 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow, renderShellTopHeader, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -2695,6 +2695,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
 			// A top header instead keeps the whole header row above the conversation.
 			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
+			// A wide top header heads the conversation column with the title row's
+			// look (design: the rail's panel surface) and the whole header row.
+			const topChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
+			const topHeader = (width: number) => renderShellTopHeader(buildShellHeaderModel(footerModel(), false), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
 			// same split stays, with the model in the title row and live work folded
 			// into one row above the editor.
@@ -2709,11 +2713,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : headerBar(width).rows,
+				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
 					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
-					if (!shellHeaderUsageHit(headerBar(event.width), event.x, event.y)) return undefined;
+					if (!shellHeaderUsageHit(topChrome() ? topHeader(event.width) : headerBar(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
@@ -2781,7 +2785,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					}
 					const rows = part.render(width);
 					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
-					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
+					// A wide top header's titled-rule editor needs none: its own bottom row is the margin.
+					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && !topChrome()
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {

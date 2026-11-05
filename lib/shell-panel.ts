@@ -17,9 +17,9 @@ export function setChromeSurface(value: ChromeSurface): void { surface = value; 
 export function panelSurfaceOpener(theme: CardTheme): string {
 	return surface === "transparent" ? "" : surfaceOpener(theme, PANEL_SURFACE_ROLE);
 }
-/** Without a tint, rail sections keep a blank row between them unless density is minimal. */
+/** Rail sections keep a blank row between them in comfortable density, whatever the surface. */
 export function sectionGap(density: string | undefined): boolean {
-	return density === undefined || density === "comfortable" || (surface === "transparent" && density !== "minimal");
+	return density === undefined || density === "comfortable";
 }
 /** Columns a panel row is indented under its header. */
 export const PANEL_ROW_INDENT = 2;

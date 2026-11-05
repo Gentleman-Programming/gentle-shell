@@ -3989,7 +3989,7 @@ test("below-input header remains a fullscreen widget without the rail and follow
 	} finally { footer.dispose(); }
 });
 
-test("narrow fullscreen with a below-input header shows only the bottom bar, carrying the header's data and extension statuses", async (t) => {
+test("narrow fullscreen with a below-input header shows only the bottom bar, carrying the header's data without extension statuses", async (t) => {
 	const home = scopedDoubleEscCancelConfigHome(t);
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
@@ -4009,12 +4009,12 @@ test("narrow fullscreen with a below-input header shows only the bottom bar, car
 		await customizeAction(ui, "Header placement: below-input");
 		assert.deepEqual(widget(tui, plainTheme).render(100), [], "no second status row below the input at narrow width");
 		const narrow = footer.render(100);
-		assert.equal(narrow.length, 2);
+		assert.equal(narrow.length, 1, "integrations live only in the rail");
 		assert.match(narrow[0]!, /Gentle Shell/, "bottom-only bar reuses the header row");
 		assert.match(narrow[0]!, /ctx .* 45%/);
 		assert.match(narrow[0]!, /\$0\.000 sub/);
 		assert.match(narrow[0]!, /usage/);
-		assert.match(narrow[1]!, /MCP: 2 servers/, "extension statuses survive on their own line");
+		assert.doesNotMatch(narrow.join("\n"), /MCP: 2 servers/, "no extension statuses in the bottom bar");
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 100));
 		for (const width of [60, 80]) {
 			tui.terminal.columns = width;
@@ -4061,7 +4061,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	const click = (x: number, y: number, width: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height: 6, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
 	try {
 		const withoutChanges = footer.render(139);
-		assert.equal(withoutChanges.length, 5);
+		assert.equal(withoutChanges.length, 4, "the edge, padding, header row and padding; statuses stay in the rail");
 		assert.deepEqual(header.render(139), []);
 		const initialUsageX = stripAnsi(withoutChanges[2]!).indexOf("usage");
 		assert.equal(footer.handleMouse?.(click(initialUsageX, 3, 139)), undefined);
@@ -4073,10 +4073,10 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		for (const width of [139, 140, 240]) {
 			tui.terminal.columns = width;
 			const rows = footer.render(width);
-			assert.equal(rows.length, 6);
+			assert.equal(rows.length, 5, "edge, padding, Changes, header row and padding; statuses stay in the rail");
 			assert.match(stripAnsi(rows[2]!), /1 file · \+2 −0/);
 			assert.match(stripAnsi(rows[3]!), /Gentle Shell/);
-			assert.match(stripAnsi(rows[4]!), /^  MCP ready/);
+			assert.doesNotMatch(stripAnsi(rows.join("\n")), /MCP ready/);
 			assert.ok(rows.slice(1).every((row) => row.startsWith(bg)));
 			assert.deepEqual(changes.render(width), []);
 			assert.deepEqual(header.render(width), []);
@@ -4095,7 +4095,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		await changesSettled();
 		assert.notEqual(railHeader.digest!(), statusDigest, "Git changes update the grouped digest");
 		assert.match(stripAnsi(footer.render(240).join("\n")), /\+3 −0/);
-		assert.match(stripAnsi(footer.render(240).join("\n")), /MCP updated/);
+		assert.doesNotMatch(stripAnsi(footer.render(240).join("\n")), /MCP updated/, "statuses stay in the rail");
 		state.active = true;
 		state.ownsHost = () => true;
 		assert.deepEqual(footer.render(240), [], "the below-input header follows the prompt, so the suppressed footer adds no exterior row");
@@ -7772,7 +7772,7 @@ test("a wide top header is the split title row's panel row with the whole header
 	}
 });
 
-test("Status bottom at a wide width keeps the bar design, shows Agents and Todos as cards, and adds a bottom Status row with the integrations", async (t) => {
+test("Status bottom at a wide width keeps the bar design, shows Agents and Todos as cards and [ Panel ], and shows no integrations", async (t) => {
 	for (const header of ["top", "below-input", "split"] as const) {
 		const home = scopedDoubleEscCancelConfigHome(t);
 		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header, statusPlacement: "bottom" }, { gentlePiConfigHome: home });
@@ -7799,17 +7799,10 @@ test("Status bottom at a wide width keeps the bar design, shows Agents and Todos
 		assert.notEqual(state.compactWork?.(), true, `${header}: no minimal-edition fold; Agents and Todos keep their cards`);
 		assert.equal(state.statusBarShowsMode?.(), true, `${header}: a chrome bar shows the permission mode`);
 		const statusRow = (rows: string[]) => rows.map(stripAnsi).find((row) => row.includes("gentle-pi · ready"));
-		if (header === "split") {
-			const bar = state.parts.get("statusbar")!.render(160).map(stripAnsi);
-			assert.match(bar.join("\n"), /ctx .*usage/, "split: the status bar");
-			assert.ok(statusRow(state.parts.get("statusbar")!.render(160)), "split: the integrations row joins the status block");
-			assert.deepEqual(footer.render(160), [], "split: the previous compact bottom bar steps aside");
-		} else {
-			if (header === "top") assert.match(stripAnsi(state.parts.get("header")!.render(160)[0]!), /^ main .*ctx .*usage/, "top: the chrome bar");
-			const rows = footer.render(160);
-			assert.ok(statusRow(rows), `${header}: the bottom Status row lists the integrations`);
-			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, `${header}: on the chrome surface`);
-		}
+		if (header === "split") assert.match(state.parts.get("statusbar")!.render(160).map(stripAnsi).join("\n"), /ctx .*usage/, "split: the status bar");
+		if (header === "top") assert.match(stripAnsi(state.parts.get("header")!.render(160)[0]!), /^ main .*ctx .*usage/, "top: the chrome bar");
+		assert.equal(statusRow([...footer.render(160), ...state.parts.get("statusbar")!.render(160)]), undefined, `${header}: no integrations row`);
+		assert.deepEqual(footer.render(160), [], `${header}: the previous compact bottom bar steps aside and nothing replaces it`);
 	}
 });
 

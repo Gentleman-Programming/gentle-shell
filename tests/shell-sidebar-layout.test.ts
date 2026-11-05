@@ -1340,7 +1340,7 @@ test("a top header falls back to the full width when the rail is not shown", (t)
 	assert.deepEqual(node.entries[0]!.component.render(180), ["HEADER 180"]);
 });
 
-test("a transparent chrome drops the rail, title row and status bar backgrounds and spaces the rail sections unless density is minimal", (t) => {
+test("a transparent chrome drops the rail, title row and status bar backgrounds and keeps the density's spacing", (t) => {
 	const previous = chromeSurface();
 	t.after(() => setChromeSurface(previous));
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
@@ -1356,7 +1356,7 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 		assert.doesNotMatch(rows.join("\n"), tinted, `${density}: no panel background`);
 		assert.deepEqual(rows.filter((row) => row.trim() !== "").map((row) => row.trim()), ["TODO", "Status"]);
 		const between = rows.indexOf(rows.find((row) => row.includes("Status"))!) - rows.indexOf(rows.find((row) => row.includes("TODO"))!);
-		assert.equal(between, density === "minimal" ? 1 : 2, `${density}: a blank row separates the sections unless minimal`);
+		assert.equal(between, 1, `${density}: the surface never changes the density, so no gap between sections`);
 		setChromeSurface("tinted");
 		assert.match(railWithHeader(f).render(50).join("\n"), tinted, "switching back repaints the panel");
 	}

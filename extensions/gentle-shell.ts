@@ -14,7 +14,7 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellIntegrationsRow, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -2544,8 +2544,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			groupedChangesOwner = (width) => !belowChrome() && belowFloat(width, !footerSuppressed()) !== undefined;
 			const bottomBar = {
 				...bottom,
-				// A wide bottom Status: split's status block carries the integrations row, the other placements end the dock with it.
-				render: (width: number) => bottomStatus() ? (visualSettings.headerPlacement === "split" ? [] : bottomStatusRows(width)) : belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
+				render: (width: number) => bottomStatus() ? [] : belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
 					if (footerSuppressed() || event.type !== "click" || event.button !== "left") return undefined;
 					const chrome = belowFloat(event.width, true);
@@ -2717,15 +2716,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// mobile chrome keeps phones and the minimal edition.
 			const fullscreen = () => (tui as TUI & { mode?: string }).mode === "fullscreen";
 			const barChrome = () => chromeBarsShown(tui);
-			// Status at the bottom of a wide terminal: the integrations row closes the bottom chrome.
+			// Status at the bottom of a wide terminal: the chrome bars close the screen, and the
+			// previous compact bottom bar steps aside ([ Panel ] opens the Status sections).
 			const bottomStatus = () => barChrome() && visualSettings.statusPlacement === "bottom";
-			const integrationsRow = (width: number) => renderShellIntegrationsRow(footerModel(), theme, width);
-			// Under a below-input bar the row joins that bar's block; otherwise it keeps its own margin row.
-			const bottomStatusRows = (width: number): string[] => {
-				const row = integrationsRow(width);
-				if (!row) return [];
-				return visualSettings.headerPlacement === "below-input" || visualSettings.density !== "comfortable" ? [row] : [renderShellChromePad(theme, width), row];
-			};
 			const topChrome = () => barChrome() && visualSettings.headerPlacement === "top";
 			// The below-input widget renders after the layout pass, so it can also
 			// require the rail to be actually drawn (a rail that does not fit groups
@@ -2747,7 +2740,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
-				: { ...chromeBar(width, "above"), rows: [...chromeBar(width, "above").rows, ...(bottomStatus() ? [integrationsRow(width)].filter((row): row is string => row !== undefined) : [])] };
+				: chromeBar(width, "above");
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
 				render: (width) => splitChrome() ? titleRows(width) : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,

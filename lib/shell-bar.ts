@@ -5,7 +5,7 @@ import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { HOVER_ROLE } from "./shell-hover.ts";
 import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
 import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard } from "./shell-card.ts";
-import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
+import { chromeSurface, clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -601,8 +601,10 @@ const BG_RESET = "\x1b[49m";
 // Paints the header content with floatRows and returns the row without its
 // transparent margins plus the background opener. The painted row is
 // `<open> <content> <reset>`; the opener has no spaces, so the first space ends
-// it. Undefined when the float style does not apply.
+// it. Undefined when the float style does not apply, and under a transparent
+// chrome surface, which draws the header unpainted like the outlined style.
 function floatHeaderPaint(theme: ShellBarTheme, width: number, content: (width: number) => string): { inner: string; open: string } | undefined {
+	if (chromeSurface() === "transparent") return undefined;
 	let floated = false;
 	const [row] = floatRows(CARD_TONE.INFO, theme, width, (inner) => {
 		floated = inner !== width;

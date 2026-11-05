@@ -233,6 +233,7 @@ import {
 	type NativeReviewAcknowledgeApprovedRequest,
 	type NativeTargetStatusRequest,
 	type NativeReviewModeOperation,
+	type NativeReviewModeRequest,
 	type NativeReviewModeSource,
 	type NativeReviewModeStatus,
 	type NativeReviewProcessDiagnostics,
@@ -811,9 +812,24 @@ const RDD_STATUS_TIMEOUT_MS = 3000;
 // spawns; the one-shot notify below still surfaces a sustained outage.
 const RDD_STATUS_MEMO_TTL_MS = 30_000;
 const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus | undefined; readonly expiresAt: number }>();
+// A late status read must not refill the memo after a mode change or session
+// shutdown. Generations are per cwd so unrelated workspaces remain independent.
+const rddStatusGenerations = new Map<string, number>();
+
+function rddStatusGeneration(cwd: string): number {
+	if (!rddStatusGenerations.has(cwd)) rddStatusGenerations.set(cwd, 0);
+	return rddStatusGenerations.get(cwd)!;
+}
+
+function invalidateRddStatus(cwd: string): void {
+	rddStatusGenerations.set(cwd, rddStatusGeneration(cwd) + 1);
+	rddStatusMemo.delete(cwd);
+	startupModeReads.delete(cwd);
+}
 
 /** @internal test seam: clears the per-cwd RDD status memo. */
 function clearRddStatusMemoForTesting(): void {
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
 	rddStatusMemo.clear();
 	rddStatusUnavailableWarned = false;
 }
@@ -880,7 +896,9 @@ async function readRddModeStatusOnce(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
+	const generation = rddStatusGeneration(cwd);
 	const read = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	return "status" in read ? read.status : undefined;
 }
 
@@ -1179,9 +1197,13 @@ async function resolveRddModeStatus(
 	const nowMs = now();
 	const cached = rddStatusMemo.get(cwd);
 	if (cached !== undefined && cached.expiresAt > nowMs && cached.status?.effective !== "off") return cached.status;
+	const generation = rddStatusGeneration(cwd);
 	// An off loadout suppresses mandatory assessment, so only a fresh off read
 	// can retain it. Known-on and unknown lines keep their existing memo policy.
 	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	// Neither cache nor return an obsolete read: in particular, an old off
+	// must never suppress review guidance after an explicit mode change.
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	const read = "status" in outcome ? outcome.status : undefined;
 	const status = read ?? (cached?.status?.effective === "off" ? undefined : cached?.status);
 	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
@@ -6865,10 +6887,12 @@ function nativeReviewModeSkipped(operation: ReviewControllerOperation, source: N
 // unavailable. It is not authorization to enter bootstrap-capable native code.
 // `rememberForPrompt` lets a decoded read serve the next prompt's RDD status
 // line from the memo instead of spawning the same STATUS again.
-async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false): Promise<boolean> {
+async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false, current: () => boolean = () => true): Promise<boolean> {
 	if (nativeReviewCli?.reviewMode === undefined) return false;
+	const generation = rddStatusGeneration(cwd);
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, ...(signal === undefined ? {} : { signal }) });
+		if (rddStatusGeneration(cwd) !== generation || !current()) return false;
 		const decoded = mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status);
 		if (decoded && rememberForPrompt) rddStatusMemo.set(cwd, { status: mode.status, expiresAt: Date.now() + RDD_STATUS_MEMO_TTL_MS });
 		return decoded && mode.status.effective === "on";
@@ -7797,8 +7821,9 @@ const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessio
 // named-agent start increments the depth, a matching end decrements it,
 // and a fresh primary-loop start resets it to 0.
 const processAgentEndSubagentDepth = new Map<PendingReviewConsentSessionKey, number>();
-// gentle-shell#2195: the RDD status line each primary session last rendered into its system prompt.
-const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, string>();
+// gentle-shell#2195: the RDD status line each primary session last rendered
+// into its system prompt, scoped to the workspace in which it was resolved.
+const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, { cwd: string; line: string }>();
 
 // gentle-shell#1064 slice 1: the parent-session profile binding store lives in
 // lib/session-profile-binding.ts (in-process, keyed by parent session id). The
@@ -9198,16 +9223,17 @@ async function resolveNegotiatedReviewStatusForSession(
 	ctx: ExtensionContext,
 	sessionKey: PendingReviewConsentSessionKey,
 	signal?: AbortSignal,
+	current: () => boolean = () => true,
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
 	// STATUS can prepare an unversioned directory natively. Only a successfully
 	// decoded effective-on mode authorizes that entry; bootstrap never counts as
 	// an own mutation and native owns all metadata/ancestor safety decisions.
-	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true);
+	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true, current);
 	startupModeReads.set(ctx.cwd, modeRead);
 	const enabled = await modeRead.finally(() => { if (startupModeReads.get(ctx.cwd) === modeRead) startupModeReads.delete(ctx.cwd); });
-	if (!enabled) return undefined;
+	if (!enabled || !current()) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new Map()).get(key)!)(sessionKey);
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
@@ -11070,6 +11096,7 @@ function createGentleAiExtensionForTesting(
 			sessionProfiles.shutdown(context.sessionManager, event);
 		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
+		invalidateRddStatus(context.cwd);
 		rddOffReviewLoadout = false;
 		auto.reset();
 		yolo.reset(context);
@@ -11563,7 +11590,10 @@ function createGentleAiExtensionForTesting(
 		// Pi awaits session_start handlers serially, so this runs after startup
 		// returns: two native spawns no longer hold the shell's first render.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS))
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS), current)
 			.then(() => undefined, () => undefined) // Best-effort only; never surface or throw.
 			.finally(() => { startupNegotiations.delete(negotiation); });
 		startupNegotiations.add(negotiation);
@@ -11610,17 +11640,31 @@ function createGentleAiExtensionForTesting(
 		// binary keeps the last known line for this cwd, or renders the
 		// fail-closed "unknown" line when none was ever read (gentle-shell#1029).
 		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
+		const promptCwd = ctx.cwd;
+		const promptEpoch = reminderEpoch;
+		const promptManager = ctx.sessionManager;
+		const currentPrompt = () => reminderSessionActive && reminderEpoch === promptEpoch &&
+			(reminderManager === undefined || reminderManager === promptManager) &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === subagentDepthKey &&
+			ctx.cwd === promptCwd && (promptManager?.getCwd?.() ?? promptCwd) === promptCwd;
 		// A startup read still in flight fills the memo: wait for it within the
 		// same deadline instead of spawning the same STATUS a second time.
-		const inFlightModeRead = isPrimarySession ? startupModeReads.get(ctx.cwd) : undefined;
+		const inFlightModeRead = isPrimarySession ? startupModeReads.get(promptCwd) : undefined;
 		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
-		const rddStatusLine = !isPrimarySession
-			? undefined
-			: pinRddStatusLine(
-				pinnedRddStatusLines.get(subagentDepthKey),
-				await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx),
-			);
-		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
+		if (!currentPrompt()) return undefined;
+		const promptGeneration = rddStatusGeneration(promptCwd);
+		const nextRddStatusLine = isPrimarySession
+			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx)
+			: undefined;
+		if (!currentPrompt()) return undefined;
+		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
+		const pinned = pinnedRddStatusLines.get(subagentDepthKey);
+		const rddStatusLine = nextRddStatusLine === undefined ? undefined : staleRead
+			? renderRddStatusLine(undefined)
+			: pinRddStatusLine(pinned?.cwd === promptCwd ? pinned.line : undefined, nextRddStatusLine);
+		// A stale in-flight prompt is unknown for this run, but must not pin
+		// unknown over the status the following fresh prompt will resolve.
+		if (rddStatusLine !== undefined && !staleRead) pinnedRddStatusLines.set(subagentDepthKey, { cwd: promptCwd, line: rddStatusLine });
 		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
 		const gentlePrompt = rddStatusLine === undefined
@@ -11676,8 +11720,12 @@ function createGentleAiExtensionForTesting(
 		catch { return; }
 		if (!mutation) return;
 		const epoch = reminderEpoch;
-		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey);
-		if (status === undefined || !reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+		const manager = ctx.sessionManager;
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && epoch === reminderEpoch && reminderManager === manager &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current);
+		if (status === undefined || !current()) return;
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
@@ -12007,6 +12055,23 @@ function createGentleAiExtensionForTesting(
 		handler: async (args, ctx) => { statusTiming.command(args, ctx); },
 	});
 
+	// The registered command owns mode mutations. Future controls can forward
+	// the complete native request here without creating another state owner.
+	const executeReviewMode = async (request: NativeReviewModeRequest, ctx: ExtensionContext) => {
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const result = await nativeReviewCli!.reviewMode!(request);
+		if (request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS) {
+			invalidateRddStatus(request.cwd);
+			for (const [key, pinned] of pinnedRddStatusLines) {
+				if (pinned.cwd === request.cwd) pinnedRddStatusLines.delete(key);
+			}
+			if (request.operation === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
+				cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
+			}
+		}
+		return result;
+	};
+
 	pi.registerCommand("gentle:review-mode", {
 		description: "Show or set the Gentle AI receipt-driven development kill switch (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
 		handler: async (args, ctx) => {
@@ -12020,13 +12085,7 @@ function createGentleAiExtensionForTesting(
 				return;
 			}
 			try {
-				const result = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation });
-				if (subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
-					cleanupAllPendingReviewConsents(
-						pendingReviewConsentRegistry,
-						pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
-					);
-				}
+				const result = await executeReviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation }, ctx);
 				const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
 				// A mutating sub-action that left the effective mode unchanged did
 				// not do what the user asked, and reporting only the resulting

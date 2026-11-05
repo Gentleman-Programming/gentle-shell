@@ -33,6 +33,7 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 | Conflict whose intent on either side is unclear | Ask one focused question naming the file and both intents |
 | `package.json` or `pnpm-lock.yaml` changed in the merge | Run `npx -y pnpm@11.1.1 install`, then commit any lockfile drift |
 | A test fails after the merge | Fix it when the fork/upstream interaction causes it; otherwise stop and report it with its output |
+| `origin/main` moved during the sync (push rejected, or `main..origin/main` non-empty after the fetch) | Another session may have pushed the same merge: compare with `git diff --stat <local-merge> origin/main`. Identical tree and parents: `git rebase --onto origin/main <local-merge> main` to keep only the local commits on top, then push. Otherwise stop and report; never force push |
 | RDD stop hook flags the merge | Run `gentle_review` assess; inspect only if `reviewDue` is true |
 
 ## Execution Steps
@@ -54,7 +55,7 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 Run each of these commands as its own step, with `timeout` and `< /dev/null` (for example `timeout 300 npx -y pnpm@11.1.1 install < /dev/null`): `install` can print `Done` and then never exit, which stalls any chained command behind it. A timeout exit after `Done` is not an install failure; check `git status` for lockfile drift and continue.
 
 Never call bare `pnpm` here: a machine whose global pnpm wrapper lost its `@pnpm/exe` engine fails the whole flow with `the installed pnpm wrapper is missing`. The `npx -y pnpm@<version>` invocation pins the version from `package.json`'s `packageManager` and works regardless of the local wrapper, which is also what `gsm-u` does.
-10. `git push origin main`. Then `git branch -D backup/main-pre-upstream-sync`, unless anything needed manual resolution; in that case keep it and say so.
+10. `git fetch origin` right before pushing, then `git push origin main`. Delete the backup only when the push succeeded, as its own step after checking the push exit code: never chain it behind a pipe such as `git push ... | tail`, whose exit code hides a rejected push. Then `git branch -D backup/main-pre-upstream-sync`, unless anything needed manual resolution; in that case keep it and say so.
 
 ## Output Contract
 

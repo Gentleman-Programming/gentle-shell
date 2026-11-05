@@ -213,8 +213,9 @@ test("help text documents the bundled upgrade, its rollback and the pinned Pi up
 	const text = helpText();
 	assert.ok(text.includes("       gentle-shell upgrade --rollback"));
 	assert.match(text, /bundled install.*release channel only.*--rollback switches back to the previous kept version/s);
-	assert.match(text, /In a bundled install Pi ships pinned: 'update' without a package\n\s+runs 'gentle-shell upgrade'/);
-	assert.match(text, /'update --latest' installs the newest published Pi instead,\n\s+without the release's verified lockfile\./);
+	assert.match(text, /In a bundled install 'update' installs the newest stable Pi\n\s+without the release's verified lockfile; --latest is an alias\./);
+	assert.match(text, /--all also updates extensions; explicit package pins remain pinned\./);
+	assert.match(text, /--force is not supported for managed Pi self updates\./);
 });
 
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {

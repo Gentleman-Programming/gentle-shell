@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfile, emptyProfilesFile, profilesFilePath, setActiveProfile, writeProfilesFileSync } from "../../../lib/agent-profiles.ts";
-import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../../../lib/agent-profile-pin.ts";
+import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../../../lib/agent-profile-pin.ts";
+import { __testing } from "../../../extensions/gentle-ai.ts";
 import type { AgentModelConfig } from "../../../lib/model-routing-authority.ts";
 import * as currentAuthority from "../../../lib/session-profile-authority.ts";
 import * as currentBinding from "../../../lib/session-profile-binding.ts";
@@ -16,6 +17,7 @@ import type { WorktreeIdentity } from "../../../lib/session-worktree-registry.ts
 import * as v1Authority from "./session-profile-authority.ts";
 import * as v1Binding from "./session-profile-binding.ts";
 import * as v1Freeze from "./session-profile-freeze.ts";
+import * as v1Reviewer from "./gentle-ai-reviewer.ts";
 
 export interface TranscriptDefaults {
 	profiles: Record<string, AgentModelConfig>;
@@ -93,8 +95,14 @@ function writeSession(base: string, records: unknown[]) {
 	};
 }
 
+interface Resumed {
+	authority: boolean;
+	options: { sessionId: string; cwd: string; configHome: string; resolveWorktree: () => WorktreeIdentity; env: NodeJS.ProcessEnv };
+	foreign: WorktreeIdentity;
+}
+
 /** Resume `transcript` under one version, with that version's process state reset first. */
-export function replay(version: Version, transcript: Transcript): ReplayObservation {
+function resume<T>(version: Version, transcript: Transcript, observe: (resumed: Resumed) => T): T {
 	const modules = versions[version];
 	const base = mkdtempSync(join(tmpdir(), `gentle-pi-v1-replay-${version}-`));
 	try {
@@ -109,17 +117,54 @@ export function replay(version: Version, transcript: Transcript): ReplayObservat
 		const authority = modules.authority.readSessionProfileAuthority(manager);
 		const options = { sessionId: SESSION_ID, cwd: home.root, configHome, resolveWorktree: () => home, env: transcript.env ?? {} };
 		modules.freeze.freezeSessionProfileAtStartup(options);
+		return observe({ authority: authority.available, options, foreign });
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+}
+
+/** What a launch and the status line see after resuming `transcript` under one version. */
+export function replay(version: Version, transcript: Transcript): ReplayObservation {
+	const modules = versions[version];
+	return resume(version, transcript, ({ authority, options, foreign }) => {
+		const { configHome } = options;
 		const resolution = modules.freeze.resolveSessionProfile(options);
 		const foreignTarget = { cwd: foreign.root, configHome, resolveWorktree: () => foreign, foreignRepository: true };
 		return {
-			authority: authority.available,
+			authority,
 			kind: resolution.kind,
 			label: modules.freeze.sessionProfileLabel(resolution),
 			routing: modules.freeze.sessionProfileRoutingAt(resolution, { ...options, foreignRepository: false }),
 			foreignRouting: modules.freeze.sessionProfileRoutingAt(resolution, foreignTarget),
 			notice: modules.freeze.inheritedProfileDriftNotice(options),
 		};
-	} finally {
-		rmSync(base, { recursive: true, force: true });
-	}
+	});
+}
+
+/**
+ * The routing snapshot a reviewer reads after resuming `transcript` in the
+ * session's own repository: v1 is the selection before A1 (#2720). Both read
+ * the replay's config home, worktree and environment through the process-wide
+ * defaults, so the environment the tests run in never leaks into the replay.
+ */
+export function replayReviewerRouting(version: Version, transcript: Transcript): AgentModelConfig {
+	return resume(version, transcript, ({ options }) => {
+		const replayed: NodeJS.ProcessEnv = { GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_PROFILE_FOLLOW: undefined, ...options.env, GENTLE_PI_CONFIG_HOME: options.configHome };
+		const previous = Object.fromEntries(Object.keys(replayed).map((key) => [key, process.env[key]]));
+		const assign = (values: NodeJS.ProcessEnv) => {
+			for (const [key, value] of Object.entries(values)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		};
+		assign(replayed);
+		setProfilePinWorktreeResolverForTesting(options.resolveWorktree);
+		try {
+			const read = version === "v1" ? v1Reviewer.readReviewerModelConfig : __testing.readReviewerModelConfig;
+			return JSON.parse(JSON.stringify(read(options.cwd, options.sessionId)));
+		} finally {
+			setProfilePinWorktreeResolverForTesting();
+			assign(previous);
+		}
+	});
 }

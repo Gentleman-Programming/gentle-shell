@@ -12,6 +12,7 @@ const LOG_LIMIT = 200;
 /** Human labels for every step the runner logs. Unknown ids are shown as-is. */
 export const stepLabels = Object.freeze({
 	gate: "Safety checks",
+	"resolve-pi-version": "Find the latest stable Pi version",
 	"prepare-pnpm-home": "Create the private pnpm folder",
 	"check-npm": "Check npm",
 	"check-global-bin": "Check the pnpm global bin directory",

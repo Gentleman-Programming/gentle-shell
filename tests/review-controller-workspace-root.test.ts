@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NativeReviewIntegrationError, NativeReviewCliError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { decodeReviewFailureV2, type AuthorityRepairAssessmentV1, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
@@ -794,4 +794,16 @@ test("an explicit linked-worktree root owns STATUS collect capture over the sess
 	const result = await __testing.executeReviewCaptureOperation({ lineageId, workspaceRoot: worktree, collectBinding: JSON.stringify(binding) }, sessionCwd, native);
 	assert.equal(result.outcome, "native-last-event-closure");
 	assert.deepEqual(observedRoots, [realpathSync(worktree)]);
+});
+
+test("request-context capability refusal remains clear in the public facade", async (t) => {
+ const cwd = repository(t);
+ const error = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_OPERATION.STATUS, false, false, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
+ const native = fakeNative({ targetStatus: async () => { throw error; } });
+ for (const operation of ["inspect", "start"] as const) {
+  const result = await __testing.executeReviewControllerOperation({ operation, ...(operation === "start" ? { input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) } : {}) }, cwd, native);
+  assert.equal(result.status, "blocked");
+  assert.equal(result.reason, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
+  assert.equal(result.mutation_performed, false);
+ }
 });

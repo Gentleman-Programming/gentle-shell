@@ -217,6 +217,7 @@ import {
 	type NativeReviewAuthorityEntry,
 
 	NativeReviewCliError,
+	NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
 	nativeUntrackedSelection,
 	NativeReviewConsentBindingError,
 	NativeReviewConsentRequiredError,
@@ -7046,7 +7047,17 @@ function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation |
 	};
 }
 
+function nativeRequestContextRefusal(operation: string, error: unknown): Record<string, unknown> | undefined {
+	if (asNativeReviewCliError(error)?.code !== NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
+		|| !isRecord(error) || error.message !== NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE) return undefined;
+	return { operation, status: "blocked", outcome: "request-context-unsupported", reason: NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
+		lineage_created: false, mutation_performed: false, mutation_outcome: "none",
+		next_action: "use-provider-with-request-context-capabilities" };
+}
+
 function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown): Record<string, unknown> {
+	const contextRefusal = nativeRequestContextRefusal(operation, error);
+	if (contextRefusal !== undefined) return contextRefusal;
 	const cliError = asNativeReviewCliError(error);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
@@ -8162,6 +8173,8 @@ function deferredPostBurnCleanup(step: (typeof POST_BURN_CLEANUP)[keyof typeof P
 }
 
 function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_review_capture", error: unknown): Record<string, unknown> {
+	const contextRefusal = nativeRequestContextRefusal(operation, error);
+	if (contextRefusal !== undefined) return contextRefusal;
 	const value = error as { mutationOutcome?: unknown; nextAction?: unknown; diagnostics?: unknown; auditRecord?: unknown; launchAttempted?: unknown; candidateViewPreNative?: unknown; failureEnvelope?: { raw?: unknown; mutationOutcome?: unknown; replayability?: unknown; nextAction?: unknown; code?: unknown; continuation?: { command?: unknown } } };
 	if (isRecord(value.failureEnvelope) && isRecord(value.failureEnvelope.raw)) {
 		const mutationOutcome = value.failureEnvelope.mutationOutcome;

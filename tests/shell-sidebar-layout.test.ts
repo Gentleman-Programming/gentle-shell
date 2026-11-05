@@ -1341,6 +1341,9 @@ test("a top header falls back to the full width when the rail is not shown", (t)
 });
 
 test("a transparent chrome drops the rail, title row and status bar backgrounds and keeps the density's spacing", (t) => {
+	const previousStyle = cardStyle();
+	t.after(() => setCardStyle(previousStyle));
+	setCardStyle(CARD_STYLE.NEON);
 	const previous = chromeSurface();
 	t.after(() => setChromeSurface(previous));
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
@@ -1354,9 +1357,11 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
 		const rows = railWithHeader(f).render(50);
 		assert.doesNotMatch(rows.join("\n"), tinted, `${density}: no panel background`);
-		assert.deepEqual(rows.filter((row) => row.trim() !== "").map((row) => row.trim()), ["TODO", "Status"]);
-		const between = rows.indexOf(rows.find((row) => row.includes("Status"))!) - rows.indexOf(rows.find((row) => row.includes("TODO"))!);
-		assert.equal(between, 1, `${density}: the surface never changes the density, so no gap between sections`);
+		// A transparent rail draws each section as a card (neon here): the content row
+		// sits between the card's top and bottom edges.
+		const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+		const between = text.findIndex((row) => row.includes("Status")) - text.findIndex((row) => row.includes("TODO"));
+		assert.equal(between, 3, `${density}: bottom edge, next top edge, no gap row: the surface never changes the density`);
 		setChromeSurface("tinted");
 		assert.match(railWithHeader(f).render(50).join("\n"), tinted, "switching back repaints the panel");
 	}
@@ -1368,6 +1373,9 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 });
 
 test("beside a centered comfortable top bar the rail starts with its padding row and puts its first section on the text row", (t) => {
+	const previousStyle = cardStyle();
+	t.after(() => setCardStyle(previousStyle));
+	setCardStyle(CARD_STYLE.NEON);
 	const previous = chromeSurface();
 	t.after(() => setChromeSurface(previous));
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
@@ -1378,7 +1386,8 @@ test("beside a centered comfortable top bar the rail starts with its padding row
 		sidebarHeader(f.tui, { render: () => ["PAD", "HEADER", "PAD"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "top"));
 		const rows = railWithHeader(f).render(50);
-		assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${surface}: the rail's top padding is level with the bar's top margin`);
+		const top = rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+		assert.ok(surface === "tinted" ? top === "" : /^╭─+╮$/.test(top), `${surface}: the rail's top row (its padding, or the card's edge) is level with the bar's top margin`);
 		assert.match(rows[1]!, /Status/, `${surface}: the first section sits on the header's text row`);
 		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "the panel surface starts on the window's first row");
 		else assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;22m/);
@@ -1417,4 +1426,49 @@ test("a compact or minimal split title row has no margin row, so the rail keeps 
 		assert.equal(rail[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${density}: a blank rail row under the title`);
 		assert.match(rail[1]!, /Status/, `${density}: the first section follows it`);
 	}
+});
+
+test("a transparent rail draws each section as a card in the active style, neon outlined or float tinted, with its content two columns in", (t) => {
+	const [previousStyle, previousSurface] = [cardStyle(), chromeSurface()];
+	t.after(() => { setCardStyle(previousStyle); setChromeSurface(previousSurface); });
+	const painted = { ...theme, bg: (role: string, text: string) => `\x1b[48;5;${role === "customMessageBg" ? 171 : 120}m${text}\x1b[49m` };
+	const strip = (row: string) => row.replace(/\x1b\[[0-9;]*m/g, "");
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		setCardStyle(style);
+		setChromeSurface("transparent");
+		const f = fixture("fullscreen", 160);
+		const received: TuiMouseEvent[] = [];
+		sidebarPart(f.tui, "todo", { render: () => [], invalidate() {} }, { render: (width: number) => [`TODO ${width}`], invalidate() {}, handleMouse(event) { received.push(event); return { handled: true }; } });
+		sidebarPart(f.tui, "footer", { surface: "panel", render: (width: number) => [`Status ${width}`], invalidate() {} });
+		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => "compact"));
+		const scroll = railWithHeader(f);
+		const rows = scroll.render(50);
+		const content = scroll.getContentWidth(50);
+		for (const row of rows) assert.equal(visibleWidth(row), content, `${style}: every card row fills the rail`);
+		assert.deepEqual(rows.map(strip).filter((row) => /TODO|Status/.test(row)).map((row) => row.trim().replace(/^│ | │$/g, "").trim()), [`TODO ${content - 4}`, `Status ${content - 4}`], `${style}: sections render two columns in on each side`);
+		if (style === CARD_STYLE.NEON) {
+			assert.match(strip(rows[0]!), /^╭─+╮$/, "neon: an outlined card per section");
+			assert.match(strip(rows[1]!), /^│ TODO/);
+			assert.match(strip(rows[2]!), /^╰─+╯$/);
+			assert.match(strip(rows[3]!), /^╭─+╮$/, "compact: the next card follows without a gap");
+			assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;\d+m/, "neon: no background");
+		} else {
+			assert.match(rows[0]!, /\x1b\[48;5;120m/, "float: each section is a tinted card in the card tone");
+			assert.equal(strip(rows[0]!).trim(), "", "float: a padding row opens the card");
+			assert.match(strip(rows[1]!), /^ {2}TODO/, "float: the content sits two columns in");
+			assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;171m/, "float: no chrome surface on a transparent rail");
+		}
+		const click = (x: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 50, height: 10, shift: false, alt: false, ctrl: false });
+		assert.equal(scroll.handleMouse(click(3, 1))?.handled, true, `${style}: a click on the card's content row reaches the section`);
+		assert.deepEqual({ x: received.at(-1)?.x, y: received.at(-1)?.y }, { x: 1, y: 0 }, `${style}: section-local coordinates`);
+		assert.equal(scroll.handleMouse(click(3, 0)), undefined, `${style}: the card's top row is not the section`);
+		assert.equal(scroll.handleMouse(click(0, 1)), undefined, `${style}: the card's edge is not the section`);
+	}
+	setCardStyle(CARD_STYLE.NEON);
+	setChromeSurface("tinted");
+	const f = fixture("fullscreen", 160);
+	sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
+	t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => "compact"));
+	assert.doesNotMatch(railWithHeader(f).render(50).map(strip).join("\n"), /╭|╰/, "a tinted rail keeps its single panel");
 });

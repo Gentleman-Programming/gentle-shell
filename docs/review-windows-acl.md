@@ -9,7 +9,7 @@ This reduces process startup work without changing removal sequencing or adding 
 ## Verification
 
 ```sh
-node --experimental-strip-types --test tests/review-candidate-windows-probe.test.ts tests/review-candidate-owner-retry.test.ts tests/review-candidate-owner-sweep.test.ts
+node --experimental-strip-types --test tests/review-owner-identity.test.ts tests/review-candidate-windows-probe.test.ts tests/review-candidate-owner-retry.test.ts tests/review-candidate-owner-sweep.test.ts
 node --experimental-strip-types --test tests/review-candidate-windows-boundary.test.ts
 ```
 

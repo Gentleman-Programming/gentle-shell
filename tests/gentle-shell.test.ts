@@ -7788,7 +7788,8 @@ test("Status bottom at a wide width keeps the bar design, shows Agents and Todos
 		const state = sidebarState(tui as unknown as TUI);
 		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
 		t.after(() => editor.dispose());
-		assert.match(stripAnsi(editor.render(160)[0]!), /^─ ✿ waiting for input ─/, `${header}: the titled-rule editor, not the float prompt`);
+		assert.match(stripAnsi(editor.render(160)[0]!), /^─ ✿ waiting for input/, `${header}: the titled-rule editor, not the float prompt`);
+		assert.match(stripAnsi(editor.render(160)[0]!), /\[ Panel \]/, `${header}: without the rail, [ Panel ] opens the Status sections`);
 		assert.match(stripAnsi(editor.render(160)[1]!), /^› /);
 		assert.notEqual(state.compactWork?.(), true, `${header}: no minimal-edition fold; Agents and Todos keep their cards`);
 		assert.equal(state.statusBarShowsMode?.(), true, `${header}: a chrome bar shows the permission mode`);

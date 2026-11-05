@@ -35,11 +35,12 @@ test("the chrome bar is the split status bar row, centered between two painted m
 	const [style, surface] = [cardStyle(), chromeSurface()];
 	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
 	const barModel = { ...model, permission: { mode: "SUPER-YOLO" } };
+	const split = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" as const };
 	for (const cards of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
 		setCardStyle(cards);
 		setChromeSurface("tinted");
-		const status = renderShellStatusBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS);
-		const below = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined);
+		const status = renderShellStatusBar(barModel as never, painted as never, 110, "alt+u", split);
+		const below = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", split, undefined);
 		assert.deepEqual(below.rows[1], status.rows[0], `${cards}: the same row as the split status bar`);
 		assert.equal(below.rows.length, 3, `${cards}: a margin row on each side centers the bar's text`);
 		assert.equal(below.headerRow, 1);
@@ -51,10 +52,10 @@ test("the chrome bar is the split status bar row, centered between two painted m
 		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 0), false, "the margins are not targets");
 		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 2), false);
 		for (const density of ["compact", "minimal"] as const) {
-			assert.equal(renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density }, undefined).rows.length, 1, `${cards}: ${density} has no margin row`);
+			assert.equal(renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", { ...split, density }, undefined).rows.length, 1, `${cards}: ${density} has no margin row`);
 		}
 		setChromeSurface("transparent");
-		const clear = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined);
+		const clear = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", split, undefined);
 		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${cards}: transparent floats it`);
 		assert.deepEqual(unstyled(clear.rows), unstyled(below.rows));
 	}

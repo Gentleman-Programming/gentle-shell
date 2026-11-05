@@ -26,15 +26,17 @@ export function layoutSchematic(settings: VisualSettings): string {
 		if (next.length > RAIL - 1 && row === 0) { row = 1; railRows[1] = name; }
 		else railRows[row] = next;
 	}
-	const input = top ? "› input" : "› input · header";
+	// With a rail, below-input places the bar below both columns, like split.
+	const input = top || rail ? "› input" : "› input · header";
 	const main = ["conversation", input];
 	const width = MAIN + (rail ? RAIL + 1 : 0);
-	const bottom = settings.statusPlacement === "bottom" || (split && rail) ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
+	const railBottomBar = rail && (split || !top);
+	const bottom = settings.statusPlacement === "bottom" || railBottomBar ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
 	if (rail) {
 		return [
-			split ? `┌${rule("title", MAIN + RAIL + 1)}┐` : `┌${rule(top ? "header" : "", MAIN)}┬${rule("Status", RAIL)}┐`,
+			top ? `┌${rule(split ? "title" : "header", width)}┐` : `┌${rule("", MAIN)}┬${rule("Status", RAIL)}┐`,
 			...main.map((text, line) => `│ ${fill(text, MAIN - 1)}│ ${fill(railRows[line] ?? "", RAIL - 1)}│`),
-			`└${rule(bottom, MAIN)}┴${"─".repeat(RAIL)}┘`,
+			railBottomBar ? `└${rule(bottom, width)}┘` : `└${rule(bottom, MAIN)}┴${"─".repeat(RAIL)}┘`,
 		].join("\n");
 	}
 	return [

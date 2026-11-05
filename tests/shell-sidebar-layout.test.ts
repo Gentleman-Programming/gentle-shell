@@ -1009,9 +1009,6 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 		{ basis: 0, grow: 1, shrink: 1, minSize: 1 },
 	]);
 	const header = node.entries[0].component as { render(width: number): string[] };
-	// The rail card ends two columns before the terminal edge (its padding plus
-	// the scrollbar column); the header stops there too so its right group
-	// lines up with the card border instead of touching the edge.
 	assert.deepEqual(header.render(0), ["HEADER 140"], "the header renders at the full terminal width, not the rail width");
 
 	const hstack = hstackOf(f);
@@ -1019,17 +1016,16 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	const scroll = railWithHeader(f);
 	const rail = scroll.render(50);
 	assert.doesNotMatch(rail.join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
-	// A split title block carries its own margin row across the rail, so the
-	// rail opens with its first card right under it.
-	assert.notEqual(rail[0]?.trim(), "", "the first card starts on the rail's first row");
+	assert.equal(rail[0]?.trim(), "", "the rail starts with a spacer below the full-width title");
+	assert.match(rail[1]!, /Status/, "the first section follows the spacer");
 });
 
-test("the top header has a rail-local inset without moving the conversation or losing hits", (t) => {
+test("upper headers add one rail-local inset without moving the conversation or losing hits", (t) => {
 	const found = cardStyle();
 	t.after(() => setCardStyle(found));
 	setCardStyle(CARD_STYLE.FLOAT);
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
-	for (const placement of ["split", "below-input"] as const) {
+	for (const placement of ["top", "split", "below-input"] as const) {
 		const f = fixture();
 		const received: TuiMouseEvent[] = [];
 		const status = renderShellSidebarBar({
@@ -1048,10 +1044,9 @@ test("the top header has a rail-local inset without moving the conversation or l
 		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => placement));
 		const frame = renderLayoutFrame(f.root, 140, 8, () => {});
-		const bodyY = placement === "split" ? 2 : 0;
+		const bodyY = placement === "below-input" ? 0 : 2;
 		assert.match(frame.lines[bodyY], /CONVERSATION/);
-		// The split title block's margin row spans the rail, so the rail adds no inset.
-		const inset = 0;
+		const inset = placement === "below-input" ? 0 : 1;
 		assert.doesNotMatch(frame.lines.slice(0, bodyY).join("\n"), /\x1b\[48;5;22m/);
 		assert.match(frame.lines[bodyY], /\x1b\[48;5;22m/, "the panel surface reaches the header");
 		assert.match(frame.lines[bodyY + inset], /\x1b\[48;5;22m/);
@@ -1086,7 +1081,7 @@ test("float rail alignment preserves fallback banners and neon bytes across live
 		sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} });
 		t.after(installSidebar(f.tui, theme));
 		const baseline = railWithHeader(f).render(50);
-		if (header) assert.deepEqual(baseline, [" TODO ", "", " Status "], "the split title block carries the top margin");
+		if (header) assert.deepEqual(baseline, [" ".repeat(50), " TODO ", "", " Status "], "the rail keeps its own spacer under the split title");
 		else assert.match(baseline.join("\n"), /✿ Gentle Shell ✿/);
 		setCardStyle(CARD_STYLE.FLOAT);
 		assert.deepEqual(railWithHeader(f).render(50), baseline, "the active split header keeps the same rail in both styles");
@@ -1291,7 +1286,7 @@ test("the rail panel surface reaches the bottom of the viewport, not just the la
 	assert.equal(rail(f).scrollTop, 0, "the fill adds no scroll range");
 });
 
-test("a top header sits inside the conversation column, and it and the rail both start on the window's first row", (t) => {
+test("a top header spans both columns above the rail while the editor and its clicks stay in place", (t) => {
 	for (const density of ["comfortable", "compact", "minimal"] as const) {
 		const f = fixture("fullscreen", 160);
 		const received: TuiMouseEvent[] = [];
@@ -1304,21 +1299,59 @@ test("a top header sits inside the conversation column, and it and the rail both
 		const dock = { render: () => ["EDITOR".padEnd(110, "e")], invalidate() {} };
 		f.root[NODE] = () => ({ type: "vstack", gap: 0, entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
 		t.after(installSidebar(f.tui, theme, () => "auto", () => "top", () => density));
-		assert.equal(f.root[NODE]().type, "hstack", `${density}: no full-width row spans the rail`);
+		const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+		assert.equal(node.type, "vstack", `${density}: the full-width header is above the hstack`);
 		const lines = renderLayoutFrame(f.root, 160, 6, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
 		assert.match(lines[5]!, /^EDITORe{101}/, `${density}: the editor stays in the conversation column`);
 		assert.equal(lines[5]!.slice(107, 110), "   ", `${density}: the editor keeps the 3-column gap from the rail`);
-		// 160 columns minus the 50-column rail: the header reaches the rail, with no gap.
-		assert.match(lines[0]!, /^HEADER 110 /, `${density}: the header runs up to the rail`);
+		assert.match(lines[0]!, /^HEADER 160(?: |$)/, `${density}: the header spans both columns`);
+		assert.doesNotMatch(lines[0]!, /Status/, `${density}: the rail starts below the header`);
 		assert.equal(lines[1]!.slice(107, 110), "   ", `${density}: the conversation keeps its 3-column gap from the rail`);
-		assert.match(lines[1]!, /^CONVERSATION/, `${density}: the conversation follows the header's own rows`);
-		assert.match(lines[density === "comfortable" ? 1 : 0]!, /Status/, `${density}: the rail's first section is level with the header's text row`);
-		const click: TuiMouseEvent = { type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 110, height: 1, shift: false, alt: false, ctrl: false };
-		(f.root[NODE]() as unknown as { entries: { component: { [key: symbol]: () => { entries: { component: Component }[] } } }[] }).entries[0]!.component[NODE]().entries[0]!.component.handleMouse?.(click);
+		assert.match(lines[1]!, /^CONVERSATION/, `${density}: the conversation follows the header`);
+		assert.match(lines[2]!, /Status/, `${density}: one blank rail row precedes the first section`);
+		const click: TuiMouseEvent = { type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 160, height: 1, shift: false, alt: false, ctrl: false };
+		node.entries[0]!.component.handleMouse?.(click);
 		assert.equal(received.at(-1)?.x, 3, `${density}: the header leaf still routes its clicks`);
-		const railRows = railWithHeader(f).render(50);
-		assert.deepEqual(railRows, density === "comfortable" ? ["", " Status "] : [" Status "], `${density}: beside a centered comfortable top bar the rail keeps a top padding row`);
+		assert.deepEqual(railWithHeader(f).render(50), [" ".repeat(50), " Status "], `${density}: the rail has exactly one leading spacer`);
 		assert.equal(sidebarState(f.tui).active, true);
+	}
+});
+
+test("every upper-header placement leaves one surface-aware rail spacer in every density and card style", (t) => {
+	const [oldStyle, oldSurface] = [cardStyle(), chromeSurface()];
+	t.after(() => { setCardStyle(oldStyle); setChromeSurface(oldSurface); });
+	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	for (const placement of ["top", "split"] as const) for (const density of ["comfortable", "compact", "minimal"] as const) {
+		for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) for (const surface of ["tinted", "transparent"] as const) {
+			setCardStyle(style);
+			setChromeSurface(surface);
+			const label = `${placement}/${density}/${style}/${surface}`;
+			const f = fixture("fullscreen", 160);
+			let clicks = 0;
+			sidebarPart(f.tui, "footer", {
+				surface: "panel", render: () => ["Status"], invalidate() {},
+				handleMouse(event) { assert.equal(event.y, 0); clicks++; return { handled: true }; },
+			});
+			sidebarHeader(f.tui, { render: (width) => ["PAD", `HEADER ${width}`, `RULE ${width}`, "PAD"], invalidate() {} });
+			f.root[NODE] = () => ({ type: "vstack", entries: [{ component: { render: () => ["CONVERSATION"], invalidate() {} } }] });
+			t.after(installSidebar(f.tui, painted, () => "auto", () => placement, () => density));
+			const frame = renderLayoutFrame(f.root, 160, 12, () => {});
+			assert.match(frame.lines[1]!, /HEADER 160/, label);
+			assert.match(frame.lines[2]!, /RULE 160/, label);
+			assert.doesNotMatch(frame.lines.slice(0, 4).join("\n"), /Status|\x1b\[48;5;22m/, `${label}: the rail starts after the entire header`);
+			assert.match(frame.lines[4]!, /CONVERSATION/, label);
+			const scroll = railWithHeader(f);
+			const rows = scroll.render(50);
+			assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${label}: one leading spacer`);
+			if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, `${label}: the spacer carries the panel`);
+			else assert.doesNotMatch(rows[0]!, /\x1b\[48;5;/, `${label}: the spacer is unpainted`);
+			const statusRow = rows.findIndex((row) => row.includes("Status"));
+			assert.equal(statusRow, surface === "transparent" && style === CARD_STYLE.FLOAT ? 2 : 1, `${label}: only the float card's own padding follows the spacer`);
+			const click = (y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 112, screenY: 4 + y, width: 50, height: 8, shift: false, alt: false, ctrl: false });
+			assert.equal(scroll.handleMouse(click(0)), undefined, `${label}: the spacer has no hit target`);
+			assert.equal(scroll.handleMouse(click(statusRow))?.handled, true, `${label}: the section title remains clickable`);
+			assert.equal(clicks, 1, label);
+		}
 	}
 });
 
@@ -1372,7 +1405,7 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 	assert.match(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted);
 });
 
-test("beside a centered comfortable top bar the rail starts with its padding row and puts its first section on the text row", (t) => {
+test("below a centered comfortable top bar the rail spacer follows the chosen surface", (t) => {
 	const previousStyle = cardStyle();
 	t.after(() => setCardStyle(previousStyle));
 	setCardStyle(CARD_STYLE.NEON);
@@ -1387,24 +1420,23 @@ test("beside a centered comfortable top bar the rail starts with its padding row
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "top"));
 		const rows = railWithHeader(f).render(50);
 		const top = rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim();
-		if (surface === "tinted") {
-			assert.equal(top, "", "tinted: the rail's top padding is level with the bar's top margin");
-			assert.match(rows[1]!, /Status/, "tinted: the first section sits on the header's text row");
-		} else {
-			assert.match(top, /^╭─ .*Status ─+╮$/, "transparent: the first card's title rule is level with the bar's top margin");
-		}
-		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "the panel surface starts on the window's first row");
+		assert.equal(top, "", `${surface}: the spacer is below all header rows`);
+		assert.match(rows[1]!, /Status/, `${surface}: the first section follows the spacer`);
+		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "the spacer continues the rail surface");
 		else assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;22m/);
 	}
 });
 
-test("a split title row's margin row spans the rail, so the rail adds no top padding of its own", (t) => {
+test("a split title row is followed by one rail spacer", (t) => {
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
 	const f = fixture("fullscreen", 160);
 	sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
 	sidebarHeader(f.tui, { render: (width: number) => [`TITLE ${width}`, "PAD"], invalidate() {} });
 	t.after(installSidebar(f.tui, painted, () => "auto", () => "split"));
-	assert.match(railWithHeader(f).render(50)[0]!, /Status/, "the first section starts right under the title block");
+	const rows = railWithHeader(f).render(50);
+	assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "");
+	assert.match(rows[0]!, /\x1b\[48;5;22m/, "the spacer is painted");
+	assert.match(rows[1]!, /Status/, "the first section follows it");
 });
 
 test("beside the rail a below-input layout keeps the transcript and the dock in the gapped column", (t) => {

@@ -53,14 +53,15 @@ test("fullscreen with the sidebar leaves no blank row between the editor and the
 	assert.ok(screen.some((row) => row.includes("Status card")), "the rail is still painted");
 });
 
-test("under a split header the rail starts right below the title block, which carries the margin row", async (t) => {
+test("under a split header the rail keeps one spacer below the title block", async (t) => {
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	setCardStyle(CARD_STYLE.FLOAT);
 	const screen = await renderViewport(140, 24, true);
 	assert.equal(screen[0], "HEADER 140");
 	assert.match(screen[1]!, /^transcript /, "the transcript starts immediately below the header");
-	assert.match(screen[1]!, /Status card/, "the rail adds no inset of its own");
+	assert.doesNotMatch(screen[1]!, /Status card/, "the first rail row separates the header from its card");
+	assert.match(screen[2]!, /Status card/, "the first card starts after exactly one spacer row");
 });
 
 test("fullscreen without the sidebar keeps Pi's bottom bar on the last row", async () => {

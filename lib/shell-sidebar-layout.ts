@@ -24,12 +24,15 @@ type StackLayoutEntry = ConstructorParameters<typeof VStack>[0] extends Array<in
 type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
-type RailHit = { key: string; component: Component; startY: number; height: number; width: number; x: number; row: number };
+// `x`/`row` map a rail cell to the part's own cells; `frameWidth`/`frameHeight` are
+// the frame the part rendered, which its mouse handler checks events against.
+// A card title row (`wholeRow`) answers across the whole rail row, its x clamped into the frame.
+type RailHit = { key: string; component: Component; startY: number; height: number; width: number; x: number; row: number; frameWidth: number; frameHeight: number; wholeRow?: boolean };
 type SectionCacheEntry = { component: Component; digest: string | undefined; revision: number; contentWidth: number; renderWidth: number; cardStyle: CardStyle; theme: ShellBarTheme; themeSignature: string; lines: string[] };
 // A transparent rail draws every section as its own card in the transcript's
 // card style (neon outline with the title in the top rule, float tint with its
 // accent bar), through the same renderCard the conversation cards use.
-type CardGeometry = { headerRow: number; bodyRow: number; bodyX: number };
+type CardGeometry = { headerRow: number; headerX: number; bodyRow: number; bodyX: number };
 // One section card: the title (with its count as the top rule's hint) and the
 // body rows together, so a float card spends no separator row between them.
 function sectionCardRows(header: { glyph?: string; title: string; count?: string }, body: readonly string[], theme: ShellBarTheme, width: number): string[] {
@@ -47,7 +50,8 @@ function cardGeometry(theme: ShellBarTheme, width: number, style: CardStyle): Ca
 	if (cached) return cached;
 	const rows = sectionCardRows({ glyph: "▾", title: "HEADER" }, [CARD_PROBE], theme, width).map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
 	const bodyRow = Math.max(0, rows.findIndex((row) => row.includes(CARD_PROBE)));
-	const geometry = { headerRow: Math.max(0, rows.findIndex((row) => row.includes("HEADER"))), bodyRow, bodyX: Math.max(0, visibleWidth(rows[bodyRow]!.slice(0, rows[bodyRow]!.indexOf(CARD_PROBE)))) };
+	const headerRow = Math.max(0, rows.findIndex((row) => row.includes("HEADER")));
+	const geometry = { headerRow, headerX: Math.max(0, visibleWidth(rows[headerRow]!.slice(0, rows[headerRow]!.indexOf("▾")))), bodyRow, bodyX: Math.max(0, visibleWidth(rows[bodyRow]!.slice(0, rows[bodyRow]!.indexOf(CARD_PROBE)))) };
 	if (geometryCache.size > 64) geometryCache.clear();
 	geometryCache.set(key, geometry);
 	return geometry;
@@ -251,13 +255,15 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			event.x >= current.contentWidth || event.y < 0 || event.y >= event.height) return undefined;
 		const contentY = scroll.scrollTop + event.y;
 		const hit = current.hits.find((candidate) => contentY >= candidate.startY && contentY < candidate.startY + candidate.height);
-		if (!hit || state.parts.get(hit.key) !== hit.component || event.x < hit.x || event.x >= hit.x + hit.width) return undefined;
+		if (!hit || state.parts.get(hit.key) !== hit.component) return undefined;
+		if (!hit.wholeRow && (event.x < hit.x || event.x >= hit.x + hit.width)) return undefined;
+		// The part sees the event in the frame it rendered: its own width and all its rows.
 		return hit.component.handleMouse?.({
 			...event,
-			x: event.x - hit.x,
+			x: Math.max(0, Math.min(hit.frameWidth - 1, event.x - hit.x)),
 			y: hit.row + contentY - hit.startY,
-			width: hit.width,
-			height: hit.height,
+			width: hit.frameWidth,
+			height: hit.frameHeight,
 		});
 	};
 	scroll.handleMouse = (event) => {
@@ -410,8 +416,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 						const top = railLines.length;
 						railLines.push(...sectionCardRows(headerParts(section.lines[group.start] ?? ""), body, theme, contentWidth));
 						// The title row folds the section like its header; body rows keep their own rows.
-						hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: contentWidth, x: 0, row: group.start });
-						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1 });
+						const frame = { frameWidth: renderWidth, frameHeight: section.lines.length };
+						hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: renderWidth, x: geometry.headerX, row: group.start, wholeRow: true, ...frame });
+						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1, ...frame });
 					});
 					const loose = (layout.loose ?? []).map((row) => section.lines[row] ?? "").filter((row) => row.trim() !== "");
 					if (loose.length && sectionGap(density())) railLines.push("");
@@ -422,7 +429,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
 				previousPanel = panel;
 				fillRow = panel ? paint(" ".repeat(contentWidth)) : "";
-				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING, row: 0 });
+				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING, row: 0, frameWidth: renderWidth, frameHeight: section.lines.length });
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);

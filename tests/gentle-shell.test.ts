@@ -7852,3 +7852,50 @@ test("repeated [ Panel ] or /gentle:panel opens never stack sheets: one stays op
 	ui.overlayView!.handleInput("\x1b");
 	await reopened;
 });
+
+test("on a transparent rail a click on a section card's title folds that section, and the rail hints leave out the usage key", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		writeCardStyle(style, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const painted = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", gap: 0, entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const statuses = new Map([["gentle-pi", "🧠 gentle-pi · ready"]]);
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		type Node = { type?: string; entries?: { component: unknown }[] };
+		const findRail = (value: unknown): { render(width: number): string[]; handleMouse(event: unknown): { handled?: boolean } | undefined } | undefined => {
+			const component = value as { [key: symbol]: () => Node; handleMouse?: unknown; getContentWidth?: unknown };
+			if (typeof component?.getContentWidth === "function") return component as never;
+			const layout = typeof component?.[node] === "function" ? component[node]() : undefined;
+			for (const entry of layout?.entries ?? []) { const found = findRail(entry.component); if (found) return found; }
+			return undefined;
+		};
+		const rail = findRail(root)!;
+		assert.ok(rail, `${style}: the rail is mounted`);
+		const text = () => rail.render(50).map(stripAnsi);
+		assert.doesNotMatch(text().join("\n"), /alt\+u usage/, `${style}: the bars carry the usage key; the rail hints do not repeat it`);
+		assert.match(text().join("\n"), /\/ commands/);
+		const title = text().findIndex((row) => row.includes("INTEGRATIONS"));
+		assert.ok(title >= 0 && text().some((row) => row.includes("gentle-pi · ready")), `${style}: Integrations shows its rows`);
+		const click = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 50, height: 38, shift: false, alt: false, ctrl: false });
+		assert.equal(rail.handleMouse(click(6, title))?.handled, true, `${style}: the card title row takes the click`);
+		root[node]();
+		assert.ok(!text().some((row) => row.includes("gentle-pi · ready")), `${style}: the click folded Integrations`);
+		const folded = text().findIndex((row) => row.includes("INTEGRATIONS"));
+		assert.equal(rail.handleMouse(click(1, folded))?.handled, true, `${style}: the card's left edge on the title row also folds`);
+		root[node]();
+		assert.ok(text().some((row) => row.includes("gentle-pi · ready")), `${style}: a second click unfolds it`);
+		await fire(handlers, "session_shutdown", ctx);
+	}
+});

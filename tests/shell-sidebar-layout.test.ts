@@ -1443,12 +1443,20 @@ test("a transparent rail draws every section as its own card in the transcript's
 		const f = fixture("fullscreen", 160);
 		const received: TuiMouseEvent[] = [];
 		const lines = (width: number) => [`\x1b[35m▾\x1b[39m CHANGES${" ".repeat(width - 14)}clean`, "  no changes", "", `▾ INTEGRATIONS${" ".repeat(width - 15)}1`, "  - gentle-pi · ready", "", "  ctrl+shift+t todos"];
+		// Like NativePointerRegion and the Status targets: the event must fall inside
+		// the frame the part rendered (its width, all its rows), or it is ignored.
+		const rendered = new Set<number>();
 		sidebarPart(f.tui, "footer", { render: () => [], invalidate() {} }, {
 			surface: "panel",
-			render: (width: number) => lines(width),
+			render: (width: number) => { rendered.add(width); return lines(width); },
 			cardGroups: () => ({ groups: [{ start: 0, end: 2 }, { start: 3, end: 5 }], loose: [6] }),
 			invalidate() {},
-			handleMouse(event) { received.push(event); return { handled: true }; },
+			handleMouse(event) {
+				if (!rendered.has(event.width) || event.height !== lines(event.width).length) return undefined;
+				if (event.x < 0 || event.x >= event.width || event.y < 0 || event.y >= event.height) return undefined;
+				received.push(event);
+				return { handled: true };
+			},
 		});
 		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => "compact"));

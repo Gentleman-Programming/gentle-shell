@@ -254,10 +254,10 @@ jobs:
           $output | Write-Output
           if ($status -ne 0) { exit $status }
           $text = $output -join "`n"
+          $tests = [regex]::Match($text, "(?m)^# tests (\d+)$")
           $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
-          $skips = [regex]::Match($text, "(?m)^# skipped (\d+)$")
-          if (!$passes.Success -or [int]$passes.Groups[1].Value -eq 0) { throw "Windows ACL boundary tests selected no tests" }
-          if ($skips.Success -and [int]$skips.Groups[1].Value -ne 0) { throw "Windows ACL boundary tests skipped on Windows" }
+          if (!$tests.Success -or !$passes.Success -or [int]$passes.Groups[1].Value -eq 0) { throw "Windows ACL boundary tests selected no tests" }
+          if ([int]$tests.Groups[1].Value -ne [int]$passes.Groups[1].Value) { throw "Windows ACL boundary tests did not all run and pass on Windows" }
 
       - name: Run Windows native consent boundary
         shell: pwsh

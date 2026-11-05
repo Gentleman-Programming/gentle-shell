@@ -4,7 +4,7 @@ Enable `GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=1` before loading the extensio
 
 The coordinator calls the existing wrapped review facade executors. Native mode, host consent, session identity, workspace/base selection, opaque bindings and native admission remain authoritative. It never parses binding strings, invents results, retries a failed capture or authorizes delivery.
 
-For a fresh ordinary review, provide pertinent `lenses` and `lensesReason`, optionally `workspaceRoot`, a committed selector (`baseRef` together with `committedOnly: true`), and an existing `requestContextPath`. Explicit request intent is accepted only for a fresh transaction. Unresolved consent returns to the host.
+For a fresh ordinary review, provide pertinent `lenses` and `lensesReason`, optionally `workspaceRoot`, a committed selector (`baseRef` together with `committedOnly: true`), and an existing `requestContextPath`. [Frozen request intent](review-request-context.md) is accepted only for a fresh transaction. Unresolved consent returns to the host.
 
 The tool stops for correction-plan authoring and edits. After an authorized bounded edit, resume with `lineageId` and the same workspace/base selection. It executes only a single native-offered `review.capture-validation` slot with reason `targeted_validation_required`, even if native state still reads `correction_required`. Native STATUS is fresh at capture time. A changed/reoffered binding does not grant another validation attempt.
 

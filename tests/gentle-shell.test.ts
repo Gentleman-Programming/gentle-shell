@@ -7434,9 +7434,12 @@ test("an agent question keeps its row above the framed editor while the rail hid
 		host.mode = "fullscreen";
 		state.active = true;
 		state.ownsHost = () => true;
+		const attached = state.layoutAttached;
+		state.layoutAttached = () => true;
 		const rows = editor.render(80).map(stripAnsi);
 		assert.match(rows[0]!, /explore asked: Which file\?/, "the question sits right above the editor");
-		assert.match(rows[1]!, /^╭/, "the below-input header keeps the framed editor");
+		assert.match(rows[1]!, /^─ ✿ waiting for input/, "beside the rail the below-input bar comes with the titled-rule editor");
+		state.layoutAttached = attached;
 		state.active = false;
 		assert.doesNotMatch(editor.render(80).map(stripAnsi).join("\n"), /explore asked/, "without the rail the Agents card lists the question itself");
 	} finally {
@@ -7698,7 +7701,8 @@ test("a wide top header is the split title row's panel row with the whole header
 		{ header: "top", status: "auto", exterior: false },
 		{ header: "split", status: "auto", exterior: false },
 		{ header: "below-input", status: "auto", exterior: false },
-		{ header: "top", status: "hidden", exterior: true },
+		// Every bar placement draws the titled-rule editor, whose own bottom row is the margin.
+		{ header: "top", status: "hidden", exterior: false },
 		{ header: "below-input", status: "hidden", exterior: false },
 		{ header: "split", status: "hidden", exterior: false },
 	] as const;
@@ -7782,6 +7786,10 @@ test("Status bottom at a wide width keeps the bar design, shows Agents and Todos
 		t.after(() => footer.dispose());
 		root[node]();
 		const state = sidebarState(tui as unknown as TUI);
+		const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+		t.after(() => editor.dispose());
+		assert.match(stripAnsi(editor.render(160)[0]!), /^─ ✿ waiting for input ─/, `${header}: the titled-rule editor, not the float prompt`);
+		assert.match(stripAnsi(editor.render(160)[1]!), /^› /);
 		assert.notEqual(state.compactWork?.(), true, `${header}: no minimal-edition fold; Agents and Todos keep their cards`);
 		assert.equal(state.statusBarShowsMode?.(), true, `${header}: a chrome bar shows the permission mode`);
 		const statusRow = (rows: string[]) => rows.map(stripAnsi).find((row) => row.includes("gentle-pi · ready"));

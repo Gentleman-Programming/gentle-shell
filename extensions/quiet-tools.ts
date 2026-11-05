@@ -775,7 +775,9 @@ export function createQuietToolRenderer(
 			}
 			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
 			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
-			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
+			// Pi flips isPartial to false only with a result; a card rebuilt from the
+			// session history has one even though Pi never saw its execution start.
+			const finished = renderContext.isPartial === false;
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
 			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
 			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });

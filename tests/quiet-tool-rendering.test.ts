@@ -1800,3 +1800,17 @@ test("a collapsed minimal bash card keeps a long, multi-line or timed-out comman
 		assert.equal(visibleWidth(rows[0]!), width);
 	}
 });
+
+test("a finished card restored from the session history keeps its expand hint even though Pi never saw its execution start", (t) => {
+	for (const level of [CARD_CONTENT.MINIMAL, CARD_CONTENT.DEFAULT]) {
+		useCardContent(t, level);
+		const tools = registeredQuietTools();
+		for (const [name, args] of [["read", { path: "a.ts" }], ["grep", { pattern: "x", path: "." }], ["bash", { command: "node scripts/build.mjs --check && git diff --check", timeout: 30 }]] as const) {
+			if (name === "bash" && level === CARD_CONTENT.DEFAULT) continue;
+			const restored = tools.get(name).renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, executionStarted: false })).render(120).map(stripAnsi).join("\n");
+			assert.match(restored, /to expand/, `${level} ${name}: a restored finished card says it expands`);
+			const streaming = tools.get(name).renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: true, executionStarted: false })).render(120).map(stripAnsi).join("\n");
+			assert.doesNotMatch(streaming, /to expand/, `${level} ${name}: a call still streaming has nothing to expand yet`);
+		}
+	}
+});

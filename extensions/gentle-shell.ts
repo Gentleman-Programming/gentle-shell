@@ -2217,12 +2217,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// Agents and Todos cards, with a Status row at the bottom.
 		return tui.terminal.columns < SIDEBAR_BREAKPOINT && placement !== "hidden" ? "narrow" : undefined;
 	};
-	// A wide top header heads the conversation column; the editor keeps the
-	// same titled rule as the IDE chrome there.
-	const topHeaderInColumn = (tui: TUI): boolean => {
-		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return false;
+	// Where the chrome bars draw (beside the rail, or with Status hidden or at the
+	// bottom, outside the mobile chrome): every placement there shares the bar
+	// design and the titled-rule editor.
+	// `drawn` asks whether the rail actually painted in the last layout pass: the
+	// editor and footer render after it, while the header renders during it.
+	const chromeBarsShown = (tui: TUI, drawn = false): boolean => {
+		if ((tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal || chromeMode(tui) === "narrow") return false;
+		const placement = visualSettings.statusPlacement;
+		if (placement === "hidden" || placement === "bottom") return true;
+		// The rail owns the host (layout installed) only at 140 columns or wider, with Status auto or right.
 		const state = sidebarState(tui);
-		return Boolean(state.active && state.ownsHost?.());
+		return Boolean(state.ownsHost?.() && (!drawn || state.active));
 	};
 	// The live-work digests the mobile work row folds, honoring the Todos switch.
 	const workParts = (tui: TUI) => {
@@ -2705,7 +2711,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// They apply beside the rail and with Status hidden (no rail at all); the
 			// mobile chrome keeps phones and the minimal edition.
 			const fullscreen = () => (tui as TUI & { mode?: string }).mode === "fullscreen";
-			const barChrome = () => fullscreen() && Boolean(tui.terminal) && chromeMode(tui) !== "narrow" && (statusCardVisible() || visualSettings.statusPlacement === "hidden" || visualSettings.statusPlacement === "bottom");
+			const barChrome = () => chromeBarsShown(tui);
 			// Status at the bottom of a wide terminal: the integrations row closes the bottom chrome.
 			const bottomStatus = () => barChrome() && visualSettings.statusPlacement === "bottom";
 			const integrationsRow = (width: number) => renderShellIntegrationsRow(footerModel(), theme, width);
@@ -2820,7 +2826,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					// only while the float prompt ends the dock. A titled-rule editor (top, split,
 					// mobile) keeps its own bottom row as the margin, and a below-input header follows it.
 					// A split status bar follows the prompt too, so it never needs the exterior row.
-					const promptEndsDock = !(chromeMode(tui) !== undefined || topHeaderInColumn(tui) || splitChrome() || belowHeader());
+					const promptEndsDock = !(chromeMode(tui) !== undefined || chromeBarsShown(tui, true) || belowHeader());
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && promptEndsDock
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
@@ -2840,7 +2846,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
-				panelChrome: (tui) => chromeMode(tui) !== undefined || topHeaderInColumn(tui),
+				panelChrome: (tui) => chromeMode(tui) !== undefined || chromeBarsShown(tui, true),
 				panelButton: (tui) => chromeMode(tui) === "narrow",
 				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
 				// The mobile work row is the first top row; a tap on it opens the leading section's view.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -4415,6 +4415,31 @@ test("AgentsView production footer uses rendered bounds and invalidates them bef
 	} finally {
 		captureStore.mock.restore();
 	}
+});
+
+test("a task that ends without a final report leaves one private content-free diagnostic file", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Diagnose me privately", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	harness.children[0].emit({ type: "message_start", message: { role: "assistant" } });
+	harness.children[0].emit({ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [], stopReason: "stop" }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	const dir = join(home, ".pi", "agent", "gentle-agents", "diagnostics");
+	const mine = () => existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(`-${id}.json`)) : [];
+	for (let attempt = 0; attempt < 40 && mine().length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(mine().length, 1, "exactly one diagnostic file for the failed task");
+	const text = readFileSync(join(dir, mine()[0]), "utf8");
+	const record = JSON.parse(text);
+	assert.deepEqual([record.schema, record.taskId, record.category, record.responses], ["gentle-pi.response-diagnostic/v1", id, "empty_report", 1]);
+	assert.equal(record.lastResponse.finalContent.kind, "empty_content");
+	assert.doesNotMatch(text, /Diagnose me privately/);
+	if (process.platform !== "win32") assert.equal(statSync(join(dir, mine()[0])).mode & 0o777, 0o600);
 });
 
 test("a task that finishes live stays visible as history, in both scopes, and its result also resolves after a restart", async () => {

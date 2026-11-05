@@ -49,6 +49,7 @@ import { WindowsActiveSessionClient, WindowsActiveSessionListener, WindowsSessio
 import { hasReviewSessionPermission, resolveCanonicalGitRepositoryIdentitySync, type ReviewSessionManager } from "../lib/review-session-standing-permission.ts";
 import { inheritedUnsafeGitEnvironmentKeys } from "../lib/review-repository.ts";
 import { historyDir, loadHistory, loadStoredTask, pruneHistory, saveTask } from "../lib/agents-history.ts";
+import { diagnosticsDir, writeResponseDiagnostic } from "../lib/agents-response-diagnostics-store.ts";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 import { AgentsView } from "../lib/agents-view.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
@@ -1625,6 +1626,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId, ...runtimeWriterProfile(task) });
 		},
+		// Private local file only, fire-and-forget; independent of metrics consent.
+		onResponseDiagnostic: (_task, record) => { void writeResponseDiagnostic(diagnosticsDir(agentHome), record); },
 		onFinish: (task, observations) => {
 			// Completion is the only forwarding opportunity. No pending event, policy
 			// query or promise survives this callback; the receiver drops when busy.

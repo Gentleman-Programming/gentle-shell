@@ -34,7 +34,7 @@ interface Harness {
 	advance(ms: number): void;
 }
 
-function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean } = {}): Harness {
+function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boolean; process?: RunnerDeps["process"]; pid?: number; maxConcurrency?: number; stallTimeoutMs?: number; toolStallTimeoutMs?: number; cleanupTimeoutMs?: number; answer?: Record<string, unknown>; exitOnKill?: boolean; exitOnStdinEnd?: boolean; state?: Record<string, unknown>; stateSuccess?: boolean; onNotification?: RunnerHooks["onNotification"]; onSuccessfulMutation?: RunnerHooks["onSuccessfulMutation"]; onFinish?: RunnerHooks["onFinish"]; onFallback?: RunnerHooks["onFallback"]; reject?: (command: Record<string, unknown>) => boolean; hold?: (command: Record<string, unknown>) => boolean; onResponseDiagnostic?: RunnerHooks["onResponseDiagnostic"] } = {}): Harness {
 	const children: FakeChild[] = [];
 	const timers: Harness["timers"] = [];
 	const asks: Harness["asks"] = [];
@@ -84,6 +84,7 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 		onNotification: options.onNotification,
 		onSuccessfulMutation: options.onSuccessfulMutation,
 		onFallback: options.onFallback,
+		onResponseDiagnostic: options.onResponseDiagnostic,
 	});
 	return { store, runner, children, timers, asks, finishes, spawnOptions, advance(ms) {
 		clock += ms;
@@ -785,6 +786,66 @@ for (const ending of ["cancel", "exit", "error", "timeout", "settled-error"] as 
 	child.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
 	assert.equal(snapshot.responses.length, 128);
 	assert.equal(h.finishes.length, 1);
+});
+
+test("an empty final report yields one content-free diagnostic record and the same failed task", async () => {
+	const records: Array<Parameters<NonNullable<RunnerHooks["onResponseDiagnostic"]>>[1]> = [];
+	const h = harness({ onResponseDiagnostic: (_task, record) => { records.push(record); } });
+	const task = h.runner.run(request());
+	await tick();
+	const child = h.children[0];
+	const message = { role: "assistant", content: [], stopReason: "stop" };
+	child.emit({ type: "message_start", message: { role: "assistant" } });
+	child.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "private draft" } });
+	child.emit({ type: "message_end", message });
+	child.emit({ type: "agent_end", messages: [message] });
+	child.emit({ type: "agent_settled" });
+	child.exit(0);
+	const finished = await h.runner.waitFor(task.id);
+	assert.equal(finished?.status, TASK_STATUS.FAILED);
+	assert.equal(finished?.error, "assistant returned no final report");
+	assert.equal(records.length, 1);
+	const [record] = records;
+	assert.deepEqual([record.taskId, record.category, record.responses, record.agentSettled], [task.id, "empty_report", 1, true]);
+	assert.equal(record.lastResponse?.finalContent?.kind, "empty_content");
+	assert.equal(record.lastResponse?.stream?.textCharacters, "private draft".length);
+	assert.doesNotMatch(JSON.stringify(record), /private|Map the repo|\/repo/);
+	assert.equal(h.finishes.length, 1);
+});
+
+for (const [ending, status, category] of [["cancel", TASK_STATUS.CANCELLED, "cancelled"], ["stall", TASK_STATUS.TIMED_OUT, "timed_out"],
+	["spawn", TASK_STATUS.FAILED, "start_failed"]] as const) test(`a ${ending} ending is recorded once as ${category}`, async () => {
+	const records: string[] = [];
+	const h = harness({ failStart: ending === "spawn", onResponseDiagnostic: (_task, record) => { records.push(record.category); } });
+	const task = h.runner.run(request());
+	await tick();
+	if (ending === "cancel") { h.runner.cancel(task.id); await tick(); h.children[0].exit(0); }
+	if (ending === "stall") { h.children[0].emit({ type: "turn_start" }); h.advance(20_000); await tick(); h.advance(20_000); }
+	assert.equal((await h.runner.waitFor(task.id))?.status, status);
+	await tick();
+	assert.deepEqual(records, [category]);
+});
+
+test("diagnostic records skip completed tasks and a throwing hook never changes the outcome", async () => {
+	const seen: string[] = [];
+	const h = harness({ onResponseDiagnostic: (_task, record) => { seen.push(record.category); throw new Error("store exploded"); } });
+	const ok = h.runner.run(request());
+	await tick();
+	const report = { role: "assistant", content: [{ type: "text", text: "report" }], stopReason: "stop" };
+	h.children[0].emit({ type: "message_end", message: report });
+	h.children[0].emit({ type: "agent_end", messages: [report] });
+	h.children[0].emit({ type: "agent_settled" });
+	h.children[0].exit(0);
+	assert.equal((await h.runner.waitFor(ok.id))?.status, TASK_STATUS.COMPLETED);
+	assert.deepEqual(seen, []);
+	const failed = h.runner.run(request());
+	await tick();
+	h.children[1].exit(1);
+	const ended = await h.runner.waitFor(failed.id);
+	assert.equal(ended?.status, TASK_STATUS.FAILED);
+	assert.match(ended?.error ?? "", /^pi exited with/);
+	assert.deepEqual(seen, ["exited_before_settle"]);
+	assert.equal(h.finishes.length, 2);
 });
 
 test("response buffering is disabled by default and absent for tasks cancelled before launch", async () => {

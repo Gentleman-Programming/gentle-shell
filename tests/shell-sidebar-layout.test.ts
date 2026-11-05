@@ -304,14 +304,14 @@ test("hidden status reclaims the reserved footer row in narrow and wide fullscre
 
 test("below-input header removes only the rail's top row", (t) => {
 	const f = fixture();
-	let header: "top" | "below-input" = "top";
+	let header: "split" | "below-input" = "split";
 	sidebarHeader(f.tui, { render: () => ["header"], invalidate() {} });
 	t.after(installSidebar(f.tui, theme, () => "auto", () => header));
 	assert.equal(f.root[NODE]().type, "vstack");
 	header = "below-input";
 	assert.equal(f.root[NODE]().type, "hstack");
 	assert.deepEqual(f.bottom.render(80), []);
-	header = "top";
+	header = "split";
 	assert.equal(f.root[NODE]().type, "vstack");
 });
 
@@ -826,7 +826,7 @@ test("fullscreen native transcript renders once without changing bytes, geometry
 test("native fullscreen header survives narrow and bottom transitions without replacing transcript scroll", (t) => {
 	const f = nativeSidebarFixture();
 	let placement: "right" | "bottom" | "hidden" = "right";
-	let headerPlacement: "top" | "below-input" = "top";
+	let headerPlacement: "split" | "below-input" = "split";
 	// Reinstall with live preferences so the transition uses the same native root.
 	f.dispose();
 	sidebarHeader(f.host as unknown as TUI, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
@@ -1030,7 +1030,7 @@ test("the top header has a rail-local inset without moving the conversation or l
 	t.after(() => setCardStyle(found));
 	setCardStyle(CARD_STYLE.FLOAT);
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
-	for (const placement of ["top", "below-input"] as const) {
+	for (const placement of ["split", "below-input"] as const) {
 		const f = fixture();
 		const received: TuiMouseEvent[] = [];
 		const status = renderShellSidebarBar({
@@ -1049,9 +1049,9 @@ test("the top header has a rail-local inset without moving the conversation or l
 		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => placement));
 		const frame = renderLayoutFrame(f.root, 140, 8, () => {});
-		const bodyY = placement === "top" ? 2 : 0;
+		const bodyY = placement === "split" ? 2 : 0;
 		assert.match(frame.lines[bodyY], /CONVERSATION/);
-		const inset = placement === "top" ? 1 : 0;
+		const inset = placement === "split" ? 1 : 0;
 		assert.doesNotMatch(frame.lines.slice(0, bodyY).join("\n"), /\x1b\[48;5;22m/);
 		assert.match(frame.lines[bodyY], /\x1b\[48;5;22m/, "the panel surface reaches the header through its top padding");
 		assert.match(frame.lines[bodyY + inset], /\x1b\[48;5;22m/);
@@ -1289,4 +1289,51 @@ test("the rail panel surface reaches the bottom of the viewport, not just the la
 	assert.equal(rail(f).scrollTop, 0);
 	rail(f).scrollBy(5);
 	assert.equal(rail(f).scrollTop, 0, "the fill adds no scroll range");
+});
+
+test("a top header sits inside the conversation column, and the rail keeps a plain top margin unless density is minimal", (t) => {
+	for (const density of ["comfortable", "compact", "minimal"] as const) {
+		const f = fixture("fullscreen", 160);
+		const received: TuiMouseEvent[] = [];
+		sidebarHeader(f.tui, {
+			render: (width: number) => [`HEADER ${width}`],
+			invalidate() {},
+			handleMouse(event) { received.push(event); return { handled: true }; },
+		});
+		const transcript = { render: () => ["CONVERSATION"], invalidate() {} };
+		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
+		t.after(installSidebar(f.tui, theme, () => "auto", () => "top", () => density));
+		assert.equal(f.root[NODE]().type, "hstack", `${density}: no full-width row spans the rail`);
+		const lines = renderLayoutFrame(f.root, 160, 6, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
+		// 160 columns minus the 50-column rail and the 3-column gap.
+		assert.match(lines[0]!, /^HEADER 107 /, `${density}: the header takes the conversation column width`);
+		// Comfortable leaves one blank row between the header and the conversation.
+		const bodyY = density === "comfortable" ? 2 : 1;
+		if (bodyY === 2) assert.equal(lines[1]!.slice(0, 107).trim(), "");
+		assert.match(lines[bodyY]!, /^CONVERSATION/, `${density}: the conversation follows the header`);
+		const click: TuiMouseEvent = { type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 107, height: 1, shift: false, alt: false, ctrl: false };
+		(f.root[NODE]() as unknown as { entries: { component: { [key: symbol]: () => { entries: { component: Component }[] } } }[] }).entries[0]!.component[NODE]().entries[0]!.component.handleMouse?.(click);
+		assert.equal(received.at(-1)?.x, 3, `${density}: the header leaf still routes its clicks`);
+		const railRows = railWithHeader(f).render(50);
+		assert.deepEqual(railRows, density === "minimal" ? [" Status "] : ["", " Status "], `${density}: plain top margin`);
+		assert.equal(sidebarState(f.tui).active, true);
+	}
+});
+
+test("a split header keeps the full-width title row above the rail", (t) => {
+	const f = fixture("fullscreen", 160);
+	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme, () => "auto", () => "split"));
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.equal(node.type, "vstack");
+	assert.deepEqual(node.entries[0]!.component.render(160), ["HEADER 158"]);
+});
+
+test("a top header falls back to the full width when the rail is not shown", (t) => {
+	const f = fixture("fullscreen", 180);
+	sidebarHeader(f.tui, { render: (width: number) => [`HEADER ${width}`], invalidate() {} });
+	t.after(installSidebar(f.tui, theme, () => "bottom", () => "top"));
+	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
+	assert.equal(node.type, "vstack");
+	assert.deepEqual(node.entries[0]!.component.render(180), ["HEADER 180"]);
 });

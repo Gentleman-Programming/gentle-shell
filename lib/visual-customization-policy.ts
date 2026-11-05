@@ -5,7 +5,12 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 
 export const VISUAL_SCHEMA = "gentle-pi.visual-customization/v1";
 export const STATUS_PLACEMENT = { AUTO: "auto", RIGHT: "right", BOTTOM: "bottom", HIDDEN: "hidden" } as const;
-export const HEADER_PLACEMENT = { TOP: "top", BELOW_INPUT: "below-input" } as const;
+/**
+ * Where the header row goes: `top` above the conversation, inside its column;
+ * `below-input` under the editor; `split` the IDE chrome, a full-width title
+ * row on top and the per-frame counters in a status bar at the bottom.
+ */
+export const HEADER_PLACEMENT = { TOP: "top", BELOW_INPUT: "below-input", SPLIT: "split" } as const;
 export const DENSITY = { COMFORTABLE: "comfortable", COMPACT: "compact", MINIMAL: "minimal" } as const;
 export type StatusPlacement = (typeof STATUS_PLACEMENT)[keyof typeof STATUS_PLACEMENT];
 export type HeaderPlacement = (typeof HEADER_PLACEMENT)[keyof typeof HEADER_PLACEMENT];

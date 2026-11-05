@@ -3653,6 +3653,7 @@ test("T3 live style Cards action refreshes cached TODO and Status in both direct
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	writeCardStyle(CARD_STYLE.NEON, { gentlePiConfigHome: home });
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }, { gentlePiConfigHome: home });
 	const { pi, handlers, commands } = fakePi();
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
 	const { ctx, ui, overlayReady } = fakeContext();
@@ -7626,4 +7627,30 @@ test("Customize groups every setting like Layout while navigation keeps stores u
  await new Promise<void>(resolve => setImmediate(resolve));
  assert.equal(snapshot(), before, "browsing an off/on option cannot write a preference");
  ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("#2890: a wide top header shows the whole header row above the conversation and keeps the YOLO banner", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+	const footer = factory(tui, plainTheme as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	t.after(() => footer.dispose());
+	type Node = { type: string; entries: { component: { render(width: number): string[]; [key: symbol]: () => Node } }[] };
+	const layout = root[node]() as unknown as Node;
+	assert.equal(layout.type, "hstack", "no title row or status bar spans the rail");
+	const column = layout.entries[0]!.component[node]();
+	assert.equal(column.type, "vstack", "the header heads the conversation column");
+	const header = stripAnsi(column.entries[0]!.component.render(107).join("\n"));
+	assert.match(header, /ctx/, "context sits in the top header");
+	assert.match(header, /\$/, "cost sits in the top header");
+	assert.equal(sidebarState(tui as unknown as TUI).statusBarShowsMode?.(), false, "no status bar hides the YOLO banner");
+	const status = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(48).join("\n"));
+	assert.match(status, /SESSION|Session/i, "without a title row the rail keeps the session");
 });

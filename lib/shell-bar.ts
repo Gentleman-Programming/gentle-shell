@@ -296,7 +296,8 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 		header: header("integrations", "Integrations", count ? String(count) : "none"),
 		rows: [...profileRows, ...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
 	});
-	if (hints) sections.push({ rows: [renderPanelRow(width, label(hints))] });
+	// Minimal density keeps only the sections: the key hints row goes.
+	if (hints && presentation?.density !== "minimal") sections.push({ rows: [renderPanelRow(width, label(hints))] });
 	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
 	const lines: string[] = [];
 	const targets: StatusTarget[] = [];
@@ -332,6 +333,12 @@ export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, 
 	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
 }
 
+// The status bar replaces the YOLO banners, so it keeps their icons.
+const MODE_GLYPHS: Record<string, string> = { YOLO: "🔥", "SUPER-YOLO": "💥" };
+function modeBadge(mode: string): string {
+	const glyph = MODE_GLYPHS[mode];
+	return glyph ? `${glyph} ${mode}` : mode;
+}
 /**
  * The status bar: branch, dirty count and a non-default permission mode on
  * the left; model · effort, context, cost and usage on the right. Usage gives
@@ -344,7 +351,7 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const join = (segments: string[]) => segments.filter(Boolean).join(divider);
 	const dirty = model.dirty ? theme.fg(ROLE.DIRTY, `±${model.dirty}`) : "";
 	const branch = [model.branch ? theme.fg(ROLE.BRANCH, model.branch) : "", dirty].filter(Boolean).join(" ");
-	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(sanitizeStatus(model.permission.mode))) : "";
+	const mode = model.permission && model.permission.mode !== "NORMAL" ? theme.fg("warning", theme.bold(modeBadge(sanitizeStatus(model.permission.mode)))) : "";
 	// Without a rail (mobile) the running jobs keep their compact count here.
 	const runningJobs = extras.jobs ? (model.jobs?.filter((job) => job.status === undefined).length ?? 0) : 0;
 	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);

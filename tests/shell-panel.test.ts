@@ -172,7 +172,10 @@ test("the status bar shows branch, permission mode, model, context, cost and usa
 	assert.equal(chrome.rows.length, 1);
 	const row = stripAnsi(chrome.rows[0]!);
 	assert.equal(visibleWidth(row), 120);
-	assert.match(row, /^ feat\/shell-ide-rework ±3 │ SUPER-YOLO +claude-opus-5-5 · high │ ctx [▰▱]+ 27% │ \$0\.000 │ usage · alt\+u $/);
+	assert.match(row, /^ feat\/shell-ide-rework ±3 │ 💥 SUPER-YOLO +claude-opus-5-5 · high │ ctx [▰▱]+ 27% │ \$0\.000 │ usage · alt\+u $/);
+	const yolo = stripAnsi(renderShellStatusBar({ ...chromeModel, permission: { mode: "YOLO" } }, plain as never, 120, "alt+u").rows[0]!);
+	assert.match(yolo, /│ 🔥 YOLO /, "YOLO keeps its fire icon (#2890)");
+	assert.equal(visibleWidth(yolo), 120);
 	assert.equal((row.match(/SUPER-YOLO/g) ?? []).length, 1, "the permission mode appears once");
 	assert.ok(chrome.usageSpan && row.slice(chrome.usageSpan.start, chrome.usageSpan.end).startsWith("usage"), "the usage segment is the click target");
 	const normal = stripAnsi(renderShellStatusBar({ ...chromeModel, permission: { mode: "NORMAL" } }, plain as never, 120, "alt+u").rows[0]!);
@@ -188,7 +191,7 @@ test("a narrow status bar drops usage before the model and keeps the branch", ()
 	const tighter = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 70, "alt+u").rows[0]!);
 	assert.equal(visibleWidth(tighter), 70);
 	assert.doesNotMatch(tighter, /claude-opus/, "then the model");
-	assert.match(tighter, /feat\/shell-ide-rework ±3 │ SUPER-YOLO +ctx [▰▱]+ 27% │ \$0\.000 $/, "branch, mode, context and cost stay");
+	assert.match(tighter, /feat\/shell-ide-rework ±3 │ 💥 SUPER-YOLO +ctx [▰▱]+ 27% │ \$0\.000 $/, "branch, mode, context and cost stay");
 	const hidden = stripAnsi(renderShellStatusBar(chromeModel, plain as never, 120, "alt+u", { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: false, modelDetails: false, contextWarning: true, stats: false } }).rows[0]!);
 	assert.doesNotMatch(hidden, /claude-opus|ctx|\$0\.000|usage/, "the visibility toggles hide model, context, cost and usage");
 });
@@ -298,7 +301,7 @@ test("a long branch gives way before the context and cost in a phone-width statu
 	const row = stripAnsi(renderShellStatusBar(longBranch, plain as never, 56, "alt+u", narrowSettings).rows[0]!);
 	assert.equal(visibleWidth(row), 56);
 	assert.match(row, /ctx [▰▱]+ 27% │ \$0\.000 $/, "context and cost stay");
-	assert.match(row, /^ feat\/shell-\S*… │ SUPER-YOLO /, "the branch is clipped and the permission mode stays");
+	assert.match(row, /^ feat\/shell\S*… │ 💥 SUPER-YOLO /, "the branch is clipped and the permission mode stays");
 });
 
 test("the rail Status sections are click targets: headers collapse them and the Changes row opens /gentle:changes", () => {
@@ -329,4 +332,13 @@ test("the work row and the sheet's esc back show they are clickable", () => {
 	assert.equal(panelSheetBackHit(30, 25, 0), true, "a click on esc back closes the sheet");
 	assert.equal(panelSheetBackHit(30, 5, 0), false);
 	assert.equal(panelSheetBackHit(30, 25, 1), false, "only the title row carries the control");
+});
+
+test("minimal density drops the rail's key hints row; compact keeps it", () => {
+	const visibility = { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
+	const hints = "alt+u usage · / commands";
+	const compact = renderShellStatusSections(chromeModel, plain as never, 48, { density: "compact", visibility }, hints, {}).lines.map(stripAnsi).join("\n");
+	const minimal = renderShellStatusSections(chromeModel, plain as never, 48, { density: "minimal", visibility }, hints, {}).lines.map(stripAnsi).join("\n");
+	assert.match(compact, /alt\+u usage/);
+	assert.doesNotMatch(minimal, /alt\+u usage/);
 });

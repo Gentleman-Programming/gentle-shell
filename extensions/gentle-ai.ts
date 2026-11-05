@@ -6222,14 +6222,18 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 		// An unsaved or in-memory branch reads as indeterminate; without any profile
 		// record on the branch it was never selected, so nothing is written.
 		const selectedBefore = ctx.sessionManager.getBranch().some((entry) => isSessionProfileFamilyEntry(entry));
+		const notifyAlreadyThere = (label: string | undefined) =>
+			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
 		if (prior.status === "absent" || (prior.status === "indeterminate" && !selectedBefore)) {
-			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
+			// Never selected but started here: the session is on its startup state.
+			const ownStartup = profileFollowEnabled() ? undefined : readSessionProfileOwnStartup(sessionId);
+			if (ownStartup !== undefined) notifyAlreadyThere(ownStartup === "none" ? undefined : sessionProfileLabel({ kind: "inherited", profile: ownStartup }));
+			else ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
 			return true;
 		}
 		const startupOrigin = prior.status === "bound" && prior.binding.origin !== "user" ? prior.binding.origin : undefined;
 		if (!profileFollowEnabled() && (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none"))) {
-			const label = prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined;
-			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
+			notifyAlreadyThere(prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined);
 			return true;
 		}
 		if (prior.status === "cleared" && prior.startup !== "none") {

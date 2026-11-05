@@ -17,7 +17,9 @@ function fixture(t: test.TestContext) {
 	let user = "S-1-5-21-1-2-3-1001";
 	let identityFailure = "";
 	let replacedMarker = false;
-	const probes = { user: 0, administrator: 0, owner: [] as string[], dacl: [] as string[], enforce: [] as string[] };
+	let whoamiUser: string | undefined;
+	let foreignPath: string | undefined;
+	const probes = { user: 0, whoami: 0, administrator: 0, owner: [] as string[], dacl: [] as string[], enforce: [] as string[], sddl: [] as string[] };
 	const native = fs.realpathSync.native;
 	t.mock.method(fs.realpathSync, "native", (path: string) =>
 		path.startsWith("\\\\?\\GLOBALROOT\\SystemRoot\\System32") ? path : native(path));
@@ -25,15 +27,8 @@ function fixture(t: test.TestContext) {
 		const name = command.split(/[\\/]/).at(-1);
 		if (name === "whoami.exe") {
 			probes.user++;
-			return identityFailure === "user" ? "unavailable" : user;
-		}
-		if (name === "icacls.exe") {
-			probes.dacl.push(args[0]);
-			const directory = fs.lstatSync(args[0]).isDirectory();
-			const flags = directory ? "OICI" : "ID";
-			const dacl = `D:${directory ? "P" : ""}(A;${flags};FA;;;${user})(A;${flags};FA;;;SY)(A;${flags};FA;;;BA)`;
-			fs.writeFileSync(join(options.cwd, args[2]), dacl, "utf16le");
-			return "";
+			probes.whoami++;
+			return identityFailure === "user" ? "unavailable" : whoamiUser ?? user;
 		}
 		if (name === "powershell.exe") {
 			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
@@ -47,21 +42,18 @@ function fixture(t: test.TestContext) {
 					probes.owner.push(request.path); probes.dacl.push(request.path);
 					const directory = request.kind === "directory";
 					const flags = directory ? "OICI" : "ID";
-					return { index, owner: replacedMarker && request.path.endsWith(".owner.json") ? "S-1-5-21-9-8-7-1002" : user,
+					return { index, owner: (replacedMarker && request.path.endsWith(".owner.json")) || request.path === foreignPath ? "S-1-5-21-9-8-7-1002" : user,
 						dacl: `D:${directory ? "P" : ""}(A;${flags};FA;;;${user})(A;${flags};FA;;;SY)(A;${flags};FA;;;BA)` };
 				}) });
 			}
-			if (script.includes("RawSecurityDescriptor")) {
-				probes.administrator++;
-				return identityFailure === "administrator" ? "unavailable" : "S-1-5-21-1-2-3-500";
-			}
 			if (script.includes("SetAccessControl")) {
 				probes.enforce.push(options.env.GENTLE_PI_CANDIDATE_ACL_PATH);
+				probes.sddl.push(options.env.GENTLE_PI_CANDIDATE_ACL_SDDL);
 				return "";
 			}
 			const path = options.env.GENTLE_PI_CANDIDATE_OWNER_PATH;
 			probes.owner.push(path);
-			return replacedMarker && path.endsWith(".owner.json") ? "S-1-5-21-9-8-7-1002" : user;
+			return (replacedMarker && path.endsWith(".owner.json")) || path === foreignPath ? "S-1-5-21-9-8-7-1002" : user;
 		}
 		throw new Error(`Unexpected subprocess: ${name}`);
 	});
@@ -74,6 +66,8 @@ function fixture(t: test.TestContext) {
 	return { commonDir, parent, boundary, probes,
 		changeUser: () => { user = "S-1-5-21-4-5-6-1002"; },
 		failIdentity: (kind: string) => { identityFailure = kind; },
+		disagreeWhoami: () => { whoamiUser = "S-1-5-21-7-7-7-1003"; },
+		foreignOwner: (path: string) => { foreignPath = path; },
 		replaceMarker: () => { replacedMarker = true; } };
 }
 
@@ -98,11 +92,39 @@ test("Windows creation refreshes identity at each boundary and preserves every f
 test("Windows preparation retains fresh pre-write and post-write owner/DACL checks", (t) => {
 	const f = fixture(t);
 	assert.equal(prepareCandidateOwnerParent(f.commonDir, "win32"), f.parent);
-	assert.equal(f.probes.user, 4);
+	assert.equal(f.probes.user, 4, "one pre-write identity batch plus one fresh read-back per directory");
+	assert.equal(f.probes.whoami, 0);
 	assert.equal(f.probes.administrator, 4);
 	assert.deepEqual(f.probes.owner, [...f.boundary, ...f.boundary.flatMap(path => [path, path])]);
-	assert.deepEqual(f.probes.dacl, f.boundary);
+	// The pre-write batch observes the DACLs it is about to replace; only the
+	// read-back observations are validated as private.
+	assert.deepEqual(f.probes.dacl, [...f.boundary, ...f.boundary]);
 	assert.deepEqual(f.probes.enforce, f.boundary);
+});
+
+test("Windows preparation takes its identity from the probe that reads owners back", (t) => {
+	const f = fixture(t);
+	// whoami and the .NET token can only disagree in theory; preparation must
+	// not depend on a second identity source it never re-reads.
+	f.disagreeWhoami();
+	assert.equal(prepareCandidateOwnerParent(f.commonDir, "win32"), f.parent);
+	assert.equal(f.probes.whoami, 0);
+	assert.deepEqual(f.probes.enforce, f.boundary);
+	for (const sddl of f.probes.sddl) assert.match(sddl, /^D:P\(A;OICI;FA;;;S-1-5-21-1-2-3-1001\)/);
+});
+
+for (const index of [0, 1, 2]) test(`Windows preparation rejects a foreign owner at boundary ${index} before rewriting any DACL`, (t) => {
+	const f = fixture(t);
+	f.foreignOwner(f.boundary[index]!);
+	assert.throws(() => prepareCandidateOwnerParent(f.commonDir, "win32"), WindowsOwnerValidationError);
+	assert.deepEqual(f.probes.enforce, []);
+});
+
+for (const kind of ["user", "administrator"]) test(`Windows preparation fails closed on ${kind} identity failure before rewriting any DACL`, (t) => {
+	const f = fixture(t);
+	f.failIdentity(kind);
+	assert.throws(() => prepareCandidateOwnerParent(f.commonDir, "win32"), WindowsOwnerValidationError);
+	assert.deepEqual(f.probes.enforce, []);
 });
 
 for (const kind of ["user", "administrator"]) test(`Windows creation fails closed on fresh ${kind} identity failure`, (t) => {

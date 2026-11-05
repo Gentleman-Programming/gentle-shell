@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import { clampThinkingLevel, createModels, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import type { Provider } from "@earendil-works/pi-ai";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, createModels, getSupportedThinkingLevels, InMemoryCredentialStore, normalizeContext } from "@earendil-works/pi-ai";
+import type { Provider } from "@earendil-works/pi-ai";
 import nanProviderExtension from "../extensions/nan-provider.ts";
 import { createNanProviderConfig as createNativeProvider, isNanAdaptiveReasoningModel, NAN_PROVIDER_BASE_URL, NAN_PROVIDER_ID } from "../lib/nan-provider.ts";
 
@@ -30,6 +35,39 @@ function jsonResponse(body: unknown, status = 200): Response {
 		status,
 		headers: { "content-type": "application/json" },
 	});
+}
+
+async function captureRequest(
+	provider: Provider,
+	modelId: string,
+	probe: {
+		maxTokens?: number;
+		mutate?: (model: ReturnType<Provider["getModels"]>[number]) => void;
+		native?: boolean;
+	} = {},
+): Promise<Record<string, unknown>> {
+	const model = provider.getModels().find((candidate) => candidate.id === modelId);
+	assert.ok(model);
+	assert.equal(model.api, "openai-completions");
+	probe.mutate?.(model);
+	let body: Record<string, unknown> | undefined;
+	const context = { messages: [{ role: "user" as const, content: "offline probe", timestamp: 0 }] };
+	const options = {
+		apiKey: "synthetic-key", reasoning: "minimal" as const, maxTokens: probe.maxTokens,
+		fetch: async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			assert.equal(String(input), `${NAN_PROVIDER_BASE_URL}/chat/completions`);
+			body = JSON.parse(String(init?.body));
+			return new Response('data: {"id":"offline","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+				headers: { "content-type": "text/event-stream" },
+			});
+		},
+	};
+	const result = probe.native
+		? await provider.streamSimple!(model, normalizeContext(context), options).result()
+		: await completeSimple(model, context, options);
+	assert.equal(result.stopReason, "stop", result.errorMessage);
+	assert.ok(body);
+	return body;
 }
 
 function refreshContext(credential?: RefreshModelsContext["credential"]): RefreshModelsContext {
@@ -197,38 +235,60 @@ test("initial catalog contains all seven documented chat models with configured 
 });
 
 test("only NaN DeepSeek serializes its unchanged output cap as max_tokens", async () => {
-	const models = createNativeProvider().getModels();
+	const provider = createNativeProvider();
+	const models = provider.getModels();
 	const model = models.find((model) => model.id === "deepseek-v4-flash")!;
-	let body: Record<string, unknown> | undefined;
-	const result = await completeSimple(model, { messages: [{ role: "user", content: "offline probe", timestamp: 0 }] }, {
-		apiKey: "synthetic-key", reasoning: "minimal",
-		fetch: async (input, init) => {
-			assert.equal(String(input), `${NAN_PROVIDER_BASE_URL}/chat/completions`);
-			body = JSON.parse(String(init?.body));
-			return new Response('data: {"id":"offline","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
-				headers: { "content-type": "text/event-stream" },
-			});
-		},
-	});
-	assert.equal(result.stopReason, "stop");
-	assert.equal(body?.max_tokens, 131_072);
-	assert.ok(!Object.hasOwn(body!, "max_completion_tokens"));
-	assert.equal(body?.reasoning_effort, "minimal");
+	const body = await captureRequest(provider, model.id);
+	assert.equal(body.max_tokens, 131_072);
+	assert.ok(!Object.hasOwn(body, "max_completion_tokens"));
+	assert.equal(body.reasoning_effort, "minimal");
 	assert.equal(model.maxTokens, 131_072);
-	assert.equal(model.compat?.maxTokensField, "max_tokens");
 	assert.ok(models.filter((candidate) => candidate.id !== model.id).every((candidate) => candidate.compat === undefined));
+	const ordinary = await captureRequest(provider, "glm5.3");
+	assert.equal(ordinary.max_completion_tokens, 32_768);
+	assert.ok(!Object.hasOwn(ordinary, "max_tokens"));
+	const custom = await captureRequest(provider, model.id, { maxTokens: 4_096 });
+	assert.equal(custom.max_tokens, 4_096);
+	assert.ok(!Object.hasOwn(custom, "max_completion_tokens"));
 });
 
 test("DeepSeek compat is isolated across snapshots, providers, and live refreshes", async () => {
 	const provider = createNativeProvider({ fetchImpl: async () => jsonResponse({ data: [{ id: "deepseek-v4-flash" }] }) });
 	for (const live of [false, true]) {
 		if (live) await provider.refreshModels!(refreshContext({ type: "api_key", key: "synthetic-key" }));
-		const model = provider.getModels().find((model) => model.id === "deepseek-v4-flash")!;
-		assert.equal(model.compat?.maxTokensField, "max_tokens");
-		model.compat!.maxTokensField = "max_completion_tokens";
-		assert.equal(provider.getModels().find((candidate) => candidate.id === model.id)!.compat?.maxTokensField, "max_tokens");
-		assert.equal(createNativeProvider().getModels().find((model) => model.id === "deepseek-v4-flash")!.compat?.maxTokensField, "max_tokens");
+		const mutated = await captureRequest(provider, "deepseek-v4-flash", { mutate(model) {
+			assert.ok(model.compat && typeof model.compat === "object");
+			Reflect.set(model.compat, "maxTokensField", "max_completion_tokens");
+		} });
+		assert.equal(mutated.max_completion_tokens, 131_072);
+		assert.ok(!Object.hasOwn(mutated, "max_tokens"));
+		for (const fresh of [provider, createNativeProvider()]) {
+			const body = await captureRequest(fresh, "deepseek-v4-flash");
+			assert.equal(body.max_tokens, 131_072);
+			assert.ok(!Object.hasOwn(body, "max_completion_tokens"));
+		}
 	}
+});
+
+test("SDK extension loader streams native NaN requests with the host-owned API factory", async (t) => {
+	const fixture = mkdtempSync(join(tmpdir(), "nan-native-loader-"));
+	t.after(() => rmSync(fixture, { recursive: true, force: true }));
+	const project = join(fixture, "project");
+	const agent = join(fixture, "agent");
+	mkdirSync(project);
+	mkdirSync(agent);
+	const loaded = await discoverAndLoadExtensions([
+		fileURLToPath(new URL("../extensions/nan-provider.ts", import.meta.url)),
+	], project, agent);
+	assert.deepEqual(loaded.errors, []);
+	const provider = loaded.runtime.pendingNativeProviderRegistrations.find(({ provider }) => provider.id === NAN_PROVIDER_ID)?.provider;
+	assert.ok(provider);
+	const deepseek = await captureRequest(provider, "deepseek-v4-flash", { native: true });
+	assert.equal(deepseek.max_tokens, 131_072);
+	assert.ok(!Object.hasOwn(deepseek, "max_completion_tokens"));
+	const ordinary = await captureRequest(provider, "glm5.3", { native: true });
+	assert.equal(ordinary.max_completion_tokens, 32_768);
+	assert.ok(!Object.hasOwn(ordinary, "max_tokens"));
 });
 
 test("GLM models expose exactly NaN's four efforts and no off", () => {
@@ -280,17 +340,17 @@ test("thinking maps are isolated across snapshots, providers, and live catalog r
 	});
 	const baseline = provider.getModels();
 	for (const model of provider.getModels()) {
-		assert.ok(model.thinkingLevelMap);
-		model.thinkingLevelMap.off = "mutated";
-		model.thinkingLevelMap.medium = null;
+		assert.ok(model.thinkingLevelMap && typeof model.thinkingLevelMap === "object");
+		Reflect.set(model.thinkingLevelMap, "off", "mutated");
+		Reflect.set(model.thinkingLevelMap, "medium", null);
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	assert.deepEqual(createNativeProvider().getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));
 	assert.deepEqual(provider.getModels(), baseline);
 	for (const model of provider.getModels()) {
-		assert.ok(model.thinkingLevelMap);
-		model.thinkingLevelMap.xhigh = "mutated";
+		assert.ok(model.thinkingLevelMap && typeof model.thinkingLevelMap === "object");
+		Reflect.set(model.thinkingLevelMap, "xhigh", "mutated");
 	}
 	assert.deepEqual(provider.getModels(), baseline);
 	await provider.refreshModels!(refreshContext({ type: "api_key", key: "map-key" }));

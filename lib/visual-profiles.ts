@@ -3,7 +3,7 @@ import { constants as fsConstants, closeSync, fstatSync, lstatSync, mkdirSync, o
 import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { ANIMATION_POLICY, type AnimationPolicy } from "./animation-policy.ts";
-import { isVisualSettings, normalizeVisualSettings, type VisualSettings } from "./visual-customization-policy.ts";
+import { isVisualSettings, normalizeVisualSettings, storedVisualSettings, type VisualSettings } from "./visual-customization-policy.ts";
 import type { BannerConfig } from "../extensions/startup-banner.ts";
 
 export const VISUAL_PROFILES_SCHEMA = "gentle-pi.visual-profiles/v1";
@@ -155,7 +155,7 @@ function existing(options: Options): VisualProfile[] {
 function write(profiles: VisualProfile[], options: Options): string {
 	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
 	const path = join(home, "visual-profiles.json");
-	const data = `${JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles })}\n`;
+	const data = `${JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: profiles.map((profile) => ({ ...profile, visual: storedVisualSettings(profile.visual) })) })}\n`;
 	if (Buffer.byteLength(data) > MAX_BYTES) {
 		throw new RangeError("Visual profiles exceed 256 KB.");
 	}

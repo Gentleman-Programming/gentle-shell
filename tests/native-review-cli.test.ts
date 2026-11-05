@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -431,26 +432,49 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 	next_action: "correct_request", cause: "flag provided but not defined: -lenses",
 };
 
-test("START preserves the explicit request file in STATUS and the provider-issued START", async () => {
-	const path = "/repo/spec with spaces.md";
-	const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`, "--projection=workspace", "--agent=pi", "--consent=relay", `--request-context=${path}`];
-	const queue = queuedAdapter([
-		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
-		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
-	]);
-	await client(queue.adapter).start({ cwd: "/repo", requestContextPath: path });
-	assert.deepEqual(queue.calls[0].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
-	assert.deepEqual(queue.calls[1].arguments, ["review", "start", ...tokens]);
+function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"]) {
+ const executable = join(process.cwd(), "package.json"); // Adapter fixture: never executed.
+ const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
+ const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
+ return { ...queue, client: new NativeReviewCliV216(queue.adapter, executable) };
+}
+
+test("START discovers capabilities before forwarding the explicit request file unchanged", async () => {
+ const path = "/repo/spec with spaces.md";
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+  { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+ ]);
+ await host.client.start({ cwd: "/repo", requestContextPath: path });
+ assert.deepEqual(host.calls[0].arguments, ["review", "capabilities", "--contract", "gentle-ai.review-integration/v2"]);
+ assert.deepEqual(host.calls[1].arguments.slice(-3), ["--request-context", path, "--next-transition"]);
+ assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
 });
 
-test("START never drops request context for an older provider or a malformed transition", async () => {
-	const refusal = { ...LENS_SELECTION_UNSUPPORTED_FAILURE, cause: "flag provided but not defined: -request-context" };
-	const older = queuedAdapter([{ stdout: JSON.stringify(refusal), exitCode: 1 }]);
-	await assert.rejects(client(older.adapter).start({ cwd: "/repo", requestContextPath: "/spec.md", lenses: ["review-risk"], lensesReason: "why" }), NativeReviewIntegrationError);
-	assert.equal(older.calls.length, 1);
-	const dropped = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
-	await assert.rejects(client(dropped.adapter).start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
-	assert.equal(dropped.calls.length, 1);
+test("request context refuses absent or unsupported advertised capabilities before STATUS or START", async () => {
+ for (const features of [[], ["start_request_context"], ["start_options_preflight"]]) {
+  const host = contextClient([], features);
+  await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+  assert.equal(host.calls.length, 1);
+ }
+ const host = contextClient([]);
+ const adapter: ExecFileAdapter = async request => {
+  const response = await host.adapter(request);
+  const body = JSON.parse(response.stdout);
+  body.features.optional.find((f: { name: string }) => f.name === "start_request_context").supported = false;
+  return { ...response, stdout: JSON.stringify(body) };
+ };
+ await assert.rejects(new NativeReviewCliV216(adapter, join(process.cwd(), "package.json")).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
+ assert.equal(host.calls.length, 1);
+});
+
+test("START never drops requested context from a malformed provider transition", async () => {
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: "/spec.md" }), /did not retain the requested context/);
+ assert.equal(host.calls.length, 2);
 });
 
 test("invalid request context paths are refused before any native invocation", async () => {

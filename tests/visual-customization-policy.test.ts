@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, isVisualSettings, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, visualPresetOf, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
+import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, isVisualSettings, parseVisualSettingsFile, resolveVisualSettings, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, visualPresetOf, writeVisualSettings, VISUAL_SCHEMA } from "../lib/visual-customization-policy.ts";
 
 test("missing settings use responsive defaults and return independent copies", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
@@ -127,7 +127,8 @@ test("atomic write round trips and invalid existing files fall back without over
 		assert.equal(path, join(home, "visual-customization.json"));
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
 		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, settings);
-		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VISUAL_SCHEMA, ...settings });
+		const { surface: _surface, ...stored } = settings;
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VISUAL_SCHEMA, ...stored }, "the tinted default is not stored");
 		const validFile = readFileSync(path, "utf8");
 		assert.throws(() => writeVisualSettings({ ...settings, density: "bad" as typeof settings.density }, { gentlePiConfigHome: home }));
 		assert.equal(readFileSync(path, "utf8"), validFile);
@@ -190,4 +191,25 @@ test("Power user keeps Neutral's spacing and adds Stats; Neutral and Light leave
 	assert.equal(visualPresetOf(DEFAULT_VISUAL_SETTINGS), VISUAL_PRESET.NEUTRAL);
 	assert.equal(applyVisualPreset(power, VISUAL_PRESET.NEUTRAL).visibility.stats, false);
 	assert.equal(applyVisualPreset(power, VISUAL_PRESET.LIGHT).visibility.stats, false);
+});
+
+test("the chrome surface defaults to tinted, is stored only when transparent, and older files read as tinted", () => {
+	assert.equal(DEFAULT_VISUAL_SETTINGS.surface, CHROME_SURFACE.TINTED);
+	const home = mkdtempSync(join(tmpdir(), "visual-surface-"));
+	try {
+		const file = join(home, "visual-customization.json");
+		writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { gentlePiConfigHome: home });
+		assert.equal(Object.hasOwn(JSON.parse(readFileSync(file, "utf8")), "surface"), false, "tinted keeps the file readable by older versions");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
+		const transparent = { ...DEFAULT_VISUAL_SETTINGS, surface: CHROME_SURFACE.TRANSPARENT };
+		writeVisualSettings(transparent, { gentlePiConfigHome: home });
+		assert.equal(JSON.parse(readFileSync(file, "utf8")).surface, "transparent");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, transparent);
+		assert.equal(visualPresetOf(transparent), VISUAL_PRESET.NEUTRAL, "presets ignore the surface");
+		assert.equal(applyVisualPreset(transparent, VISUAL_PRESET.POWER_USER).surface, CHROME_SURFACE.TRANSPARENT, "a preset keeps the surface");
+		const { surface: _surface, ...legacy } = DEFAULT_VISUAL_SETTINGS;
+		assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...legacy })), DEFAULT_VISUAL_SETTINGS);
+		assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, surface: "glass" })), undefined);
+		assert.equal(isVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }), true);
+	} finally { rmSync(home, { recursive: true, force: true }); }
 });

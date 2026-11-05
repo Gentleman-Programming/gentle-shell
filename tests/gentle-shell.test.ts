@@ -41,6 +41,7 @@ import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
+import { SUPER_YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -639,7 +640,7 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		publish("shell-session", [{ id: "job-2", label: "Fresh tail", startedAt: 1, status: "exited", endedAt: Date.now(), exitCode: 0 }]);
 		tui.terminal.columns = 80;
 		assert.match(jobs.render(46).join("\n"), /Fresh tail/, "the finished tail still paints the card");
-		assert.doesNotMatch(statusbar.render(80).join("\n"), /⧗ 1 job/, "the compact count is running-only");
+		assert.doesNotMatch(header.render(80).join("\n"), /⧗ 1 job/, "the compact count is running-only");
 		tui.terminal.columns = 160;
 		publish("shell-session", [{ id: "job-0", label: "Stale tail", startedAt: 1, status: "exited", endedAt: 5, exitCode: 0 }]);
 		assert.doesNotMatch(jobs.render(46).join("\n"), /Stale tail/, "a finished job past the TTL paints nothing");
@@ -651,14 +652,15 @@ test("jobs snapshots feed their own rail card, keep one compact fallback, and re
 		state.active = false;
 		tui.terminal.columns = 80;
 		publish("shell-session", [{ id: "job-1", label: "CI for PR 1860", startedAt: 1 }]);
-		assert.match(statusbar.render(80).join("\n"), /1 job/, "the mobile status bar preserves the count of a running job");
+		assert.match(header.render(80).join("\n"), /1 job/, "the mobile top bar preserves the count of a running job");
+		assert.deepEqual(statusbar.render(80), [], "mobile top does not duplicate the jobs count below the input");
 		const before = jobs.render(46).join("\n");
 		publish("foreign", []);
 		publish("shell-session", [{ label: "invalid" }]);
 		assert.equal(jobs.render(46).join("\n"), before);
 		publish("shell-session", []);
 		assert.doesNotMatch(jobs.render(46).join("\n"), /Jobs|CI for PR/);
-		assert.doesNotMatch(statusbar.render(80).join("\n"), /1 job/);
+		assert.doesNotMatch(header.render(80).join("\n"), /1 job/);
 		publish("shell-session", [{ id: "job-2", label: "Build runtime", startedAt: 2 }]);
 		await fire(handlers, "session_start", ctx);
 		assert.doesNotMatch(state.parts.get("jobs")!.render(46).join("\n"), /Build runtime/);
@@ -7077,6 +7079,179 @@ test("pasted image chips warn instead of sending images a text-only model reject
 	assert.ok(ui.notices.some((notice) => /1 pasted image was not sent: the current model does not accept images/.test(notice)));
 });
 
+async function mobilePlacementFixture(t: TestContext, headerPlacement: "top" | "split" | "below-input", statusPlacement: "auto" | "bottom" | "hidden", columns: number, density: "comfortable" | "compact" | "minimal" = "compact") {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement, statusPlacement, density }, { gentlePiConfigHome: home });
+	const { pi, handlers, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
+	const { ctx, ui, overlayReady } = fakeContext();
+	(ctx.model as unknown as { provider: string }).provider = "test";
+	await fire(handlers, "session_start", ctx);
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	const root = { render: () => ["conversation"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+	const tui = { mode: "fullscreen", terminal: { rows: 32, columns }, layoutRoot: root, requestRender() {} };
+	const statuses = new Map([["gentle:mode", "Permissions: SUPER-YOLO"], ["gentle:yolo", SUPER_YOLO_STATUS_TEXT]]);
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void })(tui, plainTheme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	const editor = (ui.editorFactory as (tui: unknown, theme: unknown, keybindings: unknown) => GentlePromptEditor)(tui, editorTheme, fakeKeybindings);
+	t.after(async () => { editor.dispose(); footer.dispose(); await fire(handlers, "session_shutdown", ctx); });
+	root[node]();
+	const state = sidebarState(tui as unknown as TUI);
+	const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => SidebarRail)();
+	const banner = (yoloBannerContent("tui", SUPER_YOLO_STATUS_TEXT) as (tui: TUI) => { render(width: number): string[] })(tui as unknown as TUI);
+	const layoutRows = () => {
+		const layout = root[node]() as unknown as { entries?: Array<{ component: { render(width: number): string[] } }> };
+		return (layout.entries ?? []).map(({ component }) => component.render(columns).map(stripAnsi).join("\n"));
+	};
+	return { tui, ui, ctx, commands, overlayReady, footer, editor, state, widget, banner, layoutRows };
+}
+
+async function checkMobilePanel(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, width: number) {
+	const rows = f.editor.render(width).map(stripAnsi);
+	assert.match(rows[0]!, /^─ ✿ waiting for input/, "mobile uses the titled-rule editor");
+	assert.match(rows[1]!, /^› /, "the input keeps its modern prompt");
+	const x = rows[0]!.indexOf("[ Panel ]");
+	assert.ok(x >= 0, "the Panel control is visible without live work");
+	const click = () => f.editor.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width, height: rows.length, shift: false, alt: false, ctrl: false });
+	const before = f.ui.customOptions!.length;
+	assert.equal(click()?.handled, true);
+	assert.match(stripAnsi(f.ui.overlayView!.render(width)[0]!), /^ ✿ Panel/, "the control opens the existing sheet");
+	f.ui.overlayView!.handleInput("\x1b");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(click()?.handled, true);
+	assert.equal(f.ui.customOptions!.length, before + 2, "after closing, Panel opens a fresh sheet");
+	f.ui.overlayView!.handleInput("\x1b");
+	await new Promise((resolve) => setImmediate(resolve));
+}
+
+function checkMobileBar(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, rows: string[], width: number) {
+	const text = rows.map(stripAnsi).join("\n");
+	assert.match(text, /main/);
+	assert.match(text, /💥 SUPER-YOLO/);
+	assert.match(text, /ctx/);
+	assert.match(text, /\$0\.000 sub/);
+	assert.deepEqual(f.banner.render(width), [], "the bar, not a duplicate YOLO banner, owns the permission indicator");
+	assert.ok(rows.every((row) => visibleWidth(row) <= width));
+	return text;
+}
+
+function checkMobileUsageClick(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, part: SidebarRail, width: number) {
+	const rows = part.render(width).map(stripAnsi);
+	const y = rows.findIndex((row) => row.includes("usage"));
+	assert.ok(y >= 0, "usage remains visible at this width");
+	const x = visibleWidth(rows[y]!.slice(0, rows[y]!.indexOf("usage")));
+	const click = (cx: number, cy: number): TuiMouseEvent => ({ type: "click", button: "left", x: cx, y: cy, screenX: cx, screenY: cy, width, height: rows.length, shift: false, alt: false, ctrl: false });
+	assert.equal(part.handleMouse?.(click(width - 1, y)), undefined, "the trailing edge is not a usage target");
+	assert.equal(part.handleMouse?.(click(x, y + 1)), undefined, "another row is not a usage target");
+	const before = f.ui.customOptions!.length;
+	assert.equal(part.handleMouse?.(click(x, y))?.handled, true, "the rendered usage segment opens Usage");
+	assert.equal(f.ui.customOptions!.length, before + 1);
+	f.ui.closeOverlay?.();
+}
+
+test("mobile top is one upper status bar while split retains title and lower status", async (t) => {
+	for (const width of [80, 120]) for (const status of ["auto", "bottom", "hidden"] as const) {
+		const density = status === "auto" ? "comfortable" : status === "hidden" ? "minimal" : "compact";
+		const top = await mobilePlacementFixture(t, "top", status, width, density);
+		const topRows = top.state.parts.get("header")!.render(width);
+		const topText = checkMobileBar(top, topRows, width);
+		assert.equal(topRows.length, density === "comfortable" ? 3 : 1, "density controls only the bar's margins");
+		assert.match(topText, /gpt-5\.5 · medium/, "the single bar owns the model when it fits");
+		if (width === 120) assert.match(topText, /✿ repo/, "the single bar keeps project identity when it fits");
+		assert.deepEqual(top.state.parts.get("statusbar")!.render(width), [], "top has no lower status bar");
+		assert.match(top.layoutRows()[0]!, /SUPER-YOLO/, "the mounted top bar is above the conversation");
+		assert.equal(top.layoutRows().length, 2, "the mounted layout has no lower bar");
+		assert.deepEqual(top.widget.render(width), []);
+		assert.deepEqual(top.footer.render(width), []);
+		if (width === 120) checkMobileUsageClick(top, top.state.parts.get("header")!, width);
+		await checkMobilePanel(top, width);
+		const split = await mobilePlacementFixture(t, "split", status, width, density);
+		const title = split.state.parts.get("header")!.render(width).map(stripAnsi).join("\n");
+		assert.match(title, /✿ repo/);
+		assert.match(title, /gpt-5\.5 · medium/);
+		const lower = checkMobileBar(split, split.state.parts.get("statusbar")!.render(width), width);
+		assert.doesNotMatch(lower, /gpt-5\.5|✿ repo/, "split never repeats title identity or model");
+		assert.match(split.layoutRows()[0]!, /✿ repo/);
+		assert.match(split.layoutRows().at(-1)!, /SUPER-YOLO/, "split mounts status below the conversation");
+		assert.deepEqual(split.widget.render(width), []);
+		assert.deepEqual(split.footer.render(width), []);
+		await checkMobilePanel(split, width);
+	}
+});
+
+test("mobile below-input keeps the modern Panel editor and one lower status bar", async (t) => {
+	for (const width of [80, 120]) for (const status of ["auto", "bottom", "hidden"] as const) {
+		const density = status === "auto" ? "comfortable" : status === "hidden" ? "minimal" : "compact";
+		const f = await mobilePlacementFixture(t, "below-input", status, width, density);
+		await checkMobilePanel(f, width);
+		const lower = [...f.state.parts.get("statusbar")!.render(width), ...f.widget.render(width), ...f.footer.render(width)];
+		const text = checkMobileBar(f, lower, width);
+		assert.equal(lower.length, density === "comfortable" ? 3 : 1, "density controls only the bar's margins");
+		assert.equal((text.match(/SUPER-YOLO/g) ?? []).length, 1, "exactly one lower bar paints the permission mode");
+		assert.match(text, /gpt-5\.5 · medium/);
+		if (width === 120) {
+			assert.match(text, /✿ repo/);
+			checkMobileUsageClick(f, f.state.parts.get("statusbar")!, width);
+		}
+		assert.match(f.layoutRows().at(-1)!, /SUPER-YOLO/, "below-input mounts its bar below the editor dock");
+		assert.equal(f.layoutRows().length, 2, "below-input does not mount a top header");
+	}
+});
+
+test("mobile placement changes move one bar live without losing Panel or duplicating permission", async (t) => {
+	const f = await mobilePlacementFixture(t, "top", "auto", 120);
+	const pending = f.commands.get("gentle:customize")!.handler("", f.ctx);
+	await f.overlayReady;
+	try {
+		for (const placement of ["split", "below-input", "top"] as const) {
+			await customizeAction(f.ui, `Header placement: ${placement}`);
+			const mounted = f.layoutRows();
+			assert.equal(mounted.length, placement === "split" ? 3 : 2);
+			assert.match(placement === "top" ? mounted[0]! : mounted.at(-1)!, /SUPER-YOLO/);
+			assert.equal((mounted.join("\n").match(/SUPER-YOLO/g) ?? []).length, 1);
+			assert.deepEqual(f.widget.render(120), []);
+			assert.deepEqual(f.footer.render(120), []);
+			assert.deepEqual(f.banner.render(120), []);
+			assert.match(stripAnsi(f.editor.render(120)[0]!), /\[ Panel \]/);
+		}
+	} finally {
+		f.ui.overlayView!.handleInput("\x1b");
+		await pending;
+	}
+});
+
+test("mobile below-input retains Changes when the chrome bar owns the footer", async (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeCardStyle(CARD_STYLE.FLOAT, { gentlePiConfigHome: home });
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input", surface: "tinted" }, { gentlePiConfigHome: home });
+	const { pi, handlers } = fakePi([{ numstat: "2\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }]);
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, { activeProfile: () => undefined });
+	const { ctx, ui } = fakeContext();
+	(ctx.model as unknown as { provider: string }).provider = "test";
+	await fire(handlers, "session_start", ctx);
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	const root = { render: () => [], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+	const tui = { mode: "fullscreen", terminal: { rows: 32, columns: 120 }, layoutRoot: root, requestRender() {} };
+	const theme = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m`, getBgAnsi: () => "\x1b[48;5;22m" };
+	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => SidebarRail & { dispose(): void })(tui, theme, {
+		getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
+	});
+	t.after(async () => { footer.dispose(); await fire(handlers, "session_shutdown", ctx); });
+	root[node]();
+	await fire(handlers, "agent_end", ctx);
+	await changesSettled();
+	const changes = (ui.widgets.get("gentle-shell-changes") as (tui: unknown, theme: ShellBarTheme) => SidebarRail)(tui, theme);
+	const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => SidebarRail)();
+	const status = sidebarState(tui as unknown as TUI).parts.get("statusbar")!;
+	const visible = [...changes.render(120), ...footer.render(120), ...widget.render(120), ...status.render(120)].map(stripAnsi).join("\n");
+	assert.match(visible, /1 file · \+2 −0/, "the uncommitted Changes remain visible");
+	assert.equal((visible.match(/1 file/g) ?? []).length, 1, "Changes have only one owner");
+	assert.match(visible, /ctx.*\$0\.000 sub/, "the lower chrome still carries the counters");
+});
+
 test("the installed editor draws the panel frame in the wide and mobile IDE chrome and the frame in regular mode", () => {
 	const previous = cardStyle();
 	const { pi, handlers } = fakePi();
@@ -7149,8 +7324,8 @@ test("mobile folds live work into one row above the editor that opens /gentle:pa
 		(ui.overlayView as unknown as { handleInput(data: string): void }).handleInput("\x1b");
 		editor.dispose();
 		const header = state.parts.get("header")!;
-		assert.match(stripAnsi(header.render(56).join("\n")), /^ ✿ repo .*· /, "the mobile title row carries the model");
-		assert.match(stripAnsi(state.parts.get("statusbar")!.render(56).join("\n")), /^ main/, "the mobile status bar leads with the branch");
+		assert.match(stripAnsi(header.render(56).join("\n")), /main.*ctx/, "the mobile top bar carries the branch and counters");
+		assert.deepEqual(state.parts.get("statusbar")!.render(56), [], "top has no separate lower bar");
 		void commands.get("gentle:panel")!.handler("", ctx);
 		await new Promise((resolve) => setImmediate(resolve));
 		const sheet = openPanelLines(ui);
@@ -7414,8 +7589,8 @@ test("Status at the bottom keeps Agents and Todos as cards and the chrome bars o
 			tui.terminal.columns = 120;
 			assert.equal(state.compactWork?.(), true, "below the rail breakpoint the minimal edition folds live work like a phone");
 			assert.deepEqual(todo.render(120), [], "the Todos card folds into the work row");
-			assert.match(stripAnsi(state.parts.get("header")!.render(120).join("\n")), /^ ✿ repo /, "the title row draws");
-			assert.match(stripAnsi(state.parts.get("statusbar")!.render(120).join("\n")), /^ main /, "the status bar draws");
+			assert.match(stripAnsi(state.parts.get("header")!.render(120).join("\n")), /✿ repo .*main .*ctx/, "the single top bar carries identity and status");
+			assert.deepEqual(state.parts.get("statusbar")!.render(120), [], "top has no separate lower bar");
 			assert.match(stripAnsi(editor.render(120)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
 		} finally {
 			editor.dispose();

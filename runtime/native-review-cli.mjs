@@ -166,6 +166,9 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 
 
 
+
+
+
 // Read-only risk assessment request (gentle-pi#662). `baseRef` requires
 // explicit `committedOnly` acknowledgement, exactly like Native START's
 // baseRef/committedOnly pairing, because both select a committed range
@@ -1477,6 +1480,16 @@ function decodeNativeReviewStatus(value         )                           {
 		raw: body,
 	};
 }
+function nativeReviewModeScopeArguments(operation                           , scope                                           )           {
+	if (scope !== undefined && scope !== NATIVE_REVIEW_MODE_SCOPE.CLONE && scope !== NATIVE_REVIEW_MODE_SCOPE.GLOBAL) {
+		throw new TypeError("Native review mode scope must be clone or global");
+	}
+	if (scope !== undefined && operation !== NATIVE_REVIEW_MODE_OPERATION.ENABLE && operation !== NATIVE_REVIEW_MODE_OPERATION.DISABLE) {
+		throw new TypeError("Native review mode scope is only valid for enable or disable");
+	}
+	return operation === NATIVE_REVIEW_MODE_OPERATION.STATUS ? [] : ["--scope", scope ?? NATIVE_REVIEW_MODE_SCOPE.CLONE];
+}
+
 function isWindowsRepositoryPath(value        )          { return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value); }
 export function normalizeNativeReviewCwd(value        , platform                  = process.platform)         {
 	if (platform !== "win32") return value;
@@ -1668,22 +1681,21 @@ class NativeReviewPlainCli {
 		return status;
 	}
 
-	// Dark until the negotiated version reports `mode: true` (Design Decision
-	// #7, organic-rdd-parity). `status` is read-only (no timeout suppression,
-	// exact fixed argv per the design's data flow); `enable`/`disable` mutate
-	// and always pass `--scope clone` so Pi's own kill-switch command surface
-	// never mutates the operator's global gentle-ai state across other clones.
+	// Status stays read-only; mutation defaults to clone unless the caller
+	// explicitly supplies global. Validate scope before cwd or process access.
 	async reviewMode(request                         )                                  {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const { body } = await this.execute(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(body, operation));
 	}
 
 	async reclaim(request                            )                                      {
@@ -2641,17 +2653,19 @@ export class NativeReviewCliV216                            {
 	}
 
 	async reviewMode(request                         )                                  {
+		const operation = request.operation;
+		const scopeArguments = nativeReviewModeScopeArguments(operation, request.scope);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
-		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const mutating = operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.MODE,
 			cwd,
-			["review", "mode", request.operation, "--cwd", cwd, ...(mutating ? ["--scope", "clone"] : []), "--json"],
+			["review", "mode", operation, "--cwd", cwd, ...scopeArguments, "--json"],
 			mutating,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.MODE, mutating),
 		);
-		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, request.operation));
+		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, operation));
 	}
 
 	// Read-only risk assessment (gentle-ai#4295, gentle-pi#662). Never mutates;

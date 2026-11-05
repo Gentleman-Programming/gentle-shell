@@ -566,7 +566,7 @@ export interface NativeStartRequest extends NativeUntrackedSelectionRequest, Nat
 }
 export const NATIVE_REVIEW_CONSENT_ANSWER = { GRANTED: "granted", DECLINED: "declined" } as const;
 export type NativeReviewConsentAnswer = (typeof NATIVE_REVIEW_CONSENT_ANSWER)[keyof typeof NATIVE_REVIEW_CONSENT_ANSWER];
-export interface NativeReviewConsentAnswerRequest { cwd: string; consent: ReviewConsentEnvelope; answer: NativeReviewConsentAnswer; signal?: AbortSignal; }
+export interface NativeReviewConsentAnswerRequest extends NativeRequestContextSelection { cwd: string; consent: ReviewConsentEnvelope; answer: NativeReviewConsentAnswer; signal?: AbortSignal; }
 export interface NativeReviewConsentDeclinedResult {
 	kind: "declined";
 	targetIdentity: string;
@@ -1943,12 +1943,14 @@ export class NativeReviewIntegrationError extends Error {
 // answer only through one of the exact invocations carried by the envelope.
 export class NativeReviewConsentRequiredError extends Error {
 	readonly consent: ReviewConsentEnvelope;
+	readonly requestContextPath?: string;
 	readonly launchAttempted = true;
 	readonly mutationOutcome = "none";
-	constructor(consent: ReviewConsentEnvelope) {
+	constructor(consent: ReviewConsentEnvelope, requestContextPath?: string) {
 		super(consent.headline);
 		this.name = "NativeReviewConsentRequiredError";
 		this.consent = consent;
+		this.requestContextPath = requestContextPath;
 	}
 }
 
@@ -2079,6 +2081,10 @@ function consentInvocationArguments(request: NativeReviewConsentAnswerRequest): 
 	const words = splitNativeConsentInvocation(choice.invocation);
 	if (words[0] !== "gentle-ai" || words[1] !== "review" || words[2] !== "start") throw new NativeReviewConsentBindingError("consent-invocation-not-start", "Native consent invocation is not a provider review START");
 	const arguments_ = words.slice(1);
+	if (request.requestContextPath !== undefined) {
+		const values = arguments_.flatMap((token, index) => token === "--request-context" ? [arguments_[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
+		if (values.length !== 1 || values[0] !== request.requestContextPath) throw new NativeReviewConsentBindingError("consent-invocation-request-context-changed", "Native consent invocation did not retain the requested context file");
+	}
 	if (exactConsentOption(arguments_, "--contract") !== REVIEW_INTEGRATION_CONTRACT) throw new NativeReviewConsentBindingError("consent-invocation-contract-changed", "Native consent invocation contract changed");
 	const providerCwd = exactConsentOption(arguments_, "--cwd");
 	const requestedCwd = normalizeNativeReviewCwd(request.cwd);
@@ -2337,7 +2343,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 				return decoded;
 			});
 			if (consent.targetIdentity !== targetIdentity || consent.projection !== projection) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native consent target binding mismatch");
-			throw new NativeReviewConsentRequiredError(consent);
+			if (request.requestContextPath !== undefined) {
+				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, requestContextPath: request.requestContextPath });
+			}
+			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath);
 		}
 		const result = decode(NATIVE_REVIEW_OPERATION.START, true, () => decodeReviewStartResponse(execution.body));
 		if (request.lineageId !== undefined && result.lineageId !== request.lineageId) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native start lineage mismatch");

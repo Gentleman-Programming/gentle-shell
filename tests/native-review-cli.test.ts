@@ -14,6 +14,7 @@ import {
 	NativeReviewCliError,
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
+	NativeReviewConsentRequiredError,
 	createNodeExecFileAdapter,
 	createWindowsProcessTreeKiller,
 	windowsTaskkillPath,
@@ -1197,4 +1198,46 @@ test("the central gentle-ai environment carries Gentle AI's isolation variables 
 	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
 	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
+});
+
+function requestContextConsent(path: string): Record<string, any> {
+ const raw = fixture("consent-v3.captured.json") as Record<string, any>;
+ raw.agent = "pi";
+ for (const choice of raw.choices) choice.invocation = String(choice.invocation)
+  .replace(/--cwd \S+ --target/, "--cwd /repo --target")
+  .replace(" --consent ", " --agent pi --request-context '" + path + "' --consent ");
+ return raw;
+}
+
+test("request context is retained and checked before consent replay", async () => {
+ const path = "/repo/spec with spaces.md";
+ const raw = requestContextConsent(path);
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ let pending: NativeReviewConsentRequiredError | undefined;
+ try { await host.client.start({ cwd: "/repo", requestContextPath: path }); } catch (error) { assert.ok(error instanceof NativeReviewConsentRequiredError); pending = error; }
+ assert.ok(pending);
+ assert.equal(pending.requestContextPath, path);
+ for (const mutation of ["missing", "changed", "duplicate"]) {
+  const copy = requestContextConsent(path);
+  copy.choices[0].invocation = mutation === "missing" ? copy.choices[0].invocation.replace(" --request-context '" + path + "'", "")
+   : mutation === "changed" ? copy.choices[0].invocation.replace(path, "/other.md")
+   : copy.choices[0].invocation.replace(" --consent ", " --request-context '/other.md' --consent ");
+  const queue = queuedAdapter([]);
+  await assert.rejects(client(queue.adapter).answerConsent({ cwd: "/repo", consent: decodeReviewConsentV3(copy, "pi"), answer: "granted", requestContextPath: path }), /context/);
+  assert.equal(queue.calls.length, 0);
+ }
+ const queue = queuedAdapter([{ stdout: JSON.stringify(reviewingStartV4(raw.target_identity)) }]);
+ assert.equal((await client(queue.adapter).answerConsent({ cwd: "/repo", consent: pending.consent, answer: "granted", requestContextPath: path } as any)).kind, "started");
+ assert.ok(queue.calls[0].arguments.includes(path));
+});
+
+test("START refuses consent choices that lose the requested context before presenting consent", async () => {
+ const path = "/repo/spec.md";
+ const raw = requestContextConsent(path);
+ raw.choices[1].invocation = raw.choices[1].invocation.replace(" --request-context '" + path + "'", "");
+ const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + raw.target_identity, "--projection=workspace", "--agent=pi", "--consent=relay", "--request-context=" + path];
+ const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(raw.target_identity, tokens)) }, { stdout: JSON.stringify(raw) }]);
+ await assert.rejects(host.client.start({ cwd: "/repo", requestContextPath: path }), /context/);
+ assert.equal(host.calls.length, 3);
 });

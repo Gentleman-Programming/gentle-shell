@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -806,4 +806,24 @@ test("request-context capability refusal remains clear in the public facade", as
   assert.equal(result.reason, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE);
   assert.equal(result.mutation_performed, false);
  }
+});
+
+test("request context applies sensitive-path policy before any native lookup", async () => {
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("must not read sensitive paths"); } });
+ for (const path of [".env", ".env.local", ".ssh/id_rsa", "secrets/request.md", "C:/private/KEY.PEM", "docs/../.env", "secrets\\request.md"]) {
+  const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: path }) }, process.cwd(), native);
+  assert.equal(result.reason, "request-context-sensitive-path", path);
+  assert.equal(result.mutation_performed, false);
+ }
+ assert.equal(calls, 0);
+});
+
+test("request context rejects a harmless alias resolving into a sensitive directory", async (t) => {
+ const cwd = repository(t); mkdirSync(join(cwd, "secrets")); writeFileSync(join(cwd, "secrets", "request.md"), "private fixture");
+ symlinkSync(join(cwd, "secrets"), join(cwd, "alias"), process.platform === "win32" ? "junction" : "dir");
+ let calls = 0;
+ const native = fakeNative({ targetStatus: async () => { calls++; throw new Error("must not read aliased secrets"); } });
+ const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "alias/request.md" }) }, cwd, native);
+ assert.equal(result.reason, "request-context-sensitive-path"); assert.equal(calls, 0);
 });

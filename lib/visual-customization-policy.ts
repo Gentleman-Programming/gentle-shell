@@ -12,9 +12,12 @@ export const STATUS_PLACEMENT = { AUTO: "auto", RIGHT: "right", BOTTOM: "bottom"
  */
 export const HEADER_PLACEMENT = { TOP: "top", BELOW_INPUT: "below-input", SPLIT: "split" } as const;
 export const DENSITY = { COMFORTABLE: "comfortable", COMPACT: "compact", MINIMAL: "minimal" } as const;
+/** The chrome background: `tinted` paints the rail, title row, status bar and panel sheet; `transparent` lets the terminal show through. */
+export const CHROME_SURFACE = { TINTED: "tinted", TRANSPARENT: "transparent" } as const;
 export type StatusPlacement = (typeof STATUS_PLACEMENT)[keyof typeof STATUS_PLACEMENT];
 export type HeaderPlacement = (typeof HEADER_PLACEMENT)[keyof typeof HEADER_PLACEMENT];
 export type Density = (typeof DENSITY)[keyof typeof DENSITY];
+export type ChromeSurface = (typeof CHROME_SURFACE)[keyof typeof CHROME_SURFACE];
 
 export interface VisualVisibility {
 	changes: boolean;
@@ -32,12 +35,15 @@ export interface VisualSettings {
 	statusPlacement: StatusPlacement;
 	headerPlacement: HeaderPlacement;
 	density: Density;
+	/** Stored only when transparent, so files that keep the default stay readable by older versions. */
+	surface: ChromeSurface;
 	visibility: VisualVisibility;
 }
 export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
+	surface: CHROME_SURFACE.TINTED,
 	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false },
 };
 /**
@@ -97,11 +103,12 @@ function member<T extends string>(value: unknown, choices: Record<string, T>): v
 	return typeof value === "string" && Object.values(choices).includes(value as T);
 }
 export function isVisualSettings(value: unknown): value is VisualSettings {
-	if (!record(value) || !keysMatch(value, ["statusPlacement", "headerPlacement", "density", "visibility"])) return false;
+	if (!record(value) || !keysMatch(value, ["statusPlacement", "headerPlacement", "density", "surface", "visibility"])) return false;
 	const visibility = value.visibility;
 	return member(value.statusPlacement, STATUS_PLACEMENT)
 		&& member(value.headerPlacement, HEADER_PLACEMENT)
 		&& member(value.density, DENSITY)
+		&& member(value.surface, CHROME_SURFACE)
 		&& record(visibility)
 		&& keysMatch(visibility, VISUAL_SECTION_KEYS)
 		&& Object.values(visibility).every((item) => typeof item === "boolean");
@@ -112,9 +119,11 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
  * boolean; missing added keys then take their default (`rdd`, `contextWarning` shown, `stats` hidden),
  * while present values (including `rdd: false`) are preserved. Writers stay strict.
  */
-export function normalizeVisualSettings(value: unknown): VisualSettings | undefined {
-	if (!record(value) || !record(value.visibility)) return undefined;
-	const visibility = value.visibility;
+export function normalizeVisualSettings(raw: unknown): VisualSettings | undefined {
+	if (!record(raw) || !record(raw.visibility)) return undefined;
+	// A file without `surface` (older versions, or the tinted default) reads as tinted.
+	const value = Object.hasOwn(raw, "surface") ? raw : { ...raw, surface: CHROME_SURFACE.TINTED };
+	const visibility = raw.visibility;
 	if (!Object.keys(visibility).every((key) => (VISUAL_SECTION_KEYS as readonly string[]).includes(key))) return undefined;
 	if (!BASE_SECTION_KEYS.every((key) => Object.hasOwn(visibility, key))) return undefined;
 	// A key that is present is authoritative: only a missing added key may default to shown.
@@ -143,6 +152,11 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 	}
 }
 /** Same-directory rename keeps partial JSON invisible to readers. */
+/** The stored shape: the tinted surface is the default and stays out of the file, so older versions keep reading it. */
+export function storedVisualSettings(settings: VisualSettings): Omit<VisualSettings, "surface"> & { surface?: ChromeSurface } {
+	const { surface, ...stored } = settings;
+	return surface === CHROME_SURFACE.TINTED ? stored : { ...stored, surface };
+}
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
 	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
 	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
@@ -150,7 +164,7 @@ export function writeVisualSettings(settings: VisualSettings, options: VisualOpt
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });
 	try {
-		writeFileSync(temporary, `${JSON.stringify({ schema: VISUAL_SCHEMA, ...settings })}\n`, { flag: "wx", mode: 0o600 });
+		writeFileSync(temporary, `${JSON.stringify({ schema: VISUAL_SCHEMA, ...storedVisualSettings(settings) })}\n`, { flag: "wx", mode: 0o600 });
 		renameSync(temporary, path);
 	} finally {
 		try { unlinkSync(temporary); } catch { /* Rename consumed the temporary file. */ }

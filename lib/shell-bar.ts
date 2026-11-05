@@ -4,8 +4,8 @@ import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow 
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { HOVER_ROLE } from "./shell-hover.ts";
 import { renderStatsRows, type SessionStats } from "./shell-stats.ts";
-import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard, surfaceOpener } from "./shell-card.ts";
-import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, PANEL_SURFACE_ROLE, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
+import { CARD_TONE, floatRows, paintSurfaceRow, panelInnerWidth, renderCard } from "./shell-card.ts";
+import { clipPanelText, fitPanelLine, PANEL_ROW_INDENT, panelSurfaceOpener, renderPanelHeader, renderPanelRow, sectionGap } from "./shell-panel.ts";
 import { REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, type ReviewSidebarSnapshot } from "./review-sidebar-state.ts";
 import type { VisualSettings } from "./visual-customization-policy.ts";
 import { renderChangesWidget, type ChangesModel } from "./shell-changes.ts";
@@ -298,7 +298,7 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	});
 	// Minimal density keeps only the sections: the key hints row goes.
 	if (hints && presentation?.density !== "minimal") sections.push({ rows: [renderPanelRow(width, label(hints))] });
-	const gap = !presentation || presentation.density === "comfortable" ? [" ".repeat(Math.max(0, width))] : [];
+	const gap = sectionGap(presentation?.density) ? [" ".repeat(Math.max(0, width))] : [];
 	const lines: string[] = [];
 	const targets: StatusTarget[] = [];
 	sections.forEach((section, index) => {
@@ -318,7 +318,7 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 // with the project identity above the transcript and the rail, and one status
 // bar row below them. Both sit on the rail's panel surface.
 const STATUS_BAR_DIVIDER = "│";
-const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, surfaceOpener(theme, PANEL_SURFACE_ROLE));
+const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(row, panelSurfaceOpener(theme));
 
 /** `✿ name  path` left, the session name and profile right; the path gives way first, so the profile always shows. */
 export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {

@@ -27,6 +27,7 @@ import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { REVIEW_SIDEBAR_EVENT } from "../lib/review-sidebar-state.ts";
 import { isJobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { chromeSurface, setChromeSurface } from "../lib/shell-panel.ts";
 import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, VISUAL_SCHEMA, resolveVisualSettings, visualPresetOf, writeVisualSettings } from "../lib/visual-customization-policy.ts";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
@@ -7242,7 +7243,9 @@ test("customize presets survive session switches and a fresh extension with the 
 			assert.equal(resolved.malformed, false);
 			assert.equal(resolved.readError, false);
 			assert.deepEqual(resolved.settings, scenario.settings);
-			assert.deepEqual(JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8")), { schema: VISUAL_SCHEMA, ...scenario.settings });
+			// The tinted surface is the default and is not stored.
+			const { surface: _surface, ...stored } = scenario.settings;
+			assert.deepEqual(JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8")), { schema: VISUAL_SCHEMA, ...stored });
 		};
 		const checkRestored = async (shell: ReturnType<typeof fakePi>, current: ReturnType<typeof fakeContext>) => {
 			const { ctx, ui, overlayReady } = current;
@@ -7653,4 +7656,24 @@ test("#2890: a wide top header shows the whole header row above the conversation
 	assert.equal(sidebarState(tui as unknown as TUI).statusBarShowsMode?.(), false, "no status bar hides the YOLO banner");
 	const status = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(48).join("\n"));
 	assert.match(status, /SESSION|Session/i, "without a title row the rail keeps the session");
+});
+
+test("customize Layout → Surface switches the chrome between tinted and transparent live and persists it", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = chromeSurface();
+	t.after(() => setChromeSurface(previous));
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	await customizeAction(ui, "Surface: transparent");
+	assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.surface, "transparent");
+	assert.equal(chromeSurface(), "transparent", "the live chrome follows the choice");
+	assert.match(ui.overlayView!.render(90).join("\n"), /Surface\s+○ tinted\s+● transparent/);
+	assert.match(ui.overlayView!.render(90).join("\n"), /Preset\s+○ Light\s+● Neutral/, "the surface is not part of a preset");
+	await customizeAction(ui, "Surface: tinted");
+	assert.equal(chromeSurface(), "tinted");
+	ui.overlayView!.handleInput("\x1b");
+	await pending;
 });

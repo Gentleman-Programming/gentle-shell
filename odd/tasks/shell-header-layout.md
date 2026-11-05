@@ -16,10 +16,10 @@ Branch: `fix/shell-header-layout-2890` (worktree `../gentle-pi-2890`, removed wi
 
 ## Tasks
 
-- T1 S1,S2,S3,S4: `split` header value; `top` renders the full header inside the conversation column; rail plain top margin. Route: inline. Status: done (RED 2/3 new layout tests, 2 integration tests; GREEN). Risk tier: medium (adds a config value).
+- T1 S1,S2,S3,S4 (commit d14433f6b): `split` header value; `top` renders the full header inside the conversation column; rail plain top margin. Route: inline. Status: done (RED 2/3 new layout tests, 2 integration tests; GREEN). Risk tier: medium (adds a config value).
 - T2 S1: status bar mode badge keeps its glyph (🔥 YOLO, 💥 SUPER-YOLO). Route: inline. Status: done (RED 2 in shell-panel; GREEN).
 - T3 S5: density spacing (minimal: no rail top margin, no hints row; comfortable: blank row under a top header). Route: inline. Status: done (RED 1; GREEN). Split chrome spacing unchanged (user likes it).
-- T4 S6: transparent chrome surface. Route: inline. Status: pending.
+- T4 S6,S7: Layout → Surface tinted|transparent (`surface`, stored only when transparent in visual-customization.json and profiles). Route: inline. Status: done (RED: policy, layout, gentle-shell, profiles; GREEN).
 - T5: Customize copy, layout preview, docs. Route: inline. Status: done for T1-T3.
 - T6 S7: investigate panel background report. Route: inline. Status: done — cause is the opaque `customMessageBg` (PANEL_SURFACE_ROLE) painted by `surfaceOpener` in lib/shell-bar.ts:321 (title row/status bar), lib/shell-panel.ts:70 (panel sheet) and lib/shell-sidebar-layout.ts:327 (rail); a terminal background image cannot show through. T4's transparent surface removes it.
 
@@ -31,3 +31,4 @@ Branch: `fix/shell-header-layout-2890` (worktree `../gentle-pi-2890`, removed wi
 - L4 (user): S7 report; S5 spacing remark; S6 transparent request; "hazlo todo tu no delegues".
 - L5: T1-T3+T5 implemented inline; focused files green (layout 59/59, gentle-shell 321/321, shell-panel 25/25, visual-* 92/92). Wide `top` keeps the titled-rule editor (`panelChrome`), narrow/Light keep the compact chrome for top and split.
 - L6: T6 finding recorded above; T4 design: Layout → Surface tinted|transparent stored as `surface` in visual-customization.json (missing → tinted); transparent drops the PANEL_SURFACE_ROLE backgrounds and keeps a blank row between rail sections unless density is minimal; hover stays the orange fg role.
+- L7: suite (both slices): 8503 tests, 36 fail only in tests/agent-home, gentle-agents, notification-audio-native, notification-pulse-client, notification-pulse-stream, orchestrator-scope — environmental (GENTLE_PI_CONFIG_HOME in the shell; isolated run identical to origin/main: 4 fail). Typecheck 0 diagnostics after adding `surface` to profile fixtures; runtime modules match.

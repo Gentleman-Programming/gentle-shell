@@ -4,7 +4,8 @@ import { CURSOR_MARKER, Container, ScrollView, VStack, visibleWidth, type Compon
 import { getScrollViewsAt, renderLayoutFrame, type LayoutBox } from "@earendil-works/pi-tui/dist/layout.js";
 import { installSidebar, invalidateSidebar, narrowStatusOwner } from "../lib/shell-sidebar-layout.ts";
 import { setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar } from "../lib/shell-sidebar.ts";
-import { renderShellSidebarBar } from "../lib/shell-bar.ts";
+import { renderShellSidebarBar, renderShellStatusBar } from "../lib/shell-bar.ts";
+import { chromeSurface, setChromeSurface } from "../lib/shell-panel.ts";
 import { renderTodoCard, type TodoState } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 
@@ -1336,4 +1337,31 @@ test("a top header falls back to the full width when the rail is not shown", (t)
 	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
 	assert.equal(node.type, "vstack");
 	assert.deepEqual(node.entries[0]!.component.render(180), ["HEADER 180"]);
+});
+
+test("a transparent chrome drops the rail, title row and status bar backgrounds and spaces the rail sections unless density is minimal", (t) => {
+	const previous = chromeSurface();
+	t.after(() => setChromeSurface(previous));
+	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	const tinted = /\x1b\[48;5;22m/;
+	for (const density of ["compact", "minimal"] as const) {
+		setChromeSurface("transparent");
+		const f = fixture("fullscreen", 160);
+		sidebarPart(f.tui, "todo", { render: () => ["TODO"], invalidate() {} });
+		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
+		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
+		const rows = railWithHeader(f).render(50);
+		assert.doesNotMatch(rows.join("\n"), tinted, `${density}: no panel background`);
+		assert.deepEqual(rows.filter((row) => row.trim() !== "").map((row) => row.trim()), ["TODO", "Status"]);
+		const between = rows.indexOf(rows.find((row) => row.includes("Status"))!) - rows.indexOf(rows.find((row) => row.includes("TODO"))!);
+		assert.equal(between, density === "minimal" ? 1 : 2, `${density}: a blank row separates the sections unless minimal`);
+		setChromeSurface("tinted");
+		assert.match(railWithHeader(f).render(50).join("\n"), tinted, "switching back repaints the panel");
+	}
+	setChromeSurface("transparent");
+	const model = { cwd: "/project", branch: "main", dirty: 0, sessionName: undefined, modelId: "model", effort: "high", contextPercent: 45, contextWindow: 1000, costTotal: 1, subscription: false, usage: undefined, statuses: [] };
+	assert.doesNotMatch(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted, "the status bar floats");
+	setChromeSurface("tinted");
+	assert.match(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted);
 });

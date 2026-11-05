@@ -243,7 +243,7 @@ export interface StatusSectionsOptions {
 }
 
 /** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
-export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[] } {
+export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[]; groups: Array<{ start: number; end: number }>; loose: number[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
 	type Section = { key?: StatusSection; header?: string; rows: string[]; openChangesRow?: number };
@@ -301,17 +301,24 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	const gap = sectionGap(presentation?.density) ? [" ".repeat(Math.max(0, width))] : [];
 	const lines: string[] = [];
 	const targets: StatusTarget[] = [];
+	// Each headed section's row range, and the unheaded rows (key hints), so a
+	// transparent rail can draw every section as its own card.
+	const groups: Array<{ start: number; end: number }> = [];
+	const loose: number[] = [];
 	sections.forEach((section, index) => {
 		if (index) lines.push(...gap);
+		const start = lines.length;
 		if (section.key && section.header) {
 			targets.push({ row: lines.length, kind: "toggle", section: section.key });
 			lines.push(section.header);
-			if (options.collapsed?.has(section.key)) return;
+			if (options.collapsed?.has(section.key)) { groups.push({ start, end: lines.length }); return; }
 		}
 		if (section.openChangesRow !== undefined) targets.push({ row: lines.length + section.openChangesRow, kind: "open-changes" });
 		lines.push(...section.rows);
+		if (section.key && section.header) groups.push({ start, end: lines.length });
+		else for (let row = start; row < lines.length; row++) loose.push(row);
 	});
-	return { lines, targets };
+	return { lines, targets, groups, loose };
 }
 
 // The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row

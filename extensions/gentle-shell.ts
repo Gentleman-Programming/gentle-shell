@@ -2562,6 +2562,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			let statusHover: StatusSection | "open-changes" | undefined;
 			// Keyed by width: the rail and the full-width panel sheet render the same part.
 			const statusTargets = new Map<number, StatusTarget[]>();
+			const statusGroups = new Map<number, { groups: Array<{ start: number; end: number }>; loose: number[] }>();
 			const statusCard: Component = {
 				render(width: number) {
 					// Beside the rail every header placement draws a chrome bar that shows
@@ -2571,6 +2572,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
 						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
 					statusTargets.set(width, view.targets);
+					statusGroups.set(width, { groups: view.groups, loose: view.loose });
 					return view.lines;
 				},
 				invalidate() {
@@ -2625,6 +2627,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs, spend?.runs, spend?.tokens, spend?.cost] : ""]);
 				},
 				render: (width) => statusRegion.render(width),
+				cardGroups: (width) => statusGroups.get(width),
 				handleMouse: (event) => statusRegion.handleMouse(event),
 				invalidate: () => statusRegion.invalidate(),
 			});

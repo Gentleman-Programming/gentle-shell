@@ -1,8 +1,8 @@
 import { Container, ScrollView, VStack, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
-import { CARD_STYLE, cardStyle, paintSurfaceRow, surfaceOpener, type CardStyle } from "./shell-card.ts";
-import { chromeSurface, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
+import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle } from "./shell-card.ts";
+import { chromeSurface, PANEL_ROW_INDENT, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 
@@ -24,27 +24,46 @@ type StackLayoutEntry = ConstructorParameters<typeof VStack>[0] extends Array<in
 type LayoutRoot = Component & { [NODE]?: () => LayoutNode };
 type Host = TUI & { mode?: string; layoutRoot?: LayoutRoot };
 type SidebarCache = { revision: number };
-type RailHit = { key: string; component: Component; startY: number; height: number; width: number; x: number };
+type RailHit = { key: string; component: Component; startY: number; height: number; width: number; x: number; row: number };
 type SectionCacheEntry = { component: Component; digest: string | undefined; revision: number; contentWidth: number; renderWidth: number; cardStyle: CardStyle; theme: ShellBarTheme; themeSignature: string; lines: string[] };
-// A transparent rail draws each section as a card in the active card style:
-// neon outlines it, float tints it in the card tone. Both put the content two
-// columns in on each side and one row below the card's top row.
-const CARD_INSET = 2;
-const SECTION_CARD_ROLE = "toolSuccessBg";
-function fitRow(line: string, width: number): string {
-	const clipped = visibleWidth(line) > width ? truncateToWidth(line, width, "") : line;
-	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+// A transparent rail draws every section as its own card in the transcript's
+// card style (neon outline with the title in the top rule, float tint with its
+// accent bar), through the same renderCard the conversation cards use.
+type CardGeometry = { headerRow: number; bodyRow: number; bodyX: number };
+// One section card: the title (with its count as the top rule's hint) and the
+// body rows together, so a float card spends no separator row between them.
+function sectionCardRows(header: { glyph?: string; title: string; count?: string }, body: readonly string[], theme: ShellBarTheme, width: number): string[] {
+	const tone = CARD_TONE.INFO;
+	return floatRows(tone, theme, width, (inner) => ({
+		head: [cardTop({ title: header.title, ...(header.glyph ? { glyph: header.glyph } : {}), body: [], tone }, theme, inner, header.count), ...body.map((row) => cardLine(row, tone, theme, inner))],
+		bottom: cardBottom(tone, theme, inner),
+	}));
 }
-function sectionCard(lines: readonly string[], width: number, theme: ShellBarTheme, style: CardStyle): string[] {
-	const inner = Math.max(0, width - CARD_INSET * 2);
-	const open = style === CARD_STYLE.FLOAT ? surfaceOpener(theme, SECTION_CARD_ROLE) : "";
-	if (open) {
-		const pad = ` ${paintSurfaceRow(" ".repeat(Math.max(0, width - 2)), open)} `;
-		return [pad, ...lines.map((line) => ` ${paintSurfaceRow(` ${fitRow(line, inner)} `, open)} `), pad];
-	}
-	const edge = (text: string) => theme.fg("border", text);
-	const rule = "─".repeat(Math.max(0, width - 2));
-	return [edge(`╭${rule}╮`), ...lines.map((line) => `${edge("│")} ${fitRow(line, inner)} ${edge("│")}`), edge(`╰${rule}╯`)];
+const CARD_PROBE = "\u2063probe";
+const geometryCache = new Map<string, CardGeometry>();
+function cardGeometry(theme: ShellBarTheme, width: number, style: CardStyle): CardGeometry {
+	const key = `${style}:${width}:${themeSignature(theme)}`;
+	const cached = geometryCache.get(key);
+	if (cached) return cached;
+	const rows = sectionCardRows({ glyph: "▾", title: "HEADER" }, [CARD_PROBE], theme, width).map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+	const bodyRow = Math.max(0, rows.findIndex((row) => row.includes(CARD_PROBE)));
+	const geometry = { headerRow: Math.max(0, rows.findIndex((row) => row.includes("HEADER"))), bodyRow, bodyX: Math.max(0, visibleWidth(rows[bodyRow]!.slice(0, rows[bodyRow]!.indexOf(CARD_PROBE)))) };
+	if (geometryCache.size > 64) geometryCache.clear();
+	geometryCache.set(key, geometry);
+	return geometry;
+}
+// The header row a part renders (`▾ NAME … count`, styled, hover included),
+// split at the gap before its right-aligned count into the card's glyph,
+// title and count, keeping their styling.
+function headerParts(line: string): { glyph?: string; title: string; count?: string } {
+	const trimmed = line.replace(/ +((?:\x1b\[[0-9;]*m)*)$/, "$1");
+	const split = /^(.*?\S)( {2,})(?=\S|\x1b)(.*)$/s.exec(trimmed);
+	const left = split ? split[1]! : trimmed;
+	const count = split?.[3]?.trim() ? split[3] : undefined;
+	const plain = left.replace(/\x1b\[[0-9;]*m/g, "").trimStart();
+	const glyph = /^[▾▸]\s/.test(plain) ? plain[0] : undefined;
+	// The glyph may carry its own styling: drop it with any escape codes before the next space.
+	return { ...(glyph ? { glyph } : {}), title: glyph ? left.replace(/[▾▸](?:\x1b\[[0-9;]*m)*\s/, "") : left, ...(count ? { count } : {}) };
 }
 type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {
@@ -236,7 +255,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		return hit.component.handleMouse?.({
 			...event,
 			x: event.x - hit.x,
-			y: contentY - hit.startY,
+			y: hit.row + contentY - hit.startY,
 			width: hit.width,
 			height: hit.height,
 		});
@@ -319,7 +338,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			const carded = chromeSurface() === "transparent";
-			const renderWidth = carded ? contentWidth - CARD_INSET * 2 : contentWidth - RAIL_PADDING * 2;
+			// A carded section renders one indent wider; its body rows drop that indent inside the card.
+			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
 			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
@@ -376,16 +396,29 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				// previous section; neon's header gap above is not a section.
 				if ((hits.length > 0 || branding.length > 0) && sectionGap(density())) railLines.push(!carded && panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
 				if (carded) {
-					const startY = railLines.length + 1;
-					railLines.push(...sectionCard(section.lines, contentWidth, theme, style));
-					hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: CARD_INSET });
+					const layout = (section.component as SidebarRail).cardGroups?.(renderWidth) ?? { groups: [{ start: 0, end: section.lines.length }] };
+					const geometry = cardGeometry(theme, contentWidth, style);
+					const indent = " ".repeat(PANEL_ROW_INDENT);
+					layout.groups.forEach((group, index) => {
+						if (index > 0 && sectionGap(density())) railLines.push("");
+						const body = section.lines.slice(group.start + 1, group.end).map((row) => row.startsWith(indent) ? row.slice(PANEL_ROW_INDENT) : row);
+						while (body.length && body[body.length - 1]?.trim() === "") body.pop();
+						const top = railLines.length;
+						railLines.push(...sectionCardRows(headerParts(section.lines[group.start] ?? ""), body, theme, contentWidth));
+						// The title row folds the section like its header; body rows keep their own rows.
+						hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: contentWidth, x: 0, row: group.start });
+						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1 });
+					});
+					const loose = (layout.loose ?? []).map((row) => section.lines[row] ?? "").filter((row) => row.trim() !== "");
+					if (loose.length && sectionGap(density())) railLines.push("");
+					railLines.push(...loose.map((row) => truncateToWidth(row.trimEnd(), contentWidth, "…")));
 					continue;
 				}
 				const startY = railLines.length;
 				railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
 				previousPanel = panel;
 				fillRow = panel ? paint(" ".repeat(contentWidth)) : "";
-				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING });
+				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING, row: 0 });
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);

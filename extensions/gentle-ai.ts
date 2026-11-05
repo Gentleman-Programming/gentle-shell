@@ -11882,7 +11882,7 @@ function createGentleAiExtensionForTesting(
 		const epoch = reminderEpoch;
 		const manager = ctx.sessionManager;
 		const cwd = ctx.cwd;
-		const current = () => reminderSessionActive && epoch === reminderEpoch && reminderManager === manager &&
+		const current = () => reminderSessionActive && epoch === reminderEpoch && (reminderManager === undefined || reminderManager === manager) &&
 			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
 		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current);
 		if (status === undefined || !current()) return;

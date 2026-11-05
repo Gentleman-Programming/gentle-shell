@@ -377,6 +377,53 @@ test("session and workspace replacement cannot reuse an older in-flight startup 
 	assert.deepEqual([...old.errors, ...other.errors, ...current.errors], []);
 });
 
+test("held startup OFF cannot suppress guidance after registered enable", { timeout: 30_000 }, async (t) => {
+	const f = await fixture(t, { global: "on", cloneLocal: "off" });
+	const cwd = f.repo("repo");
+	const pending = f.native.holdNext();
+	const host = await f.host(cwd);
+	await pending.started;
+	await host.prompt("/gentle:review-mode enable");
+	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
+	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
+	await pending.read.promise;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	await host.prompt("Require current guidance");
+	assertPrompt(host, "on", "global");
+	const result = await host.assess();
+	assert.equal(result.details.rddLine, "on");
+	assert.equal(result.details.nativeRisk, "medium");
+	assert.deepEqual(f.native.assessments, [cwd]);
+	assert.deepEqual(f.native.targets, [cwd]);
+	assert.deepEqual(f.native.writes.map(({ operation }) => operation), ["enable"]);
+	assert.deepEqual(host.errors, []);
+});
+
+test("shutdown and reopen invalidate a held OFF direct assessment", { timeout: 30_000 }, async (t) => {
+	const f = await fixture(t, { global: "on", cloneLocal: "off" });
+	const cwd = f.repo("repo");
+	const old = await f.host(cwd);
+	await old.prompt("Initial OFF");
+	assertPrompt(old, "off", "clone_local");
+	const pending = f.native.holdNext();
+	const assessment = old.assess();
+	await pending.started;
+	await old.close();
+	const fresh = await f.host(cwd);
+	await fresh.prompt("/gentle:review-mode enable");
+	assert.deepEqual(fresh.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
+	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
+	const result = await assessment;
+	assert.equal(result.details.rddLine, "unknown");
+	assert.equal(result.details.nativeRisk, "medium");
+	await fresh.prompt("Reopened guidance");
+	assertPrompt(fresh, "on", "global");
+	assert.deepEqual(f.native.assessments, [cwd]);
+	assert.deepEqual(f.native.targets, [cwd]);
+	assert.deepEqual(f.native.writes.map(({ operation }) => operation), ["enable"]);
+	assert.deepEqual([...old.errors, ...fresh.errors], []);
+});
+
 test("a held OFF assessment cannot skip native assessment after another session enables RDD", { timeout: 30_000 }, async (t) => {
 	const f = await fixture(t, { global: "on", cloneLocal: "off" });
 	const cwd = f.repo("repo");

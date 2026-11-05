@@ -1312,12 +1312,12 @@ test("a top header sits inside the conversation column, and it and the rail both
 		assert.match(lines[0]!, /^HEADER 110 /, `${density}: the header runs up to the rail`);
 		assert.equal(lines[1]!.slice(107, 110), "   ", `${density}: the conversation keeps its 3-column gap from the rail`);
 		assert.match(lines[1]!, /^CONVERSATION/, `${density}: the conversation follows the header's own rows`);
-		assert.match(lines[0]!, /Status/, `${density}: the rail starts level with the header`);
+		assert.match(lines[density === "comfortable" ? 1 : 0]!, /Status/, `${density}: the rail's first section is level with the header's text row`);
 		const click: TuiMouseEvent = { type: "click", button: "left", x: 3, y: 0, screenX: 3, screenY: 0, width: 110, height: 1, shift: false, alt: false, ctrl: false };
 		(f.root[NODE]() as unknown as { entries: { component: { [key: symbol]: () => { entries: { component: Component }[] } } }[] }).entries[0]!.component[NODE]().entries[0]!.component.handleMouse?.(click);
 		assert.equal(received.at(-1)?.x, 3, `${density}: the header leaf still routes its clicks`);
 		const railRows = railWithHeader(f).render(50);
-		assert.deepEqual(railRows, [" Status "], `${density}: no rail top padding beside a top header`);
+		assert.deepEqual(railRows, density === "comfortable" ? ["", " Status "] : [" Status "], `${density}: beside a centered comfortable top bar the rail keeps a top padding row`);
 		assert.equal(sidebarState(f.tui).active, true);
 	}
 });
@@ -1367,7 +1367,7 @@ test("a transparent chrome drops the rail, title row and status bar backgrounds 
 	assert.match(renderShellStatusBar(model, painted, 120).rows.join("\n"), tinted);
 });
 
-test("beside a top header the rail's first section sits on the window's first row in both surfaces", (t) => {
+test("beside a centered comfortable top bar the rail starts with its padding row and puts its first section on the text row", (t) => {
 	const previous = chromeSurface();
 	t.after(() => setChromeSurface(previous));
 	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
@@ -1375,11 +1375,12 @@ test("beside a top header the rail's first section sits on the window's first ro
 		setChromeSurface(surface);
 		const f = fixture("fullscreen", 160);
 		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
-		sidebarHeader(f.tui, { render: () => ["HEADER", "PAD"], invalidate() {} });
+		sidebarHeader(f.tui, { render: () => ["PAD", "HEADER", "PAD"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "top"));
 		const rows = railWithHeader(f).render(50);
-		assert.match(rows[0]!, /Status/, `${surface}: the first section sits on the header row`);
-		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "the panel surface starts on that row");
+		assert.equal(rows[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${surface}: the rail's top padding is level with the bar's top margin`);
+		assert.match(rows[1]!, /Status/, `${surface}: the first section sits on the header's text row`);
+		if (surface === "tinted") assert.match(rows[0]!, /\x1b\[48;5;22m/, "the panel surface starts on the window's first row");
 		else assert.doesNotMatch(rows.join("\n"), /\x1b\[48;5;22m/);
 	}
 });

@@ -497,18 +497,17 @@ export function renderShellChromePad(theme: ShellBarTheme, width: number): strin
 
 /**
  * A chrome bar: the split status bar row (branch, permission mode, model,
- * context, cost, usage) with, in comfortable density, one margin row on the
- * chrome surface on the side that faces the content: below a top bar, above a
- * bottom bar. The wide top and below-input headers draw it, so every bar shares
+ * context, cost, usage). In comfortable density it is centered between two
+ * margin rows on the chrome surface; compact and minimal draw the bar row
+ * alone. The top, below-input and split bars all draw it, so every bar shares
  * the status bar's design; a transparent surface leaves it unpainted.
  */
-export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, margin: "above" | "below", extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, extras: { jobs?: boolean } = {}): ShellHeaderChrome {
 	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint, extras);
 	if (presentation !== undefined && presentation.density !== "comfortable") return bar;
+	// Comfortable centers the text: one margin row on each side of the bar row.
 	const pad = renderShellChromePad(theme, width);
-	return margin === "below"
-		? { ...bar, rows: [...bar.rows, pad] }
-		: { ...bar, rows: [pad, ...bar.rows], headerRow: bar.headerRow + 1 };
+	return { ...bar, rows: [pad, ...bar.rows, pad], headerRow: bar.headerRow + 1 };
 }
 
 /** The usage segment is interactive only on the content row, never padding or the edge. */

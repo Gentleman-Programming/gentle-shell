@@ -329,7 +329,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 			} else if (sections.length && headerActive && inColumn) {
-				// Beside a top header the first section sits on the window's first row, level with it.
+				// Beside a top header the first section sits level with its text row: a
+				// comfortable top bar is centered between two margin rows, so the rail
+				// keeps one top padding row on its surface; compact and minimal bars are one row.
+				if (density() === "comfortable") railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
 			} else if (sections.length && headerActive && (headerPlacement() === "split" ? density() !== "comfortable" : density() === "comfortable" && style === CARD_STYLE.NEON)) {
 				// A comfortable split title block carries its own margin row across the
 				// rail; in compact and minimal the rail keeps its own top padding.

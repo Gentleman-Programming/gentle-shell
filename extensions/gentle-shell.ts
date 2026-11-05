@@ -2725,10 +2725,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// Changes into the float footer as before).
 			const belowChrome = () => barChrome() && visualSettings.headerPlacement === "below-input" && (visualSettings.statusPlacement === "hidden" || visualSettings.statusPlacement === "bottom" || sidebarState(tui).active === true);
 			// Without the rail the bar also counts the running jobs, as the mobile status bar does.
-			const chromeBar = (width: number, margin: "above" | "below") => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), margin, { jobs: !statusCardVisible() });
-			const topHeader = (width: number) => chromeBar(width, "below");
-			// The split title row keeps a margin row toward the content in comfortable density.
-			const titleRows = (width: number) => [renderShellTitleRow(footerModel(), theme, width), ...(visualSettings.density === "comfortable" ? [renderShellChromePad(theme, width)] : [])];
+			const chromeBar = (width: number) => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), { jobs: !statusCardVisible() });
+			const topHeader = (width: number) => chromeBar(width);
+			// Comfortable centers the split title row between two margin rows.
+			const titleRows = (width: number) => visualSettings.density === "comfortable"
+				? [renderShellChromePad(theme, width), renderShellTitleRow(footerModel(), theme, width), renderShellChromePad(theme, width)]
+				: [renderShellTitleRow(footerModel(), theme, width)];
 			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
 			// same split stays, with the model in the title row and live work folded
 			// into one row above the editor.
@@ -2740,7 +2742,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
-				: chromeBar(width, "above");
+				: chromeBar(width);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
 				render: (width) => splitChrome() ? titleRows(width) : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
@@ -2754,11 +2756,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => splitChrome() || narrowChrome() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width, "above").rows : [],
+				render: (width) => splitChrome() || narrowChrome() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width).rows : [],
 				invalidate() {},
 				handleMouse(event) {
 					if (!(splitChrome() || narrowChrome() || belowRail()) || event.type !== "click" || event.button !== "left") return undefined;
-					if (!shellHeaderUsageHit(belowRail() ? chromeBar(event.width, "above") : statusBarChrome(event.width), event.x, event.y)) return undefined;
+					if (!shellHeaderUsageHit(belowRail() ? chromeBar(event.width) : statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
@@ -2775,7 +2777,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				render(width: number) {
 					if (disposed) return [];
 					if (belowRail() && sidebarState(tui).active) return [];
-					if (belowChrome()) return chromeBar(width, "above").rows;
+					if (belowChrome()) return chromeBar(width).rows;
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
 					return belowHeader() ? headerBar(width).rows : [];
 				},
@@ -2784,7 +2786,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					if (disposed) return undefined;
 					if (belowRail() && sidebarState(tui).active) return undefined;
 					if (belowChrome()) {
-						if (event.type !== "click" || event.button !== "left" || !shellHeaderUsageHit(chromeBar(event.width, "above"), event.x, event.y)) return undefined;
+						if (event.type !== "click" || event.button !== "left" || !shellHeaderUsageHit(chromeBar(event.width), event.x, event.y)) return undefined;
 						void openUsage(ctx);
 						return { handled: true, render: true };
 					}

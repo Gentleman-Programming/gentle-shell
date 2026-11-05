@@ -31,7 +31,7 @@ test("a transparent surface keeps the float header's margins and drops only its 
 	}
 });
 
-test("the chrome bar is the split status bar row with a painted margin row on the content side when comfortable", (t) => {
+test("the chrome bar is the split status bar row, centered between two painted margin rows when comfortable", (t) => {
 	const [style, surface] = [cardStyle(), chromeSurface()];
 	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
 	const barModel = { ...model, permission: { mode: "SUPER-YOLO" } };
@@ -39,24 +39,22 @@ test("the chrome bar is the split status bar row with a painted margin row on th
 		setCardStyle(cards);
 		setChromeSurface("tinted");
 		const status = renderShellStatusBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS);
-		const below = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "below");
-		assert.deepEqual(below.rows[0], status.rows[0], `${cards}: the same row as the split status bar`);
-		assert.equal(below.rows.length, 2, `${cards}: the bar, then its margin row toward the content`);
-		assert.equal(below.headerRow, 0);
-		const above = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "above");
-		assert.deepEqual(above.rows, [below.rows[1], below.rows[0]], `${cards}: the margin row above a bottom bar`);
-		assert.equal(above.headerRow, 1);
+		const below = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined);
+		assert.deepEqual(below.rows[1], status.rows[0], `${cards}: the same row as the split status bar`);
+		assert.equal(below.rows.length, 3, `${cards}: a margin row on each side centers the bar's text`);
+		assert.equal(below.headerRow, 1);
+		assert.deepEqual(below.rows[0], below.rows[2], `${cards}: both margin rows are the same blank chrome row`);
 		for (const row of below.rows) assert.match(row, /\x1b\[48;5;171m/, `${cards}: the margin row is painted like the bar`);
-		const text = unstyled(below.rows)[0]!;
+		const text = unstyled(below.rows)[1]!;
 		assert.match(text, /💥 SUPER-YOLO/);
-		assert.ok(shellHeaderUsageHit(below, text.indexOf("usage"), 0), "usage stays clickable on the bar row");
-		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 1), false, "the margin is not a target");
-		assert.ok(shellHeaderUsageHit(above, text.indexOf("usage"), 1));
+		assert.ok(shellHeaderUsageHit(below, text.indexOf("usage"), 1), "usage stays clickable on the bar row");
+		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 0), false, "the margins are not targets");
+		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 2), false);
 		for (const density of ["compact", "minimal"] as const) {
-			assert.equal(renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density }, undefined, "below").rows.length, 1, `${cards}: ${density} has no margin row`);
+			assert.equal(renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density }, undefined).rows.length, 1, `${cards}: ${density} has no margin row`);
 		}
 		setChromeSurface("transparent");
-		const clear = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "below");
+		const clear = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined);
 		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${cards}: transparent floats it`);
 		assert.deepEqual(unstyled(clear.rows), unstyled(below.rows));
 	}

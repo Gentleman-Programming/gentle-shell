@@ -278,7 +278,10 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	}
 	// Power user (compact density) adds what the session spent, per model.
 	if (model.stats) {
-		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: renderStatsRows(model.stats, theme, width, model.subscription) });
+		// The agent profile opens Stats: it decides which models the session's spend went to.
+		const profile = model.profile ? sanitizeStatus(model.profile) : "";
+		const profileRow = profile ? [renderPanelRow(width, clipPanelText(`${label("profile")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)))] : [];
+		sections.push({ key: "stats", header: header("stats", "Stats", formatCost(model.stats.cost, model.subscription)), rows: [...profileRow, ...renderStatsRows(model.stats, theme, width, model.subscription)] });
 	}
 	// The status bar shows the permission mode once; Integrations only says
 	// what it means, so neither the mode nor its banner repeats here.
@@ -286,15 +289,11 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	const integrationRows = (text: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT - 2))
 		.map((line, index) => renderPanelRow(width, `${label(index === 0 ? "- " : "  ")}${line}`));
 	const permission = model.permission?.detail ? integrationRows(`${label("permissions")} ${theme.fg(ROLE.STATUS, sanitizeStatus(model.permission.detail))}`) : [];
-	const profile = model.profile ? sanitizeStatus(model.profile) : "";
-	const profileRows = profile
-		? wrapTextWithAnsi(`${label("Agent profile:")} ${theme.fg(ROLE.VALUE, profile)}`, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, line))
-		: [];
 	const count = integrations.length + (permission.length ? 1 : 0);
 	sections.push({
 		key: "integrations",
 		header: header("integrations", "Integrations", count ? String(count) : "none"),
-		rows: [...profileRows, ...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
+		rows: [...permission, ...(integrations.length ? integrations.flatMap((status) => integrationRows(theme.fg(ROLE.STATUS, sanitizeStatus(status)))) : permission.length ? [] : [renderPanelRow(width, label("no status reported"))])],
 	});
 	// Minimal density keeps only the sections: the key hints row goes.
 	if (hints && presentation?.density !== "minimal") sections.push({ rows: [renderPanelRow(width, label(hints))] });
@@ -332,11 +331,13 @@ export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, 
 	const target = Math.max(0, Math.floor(width));
 	const name = model.cwd.split("/").filter((part) => part.length > 0).pop() ?? model.cwd;
 	const left = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}  ${theme.fg(ROLE.PATH, model.cwd)}`;
-	// Mobile: the narrow status bar leaves the model out, so the title row carries it.
+	// Mobile: the narrow status bar leaves the model out, so the title row carries
+	// it with the agent profile; wide, the status bar carries both and this row keeps the session.
+	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
+	const profile = profileName ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const right = options.model
-		? executionSegment(model.modelId, model.effort, theme)
-		: [model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "", model.profile ? theme.fg(ROLE.LABEL, sanitizeStatus(model.profile)) : ""]
-			.filter(Boolean).join(theme.fg(ROLE.SEPARATOR, " · "));
+		? `${executionSegment(model.modelId, model.effort, theme)}${profile}`
+		: model.sessionName ? theme.fg(ROLE.VALUE, sanitizeStatus(model.sessionName)) : "";
 	return paintChromeRow(theme, ` ${fitPanelLine(left, right, Math.max(0, target - 2))} `);
 }
 
@@ -364,16 +365,20 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const tail = join([mode, runningJobs ? theme.fg(ROLE.STATUS, shellJobsCount(runningJobs)) : ""]);
 	const left = join([branch, tail]);
 	const showCounters = presentation?.visibility.usageCost !== false;
+	// The configured tier stays beside the effort and yields only at the end; the
+	// agent profile follows it and gives way before the usage does.
 	const tier = model.profileTier ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(model.profileTier === "fast" ? "warning" : ROLE.LABEL, model.profileTier === "fast" ? "Fast" : "Standard")}` : "";
+	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
+	const profile = profileName ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
 	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint), costSegment(model.costTotal, model.subscription, theme)] : [];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const stages: Array<UsageStage | undefined> = showCounters ? ["full", "text", "primary", undefined] : [undefined];
-	const attempts = [...stages.map((stage) => ({ stage, withExec: true, withTier: true })),
-		...(tier ? [{ stage: undefined, withExec: true, withTier: false }] : []), { stage: undefined, withExec: false, withTier: false }];
-	for (const { stage, withExec, withTier } of attempts) {
+	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true, withProfile: true }, ...(profile ? [{ stage, withExec: true, withTier: true, withProfile: false }] : [])]),
+		...(tier ? [{ stage: undefined, withExec: true, withTier: false, withProfile: false }] : []), { stage: undefined, withExec: false, withTier: false, withProfile: false }];
+	for (const { stage, withExec, withTier, withProfile } of attempts) {
 		const usage = stage ? usageSegmentText(windows, theme, stage, usageHint, paint) : "";
-		const right = join([withExec ? exec + (exec && withTier ? tier : "") : "", ...counters, usage]);
+		const right = join([withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters, usage]);
 		const room = target - 2;
 		if (visibleWidth(left) + (right ? RIGHT_PADDING : 0) + visibleWidth(right) > room) continue;
 		const row = ` ${left}${" ".repeat(room - visibleWidth(left) - visibleWidth(right))}${right} `;

@@ -1443,12 +1443,20 @@ test("a transparent rail draws every section as its own card in the transcript's
 		const f = fixture("fullscreen", 160);
 		const received: TuiMouseEvent[] = [];
 		const lines = (width: number) => [`\x1b[35m▾\x1b[39m CHANGES${" ".repeat(width - 14)}clean`, "  no changes", "", `▾ INTEGRATIONS${" ".repeat(width - 15)}1`, "  - gentle-pi · ready", "", "  ctrl+shift+t todos"];
+		// Like NativePointerRegion and the Status targets: the event must fall inside
+		// the frame the part rendered (its width, all its rows), or it is ignored.
+		const rendered = new Set<number>();
 		sidebarPart(f.tui, "footer", { render: () => [], invalidate() {} }, {
 			surface: "panel",
-			render: (width: number) => lines(width),
+			render: (width: number) => { rendered.add(width); return lines(width); },
 			cardGroups: () => ({ groups: [{ start: 0, end: 2 }, { start: 3, end: 5 }], loose: [6] }),
 			invalidate() {},
-			handleMouse(event) { received.push(event); return { handled: true }; },
+			handleMouse(event) {
+				if (!rendered.has(event.width) || event.height !== lines(event.width).length) return undefined;
+				if (event.x < 0 || event.x >= event.width || event.y < 0 || event.y >= event.height) return undefined;
+				received.push(event);
+				return { handled: true };
+			},
 		});
 		sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
 		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => "compact"));
@@ -1482,5 +1490,42 @@ test("a transparent rail draws every section as its own card in the transcript's
 		assert.equal(received.at(-1)?.y, 1, `${style}: a body row maps to its own row`);
 		assert.equal(scroll.handleMouse(click(6, integrations))?.handled, true);
 		assert.equal(received.at(-1)?.y, 3, `${style}: the second card's title maps to its header`);
+	}
+});
+
+test("float rail cards never fuse: an unpainted row separates them in every density, while neon cards may touch", (t) => {
+	const [previousStyle, previousSurface] = [cardStyle(), chromeSurface()];
+	t.after(() => { setCardStyle(previousStyle); setChromeSurface(previousSurface); });
+	const painted = { ...theme, bg: (role: string, text: string) => `\x1b[48;5;${role === "customMessageBg" ? 171 : 120}m${text}\x1b[49m` };
+	const tinted = /\x1b\[48;5;\d+m/;
+	setChromeSurface("transparent");
+	for (const style of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
+		for (const density of ["comfortable", "compact", "minimal"] as const) {
+			setCardStyle(style);
+			const f = fixture("fullscreen", 160);
+			sidebarPart(f.tui, "todo", { render: () => [], invalidate() {} }, { render: () => ["▾ TODOS  1/2", "  task"], invalidate() {} });
+			sidebarPart(f.tui, "footer", { render: () => [], invalidate() {} }, {
+				surface: "panel",
+				render: () => ["▾ CHANGES  clean", "  none", "▾ INTEGRATIONS  1", "  ready"],
+				cardGroups: () => ({ groups: [{ start: 0, end: 2 }, { start: 2, end: 4 }] }),
+				invalidate() {},
+			});
+			sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+			t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
+			const rows = railWithHeader(f).render(50);
+			const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+			for (const title of ["CHANGES", "INTEGRATIONS"]) {
+				const at = text.findIndex((row) => row.includes(title));
+				if (style === CARD_STYLE.FLOAT) {
+					// A float card opens with a padding row, so the row above that one separates two cards.
+					assert.doesNotMatch(rows[at - 2] ?? "", tinted, `float/${density}: an unpainted row separates the card before ${title}`);
+					assert.match(rows[at - 1]!, tinted, `float/${density}: ${title}'s card keeps its own top padding`);
+				} else {
+					const above = text.slice(0, at).filter((row) => row.trim() !== "").at(-1)!;
+					assert.match(above, /^╰─+╯$/, `neon/${density}: the previous card's bottom rule closes it above ${title}`);
+					assert.equal(text[at - 1]!.trim() === "", density === "comfortable", `neon/${density}: only comfortable adds a gap row`);
+				}
+			}
+		}
 	}
 });

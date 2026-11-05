@@ -2564,7 +2564,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			};
 			// The rail's Status is a panel: Changes, Review and Integrations, then
 			// the key hints that close the rail (the section headers carry none).
-			const railHints = [todoKey ? `${todoKey} todos` : "", usageShortcutKey ? `${usageShortcutKey} usage` : "", "/ commands"].filter(Boolean).join(" · ");
+			// The rail carries no key hints row: the Todos header shows its own collapse
+			// key, and the bars carry the usage key.
+			const railHints = undefined;
 			// Status sections are clickable like the other rail sections: a header
 			// folds its section, the Changes row opens /gentle:changes.
 			const statusCollapsed = new Set<StatusSection>();

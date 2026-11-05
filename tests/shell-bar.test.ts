@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_VISUAL_SETTINGS } from "../lib/visual-customization-policy.ts";
+import { collectSessionStats } from "../lib/shell-stats.ts";
 import {
 	buildShellHeaderModel,
 	formatCost,
@@ -374,60 +375,55 @@ test("the rail Status orders Changes before Integrations and keeps the location 
 	assert.match(empty, /INTEGRATIONS/);
 });
 
-test("Integrations shows the effective agent profile without changing its count or status order", () => {
+test("the agent profile opens Stats and never touches Integrations' rows, count or order", () => {
+	const stats = collectSessionStats([]);
 	const data = model({
 		profile: "alpha (session)",
 		permission: { mode: "AUTO", detail: "confirm before action" },
 		statuses: ["compact status"],
 		integrations: ["MCP connected", "Engram ready"],
+		stats,
 	});
 	const rows = () => renderShellSidebarBar(data, plainTheme, 60).map((line) => line.trimEnd());
+	const section = (lines: string[], title: string) => {
+		const at = lines.findIndex((line) => line.startsWith(`▾ ${title}`));
+		const end = lines.findIndex((line, index) => index > at && line.startsWith("▾ "));
+		return lines.slice(at, end < 0 ? undefined : end).filter((line) => line.trim() !== "");
+	};
 	const initial = rows();
-	const at = initial.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
-	assert.match(initial[at]!, /INTEGRATIONS\s+3$/);
-	assert.deepEqual(initial.slice(at + 1), [
-		"  Agent profile: alpha (session)",
-		"  - permissions confirm before action",
-		"  - MCP connected",
-		"  - Engram ready",
-	]);
+	assert.match(section(initial, "INTEGRATIONS")[0]!, /INTEGRATIONS\s+3$/);
+	assert.deepEqual(section(initial, "INTEGRATIONS").slice(1), ["  - permissions confirm before action", "  - MCP connected", "  - Engram ready"]);
+	assert.equal(section(initial, "STATS")[1], "  profile alpha (session)", "Stats opens with the profile");
 	data.profile = "beta (repo)";
-	const updated = rows().join("\n");
-	assert.match(updated, /INTEGRATIONS[\s\S]*Agent profile: beta \(repo\)/);
-	assert.doesNotMatch(updated, /alpha \(session\)/);
-
+	assert.equal(section(rows(), "STATS")[1], "  profile beta (repo)");
+	assert.doesNotMatch(rows().join("\n"), /alpha \(session\)/);
 	data.profile = undefined;
 	const absent = rows();
-	const absentAt = absent.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
-	assert.match(absent[absentAt]!, /INTEGRATIONS\s+3$/);
-	assert.deepEqual(absent.slice(absentAt + 1), ["  - permissions confirm before action", "  - MCP connected", "  - Engram ready"]);
+	assert.doesNotMatch(section(absent, "STATS").join("\n"), /profile/);
 	for (const profile of ["", " \t\n", "\x1b[31m\x1b[0m"]) {
 		data.profile = profile;
 		assert.deepEqual(rows(), absent, "an empty sanitized profile leaves prior output unchanged");
 	}
 	const onlyProfile = renderShellSidebarBar(model({ profile: "solo (local)" }), plainTheme, 60).map((line) => line.trimEnd());
-	const onlyAt = onlyProfile.findIndex((line) => line.startsWith("▾ INTEGRATIONS"));
-	assert.match(onlyProfile[onlyAt]!, /INTEGRATIONS\s+none$/);
-	assert.deepEqual(onlyProfile.slice(onlyAt + 1), ["  Agent profile: solo (local)", "  no status reported"]);
+	assert.deepEqual(section(onlyProfile, "INTEGRATIONS").slice(1), ["  no status reported"], "Integrations never lists the profile");
 });
 
-test("the rail wraps and sanitizes long agent profiles, leaving the compact bar unchanged", () => {
+test("Stats clips and sanitizes a long agent profile on one row, leaving the compact bar unchanged", () => {
 	const profile = `team-${"x".repeat(59)}\x1b[31m\nops\t界unit\x07\x1b[0m (repo)`;
 	const base = model();
-	const active = model({ profile });
+	const active = model({ profile, stats: collectSessionStats([]) });
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, changes: false } };
 	for (const width of [16, 24, 46]) {
 		const lines = renderShellSidebarBar(active, plainTheme, width, settings);
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		assert.ok(lines.every((line) => !/[\x00-\x1f\x7f-\x9f]/.test(line)), "profile controls must not reach the terminal");
-		const text = lines.slice(1).join("").replace(/\s/g, "");
-		assert.ok(text.includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`), "the complete sanitized profile survives wrapping");
+		const row = lines.find((line) => line.includes("profile"))!;
+		assert.match(row, /profile team-x*…/, "the profile clips with an ellipsis on its one row");
 	}
 	const ansiTheme = { ...plainTheme, fg: (role: string, value: string) => `\x1b[${role === "muted" ? 90 : 37}m${value}\x1b[0m` };
 	const colored = renderShellSidebarBar(active, ansiTheme, 24, settings);
 	assert.ok(colored.every((line) => visibleWidth(line) <= 24));
-	assert.match(colored.join(""), /\x1b\[90mAgent profile:\x1b\[0m/);
-	assert.ok(colored.slice(1).map(stripAnsi).join("").replace(/\s/g, "").includes(`Agentprofile:team-${"x".repeat(59)}ops界unit(repo)`));
+	assert.match(colored.join(""), /\x1b\[90mprofile\x1b\[0m/, "the label is muted like the other Stats labels");
 	assert.deepEqual(renderShellBar(active, plainTheme, 120), renderShellBar(base, plainTheme, 120));
 });
 

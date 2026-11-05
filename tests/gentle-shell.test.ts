@@ -720,9 +720,9 @@ test("the fullscreen Status rail and header refresh the effective agent profile 
 		assert.equal(typeof rail.digest, "function", "the Status card paints live state and must declare a digest");
 		assert.doesNotMatch(rail.render(46).join("\n"), /gpt-5\.5/, "model now lives in the header, not the Status card");
 
-		// Integrations exposes the same effective agent profile as the header.
+		// The bar carries the effective agent profile next to the model; Integrations no longer lists it.
 		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
-		assert.match(rail.render(46).join("\n"), /Agent profile: team/);
+		assert.doesNotMatch(rail.render(46).join("\n"), /Agent profile/);
 		assert.match(header.render(160).join("\n"), /team/);
 		const beforeProfile = header.digest?.();
 		const beforeRailProfile = live();
@@ -730,7 +730,6 @@ test("the fullscreen Status rail and header refresh the effective agent profile 
 		assert.notEqual(header.digest?.(), beforeProfile, "a profile switch changes the header digest");
 		assert.notEqual(live(), beforeRailProfile, "a profile switch changes the Status digest");
 		assert.match(header.render(160).join("\n"), /other/);
-		assert.match(rail.render(46).join("\n"), /Agent profile: other/);
 		profile = undefined;
 		assert.doesNotMatch(header.render(160).join("\n"), /team|other/);
 		assert.doesNotMatch(rail.render(46).join("\n"), /Agent profile:/);
@@ -918,7 +917,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 	try {
 		const timer = intervals.find((entry) => entry.delay === 2000);
 		assert.ok(timer, "UI session installs the 2000ms profile refresh");
-		assert.match(status(), /Agent profile: team/, "Integrations shows the effective agent profile");
+		assert.doesNotMatch(status(), /Agent profile/, "Integrations no longer lists the profile; the bar does");
 		assert.match(header(), /team/);
 		const before = tui.requestRender.mock.callCount();
 		timer.tick();
@@ -928,7 +927,7 @@ test("profile polling refreshes both fullscreen surfaces only on change and stop
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		assert.match(header(), /other \(local\)/);
-		assert.match(status(), /Agent profile: other \(local\)/, "profile polling also refreshes Integrations");
+
 		timer.tick();
 		assert.equal(tui.requestRender.mock.callCount(), before + 1);
 		const afterBind = resolutions;
@@ -3699,7 +3698,7 @@ test("T3 live style Cards action refreshes cached TODO and Status in both direct
 	const wide = root[node]() as unknown as { entries: { component: { render(width: number): string[] } }[] };
 	assert.equal(wide.entries.length, 3, "title row, transcript with the rail, status bar");
 	const [titleAbove, titleRow, titleBelow] = stripAnsi(frame.header).split("\n");
-	assert.match(titleRow!, /^ ✿ repo  \/repo .*team $/);
+	assert.match(titleRow!, /^ ✿ repo  \/repo .*Release notes $/, "the title row keeps the session; the profile rides the status bar");
 	assert.equal(titleAbove!.trim() + titleBelow!.trim(), "", "comfortable centers the title row between two margin rows");
 	const [statusMargin, statusRow, statusBelow] = stripAnsi(wide.entries[2]!.component.render(160).join("\n")).split("\n");
 	assert.equal(statusMargin!.trim() + statusBelow!.trim(), "", "and the status bar too");
@@ -7851,4 +7850,96 @@ test("repeated [ Panel ] or /gentle:panel opens never stack sheets: one stays op
 	assert.equal(ui.customOptions!.length, before + 2, "after one escape the sheet opens again");
 	ui.overlayView!.handleInput("\x1b");
 	await reopened;
+});
+
+test("on a transparent rail a click on a section card's title folds that section, and the rail has no key hints row", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		writeCardStyle(style, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		const painted = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", gap: 0, entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const statuses = new Map([["gentle-pi", "🧠 gentle-pi · ready"]]);
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		type Node = { type?: string; entries?: { component: unknown }[] };
+		const findRail = (value: unknown): { render(width: number): string[]; handleMouse(event: unknown): { handled?: boolean } | undefined } | undefined => {
+			const component = value as { [key: symbol]: () => Node; handleMouse?: unknown; getContentWidth?: unknown };
+			if (typeof component?.getContentWidth === "function") return component as never;
+			const layout = typeof component?.[node] === "function" ? component[node]() : undefined;
+			for (const entry of layout?.entries ?? []) { const found = findRail(entry.component); if (found) return found; }
+			return undefined;
+		};
+		const rail = findRail(root)!;
+		assert.ok(rail, `${style}: the rail is mounted`);
+		const text = () => rail.render(50).map(stripAnsi);
+		assert.doesNotMatch(text().join("\n"), /alt\+u usage|\/ commands/, `${style}: the rail has no key hints row`);
+		const title = text().findIndex((row) => row.includes("INTEGRATIONS"));
+		assert.ok(title >= 0 && text().some((row) => row.includes("gentle-pi · ready")), `${style}: Integrations shows its rows`);
+		const click = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 50, height: 38, shift: false, alt: false, ctrl: false });
+		assert.equal(rail.handleMouse(click(6, title))?.handled, true, `${style}: the card title row takes the click`);
+		root[node]();
+		assert.ok(!text().some((row) => row.includes("gentle-pi · ready")), `${style}: the click folded Integrations`);
+		const folded = text().findIndex((row) => row.includes("INTEGRATIONS"));
+		assert.equal(rail.handleMouse(click(1, folded))?.handled, true, `${style}: the card's left edge on the title row also folds`);
+		root[node]();
+		assert.ok(text().some((row) => row.includes("gentle-pi · ready")), `${style}: a second click unfolds it`);
+		await fire(handlers, "session_shutdown", ctx);
+	}
+});
+
+test("on a transparent rail hovering a section card's title paints it in the hover role, like the other rail controls", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
+		writeCardStyle(style, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }, { gentlePiConfigHome: home });
+		const { pi, handlers } = fakePi();
+		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+		const { ctx, ui } = fakeContext();
+		await fire(handlers, "session_start", ctx);
+		// The hover role as real SGR, the way a terminal theme paints it.
+		// Every role paints, so a leaked or overridden hover shows up as in a terminal.
+		const painted = { ...plainTheme, fg: (role: string, text: string) => `\x1b[${role === "warning" ? 33 : 37}m${text}\x1b[39m`, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+		(ctx.ui as unknown as MutablePromptThemeHost).theme = painted as unknown as typeof ctx.ui.theme;
+		const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+		const root = { render: () => ["transcript"], invalidate() {}, [node]: () => ({ type: "vstack", gap: 0, entries: [] }) };
+		const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+		const statuses = new Map([["gentle-pi", "🧠 gentle-pi · ready"]]);
+		const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => statuses, getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+		t.after(() => footer.dispose());
+		type Node = { entries?: { component: unknown }[] };
+		const findRail = (value: unknown): { render(width: number): string[]; handleMouse(event: unknown): { handled?: boolean } | undefined } | undefined => {
+			const component = value as { [key: symbol]: () => Node; getContentWidth?: unknown };
+			if (typeof component?.getContentWidth === "function") return component as never;
+			const layout = typeof component?.[node] === "function" ? component[node]() : undefined;
+			for (const entry of layout?.entries ?? []) { const found = findRail(entry.component); if (found) return found; }
+			return undefined;
+		};
+		const rail = findRail(root)!;
+		const plain = (row: string) => stripAnsi(row);
+		// The hover role opens right before the title text, with no other color in between.
+		const hovered = /\x1b\[33mINTEGRATIONS/;
+		const title = rail.render(50).findIndex((row) => plain(row).includes("INTEGRATIONS"));
+		assert.doesNotMatch(rail.render(50)[title]!, hovered, `${style}: not hovered yet`);
+		const move = (x: number, y: number) => ({ type: "move", button: "none", x, y, screenX: 110 + x, screenY: y, width: 50, height: 38, shift: false, alt: false, ctrl: false });
+		assert.ok(rail.handleMouse(move(8, title))?.handled, `${style}: the title row takes the hover`);
+		root[node]();
+		const row = rail.render(50).find((line) => plain(line).includes("INTEGRATIONS"))!;
+		assert.match(row, hovered, `${style}: the hovered card title is painted in the hover role`);
+		assert.equal((plain(row).match(/[▾▸✿]/g) ?? []).length, 1, `${style}: one glyph, the section's own`);
+		await fire(handlers, "session_shutdown", ctx);
+	}
 });

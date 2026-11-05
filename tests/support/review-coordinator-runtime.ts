@@ -50,7 +50,7 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 		processEnv: { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: variant === "coordinator" ? "1" : "0", GENTLE_AI_TELEMETRY: "0" },
 	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
 	const forecasts: Body[] = [];
-	const context = { cwd, hasUI: true, sessionManager: { getSessionId: () => "fixture-live-driver" }, modelRegistry: undefined };
+	const context = { cwd, hasUI: true, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined }, modelRegistry: undefined };
 	const facadeCalls: { name: string; parameters: Body; elapsed_ms: number }[] = [];
 	return { tools, lineage, target, nativeCalls, facadeCalls, forecasts,
 		async invoke(name: string, parameters: Body) {

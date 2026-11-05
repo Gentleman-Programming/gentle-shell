@@ -134,7 +134,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, Registered>();
 	const shortcuts = new Map<string, { description: string; handler(ctx: ExtensionContext): Promise<void> }>();
-	const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
+	const commands = new Map<string, { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }>();
 	const sent: Array<{ message: Record<string, unknown>; options: Record<string, unknown> }> = [];
 	// `delivery` records custom messages and user wakes in dispatch order.
 	const userMessages: Array<{ content: unknown; options: Record<string, unknown> | undefined }> = [];
@@ -168,7 +168,7 @@ function fakePi(initialProvider: string = "claude-bridge") {
 		on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 		registerTool: (tool: Registered) => tools.set(tool.name, tool),
 		registerShortcut: (key: string, registration: { description: string; handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, registration),
-		registerCommand: (name: string, registration: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
+		registerCommand: (name: string, registration: { description?: string; handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, registration),
 	} as unknown as ExtensionAPI;
 	let activeSession: ExtensionContext | undefined;
 	const teardown = async () => {
@@ -3952,7 +3952,7 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	// (a host with no .terminal is already a passthrough); this is the host
 	// shape the fullscreen layout actually uses.
 	const terminalTui = { requestRender() {}, terminal: { columns: 160, rows: 40 } };
-	const { ctx, widgetComponent } = fakeContext(terminalTui);
+	const { ctx, widgetComponent, overlays } = fakeContext(terminalTui);
 	await fire("session_start", ctx);
 	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Map lib/", label: "map lib modules", mode: "background" }, undefined, undefined, ctx);
 	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Map tests/", label: "map test suites", mode: "background" }, undefined, undefined, ctx);
@@ -3984,7 +3984,10 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 		type, button, x: 1, y, screenX: 1, screenY: y, width: 72, height: bottom.length, shift: false, alt: false, ctrl: false,
 	});
 	assert.equal(component.handleMouse?.(event("click", "right")), undefined);
-	assert.equal(component.handleMouse?.(event("click", "left", 1)), undefined);
+	assert.equal(component.handleMouse?.(event("click", "right", 1)), undefined, "a right click on an agent row does nothing");
+	assert.equal(component.handleMouse?.(event("click", "left", 1))?.handled, true, "a left click on an agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 1, "a left click on an agent row opens /gentle:agents");
 	assert.match(stripAnsi(component.render(72)[0]!), /Agents ▾ Collapse/, "only a left click on the header toggles");
 	assert.equal(component.handleMouse?.(event("click", "left"))?.handled, true);
 	const collapsed = component.render(72).map(stripAnsi);
@@ -3995,6 +3998,11 @@ test("the Agents card moves to the fullscreen rail like Todos and its header tog
 	const railClick = { type: "click" as const, button: "left" as const, x: 1, y: 0, screenX: 1, screenY: 0, width: 46, height: 2, shift: false, alt: false, ctrl: false };
 	assert.equal(rail.handleMouse?.(railClick)?.handled, true, "the rail header row 0 is the collapse control");
 	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/);
+	assert.equal(rail.handleMouse?.({ ...railClick, y: 1, screenY: 1 })?.handled, true, "a left click on a rail agent row is handled");
+	await tick();
+	assert.equal(overlays.length, 2, "a left click on a rail agent row opens /gentle:agents, never the panel");
+	assert.match(stripAnsi(rail.render(46)[0]!), /^▾ AGENTS/, "an agent row click never toggles the section");
+	assert.equal(typeof (rail as { open?: unknown }).open, "function", "the rail part exposes the agents view for the mobile work row");
 });
 
 test("the Agents rail digest stays stable while no task is running, so an idle card never rebuilds the rail every second", async () => {
@@ -6937,6 +6945,48 @@ test("/gentle:jobs opens this session's jobs overlay, stops the selected job, an
 	}
 });
 
+test("/gentle:jobs mouse controls route the chosen running job through the existing stop and notice path", async () => {
+	const { pi, tools, commands, fire, sent } = fakePi();
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx, overlays } = fakeContext();
+	try {
+		assert.match(commands.get("gentle:jobs")?.description ?? "", /click.*Stop/i, "command help advertises the explicit mouse control");
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "first command", label: "first job" }, undefined, undefined, ctx);
+		await tools.get("bash_background")!.execute("b2", { command: "second command", label: "second job" }, undefined, undefined, ctx);
+		const opened = commands.get("gentle:jobs")!.handler("", ctx);
+		await tick();
+		const overlay = overlays.at(-1)!;
+		const eventFor = (text: string, type: TuiMouseEvent["type"]) => {
+			const lines = overlay.render(100).map(stripAnsi);
+			const y = lines.findIndex((line) => line.includes(text));
+			assert.ok(y >= 0, `Missing ${text}`);
+			const x = visibleWidth(lines[y]!.slice(0, lines[y]!.indexOf(text)));
+			return mouse(type, type === "move" ? "none" : "left", x, y, 100, lines.length);
+		};
+		overlay.handleMouse?.(eventFor("second job", "move"));
+		assert.equal(jobs.runs[0]!.signal?.aborted, false);
+		assert.equal(jobs.runs[1]!.signal?.aborted, false);
+		overlay.handleMouse?.(eventFor("second job", "press"));
+		overlay.handleMouse?.(eventFor("second job", "click"));
+		assert.equal(jobs.runs[1]!.signal?.aborted, false, "selecting a row does not stop it");
+		overlay.handleMouse?.(eventFor("s Stop", "press"));
+		overlay.handleMouse?.(eventFor("s Stop", "click"));
+		assert.equal(jobs.runs[0]!.signal?.aborted, false);
+		assert.equal(jobs.runs[1]!.signal?.aborted, true, "the selected job alone is stopped");
+		await jobIo();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1);
+		assert.match(String(notices[0]!.message.content), /job-2 \("second job"\) was stopped by the user/);
+		overlay.handleInput("q");
+		await opened;
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
 test("a job exit notice whose forwarding throws while the parent is idle is retried after the bounded grace", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
 	const harness = deps();
@@ -7339,6 +7389,26 @@ test("subagent_run never reports provider review routing keys as unmatched", asy
 	assert.equal(warnings.length, 1, "the typo is still reported once");
 	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
 	assert.doesNotMatch(warnings[0]!, /review-refuter|review-validator/);
+});
+
+// A profile bound with "Use in this session" keeps the reserved `orchestrator`
+// key (the parent's own model); it is never a subagent routing key, so the
+// launch warning must not report it, while a real typo next to it still is.
+test("subagent_run never reports the bound profile's orchestrator key as unmatched", async (t) => {
+	t.after(() => resetSessionProfileBindingsForTesting());
+	const child = fakePi();
+	const runtime = deps();
+	captureLaunches(t);
+	gentleAgents(child.pi, {}, runtime.deps);
+	const { ctx, dialogs } = fakeContext();
+	bindSessionProfile("s1", "team", { orchestrator: { model: "openai/alpha" }, explore: { model: "openai/beta" }, explor: { model: "openai/gamma" } });
+	await child.fire("session_start", ctx);
+	await child.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "first", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const warnings = dialogs.filter((message) => /did not match any agent and was ignored/.test(message));
+	assert.equal(warnings.length, 1, "the typo is still reported once");
+	assert.match(warnings[0]!, /"explor" did not match any agent and was ignored\./);
+	assert.doesNotMatch(warnings[0]!, /"orchestrator"/, "the reserved orchestrator key is never a subagent key");
 });
 
 // Issue #2400: a model_profiles key that matches no discovered agent and has no

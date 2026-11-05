@@ -29,7 +29,7 @@ import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
 import { Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
-import { sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarPart, VISUAL_SETTINGS_CHANGED } from "../lib/shell-sidebar.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { resolveVisualSettings } from "../lib/visual-customization-policy.ts";
 import { createCompletionQueue } from "../lib/agents-completion-delivery.ts";
@@ -710,6 +710,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const restoredTaskIds = new Set<string>();
 	const tasksDir = historyDir(deps.home, agentHome);
 	let ui: ExtensionContext["ui"] | undefined;
+	// The session that owns the Agents widget, so a click on an agent row opens its /gentle:agents view.
+	let widgetCtx: ExtensionContext | undefined;
 	// The catalog prices a fallback notice ("2.0x the price").
 	let modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	const announceFallback = (change: FallbackChange, parentSessionId: string | undefined, taskId?: string) => {
@@ -1887,6 +1889,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	});
 
 	const showWidget = (ctx: ExtensionContext) => {
+		widgetCtx = ctx;
 		ui = ctx.hasUI ? ctx.ui : undefined;
 		modelRegistry = ctx.modelRegistry;
 		sessions = ctx.sessionManager;
@@ -1917,12 +1920,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// One surface of the Agents card. The rail is natively scrollable, so it
 	// lists every task; the above-editor widget keeps its row budget. Only the
-	// header row is the clickable collapse control, exactly like Todos.
-	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[] } => {
+	// header row is the clickable collapse control, exactly like Todos; a click
+	// on an agent row below it opens /gentle:agents.
+	const agentsCard = (tui: TUI, theme: Parameters<typeof renderAgentsCard>[1], rail: boolean): Component & { dispose(): void; digest(): string; surface?: "panel"; summary?(): ReturnType<typeof agentsSummary>; alert?(width: number): string[]; open?(): void } => {
 		let hovered = false;
+		let hoveredRow: number | undefined;
 		let headerRow = 0;
+		const agentRows = new Set<number>();
+		// The rows the card drew last, so a click past them (the card's spacer) opens nothing.
+		let drawnRows = 0;
 		const card: Component = {
 			render(width: number) {
+				drawnRows = 0;
+				agentRows.clear();
 				if (!agentsVisible) return [];
 				const tasks = visibleTasks();
 				const now = deps.now();
@@ -1930,35 +1940,53 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// stays as one idle row without tasks; above the editor it is a card.
 				if (rail) {
 					headerRow = 0;
-					return renderAgentsSection(tasks, theme, width, now, { collapsed, hovered });
+					const rows = renderAgentsSection(tasks, theme, width, now, { collapsed, hovered, hoveredRow, onAgentRow: (row) => agentRows.add(row) });
+					drawnRows = tasks.length === 0 ? 0 : rows.length;
+					return rows;
 				}
 				headerRow = panelHeaderRow(theme, width, agentsCardTone(tasks, now));
-				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered });
+				const lines = renderAgentsCard(tasks, theme, width, now, { collapsed, collapseKey, maxRows: widgetRows(tui.terminal?.rows), viewKey, collapseControl: true, hovered, hoveredRow, onAgentRow: (row) => agentRows.add(row) });
+				drawnRows = tasks.length === 0 ? 0 : lines.length;
 				return lines.length === 0 ? lines : [...lines, ""];
 			},
 			invalidate() {
 				hovered = false;
+				hoveredRow = undefined;
 			},
 		};
 		const region = new NativePointerRegion(card, {
 			onHover(event) {
 				const next = event.y === headerRow;
-				if (next === hovered) return { handled: true };
+				const nextRow = agentRows.has(event.y) ? event.y : undefined;
+				if (next || nextRow !== undefined) setSidebarHover(tui, region, () => region.clearHover());
+				else setSidebarHover(tui);
+				if (next === hovered && nextRow === hoveredRow) return { handled: true };
 				hovered = next;
+				hoveredRow = nextRow;
 				return { handled: true, render: true };
 			},
 			onLeave() {
-				if (!hovered) return;
+				releaseSidebarHover(tui, region);
+				if (!hovered && hoveredRow === undefined) return;
 				hovered = false;
+				hoveredRow = undefined;
 				host?.requestRender();
 			},
 			onClick(event) {
-				if (event.button !== "left" || event.y !== headerRow) return undefined;
-				toggleCollapsed();
+				if (event.button !== "left") return undefined;
+				region.clearHover();
+				if (event.y === headerRow) {
+					toggleCollapsed();
+					return { handled: true, render: true };
+				}
+				if (event.y < headerRow || event.y >= drawnRows || !widgetCtx) return undefined;
+				void openOverlay(widgetCtx);
 				return { handled: true, render: true };
 			},
 		});
 		return {
+			// The mobile work row folds this section; a tap on it opens /gentle:agents.
+			...(rail ? { open: () => { if (widgetCtx) void openOverlay(widgetCtx); } } : {}),
 			// The panel editor draws the alert above its rule while the IDE chrome
 			// hides the above-editor card (rail or mobile work row).
 			...(rail ? { surface: "panel" as const, summary: () => (agentsVisible ? agentsSummary(visibleTasks(), theme, deps.now()) : undefined), alert: (width: number) => (agentsVisible ? renderAgentsAlert(visibleTasks(), theme, width) : []), spend: () => agentsSpend(visibleTasks()) } : {}),
@@ -1969,7 +1997,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			digest: () => {
 				const tasks = visibleTasks();
 				const clock = tasks.some((task) => !isFinished(task.status)) ? Math.floor(deps.now() / 1000) : 0;
-				return JSON.stringify([agentsVisible, collapsed, hovered, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
+				return JSON.stringify([agentsVisible, collapsed, hovered, hoveredRow, tui.terminal?.rows, clock, tasks.map((task) => [task.id, task.status, task.tokens, task.cost, task.label, task.lastStep, task.error])]);
 			},
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),
@@ -2836,7 +2864,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	}
 
 	pi.registerCommand(JOBS_COMMAND_NAME, {
-		description: "Show background jobs: running first, newest first within each group; status, command, output tail; s stops the selected job.",
+		description: "Show background jobs: running first, newest first within each group; status, command, output tail. Click a job to inspect it; click Stop or press s to stop the selected running job.",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {

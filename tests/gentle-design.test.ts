@@ -1057,6 +1057,7 @@ test("gentle_design implement fails on an unknown target and reports an invalid 
 
 const DESIGN_HINT = [
 	"Gentle Design: any request for a UI design, mockup, screen, landing page or visual directions uses the gentle-design skill by default; read the skill first when it is not loaded.",
+	"Pair it with the gentle-ui-design skill for UX quality: read that skill and only the references relevant to the brief before choosing directions.",
 	'Before designing, call the gentle_design tool (action "list"); when the project has design sources but no design/system.md, run the skill\'s design system sync first.',
 	'After writing or changing a design, open or refresh it on the canvas with the gentle_design tool (action "open" with the slug), unless the user said not to.',
 	"Designs stay under design/<slug>/.",
@@ -1098,6 +1099,26 @@ test("the skill triggers on natural-language design requests and opens the canva
 	const steps = source.slice(source.indexOf("## Execution Steps"), source.indexOf("\n## ", source.indexOf("## Execution Steps") + 1));
 	assert.match(steps, /`gentle_design`[^\n]*"open"[^\n]*slug[^\n]*unless the user/);
 	assert.match(source, /`\/gentle:design`[^\n]*optional shortcuts/);
+});
+
+test("the artboard workflow loads gentle-ui-design before choosing directions and self-checks against it", () => {
+	const source = readFileSync(SKILL_PATH, "utf8");
+	const steps = source.slice(source.indexOf("## Execution Steps"), source.indexOf("\n## ", source.indexOf("## Execution Steps") + 1));
+	const load = steps.search(/`gentle-ui-design`/);
+	assert.ok(load !== -1, "the steps load gentle-ui-design");
+	assert.ok(load < steps.indexOf("Make the directions differ"), "it loads before the directions are chosen");
+	assert.match(steps, /audience, primary job, (and )?success condition/);
+	const check = steps.search(/UX self-check[^\n]*composition-and-feedback[^\n]*adaptive-interfaces/);
+	assert.ok(check !== -1, "every artboard is self-checked against the UX guidance");
+	assert.ok(check < steps.indexOf('action: "open"'), "the UX self-check runs before the canvas opens");
+});
+
+test("gentle-ui-design pairs with gentle-design instead of deferring to it", () => {
+	const source = readFileSync(fileURLToPath(new URL("../skills/gentle-ui-design/SKILL.md", import.meta.url)), "utf8");
+	const activation = source.slice(source.indexOf("## Activation Contract"), source.indexOf("\n## ", source.indexOf("## Activation Contract") + 1));
+	assert.match(activation, /Pair with `gentle-design`[^\n]*gentle-design owns delivery[^\n]*this skill owns UX quality/);
+	assert.doesNotMatch(activation, /Use `gentle-design` for its HTML artboard workflow/);
+	assert.match(activation, /`gentle-ai-tui-design` for terminal interfaces/);
 });
 
 test("the skill's Before designing gate lists first, syncs automatically, and offers a re-sync when stale", () => {

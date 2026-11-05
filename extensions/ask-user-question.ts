@@ -295,6 +295,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 					const container = createNativeFullscreenInteraction({
 						keyboardTarget: view,
 						requestRender: () => tui.requestRender(),
+						mouseObserver: view.createMouseObserver(() => tui.requestRender()),
 					});
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(view);

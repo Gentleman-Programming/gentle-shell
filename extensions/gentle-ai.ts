@@ -128,8 +128,9 @@ import {
 import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
-import { isSessionProfileFamilyEntry } from "../lib/session-profile-persistence.ts";
-import { resolveSessionProfile, sessionProfileModelProfiles, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
+import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -2509,9 +2510,33 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
 }
 
-/** Resolve one complete reviewer routing snapshot without per-role fallback. */
-function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
-	return readSessionProfileBinding(sessionId)?.modelProfiles ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+/**
+ * Resolve one complete reviewer routing snapshot without per-role fallback,
+ * through the same rule launches read (gentle-shell#1064): the Enter binding,
+ * else the profile the session froze at startup (a session frozen without one
+ * never adopts a later pin), else in follow mode the profile the target
+ * resolves now. A reviewer never runs on routing the session no longer uses.
+ */
+function readReviewerModelConfig(cwd: string, sessionId: string | undefined, sessionCwd: string = cwd): AgentModelConfig {
+	const resolution = resolveSessionProfile({ sessionId, cwd: sessionCwd, configHome: gentleAiConfigHome() });
+	// A target in another Git repository keeps its own pin layers, as launches do.
+	const target = readProfilePinStatus(cwd)?.commonDir;
+	const home = readProfilePinStatus(sessionCwd)?.commonDir;
+	// A session outside Git has no repository of its own, so any Git target is foreign.
+	const foreignRepository = target !== undefined && target !== home;
+	// A caller without a session keeps the routing it read before session profiles.
+	// An explicit binding carries its full modelProfiles (orchestrator included) to
+	// the fallback below; sessionProfileRoutingAt role-routes it, and launches must
+	// never see the orchestrator key (gentle-shell#2742, section 8).
+	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd)
+		: resolution.kind === "explicit" ? resolution.modelProfiles
+		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
+	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
+	// Only a profile chosen with Use in this session carries its orchestrator to
+	// the provider review roles; inherited, pinned and global routing leave them on
+	// Pi's persisted default (gentle-shell#2716 A1).
+	if (resolution.kind !== "explicit") delete config.orchestrator;
+	return config;
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */
@@ -5261,7 +5286,8 @@ async function runProfilesPanelAction(
 				return file;
 			}
 			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
-				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {});
+				const startup = knownSessionProfileStartup(attachment.refresh().state, sessionId);
+				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {}, startup);
 				if (!owned()) return false;
 				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
 				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
@@ -6158,10 +6184,32 @@ async function openProfilesPanelLoop(
 }
 
 /**
- * `/gentle:profiles clear`: append an explicit clear record for this session and
- * publish only the returned state. Never-bound and already-cleared sessions write
- * nothing; an unreadable record is the recovery case and is cleared. The live
- * orchestrator and every shared default stay untouched.
+ * The startup state this session knows (gentle-shell#2742, section 3): the one
+ * the newest corroborated record carries, else the profile this process froze
+ * at the session's own start. Follow mode has none.
+ */
+function knownSessionProfileStartup(state: SessionProfileAppendOutcome["state"], sessionId: string): SessionProfileStartupState | undefined {
+	if (profileFollowEnabled()) return undefined;
+	if (state.status === "bound") {
+		const { origin, name, modelProfiles, startup } = state.binding;
+		if (origin !== "user") return { origin, name, modelProfiles };
+		if (startup !== undefined) return startup;
+	} else if (state.status === "cleared" && state.startup === "none") return "none";
+	return readSessionProfileOwnStartup(sessionId);
+}
+
+/** Where a clear goes back to, named with the status label convention. */
+function startupStateText(startup: SessionProfileStartupState): string {
+	return startup === "none" ? "no profile, as this session started" : `the profile this session started with, "${sessionProfileLabel({ kind: "inherited", profile: startup })}", and use it`;
+}
+
+/**
+ * `/gentle:profiles clear`: go back to the startup state when it is known
+ * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
+ * only the returned state. Never-bound, already-cleared and startup sessions
+ * write nothing; an unreadable record is the recovery case and is replaced.
+ * Follow mode has no startup state, so a startup record gets a legacy clear
+ * (section 6). The live orchestrator and every shared default stay untouched.
  */
 async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	const sessionId = ctx.sessionManager?.getSessionId?.();
@@ -6178,21 +6226,33 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 			ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
 			return true;
 		}
-		if (prior.status === "cleared") {
+		const startupOrigin = prior.status === "bound" && prior.binding.origin !== "user" ? prior.binding.origin : undefined;
+		if (!profileFollowEnabled() && (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none"))) {
+			const label = prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined;
+			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
+			return true;
+		}
+		if (prior.status === "cleared" && prior.startup !== "none") {
 			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
 			return true;
 		}
-		const outcome = attachment.clear();
+		const startup = knownSessionProfileStartup(prior, sessionId);
+		const outcome = typeof startup === "object" ? attachment.bindStartup(startup.origin, startup.name, startup.modelProfiles) : attachment.clear(startup);
 		if (!owned()) return false;
 		const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
-		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "cleared" || !authority.available) {
+		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== (typeof startup === "object" ? "bound" : "cleared") || !authority.available) {
 			ctx.ui.notify(
 				`el Gentleman could not clear the session profile. ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."}`,
 				"warning",
 			);
 			return false;
 		}
-		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : "the unreadable session profile record";
+		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : prior.status === "cleared" ? "the recorded startup state" : "the unreadable session profile record";
+		const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+		if (startup !== undefined) {
+			ctx.ui.notify(`el Gentleman cleared ${what} (${persistence}). New launches go back to ${startupStateText(startup)}. The live orchestrator is unchanged.`, "info");
+			return true;
+		}
 		ctx.ui.notify(
 			`el Gentleman cleared ${what} — ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. New launches use the routing without a session profile (pins, repository declaration, global). The live orchestrator is unchanged.`,
 			"info",
@@ -6203,6 +6263,25 @@ async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	// only a still-active command reports the missing attachment.
 	if (selected === undefined && isCommandContextActive(ctx))
 		ctx.ui.notify("el Gentleman cannot clear the session profile: the current session attachment is unavailable. Nothing was changed.", "warning");
+}
+
+/**
+ * Whether this `session_start` is the session's own start (gentle-shell#2742,
+ * section 3). Pi has no new-session flag: "startup" also opens an existing
+ * session file, and a reload or resume restarts a session that already began.
+ * Before `session_start`, Pi records the model and thinking level of a session
+ * without a conversation, a new one included, so an own start holds at most
+ * that one pair. A profile record, any other entry, or an earlier pair means
+ * the session started before, and its startup state stays unknown.
+ */
+function isSessionOwnStart(event: { reason: string }, manager: ExtensionContext["sessionManager"]): boolean {
+	if (event.reason !== "startup" && event.reason !== "new") return false;
+	const seen = new Set<string>();
+	for (const entry of manager.getEntries()) {
+		if ((entry.type !== "model_change" && entry.type !== "thinking_level_change") || seen.has(entry.type)) return false;
+		seen.add(entry.type);
+	}
+	return true;
 }
 
 /**
@@ -8665,6 +8744,16 @@ function reviewHostRelaySelection(lens: string | undefined, config: AgentModelCo
 	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
 	let thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
 	if (model === undefined && isProviderReviewRole(routingKey)) {
+		// These roles default to the orchestrator: the session profile's own one
+		// first, so a session that switched profile never reviews on the model it
+		// started with (gentle-shell#1064).
+		const orchestrator = readProfileOrchestrator(config);
+		if (orchestrator?.model !== undefined) {
+			model = orchestrator.model;
+			thinking ??= orchestrator.thinking;
+		}
+	}
+	if (model === undefined && isProviderReviewRole(routingKey)) {
 		const persisted = readOrchestratorSettings(orchestratorSettingsPath());
 		if (persisted.status === "valid" && persisted.entry?.model !== undefined) {
 			model = persisted.entry.model;
@@ -8800,6 +8889,8 @@ async function executeReviewHostRelayCapture(
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	// The session's own directory, so a review of another repository routes like a launch there.
+	sessionCwd: string = cwd,
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -8822,7 +8913,7 @@ async function executeReviewHostRelayCapture(
 			// global routing. A pin that omits a required role stays omitted: the
 			// typed reviewer-config-invalid refusal below is fail-closed, never a
 			// silent per-role fallback to another account's routing.
-			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId));
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd));
 			return {
 				captureArgumentTokens: slot.captureArgumentTokens,
 				targetCwd: cwd,
@@ -9545,7 +9636,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -9571,7 +9662,7 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -9701,7 +9792,7 @@ async function executeReviewCaptureGroupOperation(
 	}
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
-	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
+	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd);
 	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
@@ -10859,6 +10950,7 @@ export const __testing = {
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
+	reviewHostRelaySelection,
 	readEffectiveModelConfigAsync,
 	followRenamedPin,
 	profilePinScopeNote,
@@ -11461,6 +11553,12 @@ function createGentleAiExtensionForTesting(
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		// gentle-shell#2742: only a session's own start tells this process its
+		// startup state; anything else leaves it unknown.
+		try {
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
+				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+		} catch { /* The startup state stays unknown. */ }
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();

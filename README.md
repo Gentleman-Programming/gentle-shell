@@ -273,7 +273,7 @@ Open `/gentle:customize` → **Notifications** (the card header reads **Audio no
 
 ### Background jobs — Inspect what runs in the background
 
-Use `/gentle:jobs` to inspect this session's background commands and monitors. Running jobs appear first; each group is ordered newest first. Arrow keys select a job, `Tab` opens details on narrow terminals, `s` stops a running job, and `q` closes the modal.
+Use `/gentle:jobs` to inspect this session's background commands and monitors. Running jobs appear first; each group is ordered newest first. Arrow keys select a job, `Tab` opens details on narrow terminals, `s` stops a running job, and `q` closes the modal. In fullscreen, click a job or a visible details, Stop or close control; actionable targets use the shared orange hover role without changing the selection on hover.
 
 The Status panel has a **Jobs** section with each running job's description. When the panel is hidden or unavailable in the compact/mobile layout, the top or bottom bar shows only the running count (`⧗ 1 job`). The count and descriptions disappear when no jobs remain active; `/gentle:jobs` retains completed jobs for inspection.
 

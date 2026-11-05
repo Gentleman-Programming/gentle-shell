@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { initTheme, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
@@ -21,6 +21,7 @@ import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExten
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
@@ -4273,17 +4274,178 @@ test("Enter switches only the selecting session's orchestrator and leaves shared
 
 test("reviewer routing uses the selecting session snapshot without leaking to other sessions", (t) => {
 	const { fixture, writeStore } = profilesStoreFixture(t);
-	writeStore({ team: {} }, "team");
+	// No active profile: an unbound session inherits none, so it reads the global routing.
+	writeStore({ team: {} });
 	mkdirSync(fixture.configHome, { recursive: true });
 	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" }, "review-reliability": { model: "openai/global" } }));
 	resetSessionProfileBindingsForTesting();
-	t.after(() => resetSessionProfileBindingsForTesting());
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => { resetSessionProfileBindingsForTesting(); resetFrozenInheritedProfilesForTesting(); });
 	bindSessionProfile("selecting-session", "team", { "review-risk": { model: "openai/session", thinking: "high" } });
 	const selected = __testing.readReviewerModelConfig(fixture.root, "selecting-session");
 	assert.equal(selected["review-risk"]?.model, "openai/session");
 	assert.equal(selected["review-reliability"], undefined, "a complete session snapshot never falls back per role");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, "other-session")["review-risk"]?.model, "openai/global");
 	assert.equal(__testing.readReviewerModelConfig(fixture.root, undefined)["review-risk"]?.model, "openai/global");
+});
+
+test("reviewer routing follows the profile the session froze at startup, not later global routing", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "nan/flash" } }));
+	freezeSessionProfileAtStartup({ sessionId: "frozen-session", cwd: fixture.root, configHome: fixture.configHome });
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "frozen-session")).selection, "openai/sol");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, undefined)).selection, "nan/flash");
+});
+
+test("provider review roles fall back to the session profile orchestrator before the persisted default", (t) => {
+	const { writeStore, writeSettings } = profilesStoreFixture(t);
+	writeStore({ sol: {} }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	resetSessionProfileBindingsForTesting();
+	t.after(() => resetSessionProfileBindingsForTesting());
+	bindSessionProfile("bound-session", "sol", { orchestrator: { model: "openai/sol", thinking: "high" }, "review-validator": { model: "openai/validator" } });
+	const routing = __testing.readReviewerModelConfig(process.cwd(), "bound-session");
+	assert.deepEqual(__testing.reviewHostRelaySelection("review-refuter", routing), { selection: "openai/sol", thinking: "high", routingKey: "review-refuter" });
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "openai/validator");
+	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { routingKey: "review-risk" }, "lens roles stay fail-closed");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", {}).selection, "nan/flash", "without a session orchestrator the persisted default still applies");
+});
+
+test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "inherited-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+});
+
+test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	// Pinned routing drops the orchestrator key, so the pin's own orchestrator never feeds the fallback.
+	writeStore({ pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } } });
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing keeps a frozen pin snapshot after the pin changes", (t) => {
+	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({
+		pinned: { orchestrator: { model: "openai/pinned" }, "review-risk": { model: "openai/pinned-risk" } },
+		later: { "review-risk": { model: "openai/later-risk" }, "review-refuter": { model: "openai/later-refuter" } },
+	});
+	writePin(localPinPath, "pinned");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtStartup({ sessionId: "pinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "pinned-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/pinned-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing of a session frozen without a profile ignores a pin added later", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ later: { "review-risk": { model: "openai/later-risk" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "unpinned-session", cwd: fixture.root, configHome: fixture.configHome });
+	writePin(localPinPath, "later");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "unpinned-session")).selection, "openai/global");
+});
+
+test("reviewer routing in follow mode reads the profile the target resolves now", (t) => {
+	const { fixture, writeStore, localPinPath, writePin } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	const previous = process.env.GENTLE_PI_PROFILE_FOLLOW;
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_PROFILE_FOLLOW;
+		else process.env.GENTLE_PI_PROFILE_FOLLOW = previous;
+		resetFrozenInheritedProfilesForTesting();
+	});
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } } }, "sol");
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/sol");
+	writeStore({ sol: { "review-risk": { model: "openai/sol" } }, moon: { "review-risk": { model: "openai/moon" } } }, "moon");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "follow-session")).selection, "openai/moon");
+});
+
+test("provider review roles ignore an orchestrator saved in global routing", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	writeStore({ team: {} });
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale" } }));
+	const routing = __testing.readReviewerModelConfig(fixture.root, undefined);
+	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
+test("reviewer routing of a session frozen without a profile uses a foreign repository's own pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const foreignRoot = join(fixture.root, "foreign");
+	const identity = (path: string) => path.startsWith(foreignRoot)
+		? { root: foreignRoot, commonDir: join(foreignRoot, ".git") }
+		: { root: join(fixture.root, "worktree"), commonDir: join(fixture.root, "git-common") };
+	setProfilePinWorktreeResolverForTesting(identity);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "home-session", cwd: fixture.root, configHome: fixture.configHome });
+	const foreignPin = join(foreignRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(foreignPin), { recursive: true });
+	writeFileSync(foreignPin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(foreignRoot, "home-session", fixture.root)).selection, "openai/theirs");
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, "home-session", fixture.root)).selection, "openai/global", "the session's own repository still ignores pins");
+});
+
+test("reviewer routing of a session started outside Git uses the target repository's pin", (t) => {
+	const { fixture, writeStore } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const repoRoot = join(fixture.root, "repo");
+	const outside = join(fixture.root, "outside");
+	mkdirSync(outside, { recursive: true });
+	setProfilePinWorktreeResolverForTesting((path: string) => path.startsWith(repoRoot) ? { root: repoRoot, commonDir: join(repoRoot, ".git") } : undefined);
+	writeStore({ theirs: { "review-risk": { model: "openai/theirs" } } });
+	mkdirSync(fixture.configHome, { recursive: true });
+	writeFileSync(fixture.globalPath, JSON.stringify({ "review-risk": { model: "openai/global" } }));
+	freezeSessionProfileAtStartup({ sessionId: "outside-session", cwd: outside, configHome: fixture.configHome });
+	const pin = join(repoRoot, ".git", "gentle-ai", "profile-pin.json");
+	mkdirSync(dirname(pin), { recursive: true });
+	writeFileSync(pin, `${JSON.stringify({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "theirs" }, null, 2)}\n`);
+	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(repoRoot, "outside-session", outside)).selection, "openai/theirs");
 });
 
 test("Enter preserves session-only routing when the orchestrator is absent or cannot switch", async (t) => {
@@ -4439,9 +4601,13 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	resetSessionProfileBindingsForTesting();
 	t.after(() => resetSessionProfileBindingsForTesting());
 	const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 	const liveCalls: string[] = [];
+	// Like Pi, `appendEntry` writes to the session the last start ran on.
+	let started: SessionManager | undefined;
 	createGentleAiExtension({ nativeReviewCli: null })({
-		on() {},
+		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) { handlers.set(name, handler); },
+		appendEntry(type: string, data: unknown) { started!.appendCustomEntry(type, data); },
 		registerTool() {},
 		registerCommand(name, command) { commands.set(name, command); },
 		setModel: async () => { liveCalls.push("model"); return true; },
@@ -4468,6 +4634,10 @@ function profilesCommandHarness(t: test.TestContext, profiles: Record<string, un
 	return {
 		manager, ctx, notifications, liveCalls, family, assertSharedUntouched, storePath,
 		run: (args: string, runCtx: ExtensionCommandContext = ctx) => commands.get("gentle:profiles")!.handler(args, runCtx),
+		start: (event: unknown, startCtx: ExtensionContext = ctx) => {
+			started = startCtx.sessionManager as SessionManager;
+			return handlers.get("session_start")!(event, startCtx);
+		},
 		last: () => notifications.at(-1) ?? { message: "", severity: "" },
 	};
 }
@@ -4566,6 +4736,223 @@ test("/gentle:profiles clear on an already-cleared session writes nothing and sa
 	assert.match(h.last().message, /session profile is already cleared; nothing to clear/);
 });
 
+// gentle-shell#2742, section 3: the newest record carries the startup state.
+const TEAM_DEFINITION = { orchestrator: { model: "openai/beta", thinking: "high" as const }, worker: { model: "openai/alpha" } };
+const withFast = { team: TEAM_DEFINITION, fast: { worker: { model: "openai/gamma" } } };
+const useInSession = (h: ReturnType<typeof profilesCommandHarness>, name: string) =>
+	__testing.runProfilesPanelAction(h.ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name }, {});
+const newest = (h: ReturnType<typeof profilesCommandHarness>) => (h.family().at(-1) as { data?: unknown }).data;
+
+test("Use in this session carries a recorded startup profile and clear goes back to it", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	const startup = createSessionProfileStartupBind("local", "team", TEAM_DEFINITION);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, startup);
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, { origin: "local", name: "team", modelProfiles: TEAM_DEFINITION }));
+	await h.run("clear");
+	assert.equal(h.family().length, 3);
+	assert.deepEqual(newest(h), startup, "the startup bind is written again, orchestrator included");
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId())?.origin, "local");
+	assert.equal(h.last().severity, "info");
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to the profile this session started with, "team (local)", and use it. The live orchestrator is unchanged.');
+	await h.run("clear");
+	assert.equal(h.family().length, 3, "a startup record is already there: nothing is written");
+	assert.equal(h.last().message, 'el Gentleman: this session is already on the profile it started with, "team (local)"; nothing to clear.');
+	h.assertSharedUntouched();
+});
+
+test("clear goes back to no profile when the newest record says the session started without one", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear("none"));
+	await h.run("clear");
+	assert.equal(h.family().length, 1, "a startup-none record is already there: nothing is written");
+	assert.equal(h.last().message, "el Gentleman: this session is already on no profile, as it started; nothing to clear.");
+	await useInSession(h, "fast");
+	assert.deepEqual(newest(h), createSessionProfileBind("fast", withFast.fast, "none"));
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear", startup: "none" });
+	assert.equal(readSessionProfileBinding(h.manager.getSessionId()), undefined);
+	assert.equal(h.last().message, 'el Gentleman cleared session profile "fast" (persisted in this session). New launches go back to no profile, as this session started. The live orchestrator is unchanged.');
+});
+
+test("clear in follow mode writes a legacy clear even when the newest record carries the startup state", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast, "none"));
+	process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+	t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+	await h.run("clear");
+	assert.deepEqual(newest(h), { kind: "clear" });
+	assert.match(h.last().message, /New launches use the routing without a session profile/);
+});
+
+// gentle-shell#2742, section 6: follow mode has no startup state, so a startup
+// record on the newest entry is cleared like any bind, back to the current defaults.
+// The separator after the cleared subject is matched with `.`.
+for (const [record, subject] of [
+	["startup bind", 'session profile "team"'],
+	["clear with startup none", "the recorded startup state"],
+] as const)
+	test(`clear in follow mode appends a legacy clear when the newest record is a ${record}`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		h.manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, record === "startup bind" ? createSessionProfileStartupBind("local", "team", TEAM_DEFINITION) : createSessionProfileClear("none"));
+		process.env.GENTLE_PI_PROFILE_FOLLOW = "1";
+		t.after(() => { delete process.env.GENTLE_PI_PROFILE_FOLLOW; });
+		await h.run("clear");
+		assert.equal(h.family().length, 2, "one legacy clear follows the startup record");
+		assert.deepEqual(newest(h), { kind: "clear" });
+		assert.equal(h.last().severity, "info");
+		assert.match(h.last().message, new RegExp(`^el Gentleman cleared ${subject} . persisted in this session\\. New launches use the routing without a session profile \\(pins, repository declaration, global\\)\\. The live orchestrator is unchanged\\.$`));
+		h.assertSharedUntouched();
+	});
+
+// gentle-shell#2742, section 3: a resume is not the session's own start, even
+// with no conversation on its branch, so the defaults current at resume time are
+// not its startup state and a legacy user bind still clears to a legacy clear.
+test("clear after a resume with no conversation writes a legacy clear, not the resume-time defaults", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const sessions = join(h.ctx.cwd, "resumed-sessions");
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast));
+	source.appendMessage({ role: "user", content: "flush the resumed fixture", timestamp: 1 });
+	const file = source.getSessionFile()!;
+	writeFileSync(file, `${readFileSync(file, "utf8").trim().split("\n").filter((line) => JSON.parse(line).type !== "message").join("\n")}\n`);
+	const manager = SessionManager.open(file, sessions);
+	assert.equal(manager.getBranch().some((entry) => entry.type === "message"), false, "the resumed branch has no conversation");
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	const family = () => manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family().length, 1, "the resume writes no record");
+	await h.run("clear", ctx);
+	assert.equal(family().length, 2, "one record follows the legacy bind");
+	assert.deepEqual((family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
+	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
+	assert.equal(h.last().severity, "info");
+	assert.match(h.last().message, /^el Gentleman cleared session profile "fast" . persisted in this session\. New launches use the routing without a session profile \(pins, repository declaration, global\)\. The live orchestrator is unchanged\.$/);
+});
+
+test("clear after a session's own start goes back to the defaults it started with", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "own-start-sessions"));
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "startup" }, ctx);
+	manager.appendMessage({ role: "user", content: "flush the own-start fixture", timestamp: 1 });
+	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
+	await h.run("clear", ctx);
+	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	assert.equal(family.length, 2, "the clear follows the Use in this session bind");
+	assert.deepEqual((family.at(-1) as { data?: unknown }).data, createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
+	assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
+});
+
+// Pi records a new session's model and thinking level before any extension sees
+// session_start, and records them again when it opens an existing session with no
+// conversation, so an own start is a session holding at most that one pair.
+test("Pi records the model and thinking level of a new session before session_start", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "own-start-sdk-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const agentDir = join(root, "agent");
+	mkdirSync(agentDir);
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "offline-auth.json"), modelsPath: null, refreshOnCreate: false });
+	modelRuntime.registerProvider("offline-own-start", {
+		api: "offline-own-start-test", apiKey: "offline-dummy", baseUrl: "http://offline.invalid",
+		models: [{ id: "fixture", name: "Own start fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
+		streamSimple() { throw new Error("no request is expected"); },
+	});
+	const seen: { reason: string; types: string[] }[] = [];
+	const loader = new DefaultResourceLoader({
+		cwd: root, agentDir, settingsManager,
+		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		extensionFactories: [(pi) => { pi.on("session_start", (event, ctx) => { seen.push({ reason: event.reason, types: ctx.sessionManager.getEntries().map((entry) => entry.type) }); }); }],
+	});
+	await loader.reload();
+	const { session } = await createAgentSession({ cwd: root, agentDir, modelRuntime, model: modelRuntime.getModel("offline-own-start", "fixture")!, resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(root), tools: [] });
+	try {
+		await session.bindExtensions({});
+	} finally {
+		session.dispose();
+	}
+	assert.deepEqual(seen, [{ reason: "startup", types: ["model_change", "thinking_level_change"] }]);
+});
+
+/** Use in this session, then clear; returns the record the clear appended. */
+async function useInSessionThenClear(h: ReturnType<typeof profilesCommandHarness>, ctx: ExtensionCommandContext, manager: SessionManager): Promise<unknown> {
+	await __testing.runProfilesPanelAction(ctx, { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel: (): ThinkingLevel => "medium" }, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "fast" }, {});
+	await h.run("clear", ctx);
+	const family = manager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === SESSION_PROFILE_CUSTOM_TYPE);
+	return (family.at(-1) as { data?: unknown }).data;
+}
+
+/** A saved session holding a legacy explicit bind and no conversation, reopened. */
+function reopenedLegacyBindSession(h: ReturnType<typeof profilesCommandHarness>, dir: string): SessionManager {
+	const sessions = join(h.ctx.cwd, dir);
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileBind("fast", withFast.fast));
+	source.appendMessage({ role: "user", content: "flush the reopened fixture", timestamp: 1 });
+	const file = source.getSessionFile()!;
+	writeFileSync(file, `${readFileSync(file, "utf8").trim().split("\n").filter((line) => JSON.parse(line).type !== "message").join("\n")}\n`);
+	const manager = SessionManager.open(file, sessions);
+	assert.equal(manager.getEntries().some((entry) => entry.type === "message"), false, "the reopened session has no conversation");
+	return manager;
+}
+
+// gentle-shell#2742, section 3: a reload restarts this process's extensions, not
+// the session, so it never makes the defaults current at resume its startup state.
+test("clear after a resume and a reload writes a legacy clear, not the resume-time defaults", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+	const manager = reopenedLegacyBindSession(h, "reload-sessions");
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	await h.start({ type: "session_start", reason: "reload" }, ctx);
+	assert.deepEqual(await useInSessionThenClear(h, ctx, manager), { kind: "clear" }, "an unknown startup state writes a legacy clear");
+});
+
+// The CLI reports "startup" when it opens an existing session file, and Pi then
+// records the model and thinking level again, so a profile record or an earlier
+// such pair means the session started before this process.
+for (const [subject, prepare] of [
+	["a legacy explicit bind", (manager: SessionManager) => { manager.appendModelChange("openai", "alpha"); manager.appendThinkingLevelChange("medium"); }],
+	["an earlier start", (manager: SessionManager) => { for (const _ of [1, 2]) { manager.appendModelChange("openai", "alpha"); manager.appendThinkingLevelChange("medium"); } }],
+] as const) {
+	test(`clear after a startup on a saved session with ${subject} and no conversation writes a legacy clear`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+		const manager = subject === "a legacy explicit bind" ? reopenedLegacyBindSession(h, "reopened-sessions") : SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "reopened-sessions"));
+		prepare(manager);
+		const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+		await h.start({ type: "session_start", reason: "startup" }, ctx);
+		assert.deepEqual(await useInSessionThenClear(h, ctx, manager), { kind: "clear" }, "an unknown startup state writes a legacy clear");
+	});
+}
+
+for (const reason of ["startup", "new"] as const) {
+	test(`clear after a new session's ${reason} start, as Pi records it, goes back to the defaults it started with`, async (t) => {
+		const h = profilesCommandHarness(t, withFast);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		writeFileSync(h.storePath, `${JSON.stringify({ kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: withFast, active: "team" }, null, 2)}\n`);
+		const manager = SessionManager.create(h.ctx.cwd, join(h.ctx.cwd, "new-sessions"));
+		manager.appendModelChange("openai", "alpha");
+		manager.appendThinkingLevelChange("medium");
+		const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+		await h.start(reason === "new" ? { type: "session_start", reason, previousSessionFile: join(h.ctx.cwd, "previous.jsonl") } : { type: "session_start", reason }, ctx);
+		manager.appendMessage({ role: "user", content: "flush the new-session fixture", timestamp: 1 });
+		assert.deepEqual(await useInSessionThenClear(h, ctx, manager), createSessionProfileStartupBind("global", "team", TEAM_DEFINITION));
+		assert.match(h.last().message, /New launches go back to the profile this session started with, "team/);
+	});
+}
+
 test("/gentle:profiles clear without a parent session id fails loud and writes nothing", async (t) => {
 	const h = profilesCommandHarness(t);
 	(h.ctx as unknown as { sessionManager: unknown }).sessionManager = { getSessionId: () => "" };
@@ -4591,6 +4978,7 @@ for (const [customType, kind] of [["gentle-pi.session-profile/v1", "invalid"], [
 		await h.run("clear");
 		assert.equal(h.last().severity, "info");
 		assert.match(h.last().message, /cleared the unreadable session profile record/);
+		assert.deepEqual((h.family().at(-1) as { data?: unknown }).data, { kind: "clear" }, "an unknown startup state writes a legacy clear");
 		const count = h.notifications.length;
 		__testing.notifySessionProfileProblem(h.ctx);
 		assert.equal(h.notifications.length, count, "a recovered session raises no warning");

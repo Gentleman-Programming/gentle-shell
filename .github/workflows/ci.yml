@@ -244,6 +244,21 @@ jobs:
           $passes = [regex]::Match(($output -join "`n"), "(?m)^# pass (\d+)$")
           if ($output -match "(?m)^1\.\.0$" -or !$passes.Success -or [int]$passes.Groups[1].Value -eq 0) { throw "Windows candidate view regression selected no tests" }
 
+      # These files skip off Windows, so this job is their only real-ACL run;
+      # any skip here means a real-ACL check silently stopped running.
+      - name: Run Windows ACL boundary tests
+        shell: pwsh
+        run: |
+          $output = & pnpm exec node --experimental-strip-types --test --test-reporter=tap tests/review-candidate-windows-boundary.test.ts tests/review-candidate-windows-probe.test.ts 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          $text = $output -join "`n"
+          $tests = [regex]::Match($text, "(?m)^# tests (\d+)$")
+          $passes = [regex]::Match($text, "(?m)^# pass (\d+)$")
+          if (!$tests.Success -or !$passes.Success -or [int]$passes.Groups[1].Value -eq 0) { throw "Windows ACL boundary tests selected no tests" }
+          if ([int]$tests.Groups[1].Value -ne [int]$passes.Groups[1].Value) { throw "Windows ACL boundary tests did not all run and pass on Windows" }
+
       - name: Run Windows native consent boundary
         shell: pwsh
         run: pnpm exec node --experimental-strip-types --test tests/native-review-consent.test.ts

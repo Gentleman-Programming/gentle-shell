@@ -268,7 +268,7 @@ test("private candidate owner ignores a spoofed SystemRoot when invoking Windows
 	const execFile = childProcess.execFileSync;
 	const aclExecutables: string[] = [];
 	t.mock.method(childProcess, "execFileSync", (file, arguments_, options) => {
-		if (typeof file === "string" && /\\(?:whoami|icacls)\.exe$/i.test(file)) {
+		if (typeof file === "string" && /\\(?:whoami|icacls|powershell)\.exe$/i.test(file)) {
 			aclExecutables.push(file);
 			assert.equal(file.toLowerCase().startsWith(spoofedSystemRoot.toLowerCase()), false);
 		}

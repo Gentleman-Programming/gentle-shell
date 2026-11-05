@@ -123,7 +123,7 @@ test("profile name submission never accepts a hidden field at heights 3–5, inc
 
 test("profile preview and cancel never apply; keyboard name and confirmations require deliberate input", async () => {
  const events: string[] = [];
- const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
+ const profile = { name: "Desk", themeName: "Light Theme", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, surface: "tinted" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
  const view = new VisualCustomizeView({ rows: [], theme, requestRender: () => {}, onClose: () => {}, profiles: {
   list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
  } });
@@ -152,7 +152,7 @@ test("profile preview and cancel never apply; keyboard name and confirmations re
 
 test("profile confirmation stays visible at six rows for every destructive or applying action", async () => {
 	const events: string[] = [];
-	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
+	const profile = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, surface: "tinted" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [profile], save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
 	} });
@@ -170,7 +170,7 @@ test("profile confirmation stays visible at six rows for every destructive or ap
 
 test("profile confirmation captures selected name across catalog mutation and cancels vanished targets", async () => {
 	const events: string[] = [];
-	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
+	const base = { themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, surface: "tinted" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	let catalog = [{ ...base, name: "Desk" }, { ...base, name: "Mobile" }];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 6, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => catalog, save: (name, replace) => { events.push(`save:${name}:${replace}`); }, apply: (name) => { events.push(`apply:${name}`); }, delete: (name) => { events.push(`delete:${name}`); }, reset: () => { events.push("reset"); },
@@ -195,7 +195,7 @@ test("profile confirmation captures selected name across catalog mutation and ca
 test("unrendered or clipped confirmations cannot be accepted", () => {
 	const events: string[] = [];
 	let height = 6;
-	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
+	const base = { name: "Desk", themeName: "Light", animationPolicy: "potato" as const, banner: { showRose: false, showTextLogo: true, color: "cyan" as const }, visual: { statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "compact" as const, surface: "tinted" as const, visibility: { changes: false, rdd: false, agents: true, todo: false, usageCost: true, modelDetails: false, contextWarning: false, stats: false } } };
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: {
 		list: () => [base], save: () => {}, apply: () => {}, delete: () => { events.push("delete"); }, reset: () => { events.push("reset"); },
 	} });
@@ -209,7 +209,7 @@ test("unrendered or clipped confirmations cannot be accepted", () => {
 
 test("profile confirmations cannot execute after an unrendered resize hides full identity and yes", () => {
 	const name = "A".repeat(64);
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	for (const [key, action] of [["a", "apply"], ["d", "delete"], ["r", "replace"], ["z", "reset"]] as const) {
 		for (const width of [100, 36]) for (const shortHeight of [1, 2]) {
 			let height = 12;
@@ -231,7 +231,7 @@ test("profile confirmations cannot execute after an unrendered resize hides full
 });
 
 test("profile confirmation refuses a changed target identity without another render", () => {
-	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } }];
+	let catalog = [{ name: "First", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } }];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender: () => {}, onClose: () => {}, profiles: { list: () => catalog, save: () => {}, apply: name => { effects.push(name); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p"); view.handleInput("a");
@@ -268,7 +268,7 @@ test("main controls require a visible selected row at the last rendered width an
 });
 
 test("profile confirmation refuses same-name content drift for apply, replace and delete", () => {
-	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	const original = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	for (const key of ["a", "r", "d"]) {
 		let catalog = [original];
 		const effects: string[] = [];
@@ -318,7 +318,7 @@ test("category panel renders bounded wide and narrow frames with independent nav
 test("long profile confirmation displays complete identity and yes instruction before accepting", async () => {
 	const name = "A".repeat(64);
 	const events: string[] = [];
-	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	const profile = { name, themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	let height = 8;
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => height, requestRender: () => {}, onClose: () => {}, profiles: { list: () => [profile], save: () => {}, apply: value => { events.push(value); }, delete: () => {}, reset: () => {} } });
 	view.handleInput("p");
@@ -1103,7 +1103,7 @@ test("confirmation message text is not mistaken for its yes or cancel controls",
 });
 
 test("profile confirmation mouse yes retains target fingerprint and visible-prompt guards", async () => {
-	const profile = { name: "Desk y yes", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	const profile = { name: "Desk y yes", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	let catalog = [profile];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme, rowsAvailable: () => 12, requestRender() {}, onClose() {}, profiles: {
@@ -1358,7 +1358,7 @@ test("inline consent hover is presentation only and its actual yes and cancel sp
 });
 
 test("profile confirmation hover does not grant consent or defeat changed identity", async () => {
-	const profile = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
+	const profile = { name: "Desk", themeName: "dark", animationPolicy: "quality" as const, banner: { showRose: true, showTextLogo: true, color: "pink" as const }, visual: { statusPlacement: "auto" as const, headerPlacement: "top" as const, density: "comfortable" as const, surface: "tinted" as const, visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } } };
 	let catalog = [profile];
 	const effects: string[] = [];
 	const view = new VisualCustomizeView({ rows: [], theme: hoverTheme, rowsAvailable: () => 12, requestRender() {}, onClose() {}, profiles: {
@@ -1447,11 +1447,12 @@ test("hover preserves ANSI background and restores terminal color after the card
 	let frame = view.render(80);
 	const row = point(frame, "Selected").y;
 	const before = frame[row]!;
-	assert.match(before, /\x1b\[48;2;/, "the focused row has a background");
+	const background = before.match(/\x1b\[48;(?:2;\d+;\d+;\d+|5;\d+)m/)?.[0];
+	assert.ok(background, "the focused row has a truecolor or 256-color background");
 	move(view, frame, "Selected"); frame = view.render(80);
 	const after = frame[row]!;
 	assert.equal(stripAnsi(after), stripAnsi(before));
-	assert.ok(after.indexOf("\x1b[48;2;") < after.indexOf("Selected"));
+	assert.ok(after.indexOf(background) >= 0 && after.indexOf(background) < after.indexOf("Selected"), "hover preserves the exact rendered background");
 	assert.ok(after.indexOf("\x1b[49m", after.indexOf("Selected")) > after.indexOf("Selected"));
 	assert.ok(after.endsWith("\x1b[39m"), "the right border must not leak foreground color to the next line");
 });

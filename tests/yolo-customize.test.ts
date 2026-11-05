@@ -203,6 +203,14 @@ for (const invalid of [false, true]) test(`absent/invalid owner is unavailable, 
 
 test("scope revocation refreshes without notification recursion or Git during render", async t => {
 	const h = fixture(t); await h.command("enable");
+	// Resolve the unrelated RDD discovery immediately so its timeout repaint
+	// cannot be mistaken for a recursive YOLO revocation notification.
+	h.events.on("gentle:rdd:host-ui", data => {
+		(data as { respond(value: unknown): void }).respond({
+			read: async () => undefined,
+			open: async () => { throw new Error("YOLO revocation must not open RDD"); },
+		});
+	});
 	const open = await h.open(); const view = h.view(); selectYolo(view);
 	assert.match(text(view), /YOLO: ON/);
 	const count = h.renders();

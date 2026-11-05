@@ -653,7 +653,7 @@ for (const [label, input] of [["normal", undefined], ["escalated", ESCALATE], ["
 	const tool = reviewControllerTool(cli);
 	const context = { cwd: root } as ExtensionContext;
 	{
-		const result = await tool.execute("off", { operation: "assess", ...(input === undefined ? {} : { input: JSON.stringify(input) }) }, undefined, undefined, context);
+		const result = await tool.execute("off", { operation: "assess", workspaceRoot: root, ...(input === undefined ? {} : { input: JSON.stringify(input) }) }, undefined, undefined, context);
 		const escalated = input !== undefined && "escalate" in input;
 		const risk = escalated ? VERIFICATION_TIER.HIGH : VERIFICATION_TIER.MEDIUM;
 		assert.deepEqual(result.details, {

@@ -1002,9 +1002,9 @@ function activateWithLauncher(layout, id, active, { module, next }) {
  * print exactly the release's gentle-pi and Pi before `current` switches; the
  * release's launcher is then written (a failure puts `current` back) and two
  * versions are kept (a pruning failure is only a warning). An already current
- * release changes nothing, and so does a release of the active Gentle Shell
- * whose Pi is older than the one `gentle-shell update --latest` installed (no
- * downgrade); any failure leaves `current` as it was and removes a version this
+ * release changes nothing. A newer active Pi is kept across Shell releases,
+ * without applying a different Pi's verified lockfile; any failure leaves
+ * `current` as it was and removes a version this
  * call installed. Returns { id, changed, previous?, removed?, warning? }.
  */
 export async function upgradeBundled({ layout, home, platform = layout.platform, arch = process.arch, env = {}, adapters, out = () => {} }) {
@@ -1018,10 +1018,26 @@ export async function upgradeBundled({ layout, home, platform = layout.platform,
 		out(`Gentle Shell ${shell} with Pi ${pi} is already current.`);
 		return { id, changed: false };
 	}
-	const activePi = piOfVersion(active, shell);
+	let activePi = null;
+	if (active) {
+		try {
+			if (!installedVersion(layout, active)) throw new Error("not installed");
+			const dependencies = JSON.parse(read(pathFor(process.platform).join(versionDirectory(layout, active), "package.json"))).dependencies;
+			const current = versionsOf({ shell: dependencies?.["gentle-pi"], pi: dependencies?.[PI_PACKAGE] });
+			if (current.id !== active) throw new Error("version mismatch");
+			activePi = current.pi;
+		} catch {
+			throw new Error(`the active version ${active} could not be verified; current stays as it is`);
+		}
+	}
 	if (activePi && newerVersion(activePi, pi)) {
-		out(`Gentle Shell ${shell} is current; Pi ${activePi} (installed with 'gentle-shell update --latest') is newer than this release's verified Pi ${pi}.`);
-		return { id: active, changed: false };
+		if (piOfVersion(active, shell)) {
+			out(`Gentle Shell ${shell} is current; Pi ${activePi} is newer than this release's verified Pi ${pi}.`);
+			return { id: active, changed: false };
+		}
+		out(`warning: keeping Pi ${activePi}, newer than this release's verified Pi ${pi}; installing without the release's verified lockfile. Gentle Shell features that rely on audited Pi internals may turn off.`);
+		return installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest: { ...manifest, pi: activePi }, unverified: true, active,
+			success: `Upgraded to Gentle Shell ${shell} with Pi ${activePi} (from ${active}). Run 'gentle-shell upgrade --rollback' to switch back.` });
 	}
 	return installAndActivate({ layout, home, platform, arch, env, adapters, out, manifest, lockfile, active,
 		success: `Upgraded to Gentle Shell ${shell} with Pi ${pi} (from ${active ?? "no active version"}). Run 'gentle-shell upgrade --rollback' to switch back.` });
@@ -1032,11 +1048,25 @@ function piOfVersion(id, shell) {
 	const pi = typeof id === "string" && id.startsWith(`${shell}-`) ? id.slice(shell.length + 1) : "";
 	return SEMVER.test(pi) ? pi : null;
 }
-/** Whether version `a` is newer than `b` by major, minor and patch. */
+/** Semver precedence, including prereleases; callers already validated both versions. */
 function newerVersion(a, b) {
 	const [left, right] = [a, b].map((version) => SEMVER.exec(version).slice(1, 4).map(Number));
 	const index = left.findIndex((part, at) => part !== right[at]);
-	return index !== -1 && left[index] > right[index];
+	if (index !== -1) return left[index] > right[index];
+	const [preA, preB] = [a, b].map((version) => version.split("-").slice(1).join("-"));
+	if (!preA || !preB) return !preA && Boolean(preB);
+	const [partsA, partsB] = [preA.split("."), preB.split(".")];
+	for (let i = 0; i < Math.max(partsA.length, partsB.length); i += 1) {
+		if (partsA[i] === undefined) return false;
+		if (partsB[i] === undefined) return true;
+		if (partsA[i] === partsB[i]) continue;
+		const numericA = /^\d+$/.test(partsA[i]);
+		const numericB = /^\d+$/.test(partsB[i]);
+		if (numericA && numericB) return BigInt(partsA[i]) > BigInt(partsB[i]);
+		if (numericA !== numericB) return !numericA;
+		return partsA[i] > partsB[i];
+	}
+	return false;
 }
 
 /** Installs `manifest` beside the active version (with the release lockfile,

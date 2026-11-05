@@ -1,0 +1,142 @@
+{
+  "schema": "gentle-pi.review-coordinator-public-experiment/v1",
+  "historical_original_commit": "3392d1c6c5230e93dbf0a281765b01162d1f67b8",
+  "historical_source_result_fingerprint": "b19ff9a7ca07222a3e753b56d47af785afdf087df15fee5baf61363f893d1271",
+  "environment": {
+    "os": "Windows",
+    "node": "24.14.0",
+    "native": "4.3.1",
+    "model": "openai-codex/gpt-6.1-sol",
+    "thinking": "minimal",
+    "lens": "risk"
+  },
+  "completed_journeys": 6,
+  "pairs": [
+    {
+      "pair": 1,
+      "original_ms": 352228.1312,
+      "current_ms": 186417.43000000002,
+      "time_reduction_percent": 47.07480366065661,
+      "original_tokens": 125295,
+      "current_tokens": 17318,
+      "token_reduction_percent": 86.17821940221077,
+      "original_cost": 0.308806,
+      "current_cost": 0.039692,
+      "cost_reduction_percent": 87.14662279877982
+    },
+    {
+      "pair": 2,
+      "original_ms": 359445.6413,
+      "current_ms": 184736.6517,
+      "time_reduction_percent": 48.60512119944853,
+      "original_tokens": 125797,
+      "current_tokens": 17349,
+      "token_reduction_percent": 86.20873311764191,
+      "original_cost": 0.290122,
+      "current_cost": 0.0361188,
+      "cost_reduction_percent": 87.55047876410613
+    },
+    {
+      "pair": 3,
+      "original_ms": 358748.3557,
+      "current_ms": 191439.59470000005,
+      "time_reduction_percent": 46.63680218785737,
+      "original_tokens": 125320,
+      "current_tokens": 17331,
+      "token_reduction_percent": 86.1706032556655,
+      "original_cost": 0.308736,
+      "current_cost": 0.039821999999999996,
+      "cost_reduction_percent": 87.10160136815921
+    }
+  ],
+  "aggregates": [
+    {
+      "variant": "original",
+      "completed": 3,
+      "median_ms": 358748.3557,
+      "median_tokens": 125320,
+      "median_cost": 0.308736,
+      "median_primary_calls": 10,
+      "median_primary_tokens": 117479,
+      "median_reviewer_tokens": 7859,
+      "median_primary_ms": 150044.95540000004,
+      "median_reviewer_ms": 17206.519499999995,
+      "total_recorded_cost_including_failed_attempts": 0.907664
+    },
+    {
+      "variant": "current",
+      "completed": 3,
+      "median_ms": 186417.43000000002,
+      "median_tokens": 17331,
+      "median_cost": 0.039692,
+      "median_primary_calls": 2,
+      "median_primary_tokens": 9248,
+      "median_reviewer_tokens": 8080,
+      "median_primary_ms": 4617.5373,
+      "median_reviewer_ms": 16504.707900000023,
+      "total_recorded_cost_including_failed_attempts": 0.1156328
+    }
+  ],
+  "median_paired_reductions": {
+    "time_percent": 47.07480366065661,
+    "tokens_percent": 86.17821940221077,
+    "reported_cost_percent": 87.14662279877982
+  },
+  "calibration": {
+    "attempts": 7,
+    "recorded_cost": 0.31181079999999994,
+    "interrupted_usage_possible": true,
+    "disposition": "Excluded after documented laboratory driver/protocol problems; no definitive pair was replaced."
+  },
+  "snapshot_sources": [
+    {
+      "path": "extensions/gentle-ai.ts",
+      "sha256": "61f15c04fbbd474503a6bbe4bcdd7a609656ad1fa4958be1f1275030d10cbb1d"
+    },
+    {
+      "path": "lib/native-review-cli.ts",
+      "sha256": "fc6a79b90eae2fc184df0a4c594d0001315d476d8725ede865153d3ed6090ecf"
+    },
+    {
+      "path": "runtime/native-review-cli.mjs",
+      "sha256": "0b20e10bdf7c4e26df879afc9790dd52d0580f3c6c2bc0fbbf8fab346998cb02"
+    },
+    {
+      "path": "lib/review-candidate-view-owner.ts",
+      "sha256": "19170386499b176714521997ddcc3317a6869d6cfdcfe5993f602ad97792a874"
+    },
+    {
+      "path": "lib/review-candidate-view.ts",
+      "sha256": "84fc1e63e6cc7df46a378760e9369567127026a695003c101e2d7603d0449081"
+    },
+    {
+      "path": "lib/review-coordinator.ts",
+      "sha256": "06b1e8d5940d30338d013f6cf4ce5dc74d095d380600de6c2a76248cdfaabf8e"
+    },
+    {
+      "path": "lib/review-host-relay.ts",
+      "sha256": "19c66aa5004076393ce81283d4e863beca8f2a126f22999130ec90a871054a2c"
+    },
+    {
+      "path": "lib/inprocess-reviewer.ts",
+      "sha256": "bb48d15ab3055e908dddf63a0494e96eada916d6716573e330d9f95ce1bac1ce"
+    },
+    {
+      "path": "scripts/benchmark-rdd-full-review.mjs",
+      "sha256": "10042bd8b24d3420f96cd499d967ff87e128ec49a1fe4805351e8b0183d58c9e"
+    },
+    {
+      "path": "scripts/rdd-total-case-builder.mjs",
+      "sha256": "b6e1543bc8975e86733ff930c5bb81320ccaf810b89b627297ec6fcd20c38c75"
+    },
+    {
+      "path": "scripts/rdd-total-preload.mjs",
+      "sha256": "de03cfaa6cbc6c403895eb318006360065e87cb0337ad395aee37c4a59c1e84e"
+    },
+    {
+      "path": "scripts/benchmark-rdd-total.mjs",
+      "sha256": "94de3808cdae45c1188f675302c487dc88bfaaeabc711b9b05c68e4c5717ba38"
+    }
+  ],
+  "limits": "Historical combined prototype including request context, coordinator and Windows ACL batching; not the isolated coordinator patch or the rebased published candidate. Common inspect/START/lens selection, consent, correction plan and edit scripted; primary drives initial review and corrected resume with retained history. Six real risk/refuter/validator journeys consumed native candidates. Three local pairs, one scenario, no production percentile or verified billing. Fresh-start coordinator entry not exercised. Published declaration additionally restricts the coordinator to model-only. Independent product review pending."
+}

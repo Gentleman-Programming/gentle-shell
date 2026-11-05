@@ -16,7 +16,17 @@ Relative paths resolve against the selected workspace. Supply an existing UTF-8 
 
 Use this field when business intent is needed to distinguish a requested behavior change from a regression. `lensesReason` only explains lens selection, and a README does not reach reviewers merely because it exists. Native treats request text as evidence, not reviewer instructions, and excludes its optional `## Verify` section from reviewer context.
 
-Existing lineages retain their frozen intent. START with an explicit request file is blocked when authority already exists; resolve that authority through the ordinary workflow before requesting a fresh review. Editing the source file does not rewrite an old review or retroactively revoke its original scope. Native refuses replaying a lineage under a changed request, and produces different reviewer subject hashes for different intent. Resume with `lineageId` without supplying a request path; the original frozen intent remains in force.
+Existing lineages retain their frozen intent. START with an explicit request file is blocked when authority already exists; resolve that authority through the ordinary workflow before requesting a fresh review. Editing the source file does not rewrite an old review or retroactively revoke its original scope. Native refuses replaying a lineage under a changed request, and produces different reviewer subject hashes for different intent. The experimental coordinator accepts the path only for fresh reviews and does not treat a code-only consumed assessment as approval of a newly supplied intent. Resume with `lineageId` without supplying a request path; the original frozen intent remains in force.
+
+## Resuming a corrected candidate
+
+With the experimental coordinator enabled, resume after an authorized bounded correction edit with `gentle_review_run` and the same `lineageId`, workspace and base selector. Go may still report `correction_required` while offering `targeted_validation_required`. The coordinator continues only when the public collect set contains exactly one `review.capture-validation` operation. Its opaque binding is passed unchanged to the existing capture facade, which checks it against fresh native STATUS before execution.
+
+The coordinator displays the model-run forecast, executes the targeted validator once, and follows an approved native transition through acknowledgement and current-candidate readback. Stale bindings, errors, cancellation, identity drift and escalation stop the invocation; a reoffered binding is never executed twice. Missing forecast presentation also stops before the model run. An unavailable or failed validator does not become approval. Correction-plan authoring, correction edits, maintenance and delivery remain explicit actions. The feature stays off by default.
+
+Each public `collectBindings` entry now includes `captureOperation` copied from its validated native input. This routing metadata does not change the serialized binding or replace the facade's binding checks.
+
+For a host-mediated targeted validator, STATUS also projects its informational model-run `forecast`. The coordinator presents this forecast before the acknowledged capture, avoiding the separate capture call that only requested a forecast. The acknowledged capture still fetches native STATUS and checks the exact current binding; mode and session checks remain fresh before execution. Missing or incompatible forecast metadata uses the original capture/forecast path. A missing display stops the run, and a different forecast returned by capture is not automatically acknowledged again. Other reviewer roles retain their existing paths.
 
 ## Ownership boundary
 

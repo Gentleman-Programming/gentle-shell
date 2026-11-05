@@ -14,7 +14,7 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow, renderShellTopHeader, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
@@ -2695,25 +2695,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
 			// A top header instead keeps the whole header row above the conversation.
 			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
-			// A wide top header heads the conversation column with the title row's
-			// look (design: the rail's panel surface) and the whole header row.
-			const topChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
-			const topHeader = (width: number) => renderShellTopHeader(buildShellHeaderModel(footerModel(), false), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+			// Beside the rail, the top and below-input headers draw the split status
+			// bar's design (a chrome bar) with a margin row toward the content.
+			const fullscreen = () => (tui as TUI & { mode?: string }).mode === "fullscreen";
+			const topChrome = () => fullscreen() && statusCardVisible() && visualSettings.headerPlacement === "top";
+			const belowChrome = () => fullscreen() && statusCardVisible() && visualSettings.headerPlacement === "below-input";
+			const chromeBar = (width: number, margin: "above" | "below") => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), margin);
+			const topHeader = (width: number) => chromeBar(width, "below");
+			// The split title row keeps a margin row toward the content in comfortable density.
+			const titleRows = (width: number) => [renderShellTitleRow(footerModel(), theme, width), ...(visualSettings.density === "comfortable" ? [renderShellChromePad(theme, width)] : [])];
 			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
 			// same split stays, with the model in the title row and live work folded
 			// into one row above the editor.
 			const narrowChrome = () => chromeMode(tui) === "narrow";
 			if (tui.terminal) {
 				sidebarState(tui).compactWork = narrowChrome;
-				// Both IDE chromes draw a status bar that shows the permission mode.
-				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined;
+				// The IDE chromes and the chrome bars show the permission mode with its icon.
+				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined || topChrome() || belowChrome();
 			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
-				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+				: chromeBar(width, "above");
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
+				render: (width) => ideChrome() ? titleRows(width) : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
 					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
@@ -2744,12 +2749,18 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
 					if (disposed) return [];
+					if (belowChrome()) return chromeBar(width, "above").rows;
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
 					return belowHeader() ? headerBar(width).rows : [];
 				},
 				invalidate() {},
 				handleMouse(event) {
 					if (disposed) return undefined;
+					if (belowChrome()) {
+						if (event.type !== "click" || event.button !== "left" || !shellHeaderUsageHit(chromeBar(event.width, "above"), event.x, event.y)) return undefined;
+						void openUsage(ctx);
+						return { handled: true, render: true };
+					}
 					const grouped = belowFloat(event.width, false);
 					if ((grouped ? !footerSuppressed() : !belowHeader()) || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(widgetChrome(event.width), event.x, event.y)) return undefined;

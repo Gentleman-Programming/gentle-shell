@@ -490,19 +490,25 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 	return { rows: [padding, text, padding, rule], headerRow: 1, usageSpan };
 }
 
+/** One blank row on the chrome surface: the margin a chrome bar keeps toward the content in comfortable density. */
+export function renderShellChromePad(theme: ShellBarTheme, width: number): string {
+	return paintChromeRow(theme, " ".repeat(Math.max(0, Math.floor(width))));
+}
+
 /**
- * The top header heading the conversation column: the split title row's look
- * (the rail's panel surface, inset one column) carrying the whole header row on
- * the window's first row, level with the rail's first section, and a padding
- * row under it in comfortable density. A transparent surface leaves it unpainted.
+ * A chrome bar: the split status bar row (branch, permission mode, model,
+ * context, cost, usage) with, in comfortable density, one margin row on the
+ * chrome surface on the side that faces the content: below a top bar, above a
+ * bottom bar. The wide top and below-input headers draw it, so every bar shares
+ * the status bar's design; a transparent surface leaves it unpainted.
  */
-export function renderShellTopHeader(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint): ShellHeaderChrome {
-	const target = Math.max(0, Math.floor(width));
-	const content = headerContent(model, theme, Math.max(0, target - 2), usageHint, presentation, paint);
-	const row = paintChromeRow(theme, ` ${content.text} `);
-	const usageSpan = content.usageSpan ? { start: content.usageSpan.start + 1, end: content.usageSpan.end + 1 } : undefined;
-	const padding = presentation?.density === undefined || presentation.density === "comfortable" ? [paintChromeRow(theme, " ".repeat(target))] : [];
-	return { rows: [row, ...padding], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
+export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, margin: "above" | "below"): ShellHeaderChrome {
+	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint);
+	if (presentation !== undefined && presentation.density !== "comfortable") return bar;
+	const pad = renderShellChromePad(theme, width);
+	return margin === "below"
+		? { ...bar, rows: [...bar.rows, pad] }
+		: { ...bar, rows: [pad, ...bar.rows], headerRow: bar.headerRow + 1 };
 }
 
 /** The usage segment is interactive only on the content row, never padding or the edge. */

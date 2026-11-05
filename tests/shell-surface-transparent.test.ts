@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildShellHeaderModel, renderShellHeaderChrome, renderShellTopHeader, shellHeaderUsageHit } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellChromeBar, renderShellHeaderChrome, renderShellStatusBar, shellHeaderUsageHit } from "../lib/shell-bar.ts";
 import { chromeSurface, renderPanelSheet, setChromeSurface } from "../lib/shell-panel.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { DEFAULT_VISUAL_SETTINGS, resolveVisualSettings, writeVisualSettings } from "../lib/visual-customization-policy.ts";
@@ -31,31 +31,34 @@ test("a transparent surface keeps the float header's margins and drops only its 
 	}
 });
 
-test("the top header has the split title row's look: the whole header row on the panel surface, flush with the top, a padding row under it when comfortable", (t) => {
+test("the chrome bar is the split status bar row with a painted margin row on the content side when comfortable", (t) => {
 	const [style, surface] = [cardStyle(), chromeSurface()];
 	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
+	const barModel = { ...model, permission: { mode: "SUPER-YOLO" } };
 	for (const cards of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
 		setCardStyle(cards);
 		setChromeSurface("tinted");
-		const chrome = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
-		assert.equal(chrome.rows.length, 2, `${cards}: the header row, then its padding`);
-		assert.equal(chrome.headerRow, 0, `${cards}: the header row is the first row`);
-		for (const row of chrome.rows) assert.match(row, /\x1b\[48;5;171m/, `${cards}: every row on the panel surface, like the rail`);
-		assert.doesNotMatch(chrome.rows.join("\n"), /\x1b\[48;5;120m|▔|▁/, `${cards}: no float card or edge line`);
-		const text = unstyled(chrome.rows)[0]!;
-		assert.match(text, /gpt-5\.5/);
-		assert.match(text, /ctx/);
-		assert.match(text, /usage · alt\+u/);
-		assert.ok(shellHeaderUsageHit(chrome, text.indexOf("usage"), 0), "usage stays clickable on the header row");
-		assert.equal(shellHeaderUsageHit(chrome, text.indexOf("usage"), 1), false, "padding is not a target");
+		const status = renderShellStatusBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS);
+		const below = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "below");
+		assert.deepEqual(below.rows[0], status.rows[0], `${cards}: the same row as the split status bar`);
+		assert.equal(below.rows.length, 2, `${cards}: the bar, then its margin row toward the content`);
+		assert.equal(below.headerRow, 0);
+		const above = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "above");
+		assert.deepEqual(above.rows, [below.rows[1], below.rows[0]], `${cards}: the margin row above a bottom bar`);
+		assert.equal(above.headerRow, 1);
+		for (const row of below.rows) assert.match(row, /\x1b\[48;5;171m/, `${cards}: the margin row is painted like the bar`);
+		const text = unstyled(below.rows)[0]!;
+		assert.match(text, /💥 SUPER-YOLO/);
+		assert.ok(shellHeaderUsageHit(below, text.indexOf("usage"), 0), "usage stays clickable on the bar row");
+		assert.equal(shellHeaderUsageHit(below, text.indexOf("usage"), 1), false, "the margin is not a target");
+		assert.ok(shellHeaderUsageHit(above, text.indexOf("usage"), 1));
 		for (const density of ["compact", "minimal"] as const) {
-			const tight = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density });
-			assert.equal(tight.rows.length, 1, `${cards}: ${density} keeps only the header row`);
+			assert.equal(renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density }, undefined, "below").rows.length, 1, `${cards}: ${density} has no margin row`);
 		}
 		setChromeSurface("transparent");
-		const clear = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
+		const clear = renderShellChromeBar(barModel as never, painted as never, 110, "alt+u", DEFAULT_VISUAL_SETTINGS, undefined, "below");
 		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${cards}: transparent floats it`);
-		assert.deepEqual(unstyled(clear.rows), unstyled(chrome.rows), `${cards}: same margins without the tint`);
+		assert.deepEqual(unstyled(clear.rows), unstyled(below.rows));
 	}
 });
 

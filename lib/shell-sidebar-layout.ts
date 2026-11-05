@@ -294,7 +294,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// rail. Neither reads the 50-column rail's content width.
 			const headerPart = state.parts.get("header");
 			const inColumn = headerPlacement() === "top";
-			const columnWidth = Math.max(0, width - RAIL_WIDTH - GAP);
+			// The column header runs up to the rail: the gap belongs to the transcript only.
+			const columnWidth = Math.max(0, width - RAIL_WIDTH);
 			let preparedHeaderLines = [...(headerPart?.render(inColumn ? columnWidth : Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
@@ -330,7 +331,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 			} else if (sections.length && headerActive && inColumn) {
 				// Beside a top header the first section sits on the window's first row, level with it.
-			} else if (sections.length && headerActive && (headerPlacement() === "split" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
+			} else if (sections.length && headerActive && headerPlacement() !== "split" && density() === "comfortable" && style === CARD_STYLE.NEON) {
+				// A split title block carries its own margin row across the rail.
 				// Pad the first section beneath the header without breaking its surface.
 				// Keep neon's existing comfortable gap for below-input headers too.
 				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
@@ -423,20 +425,30 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already
 			// recurses into a nested layout via [NODE].
-			// A top header heads the conversation column: the same stable `left`
-			// under the header leaf, so the transcript keeps its native scroll.
+			// A top header heads the conversation column and runs up to the rail;
+			// the transcript keeps its gap through a blank spacer. The same stable
+			// `left` sits underneath, so the transcript keeps its native scroll.
+			const gapSpacer: Component = { render: () => [], invalidate() {} };
+			const leftWithGap = {
+				render: () => [],
+				invalidate() {},
+				[NODE]: (): LayoutNode => ({ type: "hstack", gap: 0, align: "stretch", entries: [
+					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
+				] }),
+			};
 			const leftWithHeader = {
 				render: () => [],
 				invalidate() {},
 				[NODE]: (): LayoutNode => ({ type: "vstack", gap: 0, align: "stretch", entries: [
 					{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 },
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: leftWithGap, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 				] }),
 			};
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: () => ({ type: "hstack", gap: GAP, align: "stretch", entries: [
+				[NODE]: () => ({ type: "hstack", gap: prepared?.headerInColumn ? 0 : GAP, align: "stretch", entries: [
 					{ component: prepared?.headerInColumn ? leftWithHeader : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),

@@ -3698,8 +3698,12 @@ test("T3 live style Cards action refreshes cached TODO and Status in both direct
 	// The wide chrome: the title row on top and one status bar row as the last layout entry.
 	const wide = root[node]() as unknown as { entries: { component: { render(width: number): string[] } }[] };
 	assert.equal(wide.entries.length, 3, "title row, transcript with the rail, status bar");
-	assert.match(stripAnsi(frame.header), /^ ✿ repo  \/repo .*team $/);
-	assert.match(stripAnsi(wide.entries[2]!.component.render(160).join("\n")), /^ main .*ctx .*usage/);
+	const [titleRow, marginRow] = stripAnsi(frame.header).split("\n");
+	assert.match(titleRow!, /^ ✿ repo  \/repo .*team $/);
+	assert.equal(marginRow!.trim(), "", "comfortable keeps a margin row under the title row");
+	const [statusMargin, statusRow] = stripAnsi(wide.entries[2]!.component.render(160).join("\n")).split("\n");
+	assert.equal(statusMargin!.trim(), "", "and a margin row above the status bar");
+	assert.match(statusRow!, /^ main .*ctx .*usage/);
 	const neon = { ...frame };
 	paint();
 	assert.equal(todoRenders, 1, "unchanged frame uses cached TODO");
@@ -4102,13 +4106,14 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		setCardStyle(CARD_STYLE.NEON);
 		assert.deepEqual(footer.render(240), [], "neon retains the legacy dock");
 		setCardStyle(CARD_STYLE.FLOAT);
+		// Beside the rail the below-input header is a chrome bar: a margin row, then the status bar row.
 		const grouped = header.render(240);
-		assert.equal(grouped.length, 5, "rail owns statuses; widget owns Changes/header only");
+		assert.equal(grouped.length, 2, "rail owns statuses and Changes; the widget draws the chrome bar");
 		assert.doesNotMatch(stripAnsi(grouped.join("\n")), /MCP updated/);
 		assert.deepEqual(widget("gentle-shell-changes").render(240), []);
-		const usageX = stripAnsi(grouped[3]!).indexOf("usage");
-		assert.equal(header.handleMouse?.(click(usageX, 2, 240)), undefined);
-		assert.equal(header.handleMouse?.(click(usageX, 3, 240))?.handled, true);
+		const usageX = stripAnsi(grouped[1]!).indexOf("usage");
+		assert.equal(header.handleMouse?.(click(usageX, 0, 240)), undefined, "the margin row is not a target");
+		assert.equal(header.handleMouse?.(click(usageX, 1, 240))?.handled, true);
 		ui.closeOverlay?.();
 		state.active = false;
 		for (const width of [9, 10]) {
@@ -7653,7 +7658,7 @@ test("#2890: a wide top header shows the whole header row above the conversation
 	const header = stripAnsi(column.entries[0]!.component.render(107).join("\n"));
 	assert.match(header, /ctx/, "context sits in the top header");
 	assert.match(header, /\$/, "cost sits in the top header");
-	assert.equal(sidebarState(tui as unknown as TUI).statusBarShowsMode?.(), false, "no status bar hides the YOLO banner");
+	assert.equal(sidebarState(tui as unknown as TUI).statusBarShowsMode?.(), true, "the bar shows the permission mode with its icon, so the banner steps aside");
 	const status = stripAnsi(sidebarState(tui as unknown as TUI).parts.get("footer")!.render(48).join("\n"));
 	assert.match(status, /SESSION|Session/i, "without a title row the rail keeps the session");
 });
@@ -7704,11 +7709,28 @@ test("a wide top header is the split title row's panel row with the whole header
 		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 		t.after(() => footer.dispose());
 		root[node]();
+		const state = sidebarState(tui as unknown as TUI);
+		if (status === "auto") {
+			assert.equal(state.statusBarShowsMode?.(), true, `${header}: a chrome bar shows the permission mode, so the YOLO banner steps aside`);
+		}
 		if (header === "top" && status === "auto") {
-			const rows = sidebarState(tui as unknown as TUI).parts.get("header")!.render(107);
-			assert.equal(rows.length, 2, "the whole header row on the first row, then its padding");
+			const rows = state.parts.get("header")!.render(110);
+			assert.equal(rows.length, 2, "the status bar row on the first row, then its margin row");
 			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, "the rail's panel surface, not the float card");
-			assert.match(stripAnsi(rows[0]!), /ctx .*usage/);
+			assert.match(stripAnsi(rows[0]!), /^ main .*ctx .*usage/, "the split status bar's content");
+		}
+		if (header === "split") {
+			const title = state.parts.get("header")!.render(160);
+			assert.equal(title.length, 2, "the title row, then its margin row");
+			const bar = state.parts.get("statusbar")!.render(160);
+			assert.equal(bar.length, 2, "a margin row, then the status bar");
+			assert.match(stripAnsi(bar[1]!), /^ main .*ctx/);
+		}
+		if (header === "below-input") {
+			const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => { render(width: number): string[] })();
+			const rows = widget.render(110);
+			assert.equal(rows.length, 2, "a margin row, then the status bar row");
+			assert.match(stripAnsi(rows[1]!), /^ main .*ctx .*usage/);
 		}
 		assert.deepEqual(footer.render(160), exterior ? [""] : [], `${header}/${status}: ${exterior ? "the float prompt ends the dock" : "no extra row under the input"}`);
 	}

@@ -9371,15 +9371,8 @@ function reviewIntendedUntrackedInput(status: ReviewStatusV3): ReviewCollectInpu
 const INSPECT_UNTRACKED_SELECTION_NEXT_STEP =
 	'The intended-untracked selection is required before START. The expected_untracked_inventory digest covers untracked path names only (git ls-files --others --exclude-standard); nothing is read or hashed at inventory time, and file content is hashed only for selected paths at candidate freeze. Either call gentle_review with operation "select-intended-untracked" passing this selectionBinding and intendedUntracked ([] excludes every eligible path, a subset includes only those paths), or call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call. To keep a path out of the inventory permanently, ignore it through .gitignore or .git/info/exclude.';
 
-interface PublicReviewCaptureBinding { collectBinding: string; captureOperation: string; forecast?: Record<string, unknown>; }
+interface PublicReviewCaptureBinding { collectBinding: string; requiresInput: boolean; }
 
-function hostMediatedRoleForecast(slot: ReviewHostRelaySlot): Record<string, unknown> {
-	return {
-		tool: "gentle_review_capture", status: "blocked", outcome: "reviewer-model-run-forecast",
-		cost_forecast: { transport: "pi_host_relay", model_runs: 1, roles: [slot.routingKey] },
-		mutation_performed: false, mutation_outcome: "none",
-	};
-}
 function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
 	return status.applicability === "current_target" && isCanonicalProcessString(status.authority?.lineageId)
 		&& isCanonicalProcessString(status.targetIdentity) && !isTerminalReviewAuthorityState(status.authority?.state);
@@ -9387,11 +9380,10 @@ function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
 
 function publicReviewCaptureBindings(status: ReviewStatusV3): readonly PublicReviewCaptureBinding[] {
 	if (!canOfferNativeCaptureBindings(status) || status.nextTransition?.kind !== "collect") return [];
-	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => {
-		const slots = input.captureOperation === "review.capture-validation" ? reviewHostMediatedRoleSlots([input]) : [];
-		return { collectBinding: canonicalReviewCaptureBinding(input), captureOperation: input.captureOperation,
-			...(slots.length === 1 ? { forecast: hostMediatedRoleForecast(slots[0]!) } : {}) };
-	});
+	return (status.nextTransition.collect?.inputs ?? []).filter((input) => input.captureOperation !== "external.select_intended_untracked").map((input) => ({
+  collectBinding: canonicalReviewCaptureBinding(input),
+  requiresInput: input.submission?.values.some(value => value.domain !== "artifact_path_or_stdin") ?? false,
+ }));
 }
 
 function captureBindingRejected(reason: string, group = false): Record<string, unknown> {
@@ -9667,7 +9659,9 @@ async function executeReviewCaptureOperation(
 	if (hostMediatedRoleSlots.length === 1) {
 		if (parameters.correctionLines !== undefined) return captureBindingRejected("correctionLines is valid only for a correction-plan capture");
 		if (parameters.reviewerRunAcknowledged !== true) {
-			return hostMediatedRoleForecast(hostMediatedRoleSlots[0]!);
+			return { tool: "gentle_review_capture", status: "blocked", outcome: "reviewer-model-run-forecast",
+    cost_forecast: { transport: "pi_host_relay", model_runs: 1, roles: [hostMediatedRoleSlots[0]!.routingKey] },
+    mutation_performed: false, mutation_outcome: "none" };
 		}
 		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
@@ -11577,9 +11571,9 @@ function createGentleAiExtensionForTesting(
 			name: "gentle_review_run",
 			exposure: "model-only",
 			label: "Experimental Review Coordinator",
-			description: "Experimental ordinary review coordinator. Uses the existing review facade and host consent. Resume an edited correction by lineageId to execute only the native-offered targeted validator. Stops on correction edits, unresolved consent, failure or maintenance; never retries a failed capture or authorizes delivery.",
+			description: "Experimental ordinary review coordinator. Uses the existing review facade and host consent. Resume by lineageId to follow native next_transition offers. Stops on correction edits, unresolved consent, failure or maintenance; never retries a failed capture or authorizes delivery.",
 			promptSnippet: "Experimental: use gentle_review_run to assess and coordinate ordinary review; retain its returned lineage when resuming.",
-			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to run only the native-offered targeted validator. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs."],
+			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to follow the next native transition. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs."],
 			parameters: {
 				type: "object", additionalProperties: false, properties: {
 					workspaceRoot: { type: "string" }, baseRef: { type: "string" }, committedOnly: { type: "boolean", enum: [true] },
@@ -11597,8 +11591,6 @@ function createGentleAiExtensionForTesting(
 				const input = parseReviewCoordinatorInput(parameters);
 				const workspaceRoot = resolveReviewControllerWorkspaceRoot(input.workspaceRoot, ctx.cwd, candidateViews, input.lineageId);
 				const initialSession = ctx.sessionManager?.getSessionId?.();
-				let closureBaseRef = input.baseRef;
-				let closureUntrackedSelection: ReturnType<typeof readRetainedNativeUntrackedSelection> = {};
 				const tools = { gentle_review: reviewControllerTool, gentle_review_capture: reviewCaptureTool, gentle_review_capture_group: reviewCaptureGroupTool };
 				const details = await runReviewCoordinator(parameters, {
 					signal,
@@ -11609,26 +11601,8 @@ function createGentleAiExtensionForTesting(
 							const gated = await resolveReviewModeGate(nativeReviewCli, operation, workspaceRoot, signal);
 							if (gated !== undefined) return gated;
 						}
-						if (name === "gentle_review" && args.operation === "acknowledge-approved" && typeof args.lineageId === "string") {
-							const retained = processRetainedNativeStatusSelections.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey));
-							if (retained) closureUntrackedSelection = readRetainedNativeUntrackedSelection(retained, workspaceRoot, args.lineageId);
-							if (candidateViews?.hasProjection(args.lineageId, workspaceRoot)) {
-								const projection = candidateViews.resolveProjection(args.lineageId, workspaceRoot);
-								if (projection.committedOnly === true) closureBaseRef = nativeCommittedRangeSelector(projection);
-							}
-						}
 						const result = await tools[name].execute(toolCallId, args as never, signal, onUpdate, ctx);
 						return result.details as Record<string, unknown>;
-					},
-					confirmCurrentCandidate: async () => {
-						if (ctx.sessionManager?.getSessionId?.() !== initialSession || nativeReviewCli?.assess === undefined) throw new Error("Current candidate cannot be confirmed");
-						if (input.untrackedScope !== undefined && closureUntrackedSelection.untrackedScope === undefined) throw new Error("Untracked review selector is unavailable");
-						// The full facade ASSESS also reads STATUS for outcome memoization.
-						// This native read avoids a forbidden post-burn STATUS round trip.
-						const assessment = await nativeReviewCli.assess({ cwd: workspaceRoot, ...closureUntrackedSelection,
-							...(closureBaseRef === undefined ? {} : { baseRef: closureBaseRef, committedOnly: true }),
-							...(signal === undefined ? {} : { signal }) });
-						return { consumed: assessment.candidate.consumed };
 					},
 					presentForecast: async (forecast) => {
 						if (ctx.hasUI !== true || onUpdate === undefined) return false;
@@ -11636,9 +11610,6 @@ function createGentleAiExtensionForTesting(
 						return true;
 					},
 				});
-				if (details.outcome === "candidate-changed-after-close" || details.outcome === "closed-scope-unconfirmed") {
-					try { ctx.ui.notify("The previous review closed. Current changes need a fresh assessment before treating them as reviewed.", "warning"); } catch { /* The result retains both facts without relying on UI. */ }
-				}
 				return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 			},
 		});

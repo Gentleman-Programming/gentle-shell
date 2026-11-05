@@ -38,8 +38,8 @@ test("registered coordinator executes existing facade and preserves the baseline
 		assert.equal(coordinated.forecasts.length, 1);
 		assert.equal(coordinated.forecasts[0]!.outcome, "reviewer-model-run-forecast");
 		assert.equal(result.metrics.facade_calls, 5);
-		assert.equal(result.current_candidate.status, "reviewed");
-		assert.equal(coordinated.candidateReads(), 1, "one native read without post-burn STATUS");
+		assert.equal(result.current_candidate, undefined);
+		assert.equal(coordinated.candidateReads(), 0, "ACK requires no post-burn query");
 	} finally { coordinated.close(); }
 });
 
@@ -70,7 +70,7 @@ test("experimental coordinator respects RDD off and a switch disabled during its
 	}
 });
 
-test("projected validation forecast retains fresh mode and session checks before model execution", async (t) => {
+test("capture forecast retains fresh mode and session checks before model execution", async (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "rdd-projected-guards-"));
 	t.after(() => { assert.ok(cwd.startsWith(join(tmpdir(), "rdd-projected-guards-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
@@ -98,7 +98,7 @@ test("projected validation forecast retains fresh mode and session checks before
 			if (change === "session") await assert.rejects(call, { name: "AbortError" });
 			else assert.equal((await call()).details.outcome, "blocked");
 			assert.equal(displayed, 1);
-			assert.equal(statusCalls, 1, "no dedicated forecast STATUS");
+			assert.equal(statusCalls, 2, "one offered STATUS and the existing capture forecast preflight");
 			assert.equal(runs, 0);
 		} finally { __testing.setReviewHostRelayRunnerForTesting(); }
 	}

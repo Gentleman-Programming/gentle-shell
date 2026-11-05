@@ -492,59 +492,28 @@ test("refuter and validation each execute one self-contained provider vector", a
 	}
 });
 
-test("public collect metadata names the provider operation without changing its opaque binding", async () => {
+test("public collect metadata identifies authored input without changing its opaque binding", async () => {
 	const lineageId = "validation-projection";
 	const input = roleInput(lineageId, "review.capture-validation");
 	const native = { targetStatus: async () => status(lineageId, [input]),
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
 	} as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
-	const entries = result.collectBindings as Array<{ collectBinding: string; captureOperation: string }>;
+	const entries = result.collectBindings as Array<{ collectBinding: string; requiresInput: boolean }>;
 	assert.equal(entries.length, 1);
-	assert.equal(entries[0].captureOperation, "review.capture-validation");
+	assert.equal(entries[0].requiresInput, false);
 	assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
 	assert.equal((entries[0] as Record<string, unknown>).forecast, undefined, "legacy execute vectors keep their existing route");
 });
 
-function hostValidationInput(lineageId: string): ReviewCollectInputV3 {
-	const input = materializeInput(lineageId);
-	return { ...input, name: "provider_targeted_validator", captureOperation: "review.capture-validation",
-		submission: { ...input.submission!, operationToken: "capture-validation" } };
-}
-
-test("STATUS projects the exact existing host validation forecast without a second native call", async () => {
-	const lineageId = "projected-native-forecast";
-	const input = hostValidationInput(lineageId);
-	let statusCalls = 0;
-	const native = { targetStatus: async () => { statusCalls++; return status(lineageId, [input]); },
-		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
-	} as unknown as NativeReviewCli;
-	const projected = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
-	const entry = (projected.collectBindings as Array<{ collectBinding: string; forecast: unknown }>)[0];
-	assert.equal(statusCalls, 1);
-	assert.deepEqual(JSON.parse(entry.collectBinding), input);
-	const original = await capture(lineageId, input, native);
-	assert.equal(statusCalls, 2);
-	assert.deepEqual(entry.forecast, original);
-});
-
-test("projected forecast cannot admit a binding that changed before acknowledged capture", async (t) => {
-	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	let runs = 0;
-	__testing.setReviewHostRelayRunnerForTesting(async () => { runs++; throw new Error("stale binding must not launch reviewer"); });
-	const lineageId = "projected-binding-drift";
-	const input = hostValidationInput(lineageId);
-	let current = input;
-	const native = { targetStatus: async () => status(lineageId, [current]),
-		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
-	} as unknown as NativeReviewCli;
-	const projected = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
-	const entry = (projected.collectBindings as Array<{ collectBinding: string; forecast: unknown }>)[0];
-	assert.ok(entry.forecast);
-	current = { ...input, name: "different-current-slot" };
-	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: entry.collectBinding, reviewerRunAcknowledged: true }, process.cwd(), native);
-	assert.equal(result.outcome, "capture-binding-rejected");
-	assert.equal(runs, 0);
+test("public collect metadata requires authored correction input", async () => {
+ const lineageId = "authored-plan-metadata";
+ const input = correctionPlanInput(lineageId);
+ const native = { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli;
+ const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+ const entries = result.collectBindings as Array<{ collectBinding: string; requiresInput: boolean }>;
+ assert.equal(entries[0].requiresInput, true);
+ assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
 });
 
 test("terminal capture closes directly, nonterminal capture does not auto-follow, and unknown mutation reconciles once", async (t) => {

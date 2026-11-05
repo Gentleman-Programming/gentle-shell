@@ -3,305 +3,131 @@ import test from "node:test";
 import { parseReviewCoordinatorInput, runReviewCoordinator, type ReviewCoordinatorTool } from "../lib/review-coordinator.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
-type Body = Record<string, unknown>;
+type Body = Record<string, any>;
 const target = "sha256:" + "a".repeat(64);
 const lineage = "review-fixture";
 const scoped = { workspaceRoot: process.cwd(), baseRef: "b".repeat(40), committedOnly: true as const };
-const ready = { status: "ready", result: { target_identity: target, next_transition: { kind: "execute", execute: { operation: "review.start" } } } };
-const collect = { result: { target_identity: target, authority: { lineage_id: lineage, state: "reviewing" }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: '{"opaque":"binding"}' }] };
-const approved = { result: { target_identity: target, authority: { lineage_id: lineage, state: "approved" }, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } } };
+const ready = { result: { target_identity: target, next_transition: { kind: "execute", execute: { operation: "review.start" } } } };
+const collect = { result: { target_identity: target, authority: { lineage_id: lineage }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "opaque-not-json", requiresInput: false }] };
+const approved = { result: { target_identity: target, authority: { lineage_id: lineage }, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } } };
 const closed = { outcome: "native-approved-acknowledgement-completed", status: "closed", authority: "burned", target_identity: target, lineage_id: lineage };
-
+const captured = { outcome: "native-last-event-closure" };
+const stopped = { result: { ...collect.result, next_transition: { kind: "stop", reason_code: "corrected_candidate_unavailable" } } };
 function backend(responses: Body[]) {
-	const calls: { tool: ReviewCoordinatorTool; parameters: Body }[] = [];
-	return { calls, confirmCurrentCandidate: async () => ({ consumed: true }), async invoke(tool: ReviewCoordinatorTool, parameters: Body) {
-		calls.push({ tool, parameters });
-		assert.ok(responses.length, "no unexpected follow-up or retry");
-		return structuredClone(responses.shift()!);
-	} };
+ const calls: { tool: ReviewCoordinatorTool; parameters: Body }[] = [];
+ return { calls, async invoke(tool: ReviewCoordinatorTool, parameters: Body) {
+  calls.push({ tool, parameters });
+  assert.ok(responses.length, "no unexpected follow-up or retry");
+  return responses.shift()!;
+ } };
 }
 
-test("ordinary coordinator retains selectors, displays forecast and closes only through facade acknowledgement", async () => {
-	const forecast = { outcome: "reviewer-model-run-forecast", cost_forecast: { model_runs: 1 } };
-	const capture = { outcome: "native-last-event-closure", closure: { state: "approved", lineage_id: lineage, target_identity: target } };
-	const host = backend([{ reviewDue: true }, ready, { operation: "start", result: { lineage_id: lineage } }, collect, forecast, capture, approved, closed]);
-	const forecasts: Body[] = [];
-	const result = await runReviewCoordinator({ ...scoped, lenses: ["risk"], lensesReason: "Changes a permission check" }, {
-		...host, presentForecast: async (value) => { forecasts.push(value); return true; },
-	});
-	assert.equal(result.outcome, "closed");
-	assert.deepEqual((result.current_candidate as Body).status, "reviewed");
-	assert.deepEqual(forecasts, [forecast]);
-	assert.equal(host.calls.at(-1)?.parameters.operation, "acknowledge-approved");
-	for (const call of host.calls) {
-		assert.equal(call.parameters.workspaceRoot, scoped.workspaceRoot);
-		if (["assess", "inspect", "status"].includes(String(call.parameters.operation))) assert.deepEqual(JSON.parse(String(call.parameters.input)), { baseRef: scoped.baseRef, committedOnly: true });
-	}
-	assert.equal(host.calls.filter((call) => call.parameters.reviewerRunAcknowledged === true).length, 1);
+test("fresh ordinary review retains selectors, displays forecasts and ends at native ACK", async () => {
+ const forecast = { outcome: "reviewer-model-run-forecast" };
+ const host = backend([{ reviewDue: true }, ready, { result: { lineage_id: lineage } }, collect, forecast, captured, approved, closed]);
+ const shown: Body[] = [];
+ const result = await runReviewCoordinator({ ...scoped, lenses: ["risk"], lensesReason: "permission check", requestContextPath: "spec.md" }, { ...host, presentForecast: async value => { shown.push(value); return true; } });
+ assert.equal(result.outcome, "closed"); assert.deepEqual(result.result, closed); assert.deepEqual(shown, [forecast]);
+ assert.equal(result.current_candidate, undefined, "ACK describes only its frozen target");
+ assert.equal(host.calls.at(-1)!.parameters.operation, "acknowledge-approved");
+ assert.equal(JSON.parse(String(host.calls[2].parameters.input)).requestContextPath, "spec.md");
+ for (const call of host.calls) {
+  assert.equal(call.parameters.workspaceRoot, scoped.workspaceRoot);
+  if (["assess", "inspect", "status"].includes(String(call.parameters.operation))) assert.deepEqual(JSON.parse(String(call.parameters.input)), { baseRef: scoped.baseRef, committedOnly: true });
+ }
 });
 
-test("explicit intent is forwarded only to fresh START and cannot reinterpret consumed authority", async () => {
-	const host = backend([{ reviewDue: true }, ready, { outcome: "native-review-consent-required" }]);
-	await runReviewCoordinator({ requestContextPath: "spec.md" }, host);
-	assert.equal(JSON.parse(String(host.calls[2].parameters.input)).requestContextPath, "spec.md");
-	assert.throws(() => parseReviewCoordinatorInput({ lineageId: lineage, requestContextPath: "new.md" }), /immutable/);
-	const consumed = backend([{ reviewDue: false }]);
-	assert.equal((await runReviewCoordinator({ requestContextPath: "new.md" }, consumed)).outcome, "request-context-requires-fresh-review");
-	assert.equal(consumed.calls.length, 1);
+test("routing ignores every native state, reason code and capture closure shape", async () => {
+ for (const state of ["correction_required", "validating", "declined", "future-state"]) {
+  const response: Body = structuredClone(collect);
+  response.result.authority.state = state; response.result.next_transition.reason_code = "future-reason";
+  const capture = { outcome: "native-last-event-closure" };
+  Object.defineProperty(capture, "closure", { get() { throw new Error("must not inspect closure shape"); } });
+  for (const object of [response.result, response.result.authority]) Object.defineProperty(object, "state", { get() { throw new Error("must not read state"); }, configurable: true });
+  Object.defineProperty(response.result.next_transition, "reason_code", { get() { throw new Error("must not read reason_code"); } });
+  // Serialization is transport instrumentation, so poison only property reads.
+  Object.defineProperty(response, "toJSON", { value: () => ({ fixture: true }) });
+  Object.defineProperty(capture, "toJSON", { value: () => ({ fixture: true }) });
+  const host = backend([response, capture, approved, closed]);
+  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
+  assert.equal(host.calls[1].parameters.collectBinding, "opaque-not-json");
+ }
 });
 
-test("explicit new intent cannot resume an active lineage discovered by inspect", async () => {
-	const host = backend([{ reviewDue: true }, collect]);
-	const result = await runReviewCoordinator({ requestContextPath: "different-request.md" }, host);
-	assert.equal(result.outcome, "request-context-requires-fresh-review");
-	assert.equal(host.calls.length, 2, "no reviewer or acknowledgement on the old intent");
+test("stop is surfaced unchanged before edit; authored collect returns to the model", async () => {
+ for (const response of [stopped, { ...collect, collectBindings: [{ collectBinding: "plan", requiresInput: true }] }, { ...collect, collectBindings: [] }]) {
+  const host = backend([response]); const result = await runReviewCoordinator({ lineageId: lineage }, host);
+  assert.equal(result.outcome, response === stopped ? "stopped" : "input-required");
+  assert.equal(result.result, response); assert.equal(host.calls.length, 1);
+ }
 });
 
-test("not-due assessment does not inspect or start", async () => {
-	const host = backend([{ reviewDue: false }]);
-	assert.equal((await runReviewCoordinator({}, host)).outcome, "not-due");
-	assert.equal(host.calls.length, 1);
+test("post-edit opaque captures need no targeted-validator reason or operation", async () => {
+ const host = backend([collect, captured, approved, closed]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
+ assert.equal(host.calls.filter(call => call.tool === "gentle_review_capture").length, 1);
 });
 
-test("unknown assessment does not infer permission to review", async () => {
-	const host = backend([{ nativeRisk: "unassessable" }]);
-	assert.equal((await runReviewCoordinator({}, host)).outcome, "assessment-unavailable");
-	assert.equal(host.calls.length, 1);
+test("unknown input metadata fails closed and exact groups retain provider order", async () => {
+ const missing = backend([{ ...collect, collectBindings: [{ collectBinding: "opaque" }] }]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, missing)).outcome, "input-required");
+ const host = backend([{ ...collect, collectBindings: [{ collectBinding: "second", requiresInput: false }, { collectBinding: "first", requiresInput: false }] }, captured, stopped]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "stopped");
+ assert.equal(host.calls[1].tool, "gentle_review_capture_group"); assert.deepEqual(host.calls[1].parameters.collectBindings, ["second", "first"]);
 });
 
-test("unresolved consent returns verbatim without supplying a grant", async () => {
-	const consent = { outcome: "native-review-consent-required", consent_binding: "opaque", consent: { choices: ["granted", "declined"] } };
-	const host = backend([{ reviewDue: true }, ready, consent]);
-	const result = await runReviewCoordinator({}, host);
-	assert.equal(result.outcome, "consent-required");
-	assert.deepEqual(result.result, consent);
-	assert.ok(!host.calls.some((call) => call.parameters.operation === "answer-consent"));
+test("capture failures and missing forecast display never run or acknowledge further", async () => {
+ for (const capture of [{ outcome: "capture-binding-rejected" }, { outcome: "native-reviewer-result-failed", reconciliation: approved }, { outcome: "reviewer-model-run-forecast" }]) {
+  const host = backend([collect, capture]);
+  assert.ok(["blocked", "forecast"].includes(String((await runReviewCoordinator({ lineageId: lineage }, host)).outcome)));
+  assert.equal(host.calls.length, 2);
+ }
 });
 
-test("correction and maintenance routes hand back without executing them", async () => {
-	for (const response of [
-		{ result: { authority: { lineage_id: lineage, state: "correction_required" } } },
-		{ result: { next_transition: { kind: "execute", execute: { operation: "review.recover" } } } },
-	]) {
-		const host = backend([response]);
-		const result = await runReviewCoordinator({ lineageId: lineage }, host);
-		assert.ok(["correction-required", "blocked"].includes(String(result.outcome)));
-		assert.equal(host.calls.length, 1);
-	}
+test("reoffered and duplicate opaque bindings cannot execute twice", async () => {
+ const host = backend([collect, captured, collect]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "repeated-capture");
+ assert.equal(host.calls.length, 3);
+ const duplicate = backend([{ ...collect, collectBindings: [...collect.collectBindings, ...collect.collectBindings] }]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, duplicate)).outcome, "repeated-capture");
+ assert.equal(duplicate.calls.length, 1);
 });
 
-function validationCollect(state = "correction_required"): Body {
-	return { result: { target_identity: target, authority: { lineage_id: lineage, state },
-		next_transition: { kind: "collect", reason_code: "targeted_validation_required" } },
-		collectBindings: [{ captureOperation: "review.capture-validation", collectBinding: "opaque-native-validator" }] };
-}
-
-const statusForecast = { tool: "gentle_review_capture", status: "blocked", outcome: "reviewer-model-run-forecast",
-	cost_forecast: { transport: "pi_host_relay", model_runs: 1, roles: ["review-validator"] }, mutation_performed: false, mutation_outcome: "none" };
-function projectedValidation(): Body {
-	const details = validationCollect();
-	details.collectBindings = [{ captureOperation: "review.capture-validation", collectBinding: "opaque-native-validator", forecast: statusForecast }];
-	return details;
-}
-
-test("projected validation forecast is displayed before one fresh acknowledged capture", async () => {
-	const host = backend([projectedValidation(), { outcome: "native-last-event-closure", closure: { state: "approved", lineage_id: lineage } }, approved, closed]);
-	let shown = 0;
-	const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async forecast => {
-		assert.deepEqual(forecast, statusForecast); assert.equal(host.calls.length, 1); shown++; return true;
-	} });
-	assert.equal(result.outcome, "closed");
-	assert.equal(shown, 1);
-	const captures = host.calls.filter(call => call.tool === "gentle_review_capture");
-	assert.equal(captures.length, 1);
-	assert.equal(captures[0].parameters.reviewerRunAcknowledged, true);
-	assert.equal(captures[0].parameters.collectBinding, "opaque-native-validator");
-	assert.equal(host.calls.length, 4);
+test("lineage and target drift block before ACK, including a mismatched ACK envelope", async () => {
+ for (const change of [{ target_identity: "other" }, { authority: { lineage_id: "other" } }]) {
+  const host = backend([collect, captured, { result: { ...approved.result, ...change } }]);
+  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "binding-drift");
+  assert.equal(host.calls.length, 3);
+ }
+ const host = backend([approved, { ...closed, target_identity: "other" }]);
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "blocked");
+ assert.equal(host.calls.length, 2);
 });
 
-test("projected forecast absence of display or cancellation prevents capture", async () => {
-	for (const presentForecast of [undefined, async () => false]) {
-		const host = backend([projectedValidation()]);
-		assert.equal((await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast })).outcome, "forecast");
-		assert.equal(host.calls.length, 1);
-	}
-	const controller = new AbortController();
-	const host = backend([projectedValidation()]);
-	await assert.rejects(runReviewCoordinator({ lineageId: lineage }, { ...host, signal: controller.signal,
-		presentForecast: async () => { controller.abort(); return true; } }), { name: "AbortError" });
-	assert.equal(host.calls.length, 1);
+test("cancellation stops dispatch but a racing verified burn remains terminal", async () => {
+ const host = backend([]);
+ await assert.rejects(runReviewCoordinator({}, { ...host, signal: AbortSignal.abort() }), { name: "AbortError" });
+ assert.equal(host.calls.length, 0);
+ const controller = new AbortController(); let calls = 0;
+ const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke() { if (++calls === 1) return approved; controller.abort(); return closed; } });
+ assert.equal(result.outcome, "closed"); assert.equal(calls, 2); assert.equal(result.result, closed);
 });
 
-test("projected forecast never bypasses current binding refusal or retries a new forecast", async () => {
-	for (const response of [{ outcome: "capture-binding-rejected", status: "blocked" }, { outcome: "review-mode-disabled", status: "skipped" }, statusForecast]) {
-		const host = backend([projectedValidation(), response]);
-		const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async () => true });
-		assert.ok(["blocked", "forecast"].includes(String(result.outcome)));
-		assert.equal(host.calls.length, 2);
-	}
+test("no retries after missing or unsuccessful ACK", async () => {
+ for (const ack of [{}, { ...closed, authority: "active" }]) {
+  const host = backend([approved, ack]); assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "blocked"); assert.equal(host.calls.length, 2);
+ }
 });
 
-test("incompatible projected forecast retains the legacy capture forecast route", async () => {
-	const details = projectedValidation();
-	details.collectBindings = [{ captureOperation: "review.capture-validation", collectBinding: "opaque-native-validator",
-		forecast: { ...statusForecast, cost_forecast: { transport: "pi_host_relay", model_runs: 2, roles: ["review-validator"] } } }];
-	const host = backend([details, statusForecast, { outcome: "native-last-event-closure", closure: { state: "approved" } }, approved, closed]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async () => true })).outcome, "closed");
-	assert.equal(host.calls[1].parameters.reviewerRunAcknowledged, undefined);
-	assert.equal(host.calls[2].parameters.reviewerRunAcknowledged, true);
-});
-
-test("resuming a corrected candidate executes exactly the offered validator and closes through native acknowledgement", async () => {
-	for (const state of ["correction_required", "validating"]) {
-		const validation = validationCollect(state);
-		const host = backend([validation, { outcome: "reviewer-model-run-forecast" },
-			{ outcome: "native-last-event-closure", closure: { state: "approved", lineage_id: lineage } }, approved, closed]);
-		const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, presentForecast: async () => true });
-		assert.equal(result.outcome, "closed");
-		const captures = host.calls.filter(call => call.tool === "gentle_review_capture");
-		assert.equal(captures.length, 2, "one forecast then one acknowledged execution");
-		assert.equal(captures[1].parameters.collectBinding, "opaque-native-validator");
-		assert.equal(captures[1].parameters.reviewerRunAcknowledged, true);
-		assert.equal(host.calls.at(-1)?.parameters.operation, "acknowledge-approved");
-	}
-});
-
-test("correction resume refuses other roles, ambiguous bindings and missing validation reason", async () => {
-	for (const operation of [undefined, "review.capture-correction-plan", "review.capture-refuter", "review.capture-result"]) {
-		const response = validationCollect();
-		response.collectBindings = [{ captureOperation: operation, collectBinding: "opaque" }];
-		const host = backend([response]);
-		assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "correction-required");
-		assert.equal(host.calls.length, 1);
-	}
-	for (const response of [
-		{ ...validationCollect(), collectBindings: [] },
-		{ ...validationCollect(), collectBindings: [{ captureOperation: "review.capture-validation", collectBinding: "a" }, { captureOperation: "review.capture-validation", collectBinding: "b" }] },
-		{ ...validationCollect(), result: { target_identity: target, authority: { lineage_id: lineage, state: "correction_required" }, next_transition: { kind: "collect" } } },
-	]) {
-		const host = backend([response]);
-		assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "correction-required");
-		assert.equal(host.calls.length, 1);
-	}
-});
-
-test("validator failure, cancellation, drift and escalation never retry or acknowledge", async () => {
-	for (const response of [
-		{ outcome: "native-reviewer-result-failed", reconciliation: approved },
-		{ outcome: "capture-binding-rejected", status: "blocked" },
-		{ outcome: "native-last-event-closure", closure: { state: "escalated", lineage_id: lineage } },
-		{ outcome: "native-last-event-closure", closure: { state: "approved", lineage_id: "foreign-lineage" } },
-	]) {
-		const host = backend([validationCollect(), response]);
-		const result = await runReviewCoordinator({ lineageId: lineage }, host);
-		assert.ok(["blocked", "binding-drift"].includes(String(result.outcome)));
-		assert.equal(host.calls.length, 2);
-	}
-	const controller = new AbortController();
-	let calls = 0;
-	await assert.rejects(runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke() {
-		calls++; controller.abort(); return validationCollect();
-	} }), { name: "AbortError" });
-	assert.equal(calls, 1);
-	const changed = { ...approved, result: { ...approved.result, target_identity: "changed-candidate" } };
-	const host = backend([validationCollect(), { outcome: "native-last-event-closure", closure: { state: "approved" } }, changed]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "binding-drift");
-	assert.equal(host.calls.length, 3);
-});
-
-test("validation forecast is mandatory and a reoffered validator never executes twice", async () => {
-	const forecast = backend([validationCollect(), { outcome: "reviewer-model-run-forecast" }]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, forecast)).outcome, "forecast");
-	assert.equal(forecast.calls.length, 2);
-	for (const binding of ["opaque-native-validator", "new-opaque-validator"]) {
-		const again = validationCollect();
-		again.collectBindings = [{ captureOperation: "review.capture-validation", collectBinding: binding }];
-		const repeated = backend([validationCollect(), { outcome: "native-reviewer-result-captured" }, again]);
-		assert.equal((await runReviewCoordinator({ lineageId: lineage }, repeated)).outcome, "repeated-capture");
-		assert.equal(repeated.calls.length, 3);
-	}
-});
-
-test("no forecast presentation means no model run", async () => {
-	const host = backend([collect, { outcome: "reviewer-model-run-forecast" }]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "forecast");
-	assert.equal(host.calls.length, 2);
-});
-
-test("capture errors never retry or acknowledge even when reconciliation offers approval", async () => {
-	const failure = { outcome: "native-reviewer-result-failed", reconciliation: approved };
-	const host = backend([collect, failure]);
-	const result = await runReviewCoordinator({ lineageId: lineage }, host);
-	assert.equal(result.outcome, "blocked");
-	assert.deepEqual(result.result, failure);
-	assert.equal(host.calls.length, 2);
-});
-
-test("target and lineage drift block before acknowledgement", async () => {
-	for (const changed of [
-		{ ...approved, result: { ...approved.result, target_identity: "other-target" } },
-		{ ...approved, result: { ...approved.result, authority: { lineage_id: "other-lineage", state: "approved" } } },
-	]) {
-		const host = backend([collect, { outcome: "native-last-event-closure", closure: { state: "approved" } }, changed]);
-		assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "binding-drift");
-		assert.ok(!host.calls.some((call) => call.parameters.operation === "acknowledge-approved"));
-	}
-});
-
-test("cancelled coordinator performs no calls", async () => {
-	const host = backend([]);
-	await assert.rejects(runReviewCoordinator({}, { ...host, signal: AbortSignal.abort() }), { name: "AbortError" });
-	assert.equal(host.calls.length, 0);
-});
-
-test("a cancellation racing a confirmed burn does not hide acknowledgement evidence", async () => {
-	const controller = new AbortController();
-	let calls = 0;
-	const result = await runReviewCoordinator({ lineageId: lineage }, {
-		signal: controller.signal,
-		async invoke() {
-			calls++;
-			if (calls === 1) return approved;
-			controller.abort();
-			return closed;
-		},
-	});
-	assert.equal(result.outcome, "closed-scope-unconfirmed");
-	assert.deepEqual(result.result, closed);
-	assert.equal(calls, 2);
-});
-
-test("post-burn candidate drift preserves the burn but never reports current changes reviewed", async () => {
-	const host = backend([approved, closed]);
-	const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, confirmCurrentCandidate: async () => ({ consumed: false }) });
-	assert.equal(result.outcome, "candidate-changed-after-close");
-	assert.deepEqual(result.result, closed);
-	assert.equal((result.current_candidate as Body).status, "unreviewed");
-	assert.deepEqual(host.calls.map((call) => call.parameters.operation), ["status", "acknowledge-approved"]);
-});
-
-test("failed or absent post-burn evidence does not hide closure or grant current-candidate approval", async () => {
-	for (const confirmCurrentCandidate of [undefined, async () => ({}), async () => { throw new Error("assessment timeout"); }]) {
-		const host = backend([approved, closed]);
-		const result = await runReviewCoordinator({ lineageId: lineage }, { ...host, confirmCurrentCandidate });
-		assert.equal(result.outcome, "closed-scope-unconfirmed");
-		assert.deepEqual(result.result, closed);
-		assert.equal(host.calls.length, 2, "no post-burn STATUS or replay");
-	}
-});
-
-test("an accepted capture whose binding is reoffered cannot run twice", async () => {
-	const host = backend([collect, { outcome: "native-reviewer-result-captured" }, collect]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "repeated-capture");
-	assert.equal(host.calls.filter((call) => call.tool === "gentle_review_capture").length, 1);
-});
-
-test("group captures preserve the exact provider order", async () => {
-	const bindings = [{ collectBinding: '{"opaque":"second"}' }, { collectBinding: '{"opaque":"first"}' }];
-	const host = backend([{ ...collect, collectBindings: bindings }, { outcome: "native-last-event-closure", closure: { state: "correction_required" } }]);
-	assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "correction-required");
-	assert.equal(host.calls[1]!.tool, "gentle_review_capture_group");
-	assert.deepEqual(host.calls[1]!.parameters.collectBindings, bindings.map((entry) => entry.collectBinding));
+test("assessment, consent and existing frozen intent retain their explicit boundaries", async () => {
+ for (const [assessment, outcome] of [[{ reviewDue: false }, "not-due"], [{}, "assessment-unavailable"]] as const) {
+  const host = backend([assessment]); assert.equal((await runReviewCoordinator({}, host)).outcome, outcome); assert.equal(host.calls.length, 1);
+ }
+ const old = backend([{ reviewDue: true }, collect]);
+ assert.equal((await runReviewCoordinator({ requestContextPath: "new.md" }, old)).outcome, "request-context-requires-fresh-review");
+ const consent = { outcome: "native-review-consent-required" };
+ const host = backend([{ reviewDue: true }, ready, consent]); assert.equal((await runReviewCoordinator({}, host)).result, consent); assert.equal(host.calls.length, 3);
+ assert.throws(() => parseReviewCoordinatorInput({ lineageId: lineage, requestContextPath: "new.md" }), /immutable/);
 });
 
 test("ambiguous selectors and consent arguments are rejected before dispatch", () => {

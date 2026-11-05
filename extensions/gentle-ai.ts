@@ -276,6 +276,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { RDD_MODE_CONTROL_CHANNEL, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { AutoPermissionRuntime, updateAutoPrompt, type AutoRuntimeClassifier } from "../lib/auto-permission-runtime.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
@@ -816,6 +817,8 @@ const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus 
 // A late status read must not refill the memo after a mode change or session
 // shutdown. Generations are per cwd so unrelated workspaces remain independent.
 const rddStatusGenerations = new Map<string, number>();
+// A later write supersedes an earlier selector response, across sessions/cwds.
+let rddModeMutationSerial = 0;
 
 function rddStatusGeneration(cwd: string): number {
 	if (!rddStatusGenerations.has(cwd)) rddStatusGenerations.set(cwd, 0);
@@ -826,6 +829,13 @@ function invalidateRddStatus(cwd: string): void {
 	rddStatusGenerations.set(cwd, rddStatusGeneration(cwd) + 1);
 	rddStatusMemo.delete(cwd);
 	startupModeReads.delete(cwd);
+}
+
+function invalidateAllRddStatuses(): void {
+	// Direct ASSESS reads register their generation before awaiting, even when
+	// the cwd has never had a memo or prompt. They must be invalidated too.
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
+	pinnedRddStatusLines.clear();
 }
 
 /** @internal test seam: clears the per-cwd RDD status memo. */
@@ -11208,6 +11218,7 @@ function createGentleAiExtensionForTesting(
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
+	let activeRddContext: ExtensionContext | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
 		// A pending Enter selection settles before the profile owner shuts down;
@@ -11232,6 +11243,7 @@ function createGentleAiExtensionForTesting(
 		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		activeRddContext = undefined;
 		unbindPreparation?.();
 		unbindPreparation = undefined;
 		reminderManager = undefined;
@@ -11615,6 +11627,7 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		const startupEpoch = reminderEpoch;
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
@@ -11630,6 +11643,8 @@ function createGentleAiExtensionForTesting(
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await yolo.mode(ctx);
+		// A shutdown during the asynchronous startup must not revive its owner.
+		if (startupEpoch !== reminderEpoch) return;
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -11637,6 +11652,7 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		activeRddContext = ctx;
 		// gentle-shell#1690: a delegated child runs in the parent's resolved
 		// worktree. Repository preparation, review negotiation, asset install and
 		// model config belong to the parent session and write shared state. The
@@ -12191,22 +12207,149 @@ function createGentleAiExtensionForTesting(
 		handler: async (args, ctx) => { statusTiming.command(args, ctx); },
 	});
 
-	// The registered command owns mode mutations. Future controls can forward
-	// the complete native request here without creating another state owner.
+	// All controls use this native request and invalidation owner. A global write
+	// brackets its in-flight period: neither an old read nor one started while
+	// the provider is writing may refill a different workspace's status.
 	const executeReviewMode = async (request: NativeReviewModeRequest, ctx: ExtensionContext) => {
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		const result = await nativeReviewCli!.reviewMode!(request);
-		if (request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS) {
-			invalidateRddStatus(request.cwd);
-			for (const [key, pinned] of pinnedRddStatusLines) {
-				if (pinned.cwd === request.cwd) pinnedRddStatusLines.delete(key);
+		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const global = mutating && request.scope === "global";
+		const invalidate = () => {
+			if (global) invalidateAllRddStatuses();
+			else {
+				invalidateRddStatus(request.cwd);
+				for (const [key, pinned] of pinnedRddStatusLines) {
+					if (pinned.cwd === request.cwd) pinnedRddStatusLines.delete(key);
+				}
 			}
-			if (request.operation === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
+		};
+		if (mutating) { rddModeMutationSerial += 1; invalidate(); }
+		try {
+			const result = await nativeReviewCli!.reviewMode!(request);
+			if (mutating && request.operation === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
 				cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 			}
+			return result;
+		} finally {
+			// A failed native write has an unknown outcome; never retry it or keep
+			// a potentially obsolete prompt/status cache.
+			if (mutating) invalidate();
 		}
-		return result;
 	};
+
+	const rddChoices = {
+		"Enable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE },
+		"Disable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE },
+		"Enable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE, scope: "global" as const },
+		"Disable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE, scope: "global" as const },
+	};
+
+	// The context is captured at the session lifecycle boundary, not provided by
+	// a consumer. SDK contexts have live getters, so recheck UI and cwd too.
+	const bindRddOwner = (context: ExtensionContext): (() => boolean) | undefined => {
+		try {
+			const owner = activeRddContext;
+			if (!owner || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1" || !reminderSessionActive) return undefined;
+			const coordinates = reviewSessionManagerAndId(owner);
+			const cwd = owner.cwd, ui = owner.ui, epoch = reminderEpoch;
+			if (!coordinates || reminderManager !== coordinates.manager || context.sessionManager !== coordinates.manager ||
+				context.cwd !== cwd || context.ui !== ui || !owner.hasUI || (owner.mode !== "tui" && owner.mode !== "rpc")) return undefined;
+			const sessionKey = pendingReviewConsentSessionKey(owner, pendingReviewConsentFallbackKey);
+			return () => {
+				try {
+					const current = reviewSessionManagerAndId(owner);
+					return activeRddContext === owner && reminderSessionActive && reminderEpoch === epoch &&
+						reminderManager === coordinates.manager && current?.manager === coordinates.manager && current.sessionId === coordinates.sessionId &&
+						owner.cwd === cwd && (owner.sessionManager.getCwd?.() ?? cwd) === cwd && owner.ui === ui && owner.hasUI &&
+						(owner.mode === "tui" || owner.mode === "rpc") && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+				} catch { return false; }
+			};
+		} catch { return undefined; }
+	};
+
+	const openRddSelector = async (context: ExtensionContext): Promise<void> => {
+		if (nativeReviewCli?.reviewMode === undefined) {
+			context.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			return;
+		}
+		const current = bindRddOwner(context);
+		if (!current || !current()) {
+			if (context.hasUI) context.ui.notify("RDD unchanged: an interactive primary session is required.", "warning");
+			return;
+		}
+		const owner = activeRddContext!;
+		const cwd = owner.cwd;
+		const generation = rddStatusGeneration(cwd);
+		let writeSerial: number | undefined;
+		try {
+			const status = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+			if (!current() || rddStatusGeneration(cwd) !== generation) return;
+			if (status.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(status.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; RDD unchanged.", "error");
+				return;
+			}
+			const selected = await owner.ui.select(`Receipt-driven development: ${status.status.effective} (decided by ${status.status.source})`, Object.keys(rddChoices));
+			if (!current() || rddStatusGeneration(cwd) !== generation || selected === undefined) return;
+			if (!Object.hasOwn(rddChoices, selected)) {
+				owner.ui.notify("RDD unchanged: unrecognized selection.", "warning");
+				return;
+			}
+			const choice = rddChoices[selected as keyof typeof rddChoices];
+			const pending = executeReviewMode({ cwd, ...choice }, owner);
+			writeSerial = rddModeMutationSerial;
+			const result = await pending;
+			if (!current() || writeSerial !== rddModeMutationSerial) return;
+			if (result.operation !== choice.operation || !isValidRddModeStatus(result.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; the write outcome is unknown.", "error");
+				return;
+			}
+			const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
+			if (choice.operation === NATIVE_REVIEW_MODE_OPERATION.ENABLE && result.status.effective === "off") {
+				const reason = result.status.source === NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL
+					? "The repository override still keeps RDD off."
+					: result.status.source === NATIVE_REVIEW_MODE_SOURCE.GLOBAL
+						? "The repository setting cannot override machine-wide RDD off."
+						: "RDD remains off; inspect its deciding source.";
+				owner.ui.notify(`${report}\n${reason}`, "warning");
+			} else owner.ui.notify(report, "info");
+		} catch (error) {
+			if (!current() || (writeSerial === undefined ? rddStatusGeneration(cwd) !== generation : writeSerial !== rddModeMutationSerial)) return;
+			if (asNativeReviewCliError(error)?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) {
+				owner.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			} else owner.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
+	};
+
+	pi.events?.on?.(RDD_MODE_CONTROL_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object" || typeof (payload as { respond?: unknown }).respond !== "function") return;
+		const owner = activeRddContext;
+		const current = owner && bindRddOwner(owner);
+		if (!owner || !current || !current()) return;
+		const control: RddModeControl = {
+			async read() {
+				if (!current() || nativeReviewCli?.reviewMode === undefined) return undefined;
+				const cwd = owner.cwd, generation = rddStatusGeneration(cwd);
+				try {
+					const result = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+					if (!current() || generation !== rddStatusGeneration(cwd) || result.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(result.status)) return undefined;
+					return { effective: result.status.effective, source: result.status.source };
+				} catch { return undefined; }
+			},
+			async open() { if (current()) await openRddSelector(owner); },
+		};
+		(payload as { respond: (value: RddModeControl) => void }).respond(control);
+	});
+
+	pi.registerCommand("gentle:rdd", {
+		description: "Open the interactive RDD selector for this repository or an explicitly named machine-wide change.",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Use /gentle:rdd without arguments to open the interactive selector. RDD unchanged.", "warning");
+				return;
+			}
+			await openRddSelector(ctx);
+		},
+	});
 
 	pi.registerCommand("gentle:review-mode", {
 		description: "Show or set the Gentle AI receipt-driven development kill switch (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",

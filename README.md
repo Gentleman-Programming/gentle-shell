@@ -143,7 +143,7 @@ Review the exact change, not a moving target. Native review keeps one candidate 
 
 Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
-> ℹ️ **RDD is optional and on by default:** turn native receipt-driven development off anytime with `/gentle:review-mode disable` (this clone) or `gentle-ai review mode disable` (machine-wide); `/gentle:review-mode status` shows the current mode. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+> ℹ️ **RDD is optional and on by default:** open `/gentle:rdd` to see the effective mode and its source, then choose a repository change or an explicitly named machine-wide change. Cancelling changes nothing. Repository enable only clears its local off override; it cannot override a machine-wide off. The existing `/gentle:review-mode status|enable|disable` remains clone-scoped. Changing RDD does not grant review consent or change permissions. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 <details>
 <summary><kbd>More</kbd> <strong>Reviewer transport</strong> — how review completions follow Pi's transport setting</summary>

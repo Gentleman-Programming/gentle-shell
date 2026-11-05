@@ -1876,11 +1876,11 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const privateHostDiscovery = "gentle:yolo:host-ui";
-	assert.equal(eventHandlers.has(privateHostDiscovery), true);
-	assert.deepEqual([...eventHandlers.keys()].filter(name => name !== privateHostDiscovery).sort(), [
+	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui"]);
+	for (const channel of privateHostDiscovery) assert.equal(eventHandlers.has(channel), true);
+	assert.deepEqual([...eventHandlers.keys()].filter(name => !privateHostDiscovery.has(name)).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
-	], "only the original three blocked channels remain besides the known private host adapter");
+	], "only the original three blocked channels remain besides the known private host adapters");
 	assert.deepEqual(published, [], "registering host discovery emits no public event or private payload");
 	assert.equal(eventHandlers.has("gentle-pi:ask-user-choice:blocked"), true);
 	assert.equal(eventHandlers.has("rpiv:ask-user:blocked"), true);
@@ -1894,7 +1894,9 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		command: "private questionnaire command",
 		arbitrary: { nested: "private questionnaire field" },
 	};
-	eventHandlers.get(privateHostDiscovery)!(source);
+	for (const discoveryChannel of privateHostDiscovery) {
+		eventHandlers.get(discoveryChannel)!(source);
+	}
 	assert.deepEqual(published, [], "private discovery ignores questionnaire data instead of relaying it");
 	assert.deepEqual(herdrEvents, []);
 	pi.events.emit(channel, source);

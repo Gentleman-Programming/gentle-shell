@@ -2533,7 +2533,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const state = sidebarState(tui);
 				return Boolean(state.statusHidden?.() || state.headerOwnsStatus?.() || (state.active && state.ownsHost?.()));
 			};
-			groupedChangesOwner = (width) => belowFloat(width, !footerSuppressed()) !== undefined;
+			// A below-input chrome bar never groups Changes: they keep their own row (or the rail).
+			groupedChangesOwner = (width) => !belowChrome() && belowFloat(width, !footerSuppressed()) !== undefined;
 			const bottomBar = {
 				...bottom,
 				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
@@ -2695,12 +2696,21 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
 			// A top header instead keeps the whole header row above the conversation.
 			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
+			// The split title row and status bar also stay with Status hidden.
+			const splitChrome = () => ideChrome() || (barChrome() && visualSettings.headerPlacement === "split");
 			// Beside the rail, the top and below-input headers draw the split status
 			// bar's design (a chrome bar) with a margin row toward the content.
+			// They apply beside the rail and with Status hidden (no rail at all); the
+			// mobile chrome keeps phones and the minimal edition.
 			const fullscreen = () => (tui as TUI & { mode?: string }).mode === "fullscreen";
-			const topChrome = () => fullscreen() && statusCardVisible() && visualSettings.headerPlacement === "top";
-			const belowChrome = () => fullscreen() && statusCardVisible() && visualSettings.headerPlacement === "below-input";
-			const chromeBar = (width: number, margin: "above" | "below") => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), margin);
+			const barChrome = () => fullscreen() && Boolean(tui.terminal) && chromeMode(tui) !== "narrow" && (statusCardVisible() || visualSettings.statusPlacement === "hidden");
+			const topChrome = () => barChrome() && visualSettings.headerPlacement === "top";
+			// The below-input widget renders after the layout pass, so it can also
+			// require the rail to be actually drawn (a rail that does not fit groups
+			// Changes into the float footer as before).
+			const belowChrome = () => barChrome() && visualSettings.headerPlacement === "below-input" && (visualSettings.statusPlacement === "hidden" || sidebarState(tui).active === true);
+			// Without the rail the bar also counts the running jobs, as the mobile status bar does.
+			const chromeBar = (width: number, margin: "above" | "below") => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), margin, { jobs: !statusCardVisible() });
 			const topHeader = (width: number) => chromeBar(width, "below");
 			// The split title row keeps a margin row toward the content in comfortable density.
 			const titleRows = (width: number) => [renderShellTitleRow(footerModel(), theme, width), ...(visualSettings.density === "comfortable" ? [renderShellChromePad(theme, width)] : [])];
@@ -2711,17 +2721,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			if (tui.terminal) {
 				sidebarState(tui).compactWork = narrowChrome;
 				// The IDE chromes and the chrome bars show the permission mode with its icon.
-				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined || topChrome() || belowChrome();
+				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined || topChrome() || belowChrome() || splitChrome();
 			}
 			const statusBarChrome = (width: number) => narrowChrome()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
 				: chromeBar(width, "above");
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? titleRows(width) : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
+				render: (width) => splitChrome() ? titleRows(width) : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : topChrome() ? topHeader(width).rows : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
-					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
+					if (splitChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(topChrome() ? topHeader(event.width) : headerBar(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
@@ -2729,10 +2739,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
+				render: (width) => splitChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
 				invalidate() {},
 				handleMouse(event) {
-					if (!(ideChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
+					if (!(splitChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
@@ -2798,7 +2808,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry,
 					// only while the float prompt ends the dock. A titled-rule editor (top, split,
 					// mobile) keeps its own bottom row as the margin, and a below-input header follows it.
-					const promptEndsDock = !(chromeMode(tui) !== undefined || topChrome() || belowHeader());
+					const promptEndsDock = !(chromeMode(tui) !== undefined || topHeaderInColumn(tui) || belowHeader());
 					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && promptEndsDock
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},

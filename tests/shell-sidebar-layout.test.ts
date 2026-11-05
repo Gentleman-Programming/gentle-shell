@@ -838,7 +838,7 @@ test("native fullscreen header survives narrow and bottom transitions without re
 		const { frame, transcriptRenders } = f.frame(width);
 		assert.equal(transcriptRenders, 1, "native transcript paints only once");
 		assert.equal(frame.primaryScrollView, f.primary);
-		assert.match(frame.lines[0] ?? "", new RegExp(`HEADER ${status === "right" && width >= 140 ? width - 2 : width}`));
+		assert.match(frame.lines[0] ?? "", new RegExp(`HEADER ${width}`));
 		assert.ok(frame.lines.some((line) => line.includes("Editor")), "native editor survives");
 		assert.equal(frame.root.children.some((box) => box.component instanceof ScrollView && box.component !== f.primary), false, "no extra root scroll view");
 	}
@@ -1012,7 +1012,7 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	// The rail card ends two columns before the terminal edge (its padding plus
 	// the scrollbar column); the header stops there too so its right group
 	// lines up with the card border instead of touching the edge.
-	assert.deepEqual(header.render(0), ["HEADER 138"], "the header renders at the terminal width minus the rail's right inset, not the rail width");
+	assert.deepEqual(header.render(0), ["HEADER 140"], "the header renders at the full terminal width, not the rail width");
 
 	const hstack = hstackOf(f);
 	assert.equal(hstack.type, "hstack");
@@ -1106,7 +1106,7 @@ test("the header leaf carries the rule row: a two-line header renders both lines
 	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
 	assert.equal(node.type, "vstack", "a two-line header still wraps the hstack in a vstack");
 	const header = node.entries[0]!.component as { render(width: number): string[] };
-	assert.deepEqual(header.render(0), ["HEADER 138", "RULE 138"], "both the status line and the rule row reach the layout, rendered at the terminal width minus the rail's right inset");
+	assert.deepEqual(header.render(0), ["HEADER 140", "RULE 140"], "both the status line and the rule row reach the layout, rendered at the terminal width minus the rail's right inset");
 });
 
 test("below the sidebar breakpoint a rule-like header paints above native layout without a rail", (t) => {
@@ -1259,7 +1259,7 @@ test("a status bar part paints one full-width row below the transcript and the r
 	assert.match(frame.lines.at(-1)!, /^STATUS BAR/, "the status bar is the last row, under the rail too");
 	assert.match(frame.lines[1]!, /CONVERSATION/, "the transcript starts immediately below the title");
 	assert.ok(frame.lines.slice(1, -1).some((line) => /Status/.test(line)), "the rail sits above the status bar");
-	assert.equal(widthSeen, 160 - 2, "rendered at the header's width");
+	assert.equal(widthSeen, 160, "rendered at the full width, so the bar reaches the window edge");
 });
 
 test("below the rail breakpoint the status bar row stays only while its part paints one (mobile)", (t) => {
@@ -1301,10 +1301,12 @@ test("a top header sits inside the conversation column, and it and the rail both
 			handleMouse(event) { received.push(event); return { handled: true }; },
 		});
 		const transcript = { render: () => ["CONVERSATION".padEnd(107, "x")], invalidate() {} };
-		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript }] });
+		const dock = { render: () => ["EDITOR".padEnd(110, "e")], invalidate() {} };
+		f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
 		t.after(installSidebar(f.tui, theme, () => "auto", () => "top", () => density));
 		assert.equal(f.root[NODE]().type, "hstack", `${density}: no full-width row spans the rail`);
 		const lines = renderLayoutFrame(f.root, 160, 6, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
+		assert.match(lines[5]!, /^EDITORe{104}/, `${density}: the dock (editor and below-input bar) also runs up to the rail`);
 		// 160 columns minus the 50-column rail: the header reaches the rail, with no gap.
 		assert.match(lines[0]!, /^HEADER 110 /, `${density}: the header runs up to the rail`);
 		assert.equal(lines[1]!.slice(107, 110), "   ", `${density}: the conversation keeps its 3-column gap from the rail`);
@@ -1325,7 +1327,7 @@ test("a split header keeps the full-width title row above the rail", (t) => {
 	t.after(installSidebar(f.tui, theme, () => "auto", () => "split"));
 	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
 	assert.equal(node.type, "vstack");
-	assert.deepEqual(node.entries[0]!.component.render(160), ["HEADER 158"]);
+	assert.deepEqual(node.entries[0]!.component.render(160), ["HEADER 160"], "the title bar reaches the window edge");
 });
 
 test("a top header falls back to the full width when the rail is not shown", (t) => {
@@ -1388,4 +1390,30 @@ test("a split title row's margin row spans the rail, so the rail adds no top pad
 	sidebarHeader(f.tui, { render: (width: number) => [`TITLE ${width}`, "PAD"], invalidate() {} });
 	t.after(installSidebar(f.tui, painted, () => "auto", () => "split"));
 	assert.match(railWithHeader(f).render(50)[0]!, /Status/, "the first section starts right under the title block");
+});
+
+test("beside the rail a below-input layout lets the dock run up to the rail while the transcript keeps its gap", (t) => {
+	const f = fixture("fullscreen", 160);
+	sidebarHeader(f.tui, { render: () => ["HEADER"], invalidate() {} });
+	const transcript = { render: () => ["T".repeat(120)], invalidate() {} };
+	const dock = { render: () => ["D".repeat(120)], invalidate() {} };
+	f.root[NODE] = () => ({ type: "vstack", entries: [{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 }, { component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 }] });
+	t.after(installSidebar(f.tui, theme, () => "auto", () => "below-input"));
+	const lines = renderLayoutFrame(f.root, 160, 4, () => {}).lines.map((line) => line.replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x07/g, ""));
+	assert.match(lines[0]!, /^T{107} {3}/, "the transcript keeps its 3-column gap from the rail");
+	assert.match(lines[3]!, /^D{110}/, "the dock reaches the rail");
+	assert.match(lines[0]!, /Status/, "the rail still starts on the first row");
+});
+
+test("a compact or minimal split title row has no margin row, so the rail keeps its own top gap", (t) => {
+	const painted = { ...theme, bg: (_color: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
+	for (const density of ["compact", "minimal"] as const) {
+		const f = fixture("fullscreen", 160);
+		sidebarPart(f.tui, "footer", { surface: "panel", render: () => ["Status"], invalidate() {} });
+		sidebarHeader(f.tui, { render: (width: number) => [`TITLE ${width}`], invalidate() {} });
+		t.after(installSidebar(f.tui, painted, () => "auto", () => "split", () => density));
+		const rail = railWithHeader(f).render(50);
+		assert.equal(rail[0]!.replace(/\x1b\[[0-9;]*m/g, "").trim(), "", `${density}: a blank rail row under the title`);
+		assert.match(rail[1]!, /Status/, `${density}: the first section follows it`);
+	}
 });

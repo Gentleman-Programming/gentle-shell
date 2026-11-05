@@ -502,8 +502,8 @@ export function renderShellChromePad(theme: ShellBarTheme, width: number): strin
  * bottom bar. The wide top and below-input headers draw it, so every bar shares
  * the status bar's design; a transparent surface leaves it unpainted.
  */
-export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, margin: "above" | "below"): ShellHeaderChrome {
-	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint);
+export function renderShellChromeBar(model: ShellBarModel, theme: ShellBarTheme, width: number, usageHint: string | undefined, presentation: Presentation | undefined, paint: GaugePaint | undefined, margin: "above" | "below", extras: { jobs?: boolean } = {}): ShellHeaderChrome {
+	const bar = renderShellStatusBar(model, theme, width, usageHint, presentation, paint, extras);
 	if (presentation !== undefined && presentation.density !== "comfortable") return bar;
 	const pad = renderShellChromePad(theme, width);
 	return margin === "below"

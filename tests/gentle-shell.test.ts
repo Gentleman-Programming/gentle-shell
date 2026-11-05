@@ -4142,19 +4142,21 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		for (let attempt = 0; attempt < 100 && ui.overlayView === previousView; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 		await customizeAction(ui, "Status placement: hidden");
 		assert.deepEqual(footer.render(240), [], "the below-input header still follows the prompt with Status hidden: no exterior row");
-		assert.equal(header.render(240).length, 5);
+		// Status hidden draws the chrome bar too: a margin row, then the status bar row.
+		assert.equal(header.render(240).length, 2);
+		assert.match(stripAnsi(header.render(240)[1]!), /ctx .*usage/);
 		assert.doesNotMatch(stripAnsi(header.render(240).join("\n")), /MCP updated/);
+		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "Changes keep their own row beside a chrome bar");
 		await customizeAction(ui, "Section changes: hidden");
-		assert.equal(header.render(240).length, 4);
+		assert.equal(header.render(240).length, 2);
 		assert.equal(ui.widgets.has("gentle-shell-changes"), false);
 		await customizeAction(ui, "Section changes: shown");
 		await customizeAction(ui, "Header placement: top");
 		assert.deepEqual(header.render(240), []);
 		assert.equal(widget("gentle-shell-changes").render(240).length, 1, "top placement restores standalone Changes");
 		const above = railHeader.render(240);
-		assert.equal(above.length, 4);
-		assert.match(stripAnsi(above[1]!), /Gentle Shell/);
-		assert.equal(stripAnsi(above[3]!), "▔".repeat(240));
+		assert.equal(above.length, 2, "the top chrome bar, then its margin row");
+		assert.match(stripAnsi(above[0]!), /ctx .*usage/);
 		ui.overlayView!.handleInput("\x1b");
 		await pending;
 	} finally {
@@ -7691,6 +7693,8 @@ test("a wide top header is the split title row's panel row with the whole header
 		{ header: "split", status: "auto", exterior: false },
 		{ header: "below-input", status: "auto", exterior: false },
 		{ header: "top", status: "hidden", exterior: true },
+		{ header: "below-input", status: "hidden", exterior: false },
+		{ header: "split", status: "hidden", exterior: true },
 	] as const;
 	for (const { header, status, exterior } of cases) {
 		const home = scopedDoubleEscCancelConfigHome(t);
@@ -7726,7 +7730,24 @@ test("a wide top header is the split title row's panel row with the whole header
 			assert.equal(bar.length, 2, "a margin row, then the status bar");
 			assert.match(stripAnsi(bar[1]!), /^ main .*ctx/);
 		}
-		if (header === "below-input") {
+		if (status === "hidden") {
+			assert.equal(state.statusBarShowsMode?.(), true, `${header}/hidden: the bar shows the permission mode`);
+			if (header === "below-input") {
+				const rows = (ui.widgets.get("gentle-shell-below-input-header") as () => { render(width: number): string[] })().render(160);
+				assert.equal(rows.length, 2, "hidden below-input: a margin row, then the status bar row");
+				assert.match(stripAnsi(rows[1]!), /^ main .*ctx .*usage/);
+			} else if (header === "top") {
+				const rows = state.parts.get("header")!.render(160);
+				assert.equal(rows.length, 2, "hidden top: the status bar row, then its margin row");
+				assert.match(stripAnsi(rows[0]!), /^ main .*ctx .*usage/, "hidden top: the bar design, not the previous header");
+			} else {
+				assert.equal(state.parts.get("header")!.render(160).length, 2, "hidden split: the title row, then its margin row");
+				const bar = state.parts.get("statusbar")!.render(160);
+				assert.equal(bar.length, 2, "hidden split: a margin row, then the status bar");
+				assert.match(stripAnsi(bar[1]!), /^ main .*ctx .*usage/);
+			}
+		}
+		if (header === "below-input" && status === "auto") {
 			const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => { render(width: number): string[] })();
 			const rows = widget.render(110);
 			assert.equal(rows.length, 2, "a margin row, then the status bar row");

@@ -13,7 +13,6 @@ const RAIL_PADDING = 1;
 // padding that puts the card's right border two columns in from the edge.
 // The header row stops at the same column so its right group lines up with
 // the card instead of touching the terminal edge.
-const HEADER_RIGHT_INSET = RAIL_PADDING + 1;
 const GAP = 3;
 /** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
 export const SIDEBAR_RAIL_COLUMNS = RAIL_WIDTH + GAP;
@@ -55,6 +54,8 @@ type PreparedRail = {
 	headerActive: boolean;
 	/** A `top` header painted inside the conversation column, beside the rail, instead of above both. */
 	headerInColumn: boolean;
+	/** The column's dock (editor and below-input bar) runs up to the rail; only the transcript keeps the gap. */
+	dockToRail: boolean;
 	presentation?: SidebarPresentation;
 };
 const CACHE = Symbol.for("gentle-pi.experimental-sidebar.cache");
@@ -296,7 +297,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const inColumn = headerPlacement() === "top";
 			// The column header runs up to the rail: the gap belongs to the transcript only.
 			const columnWidth = Math.max(0, width - RAIL_WIDTH);
-			let preparedHeaderLines = [...(headerPart?.render(inColumn ? columnWidth : Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])];
+			let preparedHeaderLines = [...(headerPart?.render(inColumn ? columnWidth : Math.max(0, width)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
 			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
@@ -331,8 +332,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
 			} else if (sections.length && headerActive && inColumn) {
 				// Beside a top header the first section sits on the window's first row, level with it.
-			} else if (sections.length && headerActive && headerPlacement() !== "split" && density() === "comfortable" && style === CARD_STYLE.NEON) {
-				// A split title block carries its own margin row across the rail.
+			} else if (sections.length && headerActive && (headerPlacement() === "split" ? density() !== "comfortable" : density() === "comfortable" && style === CARD_STYLE.NEON)) {
+				// A comfortable split title block carries its own margin row across the
+				// rail; in compact and minimal the rail keeps its own top padding.
 				// Pad the first section beneath the header without breaking its surface.
 				// Keep neon's existing comfortable gap for below-input headers too.
 				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
@@ -358,9 +360,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			if (inColumn && headerActive && !active) preparedHeaderLines = [...(headerPart?.render(Math.max(0, width)) ?? [])];
 			headerLines = headerActive && headerPlacement() !== "below-input" ? preparedHeaderLines : [];
 			const statusPart = state.parts.get("statusbar");
-			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])] : [];
+			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0, headerInColumn: inColumn && active && headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0, headerInColumn: inColumn && active && headerLines.length > 0, dockToRail: active && (inColumn || headerPlacement() === "below-input") };
 			state.active = active;
 			return active;
 		} catch {
@@ -425,31 +427,47 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// NODE, exactly like `left` wraps the native transcript: the header
 			// vstack's second entry recurses into it the same way pi-tui already
 			// recurses into a nested layout via [NODE].
-			// A top header heads the conversation column and runs up to the rail;
-			// the transcript keeps its gap through a blank spacer. The same stable
-			// `left` sits underneath, so the transcript keeps its native scroll.
+			// Beside a top or below-input header the column runs up to the rail:
+			// its header and dock (editor, below-input bar) touch the rail, and only
+			// the native transcript entries keep the gap through a blank spacer.
+			// Each wrapper is stable per component, so the transcript keeps its
+			// native scroll and Pi's layout measurement.
 			const gapSpacer: Component = { render: () => [], invalidate() {} };
-			const leftWithGap = {
+			const spaced = new WeakMap<Component, Component & { [NODE](): LayoutNode }>();
+			const withGap = (component: Component) => {
+				let wrapped = spaced.get(component);
+				if (!wrapped) {
+					wrapped = { render: () => [], invalidate() {}, [NODE]: () => ({ type: "hstack", gap: 0, align: "stretch", entries: [
+						{ component, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+						{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
+					] }) };
+					spaced.set(component, wrapped);
+				}
+				return wrapped;
+			};
+			const leftToRail = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: (): LayoutNode => ({ type: "hstack", gap: 0, align: "stretch", entries: [
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{ component: gapSpacer, basis: GAP, grow: 0, shrink: 0, minSize: GAP },
-				] }),
+				[NODE]: (): LayoutNode => {
+					const node = reclaimFooterRow(original.call(root));
+					if (node.type !== "vstack" || !node.entries?.length) return node;
+					const entries = node.entries as StackLayoutEntry[];
+					return { ...node, gap: node.gap ?? 0, entries: entries.map((entry, index) => index === entries.length - 1 ? entry : { ...entry, component: withGap(entry.component) }) };
+				},
 			};
 			const leftWithHeader = {
 				render: () => [],
 				invalidate() {},
 				[NODE]: (): LayoutNode => ({ type: "vstack", gap: 0, align: "stretch", entries: [
 					{ component: header, basis: "auto" as const, grow: 0, shrink: 0, minSize: 1 },
-					{ component: leftWithGap, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+					{ component: leftToRail, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 				] }),
 			};
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: () => ({ type: "hstack", gap: prepared?.headerInColumn ? 0 : GAP, align: "stretch", entries: [
-					{ component: prepared?.headerInColumn ? leftWithHeader : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+				[NODE]: () => ({ type: "hstack", gap: prepared?.dockToRail ? 0 : GAP, align: "stretch", entries: [
+					{ component: prepared?.headerInColumn ? leftWithHeader : prepared?.dockToRail ? leftToRail : left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
 					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
 				] }),
 			};

@@ -20,7 +20,7 @@ import type {
 import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
-import { freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
 import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -4329,6 +4329,21 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
 });
 
+// gentle-shell#2742, section 8: only a startup record carries the orchestrator;
+// a freeze at the session's own start knows the definition but records nothing.
+test("provider review roles skip the orchestrator fallback for a profile frozen at the session's own start", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetSessionProfileBindingsForTesting();
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+});
+
 test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
 	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
 	resetSessionProfileBindingsForTesting();
@@ -4831,6 +4846,26 @@ test("clear after a resume with no conversation writes a legacy clear, not the r
 	assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
 	assert.equal(h.last().severity, "info");
 	assert.match(h.last().message, /^el Gentleman cleared session profile "fast" . persisted in this session\. New launches use the routing without a session profile \(pins, repository declaration, global\)\. The live orchestrator is unchanged\.$/);
+});
+
+// gentle-shell#2742, section 8: the startup record carries the orchestrator for
+// the reviewers, but an inherited profile still does not switch the live one.
+test("a resume on a startup record with an orchestrator leaves the live orchestrator alone; Use in this session switches it", async (t) => {
+	const h = profilesCommandHarness(t, withFast);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	const sessions = join(h.ctx.cwd, "resumed-startup-sessions");
+	const source = SessionManager.create(h.ctx.cwd, sessions);
+	source.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileStartupBind("local", "team", TEAM_DEFINITION));
+	source.appendMessage({ role: "user", content: "flush the resumed fixture", timestamp: 1 });
+	const manager = SessionManager.open(source.getSessionFile()!, sessions);
+	const ctx = { ...h.ctx, sessionManager: manager } as unknown as ExtensionCommandContext;
+	await h.start({ type: "session_start", reason: "resume" }, ctx);
+	assert.deepEqual(readSessionProfileBinding(manager.getSessionId())?.modelProfiles.orchestrator, TEAM_DEFINITION.orchestrator, "the resumed record carries the orchestrator");
+	assert.deepEqual(h.liveCalls, [], "the inherited profile does not switch the live orchestrator");
+	const live = { setModel: async () => { h.liveCalls.push("model"); return true; }, setThinkingLevel() { h.liveCalls.push("thinking"); }, getThinkingLevel: (): ThinkingLevel => "medium" };
+	await __testing.runProfilesPanelAction(ctx, live, h.storePath, readValidProfilesStore(h.storePath), { type: "use-session", name: "team" }, {});
+	assert.ok(h.liveCalls.includes("model"), "Use in this session does switch it");
 });
 
 test("clear after a session's own start goes back to the defaults it started with", async (t) => {

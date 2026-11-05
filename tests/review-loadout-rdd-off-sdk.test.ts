@@ -269,3 +269,24 @@ test("an unknown RDD line keeps the registered loadout; turning RDD on mid-sessi
 	assert.match(failed.requests.at(-1)!.systemPrompt, /Receipt-driven development: unknown/);
 	assertRegisteredRequest(failed.requests.at(-1)!, failed);
 });
+
+test("malformed fresh reads restore guidance while on and unknown preserve pinning", { timeout: 30_000 }, async (t) => {
+	const { root, bindings } = fixture(t);
+	for (const [initial, next, expected] of [["off", "malformed", "unknown"], ["on", "throws", "on"], ["throws", "on", "unknown"]] as const) {
+		let mode: RddMode = initial;
+		const run = await runSession(root, `independent-${initial}`, bindings, () => mode, () => { mode = next as RddMode; });
+		assert.deepEqual(run.errors, []);
+		assert.match(run.requests.at(-1)!.systemPrompt, new RegExp(`Receipt-driven development: ${expected}`));
+		assertRegisteredRequest(run.requests.at(-1)!, run);
+		if (initial === "off") {
+			assertLeanRequest(run.requests[0], run);
+			assert.equal(run.nativeCalls.assess, 0);
+			assert.equal(run.nativeCalls.target, 0);
+		} else {
+			assert.equal(run.nativeCalls.assess, 1);
+			assert.equal(run.nativeCalls.target, 1);
+			assert.equal(new Set(run.requests.map((request) => request.systemPrompt)).size, 1);
+		}
+		t.diagnostic(JSON.stringify({ initial, next, expected, requests: run.requests.length, calls: run.nativeCalls, errors: run.errors }));
+	}
+});

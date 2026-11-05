@@ -317,7 +317,7 @@ test("the rail Status sections are click targets: headers collapse them and the 
 	assert.ok(collapsed.some((line) => /^▸ INTEGRATIONS/.test(line)), "a collapsed section keeps its header with ▸");
 	assert.ok(!collapsed.some((line) => /gentle-pi · ready/.test(line)), "and hides its rows");
 	const hovered = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "changes" }).lines.join("\n");
-	assert.match(hovered, /<warning>▾<\/warning> <text>\*CHANGES\*<\/text>/, "a hovered header paints the shared hover role");
+	assert.match(hovered, /<warning>▾<\/warning> <warning>\*CHANGES\*<\/warning>/, "a hovered header paints the shared hover role");
 	const hoveredOpen = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "open-changes" }).lines.join("\n");
 	assert.match(hoveredOpen, /<warning>\/gentle:changes<\/warning>/, "a hovered Changes row paints its command in the hover role");
 	assert.deepEqual(renderShellSidebarBar(model, plain as never, 48), open.lines, "renderShellSidebarBar stays the lines of the same render");

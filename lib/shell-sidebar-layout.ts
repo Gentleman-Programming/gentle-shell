@@ -64,10 +64,10 @@ function headerParts(line: string): { glyph?: string; title: string; count?: str
 	const split = /^(.*?\S)( {2,})(?=\S|\x1b)(.*)$/s.exec(trimmed);
 	const left = split ? split[1]! : trimmed;
 	const count = split?.[3]?.trim() ? split[3] : undefined;
-	const plain = left.replace(/\x1b\[[0-9;]*m/g, "").trimStart();
-	const glyph = /^[▾▸]\s/.test(plain) ? plain[0] : undefined;
-	// The glyph may carry its own styling: drop it with any escape codes before the next space.
-	return { ...(glyph ? { glyph } : {}), title: glyph ? left.replace(/[▾▸](?:\x1b\[[0-9;]*m)*\s/, "") : left, ...(count ? { count } : {}) };
+	// The glyph keeps its own escape codes on both sides (the hover role paints it),
+	// so no opening code leaks onto the title.
+	const glyph = /^((?:\x1b\[[0-9;]*m)*[▾▸](?:\x1b\[[0-9;]*m)*)\s/.exec(left);
+	return { ...(glyph ? { glyph: glyph[1] } : {}), title: glyph ? left.slice(glyph[0].length) : left, ...(count ? { count } : {}) };
 }
 type SidebarPresentation = { scrollTop: number; output: LayoutNode };
 type PreparedRail = {

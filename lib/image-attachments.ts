@@ -45,7 +45,17 @@ export class ImageAttachments {
 	// Never reset: Pi's prompt history keeps the raw submitted text, so a
 	// reused id would let a recalled `[Image#1]` bind to a different image.
 	private counter = 0;
-	private readonly cache?: ImageDiskCache;
+	private cache?: ImageDiskCache;
+
+	/** Attach or drop the disk cache at runtime (session start and shutdown). */
+	setCache(cache?: ImageDiskCache): void {
+		this.cache = cache;
+	}
+
+	/** Cached files for the chips still in the draft; empty when no cache is active. */
+	cachedPaths(): Array<{ token: string; path: string }> {
+		return [...this.entries.values()].flatMap((entry) => (entry.diskPath ? [{ token: entry.token, path: entry.diskPath }] : []));
+	}
 
 	/**
 	 * An optional disk cache. Without one the class behaves exactly as before:

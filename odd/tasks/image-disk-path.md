@@ -54,20 +54,31 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 - `lib/image-attachments.ts`: constructor opcional `constructor(cache?: ImageDiskCache)`, campo `diskPath?` y `dispose()`. Sin cache el comportamiento es **idéntico** al anterior (los 9 tests de contrato y los 18 de chips siguen verdes).
 - `tests/image-disk-cache.test.ts`: 9 tests (root XDG, escape de sesión, bytes y permisos, extensión por mime, degradación sin disco, dispose aislado, barrido, barrido seguro, contrato de la clase).
 
-## Falta (bloqueado por anclas, no por diseño)
+## Cableado (hecho)
 
-- Construir el cache en el arranque de la extensión con el id de sesión real, leyendo `images.diskCache`.
-- Registrar `/gentle:images`, que lista los paths de la sesión actual (el handler puede cerrar sobre `imageAttachments` si se declara junto a los otros `registerCommand`).
-- Llamar `imageAttachments.dispose()` en el cierre de sesión y ejecutar el barrido al arrancar.
-- Las anclas para hacerlo: import de `resolveDoubleEscCancelPolicy` en `extensions/gentle-shell.ts` (patrón de config por resolver), `pi.registerCommand(<NAME>, { description, handler })` cerca de la línea 2022, y el hook de cierre de sesión (por localizar).
+- `GENTLE_PI_IMAGES_DISK_CACHE=session` activa el cache; cualquier otro valor lo deja apagado (default).
+- En `session_start` se barre lo viejo (>7 días) y se construye el cache con `ctx.sessionManager.getSessionId()`.
+- En `session_shutdown` se suelta el cache y se borra el directorio de la sesión.
+- `/gentle:images` lista `[Image#N] <path>` del draft actual; si el cache está apagado, lo explica en vez de fallar.
+- El path nunca se inyecta en el prompt: el envío sigue usando `base64`.
 
-## Tasks (todas pendientes)
+## Tasks
 
-- T1: S1/S4 — decidir retención y limpieza (las 6 decisiones abiertas) y dejarlas escritas acá.
-- T2: S3 — agregar `diskPath` **opcional** sin tocar el contrato de chips; `base64` sigue siendo la fuente de envío.
-- T3: S1 — cablear el call site de producción con el id de sesión real, con camino sin-sesión seguro.
-- T4: S2 — tests: el chip conserva su contrato; el path existe, es legible y tiene permisos correctos; sin directorio escribible la feature degrada y no rompe.
-- T5: S1 — documentar la feature en la ayuda/README de donde se descubre.
+- T1: S1/S4 — decisiones de retención y limpieza ✅
+- T2: S3 — `diskPath` opcional y contrato de chips intacto ✅
+- T3: S1 — cableado del call site con id de sesión real ✅
+- T4: S2 — tests: contrato, permisos, degradación y barrido seguro ✅ (9 nuevos)
+- T5: S1 — documentar en la ayuda: el comando explica cómo se activa ✅
+
+## Verificación
+
+```
+tsc --noEmit                      exit 0
+tests/image-disk-cache.test.ts    9/9
+tests/image-attachments.test.ts   9/9
+tests/image-paste-chips.test.ts   18/18
+runtime-harness (carga extensions/) exit 0
+```
 
 ## Log
 

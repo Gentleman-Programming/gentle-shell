@@ -1638,6 +1638,13 @@ async function packageManagerAdapters() {
 	};
 }
 
+// This evidence only selects guidance; it never authorizes installation writes.
+async function refuseSupervisorUpdate(command, fs) {
+	const { supervisorInstall } = await import("../scripts/supervisor-install.mjs");
+	const supervisor = await supervisorInstall({ packageRoot, platform: process.platform, fs });
+	if (supervisor) fail(`gentle-shell ${command}: this private installation is managed by its supervisor. No installation changed.\nRun ${shellQuote(supervisor)} with no arguments, then choose Install Gentle-Shell → Manage this installation → Check for updates.\nThe supervisor's update/upgrade commands update other tools, not Gentle Shell or Pi.`, 1);
+}
+
 // `gentle-shell upgrade`: runs before any Pi runtime check, since it may replace this package.
 // On release, a global pnpm or npm install moves to the bundled one when the
 // latest release publishes its assets (S4), with one question about the old package.
@@ -1668,7 +1675,12 @@ async function handleUpgradeCommand(commandArgs) {
 			platform: process.platform,
 			packageRoot,
 			currentVersion: ownPackageVersion(),
-			adapters: { fetch: globalThis.fetch, ...managers, migrate },
+			// runUpgrade validates options first. Its release branch starts with
+			// fetch; main starts with which. Guard those entries before network,
+			// manager invocation, builds, migration or channel/config writes.
+			adapters: { ...managers, migrate,
+				fetch: async (...args) => { await refuseSupervisorUpdate("upgrade", managers.fs); return globalThis.fetch(...args); },
+				which: async (...args) => { await refuseSupervisorUpdate("upgrade", managers.fs); return managers.which(...args); } },
 			out,
 		});
 	} catch (error) {
@@ -1893,7 +1905,7 @@ async function main() {
 	const args = parseLauncherArgs(process.argv.slice(2));
 	if (args.error !== undefined) fail(`${args.error}\nRun 'gentle-shell --help' for usage.`, 2);
 	if (args.help) {
-		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nA linked source Shell updates its local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\n");
+		process.stdout.write("Pi updates: update reinstalls the verified supplier of the Pi this launcher runs (a global Pi, or the\nShell package whose adjacent peer it is, at the same Shell version) and reads the resulting Pi version back.\nA linked source Shell updates its local Pi with its project manager and one matching lockfile;\npnpm may be newer than the declared minimum; npm must match its pin. No manager is downloaded;\nGit roots only, no lifecycle scripts or range changes. Root-only pnpm configuration is preserved;\nmulti-project/ancestor workspaces and conflicting lockfiles refuse before installation. Unknown ownership refuses; update --extensions-only stays Pi-only.\nPrefix-bundled Pi updates with gentle-shell upgrade.\nPrivate Linux supervisor installs refuse self-update and upgrade with their supervisor path and management menu; no supervisor is launched.\n");
 		process.stdout.write(`${helpText()}\nBundled Engram memory: Shell shares the global Engram server on 127.0.0.1:7437, like other agents' hooks.\nA running server is reused only with verified /compatibility evidence; when nothing listens, Shell starts the\nbundled core's engram serve (default ~/.engram) and waits for that evidence. Otherwise ENGRAM_BIN is Shell's\nguard and memory stays off for that launch. Matching versions or updating alone do not prove compatibility.\nBack up existing data before manual changes; do not delete it or bypass the safety check.\nShell rechecks on every launch and remains usable without memory.\nAn explicit ENGRAM_BIN or ENGRAM_URL is kept and bypasses the guard.\n`);
 		process.exit(0);
 	}
@@ -2011,8 +2023,10 @@ async function main() {
 		const { managedUpdatePlan, updateSelectedPi } = await import("../scripts/pi-update.mjs");
 		const plan = managedUpdatePlan(args.passthrough);
 		if (plan.self) {
+			const managers = await packageManagerAdapters();
+			await refuseSupervisorUpdate("update", managers.fs);
 			process.exitCode = await updateSelectedPi({ runtime, packageRoot, platform: process.platform, currentVersion: versionCheck.version, cwd: tmpdir(), env: process.env, home: homedir(),
-				adapters: await packageManagerAdapters(), out: (line) => process.stdout.write(`${line}\n`) });
+				adapters: managers, out: (line) => process.stdout.write(`${line}\n`) });
 			if (plan.piArgs === undefined) return;
 		}
 		passthrough = plan.piArgs;

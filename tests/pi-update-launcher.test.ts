@@ -1,22 +1,28 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 const PI = '@earendil-works/pi-coding-agent';
 // A virtual symlink filesystem: listed global links point into a pnpm store.
 // The store's adjacent peer is a sibling, not Shell/node_modules/Pi.
-function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
+export function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
+ const supervisor = scenario.startsWith('supervisor');
+ const installRoot = "/private/user's install";
  const source = scenario === 'source';
  const adjacent = source || scenario.startsWith('adjacent');
  const npm = source || scenario.startsWith('npm-');
  const nodeModules = '/global/v11/selected/node_modules';
- const shellRoot = '/store/shell-peer/node_modules/gentle-pi';
+ const shellRoot = supervisor ? `${installRoot}/prefix/lib/node_modules/gentle-pi` : '/store/shell-peer/node_modules/gentle-pi';
  const piRoot = adjacent ? '/store/shell-peer/node_modules/' + PI : '/store/pi/node_modules/' + PI;
  const target = adjacent ? 'gentle-pi' : PI;
  const dependencies: Record<string, object> = {[target]:{path: `${nodeModules}/${target}`,
   ...(scenario === 'npm-link' ? {link:true} : {}),
   ...(scenario === 'npm-file' || source ? {resolved:'file:/source/pi'} : {})}};
  if (scenario.endsWith('shared')) dependencies['unrelated'] = {path:`${nodeModules}/unrelated`};
+ if (supervisor) delete dependencies[target];
  if (scenario === 'separate') dependencies['unrelated'] = {path:'/global/v11/other/node_modules/unrelated'};
  const groups = [{path:'/global/v11',dependencies}, ...(scenario === 'ambiguous' ? [{path:'/global/other',dependencies}] : [])];
  const listing = scenario === 'malformed' ? '{' : JSON.stringify(npm ? groups[0] : groups);
@@ -33,7 +39,8 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  registerHooks({load(url, context, next) {
   if (url === original) {
    let source = next(url, context).source.toString();
-   source = source.replace('const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));', ${JSON.stringify(`const packageRoot = '${shellRoot}';`)});
+   source = source.replace('const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));', ${JSON.stringify(`const packageRoot = ${JSON.stringify(shellRoot)};`)});
+   source = source.replace('function ownPackageVersion() {', 'function ownPackageVersion() { return "4.1.0"; } function unusedOwnPackageVersion() {');
    source = source.replace('const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });', 'const bundled = undefined;');
    source = source.replace('runtime = resolvePiRuntime({', ${JSON.stringify(`runtime = ({ kind: '${adjacent ? 'bundled' : 'env'}', command: '${adjacent ? 'node' : piRoot + '/dist/bundle/cli.js'}', args: ${JSON.stringify(adjacent ? [piRoot + '/dist/bundle/cli.js'] : [])} }); /*`)}).replace('nodeExecPath: process.execPath,\\n\\t\\t});', 'nodeExecPath: process.execPath, */');
    source = source.replace('const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {', 'const versionProbe = { stdout: "${piVersion}" }; /*').replace('env: bundledEnv ?? process.env,\\n\\t});', 'env: bundledEnv ?? process.env, */');
@@ -44,9 +51,21 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
   return next(url,context);
  }});
  const links = ${JSON.stringify(links)}, roots = ${JSON.stringify(roots)};
+ const installRoot = ${JSON.stringify(installRoot)};
+ const manifest = {Schema:'gentle-shell-user-install/v1', Destination:installRoot, Prefix:installRoot+'/prefix', Agent:installRoot+'/agent', Mode:'separate', ...(${JSON.stringify(scenario)} === 'supervisor-shared' ? {Mode:'shared', Agent:installRoot+'/prefix'} : {})};
+ const missing = p => { throw Object.assign(new Error('ENOENT '+p), {code:'ENOENT'}); };
+ globalThis.fetch = async () => { console.log('NETWORK'); throw new Error('unexpected network'); };
  globalThis.fakeAdapters = {
-  fs: { realpath: async p => { if (links[p]) return links[p]; if (roots.includes(p)) return p; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); },
-   readFile: async p => { if (p === '${shellRoot}/package.json') return JSON.stringify({name:'gentle-pi',version:'4.1.0', ...(${source} ? {packageManager:'npm@11.1.1',devDependencies:{'${PI}':'^1.2.0'}} : {})}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); if (${source} && p === '${shellRoot}/package-lock.json') return '{}'; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); } },
+  fs: { lstat: async p => {
+    if (${supervisor} && [installRoot+'/installation.json', installRoot+'/supervisor'].includes(p) && ${JSON.stringify(scenario)} !== 'supervisor-missing') return {isFile:()=>${JSON.stringify(scenario)} !== 'supervisor-not-file', isSymbolicLink:()=>${JSON.stringify(scenario)} === 'supervisor-symlink' || (${JSON.stringify(scenario)} === 'supervisor-file-symlink' && p === installRoot+'/supervisor')};
+    return missing(p);
+   }, realpath: async p => {
+    if (${supervisor} && [installRoot, installRoot+'/prefix', installRoot+'/installation.json', installRoot+'/supervisor'].includes(p)) return p;
+    if (${JSON.stringify(scenario)} === 'supervisor-package-mismatch' && p === ${JSON.stringify(shellRoot)}) return '/other/package';
+    if (links[p]) return links[p]; if (roots.includes(p)) return p; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); },
+   readFile: async p => {
+    if (${supervisor} && p === installRoot+'/installation.json' && ${JSON.stringify(scenario)} !== 'supervisor-missing') return ${JSON.stringify(scenario)} === 'supervisor-invalid' ? '{' : JSON.stringify({...manifest, ...(${JSON.stringify(scenario)} === 'supervisor-mismatch' ? {Prefix:'/elsewhere'} : {}), ...(${JSON.stringify(scenario)} === 'supervisor-schema' ? {Schema:'other'} : {}), ...(${JSON.stringify(scenario)} === 'supervisor-destination' ? {Destination:'/elsewhere'} : {})});
+    if (p === ${JSON.stringify(`${shellRoot}/package.json`)}) return JSON.stringify({name:'gentle-pi',version:'4.1.0', ...(${source} ? {packageManager:'npm@11.1.1',devDependencies:{'${PI}':'^1.2.0'}} : {})}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); if (${source} && p === ${JSON.stringify(`${shellRoot}/package-lock.json`)}) return '{}'; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); } },
   which: async n => n === '${npm ? 'npm' : 'pnpm'}' ? '/fake/' + n : null,
   run: async (cmd, args, options) => {
    if(args.includes('list') || args.includes('ls')) return {code:0,stdout:${JSON.stringify(listing)}};
@@ -55,7 +74,11 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
   }
  };
  await import(original);`;
- return spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(bootstrap)}`, 'bin/gentle-shell.mjs', ...args], {encoding:'utf8'});
+ const home = mkdtempSync(join(tmpdir(), 'supervisor-cli-'));
+ try {
+  return spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(bootstrap)}`, 'bin/gentle-shell.mjs', ...args],
+   {encoding:'utf8', env:{...process.env, HOME:home, GENTLE_PI_CONFIG_HOME:join(home, 'config')}});
+ } finally { rmSync(home, {recursive:true, force:true}); }
 }
 
 for (const scenario of ['owned','adjacent','separate']) test(`public linked-store update succeeds for ${scenario}`, () => {

@@ -580,6 +580,8 @@ gentle-shell upgrade --rollback
 
 `gentle-shell upgrade` uses the package manager that owns your installation.
 
+**Private Linux supervisor installs:** `upgrade` (including `--channel main`) and Pi self-`update` instead exit with guidance and the installation's shell-quoted supervisor path. Run that path **with no arguments**, then choose **Install Gentle-Shell → Manage this installation → Check for updates**. The supervisor's `update`/`upgrade` commands update other tools, not Gentle Shell or Pi. Nothing is launched or changed automatically; extension-only and explicit package updates are unchanged. See [supported layout and evidence checks](docs/gentle-shell.md#updating-pi-safely).
+
 <details>
 <summary><kbd>More</kbd> <strong>Channels, bundled installs, and rollback</strong> — what each channel builds and how rollback works</summary>
 

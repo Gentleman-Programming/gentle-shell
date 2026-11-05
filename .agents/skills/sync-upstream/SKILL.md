@@ -18,6 +18,7 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 - Integrate with `git merge --no-ff upstream/main`; never rebase `main` and never force push: `main` is published.
 - Never resolve a conflict by taking upstream's side wholesale in a file that a fork-only commit touches. Combine both sides so the fork behavior and the upstream change both remain.
 - Create a backup branch before merging.
+- Never stage or commit `odd/work/`: stage only explicit paths (`git add <file>`), never `git add -A` or `git add .`.
 - Do not push while typecheck or tests fail, or while a conflict is unresolved.
 - Report in the user's language; commit messages stay in English.
 
@@ -25,7 +26,8 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 
 | Situation | Action |
 | --- | --- |
-| Working tree dirty or not on `main` | Stop and ask; do not stash or switch on your own |
+| Only untracked `odd/work/` in `git status` | Session runtime artifacts (herdr activity): not dirty, proceed and leave them untouched |
+| Working tree dirty (anything besides untracked `odd/work/`) or not on `main` | Stop and ask; do not stash or switch on your own |
 | `upstream` remote missing | Add `https://github.com/Gentleman-Programming/gentle-shell.git` as `upstream` |
 | `HEAD..upstream/main` is empty | Report "up to date", push only if `origin/main` is behind, stop |
 | Conflict whose intent on either side is unclear | Ask one focused question naming the file and both intents |

@@ -492,18 +492,17 @@ export function renderShellHeaderChrome(model: ShellHeaderModel, theme: ShellBar
 
 /**
  * The top header heading the conversation column: the split title row's look
- * (the rail's panel surface, inset one column) carrying the whole header row,
- * between two padding rows that line up with the rail's top padding. Minimal
- * density keeps only the header row; a transparent surface leaves it unpainted.
+ * (the rail's panel surface, inset one column) carrying the whole header row on
+ * the window's first row, level with the rail's first section, and a padding
+ * row under it in comfortable density. A transparent surface leaves it unpainted.
  */
 export function renderShellTopHeader(model: ShellHeaderModel, theme: ShellBarTheme, width: number, usageHint?: string, presentation?: HeaderPresentation, paint?: GaugePaint): ShellHeaderChrome {
 	const target = Math.max(0, Math.floor(width));
 	const content = headerContent(model, theme, Math.max(0, target - 2), usageHint, presentation, paint);
 	const row = paintChromeRow(theme, ` ${content.text} `);
 	const usageSpan = content.usageSpan ? { start: content.usageSpan.start + 1, end: content.usageSpan.end + 1 } : undefined;
-	if (presentation?.density === "minimal") return { rows: [row], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
-	const padding = paintChromeRow(theme, " ".repeat(target));
-	return { rows: [padding, row, padding], headerRow: 1, ...(usageSpan ? { usageSpan } : {}) };
+	const padding = presentation?.density === undefined || presentation.density === "comfortable" ? [paintChromeRow(theme, " ".repeat(target))] : [];
+	return { rows: [row, ...padding], headerRow: 0, ...(usageSpan ? { usageSpan } : {}) };
 }
 
 /** The usage segment is interactive only on the content row, never padding or the edge. */

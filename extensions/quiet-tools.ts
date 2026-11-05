@@ -8,7 +8,7 @@ import {
 	createWriteTool,
 	keyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
@@ -497,7 +497,16 @@ function bashSummary(command: string, width: number): string {
 	const folded = lines.length - first - 1;
 	const suffix = folded > 0 ? ` … +${folded} line${folded === 1 ? "" : "s"}` : "";
 	const room = Math.max(1, width - visibleWidth(suffix));
-	return `${visibleWidth(action) > room ? truncateToWidth(action, room, "…") : action}${suffix}`;
+	return `${clipPlain(action, room)}${suffix}`;
+}
+
+// Clips plain text to `width` columns with a trailing ellipsis and no SGR reset,
+// so the caller's title style still covers the suffix that follows.
+function clipPlain(text: string, width: number): string {
+	if (visibleWidth(text) <= width) return text;
+	let clipped = Array.from(text);
+	while (clipped.length > 0 && visibleWidth(clipped.join("")) > width - 1) clipped = clipped.slice(0, -1);
+	return `${clipped.join("")}…`;
 }
 
 function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike, summary?: { width: number }): string {
@@ -769,7 +778,7 @@ export function createQuietToolRenderer(
 			const finished = renderContext.isPartial === false && (renderContext.executionStarted === true || renderContext.isError === true);
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
 			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
-			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 1 : 0) });
+			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });
 			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */

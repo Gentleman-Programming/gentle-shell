@@ -4094,7 +4094,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		assert.match(stripAnsi(footer.render(240).join("\n")), /MCP updated/);
 		state.active = true;
 		state.ownsHost = () => true;
-		assert.deepEqual(footer.render(240), [""], "suppressed float footer leaves an unpainted exterior dock row");
+		assert.deepEqual(footer.render(240), [], "the below-input header follows the prompt, so the suppressed footer adds no exterior row");
 		assert.deepEqual(footer.render(9), [], "narrow fallback does not add spacing");
 		hasBackground = false;
 		assert.deepEqual(footer.render(240), [], "missing background retains the legacy dock");
@@ -4136,7 +4136,7 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 		await overlayReady;
 		for (let attempt = 0; attempt < 100 && ui.overlayView === previousView; attempt++) await new Promise<void>((resolve) => setTimeout(resolve, 5));
 		await customizeAction(ui, "Status placement: hidden");
-		assert.deepEqual(footer.render(240), [""], "hidden float status retains exterior dock spacing");
+		assert.deepEqual(footer.render(240), [], "the below-input header still follows the prompt with Status hidden: no exterior row");
 		assert.equal(header.render(240).length, 5);
 		assert.doesNotMatch(stripAnsi(header.render(240).join("\n")), /MCP updated/);
 		await customizeAction(ui, "Section changes: hidden");
@@ -7678,13 +7678,19 @@ test("customize Layout → Surface switches the chrome between tinted and transp
 	await pending;
 });
 
-test("a wide top header is the split title row's panel block with the whole header row, and the float footer keeps no extra row under the input", async (t) => {
+test("a wide top header is the split title row's panel row with the whole header row, and the float footer adds its exterior row only when the float prompt ends the dock", async (t) => {
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
-	for (const header of ["top", "split"] as const) {
+	const cases = [
+		{ header: "top", status: "auto", exterior: false },
+		{ header: "split", status: "auto", exterior: false },
+		{ header: "below-input", status: "auto", exterior: false },
+		{ header: "top", status: "hidden", exterior: true },
+	] as const;
+	for (const { header, status, exterior } of cases) {
 		const home = scopedDoubleEscCancelConfigHome(t);
 		writeCardStyle(CARD_STYLE.FLOAT, { gentlePiConfigHome: home });
-		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header }, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header, statusPlacement: status }, { gentlePiConfigHome: home });
 		const { pi, handlers } = fakePi();
 		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
 		const { ctx, ui } = fakeContext();
@@ -7698,14 +7704,12 @@ test("a wide top header is the split title row's panel block with the whole head
 		const footer = factory(tui, painted as unknown as ShellBarTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
 		t.after(() => footer.dispose());
 		root[node]();
-		if (header === "top") {
+		if (header === "top" && status === "auto") {
 			const rows = sidebarState(tui as unknown as TUI).parts.get("header")!.render(107);
-			assert.equal(rows.length, 3, "padding, the whole header row, padding");
+			assert.equal(rows.length, 2, "the whole header row on the first row, then its padding");
 			for (const row of rows) assert.match(row, /\x1b\[48;5;171m/, "the rail's panel surface, not the float card");
-			assert.match(stripAnsi(rows[1]!), /ctx .*usage/);
-			assert.deepEqual(footer.render(160), [], "no exterior dock row under the input");
-		} else {
-			assert.deepEqual(footer.render(160), [""], "split keeps its rows");
+			assert.match(stripAnsi(rows[0]!), /ctx .*usage/);
 		}
+		assert.deepEqual(footer.render(160), exterior ? [""] : [], `${header}/${status}: ${exterior ? "the float prompt ends the dock" : "no extra row under the input"}`);
 	}
 });

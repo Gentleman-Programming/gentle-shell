@@ -328,11 +328,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const surface = panelSurfaceOpener(theme);
 			if (sections.length && branding.length) {
 				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (sections.length && headerActive && inColumn && density() === "minimal") {
-				// A minimal top header is one row: the first section sits level with it.
-			} else if (sections.length && headerActive && (inColumn || headerPlacement() === "split" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
-				// Beside a top header this is the panel's top padding, level with the
-				// header's own padding row, exactly as under a split title row.
+			} else if (sections.length && headerActive && inColumn) {
+				// Beside a top header the first section sits on the window's first row, level with it.
+			} else if (sections.length && headerActive && (headerPlacement() === "split" || (density() === "comfortable" && style === CARD_STYLE.NEON))) {
 				// Pad the first section beneath the header without breaking its surface.
 				// Keep neon's existing comfortable gap for below-input headers too.
 				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
@@ -357,8 +355,6 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// Without the rail a top header falls back to the full-width row.
 			if (inColumn && headerActive && !active) preparedHeaderLines = [...(headerPart?.render(Math.max(0, width)) ?? [])];
 			headerLines = headerActive && headerPlacement() !== "below-input" ? preparedHeaderLines : [];
-			// Comfortable density lets the conversation breathe under a top header.
-			if (inColumn && active && headerLines.length && density() === "comfortable") headerLines = [...headerLines, ""];
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width - HEADER_RIGHT_INSET)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];

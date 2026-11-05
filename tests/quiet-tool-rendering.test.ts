@@ -1783,3 +1783,20 @@ test("a minimal bash card titles a long or multi-line command with one summary r
 	assert.equal(longRows.filter((row) => /package-/.test(row)).length, 1, "a long single line is clipped to its row, not wrapped");
 	assert.match(rows(true).join("\n"), /print\('two'\)/, "expanding shows the whole command");
 });
+
+test("a collapsed minimal bash card keeps a long, multi-line or timed-out command on its top row", (t) => {
+	useCardContent(t, CARD_CONTENT.MINIMAL);
+	const bash = registeredQuietTools().get("bash");
+	const cases: Array<[Record<string, unknown>, number[]]> = [
+		[{ command: `npm run build -- --filter ${"package-".repeat(30)}` }, [40, 60, 100, 160]],
+		[{ command: `npm run build -- --filter ${"package-".repeat(30)}`, timeout: 5 }, [40, 60, 100, 160]],
+		[{ command: `git commit -m ${"x".repeat(200)}\nsecond\nthird` }, [40, 60, 100, 160]],
+		[{ command: "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF" }, [40, 60, 100, 160]],
+		[{ command: "cd /Users/me/work/project && python3 - <<'EOF'\nprint('one')\nprint('two')\nEOF", timeout: 120 }, [60, 100, 160]],
+	];
+	for (const [args, widths] of cases) for (const width of widths) for (const state of [{ executionStarted: true }, { isError: true }]) {
+		const rows = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, isPartial: false, ...state })).render(width).map(stripAnsi).filter((row: string) => !row.startsWith("╰"));
+		assert.equal(rows.length, 1, `${width} ${JSON.stringify(state)}: one top row, got ${JSON.stringify(rows)}`);
+		assert.equal(visibleWidth(rows[0]!), width);
+	}
+});

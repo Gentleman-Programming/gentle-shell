@@ -31,25 +31,27 @@ test("a transparent surface keeps the float header's margins and drops only its 
 	}
 });
 
-test("the top header has the split title row's look: the panel surface, a padding row around the whole header row, one row when minimal", (t) => {
+test("the top header has the split title row's look: the whole header row on the panel surface, flush with the top, a padding row under it when comfortable", (t) => {
 	const [style, surface] = [cardStyle(), chromeSurface()];
 	t.after(() => { setCardStyle(style); setChromeSurface(surface); });
 	for (const cards of [CARD_STYLE.FLOAT, CARD_STYLE.NEON]) {
 		setCardStyle(cards);
 		setChromeSurface("tinted");
 		const chrome = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
-		assert.equal(chrome.rows.length, 3, `${cards}: padding, header row, padding`);
-		assert.equal(chrome.headerRow, 1);
+		assert.equal(chrome.rows.length, 2, `${cards}: the header row, then its padding`);
+		assert.equal(chrome.headerRow, 0, `${cards}: the header row is the first row`);
 		for (const row of chrome.rows) assert.match(row, /\x1b\[48;5;171m/, `${cards}: every row on the panel surface, like the rail`);
 		assert.doesNotMatch(chrome.rows.join("\n"), /\x1b\[48;5;120m|▔|▁/, `${cards}: no float card or edge line`);
-		const text = unstyled(chrome.rows)[1]!;
+		const text = unstyled(chrome.rows)[0]!;
 		assert.match(text, /gpt-5\.5/);
 		assert.match(text, /ctx/);
 		assert.match(text, /usage · alt\+u/);
-		assert.ok(shellHeaderUsageHit(chrome, text.indexOf("usage"), 1), "usage stays clickable on the header row");
-		assert.equal(shellHeaderUsageHit(chrome, text.indexOf("usage"), 0), false, "padding is not a target");
-		const minimal = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" });
-		assert.equal(minimal.rows.length, 1, `${cards}: minimal keeps only the header row`);
+		assert.ok(shellHeaderUsageHit(chrome, text.indexOf("usage"), 0), "usage stays clickable on the header row");
+		assert.equal(shellHeaderUsageHit(chrome, text.indexOf("usage"), 1), false, "padding is not a target");
+		for (const density of ["compact", "minimal"] as const) {
+			const tight = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", { ...DEFAULT_VISUAL_SETTINGS, density });
+			assert.equal(tight.rows.length, 1, `${cards}: ${density} keeps only the header row`);
+		}
 		setChromeSurface("transparent");
 		const clear = renderShellTopHeader(buildShellHeaderModel(model as never), painted as never, 107, "alt+u", DEFAULT_VISUAL_SETTINGS);
 		assert.doesNotMatch(clear.rows.join("\n"), /\x1b\[48;5;\d+m/, `${cards}: transparent floats it`);

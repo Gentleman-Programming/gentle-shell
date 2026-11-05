@@ -2784,9 +2784,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						return [truncateToWidth(theme.fg("muted", shellJobsCount(compactRunningJobs.length)), width, "…")];
 					}
 					const rows = part.render(width);
-					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
-					// A wide top header's titled-rule editor needs none: its own bottom row is the margin.
-					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && !topChrome()
+					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry,
+					// only while the float prompt ends the dock. A titled-rule editor (top, split,
+					// mobile) keeps its own bottom row as the margin, and a below-input header follows it.
+					const promptEndsDock = !(chromeMode(tui) !== undefined || topChrome() || belowHeader());
+					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && promptEndsDock
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {

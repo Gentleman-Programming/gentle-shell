@@ -193,22 +193,22 @@ test("Power user keeps Neutral's spacing and adds Stats; Neutral and Light leave
 	assert.equal(applyVisualPreset(power, VISUAL_PRESET.LIGHT).visibility.stats, false);
 });
 
-test("the chrome surface defaults to tinted, is stored only when transparent, and older files read as tinted", () => {
-	assert.equal(DEFAULT_VISUAL_SETTINGS.surface, CHROME_SURFACE.TINTED);
+test("the chrome surface defaults to transparent, is stored only when tinted, and files without it read as transparent", () => {
+	assert.equal(DEFAULT_VISUAL_SETTINGS.surface, CHROME_SURFACE.TRANSPARENT);
 	const home = mkdtempSync(join(tmpdir(), "visual-surface-"));
 	try {
 		const file = join(home, "visual-customization.json");
 		writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { gentlePiConfigHome: home });
-		assert.equal(Object.hasOwn(JSON.parse(readFileSync(file, "utf8")), "surface"), false, "tinted keeps the file readable by older versions");
+		assert.equal(Object.hasOwn(JSON.parse(readFileSync(file, "utf8")), "surface"), false, "the default keeps the file readable by older versions");
 		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
-		const transparent = { ...DEFAULT_VISUAL_SETTINGS, surface: CHROME_SURFACE.TRANSPARENT };
-		writeVisualSettings(transparent, { gentlePiConfigHome: home });
-		assert.equal(JSON.parse(readFileSync(file, "utf8")).surface, "transparent");
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, transparent);
-		assert.equal(visualPresetOf(transparent), VISUAL_PRESET.NEUTRAL, "presets ignore the surface");
-		assert.equal(applyVisualPreset(transparent, VISUAL_PRESET.POWER_USER).surface, CHROME_SURFACE.TRANSPARENT, "a preset keeps the surface");
+		const tinted = { ...DEFAULT_VISUAL_SETTINGS, surface: CHROME_SURFACE.TINTED };
+		writeVisualSettings(tinted, { gentlePiConfigHome: home });
+		assert.equal(JSON.parse(readFileSync(file, "utf8")).surface, "tinted");
+		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, tinted);
+		assert.equal(visualPresetOf(tinted), VISUAL_PRESET.NEUTRAL, "presets ignore the surface");
+		assert.equal(applyVisualPreset(tinted, VISUAL_PRESET.POWER_USER).surface, CHROME_SURFACE.TINTED, "a preset keeps the surface");
 		const { surface: _surface, ...legacy } = DEFAULT_VISUAL_SETTINGS;
-		assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...legacy })), DEFAULT_VISUAL_SETTINGS);
+		assert.deepEqual(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...legacy })), DEFAULT_VISUAL_SETTINGS, "a file without the surface reads as the transparent default");
 		assert.equal(parseVisualSettingsFile(JSON.stringify({ schema: VISUAL_SCHEMA, ...DEFAULT_VISUAL_SETTINGS, surface: "glass" })), undefined);
 		assert.equal(isVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" }), true);
 	} finally { rmSync(home, { recursive: true, force: true }); }

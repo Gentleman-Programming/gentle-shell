@@ -4042,7 +4042,8 @@ test("T4d unified float footer uses one live owner and restores legacy Changes o
 	t.after(() => setCardStyle(previous));
 	const home = scopedDoubleEscCancelConfigHome(t);
 	writeCardStyle("float", { gentlePiConfigHome: home });
-	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input" }, { gentlePiConfigHome: home });
+	// The painted float group is the tinted surface's.
+	writeVisualSettings({ ...resolveVisualSettings({ gentlePiConfigHome: home }).settings, headerPlacement: "below-input", surface: "tinted" }, { gentlePiConfigHome: home });
 	const { pi, handlers, commands } = fakePi([{ numstat: "2\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }, { numstat: "3\t0\tlib/live.ts\n", porcelain: " M lib/live.ts\0" }]);
 	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
 	const { ctx, ui, overlayReady } = fakeContext();
@@ -7713,7 +7714,7 @@ test("a wide top header is the split title row's panel row with the whole header
 	for (const { header, status, exterior } of cases) {
 		const home = scopedDoubleEscCancelConfigHome(t);
 		writeCardStyle(CARD_STYLE.FLOAT, { gentlePiConfigHome: home });
-		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header, statusPlacement: status }, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: header, statusPlacement: status, surface: "tinted" }, { gentlePiConfigHome: home });
 		const { pi, handlers } = fakePi();
 		gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home }, { activeProfile: () => "team" });
 		const { ctx, ui } = fakeContext();

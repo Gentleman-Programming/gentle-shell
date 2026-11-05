@@ -35,7 +35,7 @@ export interface VisualSettings {
 	statusPlacement: StatusPlacement;
 	headerPlacement: HeaderPlacement;
 	density: Density;
-	/** Stored only when transparent, so files that keep the default stay readable by older versions. */
+	/** Stored only when tinted, so files that keep the transparent default stay readable by older versions. */
 	surface: ChromeSurface;
 	visibility: VisualVisibility;
 }
@@ -43,7 +43,7 @@ export const DEFAULT_VISUAL_SETTINGS: VisualSettings = {
 	statusPlacement: STATUS_PLACEMENT.AUTO,
 	headerPlacement: HEADER_PLACEMENT.TOP,
 	density: DENSITY.COMFORTABLE,
-	surface: CHROME_SURFACE.TINTED,
+	surface: CHROME_SURFACE.TRANSPARENT,
 	visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false },
 };
 /**
@@ -121,8 +121,8 @@ export function isVisualSettings(value: unknown): value is VisualSettings {
  */
 export function normalizeVisualSettings(raw: unknown): VisualSettings | undefined {
 	if (!record(raw) || !record(raw.visibility)) return undefined;
-	// A file without `surface` (older versions, or the tinted default) reads as tinted.
-	const value = Object.hasOwn(raw, "surface") ? raw : { ...raw, surface: CHROME_SURFACE.TINTED };
+	// A file without `surface` (older versions, or the transparent default) reads as the default.
+	const value = Object.hasOwn(raw, "surface") ? raw : { ...raw, surface: DEFAULT_VISUAL_SETTINGS.surface };
 	const visibility = raw.visibility;
 	if (!Object.keys(visibility).every((key) => (VISUAL_SECTION_KEYS as readonly string[]).includes(key))) return undefined;
 	if (!BASE_SECTION_KEYS.every((key) => Object.hasOwn(visibility, key))) return undefined;
@@ -151,10 +151,10 @@ export function resolveVisualSettings(options: VisualOptions = {}): VisualResolu
 		return { settings: structuredClone(DEFAULT_VISUAL_SETTINGS), source: missing ? "default" : "global_file", malformed: false, readError: !missing, globalFile };
 	}
 }
-/** The stored shape: the tinted surface is the default and stays out of the file, so older versions keep reading it. */
+/** The stored shape: the default surface stays out of the file, so older versions keep reading it. */
 export function storedVisualSettings(settings: VisualSettings): Omit<VisualSettings, "surface"> & { surface?: ChromeSurface } {
 	const { surface, ...stored } = settings;
-	return surface === CHROME_SURFACE.TINTED ? stored : { ...stored, surface };
+	return surface === DEFAULT_VISUAL_SETTINGS.surface ? stored : { ...stored, surface };
 }
 /** Same-directory rename keeps partial JSON invisible to readers. */
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {

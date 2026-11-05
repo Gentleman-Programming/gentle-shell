@@ -51,6 +51,8 @@ The fork carries fork-only commits (`git log upstream/main..main`) that upstream
 8. Dependencies: if `git diff --name-only ORIG_HEAD HEAD` lists `package.json` or `pnpm-lock.yaml`, run `npx -y pnpm@11.1.1 install`.
 9. Verify: `npx -y pnpm@11.1.1 run typecheck` then `npx -y pnpm@11.1.1 test`. Use background execution; the suite takes about three minutes.
 
+Run each of these commands as its own step, with `timeout` and `< /dev/null` (for example `timeout 300 npx -y pnpm@11.1.1 install < /dev/null`): `install` can print `Done` and then never exit, which stalls any chained command behind it. A timeout exit after `Done` is not an install failure; check `git status` for lockfile drift and continue.
+
 Never call bare `pnpm` here: a machine whose global pnpm wrapper lost its `@pnpm/exe` engine fails the whole flow with `the installed pnpm wrapper is missing`. The `npx -y pnpm@<version>` invocation pins the version from `package.json`'s `packageManager` and works regardless of the local wrapper, which is also what `gsm-u` does.
 10. `git push origin main`. Then `git branch -D backup/main-pre-upstream-sync`, unless anything needed manual resolution; in that case keep it and say so.
 

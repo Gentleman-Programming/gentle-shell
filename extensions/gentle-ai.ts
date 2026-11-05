@@ -234,6 +234,7 @@ import {
 	type NativeReviewAcknowledgeApprovedRequest,
 	type NativeTargetStatusRequest,
 	type NativeReviewModeOperation,
+	type NativeReviewModeRequest,
 	type NativeReviewModeSource,
 	type NativeReviewModeStatus,
 	type NativeReviewProcessDiagnostics,
@@ -275,6 +276,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { RDD_MODE_CONTROL_CHANNEL, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { AutoPermissionRuntime, updateAutoPrompt, type AutoRuntimeClassifier } from "../lib/auto-permission-runtime.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
@@ -812,9 +814,33 @@ const RDD_STATUS_TIMEOUT_MS = 3000;
 // spawns; the one-shot notify below still surfaces a sustained outage.
 const RDD_STATUS_MEMO_TTL_MS = 30_000;
 const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus | undefined; readonly expiresAt: number }>();
+// A late status read must not refill the memo after a mode change or session
+// shutdown. Generations are per cwd so unrelated workspaces remain independent.
+const rddStatusGenerations = new Map<string, number>();
+// A later write supersedes an earlier selector response, across sessions/cwds.
+let rddModeMutationSerial = 0;
+
+function rddStatusGeneration(cwd: string): number {
+	if (!rddStatusGenerations.has(cwd)) rddStatusGenerations.set(cwd, 0);
+	return rddStatusGenerations.get(cwd)!;
+}
+
+function invalidateRddStatus(cwd: string): void {
+	rddStatusGenerations.set(cwd, rddStatusGeneration(cwd) + 1);
+	rddStatusMemo.delete(cwd);
+	startupModeReads.delete(cwd);
+}
+
+function invalidateAllRddStatuses(): void {
+	// Direct ASSESS reads register their generation before awaiting, even when
+	// the cwd has never had a memo or prompt. They must be invalidated too.
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
+	pinnedRddStatusLines.clear();
+}
 
 /** @internal test seam: clears the per-cwd RDD status memo. */
 function clearRddStatusMemoForTesting(): void {
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
 	rddStatusMemo.clear();
 	rddStatusUnavailableWarned = false;
 }
@@ -881,7 +907,9 @@ async function readRddModeStatusOnce(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
+	const generation = rddStatusGeneration(cwd);
 	const read = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	return "status" in read ? read.status : undefined;
 }
 
@@ -1070,7 +1098,10 @@ async function resolveReviewAssessmentPlan(
 	let assessment: ReviewAssessmentV1 | undefined;
 	let unassessableDetail: string | undefined;
 	let unassessableCode = "native-assess-unavailable";
-	if (nativeReviewCli?.assess === undefined) {
+	if (rddLine === RDD_LINE.OFF) {
+		unassessableCode = "rdd-off-assessment-skipped";
+		unassessableDetail = "Native assessment skipped because receipt-driven development is off; changed counts were not measured.";
+	} else if (nativeReviewCli?.assess === undefined) {
 		unassessableDetail = "native review assess is unavailable: the installed gentle-ai binary does not expose the assess command.";
 	} else {
 		try {
@@ -1101,7 +1132,7 @@ async function resolveReviewAssessmentPlan(
 	// identity, never repository-only. It is still needed when the caller
 	// claims `closed`, because a recorded decline beats closure (gentle-pi#1175).
 	const needsMemo = input.nativeReviewOutcome === undefined || input.nativeReviewOutcome === NATIVE_REVIEW_OUTCOME.CLOSED;
-	const targetIdentity = needsMemo ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
+	const targetIdentity = needsMemo && rddLine !== RDD_LINE.OFF ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
 	const memoOutcome = targetIdentity === undefined ? undefined : readNativeReviewOutcome(cwd, targetIdentity);
 	const { nativeReviewOutcome, outcomeSource } = resolveAssessNativeReviewOutcome(input, assessment, memoOutcome);
 	const plan = verificationPlan({ rddLine, risk, writerProfile, nativeReviewOutcome });
@@ -1161,9 +1192,9 @@ function homeRootedRepository(cwd: string): string | undefined {
  * `NativeReviewModeStatus`) that the `/gentle:review-mode` command also
  * calls. Never throws and never hangs past `signal`'s deadline when one is
  * given: an absent binary, a timed-out/aborted process, or a native CLI
- * failure all resolve to `undefined` unless an earlier read for the same cwd
- * succeeded, in which case that last known status is kept (gentle-shell#1029:
- * the rendered line sits in the cached prompt prefix). `ctx` is optional and
+ * failure resolves to `undefined` unless the last known status was on.
+ * Off is freshly confirmed each run so a failed read cannot suppress review
+ * guidance using a stale off status. `ctx` is optional and
  * used only for a one-shot (per process) UI notice when the read is
  * swallowed, so a sustained native outage is observable beyond the prompt.
  */
@@ -1176,21 +1207,22 @@ async function resolveRddModeStatus(
 ): Promise<NativeReviewModeStatus | undefined> {
 	const nowMs = now();
 	const cached = rddStatusMemo.get(cwd);
-	if (cached !== undefined && cached.expiresAt > nowMs) return cached.status;
-	// gentle-shell#1029: the rendered line is part of the cached system-prompt
-	// prefix. A re-read that fails or times out keeps the last successfully
-	// read status instead of flipping the prompt to "unknown" and back, which
-	// would invalidate the provider's prefix cache for the whole conversation.
-	// Only a status the native reader actually reports replaces a known one.
+	if (cached !== undefined && cached.expiresAt > nowMs && cached.status?.effective !== "off") return cached.status;
+	const generation = rddStatusGeneration(cwd);
+	// An off loadout suppresses mandatory assessment, so only a fresh off read
+	// can retain it. Known-on and unknown lines keep their existing memo policy.
 	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	// Neither cache nor return an obsolete read: in particular, an old off
+	// must never suppress review guidance after an explicit mode change.
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	const read = "status" in outcome ? outcome.status : undefined;
-	const status = read ?? cached?.status;
+	const status = read ?? (cached?.status?.effective === "off" ? undefined : cached?.status);
 	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
 	if ("cause" in outcome && !rddStatusUnavailableWarned) {
 		rddStatusUnavailableWarned = true;
 		if (ctx?.hasUI) {
 			ctx.ui.notify(
-				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status, or renders "unknown" when none was read; this notice will not repeat this session.`,
+				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status when it is on, or renders "unknown"; this notice will not repeat this session.`,
 				"warning",
 			);
 		}
@@ -1216,20 +1248,20 @@ function pinRddStatusLine(pinned: string | undefined, next: string): string {
 }
 
 /**
- * gentle-pi S11 T1: while the pinned line reads off, no review can start and
- * the orchestrator only calls ASSESS, so the primary request swaps the review
- * family's long guidance for this lean loadout: one short gentle_review
+ * While the pinned line reads off, no review can start and assessment is not
+ * mandatory, so the primary request swaps the review family's long guidance
+ * for this lean loadout: one short gentle_review
  * snippet, guideline, and description, with the capture, capture-group, and
  * scope declarations hidden (they stay registered and active). It follows the
  * pinned line, so it changes only when that line's off state flips, together
  * with the review execution contract; on and unknown keep the registered text.
  */
-const RDD_OFF_REVIEW_SNIPPET = "Assess an authorized change and return its verification plan (read-only)";
+const RDD_OFF_REVIEW_SNIPPET = "Return a verification plan on request (read-only)";
 const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
-	'Receipt-driven development is off, so use gentle_review only for {"operation":"assess"} (read-only): after an authorized implementation, delegated or inline, call it over the diff and follow the returned plan; pass input {"escalate":{"item":1-6,"reason":"<one line>"}} only when the change touches a Task Size high-risk item, or {"baseRef":"<ref>","committedOnly":true} to assess a committed range.',
-	"When ASSESS returns reviewDue or a native continuation, relay it unchanged but do not execute it while RDD is off; assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD. Continue the returned verification plan; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
+	"RDD off does not require an assessment. Applicable tests, builds, and functional checks still run; a named Task Size high-risk item still requires one independent verifier. Do not start native review or change RDD based on this loadout.",
+	'When a plan is requested, gentle_review {"operation":"assess"} remains read-only; pass {"escalate":{"item":1-6,"reason":"<one line>"}} for a named high-risk item. Native assessment is skipped and no native candidate or continuation is invented. Review outcomes never authorize delivery.',
 ];
-const RDD_OFF_REVIEW_DESCRIPTION = "Assess the current changes, or a committed range, and return the verification plan. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
+const RDD_OFF_REVIEW_DESCRIPTION = "Return a verification plan on request without a native assessment while RDD is off. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
 const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];
 
 interface ReviewToolPromptOptions {
@@ -6951,10 +6983,12 @@ function nativeReviewModeSkipped(operation: ReviewControllerOperation, source: N
 // unavailable. It is not authorization to enter bootstrap-capable native code.
 // `rememberForPrompt` lets a decoded read serve the next prompt's RDD status
 // line from the memo instead of spawning the same STATUS again.
-async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false): Promise<boolean> {
+async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false, current: () => boolean = () => true): Promise<boolean> {
 	if (nativeReviewCli?.reviewMode === undefined) return false;
+	const generation = rddStatusGeneration(cwd);
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, ...(signal === undefined ? {} : { signal }) });
+		if (rddStatusGeneration(cwd) !== generation || !current()) return false;
 		const decoded = mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status);
 		if (decoded && rememberForPrompt) rddStatusMemo.set(cwd, { status: mode.status, expiresAt: Date.now() + RDD_STATUS_MEMO_TTL_MS });
 		return decoded && mode.status.effective === "on";
@@ -7883,8 +7917,9 @@ const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessio
 // named-agent start increments the depth, a matching end decrements it,
 // and a fresh primary-loop start resets it to 0.
 const processAgentEndSubagentDepth = new Map<PendingReviewConsentSessionKey, number>();
-// gentle-shell#2195: the RDD status line each primary session last rendered into its system prompt.
-const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, string>();
+// gentle-shell#2195: the RDD status line each primary session last rendered
+// into its system prompt, scoped to the workspace in which it was resolved.
+const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, { cwd: string; line: string }>();
 
 // gentle-shell#1064 slice 1: the parent-session profile binding store lives in
 // lib/session-profile-binding.ts (in-process, keyed by parent session id). The
@@ -9313,16 +9348,17 @@ async function resolveNegotiatedReviewStatusForSession(
 	ctx: ExtensionContext,
 	sessionKey: PendingReviewConsentSessionKey,
 	signal?: AbortSignal,
+	current: () => boolean = () => true,
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
 	// STATUS can prepare an unversioned directory natively. Only a successfully
 	// decoded effective-on mode authorizes that entry; bootstrap never counts as
 	// an own mutation and native owns all metadata/ancestor safety decisions.
-	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true);
+	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true, current);
 	startupModeReads.set(ctx.cwd, modeRead);
 	const enabled = await modeRead.finally(() => { if (startupModeReads.get(ctx.cwd) === modeRead) startupModeReads.delete(ctx.cwd); });
-	if (!enabled) return undefined;
+	if (!enabled || !current()) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new Map()).get(key)!)(sessionKey);
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
@@ -11182,6 +11218,7 @@ function createGentleAiExtensionForTesting(
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
+	let activeRddContext: ExtensionContext | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
 		// A pending Enter selection settles before the profile owner shuts down;
@@ -11198,6 +11235,7 @@ function createGentleAiExtensionForTesting(
 			sessionProfiles.shutdown(context.sessionManager, event);
 		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
+		invalidateRddStatus(context.cwd);
 		rddOffReviewLoadout = false;
 		auto.reset();
 		yolo.reset(context);
@@ -11205,6 +11243,7 @@ function createGentleAiExtensionForTesting(
 		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		activeRddContext = undefined;
 		unbindPreparation?.();
 		unbindPreparation = undefined;
 		reminderManager = undefined;
@@ -11449,7 +11488,7 @@ function createGentleAiExtensionForTesting(
 			"For blocked-legacy or blocked-mixed, do not call START repeatedly. Explain invalidation, request explicit user authorization, then call RESET or RECOVER only after authorization. RESET and RECOVER_LOCK route to audited native `gentle-ai review reclaim`; only RESET carries the legacy repositoryId, commonDirHash, inventoryHash, and confirmation challenge. RECOVER routes to native `gentle-ai review recover` with exactly six inputs: predecessorLineage, expectedPredecessorRevision, successorLineage, disposition, actor, and reason. Never send RECOVER the reset challenge and never send it a maintainerAuthorization: Pi reads fresh native target status, pins the predecessor lineage, revision, provider-selected disposition, and target identity, derives the exact six-line native authorization binding, displays it for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once and allows later fresh validated envelopes only for the same live SessionManager, nonempty session ID, and canonical Git common-directory identity, including sibling worktrees; an unrelated repository requires a new explicit human grant. Revoke removes the current repository grant, while nonreload replacement, quit, and process exit remove all session grants; reload preserves them. It grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority operations; delivery commands follow ordinary repository policy.",
-			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it is the only way to get an independent verifier, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). The writer profile is reported but never adds a verifier. The plan follows its risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment (nativeRisk "unassessable"), or a native high, informs only: the plan adds the independent verifier only when escalate names a Task Size high-risk item. This never mutates review authority state.',
+			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: when RDD is on or unknown, after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it is the only way for this plan to request an independent verifier, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). The writer profile is reported but never adds a verifier. The plan follows its risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment (nativeRisk "unassessable"), or a native high, informs only: the plan adds the independent verifier only when escalate names a Task Size high-risk item. This never mutates review authority state.',
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
@@ -11588,6 +11627,7 @@ function createGentleAiExtensionForTesting(
 	}));
 
 	pi.on("session_start", async (event, ctx) => {
+		const startupEpoch = reminderEpoch;
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
@@ -11603,6 +11643,8 @@ function createGentleAiExtensionForTesting(
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await yolo.mode(ctx);
+		// A shutdown during the asynchronous startup must not revive its owner.
+		if (startupEpoch !== reminderEpoch) return;
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -11610,6 +11652,7 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		activeRddContext = ctx;
 		// gentle-shell#1690: a delegated child runs in the parent's resolved
 		// worktree. Repository preparation, review negotiation, asset install and
 		// model config belong to the parent session and write shared state. The
@@ -11699,7 +11742,10 @@ function createGentleAiExtensionForTesting(
 		// Pi awaits session_start handlers serially, so this runs after startup
 		// returns: two native spawns no longer hold the shell's first render.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS))
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS), current)
 			.then(() => undefined, () => undefined) // Best-effort only; never surface or throw.
 			.finally(() => { startupNegotiations.delete(negotiation); });
 		startupNegotiations.add(negotiation);
@@ -11746,17 +11792,39 @@ function createGentleAiExtensionForTesting(
 		// binary keeps the last known line for this cwd, or renders the
 		// fail-closed "unknown" line when none was ever read (gentle-shell#1029).
 		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
+		const promptCwd = ctx.cwd;
+		const promptEpoch = reminderEpoch;
+		const promptManager = ctx.sessionManager;
+		const currentPrompt = () => reminderSessionActive && reminderEpoch === promptEpoch &&
+			(reminderManager === undefined || reminderManager === promptManager) &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === subagentDepthKey &&
+			ctx.cwd === promptCwd && (promptManager?.getCwd?.() ?? promptCwd) === promptCwd;
 		// A startup read still in flight fills the memo: wait for it within the
 		// same deadline instead of spawning the same STATUS a second time.
-		const inFlightModeRead = isPrimarySession ? startupModeReads.get(ctx.cwd) : undefined;
+		const inFlightModeRead = isPrimarySession ? startupModeReads.get(promptCwd) : undefined;
 		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
-		const rddStatusLine = !isPrimarySession
-			? undefined
-			: pinRddStatusLine(
-				pinnedRddStatusLines.get(subagentDepthKey),
-				await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx),
-			);
-		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
+		const promptGeneration = rddStatusGeneration(promptCwd);
+		const nextRddStatusLine = isPrimarySession
+			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx)
+			: undefined;
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
+		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
+		const pinned = pinnedRddStatusLines.get(subagentDepthKey);
+		const rddStatusLine = nextRddStatusLine === undefined ? undefined : staleRead
+			? renderRddStatusLine(undefined)
+			: pinRddStatusLine(pinned?.cwd === promptCwd ? pinned.line : undefined, nextRddStatusLine);
+		// A stale in-flight prompt is unknown for this run, but must not pin
+		// unknown over the status the following fresh prompt will resolve.
+		if (rddStatusLine !== undefined && !staleRead) pinnedRddStatusLines.set(subagentDepthKey, { cwd: promptCwd, line: rddStatusLine });
 		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
 		const gentlePrompt = rddStatusLine === undefined
@@ -11812,8 +11880,12 @@ function createGentleAiExtensionForTesting(
 		catch { return; }
 		if (!mutation) return;
 		const epoch = reminderEpoch;
-		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey);
-		if (status === undefined || !reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+		const manager = ctx.sessionManager;
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && epoch === reminderEpoch && (reminderManager === undefined || reminderManager === manager) &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current);
+		if (status === undefined || !current()) return;
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
@@ -12143,6 +12215,150 @@ function createGentleAiExtensionForTesting(
 		handler: async (args, ctx) => { statusTiming.command(args, ctx); },
 	});
 
+	// All controls use this native request and invalidation owner. A global write
+	// brackets its in-flight period: neither an old read nor one started while
+	// the provider is writing may refill a different workspace's status.
+	const executeReviewMode = async (request: NativeReviewModeRequest, ctx: ExtensionContext) => {
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const global = mutating && request.scope === "global";
+		const invalidate = () => {
+			if (global) invalidateAllRddStatuses();
+			else {
+				invalidateRddStatus(request.cwd);
+				for (const [key, pinned] of pinnedRddStatusLines) {
+					if (pinned.cwd === request.cwd) pinnedRddStatusLines.delete(key);
+				}
+			}
+		};
+		if (mutating) { rddModeMutationSerial += 1; invalidate(); }
+		try {
+			const result = await nativeReviewCli!.reviewMode!(request);
+			if (mutating && request.operation === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
+				cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
+			}
+			return result;
+		} finally {
+			// A failed native write has an unknown outcome; never retry it or keep
+			// a potentially obsolete prompt/status cache.
+			if (mutating) invalidate();
+		}
+	};
+
+	const rddChoices = {
+		"Enable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE },
+		"Disable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE },
+		"Enable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE, scope: "global" as const },
+		"Disable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE, scope: "global" as const },
+	};
+
+	// The context is captured at the session lifecycle boundary, not provided by
+	// a consumer. SDK contexts have live getters, so recheck UI and cwd too.
+	const bindRddOwner = (context: ExtensionContext): (() => boolean) | undefined => {
+		try {
+			const owner = activeRddContext;
+			if (!owner || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1" || !reminderSessionActive) return undefined;
+			const coordinates = reviewSessionManagerAndId(owner);
+			const cwd = owner.cwd, ui = owner.ui, epoch = reminderEpoch;
+			if (!coordinates || reminderManager !== coordinates.manager || context.sessionManager !== coordinates.manager ||
+				context.cwd !== cwd || context.ui !== ui || !owner.hasUI || (owner.mode !== "tui" && owner.mode !== "rpc")) return undefined;
+			const sessionKey = pendingReviewConsentSessionKey(owner, pendingReviewConsentFallbackKey);
+			return () => {
+				try {
+					const current = reviewSessionManagerAndId(owner);
+					return activeRddContext === owner && reminderSessionActive && reminderEpoch === epoch &&
+						reminderManager === coordinates.manager && current?.manager === coordinates.manager && current.sessionId === coordinates.sessionId &&
+						owner.cwd === cwd && (owner.sessionManager.getCwd?.() ?? cwd) === cwd && owner.ui === ui && owner.hasUI &&
+						(owner.mode === "tui" || owner.mode === "rpc") && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+				} catch { return false; }
+			};
+		} catch { return undefined; }
+	};
+
+	const openRddSelector = async (context: ExtensionContext): Promise<void> => {
+		if (nativeReviewCli?.reviewMode === undefined) {
+			context.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			return;
+		}
+		const current = bindRddOwner(context);
+		if (!current || !current()) {
+			if (context.hasUI) context.ui.notify("RDD unchanged: an interactive primary session is required.", "warning");
+			return;
+		}
+		const owner = activeRddContext!;
+		const cwd = owner.cwd;
+		const generation = rddStatusGeneration(cwd);
+		let writeSerial: number | undefined;
+		try {
+			const status = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+			if (!current() || rddStatusGeneration(cwd) !== generation) return;
+			if (status.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(status.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; RDD unchanged.", "error");
+				return;
+			}
+			const selected = await owner.ui.select(`Receipt-driven development: ${status.status.effective} (decided by ${status.status.source})`, Object.keys(rddChoices));
+			if (!current() || rddStatusGeneration(cwd) !== generation || selected === undefined) return;
+			if (!Object.hasOwn(rddChoices, selected)) {
+				owner.ui.notify("RDD unchanged: unrecognized selection.", "warning");
+				return;
+			}
+			const choice = rddChoices[selected as keyof typeof rddChoices];
+			const pending = executeReviewMode({ cwd, ...choice }, owner);
+			writeSerial = rddModeMutationSerial;
+			const result = await pending;
+			if (!current() || writeSerial !== rddModeMutationSerial) return;
+			if (result.operation !== choice.operation || !isValidRddModeStatus(result.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; the write outcome is unknown.", "error");
+				return;
+			}
+			const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
+			if (choice.operation === NATIVE_REVIEW_MODE_OPERATION.ENABLE && result.status.effective === "off") {
+				const reason = result.status.source === NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL
+					? "The repository override still keeps RDD off."
+					: result.status.source === NATIVE_REVIEW_MODE_SOURCE.GLOBAL
+						? "The repository setting cannot override machine-wide RDD off."
+						: "RDD remains off; inspect its deciding source.";
+				owner.ui.notify(`${report}\n${reason}`, "warning");
+			} else owner.ui.notify(report, "info");
+		} catch (error) {
+			if (!current() || (writeSerial === undefined ? rddStatusGeneration(cwd) !== generation : writeSerial !== rddModeMutationSerial)) return;
+			if (asNativeReviewCliError(error)?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) {
+				owner.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			} else owner.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
+	};
+
+	pi.events?.on?.(RDD_MODE_CONTROL_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object" || typeof (payload as { respond?: unknown }).respond !== "function") return;
+		const owner = activeRddContext;
+		const current = owner && bindRddOwner(owner);
+		if (!owner || !current || !current()) return;
+		const control: RddModeControl = {
+			async read() {
+				if (!current() || nativeReviewCli?.reviewMode === undefined) return undefined;
+				const cwd = owner.cwd, generation = rddStatusGeneration(cwd);
+				try {
+					const result = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+					if (!current() || generation !== rddStatusGeneration(cwd) || result.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(result.status)) return undefined;
+					return { effective: result.status.effective, source: result.status.source };
+				} catch { return undefined; }
+			},
+			async open() { if (current()) await openRddSelector(owner); },
+		};
+		(payload as { respond: (value: RddModeControl) => void }).respond(control);
+	});
+
+	pi.registerCommand("gentle:rdd", {
+		description: "Open the interactive RDD selector for this repository or an explicitly named machine-wide change.",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Use /gentle:rdd without arguments to open the interactive selector. RDD unchanged.", "warning");
+				return;
+			}
+			await openRddSelector(ctx);
+		},
+	});
+
 	pi.registerCommand("gentle:review-mode", {
 		description: "Show or set the Gentle AI receipt-driven development kill switch (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
 		handler: async (args, ctx) => {
@@ -12156,13 +12372,7 @@ function createGentleAiExtensionForTesting(
 				return;
 			}
 			try {
-				const result = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation });
-				if (subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
-					cleanupAllPendingReviewConsents(
-						pendingReviewConsentRegistry,
-						pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
-					);
-				}
+				const result = await executeReviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation }, ctx);
 				const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
 				// A mutating sub-action that left the effective mode unchanged did
 				// not do what the user asked, and reporting only the resulting

@@ -143,7 +143,7 @@ Review the exact change, not a moving target. Native review keeps one candidate 
 
 Review is proportionate: an independent verifier runs only for a named high-risk item in every RDD state, a review is only due for high-risk work, and the agent forwards the 4R lenses that fit what it touched — with its reason — instead of paying for all four.
 
-> ℹ️ **RDD is optional and on by default:** turn native receipt-driven development off anytime with `/gentle:review-mode disable` (this clone) or `gentle-ai review mode disable` (machine-wide); `/gentle:review-mode status` shows the current mode. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
+> ℹ️ **RDD is optional and on by default:** open `/gentle:rdd` to see the effective mode and its source, then choose a repository change or an explicitly named machine-wide change. Cancelling changes nothing. Repository enable only clears its local off override; it cannot override a machine-wide off. The existing `/gentle:review-mode status|enable|disable` remains clone-scoped. Changing RDD does not grant review consent or change permissions. The `.git/gentle-ai/candidate-views` parent must sit on a filesystem that honors private POSIX modes (or equivalent Windows ACLs); WSL DrvFS mounts without metadata can reject START before lineage creation.
 
 <details>
 <summary><kbd>More</kbd> <strong>Reviewer transport</strong> — how review completions follow Pi's transport setting</summary>
@@ -322,9 +322,9 @@ Save `/gentle:mode default auto` or `/gentle:mode default yolo` to use either op
 <br>
 
 - **Default:** **OFF** unless selected or saved as the global default, with interactive primary TUI controls and live session/workspace binding; `/gentle:yolo disable` revokes it and `/gentle:yolo status` checks it.
-- **Menu:** With no argument, `/gentle:yolo` opens a menu (`enable`, `disable`, `status`) showing the current state; cancelling changes nothing, and without an interactive menu it reports status.
+- **Menu:** With no argument, `/gentle:yolo` chooses Normal, Auto, YOLO or Super Yolo for this session. Cancelling grants nothing; outside an interactive primary TUI it reports status. Session choices never save defaults.
 - **Lifetime:** Reload and session replacement revoke live grants; new primary instances may apply the saved global default.
-- **Status:** Active status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**.
+- **Status:** Active YOLO status plus a separate widget show **🚀 YOLO ON 🔥 — destructive confirmations remain**; Super Yolo is identified separately.
 - **Still mandatory:** Explicit restrictions, configured confirmations/blocks, consequential unresolved choices, destination/credential ambiguity and native consent/recovery decisions remain mandatory. Children get no independent delivery grant. This is not a sandbox.
 
 - **From Customize:** Or open `/gentle:customize` → **Editor**, choose **ON** or **OFF** on the **YOLO** line below Vim, then press Enter or Space to apply that live-session value. Browsing and previews never activate it; the native permission and consent boundaries remain the same as `/gentle:yolo`. This live toggle does not save a preference. The separate **Session permissions** and **Default permissions** rows select a current mode or save a user-global default, respectively; repository settings and visual profiles cannot grant either mode.

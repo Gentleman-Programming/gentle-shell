@@ -64,6 +64,34 @@ test("recoverable failure is distinguished from terminal missing proof within ex
 	]);
 });
 
+test("S2: setup failure preserves unrun proof without calling the verifier unavailable", async () => {
+	includesAll(await delivered(), [
+		"A failed verifier setup is a preparation failure, not an unavailable verifier capability.",
+		"If setup fails before probes, preserve the failed attempt and report zero tests run; the checks remain unverified.",
+		"An unavailable verifier remains unavailable; do not retry or escalate it.",
+	]);
+});
+
+test("S3: a repaired setup needs one explicit request and keeps every existing limit", async () => {
+	includesAll(await delivered(), [
+		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
+		"This is a new request, not an automatic retry, and it does not reset the prior attempt or unrelated budgets.",
+		"Before proceeding, confirm no child is active or has an uncertain status.",
+		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.",
+	]);
+});
+
+test("S4-S5: worker exhaustion exposes a bounded continuation without waiving proof", async () => {
+	includesAll(await delivered(), [
+		"An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature.",
+		"Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation.",
+		"Name its scope, executor, correction limit and checks, or let the human stop.",
+		"Before any worker continuation, confirm no child is active or has an uncertain status.",
+		"A new session does not reset any limit.",
+		"When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation; unavailable proof still blocks completion and delivery.",
+	]);
+});
+
 test("worker-prohibited maintenance has a bounded parent-only route, not a permission bypass", async () => {
 	includesAll(await delivered(), [
 		"worker prohibitions remain unchanged",

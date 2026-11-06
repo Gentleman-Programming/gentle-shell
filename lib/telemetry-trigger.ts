@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { gentleAiIsolationEnv } from "./gentle-ai-binary.ts";
 
 // gentle-ai#4309 owns anonymous usage telemetry end to end: install and
 // heartbeat events, the notice, every kill switch, and the wire contract.
@@ -128,7 +129,8 @@ export function spawnTelemetryTrigger(options: SpawnTelemetryTriggerOptions): Te
 	try {
 		const child = spawnImpl(options.executable, ["telemetry", "trigger", "--json"], {
 			cwd: options.cwd,
-			env: options.env,
+			// S9: a bundled install keeps Gentle AI's telemetry state inside its prefix.
+			env: gentleAiIsolationEnv(options.env),
 			detached: true,
 			windowsHide: true,
 			stdio: "ignore",

@@ -242,7 +242,13 @@ test("renderThreadItem renders labeled text, thinking, tool-output, and note blo
 	const wide = renderThreadItem({ kind: "tool", callId: "c", name: "bash", args: {}, output: "alpha beta gamma delta", running: false, isError: false }, plainTheme, 12);
 	assert.deepEqual(wide.slice(2), ["    alpha", "    beta", "    gamma", "    delta"]);
 	assert.deepEqual(renderThreadItem({ kind: "note", text: "error: boom" }, plainTheme, 30), ["Note", "  error: boom"]);
-	assert.equal(taskHeader(task("a"), 61_000), "explore · running · gpt-5.6-terra · 34k · $0.27 · 1m00s");
+	assert.equal(taskHeader(task("a"), 61_000), "explore · running · gpt-5.6-terra · 34k · $0.270 · 1m00s");
+});
+
+test("taskHeader formats subagent cost with formatCost (three decimals below $1, two at or above $1)", () => {
+	assert.match(taskHeader(task("small", { cost: 0.09 }), 1000), /\$0\.090/);
+	assert.match(taskHeader(task("large", { cost: 12.5 }), 1000), /\$12\.50/);
+	assert.doesNotMatch(taskHeader(task("zero", { cost: 0 }), 1000), /\$/);
 });
 
 test("AgentsView renders the frame with the task list and the selected thread's tail, at width", () => {
@@ -255,7 +261,7 @@ test("AgentsView renders the frame with the task list and the selected thread's 
 	const plain = lines.map(stripAnsi);
 	assert.equal(plain.length, 8);
 	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active · 1 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
-	assert.match(plain[1], /▸ └ ◐ Subagent explore.*explore · running · gpt-5\.6-terra · 34k · \$0\.27 · 1m00s/);
+	assert.match(plain[1], /▸ └ ◐ Subagent explore.*explore · running · gpt-5\.6-terra · 34k · \$0\.270 · 1m00s/);
 	assert.match(plain[2], /line 3/, "the thread window follows the tail");
 	assert.match(plain[3], /line 4/);
 	assert.match(plain.join("\n"), /Subagent worker/, "the session's own finished task now stays listed as history");
@@ -290,6 +296,33 @@ test("AgentsView keys move the selection, scroll, follow, cancel, open, and clos
 	assert.match(stripAnsi(view.render(80)[2]), /│   l9 +│$/, "f follows the tail again");
 	view.handleInput("\x1b");
 	assert.deepEqual(events, ["cancel:a", "open:a", "close"]);
+});
+
+test("AgentsView clamps thread scrolling at the bottom so the first upward key moves", () => {
+	for (const [down, up] of [["\x0a", "\x0b"], ["\x1b[6~", "\x1b[5~"]]) {
+		const { store, view } = harness(8);
+		try {
+			store.add(task("a"));
+			for (let i = 0; i < 30; i++) store.apply("a", { type: TASK_EVENT.TEXT, text: `line ${i}\n` }, 2000);
+			const bottom = view.render(80).slice(1, 5);
+			assert.match(bottom.join("\n"), /line 29/);
+			view.handleInput(up);
+			const previousPage = view.render(80).slice(1, 5);
+			assert.notDeepEqual(previousPage, bottom, "ordinary upward scrolling still moves one page");
+			view.handleInput(down);
+			assert.deepEqual(view.render(80).slice(1, 5), bottom, "ordinary downward scrolling returns to the bottom");
+			for (let i = 0; i < 7; i++) {
+				view.handleInput(down);
+				assert.deepEqual(view.render(80).slice(1, 5), bottom, "extra downward presses leave the bottom visible");
+			}
+			view.handleInput(up);
+			assert.deepEqual(view.render(80).slice(1, 5), previousPage, "the first upward press moves immediately without consuming hidden offset");
+			view.handleInput("f");
+			assert.deepEqual(view.render(80).slice(1, 5), bottom, "follow still restores the tail");
+		} finally {
+			view.dispose();
+		}
+	}
 });
 
 test("AgentsView subscribes only to the selected task and survives an empty store", () => {

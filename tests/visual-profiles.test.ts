@@ -50,6 +50,19 @@ test("malformed and unknown-version catalogs fail closed rather than overwrite",
 	assert.equal(parseVisualProfilesFile(JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [{ name: "a", ...values }, { name: "a", ...values }] })), undefined);
 });
 
+test("profiles saved before the rdd section existed load with rdd shown", () => {
+	const home = { gentlePiConfigHome: mkdtempSync(join(tmpdir(), "visual-profiles-test-")) };
+	const { rdd: _rdd, ...legacyVisibility } = { ...DEFAULT_VISUAL_SETTINGS.visibility, agents: false };
+	const legacy = { name: "old", ...values, visual: { ...values.visual, visibility: legacyVisibility } };
+	writeFileSync(join(home.gentlePiConfigHome, "visual-profiles.json"), JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [legacy] }));
+	const result = readVisualProfiles(home);
+	assert.equal(result.malformed, false);
+	assert.deepEqual(result.profiles[0]!.visual.visibility, { ...DEFAULT_VISUAL_SETTINGS.visibility, agents: false, rdd: true });
+	assert.deepEqual(getVisualProfile("old", home)!.visual.visibility.rdd, true);
+	const unknown = { ...legacy, visual: { ...legacy.visual, visibility: { ...legacyVisibility, extra: true } } };
+	assert.equal(parseVisualProfilesFile(JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: [unknown] })), undefined);
+});
+
 test("symlinked catalog file is rejected instead of followed, and save/delete leave the symlink target untouched", (t) => {
 	const home = mkdtempSync(join(tmpdir(), "visual-profiles-test-"));
 	const target = join(home, "target.json");
@@ -71,4 +84,15 @@ test("symlinked catalog file is rejected instead of followed, and save/delete le
 	assert.throws(() => saveVisualProfile("x", values, { gentlePiConfigHome: home }));
 	assert.throws(() => deleteVisualProfile("x", { gentlePiConfigHome: home }));
 	assert.equal(readFileSync(target, "utf8"), targetContent);
+});
+
+test("a profile stores the chrome surface only when tinted and reads older profiles as the transparent default", () => {
+	const home = { gentlePiConfigHome: mkdtempSync(join(tmpdir(), "visual-profiles-surface-")) };
+	saveVisualProfile("clear", values, home);
+	saveVisualProfile("tinted", { ...values, visual: { ...structuredClone(DEFAULT_VISUAL_SETTINGS), surface: "tinted" } }, home);
+	const stored = JSON.parse(readFileSync(join(home.gentlePiConfigHome, "visual-profiles.json"), "utf8")) as { profiles: { name: string; visual: Record<string, unknown> }[] };
+	assert.equal(Object.hasOwn(stored.profiles.find((p) => p.name === "clear")!.visual, "surface"), false, "older versions keep reading it");
+	assert.equal(stored.profiles.find((p) => p.name === "tinted")!.visual.surface, "tinted");
+	assert.equal(getVisualProfile("clear", home)?.visual.surface, "transparent");
+	assert.equal(getVisualProfile("tinted", home)?.visual.surface, "tinted");
 });

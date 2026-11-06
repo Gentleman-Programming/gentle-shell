@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 // Gentle Agents protocol. A child pi process streams RPC events; the host
@@ -58,11 +59,28 @@ export interface ToolStartEvent { type: typeof TASK_EVENT.TOOL_START; callId: st
 export interface ToolUpdateEvent { type: typeof TASK_EVENT.TOOL_UPDATE; callId: string; output: string }
 export interface ToolEndEvent { type: typeof TASK_EVENT.TOOL_END; callId: string; output: string; isError: boolean }
 export interface TurnEndEvent { type: typeof TASK_EVENT.TURN_END }
+/** Closed terminal-error vocabulary (#2322). A category, never provider text. */
+export const TERMINAL_ERROR_CATEGORY = {
+	AUTH: "auth",
+	RATE_LIMIT: "rate_limit",
+	QUOTA: "quota",
+	CONTEXT_LENGTH: "context_length",
+	TIMEOUT: "timeout",
+	NETWORK: "network",
+	PROVIDER_UNAVAILABLE: "provider_unavailable",
+	INVALID_REQUEST: "invalid_request",
+	UNAVAILABLE: "unavailable",
+} as const;
+
+export type TerminalErrorCategory = (typeof TERMINAL_ERROR_CATEGORY)[keyof typeof TERMINAL_ERROR_CATEGORY];
+
 export interface AgentEndEvent {
 	type: typeof TASK_EVENT.AGENT_END;
 	text: string;
 	outcome: "success" | "error" | "aborted" | "empty";
 	diagnostic?: string;
+	/** Present only when outcome is "error". */
+	errorCategory?: TerminalErrorCategory;
 }
 export interface AgentSettledEvent { type: typeof TASK_EVENT.AGENT_SETTLED }
 export interface ErrorEvent { type: typeof TASK_EVENT.ERROR; message: string }
@@ -126,6 +144,11 @@ export interface TaskRecord {
 	startedAt: number | null;
 	endedAt: number | null;
 	model: string;
+	/** Launch-layer token recorded next to `model` (#2180): which profile layer won.
+	 * Host-computed at the launch seam; absent for requests and records that never named one. */
+	modelSource?: string;
+	/** Set when the run moved to a fallback model: the model it moved away from first. */
+	fallbackFrom?: string;
 	thinking: string | undefined;
 	sessionPath: string | null;
 	error: string | null;
@@ -147,10 +170,29 @@ export interface TaskSummary {
 
 export type TaskListener = (task: TaskRecord, thread: TaskThread) => void;
 export type SummaryListener = (summary: TaskSummary) => void;
+export interface TaskStatusChange {
+	readonly producerId: string;
+	readonly sessionId: string;
+	readonly parentSessionId: string;
+	readonly taskId: string;
+	readonly runId: string;
+	readonly status: TaskStatus;
+	readonly previousStatus?: TaskStatus;
+	readonly sequence: number;
+}
+export type StatusChangeListener = (change: TaskStatusChange) => void | Promise<void>;
 
 const DEFAULT_LIMITS: ThreadLimits = { maxItems: 400, maxOutputChars: 16_000 };
+/** Finished tasks keep their thread weight only for this many most-recent
+ * records per parent session, matching the agents view's visible history cap
+ * (MAX_FINISHED_PER_SESSION in agents-view.ts, pinned by tests); older
+ * terminal tasks (record, thread, run id, listeners) leave the store
+ * entirely. Running tasks are never evicted. */
+export const TERMINAL_RETENTION = 200;
 /** Child UI requests that block on an answer; everything else (notify, setStatus, setWidget) is noise here. */
 export const DIALOG_METHODS: ReadonlySet<string> = new Set(["select", "confirm", "input", "editor"]);
+/** The one child notify that reaches the task thread: requested --tools the child does not have (#1690). */
+export const MISSING_TOOLS_NOTE_PREFIX = "gentle-agents: requested tools missing in child:";
 const LABEL_MAX = 72;
 const TEXT_CAP = 20_000;
 const ELLIPSIS = "…";
@@ -171,15 +213,72 @@ function keepTail(text: string, max: number): string {
 	return text.length <= max ? text : `${ELLIPSIS}${text.slice(text.length - max + 1)}`;
 }
 
+const ERROR_SCAN_MAX = 4096;
+const ERROR_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+// First match wins: specific causes before the generic statuses they share
+// (quota and context errors often arrive as 429 or 400).
+const ERROR_KEYWORDS: ReadonlyArray<readonly [TerminalErrorCategory, RegExp]> = [
+	[TERMINAL_ERROR_CATEGORY.CONTEXT_LENGTH, /context.?length|context.?window|maximum context|prompt is too long|too many tokens/i],
+	[TERMINAL_ERROR_CATEGORY.QUOTA, /quota|billing|out of budget|usage.?limit|credit balance/i],
+	[TERMINAL_ERROR_CATEGORY.AUTH, /unauthori[sz]ed|forbidden|authenticat|api.?key|permission.?denied/i],
+	[TERMINAL_ERROR_CATEGORY.RATE_LIMIT, /rate.?limit|too many requests/i],
+	[TERMINAL_ERROR_CATEGORY.TIMEOUT, /time.?out|timed out|deadline exceeded/i],
+	[TERMINAL_ERROR_CATEGORY.NETWORK, /network|connection|websocket|ECONN(?:RESET|REFUSED|ABORTED)|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|other side closed/i],
+	[TERMINAL_ERROR_CATEGORY.PROVIDER_UNAVAILABLE, /overloaded|unavailable|server.?error|internal.?error|server_busy|capacity|high demand/i],
+	[TERMINAL_ERROR_CATEGORY.INVALID_REQUEST, /invalid.?request|bad request/i],
+];
+// Only a status in a status position: leading ("429: ...", "429 {...}"),
+// parenthesized ("Provider (403): ...") or labeled ("status 503", "HTTP 502").
+const HTTP_STATUS = /(?:^\s*|\(|\b(?:status(?:\s+code)?|http)\s*:?\s*)([45]\d\d)(?=[\s):,{]|$)/i;
+
+function statusCategory(status: number): TerminalErrorCategory {
+	if (status === 401 || status === 403) return TERMINAL_ERROR_CATEGORY.AUTH;
+	if (status === 429) return TERMINAL_ERROR_CATEGORY.RATE_LIMIT;
+	if (status === 408 || status === 504) return TERMINAL_ERROR_CATEGORY.TIMEOUT;
+	if (status >= 500) return TERMINAL_ERROR_CATEGORY.PROVIDER_UNAVAILABLE;
+	return TERMINAL_ERROR_CATEGORY.INVALID_REQUEST;
+}
+
+function diagnosticCodes(diagnostics: unknown): string[] {
+	if (!Array.isArray(diagnostics)) return [];
+	return diagnostics.slice(0, 8).map((entry) => {
+		const code = (entry as { error?: { code?: unknown } } | null)?.error?.code;
+		return typeof code === "number" ? String(code) : typeof code === "string" && ERROR_IDENTIFIER.test(code) ? code : "";
+	});
+}
+
+/** Scans bounded structured signals; the scanned text itself is never retained. */
+function terminalErrorCategory(message: { errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown }): TerminalErrorCategory {
+	const signals = [
+		typeof message.errorMessage === "string" ? message.errorMessage.slice(0, ERROR_SCAN_MAX) : "",
+		typeof message.rawStopReason === "string" && ERROR_IDENTIFIER.test(message.rawStopReason) ? message.rawStopReason : "",
+		...diagnosticCodes(message.diagnostics),
+	].filter((signal) => signal.length > 0);
+	for (const [category, pattern] of ERROR_KEYWORDS) if (signals.some((signal) => pattern.test(signal))) return category;
+	for (const signal of signals) {
+		const status = HTTP_STATUS.exec(signal)?.[1];
+		if (status) return statusCategory(Number(status));
+	}
+	return TERMINAL_ERROR_CATEGORY.UNAVAILABLE;
+}
+
+/** The closed error category of a failed assistant message; undefined unless it stopped with an error. */
+export function assistantErrorCategory(message: { stopReason?: unknown; errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown } | undefined): TerminalErrorCategory | undefined {
+	return message && clean(message.stopReason).toLowerCase() === "error" ? terminalErrorCategory(message) : undefined;
+}
+
 function terminalAssistant(messages: unknown): Omit<AgentEndEvent, "type"> {
 	if (!Array.isArray(messages)) return { text: "", outcome: "empty", diagnostic: "assistant returned no final report" };
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown };
+		const message = messages[index] as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown; rawStopReason?: unknown; diagnostics?: unknown };
 		if (message?.role !== "assistant") continue;
 		const stopReason = clean(message.stopReason).toLowerCase();
-		// Do not preserve unbounded provider error payloads. The terminal reason is
-		// enough for an operator to distinguish failure from an empty report.
-		if (stopReason === "error") return { text: "", outcome: "error", diagnostic: "assistant reported an error" };
+		// Do not preserve unbounded provider error payloads. Only a category from
+		// the closed vocabulary leaves this function, never the scanned text.
+		if (stopReason === "error") {
+			const errorCategory = terminalErrorCategory(message);
+			return { text: "", outcome: "error", diagnostic: `assistant reported an error (${errorCategory})`, errorCategory };
+		}
 		if (stopReason === "aborted") return { text: "", outcome: "aborted", diagnostic: "assistant aborted" };
 		const text = contentText(message.content);
 		return text.length > 0
@@ -226,6 +325,65 @@ function childResponse(message: Raw): ChildResponseObservation | undefined {
 	});
 }
 
+const ARGUMENT_PROGRESS_MAX = 4096;
+
+/** Per-child liveness evidence, separate from display events and usage.
+ * RPC deltas have no sequence number. Reject duplicate fingerprints rather
+ * than claiming indistinguishable repeated bytes are fresh progress. Retain
+ * only hashes, never arguments; exhaustion fails closed until a new message.
+ */
+export class ToolArgumentProgress {
+	private timestamp = -1;
+	private active = false;
+	private readonly blocks = new Map<number, boolean>();
+	private readonly fingerprints = new Set<string>();
+
+	observe(raw: Record<string, unknown>): boolean {
+		if (raw.type === "message_start") {
+			const message = raw.message as Raw | undefined;
+			if (message?.role === "assistant" && typeof message.timestamp === "number" && Number.isSafeInteger(message.timestamp)
+				&& message.timestamp >= 0 && message.timestamp > this.timestamp && !this.active) {
+				this.timestamp = message.timestamp;
+				this.active = true;
+				this.blocks.clear();
+				this.fingerprints.clear();
+			}
+			return false;
+		}
+		if (raw.type === "message_end" || raw.type === "agent_end" || raw.type === "agent_settled" || raw.type === "turn_end") {
+			this.active = false;
+			this.blocks.clear();
+			this.fingerprints.clear();
+			return false;
+		}
+		if (!this.active || raw.type !== "message_update") return false;
+		const inner = raw.assistantMessageEvent as Raw | undefined;
+		if (!inner || typeof inner !== "object") return false;
+		const index = inner.contentIndex;
+		if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= ARGUMENT_PROGRESS_MAX) return false;
+		if (inner.type === "toolcall_start") {
+			// Older Pi RPC forwards SDK partial snapshots; current RPC puts the
+			// identity directly on toolcall_start. Neither shape is persisted.
+			const partial = inner.partial as Raw | undefined;
+			const block = Array.isArray(partial?.content) ? partial.content[index] as Raw | undefined : undefined;
+			const id = inner.id ?? (block?.type === "toolCall" ? block.id : undefined);
+			const name = inner.toolName ?? (block?.type === "toolCall" ? block.name : undefined);
+			if (typeof id === "string" && id.length > 0 && typeof name === "string" && name.length > 0 && !this.blocks.has(index)) this.blocks.set(index, true);
+			return false;
+		}
+		if (inner.type === "toolcall_end") {
+			if (this.blocks.has(index)) this.blocks.set(index, false);
+			return false;
+		}
+		if (inner.type !== "toolcall_delta" || this.blocks.get(index) !== true || typeof inner.delta !== "string" || inner.delta.length === 0) return false;
+		if (this.fingerprints.size >= ARGUMENT_PROGRESS_MAX) return false;
+		const fingerprint = createHash("sha256").update(`${index}:`).update(inner.delta).digest("hex");
+		if (this.fingerprints.has(fingerprint)) return false;
+		this.fingerprints.add(fingerprint);
+		return true;
+	}
+}
+
 // One RPC line in, zero or more deltas out. Streaming deltas carry only the
 // chunk; whole-message payloads that pi repeats on every update are ignored.
 export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: boolean } = {}): TaskEvent[] {
@@ -270,6 +428,7 @@ export function normalizeRpcEvent(raw: unknown, options: { observeResponses?: bo
 		case "agent_settled":
 			return [{ type: TASK_EVENT.AGENT_SETTLED }];
 		case "extension_ui_request":
+			if (event.method === "notify" && typeof event.message === "string" && event.message.startsWith(MISSING_TOOLS_NOTE_PREFIX)) return [{ type: TASK_EVENT.NOTE, text: clean(event.message) }];
 			return DIALOG_METHODS.has(String(event.method)) ? [{ type: TASK_EVENT.ASK, request: askRequest(event) }] : [];
 		case "auto_retry_start":
 			return [{ type: TASK_EVENT.NOTE, text: `retrying (${String(event.attempt ?? "?")}/${String(event.maxAttempts ?? "?")})` }];
@@ -400,14 +559,29 @@ export class TaskStore {
 	private readonly listeners = new Map<string, Set<TaskListener>>();
 	private readonly summaryListeners = new Set<SummaryListener>();
 	private readonly limits: Partial<ThreadLimits>;
+	private readonly producerId = randomUUID();
+	private sequence = 0;
+	private readonly runIds = new Map<string, string>();
+	private readonly statusListeners = new Set<StatusChangeListener>();
+	// Insertion-ordered recency of finished tasks, oldest first (Set keeps
+	// insertion order); prune evicts from the front.
+	private readonly terminalOrder = new Set<string>();
 
 	constructor(limits: Partial<ThreadLimits> = {}) {
 		this.limits = limits;
 	}
 
 	add(task: TaskRecord): void {
+		const previous = this.tasks.get(task.id)?.status;
+		if (!this.tasks.has(task.id)) this.runIds.set(task.id, randomUUID());
 		this.tasks.set(task.id, task);
 		this.threads.set(task.id, emptyThread(this.limits));
+		this.notifyStatus(task, previous);
+		if (isFinished(task.status)) {
+			this.markTerminal(task.id);
+			this.listeners.delete(task.id);
+			this.pruneTerminal();
+		}
 		this.notifySummary();
 	}
 
@@ -416,7 +590,13 @@ export class TaskStore {
 	restore(task: TaskRecord, thread: TaskThread): boolean {
 		if (this.tasks.has(task.id)) return false;
 		this.tasks.set(task.id, task);
+		this.runIds.set(task.id, randomUUID());
 		this.threads.set(task.id, { ...thread, limits: { ...DEFAULT_LIMITS, ...this.limits } });
+		if (isFinished(task.status)) {
+			this.markTerminal(task.id);
+			this.listeners.delete(task.id);
+			this.pruneTerminal();
+		}
 		this.notifySummary();
 		return true;
 	}
@@ -446,8 +626,18 @@ export class TaskStore {
 		if (!current) return undefined;
 		const next = { ...current, ...patch };
 		this.tasks.set(id, next);
+		this.notifyStatus(next, current.status);
 		this.notifyTask(next);
-		if (next.status !== current.status) this.notifySummary();
+		if (next.status !== current.status) {
+			// The terminal transition itself is the final notification; after it
+			// the task never changes, so its listeners stop costing anything.
+			if (isFinished(next.status)) {
+				this.listeners.delete(next.id);
+				this.markTerminal(next.id);
+			}
+			this.pruneTerminal();
+			this.notifySummary();
+		}
 		return next;
 	}
 
@@ -471,6 +661,50 @@ export class TaskStore {
 	subscribeSummary(listener: SummaryListener): () => void {
 		this.summaryListeners.add(listener);
 		return () => this.summaryListeners.delete(listener);
+	}
+
+	/** Optional, content-free observer. Restores and unchanged snapshots are silent. */
+	subscribeStatusChanges(listener: StatusChangeListener): () => void {
+		this.statusListeners.add(listener);
+		return () => { this.statusListeners.delete(listener); };
+	}
+
+	private markTerminal(id: string): void {
+		if (!this.terminalOrder.has(id)) this.terminalOrder.add(id);
+	}
+
+	/** Evict the oldest finished tasks beyond TERMINAL_RETENTION per parent
+	 * session, with their threads, run ids and listeners. Running tasks are
+	 * never evicted; a task that left the terminal state is skipped as stale. */
+	private pruneTerminal(): void {
+		const finished = new Map<string, number>();
+		for (const task of this.tasks.values()) {
+			if (!isFinished(task.status)) continue;
+			finished.set(task.parentSessionId, (finished.get(task.parentSessionId) ?? 0) + 1);
+		}
+		if (finished.size === 0) return;
+		for (const id of this.terminalOrder) {
+			const task = this.tasks.get(id);
+			if (!task || !isFinished(task.status)) { this.terminalOrder.delete(id); continue; }
+			const count = finished.get(task.parentSessionId) ?? 0;
+			if (count <= TERMINAL_RETENTION) continue;
+			this.tasks.delete(id);
+			this.threads.delete(id);
+			this.listeners.delete(id);
+			this.runIds.delete(id);
+			this.terminalOrder.delete(id);
+			finished.set(task.parentSessionId, count - 1);
+		}
+	}
+
+	private notifyStatus(task: TaskRecord, previousStatus?: TaskStatus): void {
+		if (task.status === previousStatus) return;
+		const change: TaskStatusChange = Object.freeze({ producerId: this.producerId,
+			sessionId: task.parentSessionId, parentSessionId: task.parentSessionId, taskId: task.id,
+			runId: this.runIds.get(task.id)!, status: task.status, previousStatus, sequence: ++this.sequence });
+		for (const listener of [...this.statusListeners]) {
+			try { void Promise.resolve(listener(change)).catch(() => {}); } catch { /* Observability cannot fail a mutation. */ }
+		}
 	}
 
 	private notifyTask(task: TaskRecord): void {

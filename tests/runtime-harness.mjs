@@ -17,6 +17,7 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
 const EXTENSIONS = [
 	"extensions/gentle-ai.ts",
+	"extensions/nan-provider.ts",
 	"extensions/quiet-tools.ts",
 	"extensions/skill-registry.ts",
 	"extensions/startup-banner.ts",
@@ -32,7 +33,7 @@ const EXPECTED_BANNER_COMMANDS = [
 const EXPECTED_COMMANDS = [
 	"gentle:install-delegation",
 	"gentle:install-review",
-	"gentle:models",
+	"gentle:profiles",
 	"gentle:persona",
 	"gentle:status",
 	"gentle:doctor",
@@ -42,6 +43,8 @@ const EXPECTED_COMMANDS = [
 
 const FORBIDDEN_COMPAT_COMMANDS = [
 	"gentle:install-assets",
+	// Retired: /gentle:profiles opens the same models screen.
+	"gentle:models",
 	"gentle-ai:models",
 	"gentleman:models",
 	"gentle-ai:persona",
@@ -57,6 +60,7 @@ const FORBIDDEN_COMPAT_COMMANDS = [
 function createPi() {
 	const hooks = new Map();
 	const commands = new Map();
+	const providers = new Map();
 	const flags = new Map();
 	const tools = new Map();
 	const eventHandlers = new Map();
@@ -88,6 +92,10 @@ function createPi() {
 		},
 		registerCommand(name, definition) {
 			commands.set(name, definition);
+		},
+		registerProvider(name, config) {
+			if (typeof name === "object") providers.set(name.id, name);
+			else providers.set(name, config);
 		},
 		registerFlag(name, definition) {
 			flags.set(name, definition);
@@ -121,7 +129,7 @@ function createPi() {
 		},
 	};
 
-	return { pi, hooks, commands, flags, tools, emittedEvents };
+	return { pi, hooks, commands, providers, flags, tools, emittedEvents };
 }
 
 function createUi() {
@@ -202,25 +210,56 @@ function restoreWorkspaceWritePermissions(cwd) {
 	}
 }
 
-async function loadExtensions(pi) {
+const ownedFixtureRoots = [];
+const previousFixtureEnvironment = new Map([
+	"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR",
+	"GENTLE_PI_CONFIG_HOME", "GENTLE_PI_AGENT_HOME", "GENTLE_PI_TEST_ASSETS_DIR",
+	"GENTLE_PI_AGENTS_PARENT_PERMISSION_FD",
+].map((key) => [key, process.env[key]]));
+
+async function loadExtensions(pi, fixtureDependencies) {
 	for (const [index, rel] of EXTENSIONS.entries()) {
 		const mod = await import(`${pathToFileURL(join(ROOT, rel)).href}?runtime-harness=${index}`);
 		assert.equal(typeof mod.default, "function", `${rel} must export a default function`);
-		mod.default(pi);
+		if (rel === "extensions/gentle-ai.ts") createGentleAiExtension(fixtureDependencies)(pi);
+		else mod.default(pi);
 	}
 }
 
 async function run() {
 	const globalConfigHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalConfigHome);
 	const globalAgentHome = await tempWorkspace();
+	ownedFixtureRoots.push(globalAgentHome);
 	const ambientTestAssetsDir = await tempWorkspace();
+	ownedFixtureRoots.push(ambientTestAssetsDir);
 	process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
 	process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
 	process.env.GENTLE_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
+	process.env.HOME = globalAgentHome;
+	process.env.USERPROFILE = globalAgentHome;
+	process.env.XDG_CONFIG_HOME = join(globalAgentHome, "xdg");
+	process.env.PI_CODING_AGENT_DIR = join(globalAgentHome, "pi");
+	// Discovery still exercises the default exports under the actual worker
+	// role, but must never acquire the worker's parent-permission channel.
+	delete process.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD;
+	const fixtureDependencies = {
+		nativeReviewCli: {},
+		processEnv: {
+			HOME: globalAgentHome, USERPROFILE: globalAgentHome,
+			GENTLE_PI_CONFIG_HOME: globalConfigHome, GENTLE_PI_AGENT_HOME: globalAgentHome,
+			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+			XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+			GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0",
+		},
+		resolveTelemetryTriggerBinary: () => join(globalAgentHome, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Runtime fixtures must not spawn telemetry"),
+	};
 	const globalModelsPath = join(globalConfigHome, "models.json");
 	const globalSubagentsPath = join(globalAgentHome, "subagents.json");
-	const { pi, hooks, commands, flags, tools, emittedEvents } = createPi();
-	await loadExtensions(pi);
+	const { pi, hooks, commands, providers, flags, tools, emittedEvents } = createPi();
+	await loadExtensions(pi, fixtureDependencies);
+	assert.equal(providers.get("nan")?.getModels()[0]?.api, "openai-completions", "runtime extension loading registers the NaN provider");
 
 	// gentle-pi#404: a collect binding that returns the native last-event
 	// closure must terminate after one capture. It must not re-enter a public
@@ -298,7 +337,7 @@ async function run() {
 			},
 		};
 		const lastEventPi = createPi();
-		createGentleAiExtension({ nativeReviewCli })(lastEventPi.pi);
+		createGentleAiExtension({ ...fixtureDependencies, nativeReviewCli })(lastEventPi.pi);
 		const controller = lastEventPi.tools.get("gentle_review");
 		const capture = lastEventPi.tools.get("gentle_review_capture");
 		assert.ok(controller, "runtime must register the public status controller");
@@ -353,12 +392,37 @@ async function run() {
 	assert.ok(flags.has("no-skill-registry"), "missing no-skill-registry flag");
 	assert.ok(hooks.has("session_start"), "missing session_start hook");
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
-	assert.equal(hooks.has("input"), false, "retired SDD slash input must not be intercepted");
+	assert.ok(hooks.has("input"), "missing live input provenance hook");
+	for (const text of [
+		"/sdd-init", "/sdd-continue", "/sdd-status", "/gentle-sdd-init",
+		"/gentle-sdd-continue", "/gentle-sdd-status", "/gentle:install-sdd",
+		"/gentle:sdd-preflight", "/gentle-ai:install-sdd", "/gentle-ai:sdd-preflight",
+		"/gentle-ai:sdd-status", "/gentle-ai:sdd-continue",
+		"Inspect this project without changing files.", "/ordinary-unregistered-command",
+	]) {
+		const event = { text, source: "interactive", images: [] };
+		const before = structuredClone(event);
+		const emittedBefore = emittedEvents.length;
+		for (const handler of hooks.get("input")) {
+			assert.deepEqual(await handler(event, createCtx(ROOT)), { action: "continue" },
+				`input must pass through without slash interception: ${text}`);
+		}
+		assert.deepEqual(event, before, "input text and attachments must remain unchanged");
+		assert.equal(emittedEvents.length, emittedBefore, "input must not dispatch slash logic");
+	}
 	assert.ok(hooks.has("before_agent_start"), "missing before_agent_start hook");
 	assert.ok(hooks.has("tool_call"), "missing tool_call hook");
-	for (const toolName of ["read", "bash", "grep", "find", "ls", "edit", "write"]) {
+	for (const toolName of ["read", "grep", "find", "ls", "edit", "write"]) {
 		assert.ok(tools.has(toolName), `missing quiet built-in tool renderer ${toolName}`);
 	}
+	const codemode = tools.get("codemode");
+	assert.ok(codemode, "quiet-tools must decorate the upstream codemode registration");
+	assert.equal(codemode.defaultActive, false, "rendering must not activate codemode");
+	assert.equal(codemode.renderShell, "self");
+	assert.equal(typeof codemode.renderCall, "function");
+	assert.equal(typeof codemode.renderResult, "function");
+	assert.equal(typeof codemode.prepareLoadout, "function", "upstream loadout policy must survive decoration");
+	assert.deepEqual(pi.getActiveTools(), ["read", "bash", "edit", "write"], "card registration must not change tool activation");
 	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
 	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(
@@ -383,34 +447,57 @@ async function run() {
 		[],
 		"declared extension directory must load without invalid helper modules",
 	);
+	assert.ok(
+		discovered.extensions.some((extension) => extension.resolvedPath.endsWith(join("extensions", "nan-provider.ts"))),
+		"declared extension directory must discover the NaN provider",
+	);
+
+	const nativeNan = discovered.runtime.pendingNativeProviderRegistrations
+		.find((entry) => entry.provider.id === "nan")?.provider;
+	assert.ok(nativeNan, "actual Pi loader must queue native NaN registration");
+	assert.ok(!discovered.runtime.pendingProviderRegistrations.some((entry) => entry.name === "nan"),
+		"NaN must not fall back to the legacy empty-key login route");
+	await assert.rejects(nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => "", notify() {},
+	}), /non-empty/);
+	assert.deepEqual(await nativeNan.auth.apiKey.login({
+		signal: new AbortController().signal, prompt: async () => " synthetic-loader-key ", notify() {},
+	}), { type: "api_key", key: "synthetic-loader-key" });
 
 	// orchestrator-lazy-diet: Pi Subagent Model Routing detail (the "do not
 	// pass the `model` parameter by default" / SDD-model-assignment-scoping
 	// rules) moved verbatim to assets/orchestrator-delegation.md; the
 	// always-on combined prompt now only carries a pointer to it. Union read
 	// so these assertions are repointed, not weakened.
-	const delegationDetail = await readFile(join(ROOT, "assets", "orchestrator-delegation.md"), "utf8");
+	const { DELEGATION_MODULES } = await import("./support/orchestrator-modules.ts");
+	const delegationDetail = (await Promise.all(DELEGATION_MODULES.map((file) => readFile(join(ROOT, "assets", file), "utf8")))).join("\n\n");
 
 	const promptCwd = await tempWorkspace();
 	try {
 		const promptHook = hooks.get("before_agent_start")[0];
-		const promptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(promptResult.systemPrompt, /base/);
-		assert.match(promptResult.systemPrompt, /el Gentleman/);
-		assert.match(promptResult.systemPrompt, /Organic Driven Development/);
-		assert.doesNotMatch(promptResult.systemPrompt, /## SDD Research Capabilities/);
-		assert.match(promptResult.systemPrompt, /review execution contract/);
+		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// and forwards only structured systemPromptOptions, so the harness must
+		// land in appendSystemPrompt and the hook must never return a replacement.
+		const promptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const promptResult = await promptHook(promptEvent, createCtx(promptCwd));
+		assert.equal(promptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(promptEvent.systemPrompt, "base", "the original systemPrompt field must be left untouched");
+		const promptAppended = promptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(promptAppended, /el Gentleman/);
+		assert.match(promptAppended, /Organic Driven Development/);
+		assert.doesNotMatch(promptAppended, /## SDD Research Capabilities/);
+		assert.match(promptAppended, /review execution contract/);
 		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
-		assert.match(promptResult.systemPrompt + delegationDetail, /do not pass the `model` parameter by default/);
-		assert.doesNotMatch(promptResult.systemPrompt, /Every Agent tool call MUST include `model`/);
+		assert.match(promptAppended + delegationDetail, /do not pass the `model` parameter by default/);
+		assert.doesNotMatch(promptAppended, /Every Agent tool call MUST include `model`/);
 		assert.ok(
-			promptResult.systemPrompt.includes(
+			promptAppended.includes(
 				`Package assets root: \`${join(ROOT, "assets")}\`. Lazy asset paths below are relative to this root.`,
 			),
 			"parent prompt must declare the one absolute root for relative lazy asset paths",
 		);
 		assert.doesNotMatch(
-			promptResult.systemPrompt,
+			promptAppended,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
 		);
@@ -420,26 +507,30 @@ async function run() {
 			join(globalConfigHome, "persona.json"),
 			'{"mode":"neutral"}\n',
 		);
-		const neutralPromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
-		assert.match(neutralPromptResult.systemPrompt, /Do not use slang or regional expressions/);
+		const neutralPromptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const neutralPromptResult = await promptHook(neutralPromptEvent, createCtx(promptCwd));
+		assert.equal(neutralPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		const neutralAppended = neutralPromptEvent.systemPromptOptions.appendSystemPrompt;
+		assert.match(neutralAppended, /Do not use slang or regional expressions/);
 		assert.doesNotMatch(
-			neutralPromptResult.systemPrompt,
+			neutralAppended,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 			"neutral persona prompt must not include unconditional voseo instructions after reload",
 		);
-		const subagentPromptResult = await promptHook(
-			{ agentName: "worker", systemPrompt: "worker base" },
-			createCtx(promptCwd),
-		);
-		assert.equal(subagentPromptResult.systemPrompt, "worker base");
+		const subagentEvent = { agentName: "worker", systemPrompt: "worker base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const subagentPromptResult = await promptHook(subagentEvent, createCtx(promptCwd));
+		assert.equal(subagentPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
+		assert.equal(subagentEvent.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
 		await writeFile(
 			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
 			'{"mode":"gentleman"}\n',
 		);
-		const localOverridePromptResult = await promptHook({ systemPrompt: "base" }, createCtx(promptCwd));
+		const localOverrideEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
+		const localOverridePromptResult = await promptHook(localOverrideEvent, createCtx(promptCwd));
+		assert.equal(localOverridePromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.match(
-			localOverridePromptResult.systemPrompt,
+			localOverrideEvent.systemPromptOptions.appendSystemPrompt,
 			/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo/,
 		);
 		const personaCtx = createCtx(promptCwd, true);
@@ -515,9 +606,19 @@ async function run() {
 			assert.equal(writerDispatch.task, task, "writer guard must not mutate child input");
 		}
 
+		// S16: generic writers are admitted only for a task of an existing feature document (or at the measured
+		// context backstop); the accepted cases below name one, and an undocumented launch is told to work inline.
+		await mkdir(join(toolCwd, "odd", "tasks"), { recursive: true });
+		await writeFile(join(toolCwd, "odd", "tasks", "harness.md"), "# Harness\n");
+		const undocumentedWriter = await toolHook(
+			{ toolName: "subagent_run", input: { agent: "gentle-ai-worker", task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" } },
+			createCtx(toolCwd),
+		);
+		assert.equal(undocumentedWriter?.block, true, "an undocumented writer must be blocked before dispatch");
+		assert.match(undocumentedWriter?.reason ?? "", /write this unit inline yourself/);
 		const scopedWriterDispatch = {
 			agent: "gentle-ai-worker",
-			task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
+			task: "Spec: odd/tasks/harness.md, T1. Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
 			mode: "task",
 		};
 		assert.equal(
@@ -531,7 +632,7 @@ async function run() {
 					toolName: "subagent_run",
 					input: {
 						agent: "worker",
-						task: "Implement the requested change.",
+						task: "Spec: odd/tasks/harness.md, T2. Implement the requested change.",
 						context: "## Allowed edit surfaces\n- assets/orchestrator.md",
 						mode: "task",
 					},
@@ -628,7 +729,7 @@ async function run() {
 				"valid scope followed by a repository-root scope",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
+					task: "Spec: odd/tasks/harness.md, T4.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
 					mode: "task",
 				},
 			],
@@ -636,7 +737,7 @@ async function run() {
 				"valid task scope plus invalid context scope",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					task: "Spec: odd/tasks/harness.md, T5.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
 					context: "## Allowed edit surfaces\n.",
 					mode: "task",
 				},
@@ -645,7 +746,7 @@ async function run() {
 				"conflicting valid task and context scopes",
 				{
 					agent: "gentle-ai-worker",
-					task: "## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					task: "Spec: odd/tasks/harness.md, T6.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
 					context: "## Allowed edit surfaces\ntests/runtime-harness.mjs",
 					mode: "task",
 				},
@@ -660,7 +761,7 @@ async function run() {
 					toolName: "subagent_run",
 					input: {
 						agent: "gentle-ai-worker",
-						task: "## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
+						task: "Spec: odd/tasks/harness.md, T3.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
 						mode: "task",
 					},
 				},
@@ -686,6 +787,9 @@ async function run() {
 		assert.equal(sensitiveEdit.block, true);
 		assert.equal(await toolHook({ toolName: "read", input: { path: join(toolCwd, "src", "index.ts") } }, createCtx(toolCwd)), undefined);
 		const dangerousReviewCtx = createCtx(toolCwd, true, "dangerous-review-session");
+		// Scoped confirmation dialogs offer Allow once/session/always/Deny; this fake
+		// declines (last choice) so the guarded-command flow still proves the denied path.
+		dangerousReviewCtx.ui.select = async (_label, options) => options[options.length - 1];
 		const needsConfirm = await toolHook(
 			{ toolName: "bash", input: { command: "git push" } },
 			dangerousReviewCtx,
@@ -799,7 +903,7 @@ async function run() {
 		registry.bindCurrent({ token: view.token, lineageId: "harness-candidate-drift", selectedLenses: ["review-risk"] });
 
 		const dispatchPi = createPi();
-		createGentleAiExtension({ candidateViews: registry })(dispatchPi.pi);
+		createGentleAiExtension({ ...fixtureDependencies, candidateViews: registry })(dispatchPi.pi);
 		const dispatchToolHook = dispatchPi.hooks.get("tool_call")[0];
 
 		// The contributor edits the tracked file strictly after the candidate
@@ -947,8 +1051,8 @@ async function run() {
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
-			"isolated package installation must activate only the explorer inspection tools",
+			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content"] },
+			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(
 			join(globalAgentHome, "agents", "review-risk.md"),
@@ -1202,16 +1306,16 @@ async function run() {
 		assert.doesNotMatch(invalidGlobalSkippedAgent, /model: legacy\/provider-model/);
 		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
 		assert.match(legacyCtx.ui.notifications.at(-1).message, /skipped model config/);
+		// An unreadable models.json does not block the models screen (Make default
+		// discloses it), and closing the screen leaves the file untouched.
 		let modelPanelOpened = false;
 		legacyCtx.ui.custom = () => {
 			modelPanelOpened = true;
-			return Promise.resolve({ type: "save", config: {} });
+			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:models").handler("", legacyCtx);
-		assert.equal(modelPanelOpened, false);
+		await commands.get("gentle:profiles").handler("", legacyCtx);
+		assert.equal(modelPanelOpened, true);
 		assert.equal(await readFile(globalModelsPath, "utf8"), "{ invalid json");
-		assert.equal(legacyCtx.ui.notifications.at(-1).level, "warning");
-		assert.match(legacyCtx.ui.notifications.at(-1).message, /cannot open model config/);
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
 		const emptyGlobalPreservesAgent = await readFile(
@@ -1245,15 +1349,15 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ "sdd-apply": {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, legacyCtx);
-		const explicitInheritClearsAgent = await readFile(
+		const savedInheritPreservesAgent = await readFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(explicitInheritClearsAgent, /model:/);
-		const explicitInheritClearsProfiles = JSON.parse(
+		assert.match(savedInheritPreservesAgent, /model: global\/provider-model/);
+		const savedInheritPreservesProfiles = JSON.parse(
 			await readFile(join(legacyModelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(explicitInheritClearsProfiles.model_profiles, undefined);
+		assert.equal(savedInheritPreservesProfiles.model_profiles["sdd-apply"].model, "global/provider-model");
 	} finally {
 		await rm(legacyModelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1275,10 +1379,12 @@ async function run() {
 		);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(staleSettingsOnlyCwd, true));
-		const staleOnlyClearedProfiles = JSON.parse(
+		const staleOnlyPreservedProfiles = JSON.parse(
 			await readFile(globalSubagentsPath, "utf8"),
 		);
-		assert.equal(staleOnlyClearedProfiles.model_profiles, undefined);
+		assert.deepEqual(staleOnlyPreservedProfiles.model_profiles, {
+			worker: { model: "stale/model", effort: "high" },
+		});
 	} finally {
 		await rm(staleSettingsOnlyCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1494,22 +1600,29 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		const clearedProfiles = JSON.parse(
+		// gentle-ai#4946: startup/reload never treats persisted inherit as
+		// deletion approval, including for previously materialized routing.
+		// Explicit panel saves and confirmed profile replacement still clear.
+		const preservedClearProfiles = JSON.parse(
 			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
 		);
-		assert.equal(clearedProfiles.model_profiles, undefined);
+		assert.equal(
+			preservedClearProfiles.model_profiles.worker.model,
+			"existing/model",
+		);
+		assert.equal(preservedClearProfiles.model_profiles.worker.effort, "high");
 		const unchangedProjectWorker = await readFile(
 			join(modelsCwd, ".pi", "agents", "worker.md"),
 			"utf8",
 		);
 		assert.match(unchangedProjectWorker, /model: existing\/project-worker/);
 		assert.match(unchangedProjectWorker, /thinking: high/);
-		const clearedProjectSubagentWorker = await readFile(
+		const preservedClearProjectSubagentWorker = await readFile(
 			join(modelsCwd, ".pi", "subagents", "worker.md"),
 			"utf8",
 		);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /model:/);
-		assert.doesNotMatch(clearedProjectSubagentWorker, /thinking:/);
+		assert.match(preservedClearProjectSubagentWorker, /model: existing\/project-subagent-worker/);
+		assert.match(preservedClearProjectSubagentWorker, /thinking: medium/);
 
 		await writeFile(
 			globalModelsPath,
@@ -1521,61 +1634,50 @@ async function run() {
 			{ provider: "safe", id: "model" },
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
-		ctx.ui.custom = (factory) => {
-			const panel = factory(null, null, null, () => undefined);
-			const initialLines = panel.render(120);
-			const plainInitialLines = initialLines.map(stripAnsi);
-			assert.ok(
-				plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
-				"model panel should render inside a bordered card",
-			);
-			assert.ok(
-				initialLines.length <= 20,
-				"long model agent list should fit within a 24-row terminal 85% overlay budget",
-			);
-			assert.ok(
-				plainInitialLines.some((line) => /↓ \d+ more agent\(s\)/.test(line)),
-				"long model agent list should render a down-scroll indicator",
-			);
-			assert.ok(
-				plainInitialLines.some((line) => line.includes("Continue")),
-				"long model agent list should keep Continue visible",
-			);
-			assert.doesNotMatch(
-				initialLines.join("\n"),
-				/\u001b\]|\u0007/,
-				"model panel must strip unsafe terminal control sequences from agent labels",
-			);
-			assert.doesNotMatch(
-				plainInitialLines.join("\n"),
-				/\]52|\[31m/,
-				"model panel must strip user-provided terminal escapes from labels",
-			);
-			for (let i = 0; i < 20; i++) panel.handleInput("j");
-			const scrolledLines = panel.render(120);
-			const plainScrolledLines = scrolledLines.map(stripAnsi);
-			assert.ok(
-				scrolledLines.length <= 20,
-				"scrolled model agent list should stay within the overlay height budget",
-			);
-			assert.ok(
-				plainScrolledLines.some((line) => /↑ \d+ more agent\(s\)/.test(line)),
-				"long model agent list should render an up-scroll indicator after navigation",
-			);
-			panel.handleInput("G");
-			const bottomLines = panel.render(120);
-			const plainBottomLines = bottomLines.map(stripAnsi);
-			assert.ok(
-				bottomLines.length <= 20,
-				"bottom model agent list should stay within the overlay height budget",
-			);
-			assert.ok(
-				plainBottomLines.some((line) => line.includes("▸ ← Back")),
-				"G should jump to the Back action",
-			);
-			return Promise.resolve({ type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
+		// /gentle:profiles opens the models screen on the profile this repository
+		// resolves: one table, profiles as tabs. Its render contract: a bordered
+		// card filling the terminal, scroll indicators for long agent lists, and
+		// sanitized labels everywhere, including the model card.
+		let panelVisits = 0;
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				panelVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				const initialLines = panel.render(120);
+				const plainInitialLines = initialLines.map(stripAnsi);
+				assert.ok(
+					plainInitialLines[0].startsWith("╭") && plainInitialLines.at(-1).startsWith("╰"),
+					"the models screen should render inside a bordered card",
+				);
+				assert.equal(initialLines.length, 24, "the models screen should fill the 24-row terminal");
+				assert.match(plainInitialLines[1], /current/, "the tab line names the profile on screen");
+				assert.ok(
+					plainInitialLines.some((line) => /↓ \d+ more/.test(line)),
+					"a long agent list should render a down-scroll indicator",
+				);
+				assert.doesNotMatch(initialLines.join("\n"), /\u001b\]|\u0007/, "labels must not carry unsafe control sequences");
+				assert.doesNotMatch(plainInitialLines.join("\n"), /\]52|\[31m/, "labels must not carry user-provided escapes");
+				for (let i = 0; i < 20; i++) panel.handleInput("j");
+				const plainScrolledLines = panel.render(120).map(stripAnsi);
+				assert.equal(plainScrolledLines.length, 24, "the scrolled list keeps filling the terminal");
+				assert.ok(
+					plainScrolledLines.some((line) => /↑ \d+ more/.test(line)),
+					"navigation down should render an up-scroll indicator",
+				);
+				for (let i = 0; i < 40; i++) panel.handleInput("j");
+				assert.ok(
+					panel.render(120).map(stripAnsi).some((line) => /▸\s+worker\b/.test(line)),
+					"moving past the end lands on the last agent row",
+				);
+				panel.handleInput("\r"); // the model card lists the registry, sanitized
+				const card = panel.render(120);
+				assert.match(card.map(stripAnsi).join("\n"), /Model for worker/);
+				assert.doesNotMatch(card.join("\n"), /\u001b\]|\u0007/, "registry labels are sanitized in the model card");
+				panel.handleInput("\u001b"); // close the card
+				panel.handleInput("\u001b"); // close the screen: nothing changed, one esc is enough
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(panelVisits, 1, "closing an unchanged screen ends the command");
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
 		const legacyAppliedAgent = await readFile(
@@ -1585,154 +1687,140 @@ async function run() {
 		assert.match(legacyAppliedAgent, /model: openai\/gpt-5/);
 		assert.doesNotMatch(legacyAppliedAgent, /thinking:/);
 
-		ctx.ui.custom = () =>
-			Promise.resolve({
-				type: "save",
-				config: {
-					"sdd-apply": { model: "openai/gpt-5", thinking: "high" },
-					worker: { model: "openai/gpt-5-mini", thinking: "low" },
-					researcher: { model: "openai/gpt-5-mini", thinking: "low" },
-					"project-special": { model: "openai/gpt-5-mini", thinking: "low" },
-					"global-special": { model: "openai/gpt-5-mini", thinking: "low" },
-				},
-			});
-		await commands.get("gentle:models").handler("", ctx);
-		assert.doesNotMatch(
-			ctx.ui.notifications.at(-1).message,
-			/[\u001b\u0007]/,
-			"model save notification must strip terminal control sequences from discovered agent names",
+		// Save writes the table into the profile store only (kind
+		// gentle-pi.agent_model_profiles). Global models.json, subagents.json, and
+		// agent frontmatter stay untouched — Make default is the guarded global apply.
+		const projectSubagentsBefore = await readFile(
+			join(modelsCwd, ".pi", "subagents.json"),
+			"utf8",
 		);
-
-		const savedConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(savedConfig["sdd-apply"], {
-			model: "openai/gpt-5",
-			thinking: "high",
-		});
-		assert.equal(
-			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
-			false,
-			"/gentle:models must save model routing globally, not per project",
-		);
-
-		const applyAgent = await readFile(
+		const agentFrontmatterBefore = await readFile(
 			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
 			"utf8",
 		);
-		assert.match(applyAgent, /model: openai\/gpt-5/);
-		assert.match(applyAgent, /thinking: high/);
+		const pickEffort = (panel, steps) => {
+			panel.handleInput("e");
+			for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D"); // back to inherit
+			for (let i = 0; i < steps; i++) panel.handleInput("\u001b[C");
+			panel.handleInput("\r");
+		};
+		let saveVisits = 0;
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				saveVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (saveVisits === 1) {
+					panel.handleInput("j"); // the Model ▾ / Effort ▾ header row: every agent
+					panel.handleInput("\r");
+					for (const character of "safe") panel.handleInput(character); // type-to-search
+					panel.handleInput("\r"); // safe/model for every agent
+					pickEffort(panel, 5); // inherit off minimal low medium [high]
+					panel.handleInput("\u0013"); // ctrl+s
+					return;
+				}
+				panel.handleInput("\u001b");
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(saveVisits, 2, "Save reopens the screen once before it closes");
 
-		const projectSubagents = JSON.parse(
-			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
+		const profilesPath = join(globalConfigHome, "profiles.json");
+		const savedStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(savedStore.kind, "gentle-pi.agent_model_profiles");
+		assert.equal(savedStore.version, 1);
+		assert.deepEqual(savedStore.profiles.current["sdd-apply"], { model: "safe/model", thinking: "high" });
+		assert.deepEqual(savedStore.profiles.current["project-special"], { model: "safe/model", thinking: "high" });
+		assert.equal(
+			await readFile(globalModelsPath, "utf8"),
+			JSON.stringify({ "sdd-apply": "openai/gpt-5" }, null, 2),
+			"Save must keep routing edits in the profile store, not write global models.json",
 		);
 		assert.equal(
-			projectSubagents.model_profiles["sdd-apply"].model,
-			"openai/gpt-5",
+			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
+			false,
+			"Save must keep routing edits in the profile store, not per project",
 		);
-		assert.equal(projectSubagents.model_profiles["sdd-apply"].effort, "high");
-		assert.equal(
-			projectSubagents.model_profiles.worker.model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(projectSubagents.model_profiles.worker.effort, "low");
-		const routedProjectSubagentWorker = await readFile(
-			join(modelsCwd, ".pi", "subagents", "worker.md"),
-			"utf8",
-		);
-		assert.match(routedProjectSubagentWorker, /model: openai\/gpt-5-mini/);
-		assert.match(routedProjectSubagentWorker, /thinking: low/);
-		const shadowedProjectAgentWorker = await readFile(
-			join(modelsCwd, ".pi", "agents", "worker.md"),
-			"utf8",
-		);
-		assert.match(shadowedProjectAgentWorker, /model: existing\/project-worker/);
-		assert.match(shadowedProjectAgentWorker, /thinking: high/);
-		assert.equal(
-			projectSubagents.model_profiles["project-special"].model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(projectSubagents.model_profiles["project-special"].effort, "low");
-		const globalSubagents = JSON.parse(await readFile(globalSubagentsPath, "utf8"));
-		assert.equal(
-			globalSubagents.model_profiles.researcher.model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(globalSubagents.model_profiles.researcher.effort, "low");
-		assert.equal(
-			globalSubagents.model_profiles["global-special"].model,
-			"openai/gpt-5-mini",
-		);
-		assert.equal(globalSubagents.model_profiles["global-special"].effort, "low");
+		assert.equal(await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"), projectSubagentsBefore);
+		const untouchedAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
+		assert.equal(untouchedAgent, agentFrontmatterBefore);
+		assert.doesNotMatch(untouchedAgent, /thinking:/);
 		assert.equal(existsSync(join(modelsCwd, ".pi", "settings.json")), false);
 
 		const kittyE = "\x1b[101u";
 		assert.notEqual(kittyE, "e");
 		assert.equal(matchesKey(kittyE, "e"), true);
 
-		let customPanelCalls = 0;
+		// Custom model ids: Custom model id… in the model card hands the draft back,
+		// ctx.ui.input asks for the id, the screen reopens with it, and Save stores it.
+		const chooseCustom = (panel) => {
+			panel.handleInput("\r");
+			for (const character of "zzzz") panel.handleInput(character); // nothing matches: only Custom model id… is left
+			panel.handleInput("\r");
+		};
+		let customVisits = 0;
 		ctx.ui.input = async () => "custom/provider-model";
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
-				customPanelCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (customPanelCalls === 1) {
-					panel.handleInput(kittyE); // effort picker for all agents
-					for (let i = 0; i < 4; i++) panel.handleInput("j"); // medium
+				customVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (customVisits === 1) {
+					panel.handleInput("j"); // every agent
+					panel.handleInput(kittyE); // the effort row (a kitty "e" still matches)
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[D");
+					for (let i = 0; i < 4; i++) panel.handleInput("\u001b[C"); // medium
 					panel.handleInput("\r");
-					panel.handleInput("c"); // custom model from the same unsaved draft
+					chooseCustom(panel); // custom model for every agent, same unsaved draft
 					return;
 				}
-				panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after custom model input
-			});
-		await commands.get("gentle:models").handler("", ctx);
-
-		const customSavedConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(customSavedConfig["sdd-apply"], {
-			model: "custom/provider-model",
-			thinking: "medium",
-		});
-
-		let invalidCustomCalls = 0;
-		ctx.ui.input = async () => "bad\nmodel: injected";
-		ctx.ui.custom = (factory) =>
-			new Promise((resolve) => {
-				invalidCustomCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (invalidCustomCalls === 1) {
-					panel.handleInput("c");
+				if (customVisits === 2) {
+					panel.handleInput("\u0013"); // ctrl+s saves the draft reopened after the custom id
 					return;
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
-		assert.match(
-			ctx.ui.notifications.at(-1).message,
-			/Custom model id must be a single-line/,
-		);
-		const rejectedCustomConfig = JSON.parse(
-			await readFile(globalModelsPath, "utf8"),
-		);
-		assert.deepEqual(rejectedCustomConfig["sdd-apply"], {
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(customVisits, 3);
+		const customSavedStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.deepEqual(customSavedStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
 
-		let exportPanelCalls = 0;
-		ctx.ui.custom = () => {
-			exportPanelCalls += 1;
-			return Promise.resolve(exportPanelCalls === 1 ? { type: "export", config: {} } : { type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
-		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
-		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
-		assert.equal(exported.version, 1);
-		assert.deepEqual(exported.agents["sdd-apply"], {
+		// An invalid custom id is refused on the screen and changes nothing.
+		let invalidCustomVisits = 0;
+		ctx.ui.input = async () => "bad\nmodel: injected";
+		ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				invalidCustomVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (invalidCustomVisits === 1) {
+					panel.handleInput("j");
+					chooseCustom(panel);
+					return;
+				}
+				if (invalidCustomVisits === 2) {
+					assert.match(panel.render(120).map(stripAnsi).join(" "), /Custom model id must be one provider\/model line/);
+				}
+				panel.handleInput("\u001b"); // nothing changed: one esc closes
+			});
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(invalidCustomVisits, 2);
+		const rejectedCustomStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.deepEqual(rejectedCustomStore.profiles.current["sdd-apply"], {
 			model: "custom/provider-model",
 			thinking: "medium",
 		});
+
+		// models.json export and restore are subcommands; neither opens the screen.
+		let screenOpened = false;
+		ctx.ui.custom = () => {
+			screenOpened = true;
+			return Promise.resolve({ type: "close" });
+		};
+		await commands.get("gentle:profiles").handler("export-routing", ctx);
+		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
+		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
+		assert.equal(exported.version, 1);
+		assert.deepEqual(exported.agents["sdd-apply"], { model: "openai/gpt-5" }, "export reads the saved global routing");
 
 		await writeFile(
 			join(globalConfigHome, "models.export.json"),
@@ -1742,59 +1830,47 @@ async function run() {
 				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
 			}, null, 2),
 		);
-		let restorePanelCalls = 0;
 		ctx.ui.confirm = async () => true;
-		ctx.ui.custom = () => {
-			restorePanelCalls += 1;
-			return Promise.resolve(restorePanelCalls === 1 ? { type: "restore", config: {} } : { type: "cancel" });
-		};
-		await commands.get("gentle:models").handler("", ctx);
+		await commands.get("gentle:profiles").handler("restore-routing", ctx);
+		assert.equal(screenOpened, false, "export and restore never open the screen");
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.deepEqual(restoredConfig["sdd-apply"], {
-			model: "restore/provider",
-			thinking: "high",
-		});
+		assert.deepEqual(restoredConfig["sdd-apply"], { model: "restore/provider", thinking: "high" });
 		const restoredAgent = await readFile(join(modelsCwd, ".pi", "agents", "sdd-apply.md"), "utf8");
 		assert.match(restoredAgent, /model: restore\/provider/);
 		assert.match(restoredAgent, /thinking: high/);
+		// Restore is global-only: the profile store keeps its own routing.
+		const afterRestoreStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(afterRestoreStore.profiles.current["sdd-apply"].model, "custom/provider-model");
 
-		// issue #286: `thinking: "max"` must survive save normalization and
-		// reach both subagents.json (effort) and agent frontmatter (thinking).
-		ctx.ui.custom = () =>
-			Promise.resolve({
-				type: "save",
-				config: { "sdd-apply": { model: "openai/gpt-5", thinking: "max" } },
-			});
-		await commands.get("gentle:models").handler("", ctx);
-		const maxSavedConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(maxSavedConfig["sdd-apply"].thinking, "max");
-		const maxSubagents = JSON.parse(
-			await readFile(join(modelsCwd, ".pi", "subagents.json"), "utf8"),
-		);
-		assert.equal(maxSubagents.model_profiles["sdd-apply"].effort, "max");
-		const maxApplyAgent = await readFile(
-			join(modelsCwd, ".pi", "agents", "sdd-apply.md"),
-			"utf8",
-		);
-		assert.match(maxApplyAgent, /thinking: max/);
-
-		// issue #286: effort picker must offer `max` after `xhigh` and save it.
-		let maxPickerCalls = 0;
+		// issue #286: `thinking: "max"` must survive save normalization into the
+		// profile store, and the effort row must offer `max` after `xhigh`.
+		let maxVisits = 0;
 		ctx.ui.custom = (factory) =>
 			new Promise((resolve) => {
-				maxPickerCalls += 1;
-				const panel = factory(null, null, null, resolve);
-				if (maxPickerCalls === 1) {
-					panel.handleInput(kittyE); // open effort picker (set-all row)
-					for (let i = 0; i < 7; i++) panel.handleInput("j"); // max
+				maxVisits += 1;
+				const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, null, null, resolve);
+				if (maxVisits === 1) {
+					panel.handleInput("j"); // every agent
+					panel.handleInput("e");
+					const strip = panel.render(120).map(stripAnsi).join("\n");
+					const xhighIndex = strip.indexOf("xhigh");
+					assert.ok(xhighIndex >= 0 && strip.indexOf("max", xhighIndex + 5) > xhighIndex, "the effort row must offer max after xhigh");
+					for (let i = 0; i < 10; i++) panel.handleInput("\u001b[C"); // to the last level: max
 					panel.handleInput("\r");
-					panel.handleInput("\u0013"); // ctrl+s saves the draft
+					panel.handleInput("\u0013");
 					return;
 				}
+				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:models").handler("", ctx);
-		const pickerMaxConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
-		assert.equal(pickerMaxConfig["sdd-apply"].thinking, "max");
+		await commands.get("gentle:profiles").handler("", ctx);
+		assert.equal(maxVisits, 2);
+		const maxStore = JSON.parse(await readFile(profilesPath, "utf8"));
+		assert.equal(maxStore.profiles.current["sdd-apply"].thinking, "max");
+		assert.equal(
+			maxStore.profiles.current["sdd-apply"].model,
+			"custom/provider-model",
+			"an effort-only save keeps the profile's saved model",
+		);
 	} finally {
 		await rm(modelsCwd, { recursive: true, force: true });
 		await rm(globalModelsPath, { force: true });
@@ -1811,7 +1887,25 @@ async function run() {
 	}
 }
 
-run().catch((error) => {
+// A run that awaits a promise nobody settles (a mocked panel that never
+// finishes) lets the event loop drain, and Node would exit 0 with every later
+// section skipped. Treat an unfinished run as a failure instead.
+let runCompleted = false;
+process.on("exit", () => {
+	if (runCompleted || process.exitCode) return;
+	console.error("runtime harness exited before run() completed: a section awaited a promise that never settled");
+	process.exitCode = 1;
+});
+
+run().then(() => {
+	runCompleted = true;
+}).catch((error) => {
 	console.error(error);
 	process.exitCode = 1;
+}).finally(async () => {
+	for (const [key, value] of previousFixtureEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	for (const root of ownedFixtureRoots) await rm(root, { recursive: true, force: true });
 });

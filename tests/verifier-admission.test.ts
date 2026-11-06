@@ -23,6 +23,24 @@ function workspace(withDocument: boolean): string {
 	return root;
 }
 
+// gentle-shell#2478: the rejection must name the accepted declaration placement, so a caller whose risk sentence
+// follows a separator like `; ` (the Andiveli report) learns the conforming form instead of guessing.
+test("S5: the rejection names the accepted declaration placement", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	// The reported nonconforming envelope: the declaration follows `; `, which the grammar does not accept.
+	const denied = rejectUnriskedVerifierLaunch(
+		{ agent: "gentle-ai-verify", task: "Independent verification, read-only repository; Risk: item 2 (authorization tokens). Spec: odd/tasks/example.md, T2, S1-S3." },
+		{ root, contextUsage: quiet },
+	);
+	assert.ok(denied?.block, "the `; `-separated declaration is not recognized");
+	assert.match(denied.reason, /A supported `Risk: item N` declaration starts a line/);
+	assert.match(denied.reason, /or a sentence \(after `\.`, `!` or `\?` and a space\)/);
+	assert.match(denied.reason, /for example `Risk: item 2 \(authorization tokens\)`/);
+	assert.match(denied.reason, /after another separator such as `; ` or `,` is not recognized/);
+	assert.doesNotMatch(denied.reason, /claude|gpt|openai|anthropic|gemini|sonnet|opus/i, "the message stays generic");
+});
+
 test("S3/S4: a verifier launch without a high-risk line is rejected with an inline instruction", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));

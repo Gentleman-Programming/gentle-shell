@@ -250,7 +250,7 @@ test("Auto fails closed on missing verdict, throws, changed arguments, mode revo
 });
 
 test("Native consent, human questions and delegation remain with their original executors", async t=>{
- const f=fixture(t);for(const name of ["ask_user_choice","ask_user_question","gentle_review","gentle_review_capture","subagent_run","subagent_reply"]){
+ const f=fixture(t);for(const name of ["ask_user_choice","ask_user_question","gentle_review","gentle_review_capture","gentle_review_capture_group","gentle_review_run","subagent_run","subagent_reply"]){
   assert.equal((await f.execute(name,{})).executions,1);
  }
  assert.equal(f.requests.length,0);

@@ -4,6 +4,7 @@ import { Container, Spacer, TuiAltScreen, type Component } from "@earendil-works
 import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
 import { sidebarHeader, sidebarPart } from "../lib/shell-sidebar.ts";
+import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 
 // End-to-end through pi-tui's real alt-screen renderer and Pi's real chat
 // viewport: the unit fixtures elsewhere hand-build layout nodes, which is how
@@ -46,10 +47,21 @@ async function renderViewport(columns: number, rows: number, sidebar: boolean): 
 
 test("fullscreen with the sidebar leaves no blank row between the editor and the terminal edge", async () => {
 	const screen = await renderViewport(140, 24, true);
-	assert.equal(screen[0], "HEADER 138", "the header owns the first row");
+	assert.equal(screen[0], "HEADER 140", "the header owns the first row");
 	assert.match(screen[screen.length - 1] ?? "", /^╰/, `the editor's bottom border sits on the last row, got ${JSON.stringify(screen.slice(-3))}`);
 	assert.ok(screen.some((row) => row.startsWith("╭─ editor")), "the editor is still painted");
 	assert.ok(screen.some((row) => row.includes("Status card")), "the rail is still painted");
+});
+
+test("under a split header the rail keeps one spacer below the title block", async (t) => {
+	const previous = cardStyle();
+	t.after(() => setCardStyle(previous));
+	setCardStyle(CARD_STYLE.FLOAT);
+	const screen = await renderViewport(140, 24, true);
+	assert.equal(screen[0], "HEADER 140");
+	assert.match(screen[1]!, /^transcript /, "the transcript starts immediately below the header");
+	assert.doesNotMatch(screen[1]!, /Status card/, "the first rail row separates the header from its card");
+	assert.match(screen[2]!, /Status card/, "the first card starts after exactly one spacer row");
 });
 
 test("fullscreen without the sidebar keeps Pi's bottom bar on the last row", async () => {

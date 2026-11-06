@@ -12,6 +12,9 @@ export const CONTEXT_BACKSTOP_TOKENS = 150_000;
 export const CONTEXT_BACKSTOP_FRACTION = 0.15;
 export const CONTEXT_BACKSTOP_TOKENS_ENV = "GENTLE_PI_CONTEXT_BACKSTOP_TOKENS";
 export const CONTEXT_BACKSTOP_FRACTION_ENV = "GENTLE_PI_CONTEXT_BACKSTOP_FRACTION";
+// Sampling window for the measured context (see createThrottledContextMeasure).
+export const CONTEXT_BACKSTOP_MEASURE_MS_ENV = "GENTLE_PI_CONTEXT_BACKSTOP_MEASURE_MS";
+export const CONTEXT_BACKSTOP_MEASURE_MS_DEFAULT = 5_000;
 
 /** The part of Pi's `ctx.getContextUsage()` the backstop reads; null tokens are unknown (e.g. right after compaction). */
 export interface MeasuredContext {
@@ -66,6 +69,39 @@ export function createContextBackstopSignal(env: Env = process.env): (session: u
 		if (notified.has(session)) return undefined;
 		notified.add(session);
 		return contextBackstopNotice(usage.tokens, usage.contextWindow, threshold);
+	};
+}
+
+export interface ThrottledContextMeasureOptions {
+	now?: () => number;
+	/** Injected window in ms; 0 samples on every call (tests). Omitted resolves the env, then the 5 s default. */
+	minIntervalMs?: number;
+	env?: Env;
+}
+
+/**
+ * One measured context per session per window. `ctx.getContextUsage()` rebuilds the whole session projection
+ * (O(session) per call), so the backstop samples it instead of paying that on every tool result. The first
+ * sample of a session is immediate — a resumed session already past the backstop must not wait a window — and
+ * every call inside the window skips the measurement entirely, so the backstop sees `undefined` (unknown
+ * tokens change nothing). A throwing measure returns `undefined`; the failed attempt still consumed its
+ * window, so a persistently failing host cannot turn every tool result into a retry.
+ */
+export function createThrottledContextMeasure(options: ThrottledContextMeasureOptions = {}): (session: unknown, measure: () => MeasuredContext | undefined) => MeasuredContext | undefined {
+	const now = options.now ?? (() => Date.now());
+	const env = options.env ?? process.env;
+	const minIntervalMs = options.minIntervalMs ?? envNumber(env, CONTEXT_BACKSTOP_MEASURE_MS_ENV, positive, CONTEXT_BACKSTOP_MEASURE_MS_DEFAULT);
+	const lastMeasuredAt = new Map<unknown, number>();
+	return (session, measure) => {
+		const previous = lastMeasuredAt.get(session);
+		const at = now();
+		if (previous !== undefined && at - previous < minIntervalMs) return undefined;
+		lastMeasuredAt.set(session, at);
+		try {
+			return measure();
+		} catch {
+			return undefined;
+		}
 	};
 }
 

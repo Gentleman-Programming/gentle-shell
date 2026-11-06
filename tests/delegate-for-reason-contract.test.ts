@@ -38,15 +38,16 @@ test("AC1: the core writer rule fires on named reasons, never on size or file co
 	for (const clause of [
 		"never by file count or a large task alone",
 		"`orchestrator-writer.md`",
-		"2+ independent units of behavior (separate features or fixes that do not depend on each other), each heavier than a subagent start",
-		"a unit qualifies only when it needs several minutes of work: several files or roughly 100+ changed lines",
-		"a small change to one module or one command is done inline even when several such changes are independent",
+		"2+ independent units of behavior",
+		"each heavier than a subagent start",
+		"several minutes of work: several files or roughly 100+ changed lines",
 		"Tests, docs, and code of the same behavior are one unit, never separate writers",
-		"a delivery that depends on an earlier one is not independent",
 		"Context backstop",
 	]) {
 		assert.ok(coreWriter.includes(clause), `core Writer rule is missing: ${clause}`);
 	}
+	assert.match(coreWriter, /(?:a small change to one module or one command is done inline even when several such changes are independent|Small module or command changes stay inline, even when independent)/);
+	assert.match(coreWriter, /(?:a delivery that depends on an earlier one is not independent|dependent deliveries are not independent)/);
 	assert.ok(!core.includes("large task → one bounded `gentle-ai-worker` per task"), "core keeps the size-based writer rule");
 	assert.ok(
 		core.includes("large tasks get ODD tracking and workers only by the Writer rule, else inline"),
@@ -116,14 +117,14 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
 		),
 		"core Verification rule changed",
 	);
 	assert.ok(
 		delegation.includes(
 			// S9 canon change (gentle-ai 6b9a71ef): only a named high-risk item adds the verifier.
-			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
+			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
 		),
 		"lazy Verification rule changed",
 	);
@@ -244,9 +245,10 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 // names every line that admits it. The pin still guards against accidental drift.
 test("AC4/S4: the normative verification rule text is unchanged by the review protocol", () => {
 	const normative = sectionFrom(verification, "## Verification rule (normative)");
+	// Re-pinned on purpose: the runtime admission now also accepts a `Risk: item N` sentence (verifier-admission.ts).
 	assert.equal(
 		createHash("sha256").update(normative).digest("hex"),
-		"b159829cad24a31e23d6309b3bfe0e4cc71eec2316775ba07314fecd1fb6a63f",
+		"48fb27b1e4af2f133861a2ba909fc5b5ed310fd1ca00e060f39f9208ab2cf022",
 		"the normative Verification rule section changed",
 	);
 	assert.ok(verification.includes("or a delegated writer returns"), "the module must still load when a delegated writer returns");

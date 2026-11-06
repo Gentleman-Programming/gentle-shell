@@ -4,7 +4,10 @@ import {
 	CURSOR_MARKER,
 	KeybindingsManager,
 	TUI_KEYBINDINGS,
+	TuiAltScreen,
+	stripTerminalSequences,
 	visibleWidth,
+	type Terminal,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import {
@@ -336,6 +339,156 @@ test("height stays bounded as the question count grows", () => {
 	assert.match(rendered, /❯ A/);
 });
 
+test("long option preview height is bounded to terminal rows in side-by-side mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(100);
+	assert.ok(
+		renderedLines.length <= 24,
+		`rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+	const text = renderedLines.join("\n");
+	assert.match(text, /Preview line 1/);
+	assert.match(text, /\[1–/);
+});
+
+test("scrolling with pageDown/pageUp moves the visible preview slice (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	assert.match(render(view, 100), /Preview line 1/);
+
+	// Page down scrolls the preview window
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = render(view, 100);
+	assert.doesNotMatch(pageDownText, /Preview line 1\b/);
+	assert.match(pageDownText, /Preview line/);
+
+	// Page up scrolls back
+	view.handleInput("\x1b[5~"); // PageUp
+	const pageUpText = render(view, 100);
+	assert.match(pageUpText, /Preview line 1\b/);
+
+	// Ctrl+j and Ctrl+k also scroll
+	view.handleInput("\x0a"); // ctrl+j
+	const ctrlJText = render(view, 100);
+	assert.doesNotMatch(ctrlJText, /Preview line 1\b/);
+
+	view.handleInput("\x0b"); // ctrl+k
+	const ctrlKText = render(view, 100);
+	assert.match(ctrlKText, /Preview line 1\b/);
+
+	// Mouse wheel scrolls preview
+	view.render(100);
+	view.handleMouse({ type: "wheel", button: "none", wheelDelta: 1, x: 50, y: 5, screenX: 50, screenY: 5, width: 100, height: 24, shift: false, alt: false, ctrl: false });
+	const wheelDownText = render(view, 100);
+	assert.doesNotMatch(wheelDownText, /Preview line 1\b/);
+
+	// Moving cursor to next option and back resets scroll position
+	view.handleInput(KEY.down[0]); // to Beta
+	view.handleInput(KEY.up[0]);   // back to Alpha
+	const resetText = render(view, 100);
+	assert.match(resetText, /Preview line 1\b/);
+});
+
+test("selecting an option without preview clears scrollability and mouse wheel handling (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Focused on Alpha (has preview): scrollable hint and wheel handling active
+	const alphaLines = view.render(100);
+	assert.match(alphaLines.join("\n"), /pgup\/pgdn scroll/);
+	const alphaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(alphaWheel?.handled, true);
+
+	// Move cursor to Beta (no preview)
+	view.handleInput(KEY.down[0]);
+	const betaLines = view.render(100);
+	assert.doesNotMatch(betaLines.join("\n"), /pgup\/pgdn scroll/);
+	const betaWheel = view.handleMouse({
+		type: "wheel",
+		button: "none",
+		wheelDelta: 1,
+		x: 50,
+		y: 5,
+		screenX: 50,
+		screenY: 5,
+		width: 100,
+		height: 24,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+	assert.equal(betaWheel, undefined);
+});
+
+test("long option preview height is bounded to terminal rows in inline mode (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be bounded to terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("inline preview height stays bounded within terminal rows when options wrap (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const wrappedOptions = [
+		option("Option A", "This is a detailed description that wraps across multiple lines in narrow viewports", longPreview),
+		option("Option B", "Another long description that wraps across multiple lines when rendered inline"),
+		option("Option C", "Yet another detailed description for the third option taking multiple lines"),
+		option("Option D", "Fourth option with a description that also wraps across lines in the terminal"),
+	];
+	const { view } = viewWithResult([question("Which configuration should be used for this environment?", wrappedOptions)]);
+	const renderedLines = view.render(60);
+	assert.ok(
+		renderedLines.length <= 24,
+		`inline rendered height must be <= 24 terminal rows (was ${renderedLines.length} lines, expected <= 24)`,
+	);
+});
+
+test("pageDown in inline mode advances by visible preview rows without skipping lines (#1340)", () => {
+	const longPreview = Array.from({ length: 65 }, (_, i) => `Preview line ${i + 1}`).join("\n");
+	const { view } = viewWithResult(single(longPreview));
+
+	// Initial render in inline mode (width = 60)
+	const initialLines = view.render(60);
+	const initialText = initialLines.join("\n");
+	assert.match(initialText, /Preview line 1\b/);
+
+	// Find the last visible preview content line in initial slice
+	let lastVisibleLineNum = 1;
+	for (let i = 1; i <= 65; i++) {
+		if (new RegExp(`Preview line ${i}\\b`).test(initialText)) {
+			lastVisibleLineNum = i;
+		}
+	}
+	assert.ok(lastVisibleLineNum < 65, "initial preview should be sliced");
+
+	// Page down should show the next line without skipping
+	view.handleInput("\x1b[6~"); // PageDown
+	const pageDownText = view.render(60).join("\n");
+	const nextExpectedLine = `Preview line ${lastVisibleLineNum + 1}\\b`;
+	assert.match(
+		pageDownText,
+		new RegExp(nextExpectedLine),
+		`PageDown must show next line (${nextExpectedLine}) without skipping lines`,
+	);
+});
+
 test("Escape cancels the questionnaire with a cancelled result", () => {
 	const { view, completed } = viewWithResult(single());
 	view.handleInput(KEY.escape);
@@ -430,6 +583,118 @@ test("the custom row is always appended after the authored options", () => {
 	const customRow = lines.findIndex((line) => line.includes(CUSTOM_ROW_LABEL));
 	assert.ok(betaRow >= 0 && customRow >= 0);
 	assert.ok(customRow > betaRow);
+});
+
+const hoverTheme: QuestionnaireTheme = {
+	fg: (role, text) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+	bold: (text) => text,
+};
+
+function move(lines: string[], x: number, y: number, width: number): TuiMouseEvent {
+	return { ...mouseEvent(lines, y, "move"), button: "none", x, screenX: x, width };
+}
+
+function textRow(lines: string[], text: string): number {
+	const row = lines.findIndex((line) => stripTerminalSequences(line).includes(text));
+	assert.ok(row >= 0, `missing ${text}`);
+	return row;
+}
+
+test("questionnaire hovers only selectable labels in the shared warning role, without changing answers", () => {
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({
+		questions: [question("Pick?", [option("Alpha", "First detail", "Preview body"), option("Beta", "Second detail")], { multiSelect: true })],
+		theme: hoverTheme,
+		onComplete: (result) => completed.push(result),
+	});
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+	assert.match(lines[textRow(lines, "Alpha")]!, /❯ \[ \] Alpha/);
+	assert.doesNotMatch(lines[textRow(lines, "Second detail")]!, /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, beta, 100))?.render, false, "repeated motion does not redraw");
+	assert.deepEqual(view.getResult(), { cancelled: false, answers: [] });
+	assert.deepEqual(completed, []);
+
+	const description = textRow(lines, "Second detail");
+	assert.equal(view.handleMouse(move(lines, 5, description, 100))?.render, true);
+	lines = view.render(100);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	const alpha = textRow(lines, "Alpha");
+	assert.equal(view.handleMouse(move(lines, 60, alpha, 100)), undefined, "preview cells are not label targets");
+	assert.equal(view.handleMouse(move(lines, 3, alpha, 100))?.render, true);
+	lines = view.render(100);
+	assert.match(lines[alpha]!, /\x1b\[33mAlpha\x1b\[39m/);
+	assert.doesNotMatch(lines[alpha]!, /\x1b\[33mPreview/);
+	assert.equal(view.handleMouse(move(lines, 2, 0, 100))?.render, true, "the tab heading is not a pointer-actionable target");
+	lines = view.render(100);
+	const custom = textRow(lines, CUSTOM_ROW_LABEL);
+	assert.equal(view.handleMouse(move(lines, 3, custom, 100))?.render, true);
+	assert.match(view.render(100)[custom]!, /\x1b\[33mType something\.\x1b\[39m/);
+	assert.deepEqual(completed, []);
+	view.handleInput(KEY.space);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["Alpha"] },
+	]);
+});
+
+test("questionnaire rejects stale, clipped and disposed hover geometry", () => {
+	let rows = 24;
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, rows: () => rows });
+	let lines = view.render(100);
+	const beta = textRow(lines, "Beta");
+	const old = move(lines, 3, beta, 100);
+	assert.equal(view.handleMouse(old)?.render, true);
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(old), undefined, "old width cannot target the new layout");
+	assert.equal(view.handleMouse({ ...move(lines, 3, textRow(lines, "Beta"), 80), height: 2 }), undefined, "clipped rows are not targets");
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	view.invalidate();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined, "invalidation rejects geometry until render");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.render, true);
+	rows = 10;
+	assert.notEqual(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80))?.handled, true, "height changes reject the old layout");
+	lines = view.render(80);
+	assert.doesNotMatch(lines.join("\n"), /\x1b\[33m/);
+	view.dispose();
+	assert.equal(view.handleMouse(move(lines, 3, textRow(lines, "Beta"), 80)), undefined);
+	view.handleInput(KEY.enter);
+	assert.deepEqual(view.getResult().answers, []);
+});
+
+test("questionnaire receives SGR hover and click through a centered TuiAltScreen overlay", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+		setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const completed: QuestionnaireResult[] = [];
+	const view = new QuestionnaireView({ questions: single(), theme: hoverTheme, onComplete: (result) => completed.push(result) });
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(view, { anchor: "center", width: 80, maxHeight: 20 });
+	tui.start(); tui.renderNow(true);
+	try {
+		let lines = view.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const beta = textRow(lines, "Beta");
+		const x = bounds.col + 4, y = bounds.row + beta + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		lines = view.render(80);
+		assert.match(lines[beta]!, /\x1b\[33mBeta\x1b\[39m/);
+		assert.deepEqual(completed, []);
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.equal(completed[0]?.answers[0]?.answer, "Beta");
+	} finally { tui.stop(); }
 });
 
 test("every rendered line fits the width across 1-4 questions", () => {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { gentlePiConfigHome } from "./agent-home.ts";
 
-export type PermissionMode = "normal" | "auto" | "yolo";
+export type PermissionMode = "normal" | "auto" | "yolo" | "super-yolo";
 export const PERMISSION_MODE_SCHEMA = "gentle-pi.permission-mode/v1";
 export interface PermissionModeOptions { gentlePiConfigHome?: string }
 export interface PermissionModeResolution {
@@ -13,7 +13,7 @@ export interface PermissionModeResolution {
 	globalFile: string;
 }
 export function isPermissionMode(value: unknown): value is PermissionMode {
-	return value === "normal" || value === "auto" || value === "yolo";
+	return value === "normal" || value === "auto" || value === "yolo" || value === "super-yolo";
 }
 /** Never consult merged Pi settings or repository configuration. */
 export function permissionModePolicyFile(options: PermissionModeOptions = {}): string {

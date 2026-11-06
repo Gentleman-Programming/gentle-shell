@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
 // gentle-shell#1731 T23 (G1 audit L48): port the gentle-ai Native Checking
@@ -18,6 +19,22 @@ const tracking = read("assets/orchestrator-tracking.md");
 const worker = read("assets/agents/gentle-ai-worker.md");
 const verify = read("assets/agents/gentle-ai-verify.md");
 const personas = ["gentleman", "neutral"] as const;
+let scratch: string;
+let previousConfigHome: string | undefined;
+before(() => {
+	scratch = mkdtempSync(join(tmpdir(), "gentle-bounded-stop-"));
+	previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+});
+after(() => {
+	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (scratch) rmSync(scratch, { recursive: true, force: true });
+});
+
+function prompt(persona: (typeof personas)[number]): string {
+	return __testing.buildGentlePrompt(persona, scratch, ["read"]);
+}
 
 function lineStarting(text: string, prefix: string): string {
 	const line = text.split("\n").find((entry) => entry.startsWith(prefix));
@@ -30,7 +47,7 @@ function containsAll(text: string, clauses: readonly string[], label: string): v
 }
 
 function closeStep(persona: (typeof personas)[number]): string {
-	return lineStarting(__testing.buildGentlePrompt(persona), "7. **Close.**");
+	return lineStarting(prompt(persona), "7. **Close.**");
 }
 
 test("T23(a): a partial or blocked writer gets the one correction, then Needs your decision, never more verify", () => {
@@ -75,6 +92,29 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 			"an unavailable verifier or subagent is reported as unavailable, never retried or escalated into extra ceremony",
 		], `${persona} harness Close step`);
 	}
+});
+
+test("S4-S5: the unchanged Close stop is scoped to the ended automatic cycle", () => {
+	for (const persona of personas) {
+		containsAll(prompt(persona), [
+			"The Close step's bounded stop ends the current automatic cycle; a later explicit human request is separate and remains subject to native authority.",
+			"Partial worker execution is not by itself exhausted proof or a terminal native review outcome.",
+		], `${persona} delivered continuation`);
+		assert.ok(closeStep(persona).includes("never more verification"), "the mirrored Close rule remains intact");
+	}
+});
+
+test("S4-S5: the worker returns remaining work and a human-controlled continuation after its bound", () => {
+	containsAll(worker, [
+		"After the correction bound is exhausted, stop and return `status: partial`",
+		"report the concrete remaining implementation work, failing commands and outputs, and missing proof",
+		"identify a scoped continuation the parent can offer for explicit human authorization",
+		"Do not start a fresh correction cycle or treat a new session as a reset",
+		"native authority and all other applicable limits remain binding",
+	], "worker continuation handoff");
+	containsAll(verification, [
+		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
+	], "parent continuation reference");
 });
 
 test("T23(f): the verify agent allows a second correction only for the same blocker still failing", () => {

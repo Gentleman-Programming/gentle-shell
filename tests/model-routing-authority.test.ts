@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing, applySavedModelConfig, readModelConfig, readModelConfigAsync } from "../extensions/gentle-ai.ts";
+import {
+	localProfilePinPath,
+	setProfilePinWorktreeResolverForTesting,
+	writeProfilePinSync,
+} from "../lib/agent-profile-pin.ts";
 
 test("coincident global and legacy paths preserve invalid-global status", async (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-coincidence-"));
@@ -127,6 +132,41 @@ test("active profile omission prevents stale legacy routing reads and materializ
 	assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd), materialized, result }, {
 		sync: {}, async: {}, materialized: [{}], result: { updated: 0, skipped: 0 },
 	});
+});
+
+// gentle-shell#2477 regression: a pinned or active profile replaced the legacy
+// project source even when no model config existed at all, so a session that
+// had deliberately cleared its profile read the pin back as saved routing. The
+// profile snapshot only stands in for a legacy file that is actually there.
+test("a pin or active profile invents no saved routing while no model config exists", async (t) => {
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	t.after(() => {
+		setProfilePinWorktreeResolverForTesting();
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+	});
+	const chosen = { "review-risk": { model: "openai/pinned-risk" } };
+	for (const target of ["pinned", "active"] as const) {
+		const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-model-${target}-no-config-`));
+		const configHome = join(cwd, "global");
+		const projectHome = join(cwd, ".pi", "gentle-ai");
+		mkdirSync(configHome, { recursive: true });
+		mkdirSync(projectHome, { recursive: true });
+		process.env.GENTLE_PI_CONFIG_HOME = configHome;
+		t.after(() => rmSync(cwd, { recursive: true, force: true }));
+		writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
+			kind: "gentle-pi.agent_model_profiles", version: 1, ...(target === "active" ? { active: "chosen" } : {}), profiles: { chosen },
+		}));
+		const identity = { root: join(cwd, "worktree"), commonDir: join(cwd, "git-common") };
+		mkdirSync(identity.root, { recursive: true });
+		mkdirSync(identity.commonDir, { recursive: true });
+		setProfilePinWorktreeResolverForTesting(() => identity);
+		if (target === "pinned") writeProfilePinSync(localProfilePinPath(identity.commonDir), "chosen");
+		assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd) }, { sync: {}, async: {} }, `${target} routing stays empty`);
+		assert.deepEqual(__testing.readSavedModelConfig(cwd), { status: "missing" }, `${target} saved routing stays missing`);
+		assert.deepEqual(await __testing.readSavedModelConfigAsync(cwd), { status: "missing" }, `${target} async saved routing stays missing`);
+		assert.throws(() => statSync(join(configHome, "models.json")), { code: "ENOENT" }, `reading never writes the global file`);
+	}
 });
 
 test("model routing authority normalizes and preserves sync/async source status", async (t) => {

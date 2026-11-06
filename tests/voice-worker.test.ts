@@ -19,6 +19,8 @@ const { runVoiceWorker } = createRequire(import.meta.url)("../scripts/voice-work
 const SCHEMA = "gentle.voice/v1";
 const SHERPA_ENTRY = "node_modules/sherpa-onnx-node/non-streaming-asr.js";
 const CPAL_ENTRY = "node_modules/node-cpal/index.js";
+const PULSE_ENTRY = "node_modules/node-cpal/backend-pulseaudio.js";
+const PULSE_NATIVE = "node_modules/node-cpal/bin/backend-pulseaudio/linux-x64/index.node";
 const NATIVE = "node_modules/sherpa-onnx-linux-x64/sherpa-onnx.node";
 const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
 
@@ -34,7 +36,7 @@ function install(t: test.TestContext): Install {
 	const dir = mkdtempSync(join(base, "voice-worker-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const runtimeRoot = join(dir, "runtime");
-	for (const file of [SHERPA_ENTRY, CPAL_ENTRY, NATIVE]) {
+	for (const file of [SHERPA_ENTRY, CPAL_ENTRY, NATIVE, PULSE_ENTRY, PULSE_NATIVE]) {
 		mkdirSync(dirname(join(runtimeRoot, file)), { recursive: true });
 		writeFileSync(join(runtimeRoot, file), `// ${file}\n`);
 	}
@@ -128,7 +130,7 @@ function harness(t: test.TestContext, fake: FakeOptions = {}, io: Record<string,
 			loaded.push(file);
 			if (fake.loadError) throw new Error(fake.loadError);
 			if (file === join(paths.runtimeRoot, ...SHERPA_ENTRY.split("/"))) return { OfflineRecognizer };
-			if (file === join(paths.runtimeRoot, ...CPAL_ENTRY.split("/"))) return { convenience };
+			if ([CPAL_ENTRY, PULSE_ENTRY].some((entry) => file === join(paths.runtimeRoot, ...entry.split("/")))) return { convenience };
 			throw new Error(`unexpected module ${file}`);
 		},
 		platform: "linux",
@@ -151,6 +153,35 @@ const interleaved = (frames: number, channels: number, value: (frame: number, ch
 	for (let frame = 0; frame < frames; frame++) for (let channel = 0; channel < channels; channel++) data[frame * channels + channel] = value(frame, channel);
 	return data;
 };
+
+test("WSL uses the shipped PulseAudio backend without loading ALSA", async (t) => {
+	const h = harness(t, {}, { kernelRelease: "6.18-microsoft-standard-WSL2" });
+	h.send(startRequest(h.paths));
+	await h.waitFor(() => h.types().includes("recording"));
+	h.send({ schema: SCHEMA, type: "cancel" });
+	await h.done;
+	assert.deepEqual(h.loaded, [join(h.paths.runtimeRoot, PULSE_ENTRY)]);
+	assert.equal(h.streams[0].closes, 1);
+});
+
+test("ordinary Linux keeps the default capture backend", async (t) => {
+	const h = harness(t, {}, { kernelRelease: "6.8.0-generic" });
+	h.send(startRequest(h.paths));
+	await h.waitFor(() => h.types().includes("recording"));
+	h.send({ schema: SCHEMA, type: "cancel" });
+	await h.done;
+	assert.deepEqual(h.loaded, [join(h.paths.runtimeRoot, CPAL_ENTRY)]);
+});
+
+test("WSL refuses an incomplete PulseAudio backend before native loading", async (t) => {
+	const h = harness(t, {}, { kernelRelease: "6.18-microsoft-standard-WSL2" });
+	rmSync(join(h.paths.runtimeRoot, PULSE_NATIVE));
+	h.send(startRequest(h.paths));
+	await h.done;
+	assert.deepEqual(h.loaded, []);
+	assert.deepEqual(h.messages, [{ schema: SCHEMA, type: "error", code: "runtime-invalid" }]);
+	assert.equal(h.exitCode(), 1);
+});
 
 test("records multichannel audio, resamples it to 16 kHz mono and closes its retained stream once on stop", async (t) => {
 	const worker = harness(t);

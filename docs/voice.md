@@ -230,8 +230,8 @@ built for their architecture (checked from the binary headers, not by loading).
 |--------|--------------------------------------------|
 | macOS arm64 | macOS 11 or newer |
 | macOS x64 | macOS 10.12 or newer |
-| Linux x64, glibc 2.34+ | ALSA `libasound.so.2` |
-| Linux arm64, glibc 2.34+ | ALSA `libasound.so.2` |
+| Linux x64, glibc 2.34+ | ALSA `libasound.so.2`; under WSL, a PulseAudio server (WSLg provides one) |
+| Linux arm64, glibc 2.34+ | ALSA `libasound.so.2`; under WSL, a PulseAudio server (WSLg provides one) |
 | Windows x64 | Microsoft Visual C++ runtime (`vcruntime140.dll`) |
 
 node-cpal requires Node 22 or newer, and a dictation session refuses to start
@@ -243,7 +243,10 @@ None of these targets has been verified on real hardware yet: native loading,
 library paths and microphone capture have not been executed. Linux with a glibc
 older than 2.34 is unsupported and the diagnosis names the version found.
 Windows ARM64 has no native sherpa-onnx package and is unsupported. musl Linux
-is unsupported. WSL is reported as unproven.
+is unsupported. On a Microsoft kernel (WSL) the worker selects node-cpal's
+shipped PulseAudio backend instead of ALSA, because WSLg exposes audio through
+a PulseAudio server and no ALSA device; the backend's own native file is
+validated before loading.
 
 ## Licenses and attribution
 

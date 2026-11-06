@@ -1,6 +1,6 @@
 # Choose how permission questions are handled
 
-Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent.
+Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
 
 ## Tool context in Auto
 

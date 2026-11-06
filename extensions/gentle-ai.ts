@@ -17,6 +17,7 @@ import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssi
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { snapshotReviewStartContext, type ReviewStartContext } from "../lib/review-start-context.ts";
+import { asNativeReviewCliError, readReviewFailureFacts } from "../lib/review-failure-facts.ts";
 import { parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
@@ -224,7 +225,6 @@ import {
 	NativeReviewCliError,
 	NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
 	nativeUntrackedSelection,
-	NativeReviewConsentBindingError,
 	NativeReviewConsentRequiredError,
 	NativeReviewIntegrationError,
 	NATIVE_REVIEW_ERROR_CODE,
@@ -234,7 +234,6 @@ import {
 	NATIVE_REVIEW_MODE_OPERATION,
 	NATIVE_REVIEW_MODE_SOURCE,
 	NATIVE_REVIEW_RECONCILE_ANOMALIES,
-	sanitizeForeignNativeReviewDiagnostics,
 	type NativeReviewCli,
 	type NativeIntendedUntrackedSelectionSubmission,
 	type NativeReviewAcknowledgeApprovedOutcome,
@@ -7333,24 +7332,6 @@ function nativeStatusUnsupported(operation: ReviewControllerOperation): Record<s
 	};
 }
 
-// Bundled and source module instances can coexist, making instanceof insufficient.
-function asNativeReviewCliError(error: unknown): { code: string; diagnostics: NativeReviewProcessDiagnostics } | undefined {
-	if (error instanceof NativeReviewCliError) return error;
-	if (!isRecord(error) || error.name !== "NativeReviewCliError") return undefined;
-	const value = error as { code?: unknown; diagnostics?: unknown };
-	if (typeof value.code !== "string") return undefined;
-	const diagnostics = sanitizeForeignNativeReviewDiagnostics(value.diagnostics);
-	return diagnostics === undefined || value.code !== diagnostics.error_code ? undefined : { code: value.code, diagnostics };
-}
-
-// Same coexisting-module-instance caveat as asNativeReviewCliError above.
-function asNativeReviewConsentBindingError(error: unknown): { reason: string; message: string } | undefined {
-	if (error instanceof NativeReviewConsentBindingError) return { reason: error.reason, message: error.message };
-	if (!(error instanceof Error) || error.name !== "NativeReviewConsentBindingError") return undefined;
-	const reason = (error as unknown as { reason?: unknown }).reason;
-	return typeof reason !== "string" || reason.length === 0 ? undefined : { reason, message: error.message };
-}
-
 function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation | "gentle_review_capture", diagnostics: NativeReviewProcessDiagnostics): Record<string, unknown> {
 	return {
 		operation,
@@ -7365,8 +7346,8 @@ function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation |
 	};
 }
 
-function nativeRequestContextRefusal(operation: string, error: unknown): Record<string, unknown> | undefined {
-	if (asNativeReviewCliError(error)?.code !== NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
+function nativeRequestContextRefusal(operation: string, error: unknown, facts = readReviewFailureFacts(error)): Record<string, unknown> | undefined {
+	if (facts.cli?.code !== NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
 		|| !isRecord(error) || error.message !== NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE) return undefined;
 	return { operation, status: "blocked", outcome: "request-context-unsupported", reason: NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
 		lineage_created: false, mutation_performed: false, mutation_outcome: "none",
@@ -7374,14 +7355,15 @@ function nativeRequestContextRefusal(operation: string, error: unknown): Record<
 }
 
 function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown): Record<string, unknown> {
-	const contextRefusal = nativeRequestContextRefusal(operation, error);
+	const facts = readReviewFailureFacts(error);
+	const contextRefusal = nativeRequestContextRefusal(operation, error, facts);
 	if (contextRefusal !== undefined) return contextRefusal;
-	const cliError = asNativeReviewCliError(error);
+	const cliError = facts.cli;
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
 	if (cliError !== undefined) {
 		return {
-			...nativeOperationFailure(operation, error),
+			...nativeOperationFailure(operation, error, facts),
 			outcome: "native-status-unavailable",
 			inventory_complete: false,
 			next_action: "require-complete-native-authority-inventory",
@@ -7397,9 +7379,9 @@ function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown
 	// failure-envelope shape faithfully for every mutating operation; reuse it
 	// here instead of masking the refusal as opaque authority-inventory
 	// corruption.
-	if (error instanceof NativeReviewIntegrationError) {
+	if (facts.integration !== undefined) {
 		return {
-			...nativeOperationFailure(operation, error),
+			...nativeOperationFailure(operation, error, facts),
 			outcome: "native-status-unavailable",
 			inventory_complete: false,
 		};
@@ -8544,35 +8526,34 @@ function deferredPostBurnCleanup(step: (typeof POST_BURN_CLEANUP)[keyof typeof P
 	}
 }
 
-function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_review_capture", error: unknown): Record<string, unknown> {
-	const contextRefusal = nativeRequestContextRefusal(operation, error);
+function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_review_capture", error: unknown, facts = readReviewFailureFacts(error)): Record<string, unknown> {
+	const contextRefusal = nativeRequestContextRefusal(operation, error, facts);
 	if (contextRefusal !== undefined) return contextRefusal;
-	const value = error as { mutationOutcome?: unknown; nextAction?: unknown; diagnostics?: unknown; auditRecord?: unknown; launchAttempted?: unknown; candidateViewPreNative?: unknown; failureEnvelope?: { raw?: unknown; mutationOutcome?: unknown; replayability?: unknown; nextAction?: unknown; code?: unknown; continuation?: { command?: unknown } } };
-	if (isRecord(value.failureEnvelope) && isRecord(value.failureEnvelope.raw)) {
-		const mutationOutcome = value.failureEnvelope.mutationOutcome;
+	if (facts.envelope !== undefined) {
+		const mutationOutcome = facts.envelope.mutationOutcome;
 		return {
 			operation,
 			status: "blocked",
-			native_failure: value.failureEnvelope.raw,
+			native_failure: facts.envelope.raw,
 			...(mutationOutcome === "committed"
 				? { mutation_performed: true, mutation_outcome: "committed" }
 				: mutationOutcome === "unknown"
 					? { mutation_outcome: "unknown" }
 					: { mutation_performed: false, mutation_outcome: "none" }),
-			...(typeof value.failureEnvelope.replayability === "string" ? { replayability: value.failureEnvelope.replayability } : {}),
-			...(typeof value.failureEnvelope.nextAction === "string" ? { next_action: value.failureEnvelope.nextAction } : {}),
+			...(facts.envelope.replayability === undefined ? {} : { replayability: facts.envelope.replayability }),
+			...(facts.envelope.nextAction === undefined ? {} : { next_action: facts.envelope.nextAction }),
 			// gentle-pi#627: START's preflight failure envelope for a stale
 			// managed-asset set carries a top-level continuation; render its
 			// `gentle-ai sync` command as the one actionable next step.
-			...(value.failureEnvelope.code === "managed_assets_outdated" && typeof value.failureEnvelope.continuation?.command === "string"
-				? { hint: `run ${value.failureEnvelope.continuation.command}` }
+			...(facts.envelope.managedAssetsCommand !== undefined
+				? { hint: `run ${facts.envelope.managedAssetsCommand}` }
 				: {}),
 		};
 	}
 	// Every consent binding guard runs before the provider is launched, so this
 	// is a local mismatch with nothing to reconcile. Reporting it as a native
 	// operation failure hides the one fact that makes it fixable.
-	const consentBinding = asNativeReviewConsentBindingError(error);
+	const consentBinding = facts.consentBinding;
 	if (consentBinding !== undefined) {
 		return {
 			operation,
@@ -8596,8 +8577,8 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 			mutation_outcome: "none",
 		};
 	}
-	const mutationOutcome = value.mutationOutcome === "unknown" ? "unknown" : "none";
-	const nativeCliError = asNativeReviewCliError(error);
+	const mutationOutcome = facts.mutationOutcome;
+	const nativeCliError = facts.cli;
 	if (nativeCliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, nativeCliError.diagnostics);
 	const nativeDiagnostics = nativeCliError?.diagnostics;
 	// Target-status probes use the adapter's review/status diagnostic domain.
@@ -8605,7 +8586,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	// relabeling an actionable failure as an opaque controller failure.
 	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
 	const preservesAnswerConsentStartDiagnostic = operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT && nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.START;
-	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && value.candidateViewPreNative === true
+	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && facts.candidateViewPreNative
 		? error.diagnostics ?? { code: error.reason, message: error.message }
 		: error instanceof CandidateViewError
 			? { code: error.reason, message: error.message }
@@ -8622,8 +8603,8 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 				? { lineage_created: false, mutation_performed: false, mutation_outcome: "none" as const }
 				: { mutation_outcome: mutationOutcome }),
 		...(diagnostics === undefined ? {} : { diagnostics }),
-		...(isRecord(value.auditRecord) ? { native_audit_record: value.auditRecord } : {}),
-		...(mutationOutcome === "unknown" || value.nextAction === "review.status"
+		...(facts.auditRecord === undefined ? {} : { native_audit_record: facts.auditRecord }),
+		...(mutationOutcome === "unknown" || facts.nextAction === "review.status"
 			? { replayability: "status_required", next_action: "review.status", required_status_action: requiredStatusActionText() }
 			: { next_action: "resolve-native-operation-failure" }),
 	};
@@ -9888,15 +9869,16 @@ function isSelectedReviewCapture(value: SelectedReviewCapture | Record<string, u
 function captureGroupRejected(reason: string): Record<string, unknown> { return captureBindingRejected(reason, true); }
 
 function captureGroupStatusFailure(error: unknown): Record<string, unknown> {
+	const facts = readReviewFailureFacts(error);
 	return {
 		...captureGroupRejected(error instanceof Error ? error.message : String(error)),
 		outcome: "native-status-failed",
 		// Only project the decoded native envelope, never arbitrary error fields.
 		// Group mutation reporting belongs to its submitted-reviewer progress.
-		...(error instanceof NativeReviewIntegrationError ? {
-			native_failure: error.failureEnvelope.raw,
-			replayability: error.failureEnvelope.replayability,
-			next_action: error.failureEnvelope.nextAction,
+		...(facts.integration !== undefined ? {
+			native_failure: facts.integration.raw,
+			replayability: facts.integration.replayability,
+			next_action: facts.integration.nextAction,
 		} : {}),
 	};
 }
@@ -11445,6 +11427,9 @@ export const __testing = {
 	evaluateBashPolicies,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
+	nativeStatusFailed,
+	nativeOperationFailure,
+	captureGroupStatusFailure,
 	nativeStartRejection,
 	nativeStatusInputRejection,
 	executeReviewControllerOperation,

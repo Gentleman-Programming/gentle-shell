@@ -4,8 +4,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
+import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import type { ReviewArtifactSubjectV2, ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -374,6 +376,31 @@ test("a relayed empty-output failure carries the child's own evidence in the fai
 	assert.equal(failure.reviewer?.toolCallAttempted, true);
 });
 
+test("public empty-output report preserves only safe in-process completion facts", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = repository(t);
+	const { native } = transportAwareNative();
+	const outcome = await runInProcessReviewer({ selection: "nan/deepseek-v4-flash", prompt: Buffer.from("offline"), timeoutMs: 1_000, routingKey: "review-risk" }, {
+		registry: {
+			find: () => ({ provider: "nan", id: "deepseek-v4-flash" }) as never,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "PRIVATE AUTH" }),
+		},
+		complete: async () => ({ content: [{ type: "thinking", thinking: "PRIVATE THINKING" }], stopReason: "length", errorMessage: "PRIVATE ERROR", usage: { output: 64, reasoning: 64, unknown: "PRIVATE USAGE" } }) as never,
+	});
+	assert.equal(outcome.kind, "refused");
+	if (outcome.kind !== "refused") return;
+	__testing.setReviewHostRelayRunnerForTesting(async () => {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.REVIEWER_EMPTY_OUTPUT, "pi", outcome.message, { reviewerEvidence: outcome.evidence });
+	});
+	const result = await runCapture(cwd, native, "safe-evidence-lineage");
+	assert.equal(result.outcome, "pi-host-relay-transport-failure");
+	assert.deepEqual((result.failure as { reviewer: unknown }).reviewer, {
+		reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
+	});
+	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);
+});
+
 test("capture forecasts the reviewer model run once and spends nothing until it is acknowledged", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -508,3 +535,67 @@ test("ordinary STATUS inspection uses the Pi public collect-binding route", asyn
 	assert.deepEqual(agents, ["pi"], "ordinary STATUS must request the Pi public collect-binding route");
 	assert.equal(result.operation, "status");
 });
+
+type CaptureTool = Parameters<ExtensionAPI["registerTool"]>[0];
+
+for (const grouped of [false, true]) {
+	for (const preference of ["sse", "websocket", "websocket-cached", "auto", "unset", "older-api"] as const) {
+		test(`registered ${grouped ? "group" : "individual"} capture reads effective transport ${preference} at execution time`, async (t) => {
+			t.after(() => {
+				__testing.setReviewHostRelayRunnerForTesting();
+				__testing.setReviewHostRelayGroupRunnersForTesting();
+			});
+			const cwd = repository(t);
+			const lineageId = "settings-transport-lineage";
+			const inputs = grouped
+				? [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)]
+				: [collectInput(lineageId, true)];
+			const status = grouped ? groupStatus(lineageId, inputs) : recoveredStatus(lineageId, true);
+			const finalStatus = groupStatus(lineageId, []);
+			delete finalStatus.nextTransition;
+			const { native } = queueNative(grouped
+				? [status, status, status, status, groupStatus(lineageId, inputs.slice(1)), finalStatus]
+				: [status, status, status]);
+			const tools = new Map<string, CaptureTool>();
+			let transport: "sse" | "websocket" | "websocket-cached" | "auto" | undefined = "auto";
+			let settingsReads = 0;
+			const pi = {
+				on() {}, registerCommand() {},
+				registerTool(tool: CaptureTool) { tools.set(tool.name, tool); },
+				...(preference === "older-api" ? {} : {
+					getSettings() { settingsReads += 1; return { transport }; },
+				}),
+			} as unknown as ExtensionAPI;
+			createGentleAiExtension({ nativeReviewCli: native })(pi);
+			assert.equal(settingsReads, 0, "registration must not cache settings");
+			transport = preference === "unset" || preference === "older-api" ? undefined : preference;
+			const requests: ReviewHostRelayRequest[] = [];
+			__testing.setReviewHostRelayRunnerForTesting(async (request) => {
+				requests.push(request);
+				return { promptByteLength: 64, resultByteLength: 32, submission: "{}" };
+			});
+			__testing.setReviewHostRelayGroupRunnersForTesting(
+				async (group) => { requests.push(...group); return group.map(prepared); },
+				async (result) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
+			);
+			const ctx = { cwd, hasUI: false } as unknown as Parameters<CaptureTool["execute"]>[4];
+			await tools.get("gentle_review")!.execute("status", { operation: "status", lineageId }, undefined, undefined, ctx);
+			const tool = tools.get(grouped ? "gentle_review_capture_group" : "gentle_review_capture")!;
+			const parameters = grouped
+				? { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) }
+				: { lineageId, collectBinding: JSON.stringify(inputs[0]) };
+			const forecast = await tool.execute("forecast", parameters, undefined, undefined, ctx);
+			assert.equal((forecast.details as Record<string, unknown>).outcome, "reviewer-model-run-forecast");
+			assert.equal(requests.length, 0);
+			assert.equal(settingsReads, 0, "an unacknowledged forecast must not read reviewer settings");
+			const result = await tool.execute("capture", { ...parameters, reviewerRunAcknowledged: true }, undefined, undefined, ctx);
+			assert.equal((result.details as Record<string, unknown>).outcome, grouped ? "native-reviewer-group-status-reconciled" : "native-reviewer-result-captured");
+			assert.equal(requests.length, inputs.length);
+			for (const request of requests) {
+				assert.equal(request.reviewerTransport, transport);
+				assert.equal(Object.hasOwn(request, "reviewerTransport"), transport !== undefined);
+			}
+			assert.equal(settingsReads, preference === "older-api" ? 0 : 1, "read the effective snapshot once per execution");
+		});
+	}
+}

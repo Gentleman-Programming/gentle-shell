@@ -1155,3 +1155,11 @@ test("next_transition.execute.binding stays open, as its schema declares no prop
 	};
 	assert.doesNotThrow(() => decodeReviewNextTransitionV3(withContext));
 });
+
+ test("capabilities retain request-context and START preflight features only when supported", () => {
+ const source = fixture<any>("capabilities.fixture.json");
+ source.features.optional.push({ name: "start_request_context", supported: true, requires: [] }, { name: "start_options_preflight", supported: false, requires: [] });
+ const result = decodeReviewCapabilitiesV2(source, executableDigest);
+ assert.equal(result.optionalFeatures.has("start_request_context"), true);
+ assert.equal(result.optionalFeatures.has("start_options_preflight"), false);
+ });

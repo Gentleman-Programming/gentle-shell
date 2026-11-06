@@ -297,6 +297,25 @@ function mountingContext(mounted: { component?: Component; registeredAtMount?: C
 	};
 }
 
+/**
+ * A fake `ctx.ui.custom` that mounts the prompt and then fails: the prompt
+ * was registered, but the UI never came up.
+ */
+function rejectingContext(mounted: { component?: Component; registeredAtMount?: Component | undefined }) {
+	return {
+		mode: "tui",
+		hasUI: true,
+		ui: {
+			custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: unknown) => void) => Component) => {
+				const component = factory({ requestRender() {} }, promptTheme, {}, () => {});
+				mounted.component = component;
+				mounted.registeredAtMount = pendingAgentPrompt();
+				throw new Error("the UI failed");
+			},
+		},
+	};
+}
+
 test("the ask_user_choice prompt registers itself as the pending prompt and clears it when it closes", async () => {
 	const tool = registerTool(askUserChoice);
 	const mounted: { component?: Component; registeredAtMount?: Component | undefined } = {};
@@ -318,6 +337,61 @@ test("the ask_user_choice prompt registers itself as the pending prompt and clea
 	assert.ok(mounted.component, "the prompt was mounted");
 	assert.equal(mounted.registeredAtMount, mounted.component, "the prompt is registered before Pi focuses it");
 	assert.equal(pendingAgentPrompt(), undefined, "the registration is cleared when the prompt closes");
+});
+
+test("the ask_user_choice prompt clears its registration when the UI fails", async () => {
+	const tool = registerTool(askUserChoice);
+	const mounted: { component?: Component; registeredAtMount?: Component | undefined } = {};
+
+	await assert.rejects(
+		tool.execute(
+			"call",
+			{
+				question: "Pick one",
+				options: [
+					{ label: "First", description: "The first option.", value: "first" },
+					{ label: "Second", description: "The second option.", value: "second" },
+				],
+			},
+			new AbortController().signal,
+			undefined,
+			rejectingContext(mounted),
+		),
+		/the UI failed/,
+	);
+
+	assert.equal(mounted.registeredAtMount, mounted.component, "the prompt was registered before the failure");
+	assert.equal(pendingAgentPrompt(), undefined, "the registration is cleared when the UI fails");
+});
+
+test("the ask_user_question prompt clears its registration when the UI fails", async () => {
+	const tool = registerTool(askUserQuestion);
+	const mounted: { component?: Component; registeredAtMount?: Component | undefined } = {};
+
+	await assert.rejects(
+		tool.execute(
+			"call",
+			{
+				questions: [
+					{
+						header: "Scope",
+						question: "Which scope?",
+						options: [
+							{ label: "First", description: "The first option." },
+							{ label: "Second", description: "The second option." },
+						],
+					},
+				],
+			},
+			new AbortController().signal,
+			undefined,
+			rejectingContext(mounted),
+		),
+		/the UI failed/,
+	);
+
+	assert.equal(mounted.registeredAtMount, mounted.component, "the prompt was registered before the failure");
+	assert.equal(pendingAgentPrompt(), undefined, "the registration is cleared when the UI fails");
 });
 
 test("the ask_user_question prompt registers itself as the pending prompt and clears it when it closes", async () => {

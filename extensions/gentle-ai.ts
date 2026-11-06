@@ -2336,7 +2336,7 @@ async function confirmCommand(
 			}).select(`${title}\n${preview}`, choices);
 			if (selection === "Allow for this session") sessionAllowedRemember(ctx, command);
 			if (alwaysLabel !== undefined && selection === alwaysLabel && !saveGuardedCommandAllowAlways(evaluation.key as GuardedCommandKey)) {
-				try { ctx.ui.notify?.("Could not save the always-allow preference; the command is approved once only.", true); } catch { /* display only */ }
+				try { ctx.ui.notify?.("Could not save the always-allow preference; the command is approved once only.", "warning"); } catch { /* display only */ }
 			}
 			approved = selection === "Allow once" || selection === "Allow for this session" || (alwaysLabel !== undefined && selection === alwaysLabel);
 		} else {

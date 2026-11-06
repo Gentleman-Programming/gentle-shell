@@ -149,7 +149,7 @@ function sanitizeErrorExcerpt(error: unknown): string {
 	return collapsed.length <= ERROR_EXCERPT_MAX_CHARS ? collapsed : `${collapsed.slice(0, ERROR_EXCERPT_MAX_CHARS - 1)}…`;
 }
 
-function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): InProcessReviewerOutcome {
+function refuse(code: InProcessReviewerFailureCode, message: string, evidence?: Record<string, unknown>): Extract<InProcessReviewerOutcome, { kind: "refused" }> {
 	return { kind: "refused", code, message, ...(evidence === undefined ? {} : { evidence }) };
 }
 
@@ -211,13 +211,12 @@ export function openCodeSessionAttributionHeaders(model: Model<Api>, sessionId: 
 	return { "x-opencode-session": sessionId, "x-opencode-client": "pi" };
 }
 
-/**
- * Runs one reviewer completion in-process: resolve the model, authenticate,
- * map the routing thinking label, and complete exactly one frozen prompt as
- * a single user message. Never retries, never falls back to another model,
- * never reads process.env — every seam is injected through `deps`.
- */
-export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
+type InProcessReviewerModelResolution =
+	| { readonly kind: "resolved"; readonly model: Model<Api>; readonly provider?: InProcessReviewerProvider; readonly providerId: string }
+	| Extract<InProcessReviewerOutcome, { kind: "refused" }>;
+
+/** Resolve only caller-owned model routing; no authentication or completion. */
+export function resolveInProcessReviewerModel(request: Pick<InProcessReviewerRequest, "selection" | "routingKey">, registry: InProcessReviewerRegistry): InProcessReviewerModelResolution {
 	const parsed = parseSelection(request.selection);
 	if (parsed === undefined) {
 		return refuse(
@@ -226,7 +225,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 		);
 	}
 
-	const model = deps.registry.find(parsed.provider, parsed.modelId);
+	const model = registry.find(parsed.provider, parsed.modelId);
 	if (model === undefined) {
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
@@ -252,14 +251,27 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	// construction. Keying on the returned field instead would make that
 	// guarantee depend on every provider's `getModels()` echoing its own id,
 	// which a native or OAuth-modified extension provider is free not to do.
-	const provider = deps.registry.getProvider?.(parsed.provider);
-	if (deps.registry.getProvider !== undefined && provider === undefined) {
+	const provider = registry.getProvider?.(parsed.provider);
+	if (registry.getProvider !== undefined && provider === undefined) {
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.MODEL_NOT_FOUND,
 			`The model registry resolved ${JSON.stringify(request.selection)} for ${request.routingKey} but owns no provider for ${JSON.stringify(parsed.provider)}; reassign ${request.routingKey} to a model whose provider the interactive pi can actually dispatch.`,
 			{ provider: parsed.provider, api: model.api },
 		);
 	}
+	return { kind: "resolved", model, ...(provider === undefined ? {} : { provider }), providerId: parsed.provider };
+}
+
+/**
+ * Runs one reviewer completion in-process: resolve the model, authenticate,
+ * map the routing thinking label, and complete exactly one frozen prompt as
+ * a single user message. Never retries, never falls back to another model,
+ * never reads process.env — every seam is injected through `deps`.
+ */
+export async function runInProcessReviewer(request: InProcessReviewerRequest, deps: InProcessReviewerDeps): Promise<InProcessReviewerOutcome> {
+	const resolved = resolveInProcessReviewerModel(request, deps.registry);
+	if (resolved.kind === "refused") return resolved;
+	const { model, provider, providerId } = resolved;
 
 	const auth = await deps.registry.getApiKeyAndHeaders(model);
 	// Negation narrowing (`!auth.ok`) does not eliminate the `ok: true` arm of
@@ -268,7 +280,7 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 	if (auth.ok === false) {
 		return refuse(
 			INPROCESS_REVIEWER_FAILURE.AUTH_UNAVAILABLE,
-			`No credentials available for provider ${JSON.stringify(parsed.provider)} (used by ${request.routingKey}): ${auth.error}`,
+			`No credentials available for provider ${JSON.stringify(providerId)} (used by ${request.routingKey}): ${auth.error}`,
 		);
 	}
 

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
 import { runtimeMetricsEnvAllows } from "./runtime-metrics-policy.ts";
 import { isPublicRuntimeModelId, normalizeRuntimeModel, type RuntimeMetricBucket } from "./runtime-metrics.ts";
 import type { ChildLaunchBucket } from "./runtime-metrics-children.ts";
@@ -105,7 +105,8 @@ export async function sendNativeRuntimeEvent(rows: readonly RuntimeMetricBucket[
 		const file = (deps.resolve ?? resolveGentleAiBinary)();
 		if (!runtimeMetricsEnvAllows(env)) return "disabled";
 		if (deps.signal?.aborted || deps.current?.() === false) return "discarded";
-		return await sendProcess(file, cwd, payload, env, deps.spawn ?? spawn, deps.signal);
+		// S9: a bundled install keeps Gentle AI's state inside its prefix.
+		return await sendProcess(file, cwd, payload, gentleAiIsolationEnv(env), deps.spawn ?? spawn, deps.signal);
 	} catch { return "discarded"; }
 	finally { busy = false; }
 }

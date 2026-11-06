@@ -22,7 +22,7 @@ function payload(percent: number) {
 test("UsageView frames the panel, keeps every line at width, and shows the empty state", () => {
 	const store = new UsageStore();
 	const events: string[] = [];
-	const view = new UsageView(store, { theme: plainTheme, now: () => NOW, active: () => undefined, onRefresh: async () => events.push("refresh"), onClose: () => events.push("close"), requestRender: () => events.push("render") });
+	const view = new UsageView(store, { theme: plainTheme, now: () => NOW, active: () => undefined, onRefresh: async () => { events.push("refresh"); }, onClose: () => events.push("close"), requestRender: () => events.push("render") });
 	const empty = view.render(90).map(stripAnsi);
 	assert.match(empty[0], /^╭─ ✿ Subscriptions ─+╮$/);
 	assert.match(empty[1], /No subscription usage yet/);

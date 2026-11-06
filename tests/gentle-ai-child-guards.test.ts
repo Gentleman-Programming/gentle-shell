@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -162,6 +163,66 @@ test("child session_start re-arms YOLO and the review sidebar for its own sessio
 	await capture(nextCtx, "current-session");
 	assert.ok(sidebarSessions().length > 0, "the restarted child sidebar publishes again");
 	assert.ok(sidebarSessions().every((id) => id === "session-child-next"), JSON.stringify(sidebarSessions()));
+});
+
+// Harness roadmap T5: the delivered-test lint runs in the shared tool_call
+// handler, so it holds for the parent's inline writes and for every child.
+for (const child of [false, true]) {
+	test(`${child ? "child" : "parent"} tool_call blocks a test that reads a literal commit, and allows the same write elsewhere`, async (t) => {
+		const { cwd } = isolate(t);
+		const h = harness(child, cwd);
+		await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+		const content = 'execSync("git show 3f9c2e1:src/ledger.ts");\n';
+		const call = (path: string) => h.handlers.get("tool_call")!({ toolName: "write", toolCallId: "call-1", input: { path, content } }, h.ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+		const blocked = await call("tests/ledger.test.ts");
+		assert.equal(blocked?.block, true);
+		assert.match(blocked?.reason ?? "", /git history/);
+		assert.equal((await call("scripts/check.ts"))?.block, undefined, "a non-test file is not linted");
+	});
+}
+
+// Harness roadmap T4: only the parent owns delivery, so only its commits get
+// the slice line; the bash output and structured content are kept.
+for (const child of [false, true]) {
+	test(`${child ? "child" : "parent"} bash tool_result ${child ? "never adds" : "appends"} the commit slice line`, async (t) => {
+		const { cwd } = isolate(t);
+		const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" });
+		git("init", "-q", "-b", "main");
+		writeFileSync(join(cwd, "README.md"), "base\n");
+		git("add", "README.md");
+		git("commit", "-q", "-m", "base");
+		git("switch", "-q", "-c", "feat/x");
+		writeFileSync(join(cwd, "a.ts"), "one\ntwo\n");
+		git("add", "a.ts");
+		git("commit", "-q", "-m", "feat: a");
+		const h = harness(child, cwd);
+		await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+		const event = { toolName: "bash", toolCallId: "call-1", isError: false, input: { command: "git commit -m 'feat: a'" }, content: [{ type: "text", text: "[feat/x 1234567] feat: a" }], structuredContent: { exitCode: 0 } };
+		const result = await h.handlers.get("tool_result")!(event, h.ctx) as { content?: Array<{ text?: string }>; structuredContent?: unknown } | undefined;
+		if (child) return assert.equal(result, undefined);
+		assert.equal(result?.content?.[0]?.text, "[feat/x 1234567] feat: a", "the command output is kept first");
+		assert.match(result?.content?.[1]?.text ?? "", /Commit slice: 2 authored changed lines in 1 commit on feat\/x since main/);
+		assert.deepEqual(result?.structuredContent, { exitCode: 0 });
+		const failed = await h.handlers.get("tool_result")!({ ...event, isError: true }, h.ctx);
+		assert.equal(failed, undefined, "a failed commit reports nothing");
+	});
+}
+
+// Native review tools hung when called from a codemode script (a nested call with
+// parentToolCallId), while direct calls returned at once. The runtime refuses the
+// nested form so a review never stalls the session.
+test("review tools called from inside another tool are refused; direct calls and other nested tools are not", async (t) => {
+	const { cwd } = isolate(t);
+	const h = harness(false, cwd);
+	await h.handlers.get("session_start")!({ reason: "startup" }, h.ctx);
+	const call = (toolName: string, parentToolCallId?: string) => h.handlers.get("tool_call")!({ toolName, toolCallId: "call-1", input: { operation: "status" }, ...(parentToolCallId ? { parentToolCallId } : {}) }, h.ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	for (const tool of ["gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"]) {
+		const nested = await call(tool, "codemode-1");
+		assert.equal(nested?.block, true, tool);
+		assert.match(nested?.reason ?? "", /call it directly, never from codemode or another tool/, tool);
+	}
+	assert.equal((await call("gentle_review_scope"))?.block, undefined, "a direct review call is not refused by this guard");
+	assert.equal((await call("read", "codemode-1"))?.block, undefined, "other nested tools still run");
 });
 
 async function writeToolResult(child: boolean, t: TestContext) {

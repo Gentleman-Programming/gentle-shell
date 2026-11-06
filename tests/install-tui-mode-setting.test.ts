@@ -378,3 +378,18 @@ for (const [name, packagePath] of [
 		});
 	}
 }
+
+// #1258 / #2109: on recent Windows, lstat by path reports dev 0 while fstat on
+// the opened handle reports the volume serial, so settings.json looked replaced
+// and every `pi install npm:gentle-pi` postinstall exited 1.
+test("sameOpenedFile accepts the same Windows file whose path stat has no volume id", async () => {
+	const { sameOpenedFile } = await import("../scripts/install-tui-mode-setting.mjs");
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), true);
+	assert.equal(sameOpenedFile({ dev: 2384917313, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), true);
+	// A different file is still refused on Windows, and a known volume id still has to match.
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 43 }, "win32"), false);
+	assert.equal(sameOpenedFile({ dev: 7, ino: 42 }, { dev: 2384917313, ino: 42 }, "win32"), false);
+	// POSIX keeps the full device and inode check.
+	assert.equal(sameOpenedFile({ dev: 0, ino: 42 }, { dev: 2384917313, ino: 42 }, "linux"), false);
+	assert.equal(sameOpenedFile({ dev: 66, ino: 42 }, { dev: 66, ino: 42 }, "darwin"), true);
+});

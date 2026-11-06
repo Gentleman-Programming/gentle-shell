@@ -17,7 +17,10 @@ test("a second direct file is not refused based on session write history", async
 			events: { emit() {} }, registerCommand() {}, registerTool() {}, getFlag: () => undefined,
 			getActiveTools: () => ["edit", "write"],
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: null, processEnv: {}, resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never })(pi);
+		// An isolated config home keeps the host's permission mode (for example Auto)
+		// out of a test that only exercises the ODD write gate.
+		const processEnv = { GENTLE_PI_CONFIG_HOME: join(cwd, ".config-home") };
+		createGentleAiExtension({ nativeReviewCli: null, processEnv, resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never })(pi);
 		const ctx = {
 			cwd, hasUI: false, mode: "interactive", ui: { notify() {} },
 			sessionManager: { getSessionId: () => "odd-direct" },

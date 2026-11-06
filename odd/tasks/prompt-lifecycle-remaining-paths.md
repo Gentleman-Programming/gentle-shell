@@ -48,3 +48,6 @@ Residual: a held orchestrator message is lost if the session is replaced before 
 - cf3012f7 split the idle wake: Claude Bridge keeps a user wake through the prompt lifecycle; native providers get a hidden `gentle-agents.wake` custom-message turn. The real-host harness now registers the faux provider as `claude-bridge`.
 - The bridge wake text is persisted per session (`gentle-agents.wake-identity`) and validated against `PARENT_WAKE_TEXT` on restore, so the wake text is no longer changed here and the idle test no longer asserts it.
 - cf3012f7 also moved the `restoreSessionHistory` session check inside its try; main's version replaces this branch's guard.
+
+### #1640 on main 9a4fb84f
+#1640 covers items 2 and 3 of #1638 (T2 hold liveness and T3 pre-run race), re-applied on main after #1639. The held-only re-check also counts held job notices, so one held during a cancelled `/tree` summarization is released too.

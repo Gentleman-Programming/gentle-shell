@@ -126,6 +126,12 @@ const NATIVE_PARENT_WAKE_TEXT = `${PARENT_WAKE_TEXT} Reply in the language of th
 // How long a dispatched wake may take to start a parent run before a later
 // delivery may send another one.
 export const PARENT_WAKE_GRACE_MS = 30_000;
+// How often a parent that is busy without a run is re-checked while content is
+// held for it. See `armHoldRecheck`.
+export const HOLD_RECHECK_MS = 1000;
+// How long a user prompt seen at `input` suppresses the idle wake while it is
+// still in its pre-run phase. See the `input` handler.
+export const INPUT_PROMPT_GRACE_MS = 2000;
 // A delivery or wake the host rejected while the parent was idle is retried
 // after the grace at most this many times in a row, so a permanently broken
 // runtime never retries forever.
@@ -1212,17 +1218,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// Idle wake-up state. Child content stored while the parent is idle owes a
 	// wake, and one wake covers everything stored before the run it starts.
 	// While a prompt is starting (a dispatched wake, or any prompt seen at
-	// before_agent_start) no second wake is sent: two prompts racing through
+	// input or before_agent_start) no second wake is sent: two prompts racing through
 	// Pi's asynchronous pre-run phase can both reach the agent, and the loser
 	// resets the winner's run state. A prompt that never starts a run (handled
 	// by an input handler, or rejected) emits no extension event, so the
-	// starting state expires after PARENT_WAKE_GRACE_MS and an owed wake is
-	// sent then; it never suppresses later wakes for longer than that.
+	// starting state expires after PARENT_WAKE_GRACE_MS (INPUT_PROMPT_GRACE_MS
+	// when marked at input) and an owed wake is sent then; it never suppresses later wakes for longer than that.
 	let wakeOwed = false;
 	let wakeQueued = false;
 	let promptStarting = false;
 	let cancelPromptGrace: (() => void) | undefined;
 	let cancelBoundaryFlush: (() => void) | undefined;
+	let cancelHoldRecheck: (() => void) | undefined;
+	// Completions sit in an opaque queue; this notes that one may be waiting.
+	// It is cleared by the next flush that reaches a deliverable route.
+	let completionsMaybePending = false;
 	// An idle parent has no turn boundary coming, so a failed idle delivery or
 	// wake is retried by one bounded timer that runs a full flush.
 	let cancelDeliveryRetry: (() => void) | undefined;
@@ -1285,14 +1295,36 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		cancelPromptGrace?.();
 		cancelPromptGrace = undefined;
 	};
-	const beginPromptStart = () => {
+	const beginPromptStart = (graceMs = PARENT_WAKE_GRACE_MS) => {
 		endPromptStart();
 		promptStarting = true;
 		cancelPromptGrace = deps.schedule(() => {
 			cancelPromptGrace = undefined;
 			promptStarting = false;
 			requestWake();
-		}, PARENT_WAKE_GRACE_MS);
+		}, graceMs);
+	};
+
+	const hasHeldContent = (): boolean =>
+		heldOrchestratorMessages.length > 0 || wakeOwed || completionsMaybePending || messages.pendingCount() > 0 || jobNotices.length > 0;
+	const stopHoldRecheck = () => {
+		cancelHoldRecheck?.();
+		cancelHoldRecheck = undefined;
+	};
+	// Events (`agent_*`, `turn_end`, `session_compact*`, `session_tree`) are the
+	// fast path that releases held content. They are not a guarantee: a busy
+	// state without a run can end without any event (a cancelled `/tree`
+	// summarization emits none) or be added to the host later. So while content
+	// is held for a parent that is busy without a run, one re-check is armed;
+	// it re-arms itself only while that state and the held content persist.
+	// Nothing is armed when nothing is held, and an idle or running parent is
+	// never polled.
+	const armHoldRecheck = () => {
+		if (cancelHoldRecheck || !hasHeldContent()) return;
+		cancelHoldRecheck = deps.schedule(() => {
+			cancelHoldRecheck = undefined;
+			flushAll();
+		}, HOLD_RECHECK_MS);
 	};
 
 	// Every wake requested during one synchronous delivery pass is coalesced
@@ -1309,6 +1341,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		try { route = parentRoute(); } catch { return; }
 		// A run in progress already carries the stored content; a parent busy
 		// without a run keeps the wake owed until a later boundary flush.
+		if (route === "hold") armHoldRecheck();
 		if (route !== "idle") return;
 		wakeOwed = false;
 		endDeliveryRetry();
@@ -1370,6 +1403,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const route = parentRoute();
 		if (route === "hold") {
 			heldOrchestratorMessages.push({ message, recipientSessionId });
+			armHoldRecheck();
 			return;
 		}
 		sendToParent(message, route, "followUp");
@@ -1415,7 +1449,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const deliveryRoute = (rethrow: boolean): Exclude<ParentRoute, "hold"> | undefined => {
 		try {
 			const route = parentRoute();
-			return route === "hold" ? undefined : route;
+			if (route === "hold") {
+				armHoldRecheck();
+				return undefined;
+			}
+			stopHoldRecheck();
+			return route;
 		} catch (error) {
 			if (rethrow) throw error;
 			return undefined;
@@ -1438,6 +1477,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const flushCompletions = () => {
 		const route = deliveryRoute(false);
 		if (!route) return;
+		completionsMaybePending = false;
 		for (const entry of completions.takeDeliverable(deps.now())) {
 			try {
 				if (entry.stale) deliverStale(entry.task, entry.settledAt, route);
@@ -1447,6 +1487,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				// lose the completion: it waits for the next boundary instead, and
 				// an idle parent, which has none coming, gets a bounded retry.
 				completions.requeue(entry);
+				// Still pending, so a later held-only re-check must see it.
+				completionsMaybePending = true;
 				if (route === "idle") armDeliveryRetry();
 			}
 		}
@@ -1506,7 +1548,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = false;
 		wakeOwed = false;
 		heldOrchestratorMessages = [];
+		completionsMaybePending = false;
 		endPromptStart();
+		stopHoldRecheck();
 		cancelBoundaryFlush?.();
 		cancelBoundaryFlush = undefined;
 		endDeliveryRetry();
@@ -1566,6 +1610,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const settleCompletion = (task: TaskRecord) => {
 		messages.invalidateTask(task.id);
 		completions.enqueue(task, deps.now());
+		completionsMaybePending = true;
 		if (activeAgentRuns === 0) flushAll();
 	};
 
@@ -1613,6 +1658,23 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("turn_end", () => flushAll());
 	pi.on("session_compact", scheduleBoundaryFlush);
 	pi.on("session_compact_failed", scheduleBoundaryFlush);
+	pi.on("session_tree", scheduleBoundaryFlush);
+	// A user prompt is "starting" from `input`, through input handlers, auth and
+	// model checks, until `before_agent_start`, while the host still reports
+	// idle. A wake dispatched in that window races the prompt into
+	// Agent.prompt(): the user's prompt can be rejected as already processing.
+	// The starting prompt carries the stored content itself, so no wake is
+	// needed. An input another extension handles never starts a run and emits
+	// no event, so this suppression expires quickly (INPUT_PROMPT_GRACE_MS) and
+	// the owed wake then goes out; a pre-run phase longer than that only
+	// re-opens the old window. A pre-prompt compaction makes the route "hold",
+	// and `before_agent_start` re-arms the starting state. A start window that
+	// is already open is never shortened: a dispatched wake reaches `input`
+	// too, and its own PARENT_WAKE_GRACE_MS window must keep a second wake out.
+	pi.on("input", (event) => {
+		if (parentRunActive || promptStarting || event.streamingBehavior !== undefined) return;
+		beginPromptStart(INPUT_PROMPT_GRACE_MS);
+	});
 
 	const runner = new AgentRunner(store, loadAgentsConfig({ cwd: process.cwd(), home: deps.home, agentHome }), deps, {
 		askUser: (_taskId, ask, raw) => answerThroughUi(ui, ask, raw),

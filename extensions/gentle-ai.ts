@@ -1882,9 +1882,10 @@ const BASH_COMMAND_POLICIES: readonly BashCommandPolicy[] = [
 
 // Tools whose `path` input names the file or directory they reach. The guard
 // sees only that input: a search scoped to a directory (grep over ".", with or
-// without a glob) still reads whatever the directory contains, and bash is not
-// covered here. Keeping secret bytes out of those results is a separate design
-// (gentle-shell#2349).
+// without a glob) still reads whatever the directory contains. Shell tools take
+// no `path` at all, so they are guarded from their command instead (see
+// findSensitiveCommandPath below, gentle-shell#2349). Keeping the secret bytes
+// out of a decoded or variable-built read is a separate design.
 const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
@@ -2004,17 +2005,110 @@ function hasWritableEngramTool(pi: ExtensionAPI): boolean {
 	}
 }
 
-function evaluateSensitivePathTool(
-	toolName: string,
-	input: unknown,
-): ToolCallEventResult | undefined {
-	if (!PATH_GUARDED_TOOL_NAMES.has(toolName)) return undefined;
-	const sensitivePath = collectPathInputs(input).find(isSensitivePath);
-	if (!sensitivePath) return undefined;
+// gentle-shell#2349 (scope 1): bash, bash_background and monitor carry no
+// `path` input, so the deny list never saw `cat .env` while `read .env` was
+// blocked. A command is a shell string, not a path, so the patterns run over
+// its words instead: quotes and backslash escapes are removed and shell control
+// operators split words. The pattern's own path boundary then does the prose
+// filtering for free: `git commit -m "fix .env"` yields the single word
+// `fix .env`, where `.env` has no `/` or string start before it, so a message
+// that mentions a sensitive name stays allowed.
+//
+// The #2174 data-argument exemption (dataArgumentRanges) is deliberately NOT
+// reused here, although it keeps guarded git words out of messages: for a data
+// command its ranges cover the arguments of `cat`, `head`, `tail` and `grep`,
+// which are exactly the paths this guard exists to deny. `dataArgumentRanges("cat
+// .env")` is `[[3, 8]]`, so skipping those spans would re-open `cat .env`,
+// while the raw patterns never match `git commit -m "fix .env"` anyway (no `/`
+// or start before `.env`). Word matching is the form that satisfies both.
+//
+// Deliberate limits, kept fail-open rather than hidden (option 3, a fail-closed
+// typed extractor of read targets, is gentle-shell#2349 follow-up):
+//   - globs: `cat .e*` and `rm -r ./proj/*` never spell the sensitive word.
+//   - `$VAR` indirection: `cat "$DIR/x"` is a variable, and an unexpanded
+//     `$HOME/.ssh/id_rsa` is only caught because the literal tail matches.
+//   - `cd dir && cat .env`: a relative path resolves against a directory a
+//     previous segment changed, which this lexical guard cannot follow.
+//   - decoded or interpreted reads: `base64 -d .env | cat`, `python -c
+//     read('.env')`, `$(...)` output, and paths assembled inside a script.
+//   - nested interpreters: `bash -c 'cat .env'` and `bash -c "cat .env"` keep
+//     the whole program in one quoted word, where `.env` has no path boundary
+//     before it, so the inner read stays allowed.
+// Over-denial is accepted where it protects the deny: a word that matches is
+// denied even inside a heredoc body, and prose that spells a path after a `/`
+// such as `git commit -m "add ./.env.example"` is denied too.
+const SHELL_WORD_SEPARATOR_CHARACTERS = new Set([";", "|", "&", "(", ")", "<", ">", "\n", "\r"]);
+
+function shellCommandWords(command: string): string[] {
+	const words: string[] = [];
+	let word = "";
+	let started = false;
+	const flush = (): void => {
+		if (started) words.push(word);
+		word = "";
+		started = false;
+	};
+	for (let index = 0; index < command.length; index += 1) {
+		const character = command[index] as string;
+		if (character === "'") {
+			started = true;
+			const closing = command.indexOf("'", index + 1);
+			// An unterminated quote keeps the rest of the line as one word: the
+			// shell would reject the command, and the literal text stays denied.
+			word += command.slice(index + 1, closing < 0 ? command.length : closing);
+			index = closing < 0 ? command.length : closing;
+			continue;
+		}
+		if (character === '\"') {
+			started = true;
+			let closing = command.indexOf('\"', index + 1);
+			// A backslash-escaped quote inside a double-quoted word stays literal.
+			while (closing > 0 && command[closing - 1] === "\\") closing = command.indexOf('\"', closing + 1);
+			word += command.slice(index + 1, closing < 0 ? command.length : closing);
+			index = closing < 0 ? command.length : closing;
+			continue;
+		}
+		if (character === "\\" && index + 1 < command.length) {
+			index += 1;
+			word += command[index] as string;
+			started = true;
+			continue;
+		}
+		if (SHELL_WORD_SEPARATOR_CHARACTERS.has(character) || /\s/.test(character)) {
+			flush();
+			continue;
+		}
+		word += character;
+		started = true;
+	}
+	flush();
+	return words;
+}
+
+function findSensitiveCommandPath(command: string): string | undefined {
+	return shellCommandWords(command).find(isSensitivePath);
+}
+
+function sensitivePathBlock(sensitivePath: string): ToolCallEventResult {
 	return {
 		block: true,
 		reason: `Gentle AI safety policy blocked access to sensitive path: ${sanitizeTerminalText(sensitivePath)}. Ask the user for an explicit safer plan.`,
 	};
+}
+
+function evaluateSensitivePathTool(
+	toolName: string,
+	input: unknown,
+): ToolCallEventResult | undefined {
+	const sensitivePath = PATH_GUARDED_TOOL_NAMES.has(toolName)
+		? collectPathInputs(input).find(isSensitivePath)
+		: undefined;
+	if (sensitivePath !== undefined) return sensitivePathBlock(sensitivePath);
+	if (!SHELL_COMMAND_TOOLS.has(toolName)) return undefined;
+	const command = readStringPath(input, ["command"]);
+	if (command === undefined) return undefined;
+	const commandPath = findSensitiveCommandPath(command);
+	return commandPath === undefined ? undefined : sensitivePathBlock(commandPath);
 }
 
 const ASK_USER_CHOICE_BLOCKED_EVENT = "gentle-pi:ask-user-choice:blocked";
@@ -11407,6 +11501,8 @@ export const __testing = {
 	orderDiscoverableAgents,
 	classifyGuardedCommand,
 	evaluateGuardedCommand,
+	findSensitiveCommandPath,
+	shellCommandWords,
 	guardedCommandPreview,
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,

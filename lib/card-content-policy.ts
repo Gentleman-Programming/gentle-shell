@@ -5,9 +5,8 @@ import { gentlePiConfigHome } from "./agent-home.ts";
 
 // The conversation card content level chosen in Gentle → Customize. `default`
 // keeps the quiet tools' result previews; `minimal` draws every quiet tool
-// card as the command alone. A missing file means default, so nobody loses the
-// previews without choosing to; a malformed or unreadable one also reads as
-// default, and the writer refuses
+// card as the command alone. A missing file means minimal, the default; a
+// malformed or unreadable one also reads as minimal, and the writer refuses
 // to replace it so a hand edit is never lost. There is no environment override.
 export const CARD_CONTENT_SCHEMA = "gentle-pi.card-content/v1";
 const CARD_CONTENT_FILE = "card-content.json";
@@ -18,6 +17,8 @@ export const CARD_CONTENT = {
 } as const;
 
 export type CardContent = (typeof CARD_CONTENT)[keyof typeof CARD_CONTENT];
+/** What a missing or unreadable preference means: command-only cards. `default` names the preview level. */
+export const DEFAULT_CARD_CONTENT: CardContent = CARD_CONTENT.MINIMAL;
 
 interface CardContentOptions { gentlePiConfigHome?: string }
 
@@ -45,10 +46,10 @@ export function resolveCardContent(options: CardContentOptions = {}): CardConten
 	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_CONTENT_FILE);
 	try {
 		const content = parseCardContentFile(readFileSync(globalFile, "utf8"));
-		return { content: content ?? CARD_CONTENT.DEFAULT, source: "global_file", malformed: content === undefined, globalFile };
+		return { content: content ?? DEFAULT_CARD_CONTENT, source: "global_file", malformed: content === undefined, globalFile };
 	} catch (error) {
 		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-		return { content: CARD_CONTENT.DEFAULT, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
+		return { content: DEFAULT_CARD_CONTENT, source: missing ? "default" : "global_file", malformed: !missing, globalFile };
 	}
 }
 
@@ -72,7 +73,8 @@ export function writeCardContent(content: CardContent, options: CardContentOptio
 // Pi loads every extension with its own module cache, so the renderers in
 // quiet-tools and the customize command in gentle-shell never share a module
 // instance. The process-wide slot keeps one live content level per process,
-// exactly like the card style slot; an unset slot reads as default.
+// exactly like the card style slot; an unset slot (no Gentle Shell resolution
+// yet, e.g. a host without it) reads as the `default` preview level.
 const CARD_CONTENT_SLOT = Symbol.for("gentle-pi.card-content");
 const contentState = globalThis as typeof globalThis & { [CARD_CONTENT_SLOT]?: unknown };
 

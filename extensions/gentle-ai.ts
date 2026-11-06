@@ -1,15 +1,22 @@
+import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
+import { isDeepStrictEqual } from "node:util";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
-import { appendContextBackstopNotice, createContextBackstopSignal } from "../lib/context-backstop.ts";
+import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
+import { createExplorationBudget } from "../lib/exploration-budget.ts";
 import { blockChildDestructiveCommand } from "./child-safety.ts";
 import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRepositoryPreparation, captureBoundSessionRepositoryAuthority, isHomeOrBroadUserDirectory, prepareBoundSessionRepository, rejectUndocumentedWriterLaunch, rejectUnscopedBoundedWriterDispatch, safeBootstrapDirectory, sourcePathWithinProject } from "../lib/bounded-writer-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
+import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
+import { parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
@@ -19,13 +26,18 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isProxy } from "node:util/types";
 import {
+	accessSync,
+	constants as fsConstants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import {
@@ -36,18 +48,20 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	SessionShutdownEvent,
 	Theme,
 	ThemeColor,
 	ToolCallEventResult,
 	ToolResultEvent,
 	ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { Key, Text, isKeyRelease, matchesKey, truncateToWidth, type KeybindingsManager, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
@@ -85,6 +99,7 @@ import {
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
+	unmatchedRoutingNotes,
 	profilesFilePath,
 	readProfileOrchestrator,
 	readProfilesFileResult,
@@ -111,7 +126,12 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { bindSessionProfile, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
+import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
+import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -119,8 +139,6 @@ import {
 	type OrchestratorSettingsReadResult,
 	parseOrchestratorModelRef,
 } from "../lib/profiles-orchestrator.ts";
-import { measureAgentsViewLayout, type AgentsViewLayout } from "../lib/agents-view-layout.ts";
-import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
@@ -167,7 +185,8 @@ import {
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CandidateViewError, CandidateViewRegistry, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, candidateOwnerPreparationError, CandidateViewError, CandidateViewRegistry, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { assertCandidateOwnerParent } from "../lib/review-candidate-view-owner.ts";
 import {
 	GentleAiDevBinaryOverrideError,
 	GENTLE_AI_INSTALL_RECOVERY_COMMAND,
@@ -198,6 +217,7 @@ import {
 	type NativeReviewAuthorityEntry,
 
 	NativeReviewCliError,
+	NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
 	nativeUntrackedSelection,
 	NativeReviewConsentBindingError,
 	NativeReviewConsentRequiredError,
@@ -216,6 +236,7 @@ import {
 	type NativeReviewAcknowledgeApprovedRequest,
 	type NativeTargetStatusRequest,
 	type NativeReviewModeOperation,
+	type NativeReviewModeRequest,
 	type NativeReviewModeSource,
 	type NativeReviewModeStatus,
 	type NativeReviewProcessDiagnostics,
@@ -257,6 +278,7 @@ import {
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
+import { RDD_MODE_CONTROL_CHANNEL, type RddModeControl } from "../lib/rdd-mode-control.ts";
 import { AutoPermissionRuntime, updateAutoPrompt, type AutoRuntimeClassifier } from "../lib/auto-permission-runtime.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 import { acquireChildStandingReviewPermissionClient, type ChildStandingReviewPermissionClient } from "../lib/review-session-standing-permission-ipc.ts";
@@ -794,9 +816,33 @@ const RDD_STATUS_TIMEOUT_MS = 3000;
 // spawns; the one-shot notify below still surfaces a sustained outage.
 const RDD_STATUS_MEMO_TTL_MS = 30_000;
 const rddStatusMemo = new Map<string, { readonly status: NativeReviewModeStatus | undefined; readonly expiresAt: number }>();
+// A late status read must not refill the memo after a mode change or session
+// shutdown. Generations are per cwd so unrelated workspaces remain independent.
+const rddStatusGenerations = new Map<string, number>();
+// A later write supersedes an earlier selector response, across sessions/cwds.
+let rddModeMutationSerial = 0;
+
+function rddStatusGeneration(cwd: string): number {
+	if (!rddStatusGenerations.has(cwd)) rddStatusGenerations.set(cwd, 0);
+	return rddStatusGenerations.get(cwd)!;
+}
+
+function invalidateRddStatus(cwd: string): void {
+	rddStatusGenerations.set(cwd, rddStatusGeneration(cwd) + 1);
+	rddStatusMemo.delete(cwd);
+	startupModeReads.delete(cwd);
+}
+
+function invalidateAllRddStatuses(): void {
+	// Direct ASSESS reads register their generation before awaiting, even when
+	// the cwd has never had a memo or prompt. They must be invalidated too.
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
+	pinnedRddStatusLines.clear();
+}
 
 /** @internal test seam: clears the per-cwd RDD status memo. */
 function clearRddStatusMemoForTesting(): void {
+	for (const cwd of rddStatusGenerations.keys()) invalidateRddStatus(cwd);
 	rddStatusMemo.clear();
 	rddStatusUnavailableWarned = false;
 }
@@ -863,7 +909,9 @@ async function readRddModeStatusOnce(
 	cwd: string,
 	signal?: AbortSignal,
 ): Promise<NativeReviewModeStatus | undefined> {
+	const generation = rddStatusGeneration(cwd);
 	const read = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	return "status" in read ? read.status : undefined;
 }
 
@@ -1052,7 +1100,10 @@ async function resolveReviewAssessmentPlan(
 	let assessment: ReviewAssessmentV1 | undefined;
 	let unassessableDetail: string | undefined;
 	let unassessableCode = "native-assess-unavailable";
-	if (nativeReviewCli?.assess === undefined) {
+	if (rddLine === RDD_LINE.OFF) {
+		unassessableCode = "rdd-off-assessment-skipped";
+		unassessableDetail = "Native assessment skipped because receipt-driven development is off; changed counts were not measured.";
+	} else if (nativeReviewCli?.assess === undefined) {
 		unassessableDetail = "native review assess is unavailable: the installed gentle-ai binary does not expose the assess command.";
 	} else {
 		try {
@@ -1083,7 +1134,7 @@ async function resolveReviewAssessmentPlan(
 	// identity, never repository-only. It is still needed when the caller
 	// claims `closed`, because a recorded decline beats closure (gentle-pi#1175).
 	const needsMemo = input.nativeReviewOutcome === undefined || input.nativeReviewOutcome === NATIVE_REVIEW_OUTCOME.CLOSED;
-	const targetIdentity = needsMemo ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
+	const targetIdentity = needsMemo && rddLine !== RDD_LINE.OFF ? await readCurrentTargetIdentityBestEffort(nativeReviewCli, cwd, signal) : undefined;
 	const memoOutcome = targetIdentity === undefined ? undefined : readNativeReviewOutcome(cwd, targetIdentity);
 	const { nativeReviewOutcome, outcomeSource } = resolveAssessNativeReviewOutcome(input, assessment, memoOutcome);
 	const plan = verificationPlan({ rddLine, risk, writerProfile, nativeReviewOutcome });
@@ -1143,9 +1194,9 @@ function homeRootedRepository(cwd: string): string | undefined {
  * `NativeReviewModeStatus`) that the `/gentle:review-mode` command also
  * calls. Never throws and never hangs past `signal`'s deadline when one is
  * given: an absent binary, a timed-out/aborted process, or a native CLI
- * failure all resolve to `undefined` unless an earlier read for the same cwd
- * succeeded, in which case that last known status is kept (gentle-shell#1029:
- * the rendered line sits in the cached prompt prefix). `ctx` is optional and
+ * failure resolves to `undefined` unless the last known status was on.
+ * Off is freshly confirmed each run so a failed read cannot suppress review
+ * guidance using a stale off status. `ctx` is optional and
  * used only for a one-shot (per process) UI notice when the read is
  * swallowed, so a sustained native outage is observable beyond the prompt.
  */
@@ -1158,21 +1209,22 @@ async function resolveRddModeStatus(
 ): Promise<NativeReviewModeStatus | undefined> {
 	const nowMs = now();
 	const cached = rddStatusMemo.get(cwd);
-	if (cached !== undefined && cached.expiresAt > nowMs) return cached.status;
-	// gentle-shell#1029: the rendered line is part of the cached system-prompt
-	// prefix. A re-read that fails or times out keeps the last successfully
-	// read status instead of flipping the prompt to "unknown" and back, which
-	// would invalidate the provider's prefix cache for the whole conversation.
-	// Only a status the native reader actually reports replaces a known one.
+	if (cached !== undefined && cached.expiresAt > nowMs && cached.status?.effective !== "off") return cached.status;
+	const generation = rddStatusGeneration(cwd);
+	// An off loadout suppresses mandatory assessment, so only a fresh off read
+	// can retain it. Known-on and unknown lines keep their existing memo policy.
 	const outcome = await readRddModeStatusWithCause(nativeReviewCli, cwd, signal);
+	// Neither cache nor return an obsolete read: in particular, an old off
+	// must never suppress review guidance after an explicit mode change.
+	if (rddStatusGeneration(cwd) !== generation) return undefined;
 	const read = "status" in outcome ? outcome.status : undefined;
-	const status = read ?? cached?.status;
+	const status = read ?? (cached?.status?.effective === "off" ? undefined : cached?.status);
 	rddStatusMemo.set(cwd, { status, expiresAt: nowMs + RDD_STATUS_MEMO_TTL_MS });
 	if ("cause" in outcome && !rddStatusUnavailableWarned) {
 		rddStatusUnavailableWarned = true;
 		if (ctx?.hasUI) {
 			ctx.ui.notify(
-				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status, or renders "unknown" when none was read; this notice will not repeat this session.`,
+				`Gentle AI: receipt-driven-development status is unavailable: ${outcome.cause}. The parent prompt keeps the last known status when it is on, or renders "unknown"; this notice will not repeat this session.`,
 				"warning",
 			);
 		}
@@ -1198,20 +1250,20 @@ function pinRddStatusLine(pinned: string | undefined, next: string): string {
 }
 
 /**
- * gentle-pi S11 T1: while the pinned line reads off, no review can start and
- * the orchestrator only calls ASSESS, so the primary request swaps the review
- * family's long guidance for this lean loadout: one short gentle_review
+ * While the pinned line reads off, no review can start and assessment is not
+ * mandatory, so the primary request swaps the review family's long guidance
+ * for this lean loadout: one short gentle_review
  * snippet, guideline, and description, with the capture, capture-group, and
  * scope declarations hidden (they stay registered and active). It follows the
  * pinned line, so it changes only when that line's off state flips, together
  * with the review execution contract; on and unknown keep the registered text.
  */
-const RDD_OFF_REVIEW_SNIPPET = "Assess an authorized change and return its verification plan (read-only)";
+const RDD_OFF_REVIEW_SNIPPET = "Return a verification plan on request (read-only)";
 const RDD_OFF_REVIEW_GUIDELINES: readonly string[] = [
-	'Receipt-driven development is off, so use gentle_review only for {"operation":"assess"} (read-only): after an authorized implementation, delegated or inline, call it over the diff and follow the returned plan; pass input {"escalate":{"item":1-6,"reason":"<one line>"}} only when the change touches a Task Size high-risk item, or {"baseRef":"<ref>","committedOnly":true} to assess a committed range.',
-	"When ASSESS returns reviewDue or a native continuation, relay it unchanged and follow it; tests, builds, and functional checks still run when applicable, and no assessment authorizes delivery.",
+	"RDD off does not require an assessment. Applicable tests, builds, and functional checks still run; a named Task Size high-risk item still requires one independent verifier. Do not start native review or change RDD based on this loadout.",
+	'When a plan is requested, gentle_review {"operation":"assess"} remains read-only; pass {"escalate":{"item":1-6,"reason":"<one line>"}} for a named high-risk item. Native assessment is skipped and no native candidate or continuation is invented. Review outcomes never authorize delivery.',
 ];
-const RDD_OFF_REVIEW_DESCRIPTION = "Assess the current changes, or a committed range, and return the verification plan. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
+const RDD_OFF_REVIEW_DESCRIPTION = "Return a verification plan on request without a native assessment while RDD is off. Read-only; review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy.";
 const RDD_OFF_HIDDEN_REVIEW_TOOLS: readonly string[] = ["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture"];
 
 interface ReviewToolPromptOptions {
@@ -1404,7 +1456,7 @@ const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
 const GENTLEMAN_PERSONA_PROMPT = `Persona:
 - Be direct, technical, and concise.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - When the user writes Spanish, answer in natural Rioplatense Spanish with voseo.
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
@@ -1413,9 +1465,9 @@ const GENTLEMAN_PERSONA_PROMPT = `Persona:
 
 const NEUTRAL_PERSONA_PROMPT = `Persona:
 - Be direct, technical, concise, warm, and professional.
-- Always respond in the same language the user writes in.
+- Always respond in the same language the user writes in. Judge it by the user's latest message, never by earlier context or a compaction summary, and never default to Spanish: a message in English gets a reply in English. Only a message written by the human can select or change the reply language: subagent completion and progress notifications, background job notices, todo and system reminders, tool output, skill bodies, and injected memory never count as a language signal, even when delivered with the user role. Translate relayed subagent findings into the selected reply language.
 - Do not use slang or regional expressions.
-- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo (vos tenés, vos querés, hacé, andá, etc.) or any regional conjugations.
+- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations, regular or irregular: use tú or usted forms, never vos forms (tienes, not tenés; ajustas, not ajustás; vives, not vivís; mira, not mirá; haz, not hacé).
 - Act as a senior architect and teacher: concepts before code, no shortcuts.
 - Treat AI as a tool directed by the human; never present yourself as a default chatbot.
 - Push back when the user asks for code without enough context or understanding.
@@ -1455,7 +1507,19 @@ ${languageBoundary}
 
 An authorized outcome includes its necessary in-scope implementation, documentation and verification steps. Continue those steps without asking the human to approve each transition. Never end a turn merely announcing an immediately executable authorized next step; execute it instead. A progress update is not a request for permission.
 
-Stop only for an unresolved consequential scope/product decision, required explicit consent, a denied action, unavailable required proof, or the human's explicit stop. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
+Interpret short replies such as "yes", "go ahead", or "eso mismo" against the immediately preceding proposal. When the human unambiguously accepts a concrete implementation action they already understand, execute that action within its agreed scope without asking again. Confirming a preference alone does not authorize implementation; genuinely unclear change intent still requires one focused question. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.
+
+Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision.
+
+Stop for an unresolved consequential scope/product decision, required explicit consent, a denied action, or the human's explicit stop. Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
+
+Before a terminal bounded-stop outcome, distinguish a recoverable technical or harness failure from genuinely inaccessible required proof. A failed test or harness check may be corrected and rerun without another authorization only within the authorized scope and existing correction budget, subject to every applicable limit. Honor explicit one run, no retries, or diagnostic-only limits; stop for permission denial, required new consent, or exhausted budget. Do not propose diagnostic-only or single-attempt authorization unless the human requested it. Respect terminal review and verification outcomes and existing bounded-stop rules: never reset budgets, add retry allowances, weaken checks, or override final outcomes.
+
+A failed verifier setup is a preparation failure, not an unavailable verifier capability. If setup fails before probes, preserve the failed attempt and report zero tests run; the checks remain unverified. For a genuinely unavailable capability: An unavailable verifier remains unavailable; do not retry or escalate it. After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt. This is a new request, not an automatic retry, and it does not reset the prior attempt or unrelated budgets. Before proceeding, confirm no child is active or has an uncertain status. Establish the required payload, dependencies and scratch capacity before isolated setup; do not blindly repeat an oversized copy. Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.
+
+An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature. Partial worker execution is not by itself exhausted proof or a terminal native review outcome. Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation. Name its scope, executor, correction limit and checks, or let the human stop. Before any worker continuation, confirm no child is active or has an uncertain status. The Close step's bounded stop ends the current automatic cycle; a later explicit human request is separate and remains subject to native authority. A new session does not reset any limit. When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation; unavailable proof still blocks completion and delivery.
+
+For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
 
 For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue", poll, or claim completion while checks remain pending.
 
@@ -1465,9 +1529,9 @@ ${oddProtocolSteps()}
 
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
-- Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
+- Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
-- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Before finishing, run a differential check: for each existing command that shares the code you changed, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
+- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a \`mktemp -d\` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.
 
@@ -1773,7 +1837,12 @@ function loadRuntimeGuardrailsConfig(
 	}
 }
 
-const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit"]);
+// Tools whose `path` input names the file or directory they reach. The guard
+// sees only that input: a search scoped to a directory (grep over ".", with or
+// without a glob) still reads whatever the directory contains, and bash is not
+// covered here. Keeping secret bytes out of those results is a separate design
+// (gentle-shell#2349).
+const PATH_GUARDED_TOOL_NAMES = new Set(["read", "write", "edit", "grep", "find", "ls"]);
 const PATH_INPUT_KEYS = new Set([
 	"path",
 	"paths",
@@ -1790,6 +1859,7 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.config\/gh\/hosts\.ya?ml$/,
 	/(^|\/)secrets(?:\/|$)/,
 	/(^|\/)\.env(?:$|[./_-])/,
+	/(^|\/)\.(?:envrc|netrc)(?:$|\/)/,
 	/\.(?:pem|key|p12|pfx)$/,
 ];
 
@@ -1814,26 +1884,12 @@ const KEEP_CURRENT = "Keep current";
 const INHERIT_MODEL = "Inherit active/default model";
 const CUSTOM_MODEL = "Custom model id";
 const INHERIT_THINKING = "Inherit effort";
-const THINKING_OPTIONS: (ThinkingLevel | typeof INHERIT_THINKING)[] = [
-	INHERIT_THINKING,
-	...THINKING_LEVELS,
-];
 
 const MODEL_CONTROL_OPTIONS = [
 	KEEP_CURRENT,
 	INHERIT_MODEL,
 	CUSTOM_MODEL,
 ] as const;
-const MODEL_PANEL_MAX_RENDER_ROWS = 20;
-// Rows the agent list does not own: two borders, title, current-profile line,
-// blank, "Current assignments:", blank, both scroll indicators, blank, Continue,
-// Back, blank, and the two footer rows.
-const AGENT_LIST_CHROME_ROWS = 15;
-const AGENT_LIST_MAX_VISIBLE_ROWS = MODEL_PANEL_MAX_RENDER_ROWS - AGENT_LIST_CHROME_ROWS;
-// Rows the model list does not own: two borders, title, blank, search, blank,
-// blank, and the footer row.
-const MODEL_LIST_CHROME_ROWS = 8;
-const MODEL_LIST_MAX_VISIBLE_ROWS = 12;
 
 function readStringPath(value: unknown, path: string[]): string | undefined {
 	let current = value;
@@ -1862,12 +1918,18 @@ function isNamedAgentStartEvent(event: unknown): boolean {
 }
 
 function normalizePolicyPath(value: string): string {
-	return value.trim().replace(/^~(?=\/|$)/, homedir()).replace(/\\/g, "/").toLowerCase();
+	return value.trim().replace(/^~(?=[/\\]|$)/, homedir()).replace(/\\/g, "/").toLowerCase();
 }
 
 function isSensitivePath(value: string): boolean {
 	const normalized = normalizePolicyPath(value);
 	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isSensitiveRequestContextPath(path: string): boolean {
+	if (isSensitivePath(path)) return true;
+	try { return isSensitivePath(realpathSync(path)); }
+	catch { return true; /* An unresolved alias cannot be checked safely. */ }
 }
 
 function collectPathInputs(value: unknown, key?: string): string[] {
@@ -2111,6 +2173,21 @@ function yoloConfiguredRestriction(cwd: string, keys: readonly GuardedCommandKey
 	return restriction;
 }
 
+/** Super Yolo ignores every configurable guardrail: only code-level denies survive. */
+const SUPER_YOLO_GUARDRAILS: RuntimeGuardrailsConfig = {
+	autonomousMode: true,
+	guardedCommands: { gitPush: "allow", gitRebase: "allow", gitBranchDeleteForce: "allow", npmPublish: "allow", piRemove: "allow" },
+};
+
+/**
+ * Super Yolo command decision: run everything without confirmation except the
+ * code-level catastrophic denies (root/home recursive removal, --no-preserve-root,
+ * hard-denied patterns). Configured guardrails are deliberately not consulted.
+ */
+function evaluateSuperYoloCommand(command: string): GuardAction {
+	return evaluateGuardedCommand(command, SUPER_YOLO_GUARDRAILS).action === "block" ? "block" : "allow";
+}
+
 async function confirmCommand(
 	command: string,
 	ctx: ExtensionContext,
@@ -2118,7 +2195,19 @@ async function confirmCommand(
 	herdrLifecycle: HerdrConfirmationLifecycle,
 	yoloActive = false,
 	autoGate?: () => Promise<ToolCallEventResult | undefined>,
+	superActive = false,
 ): Promise<ToolCallEventResult | undefined> {
+	if (superActive) {
+		// Sensitive-path and delivered-test guards already ran before this call;
+		// here only the code-level catastrophic denies remain.
+		if (evaluateSuperYoloCommand(command) === "block") {
+			return {
+				block: true,
+				reason: "Gentle AI safety policy blocked a catastrophic destructive shell command. Ask the user for an explicit safer plan.",
+			};
+		}
+		return autoGate?.();
+	}
 	const guardrailsConfig = loadRuntimeGuardrailsConfig(ctx.cwd);
 	const evaluation = evaluateGuardedCommand(command, guardrailsConfig);
 	// Configuration provenance is distinct from legacy autonomy resolution, which
@@ -2507,9 +2596,36 @@ function readEffectiveModelConfig(cwd: string): AgentModelConfig {
 	return pinnedEffectiveModelConfig(cwd) ?? readGlobalEffectiveModelConfig(cwd);
 }
 
-/** Resolve one complete reviewer routing snapshot without per-role fallback. */
-function readReviewerModelConfig(cwd: string, sessionId: string | undefined): AgentModelConfig {
-	return readSessionProfileBinding(sessionId)?.modelProfiles ?? pinnedEffectiveModelConfig(cwd) ?? readModelConfig(cwd);
+/**
+ * Resolve one complete reviewer routing snapshot without per-role fallback,
+ * through the same rule launches read (gentle-shell#1064): the Enter binding,
+ * else the profile the session froze at startup (a session frozen without one
+ * never adopts a later pin), else in follow mode the profile the target
+ * resolves now. A reviewer never runs on routing the session no longer uses.
+ */
+function readReviewerModelConfig(cwd: string, sessionId: string | undefined, sessionCwd: string = cwd): AgentModelConfig {
+	const resolution = resolveSessionProfile({ sessionId, cwd: sessionCwd, configHome: gentleAiConfigHome() });
+	// A target in another Git repository keeps its own pin layers, as launches do.
+	const target = readProfilePinStatus(cwd)?.commonDir;
+	const home = readProfilePinStatus(sessionCwd)?.commonDir;
+	// A session outside Git has no repository of its own, so any Git target is foreign.
+	const foreignRepository = target !== undefined && target !== home;
+	// A caller without a session keeps the routing it read before session profiles.
+	// An explicit binding carries its full modelProfiles (orchestrator included) to
+	// the fallback below; sessionProfileRoutingAt role-routes it, and launches must
+	// never see the orchestrator key (gentle-shell#2742, section 8).
+	const routed = resolution.kind === "live" ? pinnedEffectiveModelConfig(cwd)
+		: resolution.kind === "explicit" ? resolution.modelProfiles
+		: sessionProfileRoutingAt(resolution, { cwd, configHome: gentleAiConfigHome(), foreignRepository });
+	const config = routed === undefined ? readModelConfig(cwd) : cloneModelConfig(routed);
+	// Only a profile chosen with Use in this session, or recorded as the session's
+	// startup profile, carries its orchestrator to the provider review roles; an
+	// in-memory freeze, pinned and global routing leave them on Pi's persisted
+	// default (gentle-shell#2716 A1, gentle-shell#2742 section 8).
+	if (resolution.kind !== "explicit") delete config.orchestrator;
+	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
+	if (recorded !== undefined) config.orchestrator = { ...recorded };
+	return config;
 }
 
 /** The routing in effect once the pin is set aside: what a global save materializes. */
@@ -2522,6 +2638,44 @@ function readGlobalEffectiveModelConfig(cwd: string): AgentModelConfig {
 		if (entry) effective[agent.name] = entry;
 	}
 	return effective;
+}
+
+/**
+ * The profile this session's launches resolve (gentle-shell#1064 slice 3c): the
+ * Enter binding, then the profile frozen at startup, through the same rule the
+ * launcher reads. It resolves from the session's directory, as the freeze and
+ * the launcher do. `undefined` means the session resolves no profile, so
+ * launches keep the global routing; a pin the session did not freeze never
+ * reaches them and is not read here. Without session profile authority the
+ * launches are blocked, so no profile is theirs.
+ */
+function sessionLaunchProfile(ctx: ExtensionContext, authorityAvailable: boolean): { name: string; modelProfiles: AgentModelConfig } | undefined {
+	if (!authorityAvailable) return undefined;
+	const resolution = resolveSessionProfile({
+		sessionId: ctx.sessionManager?.getSessionId?.(),
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		configHome: gentleAiConfigHome(),
+	});
+	const name = resolution.kind === "explicit" ? resolution.name : resolution.profile?.name;
+	const routing = sessionProfileModelProfiles(resolution);
+	return name === undefined || routing === undefined ? undefined : { name, modelProfiles: cloneModelConfig(routing) };
+}
+
+/**
+ * Whether this session's launches may run, read as the launcher reads it (and,
+ * like it, clearing a binding it cannot corroborate). A manager without a
+ * branch has no session profile record to distrust.
+ */
+function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
+	const manager = ctx.sessionManager;
+	if (typeof manager?.getSessionId !== "function" || typeof manager.getBranch !== "function") return true;
+	return readSessionProfileAuthority(manager).available;
+}
+
+/** The routing this session's launches use: its profile, or the global effective routing. */
+async function readSessionLaunchModelConfigAsync(ctx: ExtensionContext, authorityAvailable: boolean): Promise<AgentModelConfig> {
+	return sessionLaunchProfile(ctx, authorityAvailable)?.modelProfiles
+		?? await readGlobalEffectiveModelConfigFromAsync(ctx.cwd, await readModelConfigAsync(ctx.cwd));
 }
 
 async function readEffectiveModelConfigAsync(cwd: string): Promise<AgentModelConfig> {
@@ -2556,7 +2710,7 @@ async function readGlobalEffectiveModelConfigFromAsync(
  * discoverable agent it omits on inherit, not on whatever was materialized
  * before. Padding the omitted agents with clear entries makes
  * `applyModelConfig` remove their model profiles and frontmatter routing, the
- * same way `/gentle:models` clears an agent set to inherit.
+ * same way applying a profile with inherit entries clears an agent set.
  */
 async function withOmittedAgentsClearedAsync(
 	cwd: string,
@@ -2896,8 +3050,6 @@ function isValidJsonObjectFileOrMissing(path: string): boolean {
 	}
 }
 
-const PROVIDER_REVIEW_ROLES = ["review-refuter", "review-validator"] as const;
-
 function isProviderReviewRole(name: string): boolean {
 	return PROVIDER_REVIEW_ROLES.some((role) => role === name);
 }
@@ -3126,31 +3278,80 @@ async function getPiModelOptions(ctx: ExtensionContext): Promise<string[]> {
 	return [...MODEL_CONTROL_OPTIONS, ...modelIds];
 }
 
+/**
+ * The effort levels each catalog model supports, keyed by its provider/model id.
+ * Pi clamps an unsupported level at launch, so the models screen offers only
+ * these and shows where a saved level would land. Models outside the catalog
+ * are absent: their levels are unknown.
+ */
+async function getPiThinkingSupport(ctx: ExtensionContext): Promise<Record<string, ThinkingLevel[]>> {
+	const support: Record<string, ThinkingLevel[]> = {};
+	let raw: unknown;
+	try {
+		raw = await ctx.modelRegistry?.getAvailable();
+	} catch {
+		return support;
+	}
+	if (!Array.isArray(raw)) return support;
+	for (const model of raw as Parameters<typeof getSupportedThinkingLevels>[0][]) {
+		const id = normalizeModelId(`${model?.provider}/${model?.id}`);
+		// Without the reasoning flag the catalog says nothing about effort: the
+		// model stays unknown (every level offered) rather than "off only".
+		if (!id || typeof model?.reasoning !== "boolean") continue;
+		try {
+			support[id] = getSupportedThinkingLevels(model).filter((level): level is ThinkingLevel =>
+				(THINKING_LEVELS as readonly string[]).includes(level),
+			);
+		} catch {
+			// A model whose metadata cannot be read stays unknown.
+		}
+	}
+	return support;
+}
+
+/**
+ * Where Pi lands a requested level on a model, mirroring pi-ai's
+ * clampThinkingLevel: the level itself when supported, else the nearest
+ * supported level above it, else below it.
+ */
+function clampToSupportedLevel(level: ThinkingLevel, supported: readonly ThinkingLevel[]): ThinkingLevel {
+	if (supported.includes(level)) return level;
+	const start = THINKING_LEVELS.indexOf(level);
+	for (let index = start + 1; index < THINKING_LEVELS.length; index += 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	for (let index = start - 1; index >= 0; index -= 1) {
+		if (supported.includes(THINKING_LEVELS[index])) return THINKING_LEVELS[index];
+	}
+	return supported[0] ?? "off";
+}
+
 interface OverlayComponent {
 	render(width: number): string[];
 	handleInput(data: string): void;
 	invalidate(): void;
 }
 
-type ModelPanelResult =
-	| { type: "save"; config: AgentModelConfig }
-	// `save`, then snapshot saved agent routing and the live orchestrator into
-	// the current profile without changing the global orchestrator defaults.
-	| { type: "save-profile"; config: AgentModelConfig }
-	| { type: "custom"; agent: string | "all"; config: AgentModelConfig }
-	| { type: "export"; config: AgentModelConfig }
-	| { type: "restore"; config: AgentModelConfig }
-	| { type: "cancel" };
+interface RoutingHitRegion {
+	x0: number;
+	x1: number;
+	y: number;
+	action: RoutingTableMouseAction;
+}
 
-const SET_ALL_AGENTS = "Set all agents";
+const LEAVE_ORCHESTRATOR_UNTOUCHED = "leave untouched";
 
 const PANEL_TONE = {
 	BORDER: "border",
 	MUTED: "muted",
+	DIM: "dim",
 	TEXT: "text",
 	TITLE: "title",
 	ACCENT: "accent",
 	STATUS: "status",
+	EDITED: "edited",
+	GOOD: "good",
+	DANGER: "danger",
 } as const;
 
 type PanelTone = (typeof PANEL_TONE)[keyof typeof PANEL_TONE];
@@ -3158,535 +3359,1645 @@ type PanelTone = (typeof PANEL_TONE)[keyof typeof PANEL_TONE];
 const PANEL_TONE_COLOR: Record<PanelTone, ThemeColor> = {
 	border: "border",
 	muted: "muted",
+	dim: "dim",
 	text: "text",
 	title: "accent",
 	accent: "accent",
 	status: "thinkingHigh",
+	edited: "warning",
+	good: "success",
+	danger: "error",
 };
 
-class SddModelPanel implements OverlayComponent {
+/** The pseudo row behind the Model ▾ / Effort ▾ header: it sets every agent at once. */
+const ROUTING_ALL_ROW = "__all";
+const ROUTING_CUSTOM_MODEL = "Custom model id…";
+/** The table's short form of a provider review role's inherited model and effort. */
+const ROUTING_PI_DEFAULT = "Pi default";
+/** Body lines around the agent rows: tabs, rail, description, blank, orchestrator, rule, header, blank, footer, hints, two feedback lines. */
+const ROUTING_TABLE_FIXED_ROWS = 12;
+/** Compact button labels for terminals too narrow for the full ones. */
+const ROUTING_TABLE_SHORT_BUTTONS: Partial<Record<RoutingTableButton, string>> = {
+	use: "Use here",
+	default: "Default",
+};
+/**
+ * The key hints in display order, each with a keep priority (lower stays
+ * longer): narrow terminals drop whole hints instead of cutting one in half.
+ */
+const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
+	{ text: "←→ profile", keep: 5 },
+	{ text: "↑↓ agent", keep: 6 },
+	{ text: "enter model", keep: 1 },
+	{ text: "e effort", keep: 2 },
+	{ text: "f fallbacks", keep: 6.5 },
+	{ text: "t tier", keep: 6.25 },
+	{ text: "s save", keep: 3 },
+	{ text: "u use", keep: 7 },
+	{ text: "d default", keep: 8 },
+	{ text: "n new", keep: 10 },
+	{ text: "m menu", keep: 9 },
+	{ text: "esc close", keep: 4 },
+	{ text: "a all fast", keep: 11 },
+];
+/** Model card chrome (title, search, rule, blank, hint), its borders, and a margin so the card never touches the frame. */
+const ROUTING_MODEL_CARD_CHROME_ROWS = 11;
+
+type RoutingTableAction =
+	| { type: "load"; name: string }
+	| { type: "custom"; target: string; config: AgentModelConfig }
+	| { type: "use-session"; name: string; config?: AgentModelConfig }
+	| { type: "apply-global"; name: string; config: AgentModelConfig }
+	| { type: "save"; name: string; config: AgentModelConfig }
+	| { type: "create" }
+	| { type: "create-live" }
+	| { type: "duplicate"; name: string }
+	| { type: "rename"; name: string }
+	| { type: "delete"; name: string }
+	| { type: "export-profile"; name: string }
+	| { type: "import-profile" }
+	| { type: "pin"; source: ProfilePinSource; name: string }
+	| { type: "close" };
+
+/**
+ * `saveFirst` asks the loop to write the draft into the shown profile before
+ * running the action (the "Save and switch" answer). `draft` carries unsaved
+ * edits across actions that keep the same profile on screen (rename, pin, a
+ * declined delete), so managing a profile never throws away what you typed.
+ */
+type RoutingTableResult = RoutingTableAction & { saveFirst?: AgentModelConfig; draft?: AgentModelConfig };
+
+type RoutingTableButton = "use" | "default" | "save" | "switch-save" | "switch-discard" | "switch-stay";
+
+/**
+ * What the screen needs to show another profile without closing: the store
+ * after an optional save, fresh scope state, and the footer line. `error`
+ * means the save failed and the shown profile stays, edits intact.
+ */
+type RoutingProfileSwitch =
+	| { file: AgentProfilesFile; sessionBoundName?: string; pinWinner?: string; notices: string[]; feedback: string }
+	| { error: string };
+
+/**
+ * Switches the shown profile in place. Closing the overlay and reopening it on
+ * the next tab let the terminal paint the screen beneath for a frame (and wait
+ * on the async model catalog before the new frame), which is the tab flicker.
+ */
+type RoutingProfileSwitcher = (name: string, saveFirst?: AgentModelConfig) => RoutingProfileSwitch;
+
+type RoutingTableMouseAction =
+	| { kind: "tab"; name: string }
+	| { kind: "tab-menu" }
+	| { kind: "new" }
+	| { kind: "row"; row: string }
+	| { kind: "effort"; row: string }
+	| { kind: "tier"; row: string }
+	| { kind: "all-fast" }
+	| { kind: "model-option"; index: number }
+	| { kind: "effort-option"; index: number }
+	| { kind: "menu-item"; id: string }
+	| { kind: "button"; button: RoutingTableButton };
+
+interface RoutingMenuItem {
+	id: string;
+	label: string;
+	tone?: PanelTone;
+}
+
+const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
+	use: "Use in this session",
+	default: "Make default",
+	save: "Save",
+	"switch-save": "Save and switch",
+	"switch-discard": "Discard",
+	"switch-stay": "Stay",
+};
+
+/**
+ * `/gentle:profiles` — one screen, one table, profiles as
+ * tabs. Each tab is a profile and carries where it is in effect (◉ this
+ * session, ★ default for new sessions, ⌂ this repo); the table below is that
+ * profile's routing, orchestrator first; three buttons decide where it applies.
+ * Model and effort changes happen in small cards over the still-visible table.
+ * Keyboard and pointer reach the same actions, and each key means one thing.
+ */
+/** Reads and writes the profile's fallback chains; `save` returns an error message when it refuses. */
+interface RoutingFallbacks {
+	chain(profile: string, key: string): readonly FallbackStep[];
+	save(profile: string, key: string, chain: readonly FallbackStep[]): string | undefined;
+}
+
+/** The panel's view of profile-fallbacks.json: read once, re-read after each save; a broken file is never overwritten. */
+function fileRoutingFallbacks(configHome: string): RoutingFallbacks {
+	const path = fallbacksFilePath(configHome);
+	let read = readFallbacksFile(path);
+	return {
+		chain: (profile, key) => (read.status === "valid" ? read.file.profiles[profile]?.[key] ?? [] : []),
+		save: (profile, key, chain) => {
+			// Chains belong to saved profiles; a draft would leave them orphaned.
+			const profiles = readProfilesFileResult(profilesFilePath(configHome));
+			if (profiles.status !== "valid" || !hasOwnProfile(profiles.file.profiles, profile)) return `Save the profile first (s), then add its fallbacks.`;
+			read = readFallbacksFile(path);
+			if (read.status === "invalid") return `${path} is malformed; fix or remove it first.`;
+			try {
+				writeFallbacksFile(path, setChain(read.status === "valid" ? read.file : emptyFallbacksFile(), profile, key, chain));
+			} catch (error) {
+				return `Fallbacks not saved: ${error instanceof Error ? error.message : String(error)}`;
+			} finally {
+				read = readFallbacksFile(path);
+			}
+			return undefined;
+		},
+	};
+}
+
+/** A renamed or deleted profile takes its fallback chains along; a failure leaves the chains where they were. */
+function followProfileFallbacks(profilesPath: string, from: string, to: string | undefined): void {
+	try { followProfileRename(dirname(profilesPath), from, to); } catch { /* The profile change already succeeded. */ }
+}
+
+class RoutingTablePanel implements OverlayComponent {
+	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | undefined;
+	/** The model and effort cards are picking a fallback step, not the row's own model. */
+	private pickingFallback = false;
+	private fallbackCursor = 0;
+	private readonly fallbacks: RoutingFallbacks | undefined;
+	private target: string = PROFILE_ORCHESTRATOR_KEY;
+	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
-	private mode: "agents" | "models" | "effort" = "agents";
-	private selectedRow = SET_ALL_AGENTS;
+	private query = "";
 	private modelCursor = 0;
 	private effortCursor = 0;
-	private query = "";
-	private readonly draft: AgentModelConfig;
+	private menuCursor = 0;
+	private hovered: string | undefined;
+	private escArmed = false;
+	private feedback: string | undefined;
+	private completed = false;
+	private hitRegions: RoutingHitRegion[] = [];
+	private activeTabColumn = 0;
+	private newColumn = 0;
+	private draft: AgentModelConfig;
+	private stored: AgentModelConfig;
 	private readonly rows: string[];
-	private readonly modelOptions: string[];
-	private readonly done: (result: ModelPanelResult) => void;
+	private readonly agents: string[];
+	private readonly catalog: string[];
+	private readonly done: (result: RoutingTableResult) => void;
 	private readonly theme: Theme | undefined;
-	// The profile `u` writes to, named up front so the key never targets a surprise.
-	private readonly profileLabel: string;
-	// Terminal rows, so the card fills the fullscreen overlay like `/gentle:profiles`.
 	private readonly terminalRows: (() => number) | undefined;
+	private profileName: string;
+	private file: AgentProfilesFile;
+	private sessionBoundName: string | undefined;
+	private pinWinner: string | undefined;
+	private readonly thinkingSupport: Record<string, readonly ThinkingLevel[]>;
+	private readonly fastModels: ReadonlySet<string>;
+	/** Configuration problems the screen must not hide: pins that do not resolve, keys no agent matches. */
+	private notices: string[];
+	private readonly switchProfile: RoutingProfileSwitcher | undefined;
 
 	constructor(
-		initialConfig: AgentModelConfig,
+		draft: AgentModelConfig,
 		modelOptions: string[],
 		agents: string[],
-		done: (result: ModelPanelResult) => void,
+		done: (result: RoutingTableResult) => void,
 		theme?: Theme,
-		profileLabel = "none",
+		profileName = "current",
 		terminalRows?: () => number,
+		options: {
+			file?: AgentProfilesFile;
+			sessionBoundName?: string;
+			pinWinner?: string;
+			feedback?: string;
+			thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+			fastModels?: string[];
+			notices?: string[];
+			switchProfile?: RoutingProfileSwitcher;
+			fallbacks?: RoutingFallbacks;
+		} = {},
 	) {
-		this.draft = cloneModelConfig(initialConfig);
-		this.rows = [SET_ALL_AGENTS, ...agents];
-		this.modelOptions = modelOptions;
+		this.switchProfile = options.switchProfile;
+		this.fallbacks = options.fallbacks;
+		this.thinkingSupport = options.thinkingSupport ?? {};
+		this.fastModels = new Set(options.fastModels ?? []);
+		this.notices = options.notices ?? [];
+		this.file = options.file ?? bootstrapProfilesFile(cloneModelConfig(draft));
+		const names = Object.keys(this.file.profiles);
+		this.profileName = hasOwnProfile(this.file.profiles, profileName) ? profileName : (names[0] ?? profileName);
+		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
+		this.draft = cloneModelConfig(draft);
+		this.agents = [...agents];
+		this.rows = [PROFILE_ORCHESTRATOR_KEY, ROUTING_ALL_ROW, ...agents];
+		// The control entries of the old panel (keep current, custom id) are not
+		// models; this screen offers inherit and custom as its own options.
+		this.catalog = modelOptions.filter((option) => !(MODEL_CONTROL_OPTIONS as readonly string[]).includes(option));
 		this.done = done;
 		this.theme = theme;
-		this.profileLabel = profileLabel;
 		this.terminalRows = terminalRows;
+		this.sessionBoundName = options.sessionBoundName;
+		this.pinWinner = options.pinWinner;
+		this.feedback = options.feedback;
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.hovered = undefined;
+	}
 
-	handleInput(data: string): void {
-		if (this.mode === "models") {
-			this.handleModelInput(data);
-			return;
+	// -- state ----------------------------------------------------------------
+
+	private profileNames(): string[] {
+		return Object.keys(this.file.profiles).filter((name) => hasOwnProfile(this.file.profiles, name));
+	}
+
+	private changeCount(): number {
+		let count = 0;
+		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
+			if (this.isEdited(key, "model")) count += 1;
+			if (this.isEdited(key, "thinking")) count += 1;
+			if (this.isEdited(key, "tier")) count += 1;
 		}
-		if (this.mode === "effort") {
-			this.handleEffortInput(data);
-			return;
+		return count;
+	}
+
+	private isEdited(key: string, field: "model" | "thinking" | "tier"): boolean {
+		return (this.draft[key]?.[field] ?? undefined) !== (this.stored[key]?.[field] ?? undefined);
+	}
+
+	private scopeGlyphs(name: string): Array<{ text: string; tone: PanelTone }> {
+		const glyphs: Array<{ text: string; tone: PanelTone }> = [];
+		if (this.sessionBoundName === name) glyphs.push({ text: "◉", tone: "good" });
+		if (this.file.active === name) glyphs.push({ text: "★", tone: "accent" });
+		if (this.pinWinner === name) glyphs.push({ text: "⌂", tone: "edited" });
+		return glyphs;
+	}
+
+	private scopeSentence(name: string): string {
+		const parts: string[] = [];
+		if (this.sessionBoundName === name) parts.push("Used in this session.");
+		if (this.file.active === name) parts.push("Default for new sessions.");
+		if (this.pinWinner === name) parts.push("Used in this repo.");
+		return parts.length > 0 ? parts.join(" ") : "Not in use. Pick a button below to use it.";
+	}
+
+	private rowLabel(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return "the orchestrator";
+		if (key === ROUTING_ALL_ROW) return "every agent";
+		return key;
+	}
+
+	private modelValue(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return this.draft[key]?.model ?? LEAVE_ORCHESTRATOR_UNTOUCHED;
+		// Provider review roles inherit Pi's persisted default; the table cell says
+		// so in short, the cards spell it out.
+		if (isProviderReviewRole(key)) return this.draft[key]?.model ?? ROUTING_PI_DEFAULT;
+		return this.draft[key]?.model ?? routingDefaultLabel(key, "model");
+	}
+
+	private effortValue(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return "";
+		const thinking = this.draft[key]?.thinking;
+		if (thinking === undefined) return isProviderReviewRole(key) ? ROUTING_PI_DEFAULT : routingDefaultLabel(key, "effort");
+		const supported = this.supportedLevels(key);
+		const landed = supported ? clampToSupportedLevel(thinking, supported) : thinking;
+		return landed === thinking ? thinking : `${thinking} → ${landed}`;
+	}
+
+	/**
+	 * The levels the row's model supports, from the catalog. Every agent at once
+	 * offers what all their known models share. Undefined means unknown: the row
+	 * inherits its model, or the model is not in the catalog.
+	 */
+	private supportedLevels(key: string): readonly ThinkingLevel[] | undefined {
+		if (key !== ROUTING_ALL_ROW) {
+			const model = this.draft[key]?.model;
+			return model === undefined ? undefined : this.thinkingSupport[model];
 		}
-		this.handleAgentInput(data);
+		const known = this.agents
+			.map((agent) => this.draft[agent]?.model)
+			.map((model) => (model === undefined ? undefined : this.thinkingSupport[model]))
+			.filter((levels): levels is readonly ThinkingLevel[] => levels !== undefined);
+		if (known.length === 0) return undefined;
+		return THINKING_LEVELS.filter((level) => known.every((levels) => levels.includes(level)));
 	}
 
-	render(width: number): string[] {
-		const innerWidth = Math.max(1, width - 4);
-		const lines =
-			this.mode === "models"
-				? this.renderModelPicker(innerWidth)
-				: this.mode === "effort"
-					? this.renderEffortPicker(innerWidth)
-					: this.renderAgentList(innerWidth);
-		return this.renderCard(lines, width);
+	/** The effort card's choices: inherit, then the supported levels, or every level when unknown. */
+	private effortOptions(): Array<ThinkingLevel | typeof INHERIT_THINKING> {
+		const step = this.pickingFallback ? this.chain()[this.fallbackCursor] : undefined;
+		const supported = step ? this.thinkingSupport[step.model] : this.supportedLevels(this.target);
+		return [INHERIT_THINKING, ...THINKING_LEVELS.filter((level) => !supported || supported.includes(level))];
 	}
 
-	// In the fullscreen overlay a list owns every row its chrome leaves free;
-	// without a terminal height it keeps the fixed window.
-	private visibleListRows(fixedRows: number, chromeRows: number): number {
-		if (!this.terminalRows) return fixedRows;
-		return Math.max(1, Math.floor(this.terminalRows()) - chromeRows);
+	/** The value the picker marks as current: one agent's, or every agent's when they agree. */
+	private currentValue(key: string, field: "model" | "thinking"): string | undefined {
+		if (key === ROUTING_ALL_ROW) {
+			const values = this.agents.map((agent) => this.draft[agent]?.[field]);
+			return values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined;
+		}
+		return this.draft[key]?.[field];
 	}
 
-	private renderCard(body: string[], width: number): string[] {
-		let lines = body;
-		const innerWidth = Math.max(1, width - 4);
-		const horizontal = "─".repeat(innerWidth + 2);
-		const border = (text: string) => this.renderText(text, "border");
-		const bodyRows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : 0;
-		if (lines.length < bodyRows) {
-			lines = [...lines, ...Array<string>(bodyRows - lines.length).fill("")];
+	private inheritLabel(key: string): string {
+		if (key === PROFILE_ORCHESTRATOR_KEY) return LEAVE_ORCHESTRATOR_UNTOUCHED;
+		if (key !== ROUTING_ALL_ROW && isProviderReviewRole(key)) return routingDefaultLabel(key, "model");
+		return "inherit";
+	}
+
+	private modelOptions(): string[] {
+		const query = this.query.trim().toLowerCase();
+		if (this.pickingFallback) {
+			// Only real models, never the row's own one or one already in the chain.
+			const taken = new Set([...this.chain().map((step) => step.model), ...this.targetKeys().map((key) => this.draft[key]?.model)]);
+			const offered = this.catalog.filter((option) => !taken.has(option));
+			return query ? offered.filter((option) => option.toLowerCase().includes(query)) : offered;
+		}
+		const all = [this.inheritLabel(this.target), ...this.catalog];
+		const matches = query ? all.filter((option) => option.toLowerCase().includes(query)) : all;
+		return [...matches, ROUTING_CUSTOM_MODEL];
+	}
+
+	private menuItems(): RoutingMenuItem[] {
+		if (this.overlay === "new") {
+			return [
+				{ id: "new-copy", label: `Copy of ${this.profileName}` },
+				{ id: "new-live", label: "From what's running now" },
+				{ id: "new-empty", label: "Empty", tone: "muted" },
+			];
 		}
 		return [
-			border(`╭${horizontal}╮`),
-			...lines.map(
-				(line) =>
-					`${border("│")} ${this.fitStyledLine(line, innerWidth)} ${border("│")}`,
-			),
-			border(`╰${horizontal}╯`),
+			{ id: "rename", label: "Rename" },
+			{ id: "duplicate", label: "Duplicate" },
+			{ id: "repo", label: this.pinWinner === this.profileName ? "Stop using in this repo" : "Use in this repo" },
+			{ id: "delete", label: "Delete", tone: "danger" },
 		];
 	}
 
-	private fitStyledLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
+	// -- actions ----------------------------------------------------------------
 
-	private renderLine(text = "", width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-
-	private renderCursor(focused: boolean): string {
-		return focused ? this.renderText("▸", "accent") : " ";
-	}
-
-	private handleAgentInput(data: string): void {
-		const maxCursor = this.rows.length + 1;
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.done({ type: "cancel" });
+	private finish(result: RoutingTableResult): void {
+		if (this.completed) return;
+		if (result.type === "load" && this.switchProfile) {
+			this.showProfile(result.name, result.saveFirst);
 			return;
 		}
-		if (matchesKey(data, "ctrl+s")) {
-			this.done({ type: "save", config: this.draft });
+		this.completed = true;
+		this.done(result);
+	}
+
+	/** Replaces the shown profile on this same screen, as a fresh open on that tab would. */
+	private showProfile(name: string, saveFirst?: AgentModelConfig): void {
+		const next = this.switchProfile!(name, saveFirst);
+		this.closeOverlay();
+		if ("error" in next) {
+			this.say(next.error);
 			return;
 		}
-		if (matchesKey(data, "u")) {
-			this.done({ type: "save-profile", config: this.draft });
+		this.file = next.file;
+		this.profileName = hasOwnProfile(this.file.profiles, name) ? name : (this.profileNames()[0] ?? name);
+		this.stored = cloneModelConfig(normalizeModelConfig(this.file.profiles[this.profileName]) ?? {});
+		this.draft = cloneModelConfig(this.stored);
+		this.sessionBoundName = next.sessionBoundName;
+		this.pinWinner = next.pinWinner;
+		this.notices = next.notices;
+		this.target = PROFILE_ORCHESTRATOR_KEY;
+		this.cursor = 0;
+		this.hovered = undefined;
+		this.feedback = next.feedback;
+		this.escArmed = false;
+	}
+
+	private say(message: string): void {
+		this.feedback = message;
+		this.escArmed = false;
+	}
+
+	private closeOverlay(): void {
+		this.overlay = this.pickingFallback ? "fallbacks" : undefined;
+		this.pickingFallback = false;
+		this.pending = undefined;
+		this.query = "";
+	}
+
+	// -- fallback chains --------------------------------------------------------
+
+	/** The chain key of a row: the every-agent row edits the profile's `*` chain. */
+	private chainKey(row: string): string {
+		return row === ROUTING_ALL_ROW ? "*" : row;
+	}
+
+	private chain(row = this.target): FallbackStep[] {
+		return [...(this.fallbacks?.chain(this.profileName, this.chainKey(row)) ?? [])].map((step) => ({ ...step }));
+	}
+
+	private saveChain(chain: FallbackStep[], message: string): boolean {
+		const error = this.fallbacks?.save(this.profileName, this.chainKey(this.target), chain);
+		if (error) {
+			this.say(error);
+			return false;
+		}
+		this.say(message);
+		return true;
+	}
+
+	private openFallbacks(row: string): void {
+		if (!this.fallbacks) return this.say("Fallback chains are unavailable here.");
+		this.target = row;
+		this.overlay = "fallbacks";
+		this.fallbackCursor = 0;
+	}
+
+	private handleFallbacksKey(data: string): void {
+		const chain = this.chain();
+		const label = this.rowLabel(this.target);
+		if (matchesKey(data, "escape")) {
+			this.overlay = undefined;
+			return;
+		}
+		if (matchesKey(data, "shift+up") || matchesKey(data, "shift+down")) {
+			const to = this.fallbackCursor + (matchesKey(data, "shift+up") ? -1 : 1);
+			if (to < 0 || to >= chain.length) return;
+			const [step] = chain.splice(this.fallbackCursor, 1);
+			chain.splice(to, 0, step!);
+			if (this.saveChain(chain, `${label}: ${step!.model} is fallback ${to + 1}.`)) this.fallbackCursor = to;
+			return;
+		}
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+			this.fallbackCursor = Math.max(0, this.fallbackCursor - 1);
 			return;
 		}
 		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.cursor = Math.min(maxCursor, this.cursor + 1);
+			this.fallbackCursor = Math.min(Math.max(0, chain.length - 1), this.fallbackCursor + 1);
 			return;
 		}
+		if (matchesKey(data, "f") || matchesKey(data, "a") || matchesKey(data, "return")) {
+			this.pickingFallback = true;
+			this.overlay = "model";
+			this.query = "";
+			this.modelCursor = 0;
+			if (this.modelOptions().length === 0) {
+				this.closeOverlay();
+				this.say(`${label}: every model is already in its chain.`);
+			}
+			return;
+		}
+		if (matchesKey(data, "e") && chain[this.fallbackCursor]) {
+			this.pickingFallback = true;
+			this.overlay = "effort";
+			const current = chain[this.fallbackCursor]!.thinking;
+			this.effortCursor = Math.max(0, current === undefined ? 0 : this.effortOptions().indexOf(current));
+			return;
+		}
+		if ((matchesKey(data, "x") || matchesKey(data, "delete")) && chain[this.fallbackCursor]) {
+			const [removed] = chain.splice(this.fallbackCursor, 1);
+			if (this.saveChain(chain, `${label}: removed fallback ${removed!.model}.`)) this.fallbackCursor = Math.max(0, Math.min(this.fallbackCursor, chain.length - 1));
+		}
+	}
+
+	private fallbacksCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(60, inner - 4);
+		const content = width - 4;
+		const chain = this.chain();
+		const lines: string[] = [];
+		lines.push(this.renderText("Fallbacks for ", "muted") + this.renderText(this.target === ROUTING_ALL_ROW ? "every agent" : this.rowLabel(this.target), "title"));
+		lines.push(this.renderText(truncateToWidth("Used in order when the model runs out or keeps failing.", content, "…"), "dim"));
+		lines.push(this.renderText("─".repeat(content), "border"));
+		if (chain.length === 0) lines.push(this.renderText(this.target === ROUTING_ALL_ROW ? "No fallbacks. f adds one for every agent without its own." : "No fallbacks. f adds one.", "dim"));
+		chain.forEach((step, index) => {
+			const focused = index === this.fallbackCursor;
+			const text = truncateToWidth(`${index + 1}. ${sanitizeTerminalText(step.model)}${step.thinking ? ` · ${step.thinking}` : ""}`, content - 2, "…");
+			lines.push(this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(text, focused ? "title" : "text"));
+		});
+		lines.push("");
+		lines.push(this.renderText(truncateToWidth("f add · e effort · shift+↑↓ move · x remove · esc back", content, "…"), "dim"));
+		return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/** Leaving this profile with unsaved edits asks first; nothing is lost in silence. */
+	private leave(result: RoutingTableResult): void {
+		if (this.changeCount() === 0) {
+			this.finish(result);
+			return;
+		}
+		this.pending = result;
+		this.overlay = "switch";
+	}
+
+	private switchTab(name: string): void {
+		if (name === this.profileName) return;
+		this.leave({ type: "load", name });
+	}
+
+	private switchBy(delta: number): void {
+		const names = this.profileNames();
+		const index = names.indexOf(this.profileName);
+		const next = names[Math.max(0, Math.min(names.length - 1, index + delta))];
+		if (next) this.switchTab(next);
+	}
+
+	private openModel(key: string): void {
+		this.target = key;
+		this.overlay = "model";
+		this.query = "";
+		const options = this.modelOptions();
+		const current = this.currentValue(key, "model") ?? (key === ROUTING_ALL_ROW ? undefined : this.inheritLabel(key));
+		this.modelCursor = Math.max(0, current === undefined ? 0 : options.indexOf(current));
+	}
+
+	private openEffort(key: string): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) {
+			this.say("Pick a model for the orchestrator first; its effort follows the model.");
+			return;
+		}
+		this.target = key;
+		this.overlay = "effort";
+		const current = this.currentValue(key, "thinking") as ThinkingLevel | undefined;
+		const supported = this.supportedLevels(key);
+		const landed = current !== undefined && supported ? clampToSupportedLevel(current, supported) : current;
+		this.effortCursor = Math.max(0, landed === undefined ? 0 : this.effortOptions().indexOf(landed));
+	}
+
+	private toggleTier(key: string): void {
+		const entry = this.draft[key];
+		if (!entry?.model || !this.fastModels.has(entry.model)) {
+			this.say("Standard/Fast is available only for compatible OpenAI models.");
+			return;
+		}
+		entry.tier = entry.tier === "fast" ? "standard" : "fast";
+		this.say(`${this.rowLabel(key)}: ${entry.tier === "fast" ? "Fast" : "Standard"}. Save keeps it in ${this.profileName}.${entry.tier === "fast" ? " Fast depends on plan/model; subscription usage 2.5x or purchased credits 2x. API pricing differs." : ""}`);
+	}
+
+	private setAllFast(): void {
+		let count = 0;
+		for (const key of [PROFILE_ORCHESTRATOR_KEY, ...this.agents]) {
+			const entry = this.draft[key];
+			if (!entry?.model || !this.fastModels.has(entry.model)) continue;
+			if (entry.tier !== "fast") this.toggleTier(key);
+			count += 1;
+		}
+		this.say(count
+			? `All Fast: ${count} compatible route${count === 1 ? "" : "s"}. Save to keep. Subscription 2.5x; purchased credits 2x. API pricing differs.`
+			: "No compatible OpenAI routes in this profile.");
+	}
+
+	private openMenu(kind: "menu" | "new"): void {
+		this.overlay = kind;
+		this.menuCursor = 0;
+	}
+
+	private pickModel(option: string | undefined): void {
+		if (option === undefined) return;
+		if (this.pickingFallback) {
+			const chain = [...this.chain(), { model: option }];
+			if (this.saveChain(chain, `${this.rowLabel(this.target)}: fallback ${chain.length} is ${option}.`)) this.fallbackCursor = chain.length - 1;
+			this.closeOverlay();
+			return;
+		}
+		if (option === ROUTING_CUSTOM_MODEL) {
+			this.finish({ type: "custom", target: this.target, config: cloneModelConfig(this.draft) });
+			return;
+		}
+		const model = option === this.inheritLabel(this.target) ? undefined : option;
+		for (const key of this.targetKeys()) this.setModel(key, model);
+		this.say(`${this.rowLabel(this.target)}: model ${model ?? this.inheritLabel(this.target)}. Save keeps it in ${this.profileName}.`);
+		this.closeOverlay();
+	}
+
+	private pickEffort(index: number): void {
+		const option = this.effortOptions()[index];
+		if (option === undefined) return;
+		const thinking = option === INHERIT_THINKING ? undefined : (option as ThinkingLevel);
+		if (this.pickingFallback) {
+			const chain = this.chain();
+			const step = chain[this.fallbackCursor];
+			if (step) {
+				chain[this.fallbackCursor] = thinking ? { model: step.model, thinking } : { model: step.model };
+				this.saveChain(chain, `${this.rowLabel(this.target)}: ${step.model} effort ${thinking ?? "inherit"}.`);
+			}
+			this.closeOverlay();
+			return;
+		}
+		for (const key of this.targetKeys()) this.setThinking(key, thinking);
+		this.say(`${this.rowLabel(this.target)}: effort ${thinking ?? "inherit"}. Save keeps it in ${this.profileName}.`);
+		this.closeOverlay();
+	}
+
+	private targetKeys(): string[] {
+		return this.target === ROUTING_ALL_ROW ? this.agents : [this.target];
+	}
+
+	private setModel(key: string, model: string | undefined): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && model === undefined) {
+			delete this.draft[key];
+			return;
+		}
+		const entry = { ...(this.draft[key] ?? {}) };
+		if (model !== entry.model) delete entry.tier;
+		if (model === undefined) delete entry.model;
+		else entry.model = model;
+		this.draft[key] = entry.model || entry.thinking ? entry : {};
+	}
+
+	private setThinking(key: string, thinking: ThinkingLevel | undefined): void {
+		if (key === PROFILE_ORCHESTRATOR_KEY && !this.draft[key]?.model) return;
+		const entry = { ...(this.draft[key] ?? {}) };
+		if (thinking === undefined) delete entry.thinking;
+		else entry.thinking = thinking;
+		this.draft[key] = entry.model || entry.thinking ? entry : {};
+	}
+
+	private runMenuItem(id: string): void {
+		const name = this.profileName;
+		const draft = cloneModelConfig(this.draft);
+		switch (id) {
+			case "rename":
+				this.finish({ type: "rename", name, draft });
+				return;
+			case "duplicate":
+			case "new-copy":
+				this.closeOverlay();
+				this.leave({ type: "duplicate", name });
+				return;
+			case "repo":
+				this.finish({ type: "pin", source: "local", name, draft });
+				return;
+			case "delete":
+				this.finish({ type: "delete", name, draft });
+				return;
+			case "new-live":
+				this.closeOverlay();
+				this.leave({ type: "create-live" });
+				return;
+			case "new-empty":
+				this.closeOverlay();
+				this.leave({ type: "create" });
+				return;
+		}
+	}
+
+	private pressButton(button: RoutingTableButton): void {
+		const config = cloneModelConfig(this.draft);
+		switch (button) {
+			case "use":
+				this.finish({ type: "use-session", name: this.profileName, config });
+				return;
+			case "default":
+				this.finish({ type: "apply-global", name: this.profileName, config });
+				return;
+			case "save":
+				if (this.changeCount() === 0) {
+					this.say("Nothing to save.");
+					return;
+				}
+				this.finish({ type: "save", name: this.profileName, config });
+				return;
+			case "switch-save":
+				if (this.pending) this.finish({ ...this.pending, saveFirst: config });
+				return;
+			case "switch-discard":
+				if (this.pending) this.finish(this.pending);
+				return;
+			case "switch-stay":
+				this.closeOverlay();
+				return;
+		}
+	}
+
+	// -- keyboard ----------------------------------------------------------------
+
+	handleInput(data: string): void {
+		if (isKeyRelease(data)) return;
+		if (matchesKey(data, "ctrl+c")) {
+			this.finish({ type: "close" });
+			return;
+		}
+		switch (this.overlay) {
+			case "model":
+				this.handleModelKey(data);
+				return;
+			case "effort":
+				this.handleEffortKey(data);
+				return;
+			case "menu":
+			case "new":
+				this.handleMenuKey(data);
+				return;
+			case "switch":
+				this.handleSwitchKey(data);
+				return;
+			case "fallbacks":
+				this.handleFallbacksKey(data);
+				return;
+			default:
+				this.handleTableKey(data);
+		}
+	}
+
+	private handleTableKey(data: string): void {
+		if (matchesKey(data, "escape")) {
+			if (this.changeCount() > 0 && !this.escArmed) {
+				this.feedback = "Unsaved changes. Press esc again to close without saving.";
+				this.escArmed = true;
+				return;
+			}
+			this.finish({ type: "close" });
+			return;
+		}
+		this.escArmed = false;
+		if (matchesKey(data, "left")) return this.switchBy(-1);
+		if (matchesKey(data, "right")) return this.switchBy(1);
 		if (matchesKey(data, "up") || matchesKey(data, "k")) {
 			this.cursor = Math.max(0, this.cursor - 1);
 			return;
 		}
-		if (matchesKey(data, "g")) {
-			this.cursor = 0;
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
+			this.cursor = Math.min(this.rows.length - 1, this.cursor + 1);
 			return;
 		}
-		if (data === "G") {
-			this.cursor = maxCursor;
-			return;
-		}
-		if (matchesKey(data, "i")) {
-			this.applyInherit();
-			return;
-		}
-		if (matchesKey(data, "e")) {
-			this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-			this.mode = "effort";
-			this.effortCursor = 0;
-			return;
-		}
-		if (matchesKey(data, "x")) {
-			this.done({ type: "export", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "r")) {
-			this.done({ type: "restore", config: this.draft });
-			return;
-		}
-		if (matchesKey(data, "c")) {
-			const row = this.rows[this.cursor];
-			if (row === SET_ALL_AGENTS)
-				this.done({ type: "custom", agent: "all", config: this.draft });
-			else if (row)
-				this.done({ type: "custom", agent: row, config: this.draft });
-			return;
-		}
-		if (!matchesKey(data, "return")) return;
-		if (this.cursor === this.rows.length) {
-			this.done({ type: "save", config: this.draft });
-			return;
-		}
-		if (this.cursor === this.rows.length + 1) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		this.selectedRow = this.rows[this.cursor] ?? SET_ALL_AGENTS;
-		this.mode = "models";
-		this.modelCursor = 0;
-		this.query = "";
+		if (matchesKey(data, "return")) return this.openModel(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "e")) return this.openEffort(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "f")) return this.openFallbacks(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "t")) return this.toggleTier(this.rows[this.cursor] ?? PROFILE_ORCHESTRATOR_KEY);
+		if (matchesKey(data, "a")) return this.setAllFast();
+		if (matchesKey(data, "s") || matchesKey(data, "ctrl+s")) return this.pressButton("save");
+		if (matchesKey(data, "u")) return this.pressButton("use");
+		if (matchesKey(data, "d")) return this.pressButton("default");
+		if (matchesKey(data, "n")) return this.openMenu("new");
+		if (matchesKey(data, "m")) return this.openMenu("menu");
 	}
 
-	private handleModelInput(data: string): void {
-		const options = this.filteredModelOptions();
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
+	private handleModelKey(data: string): void {
+		const options = this.modelOptions();
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "return")) return this.pickModel(options[this.modelCursor]);
+		if (matchesKey(data, "up")) {
+			this.modelCursor = Math.max(0, this.modelCursor - 1);
 			return;
 		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			this.query = "";
+		if (matchesKey(data, "down")) {
+			this.modelCursor = Math.min(options.length - 1, this.modelCursor + 1);
 			return;
 		}
 		if (matchesKey(data, "backspace")) {
 			this.query = this.query.slice(0, -1);
-			this.modelCursor = Math.min(
-				this.modelCursor,
-				Math.max(0, this.filteredModelOptions().length - 1),
-			);
+			this.modelCursor = 0;
 			return;
 		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.modelCursor = Math.min(
-				Math.max(0, options.length - 1),
-				this.modelCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
-			this.modelCursor = Math.max(0, this.modelCursor - 1);
-			return;
-		}
-		if (matchesKey(data, "return")) {
-			const selected = options[this.modelCursor];
-			if (!selected) return;
-			if (selected === CUSTOM_MODEL) {
-				this.done({
-					type: "custom",
-					agent: this.selectedRow === SET_ALL_AGENTS ? "all" : this.selectedRow,
-					config: this.draft,
-				});
-				return;
-			}
-			if (selected === KEEP_CURRENT) {
-				this.mode = "agents";
-				return;
-			}
-			this.applyModelSelection(
-				selected === INHERIT_MODEL ? undefined : selected,
-			);
-			this.mode = "agents";
-			return;
-		}
+		// Every printable key types into the search, so letters never act here.
 		if (data.length === 1 && data.charCodeAt(0) >= 32) {
 			this.query += data;
 			this.modelCursor = 0;
 		}
 	}
 
-	private applyModelSelection(model: string | undefined): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setModel(name, model);
-			return;
-		}
-		if (!row) return;
-		this.setModel(row, model);
-	}
-
-	private applyThinkingSelection(thinking: ThinkingLevel | undefined): void {
-		const row = this.selectedRow;
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.setThinking(name, thinking);
-			return;
-		}
-		this.setThinking(row, thinking);
-	}
-
-	private applyInherit(): void {
-		const row = this.rows[this.cursor];
-		if (row === SET_ALL_AGENTS) {
-			for (const name of this.rows.slice(1)) this.clearEntry(name);
-			return;
-		}
-		if (row) this.clearEntry(row);
-	}
-
-	private setModel(name: string, model: string | undefined): void {
-		const current = this.draft[name] ?? {};
-		if (model === undefined) delete current.model;
-		else current.model = model;
-		if (!current.model && !current.thinking) this.draft[name] = {};
-		else this.draft[name] = current;
-	}
-
-	private setThinking(name: string, thinking: ThinkingLevel | undefined): void {
-		const current = this.draft[name] ?? {};
-		if (thinking === undefined) delete current.thinking;
-		else current.thinking = thinking;
-		if (!current.model && !current.thinking) this.draft[name] = {};
-		else this.draft[name] = current;
-	}
-
-	private clearEntry(name: string): void {
-		this.draft[name] = {};
-	}
-
-	private filteredModelOptions(): string[] {
-		const query = this.query.trim().toLowerCase();
-		if (!query) return this.modelOptions;
-		return this.modelOptions.filter((option) =>
-			option.toLowerCase().includes(query),
-		);
-	}
-
-	private renderAgentList(width: number): string[] {
-		const lines: string[] = [];
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(line("Assign Models and Effort to Agents", "title"));
-		lines.push(line(`Current profile: ${this.profileLabel}`, "muted"));
-		lines.push("");
-		lines.push(line("Current assignments:", "muted"));
-		lines.push("");
-		const visibleRows = Math.min(
-			this.visibleListRows(AGENT_LIST_MAX_VISIBLE_ROWS, AGENT_LIST_CHROME_ROWS),
-			this.rows.length,
-		);
-		const listCursor = Math.min(this.cursor, this.rows.length - 1);
-		const start = Math.max(
-			0,
-			Math.min(
-				listCursor - Math.floor(visibleRows / 2),
-				Math.max(0, this.rows.length - visibleRows),
-			),
-		);
-		const end = Math.min(this.rows.length, start + visibleRows);
-		if (start > 0) lines.push(line(`  ↑ ${start} more agent(s)`, "muted"));
-		for (let i = start; i < end; i++) {
-			const row = this.rows[i] ?? SET_ALL_AGENTS;
-			const focused = i === this.cursor;
-			const label =
-				row === SET_ALL_AGENTS
-					? this.renderSetAllLabel(row)
-					: this.renderAgentLabel(row);
-			lines.push(`${this.renderCursor(focused)} ${label}`);
-		}
-		if (end < this.rows.length)
-			lines.push(line(`  ↓ ${this.rows.length - end} more agent(s)`, "muted"));
-		lines.push("");
-		lines.push(
-			`${this.renderCursor(this.cursor === this.rows.length)} ${this.renderText(
-				"Continue",
-				this.cursor === this.rows.length ? "accent" : "text",
-			)}`,
-		);
-		lines.push(
-			`${this.renderCursor(this.cursor === this.rows.length + 1)} ${this.renderText(
-				"← Back",
-				this.cursor === this.rows.length + 1 ? "accent" : "text",
-			)}`,
-		);
-		lines.push("");
-		// Two rows: editing keys, then the keys that leave the panel. One row no
-		// longer fits the minimum width once the profile key joins the save keys.
-		lines.push(
-			line(
-				`j/k scroll • enter model/save • e effort • i ${isProviderReviewRole(this.rows[this.cursor] ?? "") ? "Pi persisted defaults" : "inherit"} • c custom`,
-				"muted",
-			),
-		);
-		lines.push(
-			line(
-				`x export • r restore • ctrl+s save • u capture session in "${this.profileLabel}" • esc back`,
-				"muted",
-			),
-		);
-		return lines;
-	}
-
-	private renderModelPicker(width: number): string[] {
-		const lines: string[] = [];
-		const options = this.filteredModelOptions();
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(
-			line(`Select model for ${sanitizeTerminalText(this.selectedRow)}`, "title"),
-		);
-		lines.push("");
-		lines.push(
-			`${this.renderText("◎", "accent")} ${this.renderText(this.query || "search...", "muted")}`,
-		);
-		lines.push("");
-		const visibleRows = this.visibleListRows(MODEL_LIST_MAX_VISIBLE_ROWS, MODEL_LIST_CHROME_ROWS);
-		const start = Math.max(
-			0,
-			Math.min(
-				this.modelCursor - Math.floor(visibleRows / 2),
-				Math.max(0, options.length - visibleRows),
-			),
-		);
-		const end = Math.min(options.length, start + visibleRows);
-		for (let i = start; i < end; i++) {
-			const focused = i === this.modelCursor;
-			lines.push(
-				`${this.renderCursor(focused)} ${this.renderText(
-					options[i] === INHERIT_MODEL && isProviderReviewRole(this.selectedRow)
-						? routingDefaultLabel(this.selectedRow, "model")
-						: (options[i] ?? ""),
-					focused ? "status" : "text",
-				)}`,
-			);
-		}
-		if (options.length === 0) lines.push(line("  No matching models", "muted"));
-		lines.push("");
-		lines.push(
-			line("j/k: navigate • type: search • enter: select • esc: back", "muted"),
-		);
-		return lines;
-	}
-
-	private handleEffortInput(data: string): void {
-		if (matchesKey(data, "ctrl+c")) {
-			this.done({ type: "cancel" });
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.mode = "agents";
-			return;
-		}
-		if (matchesKey(data, "down") || matchesKey(data, "j")) {
-			this.effortCursor = Math.min(
-				Math.max(0, THINKING_OPTIONS.length - 1),
-				this.effortCursor + 1,
-			);
-			return;
-		}
-		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+	private handleEffortKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "return")) return this.pickEffort(this.effortCursor);
+		if (matchesKey(data, "left") || matchesKey(data, "up")) {
 			this.effortCursor = Math.max(0, this.effortCursor - 1);
 			return;
 		}
-		if (!matchesKey(data, "return")) return;
-		const selected = THINKING_OPTIONS[this.effortCursor];
-		if (selected === INHERIT_THINKING) this.applyThinkingSelection(undefined);
-		else this.applyThinkingSelection(selected);
-		this.mode = "agents";
+		if (matchesKey(data, "right") || matchesKey(data, "down")) {
+			this.effortCursor = Math.min(this.effortOptions().length - 1, this.effortCursor + 1);
+		}
 	}
 
-	private renderEffortPicker(width: number): string[] {
-		const lines: string[] = [];
-		const line = (text = "", tone?: PanelTone) =>
-			this.renderLine(text, width, tone);
-		lines.push(
-			line(`Select effort for ${sanitizeTerminalText(this.selectedRow)}`, "title"),
-		);
-		lines.push("");
-		for (let i = 0; i < THINKING_OPTIONS.length; i++) {
-			const focused = i === this.effortCursor;
-			lines.push(
-				`${this.renderCursor(focused)} ${this.renderText(
-					THINKING_OPTIONS[i] === INHERIT_THINKING && isProviderReviewRole(this.selectedRow)
-						? routingDefaultLabel(this.selectedRow, "effort")
-						: (THINKING_OPTIONS[i] ?? ""),
-					focused ? "status" : "text",
-				)}`,
-			);
+	private handleMenuKey(data: string): void {
+		const items = this.menuItems();
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		if (matchesKey(data, "up") || matchesKey(data, "k")) {
+			this.menuCursor = Math.max(0, this.menuCursor - 1);
+			return;
 		}
+		if (matchesKey(data, "down") || matchesKey(data, "j")) {
+			this.menuCursor = Math.min(items.length - 1, this.menuCursor + 1);
+			return;
+		}
+		if (matchesKey(data, "return")) {
+			const item = items[this.menuCursor];
+			if (item) this.runMenuItem(item.id);
+		}
+	}
+
+	private handleSwitchKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.pressButton("switch-stay");
+		if (matchesKey(data, "s") || matchesKey(data, "return")) return this.pressButton("switch-save");
+		if (matchesKey(data, "d")) return this.pressButton("switch-discard");
+	}
+
+	// -- pointer ----------------------------------------------------------------
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			if (this.overlay === "model") {
+				this.modelCursor = Math.max(0, Math.min(this.modelOptions().length - 1, this.modelCursor + delta));
+			} else if (this.overlay === "effort") {
+				this.effortCursor = Math.max(0, Math.min(this.effortOptions().length - 1, this.effortCursor + delta));
+			} else if (this.overlay === "menu" || this.overlay === "new") {
+				this.menuCursor = Math.max(0, Math.min(this.menuItems().length - 1, this.menuCursor + delta));
+			} else if (this.overlay === undefined) {
+				this.cursor = Math.max(0, Math.min(this.rows.length - 1, this.cursor + delta));
+			}
+			return { handled: true, render: true };
+		}
+		const exact = this.hitRegions.find(
+			(region) => region.y === event.y && event.x >= region.x0 && event.x < region.x1,
+		);
+		if (event.type === "move") {
+			if (event.button !== "none") return undefined;
+			// Whole-row targets light up anywhere on their line; buttons and tabs
+			// only under the pointer.
+			const hit = exact ?? this.hitRegions.find((region) => region.y === event.y && this.isRowAction(region.action));
+			const next = hit ? this.hoverKey(hit.action) : undefined;
+			const changed = next !== this.hovered;
+			this.hovered = next;
+			return { handled: hit !== undefined, render: changed };
+		}
+		// A click arrives as press then click: the press only claims the pointer,
+		// so one click never runs two actions.
+		if (event.type === "press") return exact ? { handled: true } : undefined;
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		if (!exact) {
+			if (this.overlay !== undefined && this.overlay !== "switch") {
+				this.closeOverlay();
+				return { handled: true, render: true };
+			}
+			return undefined;
+		}
+		this.dispatch(exact.action);
+		return { handled: true, render: true };
+	}
+
+	private isRowAction(action: RoutingTableMouseAction): boolean {
+		return action.kind === "row" || action.kind === "model-option" || action.kind === "menu-item";
+	}
+
+	private hoverKey(action: RoutingTableMouseAction): string {
+		switch (action.kind) {
+			case "row":
+			case "effort":
+			case "tier":
+				return `row:${action.row}`;
+			case "tab":
+				return `tab:${action.name}`;
+			case "model-option":
+			case "effort-option":
+				return `${action.kind}:${action.index}`;
+			case "menu-item":
+				return `menu:${action.id}`;
+			case "button":
+				return `button:${action.button}`;
+			default:
+				return action.kind;
+		}
+	}
+
+	private dispatch(action: RoutingTableMouseAction): void {
+		switch (action.kind) {
+			case "tab":
+				this.switchTab(action.name);
+				return;
+			case "tab-menu":
+				this.openMenu("menu");
+				return;
+			case "new":
+				this.openMenu("new");
+				return;
+			case "row":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.openModel(action.row);
+				return;
+			case "effort":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.openEffort(action.row);
+				return;
+			case "tier":
+				this.cursor = Math.max(0, this.rows.indexOf(action.row));
+				this.toggleTier(action.row);
+				return;
+			case "all-fast":
+				this.setAllFast();
+				return;
+			case "model-option":
+				this.pickModel(this.modelOptions()[action.index]);
+				return;
+			case "effort-option":
+				this.pickEffort(action.index);
+				return;
+			case "menu-item":
+				this.runMenuItem(action.id);
+				return;
+			case "button":
+				this.pressButton(action.button);
+				return;
+		}
+	}
+
+	// -- render ----------------------------------------------------------------
+
+	render(width: number): string[] {
+		this.hitRegions = [];
+		const inner = Math.max(20, width - 4);
+		if (this.overlay === undefined) return this.renderFrame(this.tableLines(inner), width);
+		// The table stays on screen, dimmed, under the card; its regions are
+		// dropped because the card is modal.
+		const table = this.tableLines(inner).map((line) => this.renderText(stripAnsi(line), "dim"));
+		this.hitRegions = [];
+		const card = this.cardFor(inner);
+		return this.renderFrame(this.placeCard(table, card, inner), width);
+	}
+
+	private renderFrame(body: string[], width: number): string[] {
+		const inner = Math.max(20, width - 4);
+		const rows = this.terminalRows ? Math.floor(this.terminalRows()) - 2 : body.length;
+		const padded = body.length < rows ? [...body, ...Array<string>(rows - body.length).fill("")] : body.slice(0, Math.max(rows, 1));
+		const rule = "─".repeat(inner + 2);
+		const border = (text: string) => this.renderText(text, "border");
+		return [
+			border(`╭${rule}╮`),
+			...padded.map((line) => `${border("│")} ${this.fit(line, inner)} ${border("│")}`),
+			border(`╰${rule}╯`),
+		];
+	}
+
+	private tableLines(inner: number): string[] {
+		const lines: string[] = [];
+		// Regions are recorded in frame coordinates: the top border is row 0 and
+		// content starts two columns in ("│ ").
+		const region = (action: RoutingTableMouseAction, x0: number, x1: number) =>
+			this.hitRegions.push({ y: lines.length + 1, x0: 2 + x0, x1: 2 + x1, action });
+
+		// Tabs: every profile, its scopes, the menu on the active one, and New.
+		const tabs = this.tabWindow(inner);
+		let column = 0;
+		let tabLine = "";
+		let activeStart = 0;
+		let activeEnd = 0;
+		const put = (text: string, tone: PanelTone | undefined, action?: RoutingTableMouseAction) => {
+			if (action) region(action, column, column + visibleWidth(text));
+			const styled = tone ? this.renderText(text, tone) : sanitizeTerminalText(text);
+			tabLine += action ? this.hoverWrap(this.hoverKey(action), styled, text) : styled;
+			column += visibleWidth(text);
+		};
+		put(" ", undefined);
+		if (tabs.before) put("‹ ", "dim");
+		for (const name of tabs.names) {
+			const active = name === this.profileName;
+			if (active) activeStart = column;
+			put(` ${truncateToWidth(sanitizeTerminalText(name), 18, "…")} `, active ? "title" : "muted", { kind: "tab", name });
+			for (const glyph of this.scopeGlyphs(name)) put(glyph.text, glyph.tone);
+			if (active) {
+				put(" ▾ ", "accent", { kind: "tab-menu" });
+				activeEnd = column;
+				this.activeTabColumn = activeStart;
+			}
+			put("  ", undefined);
+		}
+		if (tabs.after) put("› ", "dim");
+		this.newColumn = column;
+		put("+ New", "accent", { kind: "new" });
+		lines.push(tabLine);
+		lines.push(
+			this.renderText("─".repeat(activeStart), "border")
+				+ this.renderText("━".repeat(Math.max(0, activeEnd - activeStart)), "accent")
+				+ this.renderText("─".repeat(Math.max(0, inner - activeEnd)), "border"),
+		);
+		const title = truncateToWidth(sanitizeTerminalText(this.profileName), Math.max(8, inner - 4), "…");
+		const room = inner - 1 - visibleWidth(title) - 3;
+		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
+			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
+		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
+		const notices = this.noticeLines(inner);
+		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
-		lines.push(line("j/k: navigate • enter: select • esc: back", "muted"));
+
+		// Labels are measured after sanitizing: control sequences in an agent name
+		// would otherwise pad the column and then vanish, gluing name and model.
+		const agentCol = Math.min(26, Math.max("Orchestrator".length, ...this.agents.map((agent) => visibleWidth(sanitizeTerminalText(agent)))) + 2);
+		const padLabel = (text: string) => {
+			const safe = truncateToWidth(sanitizeTerminalText(text), agentCol - 1, "…");
+			return safe + " ".repeat(Math.max(0, agentCol - visibleWidth(safe)));
+		};
+		const tierRoom = Object.values(this.draft).some((entry) => entry.model && this.fastModels.has(entry.model)) ? 12 : 0;
+		const modelCol = Math.max(20, Math.min(40, inner - agentCol - 12 - tierRoom));
+		const effortStart = 2 + agentCol + modelCol;
+		const row = (key: string, label: string, labelTone: PanelTone) => {
+			const focused = this.rows[this.cursor] === key;
+			const model = this.modelValue(key);
+			const effort = this.effortValue(key);
+			const tier = this.draft[key]?.model && this.fastModels.has(this.draft[key]!.model!) ? `  ${this.draft[key]?.tier === "fast" ? "Fast" : "Standard"} ▾` : "";
+			const modelTone: PanelTone = this.isEdited(key, "model")
+				? "edited"
+				: model === LEAVE_ORCHESTRATOR_UNTOUCHED || model === "inherit" || model === ROUTING_PI_DEFAULT ? "dim" : "text";
+			const effortTone: PanelTone = this.isEdited(key, "thinking") ? "edited" : effort === "inherit" || effort === ROUTING_PI_DEFAULT ? "dim" : "status";
+			const chain = this.fallbacks ? this.chain(key) : [];
+			const room = inner - effortStart - visibleWidth(effort + tier) - 3;
+			const fallback = chain.length && room > 4 ? truncateToWidth(`↪ ${sanitizeTerminalText(chain[0]!.model)}${chain.length > 1 ? ` +${chain.length - 1}` : ""}`, room, "…") : "";
+			const plain = `${focused ? "▸ " : "  "}${padLabel(label)}${truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol)}${effort}${tier}${fallback ? `   ${fallback}` : ""}`;
+			const styled =
+				this.renderText(focused ? "▸ " : "  ", "accent")
+				+ this.renderText(padLabel(label), labelTone)
+				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
+				+ this.renderText(effort, effortTone)
+				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
+				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
+			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
+			if (effort) region({ kind: "effort", row: key }, effortStart, inner);
+			region({ kind: "row", row: key }, 0, inner);
+			lines.push(this.hoverWrap(`row:${key}`, styled, plain, inner));
+		};
+
+		row(PROFILE_ORCHESTRATOR_KEY, "Orchestrator", "title");
+		lines.push(` ${this.renderText("─".repeat(Math.max(0, effortStart + 8 - 1)), "border")}`);
+
+		// The header doubles as the "every agent" row: Model ▾ and Effort ▾.
+		const headerFocused = this.rows[this.cursor] === ROUTING_ALL_ROW;
+		const headerBase = `${headerFocused ? "▸ " : "  "}${"Agent".padEnd(agentCol)}${"Model ▾".padEnd(modelCol)}Effort ▾`;
+		const allFast = tierRoom && visibleWidth(`${headerBase}  All Fast`) <= inner ? "  All Fast" : "";
+		const headerNote = visibleWidth(`${headerBase}${allFast}   set every agent`) <= inner ? "   set every agent" : "";
+		const headerPlain = `${headerBase}${allFast}${headerNote}`;
+		region({ kind: "effort", row: ROUTING_ALL_ROW }, effortStart, effortStart + "Effort ▾".length);
+		if (allFast) region({ kind: "all-fast" }, visibleWidth(headerBase), visibleWidth(headerBase + allFast));
+		region({ kind: "row", row: ROUTING_ALL_ROW }, 0, inner);
+		lines.push(
+			this.hoverWrap(
+				`row:${ROUTING_ALL_ROW}`,
+				this.renderText(headerFocused ? "▸ " : "  ", "accent")
+					+ this.renderText("Agent".padEnd(agentCol), "muted")
+					+ this.renderText("Model ▾".padEnd(modelCol), "muted")
+					+ this.renderText("Effort ▾", "muted")
+					+ (allFast ? this.hoverWrap("all-fast", this.renderText(allFast, "accent"), allFast) : "")
+					+ this.renderText(headerNote, "dim"),
+				headerPlain,
+				inner,
+			),
+		);
+
+		const window = this.agentWindow(notices.length);
+		if (window.start > 0) lines.push(this.renderText(`  ↑ ${window.start} more`, "dim"));
+		for (const agent of this.agents.slice(window.start, window.end)) row(agent, agent, "text");
+		if (window.end < this.agents.length) lines.push(this.renderText(`  ↓ ${this.agents.length - window.end} more`, "dim"));
+		lines.push("");
+
+		// Footer: three buttons, the unsaved count on the right.
+		const changes = this.changeCount();
+		const status = changes > 0 ? `● ${changes} unsaved` : "Saved";
+		const buttonsWidth = (labels: (id: RoutingTableButton) => string) =>
+			1 + (["use", "default", "save"] as const).reduce((sum, id) => sum + labels(id).length + 6, 0);
+		const keyed = (id: RoutingTableButton, text: string) => `${id === "use" ? "u" : id === "default" ? "d" : "s"} · ${text}`;
+		const fullLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_BUTTONS[id]);
+		const shortLabel = (id: RoutingTableButton) => keyed(id, ROUTING_TABLE_SHORT_BUTTONS[id] ?? ROUTING_TABLE_BUTTONS[id]);
+		const label = buttonsWidth(fullLabel) + status.length + 1 <= inner ? fullLabel : shortLabel;
+		let footer = "";
+		let footerColumn = 0;
+		const button = (id: RoutingTableButton, tone: PanelTone) => {
+			const text = `[ ${label(id)} ]`;
+			region({ kind: "button", button: id }, footerColumn, footerColumn + text.length);
+			footer += this.hoverWrap(`button:${id}`, this.renderText(text, tone), text);
+			footer += "  ";
+			footerColumn += text.length + 2;
+		};
+		footer += " ";
+		footerColumn += 1;
+		button("use", "accent");
+		button("default", "accent");
+		button("save", changes > 0 ? "title" : "dim");
+		const gap = Math.max(1, inner - footerColumn - status.length - 1);
+		lines.push(footer + " ".repeat(gap) + this.renderText(status, changes > 0 ? "edited" : "good"));
+		lines.push(this.renderText(this.fitHints(inner), "dim"));
+		const [first = "", second = ""] = this.wrapFeedback(inner);
+		const feedbackTone: PanelTone = this.escArmed ? "edited" : "muted";
+		lines.push(first ? this.renderText(first, feedbackTone) : "");
+		lines.push(second ? this.renderText(second, feedbackTone) : "");
 		return lines;
 	}
 
-	private renderSetAllLabel(row: string): string {
-		const models = this.rows
-			.slice(1)
-			.map((name) => this.draft[name]?.model ?? routingDefaultLabel(name, "model"));
-		const efforts = this.rows
-			.slice(1)
-			.map((name) => this.draft[name]?.thinking ?? routingDefaultLabel(name, "effort"));
-		const firstModel = models[0] ?? "inherit";
-		const firstEffort = efforts[0] ?? "inherit";
-		const modelLabel = models.every((value) => value === firstModel)
-			? firstModel
-			: "mixed";
-		const effortLabel = efforts.every((value) => value === firstEffort)
-			? firstEffort
-			: "mixed";
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(modelLabel, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effortLabel, "status")}`;
+	/** The scope in a few characters, for terminals too narrow for the sentence. */
+	private shortScope(name: string): string {
+		const parts = this.scopeGlyphs(name).map((glyph) =>
+			glyph.text === "◉" ? "◉ session" : glyph.text === "★" ? "★ default" : "⌂ repo",
+		);
+		return parts.length > 0 ? parts.join("  ") : "not in use";
 	}
 
-	private renderAgentLabel(row: string): string {
-		const model = this.draft[row]?.model ?? routingDefaultLabel(row, "model");
-		const effort = this.draft[row]?.thinking ?? routingDefaultLabel(row, "effort");
-		return `${this.renderText(sanitizeTerminalText(row).padEnd(20), "text")} ${this.renderText("model=", "muted")}${this.renderText(model, "status")}${this.renderText(
-			", effort=",
-			"muted",
-		)}${this.renderText(effort, "status")}`;
+	/** As many key hints as fit, chosen by priority and shown in their usual order. */
+	private fitHints(inner: number): string {
+		const budget = inner - 1;
+		const chosen = new Set<number>();
+		let used = 0;
+		const byPriority = ROUTING_TABLE_HINTS.map((hint, index) => ({ ...hint, index })).sort((a, b) => a.keep - b.keep);
+		for (const hint of byPriority) {
+			const cost = visibleWidth(hint.text) + (chosen.size > 0 ? 2 : 0);
+			if (used + cost > budget) continue;
+			chosen.add(hint.index);
+			used += cost;
+		}
+		return ` ${ROUTING_TABLE_HINTS.filter((_, index) => chosen.has(index)).map((hint) => hint.text).join("  ")}`;
+	}
+
+	/**
+	 * Each notice wrapped between words under a ⚠, at most four lines in all so
+	 * the table keeps its room; anything beyond is counted, never cut mid-word.
+	 */
+	private noticeLines(inner: number): string[] {
+		const width = Math.max(10, inner - 3);
+		const lines: string[] = [];
+		let shown = 0;
+		for (const notice of this.notices) {
+			const wrapped: string[] = [];
+			let current = "";
+			for (const word of sanitizeTerminalText(notice).split(/\s+/).filter(Boolean)) {
+				const next = current ? `${current} ${word}` : word;
+				if (visibleWidth(next) <= width || current === "") {
+					current = next;
+					continue;
+				}
+				wrapped.push(current);
+				current = word;
+			}
+			if (current) wrapped.push(current);
+			if (lines.length + wrapped.length > 4) break;
+			wrapped.forEach((line, index) => lines.push(`${index === 0 ? " ⚠ " : "   "}${line}`));
+			shown += 1;
+		}
+		const hidden = this.notices.length - shown;
+		if (hidden > 0) lines.push(`   ${hidden} more problem${hidden === 1 ? "" : "s"} not shown.`);
+		return lines;
+	}
+
+	/** The feedback message on up to two lines, broken between words. */
+	private wrapFeedback(inner: number): string[] {
+		if (!this.feedback) return [];
+		const width = Math.max(10, inner - 1);
+		const lines: string[] = [];
+		let current = "";
+		for (const word of sanitizeTerminalText(this.feedback).split(/\s+/).filter(Boolean)) {
+			const next = current ? `${current} ${word}` : word;
+			if (visibleWidth(next) <= width) {
+				current = next;
+				continue;
+			}
+			if (current) lines.push(current);
+			current = word;
+		}
+		if (current) lines.push(current);
+		if (lines.length > 2) {
+			lines[1] = truncateToWidth(lines.slice(1).join(" "), width, "…");
+			lines.length = 2;
+		}
+		return lines.map((line) => ` ${line}`);
+	}
+
+	/** Which tabs fit around the active one, and whether more hide on either side. */
+	private tabWindow(inner: number): { names: string[]; before: boolean; after: boolean } {
+		const names = this.profileNames();
+		const widthOf = (name: string) =>
+			Math.min(18, visibleWidth(name)) + 4 + this.scopeGlyphs(name).length + (name === this.profileName ? 3 : 0);
+		const budget = inner - 1 - "+ New".length - 4;
+		const active = Math.max(0, names.indexOf(this.profileName));
+		let start = active;
+		let end = active + 1;
+		let used = widthOf(names[active] ?? "");
+		for (let grew = true; grew;) {
+			grew = false;
+			if (end < names.length && used + widthOf(names[end]) <= budget) {
+				used += widthOf(names[end]);
+				end += 1;
+				grew = true;
+			}
+			if (start > 0 && used + widthOf(names[start - 1]) <= budget) {
+				start -= 1;
+				used += widthOf(names[start]);
+				grew = true;
+			}
+		}
+		return { names: names.slice(start, end), before: start > 0, after: end < names.length };
+	}
+
+	private agentWindow(noticeRows = 0): { start: number; end: number } {
+		const total = this.agents.length;
+		if (!this.terminalRows) return { start: 0, end: total };
+		const room = Math.max(3, Math.floor(this.terminalRows()) - 2 - ROUTING_TABLE_FIXED_ROWS - noticeRows);
+		if (total <= room) return { start: 0, end: total };
+		const visible = Math.max(1, room - 2);
+		const focus = Math.max(0, this.cursor - 2);
+		const start = Math.max(0, Math.min(focus - Math.floor(visible / 2), total - visible));
+		return { start, end: start + visible };
+	}
+
+	// -- cards -------------------------------------------------------------------
+
+	private cardFor(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		switch (this.overlay) {
+			case "model":
+				return this.modelCard(inner);
+			case "effort":
+				return this.effortCard(inner);
+			case "menu":
+				return this.menuCard(inner, this.activeTabColumn);
+			case "new":
+				return this.menuCard(inner, this.newColumn);
+			case "fallbacks":
+				return this.fallbacksCard(inner);
+			default:
+				return this.switchCard(inner);
+		}
+	}
+
+	private modelCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(56, inner - 4);
+		const content = width - 4;
+		const lines: string[] = [];
+		const region = (action: RoutingTableMouseAction) =>
+			this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action });
+		lines.push(this.renderText("Model for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
+		lines.push(this.renderText("⌕ ", "accent") + (this.query ? sanitizeTerminalText(this.query) : this.renderText("type to search", "dim")));
+		lines.push(this.renderText("─".repeat(content), "border"));
+		const options = this.modelOptions();
+		const current = this.currentValue(this.target, "model") ?? (this.target === ROUTING_ALL_ROW ? undefined : this.inheritLabel(this.target));
+		const rows = this.terminalRows ? Math.floor(this.terminalRows()) : options.length + ROUTING_MODEL_CARD_CHROME_ROWS;
+		const visible = Math.max(3, Math.min(options.length, rows - ROUTING_MODEL_CARD_CHROME_ROWS));
+		const start = Math.max(0, Math.min(this.modelCursor - Math.floor(visible / 2), options.length - visible));
+		for (let index = start; index < Math.min(options.length, start + visible); index += 1) {
+			const option = options[index] ?? "";
+			const focused = index === this.modelCursor;
+			const tone: PanelTone = focused ? "title" : option === ROUTING_CUSTOM_MODEL || option === this.inheritLabel(this.target) ? "muted" : "text";
+			const mark = option === current ? " ✓" : "";
+			const plain = `${focused ? "▸ " : "  "}${option}${mark}`;
+			region({ kind: "model-option", index });
+			lines.push(
+				this.hoverWrap(
+					`model-option:${index}`,
+					this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(option, tone) + this.renderText(mark, "good"),
+					plain,
+					content,
+				),
+			);
+		}
+		lines.push("");
+		lines.push(this.renderText("↑↓ choose · enter pick · esc back", "dim"));
+		return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	private effortCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		// Provider review roles inherit Pi's persisted default, so their inherit
+		// choice says so (gentle-pi#2271).
+		const inheritLabel = this.target !== ROUTING_ALL_ROW && isProviderReviewRole(this.target)
+			? routingDefaultLabel(this.target, "effort")
+			: "inherit";
+		const chips = this.effortOptions().map((option, index) => {
+			const label = option === INHERIT_THINKING ? inheritLabel : option;
+			const text = index === this.effortCursor ? `[${label}]` : ` ${label} `;
+			return { index, text };
+		});
+		const oneRow = chips.reduce((sum, chip) => sum + chip.text.length + 1, 0) - 1;
+		const width = Math.min(inner - 4, Math.max(44, oneRow + 4));
+		const content = width - 4;
+		// One row when it fits; otherwise the levels wrap onto a second row, so a
+		// narrow terminal never cuts a level in half.
+		const rows: Array<typeof chips> = [[]];
+		let used = 0;
+		for (const chip of chips) {
+			const cost = chip.text.length + (rows[rows.length - 1].length > 0 ? 1 : 0);
+			if (used + cost > content && rows[rows.length - 1].length > 0) {
+				rows.push([]);
+				used = 0;
+			}
+			rows[rows.length - 1].push(chip);
+			used += chip.text.length + (rows[rows.length - 1].length > 1 ? 1 : 0);
+		}
+		const lines: string[] = [];
+		lines.push(this.renderText("Effort for ", "muted") + this.renderText(this.rowLabel(this.target), "title"));
+		lines.push(this.renderText(truncateToWidth(this.effortSource(), content, "…"), "dim"));
+		for (const row of rows) {
+			let column = 0;
+			const drawn: string[] = [];
+			for (const chip of row) {
+				this.hitRegions.push({
+					y: lines.length,
+					x0: column,
+					x1: column + chip.text.length,
+					action: { kind: "effort-option", index: chip.index },
+				});
+				const focused = chip.index === this.effortCursor;
+				drawn.push(this.hoverWrap(`effort-option:${chip.index}`, this.renderText(chip.text, focused ? "title" : "status"), chip.text));
+				column += chip.text.length + 1;
+			}
+			lines.push(drawn.join(" "));
+		}
+		lines.push("");
+		lines.push(this.renderText("←→ choose · enter pick · esc back", "dim"));
+		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/** One line under the effort card's title: whose levels these are. */
+	private effortSource(): string {
+		const supported = this.supportedLevels(this.target);
+		if (this.target === ROUTING_ALL_ROW) {
+			return supported ? "Levels every agent's model supports." : "Models unknown to the catalog: every level is shown.";
+		}
+		const model = this.draft[this.target]?.model;
+		if (model === undefined) return "Inherits its model: every level is shown.";
+		return supported ? `Levels ${model} supports.` : `${model} is not in the catalog: every level is shown.`;
+	}
+
+	private menuCard(inner: number, anchor: number): { lines: string[]; width: number; top: number; left: number } {
+		const items = this.menuItems();
+		const width = Math.min(inner - 2, Math.max(28, ...items.map((item) => visibleWidth(item.label) + 8)));
+		const content = width - 4;
+		const lines: string[] = [];
+		items.forEach((item, index) => {
+			if (item.id === "delete") lines.push(this.renderText("─".repeat(content), "border"));
+			const focused = index === this.menuCursor;
+			const plain = `${focused ? "▸ " : "  "}${item.label}`;
+			this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action: { kind: "menu-item", id: item.id } });
+			lines.push(
+				this.hoverWrap(
+					`menu:${item.id}`,
+					this.renderText(focused ? "▸ " : "  ", "accent") + this.renderText(item.label, item.tone ?? (focused ? "title" : "text")),
+					plain,
+					content,
+				),
+			);
+		});
+		return { lines, width, top: 2, left: Math.max(0, Math.min(anchor, inner - width)) };
+	}
+
+	private switchCard(inner: number): { lines: string[]; width: number; top: number; left: number } {
+		const width = Math.min(inner - 4, 60);
+		const changes = this.changeCount();
+		const lines: string[] = [];
+		lines.push(
+			this.renderText(sanitizeTerminalText(this.profileName), "title")
+				+ this.renderText(` has ${changes} unsaved change${changes === 1 ? "" : "s"}.`, "text"),
+		);
+		lines.push("");
+		let column = 0;
+		let buttons = "";
+		for (const id of ["switch-save", "switch-discard", "switch-stay"] as const) {
+			const text = `[ ${ROUTING_TABLE_BUTTONS[id]} ]`;
+			this.hitRegions.push({ y: lines.length, x0: column, x1: column + text.length, action: { kind: "button", button: id } });
+			buttons += this.hoverWrap(`button:${id}`, this.renderText(text, id === "switch-save" ? "title" : id === "switch-stay" ? "dim" : "accent"), text) + "  ";
+			column += text.length + 2;
+		}
+		lines.push(buttons);
+		lines.push(this.renderText("enter save and switch · d discard · esc stay", "dim"));
+		return { lines, width, top: 6, left: Math.max(0, Math.floor((inner - width) / 2)) };
+	}
+
+	/**
+	 * Draws a card over the dimmed table. Card regions were recorded relative to
+	 * the card content; they move into frame coordinates here: frame border and
+	 * "│ " before the body, the card's own border and "│ " before its content.
+	 */
+	private placeCard(
+		table: string[],
+		card: { lines: string[]; width: number; top: number; left: number },
+		inner: number,
+	): string[] {
+		const regions = this.hitRegions;
+		this.hitRegions = regions.map((region) => ({
+			...region,
+			y: region.y + card.top + 2,
+			x0: 2 + card.left + 2 + region.x0,
+			x1: 2 + card.left + 2 + region.x1,
+		}));
+		const content = card.width - 4;
+		const rule = "─".repeat(card.width - 2);
+		const drawn = [
+			this.renderText(`╭${rule}╮`, "accent"),
+			...card.lines.map((line) => `${this.renderText("│", "accent")} ${this.fit(line, content)} ${this.renderText("│", "accent")}`),
+			this.renderText(`╰${rule}╯`, "accent"),
+		];
+		const body = [...table];
+		const rows = Math.max(body.length, card.top + drawn.length);
+		while (body.length < rows) body.push("");
+		for (let index = 0; index < drawn.length; index += 1) {
+			const target = card.top + index;
+			const right = " ".repeat(Math.max(0, inner - card.left - card.width));
+			body[target] = " ".repeat(card.left) + drawn[index] + right;
+		}
+		return body;
+	}
+
+	// -- text helpers --------------------------------------------------------------
+
+	/**
+	 * The hover fill. It uses the theme's selection background, which reads on
+	 * every bundled theme; the pending-tool background it replaced is a shade
+	 * away from the terminal background on Gentleman-Cute and never showed.
+	 */
+	private hoverWrap(key: string, styled: string, plain: string, fillTo?: number): string {
+		if (this.hovered !== key || !this.theme) return styled;
+		const text = fillTo === undefined ? plain : plain + " ".repeat(Math.max(0, fillTo - visibleWidth(plain)));
+		return this.theme.bg("selectedBg", this.theme.fg("text", sanitizeTerminalText(text)));
+	}
+
+	private renderText(text: string, tone: PanelTone): string {
+		const safe = sanitizeTerminalText(text);
+		if (!this.theme) return safe;
+		return this.theme.fg(PANEL_TONE_COLOR[tone] ?? "text", safe);
+	}
+
+	private fit(line: string, width: number): string {
+		const plain = stripAnsi(line);
+		const visible = visibleWidth(plain);
+		if (visible > width) return truncateToWidth(plain, Math.max(1, width), "…", true);
+		return `${line}${" ".repeat(Math.max(0, width - visible))}`;
 	}
 }
 
-function renderSddModelPanelForTesting(
-	initialConfig: AgentModelConfig,
+interface RoutingTableTestEvent {
+	type: "move" | "click" | "wheel";
+	x: number;
+	y: number;
+	button?: string;
+	wheelDelta?: number;
+}
+
+function renderRoutingTableForTesting(
+	draft: AgentModelConfig,
 	modelOptions: string[],
 	agents: string[],
 	width: number,
 	theme?: Theme,
 	terminalRows?: number,
 	inputs: string[] = [],
+	mouseEvents: RoutingTableTestEvent[] = [],
+	results: RoutingTableResult[] = [],
+	options: {
+		file?: AgentProfilesFile;
+		sessionBoundName?: string;
+		pinWinner?: string;
+		profileName?: string;
+		feedback?: string;
+		thinkingSupport?: Record<string, readonly ThinkingLevel[]>;
+		fastModels?: string[];
+		notices?: string[];
+		fallbacks?: RoutingFallbacks;
+	} = {},
 ): string[] {
-	const panel = new SddModelPanel(
-		initialConfig,
+	const panel = new RoutingTablePanel(
+		draft,
 		modelOptions,
 		agents,
-		() => {},
+		(result) => results.push(result),
 		theme,
-		undefined,
+		options.profileName ?? "current",
 		terminalRows === undefined ? undefined : () => terminalRows,
+		options,
 	);
-	for (const data of inputs) panel.handleInput(data);
+	panel.render(width);
+	for (const data of inputs) {
+		panel.handleInput(data);
+		panel.render(width);
+	}
+	const send = (event: RoutingTableTestEvent, type: TuiMouseEvent["type"]) =>
+		panel.handleMouse({
+			type,
+			x: event.x,
+			y: event.y,
+			button: event.button ?? (type === "move" ? "none" : "left"),
+			wheelDelta: event.wheelDelta,
+			screenX: event.x,
+			screenY: event.y,
+			width,
+			height: terminalRows ?? 40,
+		} as TuiMouseEvent);
+	for (const event of mouseEvents) {
+		// Real terminals send press then click; replay both so a test catches
+		// any action that would fire twice.
+		if (event.type === "click") send(event, "press");
+		send(event, event.type);
+		panel.render(width);
+	}
 	return panel.render(width);
 }
 
-async function showSddModelPanel(
+interface RoutingTablePanelRequest {
+	name: string;
+	config: AgentModelConfig;
+	file: AgentProfilesFile;
+	sessionBoundName?: string;
+	pinWinner?: string;
+	feedback?: string;
+	notices?: string[];
+	switchProfile?: RoutingProfileSwitcher;
+}
+
+/**
+ * What the models screen must not hide: a pin layer that does not resolve
+ * (invalid file, or a name no profile defines) silently returns the repository
+ * to the global routing, and a routing key no agent matches is silently ignored
+ * at launch (issues #2196 and #2400).
+ */
+function routingScreenNotices(
 	ctx: ExtensionContext,
-	config: AgentModelConfig,
-	profileLabel: string,
-): Promise<ModelPanelResult> {
+	file: AgentProfilesFile,
+	shownName: string,
+	sessionBoundName: string | undefined,
+	launchRouting?: AgentModelConfig,
+	authorityAvailable = true,
+): string[] {
+	const notices: string[] = [];
+	if (!authorityAvailable) notices.push("Session profile authority is unavailable; affected launches are blocked. Use in this session selects one.");
+	const pins = evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles);
+	for (const issue of pins.invalid) {
+		notices.push(`The ${issue.source} pin file ${issue.path} is not a valid pin and is ignored. Fix or remove it.`);
+	}
+	for (const issue of pins.stale) {
+		notices.push(`The ${issue.source} pin names "${issue.profile}", which no profile defines, so it is ignored (${issue.path}).`);
+	}
+	if (sessionBoundName !== undefined && !hasOwnProfile(file.profiles, sessionBoundName)) {
+		notices.push(`This session launches with "${sessionBoundName}", which is no longer in profiles.json; its launches keep that routing.`);
+	}
+	// The table shows the saved profile; the session's launches keep the routing
+	// they took at the freeze or the binding. Both sides compare role routes only.
+	const roleRoutes = (config: unknown) => JSON.stringify(Object.entries(normalizeModelConfig(config) ?? {})
+		.filter(([key]) => !isProfileOrchestratorKey(key)).sort(([a], [b]) => a.localeCompare(b)));
+	if (shownName === sessionBoundName && launchRouting !== undefined && hasOwnProfile(file.profiles, shownName)
+		&& roleRoutes(file.profiles[shownName]) !== roleRoutes(launchRouting)) {
+		notices.push(`Saved "${shownName}" differs from this session's launches; Use in this session adopts it.`);
+	}
+	const roots = {
+		cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd,
+		home: homedir(),
+		agentHome: resolveGentlePiAgentHome(),
+	};
+	let discovered: Array<{ name: string }> = [];
+	try {
+		discovered = discoverAgents(roots).agents;
+	} catch {
+		return notices;
+	}
+	// gentle-pi#2271: provider review roles are routed by key and never have an
+	// agent file, so they always count as matched.
+	const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
+	const profileKeys = Object.keys(normalizeModelConfig(file.profiles[shownName]) ?? {}).filter((key) => !isProfileOrchestratorKey(key));
+	const unmatched = unmatchedProfileKeys(Object.fromEntries(profileKeys.map((key) => [key, { model: undefined, thinking: undefined }])), known);
+	const ignored = unmatched.filter((entry) => entry.suggestion === undefined).map((entry) => entry.key);
+	if (ignored.length > 0) {
+		notices.push(
+			`Profile key${ignored.length === 1 ? "" : "s"} ${ignored.map((key) => `"${key}"`).join(", ")} match${ignored.length === 1 ? "es" : ""} no agent configured in gentle-shell, so ${ignored.length === 1 ? "it is" : "they are"} ignored at launch.`,
+		);
+	}
+	for (const entry of unmatched) {
+		if (entry.suggestion !== undefined) notices.push(`Profile key "${entry.key}" matches no agent configured in gentle-shell; did you mean ${entry.suggestion}?`);
+	}
+	// Issue #2400: model_profiles keys in subagents.json that match nothing and
+	// suggest nothing. When the session resolves a profile (its binding or the one
+	// frozen at startup), that profile replaces those launches' routing, so the
+	// file's keys do not apply there; a pin the session did not freeze does not.
+	if (sessionBoundName === undefined) {
+		const stray = unmatchedProfileKeys(loadAgentsConfig(roots).modelProfiles, discovered)
+			.filter((entry) => entry.suggestion === undefined && !isProviderReviewRole(entry.key) && !profileKeys.includes(entry.key))
+			.map((entry) => entry.key);
+		if (stray.length > 0) {
+			notices.push(`subagents.json routes ${stray.map((key) => `"${key}"`).join(", ")}, which no agent matches, so ${stray.length === 1 ? "it is" : "they are"} ignored.`);
+		}
+	}
+	return notices;
+}
+
+async function showRoutingTablePanel(
+	ctx: ExtensionContext,
+	request: RoutingTablePanelRequest,
+): Promise<RoutingTableResult> {
 	const modelOptions = await getPiModelOptions(ctx);
+	const thinkingSupport = await getPiThinkingSupport(ctx);
+	let fastModels: string[] = [];
+	try {
+		fastModels = (await ctx.modelRegistry.getAvailable()).filter(supportsOpenAIFast).map((model) => `${model.provider}/${model.id}`);
+	} catch { /* Unknown catalog entries do not claim Fast compatibility. */ }
 	const agents = modelAssignmentNames(ctx.cwd);
-	return ctx.ui.custom<ModelPanelResult>(
-		(tui, theme, _keybindings, done) =>
-			new SddModelPanel(config, modelOptions, agents, done, theme, profileLabel, () =>
-				Math.max(0, tui.terminal.rows),
-			),
+	return ctx.ui.custom<RoutingTableResult>(
+		(tui, theme, _keybindings, done) => {
+			const panel = new RoutingTablePanel(
+				request.config,
+				modelOptions,
+				agents,
+				done,
+				theme,
+				request.name,
+				() => Math.max(0, tui.terminal.rows),
+				{
+					file: request.file,
+					sessionBoundName: request.sessionBoundName,
+					pinWinner: request.pinWinner,
+					feedback: request.feedback,
+					thinkingSupport,
+					fastModels,
+					notices: request.notices,
+					switchProfile: request.switchProfile,
+					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
+				},
+			);
+			const container = createNativeFullscreenInteraction({
+				keyboardTarget: panel,
+				requestRender: () => tui.requestRender(),
+			});
+			container.addChild(panel);
+			return container;
+		},
 		{
 			overlay: true,
-			// Same fullscreen dimensions as the `/gentle:profiles` panel.
 			overlayOptions: {
 				anchor: "center",
 				width: "100%",
@@ -3697,132 +5008,79 @@ async function showSddModelPanel(
 	);
 }
 
-async function handleModelsCommand(ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
+/**
+ * Bare `/gentle:profiles` opens the models screen on the profile this
+ * repository resolves, after the routing preflight: legacy project overrides
+ * migrate and a pinned repository is named before any edit. An unreadable
+ * saved routing file does not block the screen; Make default discloses it.
+ */
+async function openModelsScreen(ctx: ExtensionContext, live: LiveSession): Promise<void> {
 	migrateLegacyProjectModelOverrides(ctx.cwd);
 	// A pinned repository resolves its subagent routing from the profile at launch,
-	// so global routing written here will not reach its subagents. Saying it before
-	// the edits, not after them, is the difference between a note and a surprise.
+	// so global routing written elsewhere will not reach its subagents. Saying it
+	// before the edits, not after them, is the difference between a note and a surprise.
 	const pinNote = profilePinScopeNote(ctx.cwd);
 	if (pinNote) ctx.ui.notify(pinNote, "info");
-	const savedConfig = await readModelRoutingAuthorityAsync(
-		modelConfigPath(ctx.cwd),
-		legacyProjectModelConfigPath(ctx.cwd),
-	);
-	if (savedConfig.status === "invalid") {
-		ctx.ui.notify(
-			`el Gentleman cannot open model config because ${savedConfig.path} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
-			"warning",
-		);
-		return;
-	}
-	let config = savedConfig.status === "valid" ? savedConfig.config : {};
-	const profileLabel = describeCurrentProfileTarget(resolveCurrentProfileTarget(ctx.cwd));
-	let result = await showSddModelPanel(ctx, config, profileLabel);
-	while (result.type === "custom" || result.type === "export" || result.type === "restore") {
-		config = cloneModelConfig(result.config);
-		if (result.type === "export") {
-			try {
-				const count = await exportSavedModelConfig(ctx);
-				ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
-			} catch (error) {
-				ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
-			continue;
-		}
-		if (result.type === "restore") {
-			const restored = await readModelExport(ctx);
-			if (!restored) {
-				ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
-				result = await showSddModelPanel(ctx, config, profileLabel);
-				continue;
-			}
-			const approved = await ctx.ui.confirm("Restore saved model routing?", `Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`);
-			if (approved) {
-				try {
-					await writeModelConfigAsync(ctx.cwd, restored);
-				} catch (error) {
-					ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
-					result = await showSddModelPanel(ctx, config, profileLabel);
-					continue;
-				}
-				config = restored;
-				try {
-					const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
-					ctx.ui.notify([
-						"el Gentleman restored global model config.",
-						`Import: ${modelExportPath(ctx.cwd)}`,
-						`Global config: ${modelConfigPath(ctx.cwd)}`,
-						`Agents updated: ${applyResult.updated}`,
-					].join("\n"), "info");
-				} catch (error) {
-					ctx.ui.notify([
-						"el Gentleman restored global model config, but applying it to agents failed.",
-						`Global config: ${modelConfigPath(ctx.cwd)}`,
-						`Apply error: ${error instanceof Error ? error.message : String(error)}`,
-					].join("\n"), "warning");
-				}
-			}
-			result = await showSddModelPanel(ctx, config, profileLabel);
-			continue;
-		}
-		const current =
-			result.agent === "all"
-				? "inherit"
-				: (config[result.agent]?.model ?? "inherit");
-		const custom = await ctx.ui.input(
-			`${result.agent === "all" ? "all agents" : sanitizeTerminalText(result.agent)} custom model id`,
-			current === "inherit" ? "provider/model" : sanitizeTerminalText(current),
-		);
-		if (custom === undefined) return;
-		const trimmed = custom.trim();
-		if (trimmed.length > 0) {
-			const model = normalizeModelId(trimmed);
-			if (!model) {
-				ctx.ui.notify(
-					"Custom model id must be a single-line provider/model identifier using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.",
-					"warning",
-				);
-				result = await showSddModelPanel(ctx, config, profileLabel);
-				continue;
-			}
-			if (result.agent === "all") {
-				const next: AgentModelConfig = { ...config };
-				for (const name of modelAssignmentNames(ctx.cwd)) {
-					next[name] = {
-						...(next[name] ?? {}),
-						model,
-					};
-				}
-				config = next;
-			} else {
-				config = {
-					...config,
-					[result.agent]: {
-						...(config[result.agent] ?? {}),
-						model,
-					},
-				};
-			}
-		}
-		result = await showSddModelPanel(ctx, config, profileLabel);
-	}
-	if (result.type !== "save" && result.type !== "save-profile") return;
-	writeModelConfig(ctx.cwd, result.config);
-	const applyResult = await applyModelConfigAsync(ctx.cwd, result.config);
-	ctx.ui.notify(
-		[
-			"el Gentleman global model config saved.",
-			`Global config: ${modelConfigPath(ctx.cwd)}`,
-			`Agents updated: ${applyResult.updated}`,
-			...describeModelConfig(ctx.cwd, result.config),
-		].join("\n"),
-		"info",
-	);
-	if (result.type === "save-profile") updateCurrentProfileFromSavedRouting(ctx, pi);
+	const read = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	const target = read.status === "valid"
+		? resolveCurrentProfileTarget(ctx.cwd, read)
+		: read.status === "missing"
+			? ({ name: "current", source: "active" } as CurrentProfileTarget)
+			: undefined;
+	// The screen opens on the profile this session launches with while the store
+	// still has it (gentle-shell#1064 slice 3c).
+	const authorityAvailable = sessionProfileAuthorityAvailable(ctx);
+	const launchName = sessionLaunchProfile(ctx, authorityAvailable)?.name;
+	const opensOnLaunch = read.status === "valid" && launchName !== undefined && hasOwnProfile(read.file.profiles, launchName);
+	await openProfilesPanelLoop(ctx, live, opensOnLaunch ? launchName : target?.name, authorityAvailable);
 }
 
-/** The profile `u` in `/gentle:models` writes to, and why it is that one. */
+/** `/gentle:profiles export-routing`: write the saved global routing to models.export.json. */
+async function exportRoutingCommand(ctx: ExtensionContext): Promise<void> {
+	try {
+		const count = await exportSavedModelConfig(ctx);
+		ctx.ui.notify(`el Gentleman exported ${count} saved model routing entr${count === 1 ? "y" : "ies"} to ${modelExportPath(ctx.cwd)}.`, "info");
+	} catch (error) {
+		ctx.ui.notify(`Model routing export failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	}
+}
+
+/** `/gentle:profiles restore-routing`: replace the saved global routing with models.export.json, then apply it. */
+async function restoreModelExport(ctx: ExtensionContext): Promise<void> {
+	const restored = await readModelExport(ctx);
+	if (!restored) {
+		ctx.ui.notify(`Model routing restore failed: ${modelExportPath(ctx.cwd)} is missing or invalid.`, "warning");
+		return;
+	}
+	const approved = await ctx.ui.confirm(
+		"Restore saved model routing?",
+		`Replace ${modelConfigPath(ctx.cwd)} with ${modelExportPath(ctx.cwd)}`,
+	);
+	if (!approved) return;
+	try {
+		await writeModelConfigAsync(ctx.cwd, restored);
+	} catch (error) {
+		ctx.ui.notify(`Model routing restore failed before writing config: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		return;
+	}
+	try {
+		const applyResult = await applyModelConfigAsync(ctx.cwd, restored);
+		ctx.ui.notify([
+			"el Gentleman restored global model config.",
+			`Import: ${modelExportPath(ctx.cwd)}`,
+			`Global config: ${modelConfigPath(ctx.cwd)}`,
+			`Agents updated: ${applyResult.updated}`,
+		].join("\n"), "info");
+	} catch (error) {
+		ctx.ui.notify([
+			"el Gentleman restored global model config, but applying it to agents failed.",
+			`Global config: ${modelConfigPath(ctx.cwd)}`,
+			`Apply error: ${error instanceof Error ? error.message : String(error)}`,
+		].join("\n"), "warning");
+	}
+}
+
+/** The profile bare `/gentle:profiles` preselects in the unified panel, and why it is that one. */
 interface CurrentProfileTarget {
 	name: string;
 	source: "pinned" | "active";
@@ -3844,93 +5102,7 @@ function resolveCurrentProfileTarget(
 	return { name: store.file.active, source: "active" };
 }
 
-function describeCurrentProfileTarget(target: CurrentProfileTarget | undefined): string {
-	if (!target) return "none";
-	return target.source === "pinned" ? `${target.name} (pinned)` : target.name;
-}
 
-/**
- * The second half of `u` captures saved global agent routing (never the pin)
- * and the live session orchestrator. Without a live model it falls back to
- * persisted settings. The global save has already been reported, so every
- * outcome here speaks only about the profile.
- */
-function updateCurrentProfileFromSavedRouting(ctx: ExtensionContext, pi: ExtensionAPI): void {
-	const path = profilesFilePath(gentleAiConfigHome());
-	const read = readProfilesFileResult(path);
-	if (read.status === "invalid") {
-		ctx.ui.notify(
-			`el Gentleman saved the global routing, but cannot update a profile because ${sanitizeTerminalText(path)} is invalid JSON or not a profiles file. Fix or remove the file, then run /gentle:profiles again.`,
-			"warning",
-		);
-		return;
-	}
-	const snapshot = profileSnapshotFrom(
-		readGlobalEffectiveModelConfig(ctx.cwd),
-		readOrchestratorSettings(orchestratorSettingsPath()),
-	);
-	if (ctx.model) {
-		snapshot[PROFILE_ORCHESTRATOR_KEY] = {
-			model: `${ctx.model.provider}/${ctx.model.id}`,
-			thinking: pi.getThinkingLevel(),
-		};
-	}
-	if (read.status === "missing") {
-		// The same seed `/gentle:profiles` performs on its first open, so pressing
-		// `u` before ever opening that panel lands on the same "current" profile.
-		try {
-			writeProfilesFileSync(path, bootstrapProfilesFile(snapshot));
-		} catch (error) {
-			ctx.ui.notify(
-				`el Gentleman saved the global routing, but could not create ${sanitizeTerminalText(path)}: ${profilesErrorMessage(error)}`,
-				"warning",
-			);
-			return;
-		}
-		ctx.ui.notify(`el Gentleman seeded the "current" profile in ${sanitizeTerminalText(path)} from the routing just saved.`, "info");
-		return;
-	}
-	reportProfilesDrops(ctx, path, read.drops);
-	const target = resolveCurrentProfileTarget(ctx.cwd, read);
-	if (!target) {
-		ctx.ui.notify(
-			"el Gentleman saved the global routing, but no profile is current: none is active and this repository pins none. Apply or create one with /gentle:profiles, then press u here or s there.",
-			"warning",
-		);
-		return;
-	}
-	try {
-		writeProfilesFileSync(path, updateProfile(read.file, target.name, snapshot));
-	} catch (error) {
-		ctx.ui.notify(
-			`el Gentleman saved the global routing, but profile "${target.name}" was not updated: ${profilesErrorMessage(error)}`,
-			"warning",
-		);
-		return;
-	}
-	ctx.ui.notify(
-		[
-			`el Gentleman: Profile "${target.name}" updated from the routing just saved (${target.source === "pinned" ? "this repository's pinned profile" : "the active profile"}).`,
-			`Profiles store: ${sanitizeTerminalText(path)}`,
-		].join("\n"),
-		"info",
-	);
-}
-
-type ProfilesPanelResult =
-	| { type: "apply"; name: string }
-	| { type: "apply-global"; name: string }
-	| { type: "create" }
-	| { type: "update"; name: string }
-	| { type: "duplicate"; name: string }
-	| { type: "rename"; name: string }
-	| { type: "delete"; name: string }
-	| { type: "export"; name: string }
-	| { type: "pin"; source: ProfilePinSource; name: string }
-	| { type: "import" }
-	| { type: "close" };
-
-type ProfilesSnapshotHandler = (name: string) => AgentProfilesFile;
 
 /**
  * What a panel action hands the reopened panel: a one-line status for the footer,
@@ -3941,10 +5113,6 @@ interface ProfilesPanelReport {
 	status?: string;
 	selectedName?: string;
 }
-
-const PROFILES_PANEL_MIN_BODY_ROWS = 6;
-
-type ProfilesPanelPointerLayout = AgentsViewLayout & { listTop: number };
 
 function hasOwnProfile(profiles: Record<string, unknown>, name: string): boolean {
 	return Object.prototype.hasOwnProperty.call(profiles, name);
@@ -3977,8 +5145,8 @@ function profilePinStateLabel(
  * Every line the panel needs to tell a pinned repository the truth: the winning
  * layer and its exact file, an explicit warning for a file that is not a pin named
  * by path (kept separate from a pin naming a profile this store no longer defines),
- * and one sentence that a winning pin outranks the global active profile and every
- * `/gentle:models` write.
+ * and one sentence that a winning pin outranks the globally active profile and every
+ * global routing write.
  */
 function profilePinDetailLines(
 	status: ProfilePinStatus | undefined,
@@ -3995,7 +5163,7 @@ function profilePinDetailLines(
 		lines.push(`              the ${issue.source} pin names "${issue.profile}", which this store does not define; ignoring it (${issue.path}).`);
 	}
 	if (evaluation.winner) {
-		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and /gentle:models writes do not apply here.");
+		lines.push("              This repository's subagent routing comes from the pin; the globally active profile and global routing writes do not apply here.");
 	}
 	return lines;
 }
@@ -4034,15 +5202,15 @@ function followRenamedPin(
 
 /**
  * One sentence naming the profile this repository resolves, for the commands whose
- * writes a pin outranks: `/gentle:models` materializes global routing that a pinned
- * repository will not use for its subagents. The launch resolver decides, so the note
+ * writes a pin outranks: global routing applied from the unified panel does not
+ * reach a pinned repository's subagents. The launch resolver decides, so the note
  * names exactly what a launch would use.
  */
 function profilePinScopeNote(cwd: string): string | undefined {
 	const resolution = resolveProfilePin({ cwd, configHome: gentleAiConfigHome() });
 	if (!resolution) return undefined;
 	return sanitizeTerminalText(
-		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove the pin with /gentle:profiles (p or P).`,
+		`This repository pins profile "${resolution.profile}" (${resolution.source} pin at ${resolution.path}), so its subagent launches resolve that profile instead of the global routing. Change or remove it in /gentle:profiles (profile menu ▾ › Use in this repo), or with /gentle:profiles publish <name> for the committed declaration.`,
 	);
 }
 
@@ -4053,10 +5221,10 @@ function profilePinScopeNote(cwd: string): string | undefined {
  * write that already succeeded must not become an error because a probe about sharing
  * it failed.
  */
-function repoDeclarationSharing(root: string, path: string): string {
+export function repoDeclarationSharing(root: string, path: string): string {
 	const relativePath = relative(root, path).split(sep).join("/");
 	const run = (...arguments_: string[]): string =>
-		execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
+		execFileSync("git", arguments_, { cwd: root, encoding: "utf8", windowsHide: true }).trim();
 	try {
 		// Exit 0 means gitignore matches the path; the exact negation line is what makes
 		// the declaration committable again.
@@ -4076,413 +5244,6 @@ function repoDeclarationSharing(root: string, path: string): string {
 	} catch {
 		return `${relativePath} is not ignored, so it is committable as-is.`;
 	}
-}
-
-/** Keep a detail-pane scroll offset inside the bounds of its own content. */
-function clampDetailScroll(offset: number, lineCount: number, bodyRows: number): number {
-	return Math.max(0, Math.min(offset, Math.max(0, lineCount - bodyRows)));
-}
-
-// Left profile list, right detail panes. Rendering and pointer routing share
-// one measured layout; the list rows keep native keyboard, hover, press,
-// click, and wheel handling through NativeChoiceList. The frame takes the full
-// overlay, so its height follows the terminal rows the same way AgentsView does.
-class ProfilesPanel implements OverlayComponent {
-	private completed = false;
-	private pointerLayout: ProfilesPanelPointerLayout | undefined;
-	private detailScroll = 0;
-	private lastDetailLineCount = 0;
-	private lastDetailRows = 0;
-	private lastSelectedId: string | undefined;
-	private feedback: string | undefined;
-	readonly list: NativeChoiceList<ProfileListItem>;
-	private file: AgentProfilesFile;
-	private readonly currentConfig: AgentModelConfig;
-	private readonly done: (result: ProfilesPanelResult) => void;
-	private readonly saveSnapshot: ProfilesSnapshotHandler;
-	private readonly requestRender: () => void;
-	private readonly listItems: ProfileListItem[];
-	private readonly theme: Theme | undefined;
-	private readonly rows: () => number;
-	private readonly orchestratorSettings: OrchestratorSettingsReadResult;
-	// Actions reopen the panel, refreshing this snapshot without disk reads during rendering.
-	private readonly pinStatus: ProfilePinStatus | undefined;
-	private readonly sessionBoundName: string | undefined;
-	private readonly liveOrchestrator: (() => AgentRoutingEntry | undefined) | undefined;
-
-	constructor(
-		file: AgentProfilesFile,
-		currentConfig: AgentModelConfig,
-		done: (result: ProfilesPanelResult) => void,
-		keybindings: KeybindingsManager | undefined,
-		theme: Theme | undefined,
-		selectedName: string | undefined,
-		rows: () => number,
-		orchestratorSettings: OrchestratorSettingsReadResult,
-		saveSnapshot: ProfilesSnapshotHandler,
-		requestRender: () => void,
-		pinStatus: () => ProfilePinStatus | undefined,
-		sessionBound: () => string | undefined,
-		liveOrchestrator?: () => AgentRoutingEntry | undefined,
-		feedback?: string,
-	) {
-		this.file = file;
-		this.feedback = feedback;
-		this.currentConfig = currentConfig;
-		this.done = done;
-		this.saveSnapshot = saveSnapshot;
-		this.requestRender = requestRender;
-		this.theme = theme;
-		this.rows = rows;
-		this.orchestratorSettings = orchestratorSettings;
-		this.pinStatus = pinStatus();
-		this.sessionBoundName = sessionBound();
-		this.liveOrchestrator = liveOrchestrator;
-		const items = buildProfileListItems(file, evaluateProfilePin(this.pinStatus, file.profiles).winner?.profile, this.sessionBoundName);
-		this.listItems = items;
-		this.list = new NativeChoiceList<ProfileListItem>(
-			items,
-			{
-				selectedPrefix: (text) => this.renderText(text, "accent"),
-				selectedText: (text) => this.renderText(text, "accent"),
-				description: (text) => this.renderText(text, "muted"),
-				hoverBackground: (text) => (this.theme ? this.theme.bg("toolPendingBg", text) : text),
-			},
-			keybindings,
-		);
-		this.list.onSelect = (item) => this.finish({ type: "apply", name: item.id });
-		this.list.onCancel = () => this.finish({ type: "close" });
-		const selected = selectedName ? items.findIndex((item) => item.id === selectedName) : -1;
-		if (selected >= 0) this.list.setSelectedIndex(selected);
-	}
-
-	invalidate(): void {
-		this.pointerLayout = undefined;
-		this.list.invalidate();
-	}
-
-	handleInput(data: string): void {
-		if (isKeyRelease(data)) return;
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.finish({ type: "close" });
-			return;
-		}
-		const name = this.list.getSelectedItem()?.id;
-		if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("j"))) {
-			this.scrollDetail(this.pageRows());
-			return;
-		}
-		if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("k"))) {
-			this.scrollDetail(-this.pageRows());
-			return;
-		}
-		// Agents-view line scroll: j/k move the routing one line at a time. The
-		// arrow keys stay with the profile list, exactly as the letters below stay
-		// profile actions.
-		if (data === "j") {
-			this.scrollDetail(1);
-			return;
-		}
-		if (data === "k") {
-			this.scrollDetail(-1);
-			return;
-		}
-		if (data === "c") return this.finish({ type: "create" });
-		if (data === "i") return this.finish({ type: "import" });
-		if (!name) return this.list.handleInput(data);
-		if (data === "s") {
-			try {
-				this.file = this.saveSnapshot(name);
-				this.refreshListItems();
-				this.feedback = `Snapshot saved; live routing unchanged. Profile "${name}" saved from current routing.`;
-			} catch (error) {
-				this.feedback = `Snapshot failed; live routing unchanged. Profile "${name}" was not saved from current routing: ${profilesErrorMessage(error)}`;
-			}
-			this.requestRender();
-			return;
-		}
-		if (data === "a") return this.finish({ type: "apply-global", name });
-		if (data === "d") return this.finish({ type: "duplicate", name });
-		if (data === "r") return this.finish({ type: "rename", name });
-		if (data === "x") return this.finish({ type: "delete", name });
-		if (data === "e") return this.finish({ type: "export", name });
-		if (data === "p") return this.finish({ type: "pin", source: "local", name });
-		if (data === "P") return this.finish({ type: "pin", source: "repo", name });
-		this.list.handleInput(data);
-	}
-
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const layout = this.pointerLayout;
-		if (!layout) return undefined;
-		const inBody = event.y >= layout.listTop && event.y < layout.listTop + layout.bodyRows;
-		if (
-			inBody &&
-			event.type === "wheel" &&
-			event.wheelDelta &&
-			layout.mode === "panes" &&
-			event.x >= layout.threadX &&
-			event.x < layout.threadX + layout.threadWidth
-		) {
-			this.scrollDetail(event.wheelDelta);
-			return { handled: true, render: true };
-		}
-		if (!inBody) return undefined;
-		if (event.x < layout.listX || event.x >= layout.listX + layout.listWidth) return undefined;
-		return this.list.handleMouse({
-			...event,
-			x: event.x - layout.listX,
-			y: event.y - layout.listTop,
-			width: layout.listWidth,
-			height: layout.bodyRows,
-		});
-	}
-
-	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		const listWidth = measureAgentsViewLayout(safeWidth, PROFILES_PANEL_MIN_BODY_ROWS + 3).listWidth;
-		const listLines = this.list.render(listWidth);
-		// The frame fills the overlay, and the overlay fills the terminal, so the
-		// body height comes from the terminal rows rather than from the content.
-		const rows = Math.max(PROFILES_PANEL_MIN_BODY_ROWS + 3, Math.floor(this.rows()));
-		const layout = measureAgentsViewLayout(safeWidth, rows);
-		if (layout.mode === "fallback" || layout.width === 0) {
-			this.pointerLayout = undefined;
-			return [];
-		}
-		const selectedId = this.list.getSelectedItem()?.id;
-		if (selectedId !== this.lastSelectedId) {
-			this.lastSelectedId = selectedId;
-			this.detailScroll = 0;
-		}
-		const detailLines = this.renderDetailLines(layout.threadWidth, layout.mode === "panes");
-		this.lastDetailLineCount = detailLines.length;
-		this.lastDetailRows = layout.bodyRows;
-		this.detailScroll = clampDetailScroll(this.detailScroll, detailLines.length, layout.bodyRows);
-		this.pointerLayout = { ...layout, listTop: 1 };
-		const rule = "─".repeat(Math.max(0, layout.width - 2));
-		const lines: string[] = [this.renderText(`╭${rule}╮`, "border")];
-		for (let row = 0; row < layout.bodyRows; row += 1) {
-			lines.push(this.renderBodyRow(row, layout, listLines, detailLines));
-		}
-		lines.push(this.renderFooterRow(layout.width));
-		lines.push(this.renderText(`╰${rule}╯`, "border"));
-		return lines;
-	}
-
-	private scrollDetail(delta: number): void {
-		this.detailScroll = clampDetailScroll(
-			this.detailScroll + Math.trunc(delta),
-			this.lastDetailLineCount,
-			this.lastDetailRows,
-		);
-	}
-
-	private refreshListItems(): void {
-		// Keep the list instance (and its pointer observer) alive while refreshing the
-		// mutable item records that NativeChoiceList already holds by reference.
-		for (const item of buildProfileListItems(this.file, evaluateProfilePin(this.pinStatus, this.file.profiles).winner?.profile, this.sessionBoundName)) {
-			const current = this.listItems.find((candidate) => candidate.id === item.id);
-			if (current) Object.assign(current, item);
-		}
-		this.list.refreshItems();
-	}
-
-	private pageRows(): number {
-		return Math.max(1, this.lastDetailRows - 1);
-	}
-
-	private finish(result: ProfilesPanelResult): void {
-		if (this.completed) return;
-		this.completed = true;
-		this.list.setDisabled(true);
-		this.done(result);
-	}
-
-	private renderBodyRow(
-		row: number,
-		layout: AgentsViewLayout,
-		listLines: string[],
-		detailLines: string[],
-	): string {
-		if (layout.mode === "panes") {
-			return [
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-				" ",
-				this.renderText("│", "border"),
-				" ",
-				this.fitPaneLine(detailLines[this.detailScroll + row] ?? "", layout.threadWidth),
-				this.renderText("│", "border"),
-			].join("");
-		}
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(listLines[row] ?? "", layout.listWidth),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderFooterRow(width: number): string {
-		const hints =
-			"enter use in this session · a set as global default · c create · s snapshot · d duplicate · r rename · x delete · e export · i import · p pin · P share · j/k line · ctrl+j/k page · esc close";
-		const text = this.feedback ?? hints;
-		return [
-			this.renderText("│", "border"),
-			" ",
-			this.fitPaneLine(this.renderText(text, this.feedback ? "status" : "muted"), width - 4),
-			" ",
-			this.renderText("│", "border"),
-		].join("");
-	}
-
-	private renderDetailLines(width: number, showDetail: boolean): string[] {
-		if (!showDetail) return [];
-		const name = this.list.getSelectedItem()?.id;
-		if (!name || !hasOwnProfile(this.file.profiles, name)) {
-			return [this.renderLine("No profile selected.", width, "muted")];
-		}
-		const config = this.file.profiles[name];
-		const profileRows = profileRoutingRows(config);
-		const currentRows = profileRoutingRows(this.currentConfig);
-		// One shared measurement across both tables, so the same agent sits in the
-		// same column whether it comes from the profile or from models.json.
-		const widths = routingColumnWidths(profileRows, currentRows);
-		return [
-			this.renderLine(name === this.file.active ? `${name} (active)` : name, width, "title"),
-			this.renderLine(
-				`orchestrator  ${formatOrchestratorSelection(readProfileOrchestrator(config))}`,
-				width,
-				"text",
-			),
-			this.renderLine(`now           ${this.effectiveOrchestratorLabel()}`, width, "muted"),
-			// A pin only redirects subagent routing, so it is reported next to the
-			// orchestrator lines it deliberately does not move. The winning layer's path,
-			// any invalid or stale layer, and the scope sentence all come from the shared
-			// precedence rule the launch resolver uses.
-			...profilePinDetailLines(this.pinStatus, this.file.profiles).map((line) => this.renderLine(line, width, "muted")),
-			// gentle-shell#1064: the binding is stored for this session and outranks
-			// the pin in the panel list, so it is named right after the pin layers.
-			// Since #1558 launches resolve it ahead of pins and the global default,
-			// and nothing was written to make that true.
-			...(this.sessionBoundName === undefined
-				? []
-				: [this.renderLine(`session        ${sanitizeTerminalText(this.sessionBoundName)} (session) — launches resolve it ahead of pins and the global default; nothing was written`, width, "muted")]),
-			"",
-			this.renderLine("Profile routing", width, "accent"),
-			...this.indentLines(this.routingLines(profileRows, widths), width),
-			"",
-			this.renderLine("Current routing (effective)", width, "accent"),
-			...this.indentLines(this.routingLines(currentRows, widths), width),
-		];
-	}
-
-	private effectiveOrchestratorLabel(): string {
-		// The now line answers what this session runs: the live orchestrator wins
-		// when one exists, and the settings read only stands in for sessions
-		// without a live model (and still surfaces an unreadable settings file).
-		const live = this.liveOrchestrator?.();
-		if (live !== undefined) {
-			return formatOrchestratorSelection(live);
-		}
-		const settings = this.orchestratorSettings;
-		if (settings.status === "invalid") {
-			return `unreadable (${sanitizeTerminalText(settings.reason)})`;
-		}
-		return formatOrchestratorSelection(settings.status === "valid" ? settings.entry : undefined);
-	}
-
-	private routingLines(
-		rows: ProfileRoutingRow[],
-		widths: { agent: number; model: number },
-	): string[] {
-		if (rows.length === 0) {
-			return ["No routing entries — every agent inherits its default model."];
-		}
-		return rows.map((row) => formatRoutingRow(row, widths));
-	}
-
-	private indentLines(lines: string[], width: number): string[] {
-		return lines.map((line) => this.renderLine(`  ${line}`, width, "text"));
-	}
-
-	private fitPaneLine(line: string, width: number): string {
-		const visible = stripAnsi(line);
-		if (visible.length > width) {
-			return truncateToWidth(visible, Math.max(1, width), "…", true);
-		}
-		return `${line}${" ".repeat(Math.max(0, width - visible.length))}`;
-	}
-
-	private renderLine(text: string, width: number, tone?: PanelTone): string {
-		const safe = truncateToWidth(
-			sanitizeTerminalText(text),
-			Math.max(1, width),
-			"…",
-			true,
-		);
-		return tone ? this.renderText(safe, tone) : safe;
-	}
-
-	private renderText(text: string, tone: PanelTone): string {
-		const safe = sanitizeTerminalText(text);
-		if (!this.theme) return safe;
-		return this.theme.fg(PANEL_TONE_COLOR[tone], safe);
-	}
-}
-
-/** The full-screen profile picker: one visit per action, so every reopen reads fresh store, pin, orchestrator, and session-binding state. */
-async function showProfilesPanel(
-	ctx: ExtensionContext,
-	file: AgentProfilesFile,
-	currentConfig: AgentModelConfig,
-	selectedName: string | undefined,
-	saveSnapshot: ProfilesSnapshotHandler,
-	live: LiveSession,
-	status?: string,
-	sessionBoundName?: string,
-): Promise<ProfilesPanelResult> {
-	// Both orchestrator and pin state are snapshots for this panel visit.
-	// Actions (including p/P) reopen the panel and read fresh state.
-	const orchestratorSettings = readOrchestratorSettings(orchestratorSettingsPath());
-	return ctx.ui.custom<ProfilesPanelResult>(
-		(tui, theme, keybindings, done) => {
-			const panel = new ProfilesPanel(
-				file,
-				currentConfig,
-				done,
-				keybindings,
-				theme,
-				selectedName,
-				() => Math.max(0, tui.terminal.rows),
-				orchestratorSettings,
-				saveSnapshot,
-				() => tui.requestRender(),
-				() => readProfilePinStatus(ctx.cwd),
-				() => sessionBoundName,
-				() => liveOrchestratorSnapshot(ctx, live)?.entry,
-				status,
-			);
-			const container = createNativeFullscreenInteraction({
-				keyboardTarget: panel,
-				requestRender: () => tui.requestRender(),
-				mouseObserver: panel.list.createMouseObserver(() => tui.requestRender()),
-			});
-			container.addChild(panel);
-			return container;
-		},
-		{
-			overlay: true,
-			overlayOptions: {
-				anchor: "center",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			},
-		},
-	);
 }
 
 function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: ProfilesParseDrops): void {
@@ -4510,7 +5271,7 @@ function reportProfilesDrops(ctx: ExtensionContext, path: string, drops: Profile
 }
 
 /** Pi's own live-session controls: the ExtensionAPI's setModel/setThinkingLevel. */
-type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
+type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel"> & Partial<Pick<ExtensionAPI, "events">>;
 
 /**
  * Switch the running session to the profile's orchestrator. `settings.json`
@@ -4520,7 +5281,7 @@ type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThin
  * keep the current live model and report what happened; callers retain their
  * routing snapshot or persisted default independently.
  */
-async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry): Promise<string> {
+async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, entry: AgentRoutingEntry, current: () => boolean = () => true, onSuccess?: () => void): Promise<string> {
 	const reference = parseOrchestratorModelRef(entry.model);
 	if (reference === undefined) return "";
 	const label = `${reference.provider}/${reference.model}`;
@@ -4540,6 +5301,9 @@ async function switchLiveOrchestrator(ctx: ExtensionContext, live: LiveSession, 
 		return `\nThis session could not switch to ${label}: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}.`;
 	}
 	if (!switched) return `\nno authentication is configured for ${reference.provider}; this session keeps its current model.`;
+	if (!current()) return "";
+	onSuccess?.();
+	live.events?.emit(PROFILE_TIER_EVENT, { sessionId: ctx.sessionManager?.getSessionId?.(), tier: supportsOpenAIFast(model) ? entry.tier : undefined, model: `${model.provider}/${model.id}` });
 	if (entry.thinking === undefined) return `\nThis session now runs on ${label}.`;
 	try {
 		live.setThinkingLevel(entry.thinking);
@@ -4579,41 +5343,92 @@ function profileSnapshotFrom(
 	return snapshot;
 }
 
+/** The store actions runProfilesPanelAction implements; the loop handles the rest itself. */
+type ProfileStoreAction = Extract<
+	RoutingTableResult,
+	{ type: "use-session" | "apply-global" | "create" | "duplicate" | "rename" | "delete" | "export-profile" | "import-profile" | "pin" }
+>;
+
 /** Runs one finished panel action against the store and the live session, returning the file the reopened panel should show. */
 async function runProfilesPanelAction(
 	ctx: ExtensionContext,
 	live: LiveSession,
 	path: string,
 	file: AgentProfilesFile,
-	result: Exclude<ProfilesPanelResult, { type: "close" }>,
+	result: ProfileStoreAction,
 	report: ProfilesPanelReport = {},
 ): Promise<AgentProfilesFile> {
 	switch (result.type) {
-		case "apply": {
+		case "use-session": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
-			// Enter applies a complete routing snapshot to this parent session and
-			// switches only its live orchestrator. No shared defaults, materialized
-			// stores, agent frontmatter, pins, or declarations are written.
+			// Enter persists a complete routing snapshot for this parent session,
+			// publishes only the returned state, then switches its live orchestrator.
+			// No shared defaults, materialized stores, agent frontmatter, pins, or
+			// declarations are written.
 			const sessionId = ctx.sessionManager?.getSessionId?.();
 			if (typeof sessionId !== "string" || sessionId.length === 0) {
+				report.status = `This Pi session has no id to bind "${result.name}" to. Use Make default instead.`;
 				ctx.ui.notify(
-					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Set it as the global default with a instead.`,
+					`el Gentleman cannot bind profile "${result.name}" to this session: no parent session id is available here. Use Make default instead.`,
 					"warning",
 				);
 				return file;
 			}
-			const snapshot = normalizeModelConfig(file.profiles[result.name]) ?? {};
-			bindSessionProfile(sessionId, result.name, snapshot);
-			const orchestrator = readProfileOrchestrator(snapshot);
-			const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, live, orchestrator);
-			ctx.ui.notify(
-				`el Gentleman bound profile "${result.name}" to this session — shown as "${result.name} (session)". Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Set as global default with a.${liveNote}`,
-				"info",
-			);
+			const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+				const startup = knownSessionProfileStartup(attachment.refresh().state, sessionId);
+				const outcome = attachment.bind(result.name, normalizeModelConfig(result.config ?? file.profiles[result.name]) ?? {}, startup);
+				if (!owned()) return false;
+				const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+				if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== "bound" || !authority.available) {
+					const kept = authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked.";
+					report.status = `"${result.name}" was not bound to this session. ${kept}`;
+					ctx.ui.notify(
+						`el Gentleman could not bind profile "${result.name}". ${kept} No live model or thinking change was applied.`,
+						"warning",
+					);
+					return false;
+				}
+				const snapshot = outcome.state.binding;
+				// The live switch applies only while this exact snapshot is still current.
+				const current = () => {
+					if (!owned()) return false;
+					const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+					return state?.status === "bound" && isDeepStrictEqual(state.binding, snapshot);
+				};
+				const orchestrator = readProfileOrchestrator(snapshot.modelProfiles);
+				const liveNote = orchestrator === undefined ? "" : await switchLiveOrchestrator(ctx, {
+					setModel: (model) => current() ? live.setModel(model) : Promise.resolve(false),
+					setThinkingLevel: (level) => { if (current()) live.setThinkingLevel(level); },
+					getThinkingLevel: () => live.getThinkingLevel(),
+					events: live.events,
+				}, orchestrator, current);
+				if (orchestrator?.model === undefined && current()) live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
+				if (current()) {
+					const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+					report.status = `This session now uses "${snapshot.name}" (${persistence}). Nothing shared was written.${liveNote.replace(/\n/g, " ")}`;
+					ctx.ui.notify(
+						`el Gentleman bound profile "${snapshot.name}" to this session — its tab shows ◉; ${persistence}. Subagents and reviewers use this session's routing snapshot. Shared defaults were not written: the global routing, pins, and materialized stores are untouched. Make default writes them.${liveNote}`,
+						"info",
+					);
+				}
+				return true;
+			});
+			// A selection skipped by a reload or session replacement leaves a stale
+			// ctx; only a still-active command reports the missing attachment.
+			if (selected === undefined && isCommandContextActive(ctx)) {
+				report.status = `"${result.name}" was not bound: this session's attachment is unavailable.`;
+				ctx.ui.notify(
+					`el Gentleman cannot bind profile "${result.name}": the current session attachment is unavailable. No profile or live model change was applied.`,
+					"warning",
+				);
+			}
 			return file;
 		}
 		case "apply-global": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
+			const manager = ctx.sessionManager;
+			const sessionId = manager?.getSessionId?.();
+			const current = () => isCommandContextActive(ctx) && ctx.sessionManager === manager && manager?.getSessionId?.() === sessionId;
 			// A pinned repository resolves its subagent routing from the profile at launch,
 			// so a global apply would move global state this repository never reads. When a
 			// pin wins, applying is repo-scoped: re-pin this clone and write no global
@@ -4639,7 +5454,7 @@ async function runProfilesPanelAction(
 				ctx.ui.notify(pinNote, "info");
 				return file;
 			}
-			const normalized = normalizeModelConfig(file.profiles[result.name]) ?? {};
+			const normalized = cloneModelConfig(result.config);
 			const orchestratorEntry = readProfileOrchestrator(normalized);
 			const hasAgentRoutes = Object.keys(normalized).some((name) => !isProfileOrchestratorKey(name));
 			// Every global apply confirms before anything is written: applying replaces
@@ -4675,7 +5490,7 @@ async function runProfilesPanelAction(
 					clearedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → inherit (cleared)`);
 				} else if (from === undefined) {
 					addedRoutes.push(`${name}: ${formatOrchestratorSelection(to)} (added)`);
-				} else if (from.model !== to.model || from.thinking !== to.thinking) {
+				} else if (from.model !== to.model || from.thinking !== to.thinking || from.tier !== to.tier) {
 					replacedRoutes.push(`${name}: ${formatOrchestratorSelection(from)} → ${formatOrchestratorSelection(to)}`);
 				}
 			}
@@ -4738,6 +5553,7 @@ async function runProfilesPanelAction(
 					return current.status === "valid" && current.entry !== undefined
 						&& current.entry.model === orchestratorEntry.model
 						&& current.entry.thinking === orchestratorEntry.thinking
+						&& (savedRouting.status === "valid" ? savedRouting.config[PROFILE_ORCHESTRATOR_KEY]?.tier : undefined) === orchestratorEntry.tier
 						&& liveOrchestrator !== undefined
 						&& liveOrchestrator.model === orchestratorEntry.model
 						&& liveOrchestrator.thinking === orchestratorEntry.thinking;
@@ -4873,7 +5689,16 @@ async function runProfilesPanelAction(
 				// settings.json only governs future sessions. The session the user is
 				// sitting in keeps its model until told otherwise, which made a profile
 				// look applied while the orchestrator kept answering with the old one.
-				orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry);
+				if (current()) {
+					if (orchestratorEntry.model) orchestratorNote += await switchLiveOrchestrator(ctx, live, orchestratorEntry, current, () => setFrozenDefaultOrchestrator(sessionId, orchestratorEntry));
+					else {
+						setFrozenDefaultOrchestrator(sessionId, undefined);
+						live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
+					}
+				}
+			} else if (current()) {
+				setFrozenDefaultOrchestrator(sessionId, undefined);
+				live.events?.emit(PROFILE_TIER_EVENT, { sessionId, tier: undefined });
 			}
 			// A pin that does not resolve changes nothing at launch, so the global apply
 			// above is what governs this repository. Saying so keeps a broken pin from
@@ -4915,28 +5740,6 @@ async function runProfilesPanelAction(
 				return file;
 			}
 		}
-		case "update": {
-			// A profile is a complete snapshot, so capturing the current routing also
-			// captures the orchestrator the routing is running under. A settings file
-			// that cannot be read leaves the snapshot without an orchestrator entry
-			// rather than inventing one.
-			const snapshot = profileSnapshotFrom(
-				await readEffectiveModelConfigAsync(ctx.cwd),
-				readOrchestratorSettings(orchestratorSettingsPath()),
-			);
-			try {
-				const next = updateProfile(file, result.name, snapshot);
-				writeProfilesFileSync(path, next);
-				ctx.ui.notify(
-					`el Gentleman updated profile "${result.name}" from the current routing in ${modelConfigPath(ctx.cwd)}.`,
-					"info",
-				);
-				return next;
-			} catch (error) {
-				ctx.ui.notify(`Profile not updated: ${profilesErrorMessage(error)}`, "warning");
-				return file;
-			}
-		}
 		case "duplicate": {
 			// The Pi host starts the field empty and ignores the placeholder, so the title
 			// names the suggestion and Enter on an untouched field accepts it.
@@ -4973,6 +5776,7 @@ async function runProfilesPanelAction(
 			try {
 				const next = renameProfile(file, result.name, name);
 				writeProfilesFileSync(path, next);
+				followProfileFallbacks(path, result.name, name);
 				// A pin stores a name, so a rename that did not follow it would leave every
 				// pinned repository with a name the store no longer defines, which silently
 				// returns those repositories to the global routing.
@@ -4980,7 +5784,7 @@ async function runProfilesPanelAction(
 				ctx.ui.notify(
 					`el Gentleman renamed profile "${result.name}" to "${name}".` +
 						(follow.followed.length > 0 ? `\nUpdated the clone pin: ${follow.followed.map((entry) => sanitizeTerminalText(entry)).join(", ")}.` : "") +
-						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; press P on "${name}" to republish it.` : ""),
+						(follow.stillDeclared.length > 0 ? `\nThe committed repository declaration ${follow.stillDeclared.map((entry) => sanitizeTerminalText(entry)).join(", ")} still names "${result.name}"; run /gentle:profiles publish ${name} to republish it.` : ""),
 					"info",
 				);
 				report.status = `Profile "${result.name}" renamed to "${name}".`;
@@ -5012,7 +5816,7 @@ async function runProfilesPanelAction(
 			}
 			if (namedLayers.length > 0) {
 				ctx.ui.notify(
-					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first with /gentle:profiles (p removes the clone pin, P removes the declaration), then delete it.`,
+					`Profile "${result.name}" is pinned for this repository (${namedLayers.join(" and ")}). Remove the pin first (profile menu ▾ › Stop using in this repo for the clone pin, /gentle:profiles publish <name> for the declaration), then delete it.`,
 					"warning",
 				);
 				return file;
@@ -5025,6 +5829,7 @@ async function runProfilesPanelAction(
 			try {
 				const next = deleteProfile(file, result.name);
 				writeProfilesFileSync(path, next);
+				followProfileFallbacks(path, result.name, undefined);
 				return next;
 			} catch (error) {
 				ctx.ui.notify(`Profile not deleted: ${profilesErrorMessage(error)}`, "warning");
@@ -5041,6 +5846,7 @@ async function runProfilesPanelAction(
 			// failure here has nothing to roll back.
 			const status = readProfilePinStatus(ctx.cwd);
 			if (!status) {
+				report.status = "This session is not inside a Git worktree, so nothing was pinned.";
 				ctx.ui.notify(
 					"el Gentleman cannot pin a profile because this session is not inside a Git worktree. Pinning is per repository; apply the profile globally instead.",
 					"warning",
@@ -5055,6 +5861,7 @@ async function runProfilesPanelAction(
 				if (currentlyPinned) clearProfilePinSync(pinPath);
 				else writeProfilePinSync(pinPath, result.name);
 			} catch (error) {
+				report.status = `The pin could not be updated: ${profilesErrorMessage(error)}`;
 				ctx.ui.notify(
 					`el Gentleman could not update profile pin ${sanitizeTerminalText(pinPath)}: ${profilesErrorMessage(error)}`,
 					"warning",
@@ -5080,17 +5887,17 @@ async function runProfilesPanelAction(
 				result.source === "local"
 					? [
 						`el Gentleman pinned profile "${result.name}" for this clone in ${sanitizeTerminalText(pinPath)}.`,
-						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Press p again to unpin.",
+						"Subagent launches in this repository resolve that profile at launch; the orchestrator and every other repository keep their global routing. Choose Stop using in this repo in the profile menu (▾) to unpin.",
 					].join("\n")
 					: [
 						`el Gentleman declared profile "${result.name}" for this worktree in ${sanitizeTerminalText(pinPath)}.`,
-						"Subagent launches resolve it at launch. Commit the file to share the routing; a local pin takes precedence over it. Press P again to remove the declaration.",
+						`Subagent launches resolve it at launch. Commit the file to share the routing; a local pin takes precedence over it. Run /gentle:profiles publish ${result.name} again to remove the declaration.`,
 					].join("\n") + sharingNote,
 				"info",
 			);
 			return file;
 		}
-		case "export": {
+		case "export-profile": {
 			if (!hasOwnProfile(file.profiles, result.name)) return file;
 			const exportPath = profileExportPath(gentleAiConfigHome());
 			try {
@@ -5103,7 +5910,7 @@ async function runProfilesPanelAction(
 			}
 			return file;
 		}
-		case "import": {
+		case "import-profile": {
 			const importPath = profileExportPath(gentleAiConfigHome());
 			let text: string;
 			try {
@@ -5153,7 +5960,66 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): Promise<void> {
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear]";
+
+/**
+ * `/gentle:profiles` opens the models screen. File operations live in
+ * subcommands rather than on the screen: `clear` ends this session's profile
+ * selection, `export <name>` and `import` move a
+ * profile through `profiles.export.json`, `publish <name>` toggles the
+ * committed repository declaration, and `export-routing` / `restore-routing`
+ * move the saved global routing (models.json, not a profile) through
+ * `models.export.json`. The routing verbs carry their own names so a profile
+ * can never be mistaken for them.
+ */
+async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
+	const [verb = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+	if (verb === "") {
+		await openModelsScreen(ctx, live);
+		return;
+	}
+	if (verb === "export-routing" || verb === "restore-routing" || verb === "clear") {
+		if (rest.length > 0) {
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+			return;
+		}
+		if (verb === "export-routing") await exportRoutingCommand(ctx);
+		else if (verb === "restore-routing") await restoreModelExport(ctx);
+		else await handleProfilesClear(ctx);
+		return;
+	}
+	const store = await loadProfilesStore(ctx);
+	if (!store) return;
+	const name = rest.join(" ");
+	switch (verb) {
+		case "export":
+		case "publish": {
+			if (name === "" || !hasOwnProfile(store.file.profiles, name)) {
+				ctx.ui.notify(
+					name === "" ? PROFILES_COMMAND_USAGE : `No profile named "${sanitizeTerminalText(name)}". ${PROFILES_COMMAND_USAGE}`,
+					"warning",
+				);
+				return;
+			}
+			await runProfilesPanelAction(
+				ctx,
+				live,
+				store.path,
+				store.file,
+				verb === "export" ? { type: "export-profile", name } : { type: "pin", source: "repo", name },
+			);
+			return;
+		}
+		case "import":
+			await runProfilesPanelAction(ctx, live, store.path, store.file, { type: "import-profile" });
+			return;
+		default:
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+	}
+}
+
+/** Reads the profiles store, seeding it on first use; undefined after a reported failure. */
+async function loadProfilesStore(ctx: ExtensionContext): Promise<{ path: string; file: AgentProfilesFile } | undefined> {
 	const path = profilesFilePath(gentleAiConfigHome());
 	const read = readProfilesFileResult(path);
 	if (read.status === "invalid") {
@@ -5161,78 +6027,379 @@ async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession): 
 			`el Gentleman cannot open agent profiles because ${path} is invalid JSON or not a profiles file. Fix or remove the file, then run /gentle:profiles again.`,
 			"warning",
 		);
+		return undefined;
+	}
+	if (read.status === "valid") {
+		reportProfilesDrops(ctx, path, read.drops);
+		return { path, file: read.file };
+	}
+	const file = bootstrapProfilesFile(await readEffectiveModelConfigAsync(ctx.cwd));
+	try {
+		writeProfilesFileSync(path, file);
+	} catch (error) {
+		ctx.ui.notify(`el Gentleman could not create ${path}: ${profilesErrorMessage(error)}`, "warning");
+		return undefined;
+	}
+	ctx.ui.notify(`el Gentleman seeded the "current" profile in ${path} from the routing currently in effect.`, "info");
+	return { path, file };
+}
+
+/**
+ * The models screen loop: shows one profile's table, runs what the user chose,
+ * and reopens with fresh store, binding, and pin state; a tab switch stays on
+ * the open screen instead. Bare `/gentle:profiles` passes the profile this
+ * repository resolves so it is the tab on screen. Every
+ * outcome is reported on the screen's feedback line, because notifications stay
+ * hidden behind the fullscreen overlay until it closes.
+ */
+async function openProfilesPanelLoop(
+	ctx: ExtensionContext,
+	live: LiveSession,
+	initialSelectedName?: string,
+	openingAuthority?: boolean,
+): Promise<void> {
+	const store = await loadProfilesStore(ctx);
+	if (!store) return;
+	const { path } = store;
+	let file = store.file;
+	const pinWinner = () => evaluateProfilePin(readProfilePinStatus(ctx.cwd), file.profiles).winner?.profile;
+	let selectedName = initialSelectedName
+		?? resolveCurrentProfileTarget(ctx.cwd, { status: "valid", file, drops: { droppedProfiles: [], droppedAgents: [], droppedActive: undefined } })?.name
+		?? Object.keys(file.profiles)[0];
+	let feedback: string | undefined;
+	let draftOverride: AgentModelConfig | undefined;
+	// Read once per visit: the opening read serves the first one.
+	let authorityAvailable = true;
+	const writeDraft = (name: string, config: AgentModelConfig): boolean => {
+		try {
+			const next = hasOwnProfile(file.profiles, name)
+				? updateProfile(file, name, cloneModelConfig(config))
+				: createProfile(file, name, cloneModelConfig(config));
+			writeProfilesFileSync(path, next);
+			file = next;
+			return true;
+		} catch (error) {
+			feedback = `"${name}" was not saved: ${profilesErrorMessage(error)}`;
+			return false;
+		}
+	};
+	const switchProfile: RoutingProfileSwitcher = (name, saveFirst) => {
+		const previous = selectedName!;
+		if (saveFirst && !writeDraft(previous, saveFirst)) {
+			const error = feedback ?? `"${previous}" was not saved.`;
+			feedback = undefined;
+			return { error };
+		}
+		selectedName = name;
+		// The profile this session launches with, bound or frozen: the tab marked ◉.
+		const launch = sessionLaunchProfile(ctx, authorityAvailable);
+		return {
+			file,
+			sessionBoundName: launch?.name,
+			pinWinner: pinWinner(),
+			notices: routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
+			feedback: `${saveFirst ? `Saved "${previous}". ` : ""}Showing "${name}".`,
+		};
+	};
+	const differsFromStore = (name: string, config: AgentModelConfig) =>
+		JSON.stringify(normalizeModelConfig(config) ?? {}) !== JSON.stringify(normalizeModelConfig(file.profiles[name]) ?? {});
+	// Pi's runner invalidates this command ctx in a microtask when a reload or
+	// session replacement lands, possibly while a panel or input step is still in
+	// flight. Every step therefore re-checks the ctx when it settles (or throws),
+	// and a stale ctx closes the loop quietly instead of touching ctx.cwd again.
+	const stale = Symbol("stale-profiles-ctx");
+	const step = async <T>(run: () => Promise<T>): Promise<T> => {
+		let value: T;
+		try {
+			value = await run();
+		} catch (error) {
+			if (!isCommandContextActive(ctx)) throw stale;
+			throw error;
+		}
+		if (!isCommandContextActive(ctx)) throw stale;
+		return value;
+	};
+	try {
+		await runProfilesPanelSteps();
+	} catch (error) {
+		if (error !== stale) throw error;
+	}
+	async function runProfilesPanelSteps(): Promise<void> {
+		while (true) {
+			if (!isCommandContextActive(ctx)) return;
+			if (selectedName === undefined || !hasOwnProfile(file.profiles, selectedName)) {
+				selectedName = Object.keys(file.profiles)[0];
+				draftOverride = undefined;
+			}
+			if (selectedName === undefined) {
+				ctx.ui.notify("el Gentleman has no profiles left. Run /gentle:profiles again to seed one from the routing in effect.", "info");
+				return;
+			}
+			const shown = selectedName;
+			const stored = cloneModelConfig(normalizeModelConfig(file.profiles[shown]) ?? {});
+			authorityAvailable = openingAuthority ?? sessionProfileAuthorityAvailable(ctx);
+			openingAuthority = undefined;
+			const launch = sessionLaunchProfile(ctx, authorityAvailable);
+			const result = await step(() => showRoutingTablePanel(ctx, {
+				name: shown,
+				config: draftOverride ?? stored,
+				file,
+				sessionBoundName: launch?.name,
+				pinWinner: pinWinner(),
+				feedback,
+				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
+				switchProfile,
+			}));
+			draftOverride = undefined;
+			feedback = undefined;
+			const previous = selectedName;
+			if (result.saveFirst && !writeDraft(previous, result.saveFirst)) {
+				draftOverride = result.saveFirst;
+				continue;
+			}
+			const savedNote = result.saveFirst ? `Saved "${previous}". ` : "";
+			switch (result.type) {
+				case "close":
+					return;
+				case "load":
+					selectedName = result.name;
+					feedback = `${savedNote}Showing "${result.name}".`;
+					continue;
+				case "custom": {
+					const label = result.target === PROFILE_ORCHESTRATOR_KEY
+						? "the orchestrator"
+						: result.target === ROUTING_ALL_ROW ? "every agent" : sanitizeTerminalText(result.target);
+					const answer = await step(() => ctx.ui.input(`Custom model id for ${label}`, "provider/model"));
+					draftOverride = cloneModelConfig(result.config);
+					if (answer === undefined || answer.trim() === "") {
+						feedback = "No custom model set.";
+						continue;
+					}
+					const model = normalizeModelId(answer.trim());
+					if (!model) {
+						feedback = "Custom model id must be one provider/model line using letters, numbers, '.', '-', '_', '~', ':', '@', '/', '+', '%' only.";
+						continue;
+					}
+					const keys = result.target === ROUTING_ALL_ROW ? modelAssignmentNames(ctx.cwd) : [result.target];
+					for (const key of keys) draftOverride[key] = { ...(draftOverride[key] ?? {}), model };
+					feedback = `${label}: model ${model}. Save keeps it in "${previous}".`;
+					continue;
+				}
+				case "save":
+					if (writeDraft(previous, result.config)) feedback = `Saved "${previous}".`;
+					else draftOverride = result.config;
+					continue;
+				case "use-session": {
+					// What you see is what the session uses: edits are saved first.
+					// A tab switch may have changed the shown profile since this visit opened.
+					const config = result.config ?? cloneModelConfig(normalizeModelConfig(file.profiles[previous]) ?? {});
+					const saved = differsFromStore(previous, config);
+					if (saved && !writeDraft(previous, config)) {
+						draftOverride = config;
+						continue;
+					}
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "use-session", name: previous, config }, report));
+					feedback = `${saved ? `Saved "${previous}". ` : ""}${report.status ?? ""}`.trim() || undefined;
+					continue;
+				}
+				case "apply-global": {
+					// Make default saves what you see, then runs the guarded global
+					// apply with its diff confirmation, pin honesty, and rollback.
+					const saved = differsFromStore(previous, result.config);
+					if (saved && !writeDraft(previous, result.config)) {
+						draftOverride = result.config;
+						continue;
+					}
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, { type: "apply-global", name: previous, config: cloneModelConfig(result.config) }));
+					const prefix = saved ? `Saved "${previous}". ` : "";
+					feedback = file.active === previous
+						? `${prefix}"${previous}" is the default for new sessions.`
+						: pinWinner() === previous
+							? `${prefix}This repo pins its profile, so "${previous}" now applies to this repo only.`
+							: `${prefix}"${previous}" was not made the default.`;
+					continue;
+				}
+				case "create-live": {
+					if (!authorityAvailable) {
+						feedback = `${savedNote}Session profile authority is unavailable; affected launches are blocked. No profile created.`;
+						continue;
+					}
+					const answer = await step(() => ctx.ui.input("Name for a profile of what's running now", "e.g. snapshot"));
+					const name = answer?.trim() ?? "";
+					if (name === "") {
+						feedback = `${savedNote}No profile created.`;
+						continue;
+					}
+					// Captures the routing this session's launches resolve and the
+					// orchestrator it actually runs, the way the old snapshot did.
+					const snapshot = profileSnapshotFrom(
+						await step(() => readSessionLaunchModelConfigAsync(ctx, authorityAvailable)),
+						liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
+					);
+					try {
+						const next = createProfile(file, name, snapshot);
+						writeProfilesFileSync(path, next);
+						file = next;
+						selectedName = name;
+						feedback = `${savedNote}Created "${name}" from what's running now.`;
+					} catch (error) {
+						feedback = `${savedNote}Profile not created: ${profilesErrorMessage(error)}`;
+					}
+					continue;
+				}
+				default: {
+					const report: ProfilesPanelReport = {};
+					file = await step(() => runProfilesPanelAction(ctx, live, path, file, result, report));
+					selectedName = report.selectedName ?? selectedName;
+					if (result.type === "delete" && !hasOwnProfile(file.profiles, previous)) {
+						feedback = `Deleted "${previous}".`;
+					} else if (result.type === "pin") {
+						feedback = report.status ?? (pinWinner() === previous
+							? `"${previous}" is used in this repo.`
+							: `"${previous}" is no longer pinned to this repo.`);
+					} else {
+						feedback = report.status ? `${savedNote}${report.status}` : savedNote || undefined;
+					}
+					// Rename, pin, and a declined delete keep the profile on screen; carry
+					// unsaved edits across them instead of reloading from the store.
+					if (result.draft && hasOwnProfile(file.profiles, selectedName) && (selectedName === previous || result.type === "rename")) {
+						draftOverride = result.draft;
+					}
+				}
+			}
+		}
+	}
+}
+
+/**
+ * The startup state this session knows (gentle-shell#2742, section 3): the one
+ * the newest corroborated record carries, else the profile this process froze
+ * at the session's own start. Follow mode has none.
+ */
+function knownSessionProfileStartup(state: SessionProfileAppendOutcome["state"], sessionId: string): SessionProfileStartupState | undefined {
+	if (profileFollowEnabled()) return undefined;
+	if (state.status === "bound") {
+		const { origin, name, modelProfiles, startup } = state.binding;
+		if (origin !== "user") return { origin, name, modelProfiles };
+		if (startup !== undefined) return startup;
+	} else if (state.status === "cleared" && state.startup === "none") return "none";
+	return readSessionProfileOwnStartup(sessionId);
+}
+
+/** Where a clear goes back to, named with the status label convention. */
+function startupStateText(startup: SessionProfileStartupState): string {
+	return startup === "none" ? "no profile, as this session started" : `the profile this session started with, "${sessionProfileLabel({ kind: "inherited", profile: startup })}", and use it`;
+}
+
+/**
+ * `/gentle:profiles clear`: go back to the startup state when it is known
+ * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
+ * only the returned state. Never-bound, already-cleared and startup sessions
+ * write nothing; an unreadable record is the recovery case and is replaced.
+ * Follow mode has no startup state, so a startup record gets a legacy clear
+ * (section 6). The live orchestrator and every shared default stay untouched.
+ */
+async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
+	const sessionId = ctx.sessionManager?.getSessionId?.();
+	if (typeof sessionId !== "string" || sessionId.length === 0) {
+		ctx.ui.notify("el Gentleman cannot clear the session profile: no parent session id is available here.", "warning");
 		return;
 	}
-	let file: AgentProfilesFile;
-	if (read.status === "missing") {
-		file = bootstrapProfilesFile(await readEffectiveModelConfigAsync(ctx.cwd));
-		try {
-			writeProfilesFileSync(path, file);
-		} catch (error) {
+	const selected = await runCurrentSessionProfileSelection(ctx.sessionManager, async (attachment, owned) => {
+		const prior = attachment.refresh().state;
+		// An unsaved or in-memory branch reads as indeterminate; without any profile
+		// record on the branch it was never selected, so nothing is written.
+		const selectedBefore = ctx.sessionManager.getBranch().some((entry) => isSessionProfileFamilyEntry(entry));
+		const notifyAlreadyThere = (label: string | undefined) =>
+			ctx.ui.notify(label === undefined ? "el Gentleman: this session is already on no profile, as it started; nothing to clear." : `el Gentleman: this session is already on the profile it started with, "${label}"; nothing to clear.`, "info");
+		if (prior.status === "absent" || (prior.status === "indeterminate" && !selectedBefore)) {
+			// Never selected but started here: the session is on its startup state.
+			const ownStartup = profileFollowEnabled() ? undefined : readSessionProfileOwnStartup(sessionId);
+			if (ownStartup !== undefined) notifyAlreadyThere(ownStartup === "none" ? undefined : sessionProfileLabel({ kind: "inherited", profile: ownStartup }));
+			else ctx.ui.notify("el Gentleman: no session profile was ever selected in this session; nothing to clear.", "info");
+			return true;
+		}
+		const startupOrigin = prior.status === "bound" && prior.binding.origin !== "user" ? prior.binding.origin : undefined;
+		if (!profileFollowEnabled() && (startupOrigin !== undefined || (prior.status === "cleared" && prior.startup === "none"))) {
+			notifyAlreadyThere(prior.status === "bound" && startupOrigin ? sessionProfileLabel({ kind: "inherited", profile: { ...prior.binding, origin: startupOrigin } }) : undefined);
+			return true;
+		}
+		if (prior.status === "cleared" && prior.startup !== "none") {
+			ctx.ui.notify("el Gentleman: this session profile is already cleared; nothing to clear.", "info");
+			return true;
+		}
+		const startup = knownSessionProfileStartup(prior, sessionId);
+		const outcome = typeof startup === "object" ? attachment.bindStartup(startup.origin, startup.name, startup.modelProfiles) : attachment.clear(startup);
+		if (!owned()) return false;
+		const authority = publishSessionProfileOutcome(ctx.sessionManager, outcome);
+		if ((outcome.status !== "persisted" && outcome.status !== "not-persisted") || outcome.state.status !== (typeof startup === "object" ? "bound" : "cleared") || !authority.available) {
 			ctx.ui.notify(
-				`el Gentleman could not create ${path}: ${profilesErrorMessage(error)}`,
+				`el Gentleman could not clear the session profile. ${authority.available ? "The last disk-corroborated state was preserved." : "Session profile authority is unavailable; affected launches are blocked."}`,
 				"warning",
 			);
-			return;
+			return false;
 		}
-		ctx.ui.notify(`el Gentleman seeded the "current" profile in ${path} from the routing currently in effect.`, "info");
-	} else {
-		file = read.file;
-		reportProfilesDrops(ctx, path, read.drops);
+		const what = prior.status === "bound" ? `session profile "${prior.binding.name}"` : prior.status === "cleared" ? "the recorded startup state" : "the unreadable session profile record";
+		const persistence = outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration";
+		if (startup !== undefined) {
+			ctx.ui.notify(`el Gentleman cleared ${what} (${persistence}). New launches go back to ${startupStateText(startup)}. The live orchestrator is unchanged.`, "info");
+			return true;
+		}
+		ctx.ui.notify(
+			`el Gentleman cleared ${what} — ${outcome.status === "persisted" ? "persisted in this session" : "not yet persisted; active only until detach or disk corroboration"}. New launches use the routing without a session profile (pins, repository declaration, global). The live orchestrator is unchanged.`,
+			"info",
+		);
+		return true;
+	});
+	// A selection skipped by a reload or session replacement leaves a stale ctx;
+	// only a still-active command reports the missing attachment.
+	if (selected === undefined && isCommandContextActive(ctx))
+		ctx.ui.notify("el Gentleman cannot clear the session profile: the current session attachment is unavailable. Nothing was changed.", "warning");
+}
+
+/**
+ * Whether this `session_start` is the session's own start (gentle-shell#2742,
+ * section 3). Pi has no new-session flag: "startup" also opens an existing
+ * session file, and a reload or resume restarts a session that already began.
+ * Before `session_start`, Pi records the model and thinking level of a session
+ * without a conversation, a new one included, so an own start holds at most
+ * that one pair. A profile record, any other entry, or an earlier pair means
+ * the session started before, and its startup state stays unknown.
+ */
+function isSessionOwnStart(event: { reason: string }, manager: ExtensionContext["sessionManager"]): boolean {
+	if (event.reason !== "startup" && event.reason !== "new") return false;
+	const seen = new Set<string>();
+	for (const entry of manager.getEntries()) {
+		if ((entry.type !== "model_change" && entry.type !== "thinking_level_change") || seen.has(entry.type)) return false;
+		seen.add(entry.type);
 	}
-	const saveSnapshot: ProfilesSnapshotHandler = (name) => {
-		const next = updateProfile(
-			file,
-			name,
-			profileSnapshotFrom(
-				// The snapshot captures the same routing the panel shows as current,
-				// so a session binding outranks the shared layers here too.
-				readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-					?? readEffectiveModelConfig(ctx.cwd),
-				// The orchestrator follows the same honesty rule: capture what the
-				// session actually runs (ctx.model plus the live thinking level)
-				// when a live model exists; settings.json defaults stand in only
-				// when it does not (LCubero's finding on #1064).
-				liveOrchestratorSnapshot(ctx, live) ?? readOrchestratorSettings(orchestratorSettingsPath()),
-			),
-		);
-		writeProfilesFileSync(path, next);
-		file = next;
-		return next;
-	};
-	let selectedName: string | undefined;
-	const sessionBoundName = () => readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.name;
-	// The panel's "Current routing (effective)" table shows what this session's
-	// launches resolve right now, and a session binding outranks every shared
-	// layer, so a bound session reads its snapshot as the current routing while an
-	// unbound session keeps reading the effective config exactly as before.
-	const currentRoutingForPanel = async () =>
-		readSessionProfileBinding(ctx.sessionManager?.getSessionId?.())?.modelProfiles
-		?? await readEffectiveModelConfigAsync(ctx.cwd);
-	let result = await showProfilesPanel(
-		ctx,
-		file,
-		await currentRoutingForPanel(),
-		selectedName,
-		saveSnapshot,
-		live,
-		undefined,
-		sessionBoundName(),
+	return true;
+}
+
+/**
+ * Warn when the current session profile record cannot be read: an invalid record
+ * or one from a newer version blocks affected launches instead of falling back.
+ */
+function notifySessionProfileProblem(ctx: ExtensionContext): void {
+	const state = readCurrentSessionProfileOutcome(ctx.sessionManager)?.state;
+	if (state?.status !== "invalid" && state?.status !== "unsupported") return;
+	const file = ctx.sessionManager.getSessionFile?.() ?? "this in-memory session";
+	const where = `${sanitizeTerminalText(file)} entry ${state.entryIndex ?? "?"}${state.lineNumber === undefined ? "" : ` (line ${state.lineNumber})`}`;
+	const kind = state.status === "invalid" ? "invalid" : "from a newer version";
+	ctx.ui.notify(
+		`el Gentleman: the session profile record at ${where} is ${kind}. Subagent launches are blocked until it is replaced. Select a profile with Enter or run /gentle:profiles clear.`,
+		"warning",
 	);
-	while (result.type !== "close") {
-		const report: ProfilesPanelReport = {};
-		file = await runProfilesPanelAction(ctx, live, path, file, result, report);
-		selectedName = report.selectedName ?? ("name" in result ? result.name : undefined);
-		result = await showProfilesPanel(
-			ctx,
-			file,
-			await currentRoutingForPanel(),
-			selectedName,
-			saveSnapshot,
-			live,
-			report.status,
-			sessionBoundName(),
-		);
+}
+
+/** Pi's runner throws on any access to a ctx made stale by reload or session replacement. */
+function isCommandContextActive(ctx: ExtensionContext): boolean {
+	try {
+		void ctx.sessionManager;
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -5334,7 +6501,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS only; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, and nativeReviewOutcome (gentle-pi#662/#668/#1175). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"}, plus the agent lens selection {\"lenses\":[\"risk\",...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus; providers that predate it keep the tier default); answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. Ordinary provider capture belongs only to gentle_review_capture. An explicit baseRef requires committedOnly: true and requests a committed range, while repository-local policyPath remains optional. baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name; abbreviated commit ids are rejected as base-ref-unresolvable. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate (gentle-pi#662/#668/#1175/#2647); escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); writerModelId and writerEffort are only a fallback when no runtime evidence exists (caller), and with neither the profile fails closed to small (fallback). The writer profile is reported but never adds a verifier: the plan adds the independent verifier only when escalate names a Task Size high-risk item. ASSESS derives `closed` only from the native candidate.consumed fact for this exact candidate, which native records only when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown. Every outcome yields the exact risk-gated plan ASSESS returns when RDD is off: a closed review never removes the separate verifier the tier requires (verify-always-rdd-high S1), unknown is never treated as closed, and a decline is candidate-scoped and never lowers the bar below the RDD-off path. A declined or unavailable outcome, stated explicitly or recorded by this process for this exact candidate (never a different one, and never from repository state alone), wins over closure. The returned outcome_source (explicit|derived|unknown) says which of these produced the value. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired with legacy bundle export; ignored. Export returns legacy-operation-retired." },
 		inputPath: { type: "string", description: "Repository-local JSON input file for the separate legacy controller flow (alternative to input). Legacy bundle import is retired." },
@@ -5605,7 +6772,7 @@ function parseReviewControllerParameters(value: unknown): ReviewControllerParame
 	};
 	for (const key of ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource", "workspaceRoot"] as const) {
 		const optional = value[key];
-		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS)) {
+		if (key === "input" && key in value && (value.operation === REVIEW_CONTROLLER_OPERATION.START || value.operation === REVIEW_CONTROLLER_OPERATION.ASSESS || value.operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT)) {
 			parameters.input = serializeReviewJsonArgument(optional);
 			continue;
 		}
@@ -5870,10 +7037,12 @@ function nativeReviewModeSkipped(operation: ReviewControllerOperation, source: N
 // unavailable. It is not authorization to enter bootstrap-capable native code.
 // `rememberForPrompt` lets a decoded read serve the next prompt's RDD status
 // line from the memo instead of spawning the same STATUS again.
-async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false): Promise<boolean> {
+async function nativeRepositoryPreparationEnabled(nativeReviewCli: NativeReviewCli | null, cwd: string, signal?: AbortSignal, rememberForPrompt = false, current: () => boolean = () => true): Promise<boolean> {
 	if (nativeReviewCli?.reviewMode === undefined) return false;
+	const generation = rddStatusGeneration(cwd);
 	try {
 		const mode = await nativeReviewCli.reviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS, ...(signal === undefined ? {} : { signal }) });
+		if (rddStatusGeneration(cwd) !== generation || !current()) return false;
 		const decoded = mode.operation === NATIVE_REVIEW_MODE_OPERATION.STATUS && isValidRddModeStatus(mode.status);
 		if (decoded && rememberForPrompt) rddStatusMemo.set(cwd, { status: mode.status, expiresAt: Date.now() + RDD_STATUS_MEMO_TTL_MS });
 		return decoded && mode.status.effective === "on";
@@ -5964,7 +7133,17 @@ function nativeStatusPackageBinaryMissing(operation: ReviewControllerOperation |
 	};
 }
 
+function nativeRequestContextRefusal(operation: string, error: unknown): Record<string, unknown> | undefined {
+	if (asNativeReviewCliError(error)?.code !== NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE
+		|| !isRecord(error) || error.message !== NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE) return undefined;
+	return { operation, status: "blocked", outcome: "request-context-unsupported", reason: NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE,
+		lineage_created: false, mutation_performed: false, mutation_outcome: "none",
+		next_action: "use-provider-with-request-context-capabilities" };
+}
+
 function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown): Record<string, unknown> {
+	const contextRefusal = nativeRequestContextRefusal(operation, error);
+	if (contextRefusal !== undefined) return contextRefusal;
 	const cliError = asNativeReviewCliError(error);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation);
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
@@ -6590,8 +7769,9 @@ interface RetainedPreLineageNativeUntrackedSelection {
 interface RetainedNativeCaptureRoute { readonly workspaceRoot: string; readonly lineageId: string; readonly baseRef?: string; readonly committedOnly?: true; }
 
 // An inspect that stops before submission has no resolved untracked selection
-// yet. Keep only its selector, bound to the exact provider collect input.
-interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef: string; readonly committedOnly: true; }
+// yet. Retain its selector and explicit request file, bound to the exact
+// provider collect input.
+interface RetainedNativeUntrackedStopSelector { readonly selectionBinding: string; readonly targetIdentity: string; readonly baseRef?: string; readonly committedOnly?: true; readonly requestContextPath?: string; }
 
 type RetainedNativeStatusSelection = RetainedNativeUntrackedSelection | RetainedPreLineageNativeUntrackedSelection | RetainedNativeCaptureRoute | RetainedNativeUntrackedStopSelector;
 
@@ -6634,6 +7814,11 @@ function baseRefRejectionHint(reason: string): { hint?: string } {
 }
 
 function nativeStartRejection(reason: string, field?: string): Record<string, unknown> {
+	if (reason.startsWith("request-context-")) return {
+		operation: REVIEW_CONTROLLER_OPERATION.START, status: "blocked", outcome: "native-start-input-invalid", reason,
+		next_action: reason === "request-context-unresolved-path" ? "supply-an-existing-resolvable-requestContextPath" : reason === "request-context-invalid" ? "supply-a-nonempty-requestContextPath" : reason === "request-context-sensitive-path" ? "supply-a-non-sensitive-requestContextPath" : "resolve-existing-authority-before-starting-with-new-intent",
+		...nativeStartPreAuthorityRejection(),
+	};
 	return {
 		operation: REVIEW_CONTROLLER_OPERATION.START,
 		status: "blocked",
@@ -6700,6 +7885,7 @@ interface PendingReviewConsent {
 	cleanupCandidate: () => void;
 	untrackedSelection?: RetainedNativeUntrackedSelection;
 	consent: ReviewConsentEnvelope;
+	requestContextPath?: string;
 	consentDigest: string;
 }
 
@@ -6802,8 +7988,9 @@ const processRetainedNativeStatusSelections = new Map<PendingReviewConsentSessio
 // named-agent start increments the depth, a matching end decrements it,
 // and a fresh primary-loop start resets it to 0.
 const processAgentEndSubagentDepth = new Map<PendingReviewConsentSessionKey, number>();
-// gentle-shell#2195: the RDD status line each primary session last rendered into its system prompt.
-const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, string>();
+// gentle-shell#2195: the RDD status line each primary session last rendered
+// into its system prompt, scoped to the workspace in which it was resolved.
+const pinnedRddStatusLines = new Map<PendingReviewConsentSessionKey, { cwd: string; line: string }>();
 
 // gentle-shell#1064 slice 1: the parent-session profile binding store lives in
 // lib/session-profile-binding.ts (in-process, keyed by parent session id). The
@@ -7075,6 +8262,8 @@ function deferredPostBurnCleanup(step: (typeof POST_BURN_CLEANUP)[keyof typeof P
 }
 
 function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_review_capture", error: unknown): Record<string, unknown> {
+	const contextRefusal = nativeRequestContextRefusal(operation, error);
+	if (contextRefusal !== undefined) return contextRefusal;
 	const value = error as { mutationOutcome?: unknown; nextAction?: unknown; diagnostics?: unknown; auditRecord?: unknown; launchAttempted?: unknown; candidateViewPreNative?: unknown; failureEnvelope?: { raw?: unknown; mutationOutcome?: unknown; replayability?: unknown; nextAction?: unknown; code?: unknown; continuation?: { command?: unknown } } };
 	if (isRecord(value.failureEnvelope) && isRecord(value.failureEnvelope.raw)) {
 		const mutationOutcome = value.failureEnvelope.mutationOutcome;
@@ -7133,7 +8322,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	const preservesNativeTargetStatusDiagnostic = nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.STATUS;
 	const preservesAnswerConsentStartDiagnostic = operation === REVIEW_CONTROLLER_OPERATION.ANSWER_CONSENT && nativeDiagnostics?.operation === NATIVE_REVIEW_OPERATION.START;
 	const diagnostics = operation === REVIEW_CONTROLLER_OPERATION.START && error instanceof CandidateViewError && value.candidateViewPreNative === true
-		? error.diagnostics ?? { code: error.reason, message: "candidate view rejected before native START" }
+		? error.diagnostics ?? { code: error.reason, message: error.message }
 		: error instanceof CandidateViewError
 			? { code: error.reason, message: error.message }
 			: nativeDiagnostics?.operation === `review/${operation}` || preservesNativeTargetStatusDiagnostic || preservesAnswerConsentStartDiagnostic
@@ -7351,6 +8540,167 @@ function nativePreLineageCandidateIdentity(
 		: undefined;
 }
 
+// gentle-ai#2196: inspect must not advertise a START whose candidate-view
+// materialization is already known to fail. START materializes the frozen
+// view and then verifies cheap non-mutating invariants; when one is
+// deterministically false (the POSIX candidate owner parent is not private,
+// or the frozen tree tracks symlinks this process cannot create natively),
+// inspect runs the same non-persistent checks first and withholds the ready
+// advertisement with the exact typed diagnostics the START refusal would
+// carry, so STATUS and START stop disagreeing about operations that cannot
+// begin. The Windows owner boundary keeps its START-time DACL validation for
+// now; this preflight only answers questions a non-persistent check settles
+// (the capability probe creates and removes a temporary directory). The
+// symlink scan never claims a confirmed symlink-free tree from an incomplete
+// listing (timeout, output limit, unreadable tree), and the capability probe
+// samples the filesystem that will hold the candidate view — when that
+// filesystem cannot be probed, the capability stays unconfirmed and the
+// advertisement is withheld instead of guessing from another filesystem.
+let candidateViewSymlinkProbe: ((probeRoot: string) => void) | undefined;
+
+function setCandidateViewSymlinkProbeForTesting(probe: ((probeRoot: string) => void) | undefined): void {
+	candidateViewSymlinkProbe = probe;
+}
+
+// Thrown when no existing directory of the candidate-view filesystem can host
+// the probe: the capability stays unconfirmed instead of being reported as
+// incapable, so an unverifiable filesystem never masquerades as a pass.
+class CandidateViewSymlinkProbeUnavailableError extends Error {}
+
+function defaultCandidateViewSymlinkProbe(probeRoot: string): void {
+	let directory: string;
+	try {
+		directory = mkdtempSync(join(probeRoot, "gentle-symlink-probe-"));
+	} catch (error) {
+		throw new CandidateViewSymlinkProbeUnavailableError("cannot create a probe directory on the candidate-view filesystem", { cause: error });
+	}
+	try {
+		symlinkSync("probe-target", join(directory, "probe"), process.platform === "win32" ? "file" : undefined);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+// The deepest existing ancestor of the candidate-view parent: probing there
+// samples the filesystem that will actually hold the candidate view. Before
+// the first START only the Git common directory exists; after one, the probe
+// lands inside the real candidate-views parent.
+function nearestExistingAncestorDirectory(path: string): string | undefined {
+	let current = path;
+	for (;;) {
+		try {
+			if (statSync(current).isDirectory()) return current;
+		} catch {
+			// Missing or unreadable: keep walking up.
+		}
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+}
+
+type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unconfirmed";
+
+function scanCandidateTreeForSymlinks(cwd: string, candidateTree: string): CandidateTreeSymlinkScan {
+	// Discovery must describe the selected directory, never an ambient Git
+	// override pointing at a different repository or worktree.
+	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+	try {
+		const listing = execFileSync("git", ["ls-tree", "-r", "--full-tree", candidateTree], {
+			cwd,
+			env,
+			encoding: "utf8",
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			// Same bounds the candidate-view materialization uses: a bounded
+			// child that cannot hang the event loop, and a listing past the
+			// output limit is an incomplete scan, never a symlink-free verdict.
+			timeout: resolveCandidateGitTimeoutMs(),
+			maxBuffer: CANDIDATE_GIT_MAX_BUFFER_BYTES,
+		});
+		return listing.split("\n").some((line) => line.startsWith("120000 ")) ? "tracks-symlinks" : "no-symlinks";
+	} catch {
+		// A timed-out, over-limit, or otherwise unreadable tree is an
+		// incomplete scan, not a deterministic materialization failure;
+		// START owns reporting unreadable trees.
+		return "unconfirmed";
+	}
+}
+
+type CandidateViewSymlinkCapability = "capable" | "incapable" | "unconfirmed";
+
+function candidateViewSymlinkCapability(commonDir: string | undefined): CandidateViewSymlinkCapability {
+	if (commonDir === undefined) return "unconfirmed";
+	const probeRoot = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+	if (probeRoot === undefined) return "unconfirmed";
+	try {
+		(candidateViewSymlinkProbe ?? defaultCandidateViewSymlinkProbe)(probeRoot);
+	} catch (error) {
+		return error instanceof CandidateViewSymlinkProbeUnavailableError ? "unconfirmed" : "incapable";
+	}
+	return "capable";
+}
+
+function candidateViewPreflightRejection(status: ReviewStatusV3, diagnostics: Record<string, string>): Record<string, unknown> {
+	// The native body carries the executable START transition; consumers read the
+	// nested result.next_transition, so a blocked inspect must not forward it.
+	const { next_transition: _withheldTransition, ...blockedResult } = status.raw;
+	return {
+		operation: REVIEW_CONTROLLER_OPERATION.INSPECT,
+		status: "blocked",
+		outcome: "candidate-view-preflight-blocked",
+		result: blockedResult,
+		diagnostics,
+		mutation_performed: false,
+		mutation_outcome: "none",
+		lineage_created: false,
+		next_action: "resolve-native-operation-failure",
+	};
+}
+
+function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: string, commonDir: string | undefined, platform: NodeJS.Platform = process.platform): Record<string, unknown> | undefined {
+	if (status.action !== "start") return undefined;
+	if (platform !== "win32" && commonDir !== undefined) {
+		try {
+			assertCandidateOwnerParent(commonDir, platform);
+		} catch (error) {
+			// A missing parent is not a deterministic failure while START's prepare
+			// can still create it private under the nearest existing ancestor. Every
+			// other owner failure makes START refuse too, so withhold the
+			// advertisement with the owner-preparation classification.
+			let failureCause: unknown = error;
+			if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+				failureCause = undefined;
+				const ancestor = nearestExistingAncestorDirectory(join(commonDir, "gentle-ai", "candidate-views"));
+				try {
+					if (ancestor !== undefined) accessSync(ancestor, fsConstants.W_OK | fsConstants.X_OK);
+				} catch (accessError) {
+					failureCause = accessError;
+				}
+			}
+			if (failureCause !== undefined) {
+				const failure = candidateOwnerPreparationError(failureCause);
+				const typed = failure.diagnostics !== undefined && "code" in failure.diagnostics ? failure.diagnostics : undefined;
+				return candidateViewPreflightRejection(status, typed ?? { code: failure.reason, message: failure.message });
+			}
+		}
+	}
+	const candidateTree = status.projection.currentCandidateTree;
+	if (isCanonicalProcessString(candidateTree) && scanCandidateTreeForSymlinks(cwd, candidateTree) === "tracks-symlinks") {
+		const capability = candidateViewSymlinkCapability(commonDir);
+		if (capability === "unconfirmed") {
+			// The tree needs native symlinks and the target filesystem could not
+			// be probed: advertising START would only move the same uncertainty
+			// into a materialization refusal (gentle-ai#2196).
+			return candidateViewPreflightRejection(status, { code: "symlink-capability-unconfirmed" as const, message: CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE });
+		}
+		if (capability === "incapable") {
+			return candidateViewPreflightRejection(status, { code: "symlink-materialization-failed" as const, message: CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE });
+		}
+	}
+	return undefined;
+}
+
 function readRetainedPreLineageNativeUntrackedSelection(
 	selections: Map<string, RetainedNativeStatusSelection>,
 	workspaceRoot: string,
@@ -7497,14 +8847,38 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // its provider through the live model registry the caller supplies, or it is
 // refused before materialize ever runs (validateReviewerSelectionConfiguration
 // in lib/review-host-relay.ts).
-function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; routingKey: string } {
+//
+// gentle-pi#2271: review-refuter and review-validator are provider review
+// roles, not installable agents, so nothing seeds their entries and profiles
+// never carry them. For those two keys only, a snapshot with no model falls
+// back to Pi's persisted default model and effort, the default the routing
+// panel already labels them with. Lens keys keep the fail-closed rule.
+function reviewHostRelaySelection(lens: string | undefined, config: AgentModelConfig): { selection?: string; thinking?: string; tier?: AgentRoutingEntry["tier"]; routingKey: string } {
 	const routingKey = lens === undefined || lens.length === 0 ? "review capture" : lens.startsWith("review-") ? lens : `review-${lens}`;
 	const entry = config[routingKey];
-	const model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
-	const thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
+	let model = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).model === "string" && (entry as AgentRoutingEntry).model!.length > 0 ? (entry as AgentRoutingEntry).model : undefined;
+	let thinking = typeof entry === "object" && entry !== null && typeof (entry as AgentRoutingEntry).thinking === "string" ? (entry as AgentRoutingEntry).thinking : undefined;
+	if (model === undefined && isProviderReviewRole(routingKey)) {
+		// These roles default to the orchestrator: the session profile's own one
+		// first, so a session that switched profile never reviews on the model it
+		// started with (gentle-shell#1064).
+		const orchestrator = readProfileOrchestrator(config);
+		if (orchestrator?.model !== undefined) {
+			model = orchestrator.model;
+			thinking ??= orchestrator.thinking;
+		}
+	}
+	if (model === undefined && isProviderReviewRole(routingKey)) {
+		const persisted = readOrchestratorSettings(orchestratorSettingsPath());
+		if (persisted.status === "valid" && persisted.entry?.model !== undefined) {
+			model = persisted.entry.model;
+			thinking ??= persisted.entry.thinking;
+		}
+	}
 	return {
 		...(model === undefined ? {} : { selection: model }),
 		...(thinking === undefined ? {} : { thinking }),
+		...(entry?.tier === undefined ? {} : { tier: entry.tier }),
 		routingKey,
 	};
 }
@@ -7614,6 +8988,23 @@ async function reconcileUnknownReviewCaptureFailure(
 	}
 }
 
+/**
+ * Reviewers check session profile authority as launches do (gentle-shell#2742,
+ * section 7): an unreadable record blocks before any reviewer run starts, so the
+ * review state stays untouched and the same capture resumes once authority is
+ * available. A review without a session id has no record to distrust.
+ */
+function reviewerAuthorityBlocked(tool: string, manager: SessionProfileLifecycleManager | undefined): Record<string, unknown> | undefined {
+	if (manager === undefined) return undefined;
+	try {
+		if (!manager.getSessionId()) return undefined;
+		requireSessionProfileAuthority(manager);
+		return undefined;
+	} catch (error) {
+		return { tool, status: "blocked", outcome: "session-profile-authority-unavailable", reason: error instanceof Error ? error.message : String(error), mutation_performed: false, mutation_outcome: "none" };
+	}
+}
+
 async function executeReviewHostRelayCapture(
 	slot: ReviewHostRelaySlot,
 	nativeReviewCli: NativeReviewCli,
@@ -7630,6 +9021,8 @@ async function executeReviewHostRelayCapture(
 	reviewerSessionId?: string,
 	implicitWorkspaceRoot?: string,
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	// The session's own directory, so a review of another repository routes like a launch there.
+	sessionCwd: string = cwd,
 ): Promise<Record<string, unknown>> {
 	try {
 		if (slot.submission === undefined) {
@@ -7652,7 +9045,7 @@ async function executeReviewHostRelayCapture(
 			// global routing. A pin that omits a required role stays omitted: the
 			// typed reviewer-config-invalid refusal below is fail-closed, never a
 			// silent per-role fallback to another account's routing.
-			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId));
+			const launch = reviewHostRelaySelection(slot.routingKey ?? slot.lens, readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd));
 			return {
 				captureArgumentTokens: slot.captureArgumentTokens,
 				targetCwd: cwd,
@@ -8028,16 +9421,17 @@ async function resolveNegotiatedReviewStatusForSession(
 	ctx: ExtensionContext,
 	sessionKey: PendingReviewConsentSessionKey,
 	signal?: AbortSignal,
+	current: () => boolean = () => true,
 ): Promise<ReviewStatusV3 | undefined> {
 	if (nativeReviewCli?.reviewMode === undefined || nativeReviewCli.targetStatus === undefined) return undefined;
 	if (ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return undefined;
 	// STATUS can prepare an unversioned directory natively. Only a successfully
 	// decoded effective-on mode authorizes that entry; bootstrap never counts as
 	// an own mutation and native owns all metadata/ancestor safety decisions.
-	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true);
+	const modeRead = nativeRepositoryPreparationEnabled(nativeReviewCli, ctx.cwd, signal, true, current);
 	startupModeReads.set(ctx.cwd, modeRead);
 	const enabled = await modeRead.finally(() => { if (startupModeReads.get(ctx.cwd) === modeRead) startupModeReads.delete(ctx.cwd); });
-	if (!enabled) return undefined;
+	if (!enabled || !current()) return undefined;
 	try {
 		const retainedSelections = ((key: PendingReviewConsentSessionKey) => processRetainedNativeStatusSelections.get(key) ?? processRetainedNativeStatusSelections.set(key, new Map()).get(key)!)(sessionKey);
 		const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: ctx.cwd, ...(signal === undefined ? {} : { signal }) }, retainedSelections, ctx.cwd);
@@ -8105,6 +9499,7 @@ const INSPECT_UNTRACKED_SELECTION_NEXT_STEP =
 	'The intended-untracked selection is required before START. The expected_untracked_inventory digest covers untracked path names only (git ls-files --others --exclude-standard); nothing is read or hashed at inventory time, and file content is hashed only for selected paths at candidate freeze. Either call gentle_review with operation "select-intended-untracked" passing this selectionBinding and intendedUntracked ([] excludes every eligible path, a subset includes only those paths), or call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call. To keep a path out of the inventory permanently, ignore it through .gitignore or .git/info/exclude.';
 
 interface PublicReviewCaptureBinding { collectBinding: string; }
+
 function canOfferNativeCaptureBindings(status: ReviewStatusV3): boolean {
 	return status.applicability === "current_target" && isCanonicalProcessString(status.authority?.lineageId)
 		&& isCanonicalProcessString(status.targetIdentity) && !isTerminalReviewAuthorityState(status.authority?.state);
@@ -8161,13 +9556,21 @@ function selectExactReviewCapture(
 	const inputTargetIdentity = exactCollectArgument(input, "target");
 	// Go's targeted-validator vector binds its capture target to the correction
 	// target from the provider-owned validation request, rather than STATUS's
-	// current candidate identity. All other captures remain bound to STATUS.
-	const expectedInputTargetIdentity = input.validationRequest?.correctionTargetIdentity ?? statusTargetIdentity;
+	// current candidate identity. All other captures are bound to STATUS's live
+	// target, except correction plans: gentle-ai's reviewAuthorityTargetIdentity
+	// binds them to the frozen authority target (authority_target_identity)
+	// once the candidate drifts.
+	const validationTarget = input.validationRequest?.correctionTargetIdentity;
+	const expectedInputTargetIdentities = validationTarget !== undefined
+		? [validationTarget]
+		: input.captureOperation === "review.capture-correction-plan"
+			? [statusTargetIdentity, status.authorityTargetIdentity]
+			: [statusTargetIdentity];
 	if (
 		!isCanonicalProcessString(inputLineageId) ||
 		!isCanonicalProcessString(inputTargetIdentity) ||
 		inputLineageId !== lineageId ||
-		inputTargetIdentity !== expectedInputTargetIdentity
+		!expectedInputTargetIdentities.includes(inputTargetIdentity)
 	) {
 		return captureBindingRejected("collectBinding does not carry one non-empty matching provider lineage and target token");
 	}
@@ -8303,6 +9706,8 @@ async function executeReviewCaptureOperation(
 	reviewerSessionId?: string,
 	// Read effective settings only when the acknowledged capture actually runs.
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	// The caller's session, whose profile authority a reviewer run requires.
+	sessionManager?: SessionProfileLifecycleManager,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) {
@@ -8367,7 +9772,9 @@ async function executeReviewCaptureOperation(
 				mutation_outcome: "none",
 			};
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostRelaySlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
@@ -8380,20 +9787,13 @@ async function executeReviewCaptureOperation(
 	if (hostMediatedRoleSlots.length === 1) {
 		if (parameters.correctionLines !== undefined) return captureBindingRejected("correctionLines is valid only for a correction-plan capture");
 		if (parameters.reviewerRunAcknowledged !== true) {
-			return {
-				tool: "gentle_review_capture",
-				status: "blocked",
-				outcome: "reviewer-model-run-forecast",
-				cost_forecast: {
-					transport: "pi_host_relay",
-					model_runs: 1,
-					roles: [hostMediatedRoleSlots[0]!.routingKey],
-				},
-				mutation_performed: false,
-				mutation_outcome: "none",
-			};
+			return { tool: "gentle_review_capture", status: "blocked", outcome: "reviewer-model-run-forecast",
+    cost_forecast: { transport: "pi_host_relay", model_runs: 1, roles: [hostMediatedRoleSlots[0]!.routingKey] },
+    mutation_performed: false, mutation_outcome: "none" };
 		}
-		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport));
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
+		return withCorrectionTarget(await executeReviewHostRelayCapture(hostMediatedRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, modelRegistry, reviewerSessionId, implicitWorkspaceRoot, getReviewerTransport, sessionCwd));
 	}
 
 	if (selected.input.captureOperation === "review.capture-correction-plan") {
@@ -8423,7 +9823,10 @@ async function executeReviewCaptureOperation(
 				cwd,
 				...(signal === undefined ? {} : { signal }),
 			});
-			return withCorrectionTarget(mapAndClearLastEventClosure(closure, selected.binding, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
+			// The provider echoes the target the plan was captured for (the frozen
+			// authority target after drift); reconciliation stays on STATUS's target.
+			const capturedTarget = exactCollectArgument(selected.input, "target") ?? selected.binding.targetIdentity;
+			return withCorrectionTarget(mapAndClearLastEventClosure(closure, { ...selected.binding, targetIdentity: capturedTarget }, retainedUntrackedSelections, cwd, implicitWorkspaceRoot));
 		} catch (error) {
 			return await reconcileUnknownReviewCaptureFailure(error, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route);
 		}
@@ -8434,6 +9837,9 @@ async function executeReviewCaptureOperation(
 		if (parameters.reviewerRunAcknowledged !== undefined || parameters.correctionLines !== undefined) {
 			return captureBindingRejected("reviewerRunAcknowledged and correctionLines are not valid for a provider role capture");
 		}
+		// Go spawns its own pi for the role, so this is a reviewer run too.
+		const blocked = reviewerAuthorityBlocked("gentle_review_capture", sessionManager);
+		if (blocked !== undefined) return blocked;
 		return withCorrectionTarget(await executeProviderRoleVectorCapture(providerRoleSlots[0]!, nativeReviewCli, cwd, selected.binding, retainedUntrackedSelections, route, signal, implicitWorkspaceRoot));
 	}
 	return captureBindingRejected(`unsupported provider capture operation: ${selected.input.captureOperation}`);
@@ -8479,6 +9885,7 @@ async function executeReviewCaptureGroupOperation(
 	// header. Appended last for the same positional-call-site reason as above.
 	reviewerSessionId?: string,
 	getReviewerTransport?: () => ReviewHostRelayRequest["reviewerTransport"],
+	sessionManager?: SessionProfileLifecycleManager,
 ): Promise<Record<string, unknown>> {
 	const parameters = parseReviewCaptureGroupParameters(parametersValue);
 	if (nativeReviewCli === null || nativeReviewCli.targetStatus === undefined) return { ...captureGroupRejected("native target STATUS is unavailable"), outcome: "native-status-unsupported" };
@@ -8518,9 +9925,11 @@ async function executeReviewCaptureGroupOperation(
 			mutation_outcome: "none",
 		};
 	}
+	const blocked = reviewerAuthorityBlocked("gentle_review_capture_group", sessionManager);
+	if (blocked !== undefined) return blocked;
 	// Resolve session-over-pin-over-global once for the entire reviewer group,
 	// so every slot uses the same complete routing snapshot.
-	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId);
+	const reviewerRouting = readReviewerModelConfig(cwd, reviewerSessionId, sessionCwd);
 	const reviewerTransport = getReviewerTransport?.();
 	const requests: readonly ReviewHostRelayRequest[] = group.slots.map((slot) => ({
 		captureArgumentTokens: slot.captureArgumentTokens,
@@ -8671,7 +10080,7 @@ async function executeReviewControllerOperation(
 		parameters.operation === REVIEW_CONTROLLER_OPERATION.INSPECT &&
 		nativeReviewCli !== null
 	) {
-		const rawInspect = parameters.input === undefined
+		const rawInspect = parameters.input === undefined || parameters.input.trim() === ""
 			? undefined
 			: parseControllerJson(parameters.input, REVIEW_CONTROLLER_OPERATION.INSPECT);
 		const unknownField = rawInspect === undefined
@@ -8681,7 +10090,7 @@ async function executeReviewControllerOperation(
 		const baseRef = rawInspect?.baseRef;
 		if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeInspectInputRejection("base-ref-invalid");
 		if (baseRef !== undefined && rawInspect?.committedOnly !== true) return nativeInspectInputRejection("committed-only-required");
-		if (rawInspect !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
+		if (rawInspect?.committedOnly !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
 		let canonicalBaseRef: string | undefined;
 		if (typeof baseRef === "string") {
 			try {
@@ -8741,6 +10150,12 @@ async function executeReviewControllerOperation(
 							retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ ...readyCandidateIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
 						}
 					}
+					// gentle-ai#2196: a ready advertisement must survive the same cheap
+					// candidate-view invariants START verifies, or be withheld.
+					if (plainMapped.status === "ready") {
+						const preflightBlocked = inspectCandidateViewPreflightBlocked(status, defaultCwd, workspaceResolution.identity?.commonDir);
+						if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+					}
 					// gentle-pi#706: the stop alone never tells the caller what to do next.
 					return {
 						...plainMapped,
@@ -8751,12 +10166,18 @@ async function executeReviewControllerOperation(
 					};
 				}
 				const input = reviewIntendedUntrackedInput(status);
-				if (input === undefined)
+				if (input === undefined) {
+					// gentle-ai#2196: same ready-advertisement preflight as the plain path.
+					if (plainMapped.status === "ready") {
+						const preflightBlocked = inspectCandidateViewPreflightBlocked(status, defaultCwd, workspaceResolution.identity?.commonDir);
+						if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+					}
 					return {
 						...plainMapped,
 						untracked_selection: "not-required",
 						...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}),
 					};
+				}
 				const eligibleJson = exactCollectArgument(input, "eligible_paths_json"),
 					inventory = exactCollectArgument(input, "expected_untracked_inventory");
 				let eligible: unknown;
@@ -8840,6 +10261,12 @@ async function executeReviewControllerOperation(
 					undefined,
 					includeWorkspaceRoot ? defaultCwd : undefined,
 				);
+				// gentle-ai#2196: the resolved selection path advertises START under the
+				// same cheap candidate-view invariants as the plain path.
+				if (resolvedMapped.status === "ready") {
+					const preflightBlocked = inspectCandidateViewPreflightBlocked(resolvedStatus, defaultCwd, workspaceResolution.identity?.commonDir);
+					if (preflightBlocked !== undefined) return { ...preflightBlocked, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+				}
 				return {
 					...resolvedMapped,
 					...("selectionBinding" in resolvedMapped
@@ -9130,6 +10557,10 @@ async function executeReviewControllerOperation(
 		if (answeringRepositoryCwd !== pending.repositoryCwd) return consentBindingRepositoryMismatchOutcome(parameters.operation, input.consentBinding, pending.repositoryCwd, answeringRepositoryCwd);
 		if (reviewConsentDigest(pending.consent) !== pending.consentDigest) throw new Error("Review controller consent envelope binding changed");
 		pending.verifyCandidate();
+		if (pending.requestContextPath !== undefined && isSensitiveRequestContextPath(pending.requestContextPath)) {
+			cleanupPendingReviewConsent(pending, pendingReviewConsentRegistry, owningSession);
+			return { ...nativeStartRejection("request-context-sensitive-path"), operation: parameters.operation };
+		}
 		if (nativeReviewCli?.answerConsent === undefined) throw new Error("Native review consent follow-up is unavailable");
 		if (!consumePendingReviewConsent(pending, pendingReviewConsentRegistry, owningSession)) {
 			const stale = staleConsentBindingDiagnostics(
@@ -9167,6 +10598,7 @@ async function executeReviewControllerOperation(
 		try {
 			const answered = await nativeReviewCli.answerConsent({
 				cwd: pending.authorityCwd,
+				...(pending.requestContextPath === undefined ? {} : { requestContextPath: pending.requestContextPath }),
 				consent: pending.consent,
 				answer: input.answer,
 				...(signal === undefined ? {} : { signal }),
@@ -9206,10 +10638,12 @@ async function executeReviewControllerOperation(
 		const retainedStop = retainedUntrackedSelections.get(reviewLifecycleStorageKey(defaultCwd, ""));
 		const stopSelector = retainedStop !== undefined && "selectionBinding" in retainedStop ? retainedStop : undefined;
 		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
-		const committedSelector = stopSelector === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
+		const committedSelector = stopSelector?.baseRef === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
+		const requestContext = stopSelector?.requestContextPath === undefined ? {} : { requestContextPath: stopSelector.requestContextPath };
+		if (requestContext.requestContextPath !== undefined && isSensitiveRequestContextPath(requestContext.requestContextPath)) return { ...nativeStartRejection("request-context-sensitive-path"), operation: parameters.operation };
 		let status: ReviewStatusV3;
 		try {
-			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...committedSelector, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
+			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...committedSelector, ...requestContext, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
 			if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
 			status = negotiated.status!;
 		} catch (error) { return nativeStatusFailed(parameters.operation, error); }
@@ -9221,7 +10655,7 @@ async function executeReviewControllerOperation(
 		const rejected = (stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity) || input === undefined || canonicalReviewCaptureBinding(input) !== canonicalBinding || exactCollectArgument(input, "target_identity") !== status.targetIdentity || exactCollectArgument(input, "projection") !== status.projection.projection || exactCollectArgument(input, "base_tree") !== status.projection.baseTree || exactCollectArgument(input, "candidate_tree") !== status.projection.currentCandidateTree || !Array.isArray(eligible) || selected.reason !== undefined || selected.intendedUntracked!.some((path) => !eligible.includes(path));
 		if (rejected) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", mutation_performed: false, mutation_outcome: "none" };
 		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
-		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
+		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...requestContext, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
 		return { ...result, operation: parameters.operation };
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.START) {
@@ -9231,8 +10665,18 @@ async function executeReviewControllerOperation(
 		);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
-			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
+			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
+			if (rawStart.requestContextPath !== undefined && !isCanonicalProcessString(rawStart.requestContextPath)) return nativeStartRejection("request-context-invalid");
+			const requestContext: { requestContextPath?: string } = {};
+			if (rawStart.requestContextPath !== undefined) {
+				const rawPath = rawStart.requestContextPath as string;
+				if (isSensitivePath(rawPath)) return nativeStartRejection("request-context-sensitive-path");
+				const expandedPath = rawPath.replace(/^~(?=[/\\]|$)/, homedir());
+				try { requestContext.requestContextPath = realpathSync(resolve(defaultCwd, expandedPath)); }
+				catch { return nativeStartRejection("request-context-unresolved-path"); }
+				if (isSensitiveRequestContextPath(requestContext.requestContextPath)) return nativeStartRejection("request-context-sensitive-path");
+			}
 			const focus = rawStart.focus;
 			if (focus !== undefined && !isNativeStartFocus(focus)) return nativeStartRejection("focus-invalid");
 			const lensSelection = validateNativeStartLensSelection(rawStart);
@@ -9332,6 +10776,7 @@ async function executeReviewControllerOperation(
 			try {
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 					cwd: defaultCwd,
+					...requestContext,
 					...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 					...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true }),
 					...(untrackedSelection.untrackedScope === undefined ? {} : untrackedSelection),
@@ -9358,6 +10803,7 @@ async function executeReviewControllerOperation(
 					if (offeredBaseRef !== undefined) {
 						const renegotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {
 							cwd: defaultCwd,
+							...requestContext,
 							...(parameters.lineageId === undefined ? {} : { lineageId: parameters.lineageId }),
 							baseRef: offeredBaseRef,
 							committedOnly: true,
@@ -9389,7 +10835,17 @@ async function executeReviewControllerOperation(
 						next_action: "inspect-and-resolve-the-current-intended-untracked-selection",
 					};
 				}
-				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") return mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
+				if (target.nextTransition?.kind === "collect" || target.applicability !== "unrelated" || target.action !== "start") {
+					// Existing authority keeps its frozen intent. Never imply that a
+					// new request file was applied by merely returning its STATUS.
+					if (requestContext.requestContextPath !== undefined && target.applicability !== "unrelated") return nativeStartRejection("request-context-requires-fresh-review");
+					const mapped = mapNativeTargetStatus(parameters.operation, target, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
+					if (requestContext.requestContextPath !== undefined && typeof mapped.selectionBinding === "string") {
+						retainNativeStatusSelection(retainedUntrackedSelections, reviewLifecycleStorageKey(defaultCwd, ""), Object.freeze({ selectionBinding: mapped.selectionBinding, targetIdentity: target.targetIdentity, ...requestContext,
+							...(canonicalBaseRef === undefined ? {} : { baseRef: canonicalBaseRef, committedOnly: true as const }) }));
+					}
+					return mapped;
+				}
 			} catch (error) {
 				return nativeOperationFailure(parameters.operation, error);
 			}
@@ -9415,6 +10871,7 @@ async function executeReviewControllerOperation(
 					nativeStartAttempted = true;
 					result = await nativeReviewCli.start({
 						cwd: defaultCwd,
+						...requestContext,
 						...(canonicalBaseRef === undefined
 							? {}
 							: { baseRef: candidateView?.baseCommit ?? canonicalBaseRef, committedOnly: true }),
@@ -9461,6 +10918,7 @@ async function executeReviewControllerOperation(
 							},
 							...(retainedUntrackedSelection === undefined ? {} : { untrackedSelection: retainedUntrackedSelection }),
 							consent: error.consent,
+							...requestContext,
 							consentDigest,
 						};
 						pendingReviewConsentRegistry.add(pendingReviewConsentSession, pending);
@@ -9648,13 +11106,19 @@ async function executeReviewControllerOperation(
 
 /** @internal */
 export const __testing = {
+	setCandidateViewSymlinkProbeForTesting,
+	CandidateViewSymlinkProbeUnavailableError,
+	scanCandidateTreeForSymlinks,
 	parseReviewControllerParameters,
 	parseReviewCaptureParameters,
 	parseReviewCaptureGroupParameters,
 	runProfilesPanelAction,
+	openProfilesPanelLoop,
+	notifySessionProfileProblem,
 	resolveReviewModeGate,
 	readEffectiveModelConfig,
 	readReviewerModelConfig,
+	reviewHostRelaySelection,
 	readEffectiveModelConfigAsync,
 	followRenamedPin,
 	profilePinScopeNote,
@@ -9668,6 +11132,7 @@ export const __testing = {
 	guardedCommandTitle,
 	loadRuntimeGuardrailsConfig,
 	isReversibleYoloCommand,
+	evaluateSuperYoloCommand,
 	yoloConfiguredRestriction,
 	buildGentlePrompt,
 	nativeStatusUnsupported,
@@ -9679,7 +11144,9 @@ export const __testing = {
 	setReviewHostRelayRunnerForTesting,
 	setReviewHostRelayGroupRunnersForTesting,
 	clearReviewTransportProbeForTesting,
-	renderSddModelPanel: renderSddModelPanelForTesting,
+	routingTablePanel: renderRoutingTableForTesting,
+	fileRoutingFallbacks,
+	piThinkingSupport: getPiThinkingSupport,
 	getOrchestratorPrompt,
 	renderOrchestratorPrompt,
 	loadReviewContractPromptFragment,
@@ -9738,6 +11205,9 @@ export interface GentleAiRuntimeDependencies {
 	telemetryExecFileAdapter?: ExecFileAdapter;
 	/** Test-only inference seam; production always uses the active session model. */
 	autoPermissionClassifier?: AutoRuntimeClassifier;
+	// The backstop samples the measured context at most once per window (its measure rebuilds the whole
+	// session projection). Tests inject a clock or a zero window; production resolves the env and default.
+	contextBackstopMeasure?: { now?: () => number; minIntervalMs?: number };
 }
 
 export function createGentleAiExtension(dependencies: GentleAiRuntimeDependencies = {}): (pi: ExtensionAPI) => void {
@@ -9772,11 +11242,22 @@ function createGentleAiExtensionForTesting(
 		cancel: () => classifier?.cancel(),
 	}, { configHome: gentlePiConfigHome(permissionEnvironment) });
 	const auto = autoPermissions;
+	const verifierSettleReminders = createVerifierSettleReminders<PendingReviewConsentSessionKey>();
+	const explorationBudget = createExplorationBudget();
+	// Named-agent or child runs started and not yet settled, per session. Such a run never records verifier attempts (its
+	// tool calls are not primary), so its settle checks must not remind. Each one pairs off at its own `agent_settled`,
+	// nested runs included: Pi may check settlement again after a continuation without a new `before_agent_start`, and
+	// `agent_end` may or may not have paired off the subagent depth by then.
+	const verifierSettleNamedRuns = new Map<PendingReviewConsentSessionKey, number>();
 	pi.on("tool_result", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.toolResult(event, ctx);
 	});
 	pi.on("input", (event, ctx) => {
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") auto.input(event, ctx);
+		// #2652: a new user prompt resets the settle reminder; a steer joins the running prompt.
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && event.streamingBehavior !== "steer") {
+			verifierSettleReminders.userPrompt(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey));
+		}
 		return { action: "continue" };
 	});
 
@@ -9810,11 +11291,21 @@ function createGentleAiExtensionForTesting(
 
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
+	const sessionProfiles = createSessionProfileIntegration();
+	pi.on("session_before_fork", async (event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
+	});
+	pi.on("session_before_tree", async (_event, ctx) => {
+		await waitCurrentSessionProfileSelection(ctx.sessionManager);
+	});
 	const observedReviewTool: typeof reviewSidebar.tool = (definition) => statusTiming.tool(reviewSidebar.tool(definition));
 	pi.on("session_tree", (_event, ctx) => {
 		auto.reset();
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
+		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 	});
 	// Lean RDD-off review loadout (applyRddOffReviewPrompt): every
 	// before_agent_start sets it from the pinned line before Pi prepares that
@@ -9823,9 +11314,24 @@ function createGentleAiExtensionForTesting(
 	let reminderSessionActive = true;
 	let reminderEpoch = 0;
 	let reminderManager: ExtensionContext["sessionManager"] | undefined;
+	let activeRddContext: ExtensionContext | undefined;
 	let unbindPreparation: (() => void) | undefined;
 	pi.on("session_shutdown", (event, context) => {
+		// A pending Enter selection settles before the profile owner shuts down;
+		// without one the whole shutdown stays synchronous, so terminal cleanup
+		// (child permission transport, sidebars) is never deferred a turn.
+		if (hasPendingSessionProfileSelection(context.sessionManager)) {
+			return waitCurrentSessionProfileSelection(context.sessionManager).then(() => shutdownSession(event, context));
+		}
+		shutdownSession(event, context);
+	});
+	function shutdownSession(event: SessionShutdownEvent, context: ExtensionContext): void {
+		if (sessionProfiles.isCurrent(context.sessionManager)) {
+			clearSessionProfileBinding(context.sessionManager.getSessionId());
+			sessionProfiles.shutdown(context.sessionManager, event);
+		}
 		pinnedRddStatusLines.delete(pendingReviewConsentSessionKey(context, pendingReviewConsentFallbackKey));
+		invalidateRddStatus(context.cwd);
 		rddOffReviewLoadout = false;
 		auto.reset();
 		yolo.reset(context);
@@ -9833,6 +11339,7 @@ function createGentleAiExtensionForTesting(
 		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		activeRddContext = undefined;
 		unbindPreparation?.();
 		unbindPreparation = undefined;
 		reminderManager = undefined;
@@ -9848,7 +11355,8 @@ function createGentleAiExtensionForTesting(
 		cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
 		processRetainedNativeStatusSelections.delete(sessionKey);
 		processAgentEndSubagentDepth.delete(sessionKey);
-	});
+		verifierSettleNamedRuns.delete(sessionKey);
+	}
 
 	// gentle-pi ODD input phase labels: the explicit half of the bounded ODD
 	// phase signal for the Gentle prompt's working label. Gentle Shell infers
@@ -9912,7 +11420,7 @@ function createGentleAiExtensionForTesting(
 		},
 	});
 
-	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review"]);
+	const GENTLE_TIMED_TOOLS = new Set(["gentle_review_scope", "gentle_review_capture_group", "gentle_review_capture", "gentle_review", "gentle_review_run"]);
 	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
 	const recordReviewTiming = (event: { toolCallId: string; toolName: string }, endedAt?: number): void => {
 		const ledger = elapsedTiming;
@@ -9970,7 +11478,7 @@ function createGentleAiExtensionForTesting(
 		return named.length === 0 ? operation : `${operation} · ${named.join(" · ")}`;
 	};
 
-	pi.registerTool(observedReviewTool({
+	const reviewCaptureGroupTool = observedReviewTool({
 		name: "gentle_review_capture_group",
 		renderShell: "self",
 		label: "Gentle Review Capture Group",
@@ -10006,12 +11514,14 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 				() => pi.getSettings?.().transport,
+				reviewSessionManagerAndId(ctx)?.manager as SessionProfileLifecycleManager | undefined,
 			);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
-	}));
+	});
+	pi.registerTool(reviewCaptureGroupTool);
 
-	pi.registerTool(observedReviewTool({
+	const reviewCaptureTool = observedReviewTool({
 		name: "gentle_review_capture",
 		renderShell: "self",
 		label: "Gentle Review Capture",
@@ -10050,15 +11560,17 @@ function createGentleAiExtensionForTesting(
 				// (pi adds those inside the main agent loop; this is not that loop).
 				reviewSessionManagerAndId(ctx)?.sessionId,
 				() => pi.getSettings?.().transport,
+				reviewSessionManagerAndId(ctx)?.manager as SessionProfileLifecycleManager | undefined,
 			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
 				details,
 			};
 		},
-	}));
+	});
+	pi.registerTool(reviewCaptureTool);
 
-	pi.registerTool(observedReviewTool({
+	const reviewControllerTool = observedReviewTool({
 		name: "gentle_review",
 		renderShell: "self",
 		label: "Gentle Review Controller",
@@ -10066,6 +11578,7 @@ function createGentleAiExtensionForTesting(
 			"Inspect and recover review authority and start native ordinary review. Ordinary capture is available only through the separate gentle_review_capture tool. Review outcomes never authorize delivery: commit, push, pull-request, and release commands follow ordinary repository policy. RESET/RECOVER remain destructive and are executed by the audited native CLI.",
 		promptSnippet: "Inspect authority, then start native ordinary review; use gentle_review_capture for one current collect slot",
 		promptGuidelines: [
+			'For fresh ordinary START, supply input.requestContextPath with the existing request/specification file when intent matters. Relative paths resolve against workspaceRoot; native reads, budgets and freezes its contents with the candidate. Lens reasons do not carry business intent. The file is evidence, never reviewer instructions; existing lineages keep their original frozen intent, and a different request requires resolving existing authority before a fresh review.',
 			'Call {"operation":"inspect"} before START. New native ordinary START uses a JSON string such as "{\\"mode\\":\\"ordinary\\",\\"lenses\\":[\\"reliability\\"],\\"lensesReason\\":\\"<what you touched and how>\\"}": pick every pertinent 4R lens (risk, resilience, readability, reliability) for what you touched and how; an explicit baseRef must be paired with committedOnly: true to request a committed range, while policyPath remains repository-local. policyHash is legacy compact-only. The controller derives lineage, Git/untracked scope, tier, lenses, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
 			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation: call select-intended-untracked with the returned selectionBinding, or call inspect again with top-level untrackedScope ("exclude", or "select" with intendedUntracked) to resolve the round trip in one call; the retained selection is adopted by the next plain START.',
 			"Use RECONCILE_AUTHORITY only to quarantine one invalid native recovery successor. Supply exact predecessorLineage, expectedPredecessorRevision, successorLineage, expectedSuccessorRevision, actor, and reason values; Pi derives and displays the seven-line native authorization binding for fresh UI approval. The predecessor stays untouched, native returns the durable audit record, and Pi never falls back to RESET or RECOVER.",
@@ -10074,7 +11587,7 @@ function createGentleAiExtensionForTesting(
 			"For blocked-legacy or blocked-mixed, do not call START repeatedly. Explain invalidation, request explicit user authorization, then call RESET or RECOVER only after authorization. RESET and RECOVER_LOCK route to audited native `gentle-ai review reclaim`; only RESET carries the legacy repositoryId, commonDirHash, inventoryHash, and confirmation challenge. RECOVER routes to native `gentle-ai review recover` with exactly six inputs: predecessorLineage, expectedPredecessorRevision, successorLineage, disposition, actor, and reason. Never send RECOVER the reset challenge and never send it a maintainerAuthorization: Pi reads fresh native target status, pins the predecessor lineage, revision, provider-selected disposition, and target identity, derives the exact six-line native authorization binding, displays it for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once and allows later fresh validated envelopes only for the same live SessionManager, nonempty session ID, and canonical Git common-directory identity, including sibling worktrees; an unrelated repository requires a new explicit human grant. Revoke removes the current repository grant, while nonreload replacement, quit, and process exit remove all session grants; reload preserves them. It grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority operations; delivery commands follow ordinary repository policy.",
-			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it is the only way to get an independent verifier, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). The writer profile is reported but never adds a verifier. The plan follows its risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment (nativeRisk "unassessable"), or a native high, informs only: the plan adds the independent verifier only when escalate names a Task Size high-risk item. This never mutates review authority state.',
+			'ASSESS (gentle-pi#662/#668) is read-only and needs no lineageId: when RDD is on or unknown, after a delegated writer returns, call {"operation":"assess"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason) instead of judging non-triviality from the task description. Pass input as JSON only to assess a committed range ({"baseRef":"<ref>","committedOnly":true}), to supply a fallback writer profile ({"writerModelId":"...", "writerEffort":"..."}), or to state that the native review was declined or unavailable for this candidate ({"nativeReviewOutcome":"declined|unavailable|unknown"}), or to raise a candidate you know is high risk ({"escalate":{"item":1-6,"reason":"<one line>"}}, item from the Task Size high-risk list; it is the only way for this plan to request an independent verifier, keeps nativeRisk, returns agentEscalation, and can never lower a tier). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller), otherwise the profile is small (fallback). The writer profile is reported but never adds a verifier. The plan follows its risk tier whatever RDD reads and whatever the native review outcome: the native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate, written natively when the approved review for that candidate is acknowledged; a caller-supplied closed is not authority and, without that fact, resolves to unknown; the outcome only explains the plan. A decline or unavailable review recorded by this process is bound to that exact candidate\'s own target identity, never to a different candidate or to bare repository state, and wins over closure. The result\'s outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. When native reports them, ASSESS projects reviewDue, reviewDueReason, candidate.consumed, and the native continuation verbatim; older binaries omit them and nothing is invented. Relay that continuation unchanged; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification such as browser checks for UI changes still run when applicable. A failed or unavailable native assessment (nativeRisk "unassessable"), or a native high, informs only: the plan adds the independent verifier only when escalate names a Task Size high-risk item. This never mutates review authority state.',
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
@@ -10212,13 +11725,83 @@ function createGentleAiExtensionForTesting(
 				details,
 			};
 		},
-	}));
+	});
+	pi.registerTool(reviewControllerTool);
+
+	// Opt-in only; use the same wrapped tool executors so consent, authority,
+	// candidate routes, acknowledgement bookkeeping and sidebar updates survive.
+	if (permissionEnvironment.GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR === "1" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+		pi.registerTool({
+			name: "gentle_review_run",
+			exposure: "model-only",
+			label: "Experimental Review Coordinator",
+			description: "Experimental ordinary review coordinator. Uses the existing review facade and host consent. Resume by lineageId to follow native next_transition offers. Stops on correction edits, unresolved consent, failure or maintenance; never retries a failed capture or authorizes delivery.",
+			promptSnippet: "Experimental: use gentle_review_run to assess and coordinate ordinary review; retain its returned lineage when resuming.",
+			promptGuidelines: ["Supply the exact candidate selector and pertinent lenses with a reason. Resume an existing transaction with lineageId and the same workspaceRoot/baseRef. After an authorized correction edit, resume to follow the next native transition. Review consent stays in the host; never supply a consent answer. Correction edits and maintenance remain explicit handoffs.", "Relay every returned forecasts entry losslessly in the user's language, preserving all forecast fields and counts. Forecasts are informational; they do not grant review consent or delivery permission."],
+			parameters: {
+				type: "object", additionalProperties: false, properties: {
+					workspaceRoot: { type: "string" }, baseRef: { type: "string" }, committedOnly: { type: "boolean", enum: [true] },
+					lineageId: { type: "string" }, lenses: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["risk", "resilience", "readability", "reliability"] } },
+					lensesReason: { type: "string" }, requestContextPath: { type: "string" }, untrackedScope: { type: "string", enum: ["exclude", "select"] },
+					intendedUntracked: { type: "array", items: { type: "string" } },
+				},
+			},
+			executionMode: "sequential",
+			prepareLoadout() {
+				return rddOffReviewLoadout ? { hiddenDeclarations: ["gentle_review_run"] } : undefined;
+			},
+			async execute(toolCallId, parameters, signal, onUpdate, ctx) {
+				if (signal?.aborted) throw reviewCancellation("Review coordinator cancelled");
+				const input = parseReviewCoordinatorInput(parameters);
+				const workspaceRoot = resolveReviewControllerWorkspaceRoot(input.workspaceRoot, ctx.cwd, candidateViews, input.lineageId);
+				const initialSession = ctx.sessionManager?.getSessionId?.();
+				const tools = { gentle_review: reviewControllerTool, gentle_review_capture: reviewCaptureTool, gentle_review_capture_group: reviewCaptureGroupTool };
+				const details = await runReviewCoordinator(parameters, {
+					signal,
+					invoke: async (name, args) => {
+						if (ctx.sessionManager?.getSessionId?.() !== initialSession) throw reviewCancellation("Review coordinator session changed");
+						if (name !== "gentle_review" || args.operation !== "assess") {
+							const operation = name === "gentle_review" ? args.operation as ReviewControllerOperation : REVIEW_CONTROLLER_OPERATION.START;
+							const gated = await resolveReviewModeGate(nativeReviewCli, operation, workspaceRoot, signal);
+							if (gated !== undefined) return gated;
+						}
+						// Direct facade dispatch retains executor safety and sidebar hooks,
+						// but emits no nested tool_call/tool_result/execution events. SDK
+						// accounting sees only the outer call; internal facade calls have
+						// no additional budget/timing events. Returned metrics describe them.
+						const result = await tools[name].execute(toolCallId, args as never, signal, onUpdate, ctx);
+						return result.details as Record<string, unknown>;
+					},
+					presentForecast: async (forecast) => {
+						if (ctx.hasUI !== true || onUpdate === undefined) return false;
+						onUpdate({ content: [{ type: "text", text: JSON.stringify(forecast) }], details: forecast });
+						return true;
+					},
+				});
+				return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+			},
+		});
+	}
 
 	pi.on("session_start", async (event, ctx) => {
+		const startupEpoch = reminderEpoch;
+		const profileSessionId = ctx.sessionManager?.getSessionId?.();
+		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
+		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		// gentle-shell#2742: only a session's own start tells this process its
+		// startup state; anything else leaves it unknown.
+		try {
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
+				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+		} catch { /* The startup state stays unknown. */ }
+		readSessionProfileAuthority(ctx.sessionManager);
+		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();
 		yolo.reset(ctx);
 		// Package-owned children reset local state but never initialize primary defaults.
 		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") await yolo.mode(ctx);
+		// A shutdown during the asynchronous startup must not revive its owner.
+		if (startupEpoch !== reminderEpoch) return;
 		reviewSidebar.reset(ctx);
 		statusTiming.reset(ctx);
 		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
@@ -10226,6 +11809,7 @@ function createGentleAiExtensionForTesting(
 		reminderEpoch += 1;
 		unbindPreparation?.();
 		reminderManager = ctx.sessionManager;
+		activeRddContext = ctx;
 		// gentle-shell#1690: a delegated child runs in the parent's resolved
 		// worktree. Repository preparation, review negotiation, asset install and
 		// model config belong to the parent session and write shared state. The
@@ -10287,7 +11871,7 @@ function createGentleAiExtensionForTesting(
 			const modelResult = await applySavedModelConfig(ctx);
 			if (ctx.hasUI && modelResult.invalidPath) {
 				ctx.ui.notify(
-					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:models again.`,
+					`el Gentleman skipped model config because ${modelResult.invalidPath} is invalid JSON or not an object. Fix or remove the file, then run /gentle:profiles again.`,
 					"warning",
 				);
 				return;
@@ -10315,7 +11899,10 @@ function createGentleAiExtensionForTesting(
 		// Pi awaits session_start handlers serially, so this runs after startup
 		// returns: two native spawns no longer hold the shell's first render.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS))
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && reminderEpoch === epoch && reminderManager === manager &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const negotiation = resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, AbortSignal.timeout(STARTUP_NEGOTIATION_TIMEOUT_MS), current)
 			.then(() => undefined, () => undefined) // Best-effort only; never surface or throw.
 			.finally(() => { startupNegotiations.delete(negotiation); });
 		startupNegotiations.add(negotiation);
@@ -10326,11 +11913,13 @@ function createGentleAiExtensionForTesting(
 		const isChildSession = permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1";
 		const isPrimarySession = !isNamedAgent && !isChildSession;
 		const subagentDepthKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		if (isPrimarySession && !ctx.signal?.aborted) explorationBudget.start(subagentDepthKey);
 		if (isNamedAgent || isChildSession) {
 			processAgentEndSubagentDepth.set(subagentDepthKey, (processAgentEndSubagentDepth.get(subagentDepthKey) ?? 0) + 1);
 		} else {
 			processAgentEndSubagentDepth.set(subagentDepthKey, 0);
 		}
+		verifierSettleNamedRuns.set(subagentDepthKey, isPrimarySession ? 0 : (verifierSettleNamedRuns.get(subagentDepthKey) ?? 0) + 1);
 		// gentle-pi#677: nudge gentle-ai's own telemetry trigger for a primary
 		// session only, reusing the exact isNamedAgent predicate that
 		// decides the orchestrator prompt below. At most one attempt per
@@ -10360,17 +11949,39 @@ function createGentleAiExtensionForTesting(
 		// binary keeps the last known line for this cwd, or renders the
 		// fail-closed "unknown" line when none was ever read (gentle-shell#1029).
 		const rddStatusSignal = AbortSignal.timeout(RDD_STATUS_TIMEOUT_MS);
+		const promptCwd = ctx.cwd;
+		const promptEpoch = reminderEpoch;
+		const promptManager = ctx.sessionManager;
+		const currentPrompt = () => reminderSessionActive && reminderEpoch === promptEpoch &&
+			(reminderManager === undefined || reminderManager === promptManager) &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === subagentDepthKey &&
+			ctx.cwd === promptCwd && (promptManager?.getCwd?.() ?? promptCwd) === promptCwd;
 		// A startup read still in flight fills the memo: wait for it within the
 		// same deadline instead of spawning the same STATUS a second time.
-		const inFlightModeRead = isPrimarySession ? startupModeReads.get(ctx.cwd) : undefined;
+		const inFlightModeRead = isPrimarySession ? startupModeReads.get(promptCwd) : undefined;
 		if (inFlightModeRead !== undefined) await Promise.race([inFlightModeRead, rddAbortRejection(rddStatusSignal)]).catch(() => undefined);
-		const rddStatusLine = !isPrimarySession
-			? undefined
-			: pinRddStatusLine(
-				pinnedRddStatusLines.get(subagentDepthKey),
-				await resolveRddStatusLine(nativeReviewCli, ctx.cwd, rddStatusSignal, undefined, ctx),
-			);
-		if (rddStatusLine !== undefined) pinnedRddStatusLines.set(subagentDepthKey, rddStatusLine);
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
+		const promptGeneration = rddStatusGeneration(promptCwd);
+		const nextRddStatusLine = isPrimarySession
+			? await resolveRddStatusLine(nativeReviewCli, promptCwd, rddStatusSignal, undefined, ctx)
+			: undefined;
+		if (!currentPrompt()) {
+			updateYoloPrompt(event.systemPromptOptions, false, false);
+			updateAutoPrompt(event.systemPromptOptions, false);
+			return undefined;
+		}
+		const staleRead = rddStatusGeneration(promptCwd) !== promptGeneration;
+		const pinned = pinnedRddStatusLines.get(subagentDepthKey);
+		const rddStatusLine = nextRddStatusLine === undefined ? undefined : staleRead
+			? renderRddStatusLine(undefined)
+			: pinRddStatusLine(pinned?.cwd === promptCwd ? pinned.line : undefined, nextRddStatusLine);
+		// A stale in-flight prompt is unknown for this run, but must not pin
+		// unknown over the status the following fresh prompt will resolve.
+		if (rddStatusLine !== undefined && !staleRead) pinnedRddStatusLines.set(subagentDepthKey, { cwd: promptCwd, line: rddStatusLine });
 		rddOffReviewLoadout = isPrimarySession && isRddStatusLineOff(rddStatusLine);
 		if (rddOffReviewLoadout) applyRddOffReviewPrompt(event.systemPromptOptions as ReviewToolPromptOptions | undefined);
 		const gentlePrompt = rddStatusLine === undefined
@@ -10398,7 +12009,7 @@ function createGentleAiExtensionForTesting(
 		// and forwards only systemPromptOptions, so the harness is delivered
 		// through the mutable appendSystemPrompt section instead of a replacement.
 		appendSystemPromptOnce(event.systemPromptOptions, `${gentlePrompt}${reviewContractPrompt}`);
-		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx));
+		updateYoloPrompt(event.systemPromptOptions, isPrimarySession && await yolo.active(ctx), isPrimarySession && await yolo.superActive(ctx));
 		updateAutoPrompt(event.systemPromptOptions, isPrimarySession && await yolo.mode(ctx) === "auto");
 		return undefined;
 	});
@@ -10426,8 +12037,12 @@ function createGentleAiExtensionForTesting(
 		catch { return; }
 		if (!mutation) return;
 		const epoch = reminderEpoch;
-		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey);
-		if (status === undefined || !reminderSessionActive || epoch !== reminderEpoch || pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) !== sessionKey) return;
+		const manager = ctx.sessionManager;
+		const cwd = ctx.cwd;
+		const current = () => reminderSessionActive && epoch === reminderEpoch && (reminderManager === undefined || reminderManager === manager) &&
+			pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey && ctx.cwd === cwd && (manager?.getCwd?.() ?? cwd) === cwd;
+		const status = await resolveNegotiatedReviewStatusForSession(nativeReviewCli, ctx, sessionKey, undefined, current);
+		if (status === undefined || !current()) return;
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
@@ -10455,6 +12070,34 @@ function createGentleAiExtensionForTesting(
 		consumeReviewMutation(pi, ctx.sessionManager, root, mutation, "nudged", targetIdentity);
 	});
 
+	// #2652: a primary run that declares `Risk: item N` in its final message and never attempted a verifier launch
+	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept. The incoming
+	// `canContinue` is false for a completed run (its last message is the assistant's); Pi re-validates the continuation
+	// after the appended reminder, so it is not a precondition here.
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		if ((verifierSettleNamedRuns.get(sessionKey) ?? 0) > 0) return undefined;
+		if (event.outcome !== "completed") return undefined;
+		const reminder = verifierSettleReminders.beforeSettle(
+			sessionKey,
+			finalAssistantText(event.context.contextMessages),
+		);
+		if (reminder === undefined) return undefined;
+		return {
+			entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
+			continue: true,
+		};
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const namedRuns = verifierSettleNamedRuns.get(sessionKey) ?? 0;
+		if (namedRuns > 0) verifierSettleNamedRuns.set(sessionKey, namedRuns - 1);
+		else explorationBudget.settle(sessionKey);
+	});
+
 	const recordWriteResult = async (event: ToolResultEvent, ctx: ExtensionContext): Promise<void> => {
 		if (!reminderSessionActive || (reminderManager && reminderManager !== ctx.sessionManager) || event.isError !== false || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		if (!isRecord(event.input) || typeof event.input.path !== "string" || !event.input.path.trim()) return;
@@ -10469,14 +12112,29 @@ function createGentleAiExtensionForTesting(
 		} catch { /* Preparation and receipt persistence cannot change a successful tool result. */ }
 	};
 	const contextBackstopSignal = createContextBackstopSignal(permissionEnvironment);
+	// One projection rebuild per session per window, not one per tool result: the measured context is
+	// sampled (see createThrottledContextMeasure), so long sessions stop paying an O(session) scan on
+	// every tool result while the backstop keeps its once-per-crossing notice semantics.
+	const contextBackstopMeasure = createThrottledContextMeasure({
+		now: dependencies.contextBackstopMeasure?.now,
+		minIntervalMs: dependencies.contextBackstopMeasure?.minIntervalMs,
+		env: permissionEnvironment,
+	});
 	pi.on("tool_result", async (event, ctx) => {
-		// Harness roadmap R1: the primary session's measured context is checked
-		// against the backstop on every tool result; the first result at or past
-		// it carries one notice, after any other patch below.
+		// Harness roadmap R1: the primary session's measured context is sampled against the backstop; the
+		// first sampled result at or past it carries one notice, after any other patch below. The sample
+		// runs at most once per window per session (default 5 s, GENTLE_PI_CONTEXT_BACKSTOP_MEASURE_MS),
+		// so a crossing is announced on the next sampled result — never later than one window past it.
 		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
 		const primary = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+		const explorationNotice = explorationBudget.result(sessionKey, event, primary, ctx.signal?.aborted === true);
+		// Keep discovery payloads intact. Steer only an already-active run so the
+		// next model step sees the notice without starting a new run while idle.
+		if (explorationNotice && typeof ctx.isIdle === "function" && !ctx.isIdle()) {
+			try { pi.sendMessage({ customType: "gentle-pi.exploration-budget", content: explorationNotice, details: explorationBudget.facts(sessionKey), display: true }, { deliverAs: "steer", triggerTurn: true }); } catch { /* Advisory only. */ }
+		}
 		let notice: string | undefined;
-		try { notice = primary ? contextBackstopSignal(sessionKey, ctx.getContextUsage?.()) : undefined; } catch { notice = undefined; }
+		try { notice = primary ? contextBackstopSignal(sessionKey, contextBackstopMeasure(sessionKey, () => ctx.getContextUsage?.())) : undefined; } catch { notice = undefined; }
 		const withNotice = (patch: ToolResultEventResult | undefined) => notice ? appendContextBackstopNotice(event, patch, notice) : patch;
 		// Harness roadmap T4: a parent commit reports the branch's authored
 		// changed lines so delivery slicing reads a number, not an estimate.
@@ -10495,7 +12153,14 @@ function createGentleAiExtensionForTesting(
 			return { block: true, reason: `${event.toolName} runs only as a direct tool call: call it directly, never from codemode or another tool.` };
 		}
 		const primaryToolCall = permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && (processAgentEndSubagentDepth.get(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey)) ?? 0) === 0;
-		const yoloActive = primaryToolCall && await yolo.active(ctx);
+		if (primaryToolCall && !ctx.signal?.aborted) explorationBudget.call(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolCallId, event.toolName, event.parentToolCallId);
+		// #2652: count a verifier launch attempt before any admission check can reject it.
+		if (primaryToolCall) verifierSettleReminders.toolCall(pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), event.toolName, event.input);
+		// One early mode read settles the session binding (and its one-time epoch
+		// bump) before the guarded region below captures its own epoch.
+		const settledMode = primaryToolCall ? await yolo.mode(ctx, { toolCallId: event.toolCallId }) : "normal";
+		const yoloActive = primaryToolCall && settledMode === "yolo";
+		const superYoloActive = primaryToolCall && settledMode === "super-yolo";
 		const sensitivePathDenied = evaluateSensitivePathTool(
 			event.toolName,
 			event.input,
@@ -10541,13 +12206,17 @@ function createGentleAiExtensionForTesting(
 			if (childDenied) return childDenied;
 		}
 		const modeEpoch = yolo.epoch();
+		// The admission's authoritative mode read is always a fresh capture, never
+		// the admission slot: a reselection while this lookup is in flight must
+		// invalidate it (mode() answers Normal, the epoch check below blocks), and
+		// tests/auto-mode-invariants.test.ts holds exactly this lookup to lock it.
 		const permissionMode = primaryToolCall ? await yolo.mode(ctx) : "normal";
 		// A superseded lookup returns Normal for display, not permission to skip Auto.
 		if (primaryToolCall && modeEpoch !== yolo.epoch()) {
 			return { block: true, reason: "Permission mode changed during tool admission. This action was not run; retry under the current mode." };
 		}
 		const autoGate = permissionMode === "auto" ? gate : undefined;
-		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate);
+		return await confirmCommand(command, ctx, pi.events, herdrLifecycle, yoloActive, autoGate, superYoloActive);
 	});
 
 	for (const owner of ["delegation", "review"] as const) {
@@ -10565,17 +12234,10 @@ function createGentleAiExtensionForTesting(
 		});
 	}
 
-	pi.registerCommand("gentle:models", {
-		description: "Configure global per-agent models for el Gentleman.",
-		handler: async (_args, ctx) => {
-			await handleModelsCommand(ctx, pi);
-		},
-	});
-
 	pi.registerCommand("gentle:profiles", {
-		description: "Create, switch, and manage global agent-model profiles for el Gentleman.",
-		handler: async (_args, ctx) => {
-			await handleProfilesCommand(ctx, pi);
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.",
+		handler: async (args, ctx) => {
+			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},
 	});
 
@@ -10710,6 +12372,150 @@ function createGentleAiExtensionForTesting(
 		handler: async (args, ctx) => { statusTiming.command(args, ctx); },
 	});
 
+	// All controls use this native request and invalidation owner. A global write
+	// brackets its in-flight period: neither an old read nor one started while
+	// the provider is writing may refill a different workspace's status.
+	const executeReviewMode = async (request: NativeReviewModeRequest, ctx: ExtensionContext) => {
+		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+		const mutating = request.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS;
+		const global = mutating && request.scope === "global";
+		const invalidate = () => {
+			if (global) invalidateAllRddStatuses();
+			else {
+				invalidateRddStatus(request.cwd);
+				for (const [key, pinned] of pinnedRddStatusLines) {
+					if (pinned.cwd === request.cwd) pinnedRddStatusLines.delete(key);
+				}
+			}
+		};
+		if (mutating) { rddModeMutationSerial += 1; invalidate(); }
+		try {
+			const result = await nativeReviewCli!.reviewMode!(request);
+			if (mutating && request.operation === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
+				cleanupAllPendingReviewConsents(pendingReviewConsentRegistry, sessionKey);
+			}
+			return result;
+		} finally {
+			// A failed native write has an unknown outcome; never retry it or keep
+			// a potentially obsolete prompt/status cache.
+			if (mutating) invalidate();
+		}
+	};
+
+	const rddChoices = {
+		"Enable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE },
+		"Disable RDD for this repository": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE },
+		"Enable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE, scope: "global" as const },
+		"Disable RDD machine-wide": { operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE, scope: "global" as const },
+	};
+
+	// The context is captured at the session lifecycle boundary, not provided by
+	// a consumer. SDK contexts have live getters, so recheck UI and cwd too.
+	const bindRddOwner = (context: ExtensionContext): (() => boolean) | undefined => {
+		try {
+			const owner = activeRddContext;
+			if (!owner || permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1" || !reminderSessionActive) return undefined;
+			const coordinates = reviewSessionManagerAndId(owner);
+			const cwd = owner.cwd, ui = owner.ui, epoch = reminderEpoch;
+			if (!coordinates || reminderManager !== coordinates.manager || context.sessionManager !== coordinates.manager ||
+				context.cwd !== cwd || context.ui !== ui || !owner.hasUI || (owner.mode !== "tui" && owner.mode !== "rpc")) return undefined;
+			const sessionKey = pendingReviewConsentSessionKey(owner, pendingReviewConsentFallbackKey);
+			return () => {
+				try {
+					const current = reviewSessionManagerAndId(owner);
+					return activeRddContext === owner && reminderSessionActive && reminderEpoch === epoch &&
+						reminderManager === coordinates.manager && current?.manager === coordinates.manager && current.sessionId === coordinates.sessionId &&
+						owner.cwd === cwd && (owner.sessionManager.getCwd?.() ?? cwd) === cwd && owner.ui === ui && owner.hasUI &&
+						(owner.mode === "tui" || owner.mode === "rpc") && (processAgentEndSubagentDepth.get(sessionKey) ?? 0) === 0;
+				} catch { return false; }
+			};
+		} catch { return undefined; }
+	};
+
+	const openRddSelector = async (context: ExtensionContext): Promise<void> => {
+		if (nativeReviewCli?.reviewMode === undefined) {
+			context.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			return;
+		}
+		const current = bindRddOwner(context);
+		if (!current || !current()) {
+			if (context.hasUI) context.ui.notify("RDD unchanged: an interactive primary session is required.", "warning");
+			return;
+		}
+		const owner = activeRddContext!;
+		const cwd = owner.cwd;
+		const generation = rddStatusGeneration(cwd);
+		let writeSerial: number | undefined;
+		try {
+			const status = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+			if (!current() || rddStatusGeneration(cwd) !== generation) return;
+			if (status.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(status.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; RDD unchanged.", "error");
+				return;
+			}
+			const selected = await owner.ui.select(`Receipt-driven development: ${status.status.effective} (decided by ${status.status.source})`, Object.keys(rddChoices));
+			if (!current() || rddStatusGeneration(cwd) !== generation || selected === undefined) return;
+			if (!Object.hasOwn(rddChoices, selected)) {
+				owner.ui.notify("RDD unchanged: unrecognized selection.", "warning");
+				return;
+			}
+			const choice = rddChoices[selected as keyof typeof rddChoices];
+			const pending = executeReviewMode({ cwd, ...choice }, owner);
+			writeSerial = rddModeMutationSerial;
+			const result = await pending;
+			if (!current() || writeSerial !== rddModeMutationSerial) return;
+			if (result.operation !== choice.operation || !isValidRddModeStatus(result.status)) {
+				owner.ui.notify("Gentle AI review mode returned an invalid status; the write outcome is unknown.", "error");
+				return;
+			}
+			const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
+			if (choice.operation === NATIVE_REVIEW_MODE_OPERATION.ENABLE && result.status.effective === "off") {
+				const reason = result.status.source === NATIVE_REVIEW_MODE_SOURCE.CLONE_LOCAL
+					? "The repository override still keeps RDD off."
+					: result.status.source === NATIVE_REVIEW_MODE_SOURCE.GLOBAL
+						? "The repository setting cannot override machine-wide RDD off."
+						: "RDD remains off; inspect its deciding source.";
+				owner.ui.notify(`${report}\n${reason}`, "warning");
+			} else owner.ui.notify(report, "info");
+		} catch (error) {
+			if (!current() || (writeSerial === undefined ? rddStatusGeneration(cwd) !== generation : writeSerial !== rddModeMutationSerial)) return;
+			if (asNativeReviewCliError(error)?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) {
+				owner.ui.notify("Gentle AI review mode is not available with the currently negotiated native version.", "info");
+			} else owner.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
+	};
+
+	pi.events?.on?.(RDD_MODE_CONTROL_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object" || typeof (payload as { respond?: unknown }).respond !== "function") return;
+		const owner = activeRddContext;
+		const current = owner && bindRddOwner(owner);
+		if (!owner || !current || !current()) return;
+		const control: RddModeControl = {
+			async read() {
+				if (!current() || nativeReviewCli?.reviewMode === undefined) return undefined;
+				const cwd = owner.cwd, generation = rddStatusGeneration(cwd);
+				try {
+					const result = await executeReviewMode({ cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, owner);
+					if (!current() || generation !== rddStatusGeneration(cwd) || result.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(result.status)) return undefined;
+					return { effective: result.status.effective, source: result.status.source };
+				} catch { return undefined; }
+			},
+			async open() { if (current()) await openRddSelector(owner); },
+		};
+		(payload as { respond: (value: RddModeControl) => void }).respond(control);
+	});
+
+	pi.registerCommand("gentle:rdd", {
+		description: "Open the interactive RDD selector for this repository or an explicitly named machine-wide change.",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Use /gentle:rdd without arguments to open the interactive selector. RDD unchanged.", "warning");
+				return;
+			}
+			await openRddSelector(ctx);
+		},
+	});
+
 	pi.registerCommand("gentle:review-mode", {
 		description: "Show or set the Gentle AI receipt-driven development kill switch (status|enable|disable). Every sub-action is user-initiated only; Pi automation never toggles it.",
 		handler: async (args, ctx) => {
@@ -10723,13 +12529,7 @@ function createGentleAiExtensionForTesting(
 				return;
 			}
 			try {
-				const result = await nativeReviewCli.reviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation });
-				if (subAction === NATIVE_REVIEW_MODE_OPERATION.DISABLE && result.status.effective === "off") {
-					cleanupAllPendingReviewConsents(
-						pendingReviewConsentRegistry,
-						pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey),
-					);
-				}
+				const result = await executeReviewMode({ cwd: ctx.cwd, operation: subAction as NativeReviewModeOperation }, ctx);
 				const report = `receipt-driven development: ${result.status.effective} (decided by ${result.status.source})`;
 				// A mutating sub-action that left the effective mode unchanged did
 				// not do what the user asked, and reporting only the resulting

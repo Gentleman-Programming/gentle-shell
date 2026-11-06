@@ -17,8 +17,10 @@ function isolatedHome(t: test.TestContext): string {
 	const previousHome = process.env.HOME;
 	const previousUserProfile = process.env.USERPROFILE;
 	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	// Clear the higher-priority config override as well as isolating both OS homes.
+	const previousShellConfigHome = process.env.GENTLE_SHELL_CONFIG_HOME;
+	// Clear both config overrides as well as isolating both OS homes.
 	delete process.env.GENTLE_PI_CONFIG_HOME;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
 	t.after(() => {
@@ -28,6 +30,8 @@ function isolatedHome(t: test.TestContext): string {
 		else process.env.USERPROFILE = previousUserProfile;
 		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
 		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousShellConfigHome === undefined) delete process.env.GENTLE_SHELL_CONFIG_HOME;
+		else process.env.GENTLE_SHELL_CONFIG_HOME = previousShellConfigHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	return home;
@@ -47,21 +51,36 @@ test("gentlePiConfigHome honours GENTLE_PI_CONFIG_HOME and otherwise falls back 
 });
 
 test("the isolated home restores defined and undefined config overrides", async (t) => {
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previous = {
+		HOME: process.env.HOME,
+		USERPROFILE: process.env.USERPROFILE,
+		GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME,
+		GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME,
+	};
+	const config = join(tmpdir(), "synthetic-inherited-config");
+	const marker = join(tmpdir(), "synthetic-inherited-marker");
 	try {
-		for (const inherited of [undefined, "/synthetic-inherited-config"]) {
-			if (inherited === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-			else process.env.GENTLE_PI_CONFIG_HOME = inherited;
-			await t.test(`inherited override: ${inherited === undefined ? "unset" : "set"}`, (child) => {
+		for (const [pi, shell] of [[undefined, undefined], [config, marker], [undefined, marker], [config, undefined]]) {
+			if (pi === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+			else process.env.GENTLE_PI_CONFIG_HOME = pi;
+			if (shell === undefined) delete process.env.GENTLE_SHELL_CONFIG_HOME;
+			else process.env.GENTLE_SHELL_CONFIG_HOME = shell;
+			await t.test(`inherited pi ${pi === undefined ? "unset" : "set"}, shell ${shell === undefined ? "unset" : "set"}`, (child) => {
 				const home = isolatedHome(child);
 				assert.equal(process.env.GENTLE_PI_CONFIG_HOME, undefined);
+				assert.equal(process.env.GENTLE_SHELL_CONFIG_HOME, undefined);
 				assert.equal(gentlePiConfigHome(), join(home, ".pi", "gentle-ai"));
 			});
-			assert.equal(process.env.GENTLE_PI_CONFIG_HOME, inherited);
+			assert.equal(process.env.GENTLE_PI_CONFIG_HOME, pi);
+			assert.equal(process.env.GENTLE_SHELL_CONFIG_HOME, shell);
+			assert.equal(process.env.HOME, previous.HOME);
+			assert.equal(process.env.USERPROFILE, previous.USERPROFILE);
 		}
 	} finally {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 	}
 });
 

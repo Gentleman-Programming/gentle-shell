@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createSessionScratchExtension, SCRATCH_COMMAND_USAGE } from "../extensions/session-scratch.ts";
 import * as scratchLib from "../lib/session-scratch.ts";
-import { gitArtifactTargets, LEDGER_VERSION, type ScratchLedger } from "../lib/session-scratch.ts";
+import { gitArtifactTargets, LEDGER_ARTIFACTS_CAP, LEDGER_VERSION, type ScratchLedger } from "../lib/session-scratch.ts";
 
 // Session scratch and artifact ledger (odd/tasks/session-scratch-ledger.md):
 // the runtime owns the parent session's TMPDIR and the clones/worktrees it
@@ -942,4 +942,70 @@ test("advisories S7: the reference documents the advisory rules", () => {
 		"live or quarantined subagent", "a later startup sweep", "has a start token other than the one its ledger recorded", "never through the wall clock", "cannot be read", "has linked worktrees",
 		"changed in the last minute", "recorded `inherited` values", "not a `gpXXXXXX` directory",
 	]) assert.ok(section.includes(term), `scratch reference missing ${term}`);
+});
+
+// Perf (long-session audit): the ledger file I/O must not grow with the number
+// of retained ledgers or artifacts. `listLedgers` and `writeLedger` use only
+// the async fs seam, and `capture` keeps at most `LEDGER_ARTIFACTS_CAP`
+// artifacts, evicting the oldest first. Old pre-cap ledgers still read.
+
+test("perf: pushing beyond the cap keeps the ledger bounded and keeps the newest artifacts", async (t) => {
+	const fx = fixture(t);
+	const s = session(fx);
+	await s.start();
+	for (let i = 0; i < LEDGER_ARTIFACTS_CAP + 6; i++) {
+		await s.bash(`cd ${fx.work} && git clone x d${i}`, () => mkdirSync(join(fx.work, `d${i}`)));
+	}
+	const ledger = readLedger(fx, "s-1");
+	assert.equal(ledger.artifacts.length, LEDGER_ARTIFACTS_CAP, "the ledger file stays bounded at the cap");
+	assert.equal(basename(ledger.artifacts[0].path), `d6`, "eviction is oldest-first");
+	assert.equal(basename(ledger.artifacts.at(-1)!.path), `d${LEDGER_ARTIFACTS_CAP + 5}`, "the newest artifacts are kept");
+	assert.ok(!ledger.artifacts.some((artifact) => basename(artifact.path) === "d0"));
+	await s.shutdown();
+	// An old ledger written before the cap still reads, whole, by the pre-cap reader.
+	writeForeignLedger(fx, { sessionId: "pre-cap", artifacts: Array.from({ length: LEDGER_ARTIFACTS_CAP + 10 }, (_, i) => ({ kind: "clone" as const, path: join(fx.work, `old${i}`), command: "git clone", recordedAt: new Date(0).toISOString() })) });
+	const preCap = scratchLib.readLedger(ledgerFile(fx, "pre-cap"));
+	assert.equal(preCap?.artifacts.length, LEDGER_ARTIFACTS_CAP + 10, "a pre-cap ledger is read without pruning");
+	const stored = await scratchLib.listLedgers(fx.configHome);
+	assert.equal(stored.find(({ ledger: found }) => found.sessionId === "pre-cap")?.ledger.artifacts.length, LEDGER_ARTIFACTS_CAP + 10);
+	const out = await s.run("list");
+	assert.match(out, /old0 \(session pre-cap, ended\)/);
+});
+
+test("perf: listLedgers and writeLedger run on the async fs seam only", async (t) => {
+	const fx = fixture(t);
+	assert.equal(scratchLib.writeLedger.constructor.name, "AsyncFunction", "writeLedger is async");
+	assert.equal(scratchLib.listLedgers.constructor.name, "AsyncFunction", "listLedgers is async");
+	const saved = { ...scratchLib.ledgerFs };
+	const calls: Record<string, number> = {};
+	t.after(() => Object.assign(scratchLib.ledgerFs, saved));
+	for (const name of Object.keys(scratchLib.ledgerFs) as (keyof typeof scratchLib.ledgerFs)[]) {
+		(scratchLib.ledgerFs as Record<string, unknown>)[name] = async (...args: unknown[]) => {
+			calls[name] = (calls[name] ?? 0) + 1;
+			return await (saved[name] as (...rest: unknown[]) => unknown)(...args);
+		};
+	}
+	const ledger: ScratchLedger = { version: LEDGER_VERSION, sessionId: "async", pid: 1, processStartedAt: new Date(0).toISOString(), cwd: fx.cwd, tempRoot: null, inherited: {}, scratchDir: null, artifacts: [] };
+	await scratchLib.writeLedger(ledgerFile(fx, "async"), ledger);
+	for (const name of ["mkdir", "writeFile", "rename"]) assert.ok(calls[name], `writeLedger goes through the seam: ${name}`);
+	const stored = await scratchLib.listLedgers(fx.configHome);
+	assert.equal(stored.length, 1);
+	assert.equal(stored[0].ledger.sessionId, "async");
+	for (const name of ["readdir", "readFile", "stat"]) assert.ok(calls[name], `listLedgers goes through the seam: ${name}`);
+});
+
+test("perf: a failed ledger write leaves the previous ledger file intact", async (t) => {
+	if (process.getuid?.() === 0) { t.skip("a write never fails for root"); return; }
+	const fx = fixture(t);
+	const path = ledgerFile(fx, "intact");
+	const ledger: ScratchLedger = { version: LEDGER_VERSION, sessionId: "intact", pid: 1, processStartedAt: new Date(0).toISOString(), cwd: fx.cwd, tempRoot: null, inherited: {}, scratchDir: null, artifacts: [{ kind: "clone", path: join(fx.work, "kept"), command: "git clone", recordedAt: new Date(0).toISOString() }] };
+	await scratchLib.writeLedger(path, ledger);
+	chmodSync(dirname(path), 0o500);
+	try {
+		await assert.rejects(() => scratchLib.writeLedger(path, { ...ledger, sessionId: "lost" }));
+		assert.equal(scratchLib.readLedger(path)?.sessionId, "intact", "the previous ledger file survives the failed write");
+		assert.deepEqual(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp")), [], "no temp file is left behind");
+	} finally {
+		chmodSync(dirname(path), 0o700);
+	}
 });

@@ -59,7 +59,7 @@ it lets the window close.
 Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node ≥22.19.0,
 Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 4.2.0. Windows native source builds require Go ≥1.25.10 when the
+Gentle AI 4.3.1. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -734,7 +734,7 @@ PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@4.0.0`
 lists Pi 1.0.0 while the Pi beside gentle-pi is 1.1.0. So Gentle Shell may run a
 Pi newer than `PI_INSTALL_VERSION`, always at least the minimum: the runner
 verifies that Pi (`verify-global-list`, the setup recovery, a pnpm
-`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.2.0 now; the 1.0.0/1.1.0 figures above are that older verification), the outcome says which Pi
+`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.5.0 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
 Gentle Shell runs. `--config.auto-install-peers=false` would leave gentle-pi
 with no Pi beside it, so the launcher would run any `pi` on PATH, and
 `--config.overrides` is ignored for global installs.

@@ -74,6 +74,35 @@ test("alias identity preserves status age, validates data, and rejects stale bra
 	assert.deepEqual(cache.get(manager)?.aliases, valid.aliases);
 });
 
+test("explicit work topic refreshes the current alias when no subject is declared (#2553)", () => {
+	const cache = new OrchestratorStateCache();
+	const entries: { type: string; customType: string; data: unknown }[] = [];
+	const manager = { getSessionId: () => "owner", getCwd: () => "/repo", getBranch: () => entries };
+	const append = (customType: string, data: unknown) => entries.push({ type: "custom", customType, data });
+	cache.load(manager);
+	const work = { area: "gentle-shell", topic: "pr-2509-followup" };
+	cache.publish(manager, { work }, append, 10);
+	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "pr-2509-followup" });
+	// Fresh topic on a later publication updates Current; Initial is retained.
+	cache.publish(manager, { work: { area: "gentle-shell", topic: "ci-watch" } }, append, 20);
+	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "ci-watch" });
+	// A state-only refresh never re-derives the alias from stored work.
+	cache.publish(manager, undefined, append, 30);
+	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "ci-watch" });
+	// An explicit subject in the same publication wins over the topic.
+	cache.publish(manager, { work }, append, 40, "declared-task");
+	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "declared-task" });
+	// Legacy records without aliases: topic refreshes Current, Initial stays unknown.
+	const legacy = [{ type: "custom", customType: ORCHESTRATOR_STATE_ENTRY, data: {
+		schema: 1, sessionId: "owner", recordedAt: 1, cwd: "/repo", source: "owner-curated",
+		ownerReply: false, authority: "none", state: null } }];
+	const legacyManager = { getSessionId: () => "owner", getCwd: () => "/repo", getBranch: () => legacy };
+	const legacyCache = new OrchestratorStateCache();
+	legacyCache.load(legacyManager);
+	legacyCache.publish(legacyManager, { work }, append, 50);
+	assert.deepEqual(legacyCache.get(legacyManager)?.aliases, { initialAlias: null, currentAlias: "pr-2509-followup" });
+});
+
 test("recorded cwd preserves only unambiguous native absolute paths", () => {
 	const separators = [0x00a0, ...Array.from({ length: 11 }, (_, i) => 0x2000 + i), 0x202f, 0x205f, 0x3000];
 	const invalid = ["relative/repo", "/repo\nother", "/repo\ud800", "/" + "x".repeat(1024),

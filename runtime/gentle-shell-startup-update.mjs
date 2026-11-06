@@ -22,6 +22,30 @@
 
 
 
+
+
+
+
+
+
+
+/** The launcher config records the last live lookup so the everyday launch stays off the network. */
+
+
+
+
+
+/** Reads the config's `startupReleaseCheck` key; anything malformed is no cache. */
+export function parseStartupReleaseCache(value         )                                  {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const { checkedAt, latest } = value                                             ;
+	const ms = typeof checkedAt === "number" ? checkedAt : typeof checkedAt === "string" ? Date.parse(checkedAt) : Number.NaN;
+	if (!Number.isFinite(ms) || typeof latest !== "string" || latest === "") return undefined;
+	return { checkedAt: ms, latest };
+}
+
+export const STARTUP_RELEASE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export function shouldCheckStartupUpdate({ args, env, bundled, inputTTY, outputTTY }                           )          {
 	if (!bundled || !inputTTY || !outputTTY || args.command || args.piSubcommand || args.error || args.help || args.version || args.packageRoot !== undefined) {
 		return false;
@@ -62,9 +86,30 @@ function isNewer(latest          , current          )          {
 	return false;
 }
 
-export async function findStartupUpdate({ current, skipped, lookup, timeoutMs = 1500 }                            )                                          {
+function offerFor(current        , latest                    , skipped                    )                                 {
 	const currentParts = stableParts(current);
 	if (!currentParts) return undefined;
+	if (latest === undefined || latest === skipped) return undefined;
+	const latestParts = stableParts(latest);
+	if (!latestParts || !isNewer(latestParts, currentParts)) return undefined;
+	return {
+		current,
+		latest,
+		notesUrl: `https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v${latest}`,
+	};
+}
+
+// A malformed cached latest is never trusted — it must not suppress the
+// network check for a whole TTL window — so it counts as no cache at all.
+function usableCache(cache                                 , ttlMs        , nowMs        )                                  {
+	if (cache === undefined) return undefined;
+	if (!Number.isFinite(cache.checkedAt) || typeof cache.latest !== "string" || cache.latest === "" || stableParts(cache.latest) === undefined) return undefined;
+	return nowMs - cache.checkedAt < ttlMs ? cache : undefined;
+}
+
+export async function findStartupUpdate({ current, skipped, lookup, timeoutMs = 1500, cache, nowMs = Date.now(), ttlMs = STARTUP_RELEASE_TTL_MS, cacheWrite }                            )                                          {
+	const cached = usableCache(cache, ttlMs, nowMs);
+	if (cached !== undefined) return offerFor(current, cached.latest, skipped);
 	const controller = new AbortController();
 	const deadline = Number.isFinite(timeoutMs) && timeoutMs >= 0 && timeoutMs <= 2_147_483_647 ? timeoutMs : 1500;
 	let timer                                           ;
@@ -77,17 +122,24 @@ export async function findStartupUpdate({ current, skipped, lookup, timeoutMs = 
 		});
 		// The race bounds startup even if the injected lookup ignores cancellation.
 		const latest = await Promise.race([lookup(controller.signal), timeout]);
-		if (latest === undefined || latest === skipped) return undefined;
-		const latestParts = stableParts(latest);
-		if (!latestParts || !isNewer(latestParts, currentParts)) return undefined;
-		return {
-			current,
-			latest,
-			notesUrl: `https://github.com/Gentleman-Programming/gentle-shell/releases/tag/v${latest}`,
-		};
+		// Only a real answer is worth a day's trust: a timeout or rejection must
+		// not suppress tomorrow's check.
+		if (typeof latest === "string") cacheWrite?.(latest);
+		return offerFor(current, latest, skipped);
 	} catch {
 		return undefined;
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+// Mirrors omitStartupVersion: preserves every other config key, fails loudly on
+// an invalid config, and records the lookup's answer with an injected clock.
+export function writeStartupReleaseCache(read                          , write                        , version        , nowMs = Date.now())       {
+	const text = read();
+	const config = text === undefined ? {} : JSON.parse(text);
+	if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid launcher config");
+	const cache                      = { checkedAt: nowMs, latest: version };
+	const serialized = JSON.stringify({ ...config, startupReleaseCheck: { checkedAt: new Date(cache.checkedAt).toISOString(), latest: cache.latest } }, null, 2);
+	write(`${serialized}\n`);
 }

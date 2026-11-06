@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Container, stripTerminalSequences, Text, TuiAltScreen, visibleWidth, type Component, type Terminal } from "@earendil-works/pi-tui";
+import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
 import askUserQuestion, { askMultiSelect } from "../extensions/ask-user-question.ts";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 
@@ -463,6 +465,101 @@ test("ask_user_question mounts through ctx.ui.custom without an overlay option",
 
 	assert.equal(customArgCount, 1, "a dock swap passes the factory only; no overlay options");
 });
+
+for (const multiSelect of [false, true]) {
+	test(`ask_user_question dock clears hover on its border and preserves native ${multiSelect ? "multi" : "single"}-select`, async () => {
+		let input: ((data: string) => void) | undefined;
+		const terminal: Terminal = {
+			start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+			get columns() { return 100; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+			moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+			setTitle() {}, setProgress() {}, setProgramStatus() {},
+		};
+		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+		const editor = new Container();
+		const viewport = createChatViewport({
+			document: new Text("Visible transcript", 0, 0),
+			pendingMessages: new Container(), status: new Container(), editor,
+			footer: new Text("Footer", 0, 0), scrollbar: "hidden",
+		});
+		tui.setLayoutRoot(viewport.root);
+		const hoverTheme: Theme = {
+			fg: (role, text) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+			bold: (text) => text,
+		};
+		const label = "Beta: envelope/Ω";
+		const questions = [{
+			question: "Pick?", header: "Pick", options: [option("Alpha"), option(label)],
+			...(multiSelect ? { multiSelect: true } : {}),
+		}];
+		const { tool, emitted } = registerQuestionTool();
+		const completions: unknown[] = [];
+		const pending = run(tool, { questions }, {
+			mode: "tui",
+			ui: { custom: (factory: CustomFactory) => new Promise((resolve) => {
+				const component = factory(tui, hoverTheme, {}, (value) => {
+					completions.push(value);
+					resolve(value);
+				}) as Component;
+				editor.addChild(component);
+				tui.setFocus(component);
+			}) },
+		});
+		tui.start();
+		tui.renderNow(true);
+		try {
+			assert.ok(input, "the fullscreen terminal receives native SGR input");
+			let screen = tui.getScreenLines();
+			const targetRow = screen.findIndex((line) => stripTerminalSequences(line).includes(label));
+			const tabsRow = screen.findIndex((line) => stripTerminalSequences(line).includes("[1/1]"));
+			const borderRow = tabsRow - 1;
+			assert.ok(targetRow >= 0 && borderRow >= 0, "both the option and its preceding dock border are rendered");
+			assert.match(stripTerminalSequences(screen[borderRow]!).trim(), /^─+$/);
+			const targetLine = stripTerminalSequences(screen[targetRow]!);
+			const targetX = visibleWidth(targetLine.slice(0, targetLine.indexOf(label))) + 1;
+			const expectedInitial = multiSelect ? /❯ \[ \] Alpha/ : /❯ Alpha/;
+			assert.match(screen.map(stripTerminalSequences).join("\n"), expectedInitial);
+
+			input(`\x1b[<35;${targetX};${targetRow + 1}M`);
+			tui.renderNow();
+			screen = tui.getScreenLines();
+			assert.ok(screen[targetRow]!.includes(`\x1b[33m${label}\x1b[39m`), "the option uses the warning role");
+			assert.match(screen.map(stripTerminalSequences).join("\n"), expectedInitial, "hover leaves keyboard selection unchanged");
+			if (multiSelect) assert.match(stripTerminalSequences(screen[targetRow]!), /\[ \] Beta/);
+			assert.deepEqual(completions, [], "hover does not answer or toggle");
+
+			input(`\x1b[<35;1;${borderRow + 1}M`);
+			tui.renderNow();
+			screen = tui.getScreenLines();
+			assert.ok(!screen[targetRow]!.includes("\x1b[33m"), "moving onto the non-view dock border clears hover");
+			assert.match(screen.map(stripTerminalSequences).join("\n"), expectedInitial);
+			if (multiSelect) assert.match(stripTerminalSequences(screen[targetRow]!), /\[ \] Beta/);
+			assert.deepEqual(completions, []);
+
+			input(`\x1b[<0;${targetX};${targetRow + 1}M`);
+			assert.deepEqual(completions, [], "press alone does not answer");
+			input(`\x1b[<0;${targetX};${targetRow + 1}m`);
+			if (multiSelect) {
+				assert.deepEqual(completions, [], "a multi-select click toggles without answering");
+				tui.renderNow();
+				screen = tui.getScreenLines();
+				assert.match(stripTerminalSequences(screen[targetRow]!), /\[x\] Beta/);
+				input("\r");
+			}
+			const result = await pending;
+			const answer = multiSelect
+				? { questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: [label] }
+				: { questionIndex: 0, question: "Pick?", kind: "option", answer: label };
+			assert.equal(completions.length, 1);
+			assert.deepEqual(result.details.answers, [answer]);
+			assert.equal(result.content[0]?.text, multiSelect ? `1. Pick? — selected: ${label}` : `1. Pick? — ${label}`);
+			assert.deepEqual(emitted, [
+				{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
+				{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+			]);
+		} finally { tui.stop(); }
+	});
+}
 
 test("ask_user_question mounts exactly one active question and switches with Tab", async () => {
 	const { tool } = registerQuestionTool();

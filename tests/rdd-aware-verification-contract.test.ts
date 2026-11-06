@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadSkillsFromDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
@@ -15,12 +15,8 @@ import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 // rendered `Receipt-driven development:` line, stated normatively exactly
 // once in trigger 5 (Verification rule) and referenced -- not restated --
 // everywhere else in this asset:
-//   - every line (`on`, `off`, `unknown`) -> verify-always-rdd-high S1: the
-//                         parent calls `gentle_review` with
-//                         `{"operation":"assess"}` over the writer's diff and
-//                         follows the returned plan by native risk tier
-//                         (passive/medium/high/unassessable), instead of a
-//                         blanket non-trivial judgment.
+//   - validated `off` -> no mandatory assess; named-risk verification remains.
+//   - `on`/`unknown` -> assess the writer's diff and follow the risk plan.
 //   - `on`             -> the native review is an additional outside view; it
 //                         never replaces or skips the tier's verification.
 // These tests assert the exact distinctive sentences (not bare words like
@@ -45,7 +41,7 @@ const delegation = readDelegationDetail();
 const worker = read("assets/agents/gentle-ai-worker.md");
 
 const ROUTING_SENTENCE =
-	'After the writer returns, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan, whatever the `Receipt-driven development:` line reads (`on`, `off`, or `unknown`), instead of judging non-triviality from the task description: the operation resolves the native risk tier and states exactly who verifies next.';
+	'After the writer returns, when RDD is validated off, do not require `assess`: the writer\'s self-verification stands and a named Task Size high-risk item still requires an independent verifier. When RDD is on or unknown, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan.';
 const RDD_ON_SENTENCE =
 	"When the line reads `on`, the native review is an additional outside view of the change; it never replaces or skips the tier's verification, and the tier's verifier runs before review.";
 // Verification by named risk changed the tier table and replaced the
@@ -59,11 +55,20 @@ const HIGH_TIER_ROW = "| high | only through `escalate` naming a Task Size high-
 const UNASSESSABLE_TIER_ROW = "| native high, unknown, or assess failed | informs only: writer self-verification stands; escalate when a named high-risk item applies |";
 // odd/tasks/verifier-admission.md S6: the sentence names the runtime admission of the verifier launch.
 const NAMED_RISK_SENTENCE =
-	"The independent verifier runs only when the change touches a named Task Size high-risk item, passed as `escalate` (the runtime admits its launch on a `Risk: item N` line, a feature-document task line, or past the context backstop); never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change. An unknown `Receipt-driven development:` line never lowers a tier below `off`.";
+	"The independent verifier runs only when the change touches a named Task Size high-risk item (runtime admits its launch on a `Risk: item N` line or sentence, a feature-document task line, or past the context backstop); never for size, a native tier alone, a failed assessment, or the model or effort that wrote the change. An unknown `Receipt-driven development:` line does not waive named-risk verification.";
 const SPOT_CHECK_SENTENCE =
 	"The parent spot check (re-running one reported command before delivery) stays required in every tier.";
-test("trigger 5 (Verification rule) routes every RDD line through assess and the risk tier", () => {
+test("trigger 5 skips mandatory assess only for validated off and preserves named-risk verification", () => {
 	assert.ok(delegation.includes(ROUTING_SENTENCE), "trigger 5 is missing the exact routing sentence");
+	assert.doesNotMatch(delegation, /whatever the `Receipt-driven development:` line reads \(`on`, `off`, or `unknown`\)/);
+	assert.doesNotMatch(registeredReviewToolContract(), /it is the only way to get an independent verifier/);
+	for (const path of ["assets/orchestrator.md", "skills/gentle-ai/SKILL.md"]) {
+		assert.match(read(path), /assess `escalate` when RDD is on or unknown/, `${path} must not mandate assess while off`);
+	}
+	const { skills, diagnostics } = loadSkillsFromDir({ dir: join(ROOT, "skills/gentle-ai"), source: "fixture" });
+	assert.deepEqual(diagnostics, []);
+	assert.equal(skills.length, 1);
+	assert.equal(skills[0].name, "gentle-ai");
 });
 
 test("trigger 5 states that with RDD on the native review adds an outside view and never replaces verification", () => {
@@ -79,7 +84,7 @@ test("trigger 5 states the native risk tier table exactly once, with all four ro
 	}
 });
 
-test("trigger 5 states the named-risk verifier rule and the unknown-never-lowers-a-tier rule", () => {
+test("trigger 5 states the named-risk verifier rule for unknown mode", () => {
 	assert.ok(delegation.includes(NAMED_RISK_SENTENCE), "trigger 5 is missing the named-risk verifier sentence");
 	assert.ok(!delegation.includes("small-model bias"), "the retired small-model bias must not survive in any orchestrator module");
 });

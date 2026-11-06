@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +11,7 @@ import { CandidateTreeSymlinkScanner } from "../lib/review-candidate-symlink-sca
 function store(t: test.TestContext): string {
  const root = realpathSync(mkdtempSync(join(tmpdir(), "symlink-cache-")));
  mkdirSync(join(root, "refs"));
+ writeFileSync(join(root, "config"), "[core]\nrepositoryformatversion = 0\n");
  t.after(() => rmSync(root, { recursive: true, force: true }));
  return root;
 }
@@ -100,4 +101,32 @@ test("real Git loose and packed replacements are respected, including changes an
  assert.equal(scanner.scan(cwd, link, common), "no-symlinks");
  git(["replace", "-d", link]);
  assert.equal(scanner.scan(cwd, link, common), "tracks-symlinks");
+ const originalConfig = readFileSync(join(common, "config"), "utf8");
+ writeFileSync(join(common, "config"), originalConfig + "\n[core]\nrepositoryformatversion = 1\n[extensions]\nrefStorage = unknown-review-backend\n");
+ assert.equal(scanner.scan(cwd, regular, common), "unconfirmed", "unknown configured backend never borrows a warm answer");
+ writeFileSync(join(common, "config"), originalConfig);
+ assert.equal(scanner.scan(cwd, regular, common), "no-symlinks");
+});
+
+test("noncanonical packed refs never borrow a warm answer", t => {
+ const common = store(t), oid = "a".repeat(40);
+ const header = "# pack-refs with: peeled fully-peeled sorted \n";
+ let listing = "", listings = 0;
+ const scanner = new CandidateTreeSymlinkScanner(() => { listings++; return listing; });
+ const scan = () => scanner.scan(process.cwd(), "e".repeat(40), common);
+ assert.equal(scan(), "no-symlinks");
+ listing = `120000 blob ${oid}\tlink\n`;
+ const invalid = [
+  `^${oid}\n`, `${oid} refs/heads/x`, `${header}${oid} refs/heads/x\n# comment\n`, "# junk\n",
+  `${header}${oid} refs/tags/v1\n^${oid}\n^${oid}\n`,
+  `${header}${oid} refs/heads/z\n${oid} refs/heads/a\n`,
+ ];
+ for (const contents of invalid) {
+  writeFileSync(join(common, "packed-refs"), contents);
+  assert.equal(scan(), "tracks-symlinks", JSON.stringify(contents));
+ }
+ assert.equal(listings, 1 + invalid.length);
+ writeFileSync(join(common, "packed-refs"), `${header}${oid} refs/tags/v1.0\n^${oid}\n`);
+ assert.equal(scan(), "no-symlinks", "canonical peeled tag can reuse the literal tree");
+ assert.equal(listings, 1 + invalid.length);
 });

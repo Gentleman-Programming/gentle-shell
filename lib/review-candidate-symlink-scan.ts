@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { CANDIDATE_GIT_MAX_BUFFER_BYTES, resolveCandidateGitTimeoutMs, type CandidateGitExecutor } from "./review-candidate-view.ts";
 
 export type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unconfirmed";
 type DefinitiveScan = Exclude<CandidateTreeSymlinkScan, "unconfirmed">;
+const MAX_REF_METADATA_BYTES = 1024 * 1024;
 
-function readPackedRefs(path: string, size: number): string | undefined {
+function readBoundedFile(path: string, size: number): string | undefined {
 	const fd = openSync(path, "r");
 	try {
 		// A concurrent grow/replacement must not turn a small supported read
@@ -22,29 +23,56 @@ function identity(path: string): string | undefined {
 	return value === undefined ? undefined : [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(":");
 }
 
-/** Only the files ref backend with a freshly verified empty replacement namespace. */
-function hasNoReplacements(commonDir: string): boolean {
+function isCanonicalPackedRefs(contents: string): boolean {
+	if (!contents.endsWith("\n")) return false;
+	const lines = contents.split("\n");
+	if (!/^# pack-refs with: (?:peeled )?(?:fully-peeled )?sorted $/.test(lines.shift() ?? "")) return false;
+	lines.pop(); // The required final newline is not an empty ref record.
+	let previousName = "", peelable = false, oidLength = 0;
+	for (const line of lines) {
+		if (line.startsWith("^")) {
+			if (!peelable || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line.slice(1)) || line.length !== oidLength + 1) return false;
+			peelable = false; continue;
+		}
+		const match = /^([0-9a-f]{40}|[0-9a-f]{64}) (refs\/[A-Za-z0-9._/-]+)$/.exec(line);
+		if (match === null) return false;
+		const [, oid, name] = match;
+		if (name.includes("..") || name.split("/").some(part => part === "" || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))
+			|| name.startsWith("refs/replace/") || name <= previousName || (oidLength !== 0 && oid.length !== oidLength)) return false;
+		previousName = name; oidLength = oid.length; peelable = name.startsWith("refs/tags/");
+	}
+	return true;
+}
+
+/** Default files backend only; uncertain configuration is never cache authority. */
+function replacementFreeView(commonDir: string): string | undefined {
+	const config = join(commonDir, "config");
+	const beforeConfig = identity(config);
+	const configDetails = lstatSync(config);
+	if (!configDetails.isFile() || configDetails.isSymbolicLink() || configDetails.size > MAX_REF_METADATA_BYTES) return undefined;
+	const configContents = readBoundedFile(config, configDetails.size);
+	// Includes and an explicitly selected backend need Git interpretation;
+	// retaining an uncached scan avoids implementing its configuration parser.
+	if (configContents === undefined || /refstorage|\[\s*include/i.test(configContents)) return undefined;
 	const refs = lstatSync(join(commonDir, "refs"));
-	if (!refs.isDirectory() || refs.isSymbolicLink() || lstatSync(join(commonDir, "reftable"), { throwIfNoEntry: false }) !== undefined) return false;
+	if (!refs.isDirectory() || refs.isSymbolicLink() || lstatSync(join(commonDir, "reftable"), { throwIfNoEntry: false }) !== undefined) return undefined;
 	const loose = join(commonDir, "refs", "replace");
 	const beforeLoose = identity(loose);
 	if (beforeLoose !== undefined) {
 		const details = lstatSync(loose);
-		if (!details.isDirectory() || details.isSymbolicLink() || readdirSync(loose).length > 0) return false;
+		if (!details.isDirectory() || details.isSymbolicLink()) return undefined;
+		const directory = opendirSync(loose);
+		try { if (directory.readSync() !== null) return undefined; } finally { directory.closeSync(); }
 	}
 	const packed = join(commonDir, "packed-refs");
 	const beforePacked = identity(packed);
 	if (beforePacked !== undefined) {
 		const details = lstatSync(packed);
-		if (!details.isFile() || details.isSymbolicLink() || details.size > 1024 * 1024) return false;
-		const contents = readPackedRefs(packed, details.size);
-		if (contents === undefined) return false;
-		for (const line of contents.split(/\r?\n/)) {
-			if (line === "" || line.startsWith("#") || /^\^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line)) continue;
-			if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64}) refs\/[^\x00-\x20\x7f]+$/.test(line) || line.includes(" refs/replace/")) return false;
-		}
+		if (!details.isFile() || details.isSymbolicLink() || details.size > MAX_REF_METADATA_BYTES) return undefined;
+		const contents = readBoundedFile(packed, details.size);
+		if (contents === undefined || !isCanonicalPackedRefs(contents)) return undefined;
 	}
-	return beforeLoose === identity(loose) && beforePacked === identity(packed);
+	return beforeLoose === identity(loose) && beforePacked === identity(packed) && beforeConfig === identity(config) ? beforeConfig : undefined;
 }
 
 /** Discovery only: materialization, filesystem identity and authority stay fresh. */
@@ -70,7 +98,8 @@ export class CandidateTreeSymlinkScanner {
 				const common = realpathSync(verifiedCommonDir);
 				// No extra Git process on a warm scan. Unknown backend, oversized
 				// or malformed refs and active replacements always scan uncached.
-				if (hasNoReplacements(common)) key = `${root}\0${common}\0${candidateTree}`;
+				const view = replacementFreeView(common);
+				if (view !== undefined) key = `${root}\0${common}\0${view}\0${candidateTree}`;
 			}
 		} catch { /* An unavailable cache eligibility check never borrows old data. */ }
 		if (key !== undefined) {

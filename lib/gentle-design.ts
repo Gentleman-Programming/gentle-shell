@@ -10,6 +10,8 @@ import { detectDesignSources, staleDesignSources } from "./design-sources.ts";
 // open/stop drive, and the comments tool. The extension stays a thin wrapper.
 
 export const DESIGN_SKILL_NAME = "gentle-design";
+/** Paired with every design request: gentle-design owns delivery, this skill owns UX quality. */
+export const UI_DESIGN_SKILL_NAME = "gentle-ui-design";
 
 export const DESIGN_SUBCOMMANDS = ["open", "stop", "sync", "implement"] as const;
 export type DesignSubcommand = (typeof DESIGN_SUBCOMMANDS)[number];
@@ -365,6 +367,7 @@ export const DESIGN_TOOL_NAME = "gentle_design";
 /** Appended to the system prompt while the gentle-design skill is available (S11). */
 export const DESIGN_PROMPT_HINT = [
 	`Gentle Design: any request for a UI design, mockup, screen, landing page or visual directions uses the ${DESIGN_SKILL_NAME} skill by default; read the skill first when it is not loaded.`,
+	`Pair it with the ${UI_DESIGN_SKILL_NAME} skill for UX quality: read that skill and only the references relevant to the brief before choosing directions.`,
 	`Before designing, call the ${DESIGN_TOOL_NAME} tool (action "list"); when the project has design sources but no design/system.md, run the skill's design system sync first.`,
 	`After writing or changing a design, open or refresh it on the canvas with the ${DESIGN_TOOL_NAME} tool (action "open" with the slug), unless the user said not to.`,
 	"Designs stay under design/<slug>/.",

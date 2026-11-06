@@ -124,9 +124,25 @@ class CodemodeCard implements Component {
 }
 
 /** Replace presentation only: execute, schema and every loadout/exposure field retain their references. */
+/**
+ * Appended after Pi's own codemode guideline, which only says to batch calls.
+ * Pi adds a tool's guidelines to the system prompt while the tool is active, so
+ * these rules cost nothing when codemode is off and reach delegated children too.
+ */
+export const CODEMODE_GUIDELINES: readonly string[] = [
+	"Use codemode as a thin orchestration layer that cuts model/tool round trips, not a place for the whole task: give each script one coherent objective (gather context, prepare one change, run checks, or save evidence) and never mix uncertain exploration, file mutations, and remote publishing in one script.",
+	"In codemode, parallelize by independence, not by count: run independent calls together with Promise.allSettled() and label each result so partial failures stay attributable; run dependent steps (read, decide, edit, verify) sequentially and never parallelize writes that can overlap.",
+	"In codemode, a fulfilled promise is not success: check each result's own failure fields (bash exit_code, MCP isError, truncation flags) and throw or report the failure instead of assuming the call worked. Await every tool call before the script ends.",
+	"Codemode side effects are not transactional: a change made before a later failure stays made. Validate prerequisites before mutating, never repeat a side effect merely because the script failed afterward, and inspect the real state after a partial failure.",
+	"From codemode, return decision-relevant evidence: affected files, exit codes, test totals, relevant errors, truncation indicators, and full-log paths. Filter noise, never evidence; a summary must never turn a failure into success.",
+	"Keep long waits out of codemode: run builds, CI, servers, and long suites with the background tools when they are available and continue on their completion event; when they are not, use one bounded direct foreground call with an explicit timeout. Never poll inside a script.",
+	"In codemode, discover unfamiliar tools with searchTools() and describeTool() before calling them instead of inventing names or arguments; respect direct-only tools, permissions, consent, and sandbox boundaries, which codemode never bypasses; prefer a direct tool call when a script adds no real benefit.",
+];
+
 export function decorateCodemodeTool(tool: ToolDefinition): ToolDefinition {
 	return {
 		...tool,
+		promptGuidelines: [...(tool.promptGuidelines ?? []), ...CODEMODE_GUIDELINES],
 		renderShell: "self",
 		renderCall(args, theme, context) {
 			const tone = context.isError ? CARD_TONE.ERROR : context.isPartial ? CARD_TONE.WARNING : CARD_TONE.INFO;

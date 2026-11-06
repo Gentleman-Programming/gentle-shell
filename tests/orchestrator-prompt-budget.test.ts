@@ -52,7 +52,9 @@ test("rendered orchestrator core and selected declarations fit the byte budget",
 	const prompt = Buffer.byteLength(core, "utf8");
 	const total = prompt + declarationBytes;
 	t.diagnostic(`rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
-	assert.ok(total <= 16600, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
+	// Issue #2935 (user decision): 16,600 -> 16,700 B with the canonical core budget raise to 9,350 B,
+	// so the resolved-skill-read exception keeps the full confinement wording.
+	assert.ok(total <= 16700, `rendered core ${prompt} B + declarations ${declarationBytes} B = ${total} B`);
 });
 
 // Pi 1.4 does not export its pure system assembler from the package root.

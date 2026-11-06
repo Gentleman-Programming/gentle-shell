@@ -12,6 +12,7 @@ import {
 	todoStateMessage,
 	todoSummary,
 	type TodoState,
+	renderTodoSection,
 } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -499,4 +500,15 @@ test("renderTodoCard folds dropped tasks next to done ones in a long list", () =
 	assert.match(plain[2], /^│ ✕ 3 dropped +│$/);
 	assert.match(plain[3], /^│ ○ Task 9 +│$/);
 	assert.match(plain[12], /^│ … 3 more +│$/);
+});
+
+test("the rail Todos header carries the collapse key as a small dim hint before the count", () => {
+	// Real SGR, so the width is measured as a terminal draws it.
+	const theme = { fg: (role: string, text: string) => role === "dim" ? `\x1b[2m${text}\x1b[22m` : text, bold: (text: string) => text };
+	const state = { tasks: [{ id: 1, title: "Ship it", status: "in_progress" as const }, { id: 2, title: "Done", status: "done" as const }], nextId: 3, updatedTurn: 0 };
+	const withKey = renderTodoSection(state, theme as never, 46, { collapsed: false, staleTurns: 0, collapseKey: "ctrl+shift+t" });
+	assert.match(withKey.header, /\x1b\[2mctrl\+shift\+t\x1b\[22m +1\/2$/, "the key sits dim before the count");
+	assert.equal(visibleWidth(withKey.header), 46, "the header keeps its width");
+	const without = renderTodoSection(state, theme as never, 46, { collapsed: false, staleTurns: 0 });
+	assert.doesNotMatch(without.header, /ctrl/, "no key, no hint");
 });

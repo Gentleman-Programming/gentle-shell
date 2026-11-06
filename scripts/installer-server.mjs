@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
-import { PI_INSTALL_VERSION, goAcquisition, requirements } from "./installer-preflight.mjs";
+import { goAcquisition, requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
 // allowlist. The browser never sends commands, paths, plans or environment:
@@ -71,8 +71,8 @@ export const actionDescriptions = Object.freeze({
 	"persist-pnpm": "Install pnpm under PNPM_HOME with `pnpm add -g`.",
 	"acquire-go": "Download the installer's pinned Go from go.dev and verify it, only to build Gentle AI.",
 	"verify-go": "Check that the downloaded Go runs and reports the pinned version.",
-	"install-pi": "Install the Pi coding agent globally with pnpm.",
-	"install-shell": `Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put a newer Pi than ${PI_INSTALL_VERSION} next to it ` +
+	"install-pi": "Resolve the latest stable Pi and install that exact version globally with pnpm.",
+	"install-shell": `Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put another Pi next to it ` +
 		`(at least Pi ${requirements.pi}), and Gentle Shell runs that Pi.`,
 	"provision-native": "Provision the package-native Gentle AI binary with the existing installer.",
 	"setup-shell": "Run the normal `gentle-shell setup`.",
@@ -135,6 +135,7 @@ export const guidance = Object.freeze({
 		"build-gentle-ai-main": `Gentle AI could not be built from its latest \`main\` commit. Check your network connection and that \`go\` runs in a terminal. ${tryAgain}`,
 		"install-shell-main": `Gentle Shell could not be installed from its latest \`main\` commit. Check your network connection. ${tryAgain}`,
 		"record-channel": "Gentle Shell is installed from `main`, but the channel could not be saved under `~/.pi/gentle-ai`. Check that folder's permissions, then run the installer again.",
+		"resolve-pi-version": `The latest stable Pi could not be resolved or did not meet the minimum. No packages were installed. Check your network connection. ${tryAgain}`,
 		"install-pi": `Installing Pi with pnpm failed. Your existing Gentle Shell was not changed. Check your network connection. ${tryAgain}`,
 		"update-shell": "Updating Gentle Shell failed. Run `gentle-shell upgrade` in a terminal to see the details.",
 		"verify-updated-shell": "Gentle Shell did not report the expected version after the update. Run `gentle-shell --version`, then `gentle-shell upgrade` in a terminal.",
@@ -351,12 +352,12 @@ function actionDescription(action, plan) {
 	const pi = plan.tools?.pi;
 	const stable = (...versions) => versions.every((version) => typeof version === "string" && STABLE.test(version));
 	const bare = (version) => version.replace(/^v/, "");
-	if (action.id === "update-pi" && ["pnpm", "npm"].includes(pi?.owner) && stable(pi.version, pi.required, action.version)) {
-		return `Update Pi ${bare(pi.version)} to ${bare(action.version)} with ${pi.owner}, the package manager that installed it. ` +
+	if (action.id === "update-pi" && action.version === "latest" && ["pnpm", "npm"].includes(pi?.owner) && stable(pi.version, pi.required)) {
+		return `Update Pi ${bare(pi.version)} to the latest stable version with ${pi.owner}, the package manager that installed it. ` +
 			`Gentle Shell needs Pi ${bare(pi.required)} or newer.`;
 	}
 	if (action.id === "install-pi" && pi?.status === "needs-install" && stable(pi.version)) {
-		return `Install Pi ${PI_INSTALL_VERSION} globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
+		return `Install the latest stable Pi globally with pnpm for Gentle Shell. The Pi ${bare(pi.version)} already on this computer ` +
 			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.";
 	}
 	// The pinned Go: its version, the Go found (older, unchecked or missing), and what stays unchanged.
@@ -558,7 +559,7 @@ function outcomeView(result) {
 	} else {
 		view.guidance = guidance.outcomes[result.outcome];
 		// The Pi Gentle Shell runs, when pnpm put one other than the installer's next to it.
-		if (typeof result.piVersion === "string" && STABLE.test(result.piVersion) && result.piVersion.replace(/^v/, "") !== PI_INSTALL_VERSION) {
+		if (typeof result.piVersion === "string" && STABLE.test(result.piVersion)) {
 			view.guidance += ` Gentle Shell runs Pi ${result.piVersion.replace(/^v/, "")}, which pnpm installed next to it.`;
 		}
 		if (result.action === "open-new-terminal") view.action = "open-new-terminal";

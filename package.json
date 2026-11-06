@@ -1,6 +1,6 @@
 {
 	"name": "gentle-pi",
-	"version": "4.5.1",
+	"version": "4.6.0",
 	"description": "Turn Pi into el Gentleman: an ODD development harness with focused subagents, configured TDD evidence, native review, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
@@ -51,6 +51,7 @@
 		"build:runtime-modules": "node scripts/build-runtime-modules.mjs --write",
 		"check:runtime-modules": "node scripts/build-runtime-modules.mjs --check",
 		"test:packed-package": "node scripts/test-packed-runner.mjs",
+		"perf:render-cache": "node scripts/render-cache-performance.mjs",
 		"prepack": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs",
 		"prepublishOnly": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs && pnpm run test:packed-package",
 		"typecheck": "node scripts/check-types.mjs"

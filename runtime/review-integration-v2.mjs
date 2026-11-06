@@ -218,6 +218,8 @@ const CAPABILITIES_SCHEMA_IDENTITIES                                            
 	}),
 });
 const OPTIONAL_FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",
@@ -237,6 +239,8 @@ const OPTIONAL_FEATURE_NAMES = Object.freeze([
 	"validating_result_reopen",
 ]         );
 const FEATURE_NAMES = Object.freeze([
+	"start_request_context",
+	"start_options_preflight",
 	"base_ref_workspace_overlay",
 	"bounded_process_waits",
 	"classified_authority_repair",

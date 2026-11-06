@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, imageFallback, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import quietTools from "../extensions/quiet-tools.ts";
-import { decorateCodemodeTool, registerCompactCodemode } from "../lib/codemode-renderer.ts";
+import { CODEMODE_GUIDELINES, decorateCodemodeTool, registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
@@ -88,13 +88,33 @@ test("public factory runs once and every non-presentation field retains its exac
 	assert.equal(hooks.length, 1);
 	assert.ok(original);
 	for (const key of Object.keys(original)) {
-		if (["renderCall", "renderResult", "renderShell"].includes(key)) continue;
+		if (["renderCall", "renderResult", "renderShell", "promptGuidelines"].includes(key)) continue;
 		assert.equal(Reflect.get(tools[0]!, key), Reflect.get(original, key), `${key} must remain upstream-owned`);
 	}
 	assert.equal(tools[0]!.execute, original.execute);
 	assert.equal(tools[0]!.parameters, original.parameters);
 	assert.equal(tools[0]!.prepareLoadout, original.prepareLoadout);
 	assert.equal(tools[0]!.exposure, original.exposure);
+});
+
+test("codemode keeps upstream prompt guidelines first and appends the thin-orchestration rules", async () => {
+	const { pi, tools } = registry();
+	let original: ToolDefinition | undefined;
+	await registerCompactCodemode(pi, (api) => createCodemodeExtension()(new Proxy(api, {
+		get(target, property, receiver) {
+			if (property === "registerTool") return (tool: ToolDefinition) => { original = tool; api.registerTool(tool); };
+			return Reflect.get(target, property, receiver);
+		},
+	})));
+	assert.ok(original);
+	const upstream = original.promptGuidelines ?? [];
+	assert.ok(upstream.length > 0, "upstream codemode ships its own guideline");
+	assert.deepEqual(tools[0]!.promptGuidelines, [...upstream, ...CODEMODE_GUIDELINES]);
+	assert.deepEqual(registeredCodemode().promptGuidelines?.slice(-CODEMODE_GUIDELINES.length), [...CODEMODE_GUIDELINES]);
+	const rules = CODEMODE_GUIDELINES.join("\n");
+	for (const rule of [/one coherent objective/, /Promise\.allSettled\(\)/, /exit_code/, /isError/, /not transactional/, /never repeat a side effect/, /background tools when they are available/, /bounded direct foreground call with an explicit timeout/, /searchTools\(\)/, /describeTool\(\)/, /direct tool call/]) {
+		assert.match(rules, rule);
+	}
 });
 
 test("public loadout modes preserve hidden and deferred exposure policy", async () => {

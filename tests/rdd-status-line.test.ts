@@ -357,6 +357,24 @@ test("resolveRddModeStatus still follows a real status change after a re-read", 
 	assert.equal((await resolveRddModeStatus(cli, cwd, undefined, now))?.effective, "off");
 });
 
+test("a failed fresh mode read never reuses a cached off status", async () => {
+	clearRddStatusMemoForTesting();
+	let fail = false;
+	let calls = 0;
+	const cli: Pick<NativeReviewCli, "reviewMode"> = {
+		async reviewMode() {
+			calls++;
+			if (fail) throw new Error("native review CLI unavailable");
+			return modeResult("off", NATIVE_REVIEW_MODE_SOURCE.GLOBAL);
+		},
+	};
+	const now = () => 1_000_000;
+	assert.equal((await resolveRddModeStatus(cli, "/repo-off-failure", undefined, now))?.effective, "off");
+	fail = true;
+	assert.equal(await resolveRddModeStatus(cli, "/repo-off-failure", undefined, now), undefined);
+	assert.equal(calls, 2);
+});
+
 test("resolveRddModeStatus stays unknown when no status was ever read", async () => {
 	clearRddStatusMemoForTesting();
 	const cli = fakeReviewMode(() => { throw new Error("never available"); });

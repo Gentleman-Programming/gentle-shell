@@ -377,12 +377,12 @@ test("RDD labels say what is happening and who acts", () => {
 	});
 });
 
-test("RDD stays hidden without current-session evidence and occupies one group between Changes and Integrations", () => {
-	assert.doesNotMatch(renderShellSidebarBar(model(), theme, 46).join("\n"), /RDD/);
+test("the Review section stays hidden without current-session evidence and sits between Changes and Integrations", () => {
+	assert.doesNotMatch(renderShellSidebarBar(model(), theme, 46).join("\n"), /REVIEW/);
 	const text = renderShellSidebarBar(model({ state: "reviewing", scope: "app.ts +2 files" }), theme, 46).join("\n");
-	assert.equal((text.match(/RDD/g) ?? []).length, 1);
-	assert.ok(text.indexOf("Changes") < text.indexOf("RDD"));
-	assert.ok(text.indexOf("RDD") < text.indexOf("Integrations"));
+	assert.equal((text.match(/REVIEW/g) ?? []).length, 1);
+	assert.ok(text.indexOf("CHANGES") < text.indexOf("REVIEW"));
+	assert.ok(text.indexOf("REVIEW") < text.indexOf("INTEGRATIONS"));
 	assert.match(text, /Reviewers running…/);
 	assert.match(text, /app\.ts \+2 files/);
 });

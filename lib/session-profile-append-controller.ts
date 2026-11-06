@@ -10,11 +10,14 @@ import {
 import {
  createSessionProfileBind,
  createSessionProfileClear,
+ createSessionProfileStartupBind,
  isSessionProfileFamilyEntry,
  readSessionProfileEntry,
  SESSION_PROFILE_CUSTOM_TYPE,
  type SessionProfileBindPayload,
  type SessionProfileClearPayload,
+ type SessionProfileStartupOrigin,
+ type SessionProfileStartupState,
 } from "./session-profile-persistence.ts";
 
 type Entry = {
@@ -85,8 +88,15 @@ export interface SessionProfileAttachment {
  bind(
   name: string,
   models: SessionProfileBindPayload["modelProfiles"],
+  startup?: SessionProfileStartupState,
  ): SessionProfileAppendOutcome;
- clear(): SessionProfileAppendOutcome;
+ /** Record the profile the session took at startup (gentle-shell#2742). */
+ bindStartup(
+  origin: SessionProfileStartupOrigin,
+  name: string,
+  models: SessionProfileBindPayload["modelProfiles"],
+ ): SessionProfileAppendOutcome;
+ clear(startup?: "none"): SessionProfileAppendOutcome;
  refresh(): SessionProfileAppendOutcome;
 }
 export type SessionProfileAttachContext = {
@@ -466,13 +476,17 @@ export function createSessionProfileAppendController(
   const epoch = generation;
   const live = () => source !== undefined && epoch === generation;
   return {
-   bind: (name, models) =>
+   bind: (name, models, startup) =>
     live()
-     ? append(createSessionProfileBind(name, models))
+     ? append(createSessionProfileBind(name, models, startup))
      : unavailable("detached-source"),
-   clear: () =>
+   bindStartup: (origin, name, models) =>
     live()
-     ? append(createSessionProfileClear())
+     ? append(createSessionProfileStartupBind(origin, name, models))
+     : unavailable("detached-source"),
+   clear: (startup) =>
+    live()
+     ? append(createSessionProfileClear(startup))
      : unavailable("detached-source"),
    refresh: () => (live() ? refresh() : unavailable("detached-source")),
   };

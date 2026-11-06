@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { blockChildDestructiveCommand } from "../extensions/child-safety.ts";
 import { __testing } from "../extensions/gentle-ai.ts";
+import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 
 // gentle-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
 // verify launch ran no probes because the handoff said only "read-only" and
@@ -18,6 +22,18 @@ import { __testing } from "../extensions/gentle-ai.ts";
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
 const verify = read("assets/agents/gentle-ai-verify.md");
 const verification = read("assets/orchestrator-verification.md");
+let scratch: string;
+let previousConfigHome: string | undefined;
+before(() => {
+	scratch = mkdtempSync(join(tmpdir(), "gentle-verify-first-"));
+	previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+});
+after(() => {
+	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (scratch) rmSync(scratch, { recursive: true, force: true });
+});
 
 function containsAll(text: string, clauses: readonly string[], label: string): void {
 	for (const clause of clauses) assert.ok(text.includes(clause), `${label} is missing: ${clause}`);
@@ -48,6 +64,25 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 		"Do not keep repairing helpers",
 		"Auxiliary tooling defects remain subject to the existing correction bound",
 	], "parent setup");
+});
+
+test("S2-S3: setup recovery references the always-on bounded policy", () => {
+	containsAll(verification, [
+		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
+		"Do not automatically relaunch the verifier for the same missing prerequisite",
+	], "parent setup recovery");
+});
+
+test("S3: scratch preparation establishes capacity and a complete payload before copying", () => {
+	containsAll(verify, [
+		"Before isolated setup, establish the required payload, available dependencies, and scratch capacity, including space and inodes when relevant.",
+		"A smaller copy is permitted only when it includes all source, test/build files, baseline material, and dependencies needed for every authorized probe.",
+		"If a prerequisite cannot be established, report it as missing instead of blindly copying or omitting required inputs",
+		"If setup fails before probes, preserve the failed attempt and report zero tests run",
+		"never `git worktree`, `git stash`, or a symlink into the workspace",
+		"No network, no installs, no writes outside the scratch directory",
+		"under the system temp directory, never inside the workspace",
+	], "scratch isolation remains required");
 });
 
 test("S5: documentation identifies the instruction as policy rather than runtime enforcement", () => {
@@ -100,6 +135,46 @@ test("T16/W1: the scratch copy method cannot write outside the scratch directory
 		"never `git worktree`, `git stash`, or a symlink into the workspace",
 		"set `HOME` and `TMPDIR` inside the scratch directory",
 	], "scratch copy method");
+});
+
+// gentle-shell#2818: the prompt asked for a copy without `.git` but named only
+// `cp -a --reflink=auto`, which cannot exclude anything. Verifiers then ran
+// `rm -rf "$s/work/.git"` (blocked by child safety) or `cp --exclude` (no such
+// option), so no probe ran. The prompt names one exact guard-compatible form.
+const SCRATCH_COPY = /`(mkdir -p "\$s\/work" && tar --exclude=\.\/\.git [^`]+)`/;
+
+test("#2818: the scratch copy names one exact command the child guard allows", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command, "verify must name the exact tar scratch copy command");
+	assert.deepEqual(recognizeDestructiveCommands(command), []);
+	assert.equal(blockChildDestructiveCommand(command), undefined);
+	assert.ok(!verify.includes("for example `cp -a --reflink=auto`"), "the cp example cannot exclude `.git`");
+	containsAll(verify, [
+		"never copy `.git` and delete it afterwards",
+		"`cp` has no `--exclude` option",
+	], "scratch copy method");
+});
+
+test("#2818: the named scratch copy omits top-level .git and keeps dotfiles, dependencies and symlinks", () => {
+	const command = verify.match(SCRATCH_COPY)?.[1];
+	assert.ok(command);
+	const workspace = join(scratch, "workspace");
+	mkdirSync(join(workspace, ".git", "objects"), { recursive: true });
+	writeFileSync(join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+	writeFileSync(join(workspace, ".env.example"), "KEY=\n");
+	mkdirSync(join(workspace, "node_modules", "dep"), { recursive: true });
+	writeFileSync(join(workspace, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+	mkdirSync(join(workspace, "node_modules", ".bin"));
+	symlinkSync("../dep/index.js", join(workspace, "node_modules", ".bin", "dep"));
+	const s = mkdtempSync(join(scratch, "probe-"));
+	const result = spawnSync("bash", ["-c", command], { cwd: workspace, env: { ...process.env, s }, encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	const work = join(s, "work");
+	assert.equal(existsSync(join(work, ".git")), false);
+	assert.equal(readFileSync(join(work, ".env.example"), "utf8"), "KEY=\n");
+	assert.equal(readFileSync(join(work, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 1;\n");
+	assert.equal(readlinkSync(join(work, "node_modules", ".bin", "dep")), "../dep/index.js");
+	assert.equal(existsSync(join(workspace, ".git", "HEAD")), true);
 });
 
 // T21 (L44): in after4, verify reported a behavior already present at the
@@ -166,19 +241,20 @@ test("T16: the verify handoff names probe command forms and the scratch location
 	], "verify handoff");
 });
 
-// T17b (L42): after4 B x5 read two files, then the core Evidence-budget rule
-// fired and delegated a 1.5 min exploration on a small task the parent then
-// implemented inline. The trigger itself must exclude reading for an inline write.
-test("T17b: the core Evidence-budget rule never fires to prepare an inline write", () => {
+// T17b (L42): preparation for an understood inline write stays inline, but
+// discovery cannot evade the evidence budget merely because a write is planned.
+test("T17b: inline-write preparation is distinct from discovery", () => {
 	const core = read("assets/orchestrator.md");
 	const rule = core.split("\n").find((line) => line.includes("**Evidence-budget rule**"));
 	assert.ok(rule, "Evidence-budget rule is missing");
-	assert.ok(rule.includes("never for reading before an inline write"), "Evidence-budget rule must exclude reading for an inline write");
+	assert.match(rule, /Exempt only preparation for an understood inline write, not discovery/);
+	assert.match(rule, /cumulative discovery each batch, never reset/);
+	assert.match(core, /No explore, worker, or verifier unless a trigger fires/);
 });
 
 test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+		const prompt = __testing.buildGentlePrompt(persona, scratch, ["read"]);
 		const step = prompt.split("\n").find((line) => line.startsWith("2. **Explore.**"));
 		assert.ok(step, "ODD step 2 Explore is missing");
 		containsAll(step, [

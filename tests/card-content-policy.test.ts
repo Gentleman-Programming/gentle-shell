@@ -9,7 +9,7 @@ const home = () => mkdtempSync(join(tmpdir(), "gentle-card-content-"));
 
 test("a missing preference means the default content level", () => {
 	const dir = home();
-	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "default", source: "default", malformed: false, globalFile: join(dir, "card-content.json") });
+	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "default", malformed: false, globalFile: join(dir, "card-content.json") }, "minimal is the default");
 });
 
 test("the preference round-trips through the atomic writer", () => {
@@ -35,7 +35,7 @@ test("invalid or unreadable preference files read as default and are never overw
 		const dir = home();
 		const path = join(dir, "card-content.json");
 		writeFileSync(path, raw);
-		assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "default", source: "global_file", malformed: true, globalFile: path }, raw);
+		assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: true, globalFile: path }, raw);
 		assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/, raw);
 		assert.equal(readFileSync(path, "utf8"), raw, "the malformed file is preserved");
 	}
@@ -55,7 +55,7 @@ test("POSIX unreadable preference files read as default and are never overwritte
 	writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: locked });
 	chmodSync(join(locked, "card-content.json"), 0o000);
 	try {
-		assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "default", source: "global_file", malformed: true, globalFile: "" });
+		assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "minimal", source: "global_file", malformed: true, globalFile: "" });
 		assert.throws(() => writeCardContent(CARD_CONTENT.DEFAULT, { gentlePiConfigHome: locked }), /Cannot update malformed or unreadable card content preference/);
 	} finally {
 		chmodSync(join(locked, "card-content.json"), 0o600);

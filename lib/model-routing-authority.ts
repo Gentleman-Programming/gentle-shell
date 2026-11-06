@@ -13,9 +13,16 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+export type ServiceTier = "standard" | "fast";
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return value === "standard" || value === "fast";
+}
+
 export interface AgentRoutingEntry {
 	model?: string;
 	thinking?: ThinkingLevel;
+	tier?: ServiceTier;
 }
 
 export type AgentModelConfig = Record<string, AgentRoutingEntry>;
@@ -73,10 +80,11 @@ export function normalizeRoutingEntry(value: unknown): AgentRoutingEntry | undef
 		: isThinkingLevel(value.effort)
 			? value.effort
 			: undefined;
-	if (!model && !thinking) {
+	const tier = isServiceTier(value.tier) ? value.tier : undefined;
+	if (!model && !thinking && !tier) {
 		return Object.keys(value).length === 0 ? {} : undefined;
 	}
-	return { model, thinking };
+	return { model, thinking, ...(tier === undefined ? {} : { tier }) };
 }
 
 export function normalizeModelConfig(value: unknown): AgentModelConfig | undefined {
@@ -123,13 +131,31 @@ export async function readModelConfigFileAsync(
 	}
 }
 
+// A present global config must merge with, not fully shadow, the legacy project
+// config: project-only entries still apply, same-name entries prefer global.
+function mergeSavedModelConfig(
+	globalResult: ModelConfigFileResult,
+	projectResult: ModelConfigFileResult,
+): ModelConfigFileResult {
+	if (globalResult.status === "invalid") return globalResult;
+	if (projectResult.status === "invalid") return projectResult;
+	if (globalResult.status === "missing" && projectResult.status === "missing") return { status: "missing" };
+	return {
+		status: "valid",
+		config: {
+			...(projectResult.status === "valid" ? projectResult.config : {}),
+			...(globalResult.status === "valid" ? globalResult.config : {}),
+		},
+	};
+}
+
 export function readSavedModelConfig(
 	globalPath: string,
 	projectPath: string,
 ): ModelConfigFileResult {
 	const globalResult = readModelConfigFile(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFile(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, readModelConfigFile(projectPath));
 }
 
 export async function readSavedModelConfigAsync(
@@ -137,6 +163,6 @@ export async function readSavedModelConfigAsync(
 	projectPath: string,
 ): Promise<ModelConfigFileResult> {
 	const globalResult = await readModelConfigFileAsync(globalPath);
-	if (globalResult.status !== "missing") return globalResult;
-	return readModelConfigFileAsync(projectPath);
+	if (globalResult.status === "invalid") return globalResult;
+	return mergeSavedModelConfig(globalResult, await readModelConfigFileAsync(projectPath));
 }

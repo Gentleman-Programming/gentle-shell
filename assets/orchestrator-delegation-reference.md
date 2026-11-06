@@ -45,15 +45,15 @@ Progress is published automatically from the todo list: never call `orchestrator
 
 | Action | Direct inline | Delegated direct worker |
 |--------|---------------|-------------------------|
-| Read to decide/verify within the evidence budget (one parallel batch: at most 3 calls, ~10k tokens) | ✅ | — |
+| Read to decide/verify within the cumulative evidence budget (one parallel batch: at most 3 calls, ~10k tokens) | ✅ | — |
 | Read to explore/understand beyond the evidence budget | — | ✅ one narrow explorer (handoff of at most ~2k tokens, `path:line` evidence) |
-| Read as preparation for writing | — | ✅ together with the write |
+| Read as preparation for writing | ✅ for understood inline work | ✅ together with the delegated write |
 | Write a small task (one understood change, any number of files) | ✅ | — |
 | Write a large task with no Writer rule reason | ✅ following the logbook | — |
 | Write a unit with a Writer rule reason | — | ✅ one bounded writer per unit |
 | Bash for state (`git`, `gh`) | ✅ | — |
 | Focused test and suite of the change being made | ✅ in one command | — |
-| Named high-risk item (assess `escalate`), or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
+| Named high-risk item (assess `escalate` when RDD is on or unknown), or long suites, builds, or installs of a large task | — | ✅ independent `gentle-ai-verify` |
 
 Use the platform's native bounded worker for delegated-direct work.
 
@@ -105,11 +105,11 @@ When the policy is on and `subagent_run` is available:
 
 Waiting on CI, a build, or a server is not delegation: use `bash_background` with the wait inside the command and end the turn. Never `sleep`, poll, or spend a subagent to wait.
 
-For generic mapping, follow the Evidence-budget rule under Pi Trigger Runtime Bindings.
+For generic mapping, follow the Evidence-budget rule in the delegation card.
 
 The canonical Writer rule under Delegation Triggers overrides the general runtime preference above.
 
-Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`, and the `gentle_review` `assess` operation's returned plan decides whether `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting) also runs, by a named `escalate` item and whatever the rendered `Receipt-driven development:` line reads, instead of a blanket non-trivial rule (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
+Delegate generic verification that executes or delegates commands per the RDD-aware Verification rule (trigger 3 under Delegation Triggers, gentle-pi#661) -- the normative on/off/unknown routing lives in `orchestrator-verification.md`, not here: the bounded writer always self-verifies via `## Verification`; a named high-risk item also requires `gentle-ai-verify` (or the native `Agent` fallback, with the same read-only verification constraints, exact parent-authorized commands, and fallback reporting). When RDD is on or unknown, use the `gentle_review` `assess` plan and named `escalate` item; validated off does not require assessment (gentle-pi#662). `## Known environmental failures` follows the same definition as `gentle-ai-worker`'s Verification contract: exact pre-existing base failures reported as evidence, never blockers -- any other failing required command still forces `status: partial`. The change's own focused test and suite run inline. Separate exploration stays reserved for when the parent needs the map to decide or route; reading that prepares a write belongs with the writer making the change, consistent with the Delegation Rules table above.
 
 For delegation other than a large task's bounded writes, use the generic fallback: if `subagent_*` tools are unavailable, fall back to Pi's native `Agent` tool or another available delegation mechanism. The delegation trigger remains mandatory; the fallback changes the runtime, not the requirement to delegate. If no delegation mechanism is available, stop the complex work and explain the blocker instead of silently continuing inline.
 

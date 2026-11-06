@@ -7,9 +7,8 @@ import test from "node:test";
 import type { AssistantMessage, JsonObject, Tool, ToolCall } from "@earendil-works/pi-ai";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
-// gentle-pi S11 T1: with receipt-driven development off, the orchestrator only
-// ever calls gentle_review ASSESS, so the parent request carries a short ASSESS
-// guideline and leaves the capture, capture-group, and scope declarations out.
+// With receipt-driven development off, the parent request does not require
+// ASSESS and leaves the capture, capture-group, and scope declarations out.
 // With RDD on, the request is exactly what the registered tools declare. Both
 // paths run through a real Pi SDK session and inspect the provider request.
 
@@ -20,6 +19,7 @@ interface SessionRun {
 	requests: RecordedRequest[];
 	registered: Map<string, { description: string; promptGuidelines?: readonly string[] }>;
 	assessResults: Array<{ isError: boolean; details: unknown }>;
+	nativeCalls: { mode: number; assess: number; target: number };
 	errors: string[];
 }
 
@@ -31,24 +31,29 @@ const NATIVE_CONTINUATION = {
 	arguments: [{ name: "--agent", value: "pi" }, { name: "--next-transition" }],
 };
 
-function nativeCli(mode: () => RddMode): NativeReviewCli {
+function nativeCli(mode: () => RddMode, calls: SessionRun["nativeCalls"]): NativeReviewCli {
 	return {
 		reviewMode: async () => {
+			calls.mode++;
 			const effective = mode();
 			if (effective === "throws") throw new Error("native review mode is unavailable");
 			return { operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } };
 		},
-		assess: async () => ({
-			schema: "gentle-ai.review-assessment/v1",
-			risk: "high",
-			reviewDue: true,
-			reviewDueReason: "high_risk",
-			nextTransition: NATIVE_CONTINUATION,
-			reasons: [],
-			changedPaths: 1,
-			changedLines: 3,
-			candidate: { kind: "current-changes", baseRef: undefined },
-		}),
+		assess: async () => {
+			calls.assess++;
+			return {
+				schema: "gentle-ai.review-assessment/v1",
+				risk: "high",
+				reviewDue: true,
+				reviewDueReason: "high_risk",
+				nextTransition: NATIVE_CONTINUATION,
+				reasons: [],
+				changedPaths: 1,
+				changedLines: 3,
+				candidate: { kind: "current-changes", baseRef: undefined },
+			};
+		},
+		targetStatus: async () => { calls.target++; return { applicability: "current_target", targetIdentity: "fixture" }; },
 	} as unknown as NativeReviewCli;
 }
 
@@ -66,9 +71,9 @@ async function runSession(
 	mkdirSync(cwd);
 	const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "gitconfig") };
 	writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, "");
+	// The stubbed review client needs a repository root, not a committed candidate.
 	execFileSync("git", ["init", "--initial-branch=fixture"], { cwd, env: gitEnv, stdio: "ignore" });
-	execFileSync("git", ["-c", "user.name=SDK Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"], { cwd, env: gitEnv, stdio: "ignore" });
-	const run: SessionRun = { requests: [], registered: new Map(), assessResults: [], errors: [] };
+	const run: SessionRun = { requests: [], registered: new Map(), assessResults: [], nativeCalls: { mode: 0, assess: 0, target: 0 }, errors: [] };
 	let next: { name: string; arguments: JsonObject } | undefined;
 	let calls = 0;
 	const model = { id: "driver", name: "Local driver", provider: "loadout-fixture", api: "loadout-fixture", baseUrl: "http://invalid.local", reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as const;
@@ -85,7 +90,7 @@ async function runSession(
 				return registerTool(definition as never);
 			}) as typeof pi.registerTool;
 			createGentleAiExtension({
-				nativeReviewCli: nativeCli(mode),
+				nativeReviewCli: nativeCli(mode, run.nativeCalls),
 				candidateViews: null,
 				processEnv: { ...bindings, GENTLE_AI_TELEMETRY: "0" },
 				resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); },
@@ -140,7 +145,7 @@ async function runSession(
 	return run;
 }
 
-const LEAN_GUIDELINE = /gentle_review only for \{"operation":"assess"\}/;
+const LEAN_GUIDELINE = /RDD off does not require an assessment/;
 
 function fixture(t: { after: (fn: () => void) => void }): { root: string; bindings: Record<string, string> } {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-review-loadout-")));
@@ -171,10 +176,8 @@ function registeredGuidelines(run: SessionRun): string[] {
 function assertLeanRequest(request: RecordedRequest, run: SessionRun): void {
 	assert.match(request.systemPrompt, /Receipt-driven development: off /);
 	assert.match(request.systemPrompt, LEAN_GUIDELINE);
-	assert.match(request.systemPrompt, /relay it unchanged but do not execute it while RDD is off/);
-	assert.match(request.systemPrompt, /assessment metadata does not authorize STATUS, another review lifecycle operation, or enabling RDD/);
-	assert.doesNotMatch(request.systemPrompt, /relay it unchanged and follow it/);
-	assert.match(request.systemPrompt, /Continue the returned verification plan/);
+	assert.doesNotMatch(request.systemPrompt, /after an authorized implementation, delegated or inline, call it over the diff/);
+	assert.match(request.systemPrompt, /named Task Size high-risk item still requires one independent verifier/);
 	assert.match(request.systemPrompt, /tests, builds, and functional checks still run/);
 	for (const guideline of registeredGuidelines(run)) assert.equal(request.systemPrompt.includes(guideline), false, `RDD off must leave out: ${guideline.slice(0, 80)}`);
 	const names = request.tools.map((tool) => tool.name);
@@ -193,7 +196,7 @@ function assertRegisteredRequest(request: RecordedRequest, run: SessionRun): voi
 	}
 }
 
-test("RDD off: the parent request carries only the lean ASSESS loadout; RDD on: the registered review loadout", { timeout: 30_000 }, async (t) => {
+test("RDD off: the parent request does not mandate ASSESS; RDD on keeps the registered review loadout", { timeout: 30_000 }, async (t) => {
 	const { root, bindings } = fixture(t);
 	const off = await runSession(root, "off", bindings, () => "off");
 	const on = await runSession(root, "on", bindings, () => "on");
@@ -211,9 +214,11 @@ test("RDD off: the parent request carries only the lean ASSESS loadout; RDD on: 
 	assert.equal((off.assessResults[0].details as { schema?: string }).schema, "gentle-pi.review-assessment-plan/v1");
 	const plan = off.assessResults[0].details as Record<string, unknown>;
 	assert.equal(plan.rddLine, "off");
-	assert.equal(plan.reviewDue, true);
-	assert.equal(plan.reviewDueReason, "high_risk");
-	assert.deepEqual(plan.nextTransition, NATIVE_CONTINUATION);
+	assert.equal(plan.nativeRisk, "unassessable");
+	assert.equal(plan.candidate, null);
+	for (const field of ["reviewDue", "reviewDueReason", "nextTransition"]) assert.equal(Object.hasOwn(plan, field), false);
+	assert.equal(off.nativeCalls.assess, 0);
+	assert.equal(off.nativeCalls.target, 0);
 	assert.equal((plan.plan as Record<string, unknown>).writerSelfVerification, true);
 	assert.equal((plan.plan as Record<string, unknown>).independentVerifier, true);
 
@@ -223,6 +228,9 @@ test("RDD off: the parent request carries only the lean ASSESS loadout; RDD on: 
 	}
 	assert.equal(on.assessResults.length, 1);
 	assert.equal(on.assessResults[0].isError, false);
+	assert.equal(on.nativeCalls.assess, 1);
+	assert.equal(on.nativeCalls.target, 1);
+	assert.deepEqual((on.assessResults[0].details as Record<string, unknown>).nextTransition, NATIVE_CONTINUATION);
 
 	const bytes = (request: RecordedRequest) => ({
 		systemPrompt: Buffer.byteLength(request.systemPrompt),
@@ -244,15 +252,41 @@ test("an unknown RDD line keeps the registered loadout; turning RDD on mid-sessi
 		assert.match(request.systemPrompt, /Receipt-driven development: unknown/);
 		assertRegisteredRequest(request, unknown);
 	}
+	assert.equal(unknown.nativeCalls.assess, 1);
+	assert.equal(unknown.nativeCalls.target, 1);
 
 	let mode: RddMode = "off";
-	const flipped = await runSession(root, "flip", bindings, () => mode, () => {
-		mode = "on";
-		__testing.clearRddStatusMemoForTesting();
-	});
+	const flipped = await runSession(root, "flip", bindings, () => mode, () => { mode = "on"; });
 	assert.deepEqual(flipped.errors, []);
 	const last = flipped.requests.at(-1)!;
 	for (const request of flipped.requests.slice(0, -1)) assertLeanRequest(request, flipped);
 	assert.match(last.systemPrompt, /Receipt-driven development: on /);
 	assertRegisteredRequest(last, flipped);
+
+	mode = "off";
+	const failed = await runSession(root, "failed-after-off", bindings, () => mode, () => { mode = "throws"; });
+	assert.deepEqual(failed.errors, []);
+	assert.match(failed.requests.at(-1)!.systemPrompt, /Receipt-driven development: unknown/);
+	assertRegisteredRequest(failed.requests.at(-1)!, failed);
+});
+
+test("malformed fresh reads restore guidance while on and unknown preserve pinning", { timeout: 30_000 }, async (t) => {
+	const { root, bindings } = fixture(t);
+	for (const [initial, next, expected] of [["off", "malformed", "unknown"], ["on", "throws", "on"], ["throws", "on", "unknown"]] as const) {
+		let mode: RddMode = initial;
+		const run = await runSession(root, `independent-${initial}`, bindings, () => mode, () => { mode = next as RddMode; });
+		assert.deepEqual(run.errors, []);
+		assert.match(run.requests.at(-1)!.systemPrompt, new RegExp(`Receipt-driven development: ${expected}`));
+		assertRegisteredRequest(run.requests.at(-1)!, run);
+		if (initial === "off") {
+			assertLeanRequest(run.requests[0], run);
+			assert.equal(run.nativeCalls.assess, 0);
+			assert.equal(run.nativeCalls.target, 0);
+		} else {
+			assert.equal(run.nativeCalls.assess, 1);
+			assert.equal(run.nativeCalls.target, 1);
+			assert.equal(new Set(run.requests.map((request) => request.systemPrompt)).size, 1);
+		}
+		t.diagnostic(JSON.stringify({ initial, next, expected, requests: run.requests.length, calls: run.nativeCalls, errors: run.errors }));
+	}
 });

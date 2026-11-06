@@ -267,6 +267,7 @@ function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, opti
 	childStandingReviewPermissionClient?: ChildStandingReviewPermissionClient;
 	consent?: ReviewConsentEnvelope;
 	targetStatus?: (request: Record<string, unknown>) => Promise<ReviewStatusV3>;
+	emitted?: Array<{ channel: string; data: unknown }>;
 } = {}) {
 	const tools = new Map<string, RegisteredTool>();
 	const commands = new Map<string, RegisteredCommand>();
@@ -300,7 +301,7 @@ function controllerHarness(cwd: string, processEnv: NodeJS.ProcessEnv = {}, opti
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
 		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
-		events: { emit() {} },
+		events: { emit(channel: string, data: unknown) { options.emitted?.push({ channel, data }); } },
 	} as unknown as ExtensionAPI);
 	const controller = tools.get("gentle_review");
 	assert.ok(controller);
@@ -411,6 +412,25 @@ test("provider grant and decline remain candidate-only and cancellation stores n
 	assert.equal(cancelled.outcome, "native-review-consent-required");
 	assert.deepEqual(runtime.answers, ["granted", "declined"]);
 	assert.equal(prompts, 3, "neither provider choice creates standing host permission");
+});
+
+test("the review consent prompt projects one balanced Herdr blocker while it awaits the human", async (t) => {
+	const cwd = reviewRepository(t);
+	const emitted: Array<{ channel: string; data: unknown }> = [];
+	const runtime = controllerHarness(cwd, {}, { emitted });
+	const herdr = () => emitted.filter(({ channel }) => channel === "herdr:blocked").map(({ data }) => data);
+	const observedWhilePrompting: unknown[][] = [];
+	const ctx = interactiveContext(cwd, {}, async (_title, options) => {
+		observedWhilePrompting.push(herdr());
+		return options[0];
+	});
+	await runtime.controller.execute("herdr-consent", { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, undefined, undefined, ctx);
+	assert.deepEqual(observedWhilePrompting, [[{ active: true, label: "Review authorization awaiting input" }]], "Herdr sees the pane as blocked while the authorization is open");
+	assert.deepEqual(herdr(), [
+		{ active: true, label: "Review authorization awaiting input" },
+		{ active: false },
+	], "the blocker is released once the human answers");
+	assert.deepEqual(runtime.answers, ["granted"]);
 });
 
 test("explicit revocation ends the host grant without changing provider mode or authority", async (t) => {

@@ -14,10 +14,11 @@ import {
 } from "node:fs/promises";
 import https from "node:https";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createProxyTunnelAgent, proxyTrustOptions, resolveProxyForTarget } from "./gentle-ai-proxy.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
@@ -171,17 +172,33 @@ async function sha256File(path) {
 function downloadTimeoutError(stage) { return Object.assign(new Error(`Gentle AI download ${stage} timed out`), { code: "GENTLE_AI_DOWNLOAD_TIMEOUT" }); }
 function isRetryableDownloadError(error) { return error && typeof error === "object" && ["GENTLE_AI_DOWNLOAD_TIMEOUT", "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"].includes(error.code); }
 function downloadHttpError(status) { return Object.assign(new Error(`Gentle AI download failed with HTTP ${status}`), { code: [429, 500, 502, 503, 504].includes(status) ? "GENTLE_AI_DOWNLOAD_TRANSIENT_HTTP" : "GENTLE_AI_DOWNLOAD_HTTP" }); }
+/**
+ * Downloads a release asset over HTTPS.
+ *
+ * The trust options in `options` reach both peers of the connection, the
+ * proxy and the origin. An explicit `ca` replaces Node's default certificate
+ * authority list rather than adding to it, so it has to include the
+ * authorities of both peers the download is expected to reach. The client
+ * credentials are used for the origin only and are never offered to the
+ * proxy.
+ */
 export async function downloadGentleAiAsset(url, destination, maxBytes = MAX_DOWNLOAD_BYTES, redirects = MAX_REDIRECTS, options = {}) {
-	const { request = https.get, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay } = options;
+	const { request = https.get, env = process.env, headerTimeoutMs = DOWNLOAD_TIMEOUTS.headers, bodyTimeoutMs = DOWNLOAD_TIMEOUTS.body, maxAttempts = DOWNLOAD_TIMEOUTS.attempts, retryDelayMs = DOWNLOAD_TIMEOUTS.retryDelay } = options;
+	const trust = proxyTrustOptions(options);
 	if (![headerTimeoutMs, bodyTimeoutMs, retryDelayMs, maxAttempts].every((value) => Number.isSafeInteger(value) && value >= 0) || maxAttempts < 1) throw new TypeError("Gentle AI download timeout and retry options must be safe non-negative integers");
 	const responseFor = async (currentUrl, remainingRedirects) => {
 		const parsed = new URL(currentUrl);
 		if (parsed.protocol !== "https:") throw new Error("Gentle AI installer requires HTTPS downloads");
+		// The proxy is resolved per URL rather than once per download, because a
+		// redirect may land on a host that NO_PROXY exempts.
+		const proxy = resolveProxyForTarget(parsed, env);
+		const requestOptions = { headers: { "user-agent": "gentle-pi-installer" }, ...trust };
+		if (proxy !== undefined) requestOptions.agent = createProxyTunnelAgent(proxy, headerTimeoutMs, trust);
 		return new Promise((resolve, reject) => {
 			let pending;
 			const timer = setTimeout(() => pending?.destroy(downloadTimeoutError("headers")), headerTimeoutMs);
 			const fail = (error) => { clearTimeout(timer); reject(error); };
-			pending = request(parsed, { headers: { "user-agent": "gentle-pi-installer" } }, (response) => {
+			pending = request(parsed, requestOptions, (response) => {
 				clearTimeout(timer);
 				const status = response.statusCode ?? 0, location = response.headers.location;
 				if (status >= 300 && status < 400 && location) { response.resume(); return remainingRedirects <= 0 ? fail(new Error("Gentle AI download exceeded redirect limit")) : responseFor(new URL(location, parsed).toString(), remainingRedirects - 1).then(resolve, reject); }
@@ -661,7 +678,7 @@ async function installWindowsGentleAiFromGoSumdb(options, packageRoot, architect
 	const execute = options.execFile ?? execFileAsync;
 	return withInstallLock(packageRoot, options, async (runtimeRoot) => {
 		await cleanupStaleStagingBundles(runtimeRoot);
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		// Go builds in a short private directory under the system temp directory, never inside
 		// the package: from a deep pnpm store path (179 characters, run 38063142924) the
 		// working directories Go gives asm.exe inside GOMODCACHE exceed MAX_PATH and
@@ -704,7 +721,7 @@ async function installSignedRelease(options, packageRoot, platform, arch, asset)
 		await cleanupStaleStagingBundles(runtimeRoot);
 		const existing = versionBundlePath(runtimeRoot);
 		if (await existingSignedBundleMatches(existing, asset, platform)) return { installed: false, binaryPath: join(existing, asset.executable), asset };
-		const stagingDirectory = await mkdtemp(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`));
+		const stagingDirectory = await mkdtemp(toNamespacedPath(join(runtimeRoot, `.v${INSTALLER_VERSION}.staging-`)));
 		try {
 			const form = gentleAiAssetForm(asset.name);
 			const archive = join(stagingDirectory, asset.name);

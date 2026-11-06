@@ -189,7 +189,8 @@ import {
 import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
 import { renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
 import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
-import { BASE_REF_ACCEPTED_FORMS, CANDIDATE_GIT_MAX_BUFFER_BYTES, candidateOwnerPreparationError, CandidateViewError, CandidateViewRegistry, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, resolveCandidateGitTimeoutMs, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
+import { scanCandidateTreeForSymlinks } from "../lib/review-candidate-symlink-scan.ts";
+import { BASE_REF_ACCEPTED_FORMS, candidateOwnerPreparationError, CandidateViewError, CandidateViewRegistry, CANDIDATE_SYMLINK_CAPABILITY_UNCONFIRMED_MESSAGE, CANDIDATE_SYMLINK_MATERIALIZATION_MESSAGE, injectReviewCandidateView, readCandidateContextManifestPage, resolveCanonicalCandidateBase, isProviderCandidateBaseTree, type CandidateView } from "../lib/review-candidate-view.ts";
 import { assertCandidateOwnerParent } from "../lib/review-candidate-view-owner.ts";
 import {
 	GentleAiDevBinaryOverrideError,
@@ -8874,34 +8875,6 @@ function nearestExistingAncestorDirectory(path: string): string | undefined {
 	}
 }
 
-type CandidateTreeSymlinkScan = "tracks-symlinks" | "no-symlinks" | "unconfirmed";
-
-function scanCandidateTreeForSymlinks(cwd: string, candidateTree: string): CandidateTreeSymlinkScan {
-	// Discovery must describe the selected directory, never an ambient Git
-	// override pointing at a different repository or worktree.
-	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-	try {
-		const listing = execFileSync("git", ["ls-tree", "-r", "--full-tree", candidateTree], {
-			cwd,
-			env,
-			encoding: "utf8",
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "pipe"],
-			// Same bounds the candidate-view materialization uses: a bounded
-			// child that cannot hang the event loop, and a listing past the
-			// output limit is an incomplete scan, never a symlink-free verdict.
-			timeout: resolveCandidateGitTimeoutMs(),
-			maxBuffer: CANDIDATE_GIT_MAX_BUFFER_BYTES,
-		});
-		return listing.split("\n").some((line) => line.startsWith("120000 ")) ? "tracks-symlinks" : "no-symlinks";
-	} catch {
-		// A timed-out, over-limit, or otherwise unreadable tree is an
-		// incomplete scan, not a deterministic materialization failure;
-		// START owns reporting unreadable trees.
-		return "unconfirmed";
-	}
-}
-
 type CandidateViewSymlinkCapability = "capable" | "incapable" | "unconfirmed";
 
 function candidateViewSymlinkCapability(commonDir: string | undefined): CandidateViewSymlinkCapability {
@@ -8961,7 +8934,7 @@ function inspectCandidateViewPreflightBlocked(status: ReviewStatusV3, cwd: strin
 		}
 	}
 	const candidateTree = status.projection.currentCandidateTree;
-	if (isCanonicalProcessString(candidateTree) && scanCandidateTreeForSymlinks(cwd, candidateTree) === "tracks-symlinks") {
+	if (isCanonicalProcessString(candidateTree) && scanCandidateTreeForSymlinks(cwd, candidateTree, commonDir) === "tracks-symlinks") {
 		const capability = candidateViewSymlinkCapability(commonDir);
 		if (capability === "unconfirmed") {
 			// The tree needs native symlinks and the target filesystem could not

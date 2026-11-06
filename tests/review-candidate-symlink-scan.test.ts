@@ -1,0 +1,103 @@
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+import { __testing } from "../extensions/gentle-ai.ts";
+import { CandidateTreeSymlinkScanner } from "../lib/review-candidate-symlink-scan.ts";
+
+function store(t: test.TestContext): string {
+ const root = realpathSync(mkdtempSync(join(tmpdir(), "symlink-cache-")));
+ mkdirSync(join(root, "refs"));
+ t.after(() => rmSync(root, { recursive: true, force: true }));
+ return root;
+}
+
+test("repeated inspect scans reuse an unchanged literal tree without launching another Git process", t => {
+ const common = store(t), original = childProcess.execFileSync;
+ let listings = 0;
+ childProcess.execFileSync = ((file, args) => {
+  assert.equal(file, "git"); assert.ok(args.includes("ls-tree")); listings++;
+  return "100644 blob " + "a".repeat(40) + "\tfile.txt\n";
+ }) as typeof childProcess.execFileSync;
+ syncBuiltinESMExports();
+ try {
+  for (let i = 0; i < 5; i++) assert.equal(__testing.scanCandidateTreeForSymlinks(process.cwd(), "1".repeat(40), common), "no-symlinks");
+  assert.equal(listings, 1);
+ } finally { childProcess.execFileSync = original; syncBuiltinESMExports(); }
+});
+
+test("active or malformed replacement refs bypass old cache entries without poisoning literal answers", t => {
+ const common = store(t);
+ let listing = "", listings = 0;
+ const argumentsSeen: string[][] = [];
+ const scanner = new CandidateTreeSymlinkScanner((_file, args) => { listings++; argumentsSeen.push([...args]); return listing; });
+ const scan = () => scanner.scan(process.cwd(), "2".repeat(40), common);
+ assert.equal(scan(), "no-symlinks");
+ mkdirSync(join(common, "refs", "replace"));
+ const replacement = join(common, "refs", "replace", "2".repeat(40));
+ writeFileSync(replacement, "3".repeat(40) + "\n");
+ listing = "120000 blob " + "a".repeat(40) + "\tlink\n";
+ assert.equal(scan(), "tracks-symlinks");
+ unlinkSync(replacement);
+ writeFileSync(join(common, "packed-refs"), "malformed refs\n");
+ assert.equal(scan(), "tracks-symlinks", "unknown eligibility does not borrow the cached negative");
+ unlinkSync(join(common, "packed-refs"));
+ assert.equal(scan(), "no-symlinks", "replacement answers never overwrite a literal tree entry");
+ assert.equal(listings, 3);
+ assert.ok(argumentsSeen[0].includes("--no-replace-objects"));
+ assert.ok(argumentsSeen.slice(1).every(args => !args.includes("--no-replace-objects")));
+});
+
+test("failed scans are retried, cache is bounded by LRU and trees remain isolated", t => {
+ const common = store(t);
+ let fail = true, listings = 0;
+ const scanner = new CandidateTreeSymlinkScanner(() => {
+  listings++; if (fail) throw new Error("output limit or timeout"); return "";
+ }, 2);
+ const scan = (id: string) => scanner.scan(process.cwd(), id.repeat(40), common);
+ assert.equal(scan("a"), "unconfirmed"); fail = false;
+ assert.equal(scan("a"), "no-symlinks"); assert.equal(scan("a"), "no-symlinks");
+ assert.equal(listings, 2);
+ scan("b"); scan("a"); scan("c"); scan("b");
+ assert.equal(listings, 5, "least recently used tree is scanned after eviction");
+});
+
+test("repository identity, unsupported refs and missing verified context never share cached scans", t => {
+ const a = store(t), b = store(t);
+ let listings = 0;
+ const scanner = new CandidateTreeSymlinkScanner(() => { listings++; return ""; });
+ const scan = (common?: string) => scanner.scan(process.cwd(), "d".repeat(40), common);
+ for (const common of [a, b, a, b]) assert.equal(scan(common), "no-symlinks");
+ assert.equal(listings, 2);
+ mkdirSync(join(a, "reftable"));
+ scan(a); scan(a); scan(); scan();
+ assert.equal(listings, 6, "unknown backend or context always scans afresh");
+ writeFileSync(join(b, "packed-refs"), "x".repeat(1024 * 1024 + 1));
+ scan(b); scan(b);
+ assert.equal(listings, 8, "oversized refs do not borrow cached classifications");
+});
+
+test("real Git loose and packed replacements are respected, including changes and removal", t => {
+ const cwd = store(t);
+ const git = (args: string[], input?: string) => childProcess.execFileSync("git", args, { cwd, encoding: "utf8", input, windowsHide: true }).trim();
+ git(["init", "--quiet"]);
+ const common = realpathSync(resolve(cwd, git(["rev-parse", "--git-common-dir"])));
+ const blob = git(["hash-object", "-w", "--stdin"], "fixture\n");
+ const regular = git(["mktree"], `100644 blob ${blob}\tfile.txt\n`);
+ const link = git(["mktree"], `120000 blob ${blob}\tlink\n`);
+ const scanner = new CandidateTreeSymlinkScanner();
+ assert.equal(scanner.scan(cwd, regular, common), "no-symlinks");
+ git(["replace", regular, link]);
+ assert.equal(scanner.scan(cwd, regular, common), "tracks-symlinks");
+ git(["pack-refs", "--all"]);
+ assert.equal(scanner.scan(cwd, regular, common), "tracks-symlinks");
+ git(["replace", "-d", regular]);
+ assert.equal(scanner.scan(cwd, regular, common), "no-symlinks");
+ git(["replace", link, regular]);
+ assert.equal(scanner.scan(cwd, link, common), "no-symlinks");
+ git(["replace", "-d", link]);
+ assert.equal(scanner.scan(cwd, link, common), "tracks-symlinks");
+});

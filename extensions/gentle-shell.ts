@@ -14,28 +14,34 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups } from "../lib/command-palette-catalog.ts";
+import { buildKeymapRows } from "../lib/keymaps-customize.ts";
 import { discoverYoloUiAdapter, MODE_STATUS_KEY, YOLO_DISPLAY, YOLO_STATUS_KEY, type YoloDisplay, type YoloUiAdapter } from "../lib/yolo-session-policy.ts";
+import { discoverRddModeControl, type RddModeControl } from "../lib/rdd-mode-control.ts";
+import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
-import { applyVisualPreset, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
+import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
 import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfigForEdit, writeBannerConfig } from "./startup-banner.ts";
-import { agentsViewKey } from "../lib/agents-keys.ts";
+import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
-import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_WATCHDOG_MS, withPromptHint, type PromptState } from "../lib/shell-prompt.ts";
+import { stripAnsi } from "../lib/terminal-theme.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
+import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
@@ -123,9 +129,9 @@ import {
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { panelSheetBackHit, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
@@ -165,6 +171,7 @@ interface ShellBarComponent {
 interface BuildOptions {
 	jobs?: RunningJobDisplay[];
 	profile?: string;
+	profileTier?: ShellBarModel["profileTier"];
 	home?: string;
 	dirty?: number;
 	usage?: ProviderUsage;
@@ -188,6 +195,7 @@ export interface ShellDeps {
 }
 
 export type ActiveProfileReader = (() => string | undefined) & {
+	tier(): ShellBarModel["profileTier"];
 	bind(cwd: string, resolveWorktree: WorktreeResolver, sessionId?: string): boolean;
 	refresh(): boolean;
 	reset(): void;
@@ -199,6 +207,8 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 	const path = profilesFilePath(gentlePiConfigHome(env));
 	let fingerprint: string | undefined;
 	let name: string | undefined;
+	let tiers: Record<string, ShellBarModel["profileTier"]> = {};
+	let effectiveTier: ShellBarModel["profileTier"];
 	let bound = false;
 	let cwd: string | undefined;
 	let identity: WorktreeIdentity | undefined;
@@ -211,6 +221,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 			if (next !== fingerprint) {
 				const result = readProfilesFileResult(path);
 				name = result.status === "valid" ? result.file.active : undefined;
+				tiers = result.status === "valid" ? Object.fromEntries(Object.entries(result.file.profiles).map(([name, config]) => [name, config.orchestrator?.tier])) : {};
 				fingerprint = next;
 			}
 			return name;
@@ -221,6 +232,11 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		}
 	};
 	const reader = (() => bound ? effective : global()) as ActiveProfileReader;
+	reader.tier = () => {
+		if (bound) return effectiveTier;
+		const active = global();
+		return active ? tiers[active] : undefined;
+	};
 	reader.refresh = () => {
 		if (!bound) return false;
 		// gentle-shell#1064: the status shows the profile launches use, through
@@ -228,15 +244,20 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		// startup → live p → P → G only in follow mode), with the existing
 		// spelling: "name (session)", "name (local)", "name (repo)", or the bare
 		// global name.
-		const next = cwd === undefined ? global() : sessionProfileLabel(resolveSessionProfile({
+		global();
+		const selected = cwd === undefined ? undefined : resolveSessionProfile({
 			sessionId,
 			cwd,
 			configHome: gentlePiConfigHome(env),
 			resolveWorktree: () => identity,
 			env,
-		}));
-		const changed = next !== effective;
+		});
+		const next = selected ? sessionProfileLabel(selected) : name;
+		const configuredName = selected ? selected.kind === "explicit" ? selected.name : selected.profile?.name : name;
+		const nextTier = configuredName ? tiers[configuredName] : undefined;
+		const changed = next !== effective || nextTier !== effectiveTier;
 		effective = next;
+		effectiveTier = nextTier;
 		return changed;
 	};
 	reader.bind = (nextCwd, resolveWorktree, nextSessionId) => {
@@ -247,7 +268,7 @@ export function createActiveProfileReader(env: NodeJS.ProcessEnv = process.env):
 		bound = true;
 		return reader.refresh();
 	};
-	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; };
+	reader.reset = () => { bound = false; cwd = undefined; identity = undefined; sessionId = undefined; effective = undefined; effectiveTier = undefined; };
 	return reader;
 }
 
@@ -334,7 +355,7 @@ export function buildShellBarModel(
 	const model = ctx.model;
 	const adaptiveReasoning = isNanAdaptiveReasoningModel(model);
 	const entries = Array.from(footerData.getExtensionStatuses().entries())
-		.filter(([key]) => options.jobs === undefined || key !== JOBS_STATUS_KEY)
+		.filter(([key]) => key !== "gentle-fast" && (options.jobs === undefined || key !== JOBS_STATUS_KEY))
 		.sort(([a], [b]) => a.localeCompare(b));
 	const statuses = entries.map(([, text]) => text);
 	// The permission mode has its own status keys: the wide chrome shows the mode
@@ -346,6 +367,7 @@ export function buildShellBarModel(
 	return {
 		cwd: shortenHome(ctx.sessionManager.getCwd(), home),
 		profile: options.profile,
+		...(options.profileTier ? { profileTier: options.profileTier } : {}),
 		branch: footerData.getGitBranch(),
 		dirty: options.dirty,
 		sessionName: ctx.sessionManager.getSessionName(),
@@ -354,7 +376,8 @@ export function buildShellBarModel(
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
 		costTotal,
-		subscription: model ? ctx.modelRegistry.isUsingOAuth(model) : false,
+		// claude-bridge runs on a Claude subscription without a Pi OAuth credential.
+		subscription: model ? model.provider === CLAUDE_BRIDGE_PROVIDER || ctx.modelRegistry.isUsingOAuth(model) : false,
 		usage: options.usage,
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
@@ -369,6 +392,7 @@ export interface FooterStatusMemoDeps {
 	footerData: ShellFooterData;
 	usage: () => ProviderUsage | undefined;
 	profile: () => string | undefined;
+	profileTier?: () => ShellBarModel["profileTier"];
 	jobs: () => RunningJobDisplay[] | undefined;
 	review: () => ReviewSidebarSnapshot | undefined;
 	tracker: () => Pick<WorktreeChangesTracker, "model" | "unbornRoots">;
@@ -403,6 +427,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 			model ? ctx.modelRegistry.isUsingOAuth(model) : false,
 			footerData.getGitBranch(),
 			deps.profile(),
+			deps.profileTier?.(),
 			ctx.sessionManager.getSessionName(),
 			ctx.sessionManager.getCwd(),
 			[...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b)),
@@ -422,7 +447,7 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 		if (cache?.key === k) return cache.model;
 		const tracker = deps.tracker();
 		const built: ShellBarModel = {
-			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), jobs: deps.jobs() }),
+			...buildShellBarModel(pi, ctx, footerData, { dirty: tracker.model.files.length, usage: deps.usage(), profile: deps.profile(), profileTier: deps.profileTier?.(), jobs: deps.jobs() }),
 			changes: { files: tracker.model.files.length, added: tracker.model.added, deleted: tracker.model.deleted },
 			review: deps.review(),
 		};
@@ -495,10 +520,14 @@ interface PromptEditorDeps {
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
+	/** The Panel action is available only in the shell's narrow chrome. */
+	panelButton?: () => boolean;
 	/** Rows the editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input; `hovered` is the top row under the pointer. */
 	topRows?: (width: number, hovered?: number) => string[];
 	/** A left click on one of the top rows (index into topRows). */
 	onTopRowClick?: (index: number) => void;
+	/** Open the same sheet as /gentle:panel. */
+	onPanelClick?: () => void;
 }
 
 const PROMPT_FRAME_ROLE = "border";
@@ -558,9 +587,12 @@ export class GentlePromptEditor extends CustomEditor {
 	// quality watchdog repaints only when now() drifts past its window.
 	private lastRenderAt = 0;
 	private readonly deps: PromptEditorDeps;
+	private readonly pointerTui: TUI;
 	private floatMouseLayout?: ReturnType<typeof resolvePromptLayout>;
 	private topRowCount = 0;
 	private hoveredTopRow: number | undefined;
+	private hoveredPanel = false;
+	private panelStart: number | undefined;
 	// Native selection engine (shift+home/end, alt+a, replace-on-key): ported
 	// from pi-select-del so the petal prompt owns the feature without factory
 	// composition. Constructed with `this`; the internals probe degrades to
@@ -590,6 +622,7 @@ export class GentlePromptEditor extends CustomEditor {
 		super(tui, theme, keybindings);
 		this.selectionEngine = new SelectionEngine(this);
 		this.deps = deps;
+		this.pointerTui = tui;
 		this.keybindingsManager = keybindings;
 		const attachments = deps.attachments;
 		if (!attachments || !deps.readClipboardImage) return;
@@ -1282,15 +1315,53 @@ export class GentlePromptEditor extends CustomEditor {
 		this.deps.dispatchQueuedText(queued);
 	}
 
+	private clearPanelHover(): void {
+		if (!this.hoveredPanel) return;
+		this.hoveredPanel = false;
+		this.deps.requestRender();
+	}
+
+	private clearEditorHover(): void {
+		this.clearPanelHover();
+		if (this.hoveredTopRow !== undefined) {
+			this.hoveredTopRow = undefined;
+			this.deps.requestRender();
+		}
+		releaseSidebarHover(this.pointerTui, this);
+	}
+
 	handleMouse(event: Parameters<CustomEditor["handleMouse"]>[0]): ReturnType<CustomEditor["handleMouse"]> {
+		const onPanel = (this.deps.panelButton?.() ?? true) && this.panelStart !== undefined && this.floatMouseLayout?.panel && event.width === this.floatMouseLayout.width && event.y === this.topRowCount &&
+			event.x >= this.panelStart && event.x < this.panelStart + visibleWidth(PANEL_BUTTON);
+		if (event.type === "move" && event.button === "none") {
+			if (onPanel || (event.y >= 0 && event.y < this.topRowCount)) setSidebarHover(this.pointerTui, this, () => this.clearEditorHover());
+			else setSidebarHover(this.pointerTui);
+			if (onPanel) {
+				const changed = this.hoveredTopRow !== undefined || !this.hoveredPanel;
+				if (this.hoveredTopRow !== undefined) { this.hoveredTopRow = undefined; this.deps.requestRender(); }
+				if (!this.hoveredPanel) { this.hoveredPanel = true; this.deps.requestRender(); }
+				return changed ? { handled: true, render: true } : { handled: true };
+			}
+			this.clearPanelHover();
+		}
+		if (onPanel && (event.type === "press" || event.type === "click")) {
+			if (event.type === "click" && event.button === "left") {
+				this.clearEditorHover();
+				this.deps.onPanelClick?.();
+			}
+			return { handled: true, render: event.type === "click" };
+		}
 		// Rows drawn above the panel rule belong to the shell, not to Pi's editor.
 		if (this.topRowCount > 0) {
 			if (event.y < this.topRowCount) {
 				// Hovering a top row paints it as clickable, like every other control.
-				if (event.type === "move" && this.hoveredTopRow !== event.y) {
-					this.hoveredTopRow = event.y;
-					this.deps.requestRender();
-					return { handled: true, render: true };
+				if (event.type === "move" && event.button === "none") {
+					if (this.hoveredTopRow !== event.y) {
+						this.hoveredTopRow = event.y;
+						this.deps.requestRender();
+						return { handled: true, render: true };
+					}
+					return { handled: true };
 				}
 				if (event.type !== "click" || event.button !== "left") return undefined;
 				this.deps.onTopRowClick?.(event.y);
@@ -1349,6 +1420,8 @@ export class GentlePromptEditor extends CustomEditor {
 			fg: this.deps.fg,
 			bold: this.deps.bold,
 			workingLabel: this.promptState === PROMPT_STATE.WORKING ? this.deps.workingLabel?.() : undefined,
+			panelButton: Boolean(layout.panel && this.deps.onPanelClick && (this.deps.panelButton?.() ?? true)),
+			panelHovered: this.hoveredPanel,
 			escHint: [
 				this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : undefined,
 				this.promptState === PROMPT_STATE.WORKING && this.isPendingEscapeCancel()
@@ -1369,6 +1442,10 @@ export class GentlePromptEditor extends CustomEditor {
 		const topRows = this.deps.topRows?.(width, this.hoveredTopRow) ?? [];
 		if (this.hoveredTopRow !== undefined && this.hoveredTopRow >= topRows.length) this.hoveredTopRow = undefined;
 		this.topRowCount = topRows.length;
+		const plainRule = stripAnsi(framed[0] ?? "");
+		const panelAt = layout.panel && this.deps.onPanelClick && (this.deps.panelButton?.() ?? true) ? plainRule.lastIndexOf(PANEL_BUTTON) : -1;
+		this.panelStart = panelAt < 0 ? undefined : visibleWidth(plainRule.slice(0, panelAt));
+		if (this.panelStart === undefined && this.hoveredPanel) this.clearEditorHover();
 		framed.unshift(...topRows);
 		// Pi places autocomplete after its bottom border. Keep those rows below
 		// Gentle's frame and preserve their terminal width and row coordinates.
@@ -1391,8 +1468,15 @@ export class GentlePromptEditor extends CustomEditor {
 		return framed;
 	}
 
+	invalidate(): void {
+		super.invalidate();
+		this.panelStart = undefined;
+		this.clearEditorHover();
+	}
+
 	dispose(): void {
 		this.disposed = true;
+		this.clearEditorHover();
 		this.stopWatchdog();
 	}
 
@@ -1471,7 +1555,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; panelButton?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void; onPanelClick?: () => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1491,8 +1575,10 @@ function installPrompt(
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
+			panelButton: promptDeps.panelButton ? () => promptDeps.panelButton!(tui) : undefined,
 			topRows: promptDeps.topRows ? (width, hovered) => promptDeps.topRows!(tui, width, hovered) : undefined,
 			onTopRowClick: promptDeps.onTopRowClick ? (index) => promptDeps.onTopRowClick!(tui, index) : undefined,
+			onPanelClick: promptDeps.onPanelClick,
 		});
 		// Pi's own docs require an explicit requestRender() after a state change
 		// (docs/tui.md: "Call tui.requestRender() after state changes"); no host
@@ -1550,30 +1636,80 @@ function renderDoubleEscCancelReport(
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
 const CHANGES_COMMAND_NAME = "gentle:changes";
-const CHANGES_SHORTCUT_DEFAULT = "alt+g";
 const CHANGES_POLL_DEFAULT_MS = 2000;
 const GIT_TIMEOUT_MS = 5000;
 const COMMANDS_COMMAND_NAME = "gentle:commands";
 
-export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity): GitRunner {
+// If taskkill cannot run (AppLocker, a broken PATH) the direct child can exit
+// while a descendant still holds the inherited pipes, which keeps execFile from
+// calling back; cut them after this grace so the scan still settles.
+const GIT_TREE_KILL_GRACE_MS = 1_000;
+
+export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env, run: typeof execFile = execFile, maxBuffer = Infinity, killProcessTree: ProcessTreeKiller | undefined = process.platform === "win32" ? windowsProcessTreeKiller : undefined): GitRunner {
 	// Pi exec cannot replace the inherited environment. Use argv directly and
 	// a complete sanitized environment for discovery, status, and lazy diffs.
 	const childEnv = worktreeGitEnvironment(env);
+	// A timed-out Git scan on Windows is more than one process: `git` hands the
+	// status work to a descendant, and that descendant survives the direct child
+	// Node itself kills, so a large repository whose scan passes the timeout
+	// leaks another orphaned git.exe on every poll until physical memory is
+	// exhausted (#927). Windows therefore owns the deadline below, so the tree
+	// kill lands while the parent is still alive for taskkill to walk; everywhere
+	// else execFile's own timeout stays exactly as it was.
+	const treeKiller = killProcessTree;
 	return (args) => new Promise((resolve) => {
-		run("git", ["-C", cwd, ...args], {
-			env: childEnv,
-			encoding: "utf8",
-			shell: false,
-			windowsHide: true,
-			timeout: GIT_TIMEOUT_MS,
-			// Pi exec accumulates output without a maxBuffer cap. In particular,
-			// large porcelain inventories must not become partial successful scans.
-			// Only a single diff passes a bound, and is told when it hit it.
-			maxBuffer,
-		}, (error, stdout) => {
-			if ((error as { code?: unknown } | null)?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return resolve({ stdout, code: 1, truncated: true });
-			resolve({ stdout, code: error ? typeof error.code === "number" ? error.code : 1 : 0 });
-		});
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		let grace: ReturnType<typeof setTimeout> | undefined;
+		let settled = false;
+		// A scan that passed its deadline is a failed scan, never a partial
+		// success, even if the direct child exited 0 before its pipes closed.
+		let timedOut = false;
+		const settle = (error: { code?: unknown; killed?: boolean } | null, stdout: string): void => {
+			settled = true;
+			if (deadline !== undefined) clearTimeout(deadline);
+			if (grace !== undefined) clearTimeout(grace);
+			if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") { resolve({ stdout, code: 1, truncated: true }); return; }
+			const code = timedOut ? 1 : error ? typeof error.code === "number" ? error.code : 1 : 0;
+			// Without a tree killer execFile owns the timeout and reports its kill on the error.
+			resolve({ stdout, code, ...(timedOut || (treeKiller === undefined && error?.killed) ? { timedOut: true } : {}) });
+		};
+		let child: ReturnType<typeof execFile>;
+		try {
+			child = run("git", ["-C", cwd, ...args], {
+				env: childEnv,
+				encoding: "utf8",
+				shell: false,
+				windowsHide: true,
+				...(treeKiller === undefined ? { timeout: GIT_TIMEOUT_MS } : {}),
+				// Pi exec accumulates output without a maxBuffer cap. In particular,
+				// large porcelain inventories must not become partial successful scans.
+				// Only a single diff passes a bound, and is told when it hit it.
+				maxBuffer,
+			}, (error, stdout) => settle(error, stdout));
+		} catch (error) {
+			// A spawn that throws (invalid options, an injected runner) is a failed scan.
+			settle(error as { code?: unknown }, "");
+			return;
+		}
+		// The callback may already have settled a synchronous run (a fake in
+		// tests, a spawn error), so only arm the deadline while it is pending.
+		if (settled || treeKiller === undefined || child?.pid === undefined) return;
+		const pid = child.pid;
+		deadline = setTimeout(() => {
+			timedOut = true;
+			// taskkill walks the tree from a live parent. If the direct child
+			// already exited, only a descendant can be holding the inherited
+			// pipes, and a PID-based kill would just report "process not found";
+			// the grace below still cuts those pipes so the scan can settle.
+			if (child.exitCode === null && child.signalCode === null) treeKiller(pid);
+			grace = setTimeout(() => {
+				if (child.exitCode === null && child.signalCode === null) child.kill();
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+			}, GIT_TREE_KILL_GRACE_MS);
+			grace.unref?.();
+		}, GIT_TIMEOUT_MS);
+		deadline.unref?.();
 	});
 }
 
@@ -1581,7 +1717,7 @@ export async function loadFileDiff(git: GitRunner, file: ChangedFile): Promise<s
 	const args = file.status === CHANGE_STATUS.UNTRACKED ? ["diff", "--no-index", "--", "/dev/null", file.path] : ["diff", "HEAD", "--", file.path];
 	const result = await git(args);
 	if (result.truncated || result.stdout.length > DIFF_MAX_BYTES || result.stdout.split("\n", DIFF_MAX_LINES + 2).length > DIFF_MAX_LINES + 1) return DIFF_TOO_LARGE;
-	return result.code === 0 || result.code === 1 ? result.stdout : "";
+	return !result.timedOut && (result.code === 0 || result.code === 1) ? result.stdout : "";
 }
 
 // Untracked files have no numstat; count their lines without reading past the diff bound.
@@ -1599,22 +1735,17 @@ const fileRevision = (root: string): FileRevision => async (path) => {
 };
 
 export { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
-export function changesShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_CHANGES_KEY?.trim();
-	if (value === undefined) return CHANGES_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+// Each key reads its environment variable, then keymaps.json, then its default (lib/keymaps.ts).
+export function changesShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("changes", env, bindings);
 }
 
-export function presetShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_PRESET_KEY?.trim();
-	if (value === undefined) return PRESET_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function presetShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("preset", env, bindings);
 }
 
-export function usageShortcut(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_SHELL_USAGE_KEY?.trim();
-	if (value === undefined) return USAGE_SHORTCUT_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+export function usageShortcut(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("usage", env, bindings);
 }
 
 function positiveMs(value: string | undefined, fallback: number): number {
@@ -1699,21 +1830,61 @@ async function showChangesOverlay(ctx: ExtensionContext, deps: OverlayDeps): Pro
 // entries that are actually registered, so a missing extension never shows
 // a dead row. Selecting an entry runs it exactly as if the user had typed
 // the underlying slash command.
-async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv): Promise<void> {
+// Each row shows the key saved now; one that differs from the key Pi loaded at
+// startup is marked "(reload)", since Pi only applies it after /reload.
+function paletteShortcuts(pi: ExtensionAPI, env: NodeJS.ProcessEnv, loaded: KeymapBindings): Record<string, string | undefined> {
+	const saved = loadKeymaps(env).bindings;
+	const shortcuts: Record<string, string | undefined> = {};
+	for (const { name } of pi.getCommands()) {
+		const id = commandKeymapId(name);
+		const now = effectiveKey(id, env, saved);
+		const active = effectiveKey(id, env, loaded);
+		shortcuts[name] = now === active ? now : `${now ?? "none"} (reload)`;
+	}
+	return shortcuts;
+}
+
+/**
+ * The palette commands Customize lists under Keymaps. The command list is an
+ * extra there: when Pi cannot report it yet (before its runtime is
+ * initialized), Customize still opens with the built-in actions only.
+ */
+function paletteCommandsForKeymaps(pi: ExtensionAPI): { command: string; label: string }[] {
+	try {
+		return buildCommandPaletteGroups(pi.getCommands(), {}).flatMap((group) => group.items);
+	} catch {
+		return [];
+	}
+}
+
+/** Tab in the palette: assign the captured key to the command, through the same checks as /gentle:customize. */
+async function bindFromPalette(ctx: ExtensionContext, env: NodeJS.ProcessEnv, command: string, data: string, keybindings: PiKeybindings | undefined): Promise<void> {
+	const id = commandKeymapId(command);
+	const file = loadKeymaps(env);
+	const change = prepareKeymapChange(id, data, env, file, keybindings);
+	if (change.kind === "refused") return ctx.ui.notify(change.message, change.type);
+	if (change.confirm && !(await ctx.ui.confirm("Keymaps", change.confirm))) return;
+	writeKeymaps(gentlePiConfigHome(env), change.bindings);
+	ctx.ui.notify(keymapSavedNotice(id, keymapLabel(id), env, change.bindings), "info");
+}
+
+async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext, env: NodeJS.ProcessEnv, loaded: KeymapBindings = {}): Promise<void> {
 	if (!ctx.hasUI) return;
-	const groups = buildCommandPaletteGroups(pi.getCommands(), {
-		"gentle:changes": changesShortcut(env),
-		"gentle:agents": agentsViewKey(env),
-	});
+	const groups = buildCommandPaletteGroups(pi.getCommands(), paletteShortcuts(pi, env, loaded));
 	if (groups.length === 0) {
 		ctx.ui.notify("No Gentle commands are registered.", "info");
 		return;
 	}
+	let piKeybindings: PiKeybindings | undefined;
 	const result = await ctx.ui.custom<CommandPaletteResult>(
-		(tui, theme, _keybindings, done) => new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows)),
+		(tui, theme, keybindings, done) => {
+			if (typeof (keybindings as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keybindings as PiKeybindings;
+			return new CommandPalette(groups, withOverlayRepaint(tui, done), theme, () => Math.max(0, tui.terminal.rows));
+		},
 		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } },
 	);
 	if (result?.type === "run") pi.sendUserMessage(`/${result.name}`, { expandPromptTemplates: true });
+	if (result?.type === "bind") await bindFromPalette(ctx, env, result.name, result.data, piKeybindings);
 }
 
 function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true, grouped: (width: number) => boolean = () => false): void {
@@ -1737,8 +1908,6 @@ const USAGE_COMMAND_NAME = "gentle:usage";
 const PANEL_COMMAND_NAME = "gentle:panel";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
-const USAGE_SHORTCUT_DEFAULT = "alt+u";
-const PRESET_SHORTCUT_DEFAULT = "alt+l";
 const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
 /** The order the preset shortcut walks; a hand-tuned mix starts it on Neutral. */
 const PRESET_CYCLE: readonly VisualPreset[] = [VISUAL_PRESET.LIGHT, VISUAL_PRESET.NEUTRAL, VISUAL_PRESET.POWER_USER];
@@ -1866,10 +2035,26 @@ export async function backgroundChangeRefreshesSettled(timeoutMs = 2000): Promis
 
 export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, overrides: Partial<ShellDeps> = {}): void {
 	installSessionChangeCapture(pi, env, overrides.resolveWorktree ?? resolveSessionWorktree);
+	// Replaced before persistence, so the footer, /gentle:stats and the session file
+	// all carry the API-equivalent cost of claude-bridge turns instead of $0. It runs
+	// in subagent children too: the parent sums their message_end cost over RPC.
+	pi.on("message_end", (event, ctx) => {
+		const priced = priceBridgeMessage(event.message, (provider, id) => ctx.modelRegistry.find(provider, id)?.cost);
+		return priced ? { message: priced } : undefined;
+	});
 	if (!shellEnabled(env)) return;
+	// Pi reads shortcuts once (startup and /reload), so the saved keymaps are read once too.
+	const keymaps = loadKeymaps(env);
+	let keymapsReported = false;
+	pi.on("session_start", (_event, ctx) => {
+		if (!keymaps.malformed || keymapsReported || !ctx.hasUI) return;
+		keymapsReported = true;
+		ctx.ui.notify(`Keymaps: ${keymaps.path} is unreadable or malformed; using the default keys.`, "warning");
+	});
 	const profileReader = createActiveProfileReader(env);
 	const deps: ShellDeps = { ...defaultShellDeps, activeProfile: profileReader, ...overrides };
 	let closeCustomize: (() => void) | undefined;
+	let customizeGeneration = 0;
 	let profilePoll: ReturnType<typeof setInterval> | undefined;
 	const stopProfilePoll = () => {
 		if (profilePoll) clearInterval(profilePoll);
@@ -2069,26 +2254,48 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const hint = keyHint("app.tools.expand", options.expanded ? "collapse" : "expand");
 		return cardComponent({ title: "Gentle AI", subtitle: "review preflight", body, tone: CARD_TONE.INFO }, theme, { expanded: options.expanded, previewRows: 3, hint });
 	});
-	// Which IDE chrome the fullscreen shell draws: "wide" while the rail owns the
-	// host, "narrow" (mobile) below the rail breakpoint or with Status at the
-	// bottom (the minimal edition), undefined for the below-input header, a
-	// hidden Status, and regular mode.
+	// The attached narrow fullscreen layout owns the mobile editor and work row
+	// for every header placement. Wide split uses the IDE chrome beside the rail;
+	// wide top and below-input keep their existing chrome-bar paths.
 	const chromeMode = (tui: TUI): "wide" | "narrow" | undefined => {
-		if (visualSettings.headerPlacement !== "top" || (tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
+		if ((tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal) return undefined;
 		const state = sidebarState(tui);
-		if (state.active && state.ownsHost?.()) return "wide";
-		// The compact chrome replaces the bottom bar, so it only applies while the
-		// layout that draws its title row and status bar is installed.
+		if (state.active && state.ownsHost?.()) return visualSettings.headerPlacement === "split" ? "wide" : undefined;
+		// Do not suppress native widgets unless the host can actually draw the bar.
 		if (!state.layoutAttached?.()) return undefined;
+		return tui.terminal.columns < SIDEBAR_BREAKPOINT ? "narrow" : undefined;
+	};
+	// Where the chrome bars draw (beside the rail, or with Status hidden or at the
+	// bottom, outside the mobile chrome): every placement there shares the bar
+	// design and the titled-rule editor.
+	// `drawn` asks whether the rail actually painted in the last layout pass: the
+	// editor and footer render after it, while the header renders during it.
+	const chromeBarsShown = (tui: TUI, drawn = false): boolean => {
+		if ((tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal || chromeMode(tui) === "narrow") return false;
 		const placement = visualSettings.statusPlacement;
-		// "bottom" (the Light preset) is the minimal edition: the phone layout at any width, no rail.
-		if (placement === "bottom") return "narrow";
-		return tui.terminal.columns < SIDEBAR_BREAKPOINT && (placement === "auto" || placement === "right") ? "narrow" : undefined;
+		if (placement === "hidden" || placement === "bottom") return true;
+		// The rail owns the host (layout installed) only at 140 columns or wider, with Status auto or right.
+		const state = sidebarState(tui);
+		return Boolean(state.ownsHost?.() && (!drawn || state.active));
 	};
 	// The live-work digests the mobile work row folds, honoring the Todos switch.
-	const workSummaries = (tui: TUI) => {
+	const workParts = (tui: TUI) => {
 		const state = sidebarState(tui);
-		return ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => state.parts.get(key)?.summary?.()).filter((summary) => summary !== undefined);
+		return ["agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).flatMap((key) => {
+			const part = state.parts.get(key);
+			const summary = part?.summary?.();
+			return part && summary ? [{ part, summary }] : [];
+		});
+	};
+	const workSummaries = (tui: TUI) => workParts(tui).map((work) => work.summary);
+	// A tap on the work row opens the leading section's own view (an agent opens
+	// /gentle:agents); a section without one, such as Todos, opens the panel sheet.
+	const openWorkRow = (tui: TUI, ctx: ExtensionContext) => {
+		const parts = workParts(tui);
+		const lead = parts[workRowLead(parts.map((work) => work.summary))];
+		if (!lead) return;
+		if (lead.part.open) lead.part.open();
+		else void openPanelSheet(ctx);
 	};
 	// What the panel editor draws above its rule: the mobile work row, then any
 	// agent question, so nothing another widget adds can land between them and the input.
@@ -2103,7 +2310,16 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return [...(row ? [row] : []), ...(cardHidden ? (state.parts.get("agents")?.alert?.(width) ?? []) : [])];
 	};
 	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
-	const openPanelSheet = (ctx: ExtensionContext) =>
+	// The sheet leaves the editor's [ Panel ] clickable, so an open sheet is reused
+	// instead of stacking another overlay per click.
+	let openSheet: Promise<null | undefined> | undefined;
+	const openPanelSheet = (ctx: ExtensionContext) => {
+		if (openSheet) return openSheet;
+		const opened = showPanelSheet(ctx).finally(() => { if (openSheet === opened) openSheet = undefined; });
+		openSheet = opened;
+		return opened;
+	};
+	const showPanelSheet = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
 				const close = withOverlayRepaint(tui, done);
@@ -2180,8 +2396,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Show subscription usage windows for the connected providers. Press r to refetch.",
 		handler: async (_args, ctx) => openUsage(ctx),
 	});
-	const usageShortcutKey = usageShortcut(env);
-	const todoKey = todoCollapseKey(env);
+	const usageShortcutKey = usageShortcut(env, keymaps.bindings);
+	const todoKey = todoCollapseKey(env, keymaps.bindings);
 	if (usageShortcutKey) {
 		pi.registerShortcut(usageShortcutKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Show subscription usage windows for the connected providers",
@@ -2225,10 +2441,12 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		ctx.ui.notify(`vim: ${result.policy} (decided by ${source})${result.malformed ? "; malformed or unreadable file, falling back to off" : ""}. ${state}.`, result.malformed || (effective !== undefined && effective !== result.policy) ? "warning" : "info");
 	};
 	let visualSettings = resolveVisualSettings(animationOptions).settings;
+	setChromeSurface(visualSettings.surface);
 	let sidebarTui: TUI | undefined;
 	let groupedChangesOwner: (width: number) => boolean = () => false;
 	const refreshVisual = () => {
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		setChromeSurface(visualSettings.surface);
 		if (currentContext && changes) showChanges(currentContext, changes.model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 		if (sidebarTui?.terminal) sidebarState(sidebarTui).visibility = { todo: visualSettings.visibility.todo };
 		renderHost?.invalidateSidebar?.();
@@ -2241,6 +2459,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	let changes: WorktreeChangesTracker | undefined;
 	let registry: SessionWorktreeRegistry | undefined;
 	let currentContext: ExtensionContext | undefined;
+	let disposeFooter: (() => void) | undefined;
 	let review: ReviewSidebarSnapshot | undefined;
 	let runningJobs: RunningJobDisplay[] | undefined;
 	let jobsCollapsed = false;
@@ -2304,6 +2523,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		},
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		customizeGeneration++;
 		closeCustomize?.();
 		runningJobs = undefined;
 		adaptiveReasoningNotices.clear();
@@ -2324,6 +2544,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		applyCardContent();
 		if (!ctx.hasUI) return;
 		visualSettings = resolveVisualSettings(animationOptions).settings;
+		setChromeSurface(visualSettings.surface);
 		if (!overrides.activeProfile) {
 			profileReader.bind(ctx.cwd, deps.resolveWorktree, ctx.sessionManager.getSessionId());
 			const sessionId = ctx.sessionManager.getSessionId();
@@ -2338,6 +2559,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		changes = changesTracker(ctx);
 		const tracker = changes;
 		ctx.ui.setFooter((tui, theme, footerData) => {
+			disposeFooter?.();
 			sidebarTui = tui;
 			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
@@ -2352,6 +2574,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				pi, ctx, footerData,
 				usage: () => usage.get(ctx.model?.provider ?? ""),
 				profile: () => deps.activeProfile(),
+				profileTier: () => deps.activeProfile === profileReader ? profileReader.tier() : undefined,
 				// The compact bar and header derive ⧗ N jobs from model.jobs.length,
 				// so this input is running-only: the snapshot carries the finished tail.
 				jobs: () => runningJobs?.filter((job) => job.status === undefined),
@@ -2375,10 +2598,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const state = sidebarState(tui);
 				return Boolean(state.statusHidden?.() || state.headerOwnsStatus?.() || (state.active && state.ownsHost?.()));
 			};
-			groupedChangesOwner = (width) => belowFloat(width, !footerSuppressed()) !== undefined;
+			// Chrome bars never group Changes: they keep their own row (or the rail).
+			groupedChangesOwner = (width) => !narrowChrome() && !belowChrome() && belowFloat(width, !footerSuppressed()) !== undefined;
 			const bottomBar = {
 				...bottom,
-				render: (width: number) => belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
+				render: (width: number) => bottomStatus() ? [] : belowFloat(width, true)?.rows ?? (statusOwner() === STATUS_OWNER.BOTTOM ? renderShellBottomOnlyBar(footerModel(), theme, width, usageShortcutKey, visualSettings, undefined, gaugePaint(ctx)) : bottom.render(width)),
 				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
 					if (footerSuppressed() || event.type !== "click" || event.button !== "left") return undefined;
 					const chrome = belowFloat(event.width, true);
@@ -2389,21 +2613,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			};
 			// The rail's Status is a panel: Changes, Review and Integrations, then
 			// the key hints that close the rail (the section headers carry none).
-			const railHints = [todoKey ? `${todoKey} todos` : "", usageShortcutKey ? `${usageShortcutKey} usage` : "", "/ commands"].filter(Boolean).join(" · ");
+			// The rail carries no key hints row: the Todos header shows its own collapse
+			// key, and the bars carry the usage key.
+			const railHints = undefined;
 			// Status sections are clickable like the other rail sections: a header
 			// folds its section, the Changes row opens /gentle:changes.
 			const statusCollapsed = new Set<StatusSection>();
 			let statusHover: StatusSection | "open-changes" | undefined;
 			// Keyed by width: the rail and the full-width panel sheet render the same part.
 			const statusTargets = new Map<number, StatusTarget[]>();
+			const statusGroups = new Map<number, { groups: Array<{ start: number; end: number }>; loose: number[] }>();
 			const statusCard: Component = {
 				render(width: number) {
-					// The rail drops what the wide chrome's title row and status bar show
-					// (session, permission mode) only while that chrome actually draws.
-					const view = statusCardVisible() && visualSettings.headerPlacement === "top"
+					// Beside the rail every header placement draws a chrome bar that shows
+					// the permission mode with its icon, so the rail never repeats the raw
+					// mode statuses; the session-and-statuses view stays for other hosts.
+					const view = statusCardVisible()
 						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
 						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
 					statusTargets.set(width, view.targets);
+					statusGroups.set(width, { groups: view.groups, loose: view.loose });
 					return view.lines;
 				},
 				invalidate() {
@@ -2428,11 +2657,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				onHover(event) {
 					const target = targetAt(event.y, event.width);
 					const next = !target ? undefined : target.kind === "toggle" ? target.section : "open-changes";
+					if (next) setSidebarHover(tui, statusRegion, () => statusRegion.clearHover());
+					else setSidebarHover(tui);
 					if (next === statusHover) return { handled: true };
 					statusHover = next;
 					return { handled: true, render: true };
 				},
 				onLeave() {
+					releaseSidebarHover(tui, statusRegion);
 					if (!statusHover) return;
 					statusHover = undefined;
 					tui.requestRender();
@@ -2455,6 +2687,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs, spend?.runs, spend?.tokens, spend?.cost] : ""]);
 				},
 				render: (width) => statusRegion.render(width),
+				cardGroups: (width) => statusGroups.get(width),
 				handleMouse: (event) => statusRegion.handleMouse(event),
 				invalidate: () => statusRegion.invalidate(),
 			});
@@ -2482,11 +2715,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const jobsRegion = new NativePointerRegion(jobsRailCard, {
 				onHover(event) {
 					const next = event.y === jobsHeaderRow;
+					if (next) setSidebarHover(tui, jobsRegion, () => jobsRegion.clearHover());
+					else setSidebarHover(tui);
 					if (next === jobsHovered) return { handled: true };
 					jobsHovered = next;
 					return { handled: true, render: true };
 				},
 				onLeave() {
+					releaseSidebarHover(tui, jobsRegion);
 					if (!jobsHovered) return;
 					jobsHovered = false;
 					tui.requestRender();
@@ -2526,40 +2762,70 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// effort, context, cost, usage) plus session identity and the jobs count
 			// when Status is absent. Opaque statuses and working state stay excluded.
 			const headerBar = (width: number) => renderShellHeaderChrome(buildShellHeaderModel(footerModel(), !statusCardVisible() && (statusOwner() === STATUS_OWNER.HEADER || visualSettings.statusPlacement === "hidden")), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
-			// With the rail shown and the header on top, the chrome splits like an
+			// With the rail shown and a split header, the chrome splits like an
 			// IDE: a title row with the project identity above, and a status bar
 			// with the per-frame counters below (design/shell-rework/02-proposal.html).
-			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "top";
-			// Mobile (design/shell-rework/05-mobile.html): below the rail breakpoint the
-			// same split stays, with the model in the title row and live work folded
-			// into one row above the editor.
+			// A top header instead keeps the whole header row above the conversation.
+			const ideChrome = () => statusCardVisible() && visualSettings.headerPlacement === "split";
+			// The split title row and status bar also stay with Status hidden.
+			const splitChrome = () => ideChrome() || (barChrome() && visualSettings.headerPlacement === "split");
+			// Beside the rail the below-input bar is the full-width bottom row, like
+			// split's status bar; the widget under the input steps aside while the
+			// rail is actually drawn.
+			const belowRail = () => fullscreen() && visualSettings.headerPlacement === "below-input" && statusCardVisible();
+			// Beside the rail, the top and below-input headers draw the split status
+			// bar's design (a chrome bar) with a margin row toward the content.
+			// They apply beside the rail and with Status hidden (no rail at all); the
+			// mobile chrome keeps phones and the minimal edition.
+			const fullscreen = () => (tui as TUI & { mode?: string }).mode === "fullscreen";
+			const barChrome = () => chromeBarsShown(tui);
+			// Status at the bottom of a wide terminal: the chrome bars close the screen, and the
+			// previous compact bottom bar steps aside ([ Panel ] opens the Status sections).
+			const bottomStatus = () => barChrome() && visualSettings.statusPlacement === "bottom";
+			const topChrome = () => barChrome() && visualSettings.headerPlacement === "top";
+			// The below-input widget renders after the layout pass, so it can also
+			// require the rail to be actually drawn (a rail that does not fit groups
+			// Changes into the float footer as before).
+			const belowChrome = () => barChrome() && visualSettings.headerPlacement === "below-input" && (visualSettings.statusPlacement === "hidden" || visualSettings.statusPlacement === "bottom" || sidebarState(tui).active === true);
+			// Without the rail the bar also counts the running jobs, as the mobile status bar does.
+			const chromeBar = (width: number) => renderShellChromeBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx), { jobs: !statusCardVisible() });
+			const topHeader = (width: number) => chromeBar(width);
+			// Comfortable centers the split title row between two margin rows.
+			const titleRows = (width: number) => visualSettings.density === "comfortable"
+				? [renderShellChromePad(theme, width), renderShellTitleRow(footerModel(), theme, width), renderShellChromePad(theme, width)]
+				: [renderShellTitleRow(footerModel(), theme, width)];
+			// Mobile keeps the same work row and editor for all placements. Only split
+			// moves model identity to the title; top and below-input use one shared bar.
 			const narrowChrome = () => chromeMode(tui) === "narrow";
+			const narrowSplit = () => narrowChrome() && visualSettings.headerPlacement === "split";
+			const narrowTop = () => narrowChrome() && visualSettings.headerPlacement === "top";
+			const narrowBelow = () => narrowChrome() && visualSettings.headerPlacement === "below-input";
 			if (tui.terminal) {
 				sidebarState(tui).compactWork = narrowChrome;
-				// Both IDE chromes draw a status bar that shows the permission mode.
-				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined;
+				// The IDE chromes and the chrome bars show the permission mode with its icon.
+				sidebarState(tui).statusBarShowsMode = () => chromeMode(tui) !== undefined || topChrome() || belowChrome() || splitChrome();
 			}
-			const statusBarChrome = (width: number) => narrowChrome()
+			const statusBarChrome = (width: number) => narrowSplit()
 				? renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, { ...visualSettings, visibility: { ...visualSettings.visibility, modelDetails: false } }, gaugePaint(ctx), { jobs: true })
-				: renderShellStatusBar(footerModel(), theme, width, usageShortcutKey, visualSettings, gaugePaint(ctx));
+				: chromeBar(width);
 			const disposeHeader = sidebarHeader(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() ? [renderShellTitleRow(footerModel(), theme, width)] : narrowChrome() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : headerBar(width).rows,
+				render: (width) => splitChrome() ? titleRows(width) : narrowSplit() ? [renderShellTitleRow(footerModel(), theme, width, { model: true })] : (narrowTop() || topChrome()) ? topHeader(width).rows : headerBar(width).rows,
 				invalidate() {},
 				handleMouse(event) {
-					if (ideChrome() || narrowChrome() || event.type !== "click" || event.button !== "left") return undefined;
-					if (!shellHeaderUsageHit(headerBar(event.width), event.x, event.y)) return undefined;
+					if (splitChrome() || narrowSplit() || narrowBelow() || event.type !== "click" || event.button !== "left") return undefined;
+					if (!shellHeaderUsageHit(narrowTop() || topChrome() ? topHeader(event.width) : headerBar(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => ideChrome() || narrowChrome() ? statusBarChrome(width).rows : [],
+				render: (width) => splitChrome() || narrowSplit() || narrowBelow() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width).rows : [],
 				invalidate() {},
 				handleMouse(event) {
-					if (!(ideChrome() || narrowChrome()) || event.type !== "click" || event.button !== "left") return undefined;
-					if (!shellHeaderUsageHit(statusBarChrome(event.width), event.x, event.y)) return undefined;
+					if (!(splitChrome() || narrowSplit() || narrowBelow() || belowRail()) || event.type !== "click" || event.button !== "left") return undefined;
+					if (!shellHeaderUsageHit(belowRail() ? chromeBar(event.width) : statusBarChrome(event.width), event.x, event.y)) return undefined;
 					void openUsage(ctx);
 					return { handled: true, render: true };
 				},
@@ -2571,13 +2837,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// The public widget slot follows the editor even when the rail is absent.
 			const belowHeader = () => visualSettings.headerPlacement === "below-input" && (tui as TUI & { mode?: string }).mode === "fullscreen" && statusOwner() !== STATUS_OWNER.BOTTOM;
 			const widgetChrome = (width: number) => belowFloat(width, false) ?? headerBar(width);
+			let disposed = false;
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, () => ({
 				render(width: number) {
+					if (disposed || narrowChrome()) return [];
+					if (belowRail() && sidebarState(tui).active) return [];
+					if (belowChrome()) return chromeBar(width).rows;
 					if (belowFloat(width, false)) return footerSuppressed() ? widgetChrome(width).rows : [];
 					return belowHeader() ? headerBar(width).rows : [];
 				},
 				invalidate() {},
 				handleMouse(event) {
+					if (disposed || narrowChrome()) return undefined;
+					if (belowRail() && sidebarState(tui).active) return undefined;
+					if (belowChrome()) {
+						if (event.type !== "click" || event.button !== "left" || !shellHeaderUsageHit(chromeBar(event.width), event.x, event.y)) return undefined;
+						void openUsage(ctx);
+						return { handled: true, render: true };
+					}
 					const grouped = belowFloat(event.width, false);
 					if ((grouped ? !footerSuppressed() : !belowHeader()) || event.type !== "click" || event.button !== "left") return undefined;
 					if (!shellHeaderUsageHit(widgetChrome(event.width), event.x, event.y)) return undefined;
@@ -2585,19 +2862,45 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			}), { placement: "belowEditor" });
+			// Pi still owns the footer component; shutdown releases its session-bound
+			// hooks before the old context becomes invalid, even if Pi disposes later.
+			const dispose = () => {
+				if (disposed) return;
+				disposed = true;
+				if (disposeFooter === dispose) disposeFooter = undefined;
+				clearInterval(jobsTimer);
+				jobsPart.dispose();
+				ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined);
+				disposeHeader();
+				disposeStatusBar();
+				statusRegion.dispose();
+				uninstall();
+				unpaintPage();
+				part.dispose();
+				if (sidebarTui === tui) { sidebarTui = undefined; renderHost = undefined; groupedChangesOwner = () => false; }
+			};
+			disposeFooter = dispose;
 			return { ...part,
 				render(width: number) {
+					if (disposed) return [];
 					// Running-only: a finished tail must never paint a ⧗ 0 jobs row.
 					const compactRunningJobs = runningJobs?.filter((job) => job.status === undefined);
 					if (visualSettings.statusPlacement === "hidden" && (tui as TUI & { mode?: string }).mode !== "fullscreen" && compactRunningJobs?.length) {
 						return [truncateToWidth(theme.fg("muted", shellJobsCount(compactRunningJobs.length)), width, "…")];
 					}
 					const rows = part.render(width);
-					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry.
-					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen"
+					// Preserve a shrinkable exterior dock row, outside prompt/completion geometry,
+					// only while the float prompt ends the dock. A titled-rule editor (top, split,
+					// mobile) keeps its own bottom row as the margin, and a below-input header follows it.
+					// A split status bar follows the prompt too, so it never needs the exterior row.
+					const promptEndsDock = !(chromeMode(tui) !== undefined || chromeBarsShown(tui, true) || belowHeader());
+					return rows.length === 0 && (tui as TUI & { mode?: string }).mode === "fullscreen" && promptEndsDock
 						&& resolvePromptLayout(width, cardStyle(), theme.bg?.bind(theme)).background ? [""] : rows;
 				},
-				dispose() { clearInterval(jobsTimer); jobsPart.dispose(); ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined); disposeHeader(); disposeStatusBar(); statusRegion.dispose(); uninstall(); unpaintPage(); part.dispose(); if (sidebarTui === tui) { sidebarTui = undefined; groupedChangesOwner = () => false; } } };
+				handleMouse(event: Parameters<NonNullable<SidebarRail["handleMouse"]>>[0]) {
+					return disposed ? undefined : part.handleMouse?.(event);
+				},
+				dispose };
 		});
 		void refreshUsage(ctx, true);
 		const ownsPrompt = installPrompt(
@@ -2610,10 +2913,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
-				panelChrome: (tui) => chromeMode(tui) !== undefined,
+				panelChrome: (tui) => chromeMode(tui) !== undefined || chromeBarsShown(tui, true),
+				// Without the rail, [ Panel ] opens the Status sections: the mobile chrome,
+				// and a wide terminal with Status at the bottom.
+				panelButton: (tui) => chromeMode(tui) === "narrow" || (visualSettings.statusPlacement === "bottom" && chromeBarsShown(tui, true)),
 				topRows: (tui, width, hovered) => panelTopRows(tui, width, ctx.ui.theme, hovered),
-				// The mobile work row is the first top row; a tap on it opens the panel sheet.
-				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0 && workSummaries(tui).length > 0) void openPanelSheet(ctx); } },
+				// The mobile work row is the first top row; a tap on it opens the leading section's view.
+				onTopRowClick: (tui, index) => { if (chromeMode(tui) === "narrow" && index === 0) openWorkRow(tui, ctx); },
+				onPanelClick: () => { void openPanelSheet(ctx); } },
 		);
 		imageAttachments.clear();
 		ctx.ui.setWidget(IMAGE_ATTACHMENTS_WIDGET_KEY, ownsPrompt
@@ -2652,6 +2959,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return { action: "transform", text: submitted.text, images: [...(event.images ?? []), ...submitted.images] };
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		customizeGeneration++;
+		disposeFooter?.();
 		closeCustomize?.();
 		if (review) {
 			review = undefined;
@@ -2705,7 +3014,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Browse uncommitted Git changes (working tree vs HEAD, untracked included) in this session's repository and its subagents' worktrees. Press o to open $EDITOR.",
 		handler: async (_args, ctx) => openChanges(ctx),
 	});
-	const shortcut = changesShortcut(env);
+	const shortcut = changesShortcut(env, keymaps.bindings);
 	if (shortcut) {
 		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the session's uncommitted Git changes",
@@ -2714,16 +3023,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	}
 	pi.registerCommand(COMMANDS_COMMAND_NAME, {
 		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
-		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env),
+		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 	});
-	const commandsShortcut = commandsKey(env);
+	const commandsShortcut = commandsKey(env, keymaps.bindings);
 	if (commandsShortcut) {
 		pi.registerShortcut(commandsShortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Open the command palette",
-			handler: async (ctx) => showCommandPalette(pi, ctx, env),
+			handler: async (ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
 		});
 	}
-	const jobsKey = jobsCollapseKey(env);
+	// A palette command the user gave a key runs exactly as if typed.
+	for (const id of commandKeymapIds(keymaps.bindings)) {
+		const key = effectiveKey(id, env, keymaps.bindings);
+		const command = keymapCommand(id);
+		if (!key || !command) continue;
+		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: `Run /${command}`,
+			handler: async (ctx) => {
+				if (!pi.getCommands().some((registered) => registered.name === command)) {
+					ctx.ui.notify(`${key} runs /${command}, which is not available in this session.`, "warning");
+					return;
+				}
+				pi.sendUserMessage(`/${command}`, { expandPromptTemplates: true });
+			},
+		});
+	}
+	const jobsKey = jobsCollapseKey(env, keymaps.bindings);
 	if (jobsKey) {
 		pi.registerShortcut(jobsKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Collapse or expand the jobs card",
@@ -2734,7 +3059,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			},
 		});
 	}
-	const presetKey = presetShortcut(env);
+	const presetKey = presetShortcut(env, keymaps.bindings);
 	if (presetKey) {
 		pi.registerShortcut(presetKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: "Cycle the visual preset: Light, Neutral, Power user",
@@ -2753,13 +3078,26 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, audio notifications, Vim editing, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
 				return;
 			}
 			closeCustomize?.();
+			const generation = ++customizeGeneration;
+			// The owner also checks its lifecycle; this binds this particular card
+			// to its caller before discovery and again before handing off the UI.
+			const currentRddSession = (() => {
+				try {
+					const manager = ctx.sessionManager, id = manager.getSessionId(), cwd = ctx.cwd, ui = ctx.ui;
+					if (env.GENTLE_PI_AGENTS_CHILD === "1" || !id || !cwd || (manager.getCwd?.() ?? cwd) !== cwd) return () => false;
+					return () => {
+						try { return customizeGeneration === generation && ctx.mode === "tui" && ctx.hasUI && ctx.ui === ui && ctx.cwd === cwd && ctx.sessionManager === manager && manager.getSessionId() === id && (manager.getCwd?.() ?? cwd) === cwd; }
+						catch { return false; }
+					};
+				} catch { return () => false; }
+			})();
 			let closed = false;
 			let adapter: YoloUiAdapter | undefined;
 			let unobserve: (() => void) | undefined;
@@ -2785,6 +3123,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				if (await action() === false) return;
 				ctx.ui.notify(notice, "info");
 			} });
+			const explicitChoice = (setting: string, value: string, current: () => boolean): CustomizeRow["choice"] => ({ setting, value, current, applyOnMove: false });
 			for (const policy of ["quality", "performance", "potato"] as const) add(
 				() => `Animations: ${policy}${resolveAnimationPolicy(animationOptions).policy === policy ? " (current)" : ""}`,
 				"Animation saved. Prompt applies now; startup banner applies at next startup.",
@@ -2802,18 +3141,19 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				const [r, g, b] = bannerColors[next.color];
 				return { title: `Banner · ${next.color} (static)`, sample: `${next.showRose ? `\x1b[38;2;${r};${g};${b}m🌹\x1b[0m` : "·"}  ${next.showTextLogo ? "GENTLE SHELL" : "(logo hidden)"}` };
 			};
-			add(() => `Banner rose: ${banner.showRose ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showRose = !next.showRose;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showRose: !banner.showRose }));
-			add(() => `Banner text logo: ${banner.showTextLogo ? "on" : "off"}`, "Banner saved; applies at next startup.", async () => {
-				const next = { ...await readBannerConfigForEdit(bannerHome) };
-				next.showTextLogo = !next.showTextLogo;
-				await writeBannerConfig(next, bannerHome);
-				banner = next;
-			}, () => bannerPreview({ ...banner, showTextLogo: !banner.showTextLogo }));
+			for (const [setting, key] of [["Banner rose", "showRose"], ["Banner text logo", "showTextLogo"]] as const) {
+				for (const enabled of [true, false]) add(
+					() => `${setting}: ${enabled ? "on" : "off"}${banner[key] === enabled ? " (current)" : ""}`,
+					"Banner saved; applies at next startup.",
+					async () => {
+						const next = { ...await readBannerConfigForEdit(bannerHome), [key]: enabled };
+						await writeBannerConfig(next, bannerHome);
+						banner = next;
+					},
+					() => bannerPreview({ ...banner, [key]: enabled }),
+					explicitChoice(setting, enabled ? "on" : "off", () => banner[key] === enabled),
+				);
+			}
 			for (const color of BANNER_COLORS) add(
 				() => `Banner color: ${color}${banner.color === color ? " (current)" : ""}`,
 				"Banner saved; applies at next startup.",
@@ -2831,6 +3171,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				for (const name of names) rows.push({
 					category,
 					label: () => `Theme: ${name}${activeTheme === name ? " (current)" : ""}`,
+					choice: explicitChoice("Theme", name, () => activeTheme === name),
 					preview: () => {
 						const selected = ctx.ui.getTheme(name);
 						if (selected?.name !== name) throw new Error("Selected theme is unavailable.");
@@ -2866,6 +3207,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const [label, policy] of [["enable", "on"], ["disable", "off"]] as const) rows.push({
 				category,
 				label: () => `Vim: ${label}${resolveVimPolicy(animationOptions).policy === policy ? " (current preference)" : ""}`,
+				choice: explicitChoice("Vim", policy, () => resolveVimPolicy(animationOptions).policy === policy),
 				preview: () => {
 					const result = resolveVimPolicy(animationOptions);
 					const effective = prompt?.effectiveVimPolicy ?? "no active prompt";
@@ -2879,6 +3221,40 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					vimPolicy = result.policy;
 					prompt?.setVimPolicy(vimPolicy);
 					reportVim(ctx, result);
+				},
+			});
+			let rddControl: RddModeControl | undefined;
+			let rddSnapshot: Awaited<ReturnType<RddModeControl["read"]>>;
+			let rddLoading = true;
+			let rddHandoff: RddModeControl | undefined;
+			// Never block the rest of Customize on an unavailable or slow provider.
+			// Rendering only consumes the snapshot, which is refreshed on each open.
+			const refreshRdd = async () => {
+				let control: RddModeControl | undefined;
+				let snapshot: Awaited<ReturnType<RddModeControl["read"]>>;
+				try {
+					control = currentRddSession() ? await discoverRddModeControl(pi) : undefined;
+					snapshot = !closed && currentRddSession() ? await control?.read() : undefined;
+				} catch { /* An incompatible or failing bridge is unavailable. */ }
+				if (closed) return;
+				rddSnapshot = currentRddSession() && snapshot && (snapshot.effective === "on" || snapshot.effective === "off") && Object.values(NATIVE_REVIEW_MODE_SOURCE).includes(snapshot.source) ? snapshot : undefined;
+				rddControl = rddSnapshot ? control : undefined;
+				rddLoading = false;
+				requestCustomizeRender?.();
+			};
+			rows.push({
+				category,
+				label: () => rddSnapshot ? `RDD: ${rddSnapshot.effective} (decided by ${rddSnapshot.source}) · checked on open` : `RDD: ${rddLoading ? "checking" : "unavailable"}`,
+				preview: () => ({ title: "RDD selector", sample: "Enter for fresh status and repository or explicitly machine-wide choices; review consent unchanged." }),
+				action: () => {
+					if (closed || !currentRddSession()) return;
+					if (!rddControl || !rddSnapshot) {
+						ctx.ui.notify(rddLoading ? "RDD status is still being checked." : "RDD is unavailable in this live primary session.", "warning");
+						return;
+					}
+					// The owner's native selector must not sit underneath our overlay.
+					rddHandoff = rddControl;
+					close();
 				},
 			});
 			let yoloDisplay: YoloDisplay = YOLO_DISPLAY.unavailable;
@@ -2909,23 +3285,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				})().finally(() => { refreshing = undefined; });
 				return refreshing;
 			};
-			rows.push({
+			for (const value of [YOLO_DISPLAY.on, YOLO_DISPLAY.off]) rows.push({
 				category,
-				label: () => `YOLO: ${yoloDisplay} · session only`,
-				preview: () => ({ title: "YOLO · session permission", sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
+				label: () => `YOLO: ${value} · session only`,
+				choice: explicitChoice("YOLO", value, () => yoloDisplay === value),
+				preview: () => ({ title: `YOLO: ${yoloDisplay} · session only`, sample: "ordinary scoped commits/push/PR · destructive confirmations remain · review consent unchanged · reset on reload" }),
 				action: async () => {
 					if (closed) return;
 					if (!adapter || yoloDisplay === YOLO_DISPLAY.unavailable) {
 						ctx.ui.notify("YOLO is unavailable in this live primary session.", "warning");
 						return;
 					}
-					await adapter.toggle();
+					if (yoloDisplay !== value) await adapter.toggle();
 					await refreshYolo();
 				},
 			});
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Session permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDisplay === mode ? " (current)" : ""}`,
+				choice: explicitChoice("Session permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDisplay === mode),
 				preview: () => ({ title: "Permissions · current session", sample: mode === "auto"
 					? "independent session-model action checks · extra inference cost · hard safety and native consent remain"
 					: mode === "yolo" ? "ordinary scoped delivery permission · destructive confirmations remain"
@@ -2940,6 +3318,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const mode of ["normal", "auto", "yolo", "super-yolo"] as const) rows.push({
 				category,
 				label: () => `Default permissions: ${mode.toUpperCase()}${mode === "auto" ? " (beta)" : ""}${permissionDefault === mode ? " (saved)" : ""}`,
+				choice: explicitChoice("Default permissions", mode === "auto" ? "AUTO (beta)" : mode.toUpperCase(), () => permissionDefault === mode),
 				preview: () => ({ title: "Permissions · user-global default", sample: `New primary sessions start in ${mode.toUpperCase()}; current session stays unchanged. ${mode === "auto" ? "Additional classifier inference uses the session model; usage is separate." : "Independent safety and consent remain."}` }),
 				action: async () => {
 					if (closed) return;
@@ -2958,6 +3337,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const result = historyCapture();
 					return `Prompt history capture: ${label}${result.preference === policy && !result.malformed ? " (current)" : ""}${result.envOverride ? " · env override" : ""}`;
 				},
+				choice: explicitChoice("History capture", policy, () => { const result = historyCapture(); return result.preference === policy && !result.malformed; }),
 				preview: () => {
 					const result = historyCapture();
 					const effective = result.enabled ? "on" : "off";
@@ -2974,15 +3354,17 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			rows.push(...buildNotificationRows(ctx));
 			category = "Layout";
-			// Presets set density and visibility together and keep the placements; any switch below still overrides them.
+			// Presets set the visibility switches and keep the placements, the density and the surface; any switch below still overrides them.
 			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)),
 				layoutChoice("Preset", PRESET_LABEL[preset], () => visualPresetOf(visual()) === preset, "Light hides the rail, Power user adds Stats; alt+l cycles them"));
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }),
 				layoutChoice("Status", value, () => visual().statusPlacement === value, "Where Status lives; auto uses the rail from 140 columns"));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }),
-				layoutChoice("Header", value, () => visual().headerPlacement === value, "The model, context and cost row: above the conversation or under the input"));
+				layoutChoice("Header", value, () => visual().headerPlacement === value, "The model, context and cost row: top above the conversation, below-input under the input, split into a title row and a bottom status bar"));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }),
-				layoutChoice("Density", value, () => visual().density === value, "Space between rail sections"));
+				layoutChoice("Density", value, () => visual().density === value, "Spacing: comfortable adds gaps between rail sections and a padding row under a top header; compact removes them; minimal also drops the brand and the key hints"));
+			for (const value of Object.values(CHROME_SURFACE)) add(() => `Surface: ${value}${visual().surface === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, surface: value })), () => layoutPreview({ ...visual(), surface: value }),
+				layoutChoice("Surface", value, () => visual().surface === value, "Chrome background: transparent (default) lets the terminal background show through; tinted paints the rail, header rows and panel"));
 			category = "Cards";
 			// One live style for conversation cards, panels, header/footer and prompt.
 			const cardStylePreview = { [CARD_STYLE.NEON]: "╭─ ✿ read ─╮  outlined chrome + prompt", [CARD_STYLE.FLOAT]: "▎ ✿ read  painted chrome + prompt" };
@@ -3024,20 +3406,32 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				{ setting: "Card content", value: content, current: () => { const current = resolveCardContent(home); return current.content === content && !current.malformed; }, hint: "Tool cards: result previews, or the command only" },
 			);
 			category = "Sections";
-			for (const key of VISUAL_SECTION_KEYS) add(
-				() => `Section ${key}: ${visual().visibility[key] ? "shown" : "hidden"}`,
+			for (const key of VISUAL_SECTION_KEYS) for (const shown of [true, false]) add(
+				() => `Section ${key}: ${shown ? "shown" : "hidden"}`,
 				pending,
-				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: !settings.visibility[key] } })),
+				() => updateVisual((settings) => ({ ...settings, visibility: { ...settings.visibility, [key]: shown } })),
 				() => {
-					const visibility = { ...visual().visibility, [key]: !visual().visibility[key] };
-					return { title: `Sections · ${key} ${visibility[key] ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, shown]) => shown).map(([section]) => section).join("] [") || "no optional sections"}]` };
+					const visibility = { ...visual().visibility, [key]: shown };
+					return { title: `Sections · ${key} ${shown ? "shown" : "hidden"}`, sample: `[${Object.entries(visibility).filter(([, value]) => value).map(([section]) => section).join("] [") || "no optional sections"}]` };
 				},
+				explicitChoice(key, shown ? "shown" : "hidden", () => visual().visibility[key] === shown),
 			);
+			let piKeybindings: PiKeybindings | undefined;
+			let reloadRequested = false;
+			rows.push(...buildKeymapRows({
+				env,
+				configHome: doubleEscCancelConfigHome,
+				keybindings: () => piKeybindings,
+				commands: paletteCommandsForKeymaps(pi),
+				notify: (message, type) => ctx.ui.notify(message, type),
+				// Pi reloads after this card closes, as the command's last step.
+				reload: () => { reloadRequested = true; close(); },
+			}));
 			const catalog = () => listVisualProfiles(home).map(name => getVisualProfile(name, home)!);
 			category = "Profiles";
 			rows.push({ category, label: "Visual profiles (preview, save, apply, delete)", preview: () => {
 				const saved = catalog()[0];
-				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
+				return saved ? { title: `${saved.name} · saved profile`, sample: `${saved.visual.headerPlacement === "top" ? "[Header] → [Input]" : saved.visual.headerPlacement === "split" ? "[Title] → [Input] → [Status bar]" : "[Input] → [Header]"}  [${saved.visual.statusPlacement} status]` } : { title: "No saved profiles", sample: "Enter to save the current appearance" };
 			}, action: () => {
 				catalog();
 				customizeView?.openProfiles();
@@ -3114,23 +3508,28 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				unobserve = adapter?.observe(() => { void refreshYolo(); });
 				await refreshYolo();
 				if (closed) return;
-				await ctx.ui.custom<null>((tui, theme, _keys, done) => {
+				await ctx.ui.custom<null>((tui, theme, keys, done) => {
+					if (typeof (keys as Partial<PiKeybindings> | undefined)?.getKeys === "function") piKeybindings = keys as PiKeybindings;
 					finish = () => done(null);
 					if (closed) done(null);
 					requestYoloRender = () => { if (!closed) tui.requestRender(); };
 					requestCustomizeRender = requestYoloRender;
 					customizeView = new VisualCustomizeView({ rows, profiles, theme, requestRender: requestYoloRender, rowsAvailable: () => Math.max(0, Math.floor(tui.terminal.rows * 0.85) - 2), onError: (error) => { if (!closed) ctx.ui.notify(`${customizeView?.title() ?? "Customization"}: ${error.message}`, "error"); }, onClose: close });
 					const view = customizeView;
+					void refreshRdd();
 					// Own interaction lifetime here, leaving the shared view unchanged.
 					return {
 						render: (width) => closed ? [] : view.render(width),
 						handleInput: (data) => { if (!closed) view.handleInput(data); },
+						handleMouse: (event) => closed ? undefined : view.handleMouse(event),
 						focus: (label: string) => !closed && view.focus(label),
 						invalidate: () => { if (!closed) view.invalidate(); },
 						dispose: close,
 					};
 				}, { overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "85%" } });
 			} finally { close(); }
+			if (rddHandoff && currentRddSession()) await rddHandoff.open();
+			if (reloadRequested) await ctx.reload();
 		},
 	});
 	pi.registerCommand("gentle:vim", {

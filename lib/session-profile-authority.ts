@@ -11,6 +11,7 @@ import {
  bindSessionProfile,
  clearSessionProfileBinding,
  readSessionProfileBinding,
+ recordSessionProfileStartupNone,
  type SessionProfileBinding,
 } from "./session-profile-binding.ts";
 
@@ -20,6 +21,9 @@ export type SessionProfileAuthority =
 
 /** Publish only the returned detached snapshot, including preserved disk state
  * on append failure. Terminal invalid/future records never expose a fallback.
+ * The record's origin and startup state travel with it (gentle-shell#2742), so
+ * a startup record is never read as an explicit choice and a startup-none
+ * clear stays distinct from a legacy clear.
  */
 export function publishSessionProfileOutcome(
  manager: SessionProfileLifecycleManager,
@@ -28,10 +32,12 @@ export function publishSessionProfileOutcome(
  const id = manager.getSessionId();
  const state = outcome.state;
  if (state.status === "bound") {
-  bindSessionProfile(id, state.binding.name, state.binding.modelProfiles);
+  const { name, origin, modelProfiles, startup } = state.binding;
+  bindSessionProfile(id, name, modelProfiles, { origin, ...(startup === undefined ? {} : { startup }) });
   return { available: true, binding: readSessionProfileBinding(id) };
  }
- clearSessionProfileBinding(id);
+ if (state.status === "cleared" && state.startup === "none") recordSessionProfileStartupNone(id);
+ else clearSessionProfileBinding(id);
  return state.status === "absent" || state.status === "cleared"
   ? { available: true }
   : { available: false };

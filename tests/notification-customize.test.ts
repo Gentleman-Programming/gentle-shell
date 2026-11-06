@@ -60,8 +60,8 @@ function harness(options: { malformed?: boolean; failWrite?: boolean; events?: P
 		rows: () => buildNotificationRows(ctx) };
 }
 
-function findRow(rows: CustomizeRow[], label: string | RegExp): CustomizeRow {
-	const found = rows.find(row => { const text = typeof row.label === "function" ? row.label() : row.label; return typeof label === "string" ? text.startsWith(label) : label.test(text); });
+function findRow(rows: CustomizeRow[], label: string | RegExp, value?: string): CustomizeRow {
+	const found = rows.find(row => { const text = typeof row.label === "function" ? row.label() : row.label; return (value === undefined || row.choice?.value === value) && (typeof label === "string" ? text.startsWith(label) : label.test(text)); });
 	assert.ok(found, `missing row ${label}`);
 	return found!;
 }
@@ -70,21 +70,23 @@ function findRow(rows: CustomizeRow[], label: string | RegExp): CustomizeRow {
 function isVisible(row: CustomizeRow): boolean {
 	try { return (row as CustomizeRow & { visible?: () => boolean }).visible?.() !== false; } catch { return false; }
 }
-function visibleRows(rows: CustomizeRow[]): CustomizeRow[] { return rows.filter(isVisible); }
+function visibleRows(rows: CustomizeRow[]): CustomizeRow[] {
+	return rows.filter(isVisible).filter((row, i, shown) => !row.choice || row.choice.setting !== shown[i - 1]?.choice?.setting);
+}
 function keyhintOf(row: CustomizeRow): string { return (row as CustomizeRow & { keyhint?: string }).keyhint ?? ""; }
 
 function fakeInline(inputs: (string | undefined)[] = [], confirms: boolean[] = []): CustomizeInline {
-	return { input: async () => inputs.shift(), confirm: async () => confirms.shift() ?? false, disposed: false };
+	return { input: async () => inputs.shift(), capture: async () => undefined, confirm: async () => confirms.shift() ?? false, disposed: false };
 }
 function label(row: CustomizeRow): string { return typeof row.label === "function" ? row.label() : row.label; }
 
 test("Notifications rows toggle and mute directly without any nested native dialog", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		await findRow(rows, "Audio notifications: off").action(fakeInline());
+		await findRow(rows, "Audio notifications: off", "on").action(fakeInline());
 		assert.equal(getNotificationService()!.getState().settings.enabled, true);
 		assert.equal(h.writes, 1);
-		await findRow(rows, "Audio: unmuted").action(fakeInline());
+		await findRow(rows, "Audio: unmuted", "on").action(fakeInline());
 		assert.equal(getNotificationService()!.getState().muted, true);
 		assert.equal(h.writes, 1, "mute persists in-process without writing configuration");
 		assert.deepEqual(h.nested, { select: 0, input: 0, confirm: 0 });
@@ -101,10 +103,10 @@ test("labels and previews never probe, play or write and the card exposes no ava
 	} finally { h.owner.retire(); }
 });
 
-test("event rows cycle independently and p tests the selected sound without writing", async () => {
+test("event rows apply explicit choices independently and p tests the selected sound without writing", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const failed = findRow(rows, "agent.failed:");
+		const failed = findRow(rows, "agent.failed:", "attention tone");
 		assert.match(label(failed), /builtin:error/);
 		await failed.action(fakeInline());
 		assert.equal(getNotificationService()!.getState().settings.audio.events["agent.failed"], "builtin:attention");
@@ -157,7 +159,7 @@ test("malformed configuration needs fresh strict consent per attempt; a failed w
 	for (const failWrite of [false, true]) {
 		const h = harness({ malformed: true, failWrite }); try {
 			const rows = h.rows();
-			const enable = findRow(rows, "Audio notifications:");
+			const enable = findRow(rows, "Audio notifications:", "on");
 			await enable.action(fakeInline([], [false]));
 			assert.equal(h.writes, 0, "cancel preserves the file and settings");
 			assert.equal(getNotificationService()!.getState().malformed, true);
@@ -200,24 +202,44 @@ function customizeView(rows: CustomizeRow[], onClose: () => void = () => {}) {
 		profiles: { list: () => [], save: () => {}, apply: () => {}, delete: () => {}, reset: () => {} } });
 }
 
-/** Navigates the controls pane until the given label prefix carries the selection marker. */
+/** Focus a row's inline setting without applying its highlighted value. */
 function selectControl(view: VisualCustomizeView, prefix: string): void {
+	assert.ok(view.focus(prefix), `could not select a control labelled ${prefix}`);
 	view.render(76);
-	view.handleInput("\x1b[C");
-	for (let i = 0; i < 60; i++) {
-		if (view.render(76).join("\n").includes(`\u25b8 ${prefix}`)) return;
-		view.handleInput("\x1b[B");
-	}
-	assert.fail(`could not select a control labelled ${prefix}`);
 }
 
 /** Detailed event rows are folded by default: expand Advanced inside the same card, then select. */
 async function expandAndSelect(view: VisualCustomizeView, prefix: string): Promise<void> {
 	selectControl(view, "Advanced");
+	view.handleInput("\x1b[C");
 	view.handleInput("\r");
 	await tick();
 	selectControl(view, prefix);
 }
+
+test("browsing notification choices neither saves nor opens a file or recovery prompt", async () => {
+	const h = harness();
+	try {
+		const before = structuredClone(getNotificationService()!.getState().settings);
+		const view = customizeView(h.rows());
+		for (const prefix of ["Audio notifications:", "Audio:", "Success:", "Advanced:"]) {
+			selectControl(view, prefix);
+			for (let i = 0; i < 4; i++) { view.handleInput("\x1b[C"); view.render(160); }
+			assert.doesNotMatch(view.render(160).join("\n"), /Local audio path|Replace malformed/);
+		}
+		assert.equal(h.writes, 0); assert.equal(h.probes, 0); assert.equal(h.played, 0);
+		assert.deepEqual(getNotificationService()!.getState().settings, before);
+		assert.deepEqual(h.nested, { select: 0, input: 0, confirm: 0 });
+		selectControl(view, "Success:");
+		for (let i = 0; i < 4; i++) view.handleInput("\x1b[C");
+		view.handleInput("\r");
+		assert.match(view.render(160).join("\n"), /Local audio path/);
+		view.handleInput("\x1b"); await tick(); await tick();
+		assert.equal(h.writes, 0);
+		assert.deepEqual(getNotificationService()!.getState().settings, before, "cancel preserves preferences");
+		view.dispose();
+	} finally { h.owner.retire(); }
+});
 
 test("an in-flight local sound validation keeps busy, blocking a second field and any write until it settles", async () => {
 	const h = harness(); try {
@@ -313,14 +335,14 @@ test("event rows cover supported events and never expose session.shutdown", () =
 test("p on every basic non-event notification control stays on the audio card, opens no profiles and never previews", () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		const targets = ["Audio notifications:", "Audio: unmuted", "Advanced"];
+		const targets = [["Audio notifications:", "Enabled"], ["Audio: unmuted", "Mute"], ["Advanced", "Advanced"]];
 		const listed: number[] = [];
 		const view = new VisualCustomizeView({ rows, theme: { fg: (_role: string, text: string) => text }, rowsAvailable: () => 24, requestRender: () => {}, onClose: () => {}, profiles: {
 			list: () => { listed.push(1); return []; }, save: () => {}, apply: () => {}, delete: () => {}, reset: () => {},
 		} });
-		for (const [i, target] of targets.entries()) {
+		for (const [i, [target, setting]] of targets.entries()) {
 			selectControl(view, target);
-			assert.ok(view.render(76).join("\n").includes(`\u25b8 ${target}`), `non-event row ${i} (${target}) must be the selected control`);
+			assert.ok(view.render(76).join("\n").includes(`\u25b8 ${setting} `), `non-event row ${i} (${target}) must be the selected control`);
 			view.handleInput("p");
 			const frame = view.render(76).join("\n");
 			assert.equal(view.title(), "Audio notifications", `non-event row ${i} must keep the audio header`);
@@ -351,15 +373,15 @@ test("the basic card exposes exactly six human controls and an Advanced toggle w
 	} finally { h.owner.retire(); }
 });
 
-test("context.high is exposed as an advanced per-event row that cycles independently", async () => {
+test("context.high is exposed as an advanced per-event row with independent choices", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
 		assert.equal(label(findRow(rows, "context.high:")), "context.high: builtin:attention", "the attention tone is the context default");
-		await findRow(rows, /^Advanced/).action(fakeInline());
+		await findRow(rows, /^Advanced/, "shown").action(fakeInline());
 		assert.equal(visibleRows(rows).some(row => label(row).startsWith("context.high:")), true);
 		await findRow(rows, "context.high:").action(fakeInline());
 		const events = getNotificationService()!.getState().settings.audio.events;
-		assert.equal(events["context.high"], null, "Enter cycles the context tone to silence without touching other events");
+		assert.equal(events["context.high"], null, "Enter applies silence to the context tone without touching other events");
 		assert.equal(events["agent.attention"], "builtin:attention");
 		assert.equal(h.writes, 1);
 	} finally { h.owner.retire(); }
@@ -379,10 +401,10 @@ test("Advanced folds the fourteen detailed event rows inside the same card witho
 		const rows = h.rows();
 		const detail = () => visibleRows(rows).map(label).filter(text => /^(?:agent|subagent|session|context)\./.test(text));
 		assert.equal(detail().length, 0, "detailed event rows stay folded by default");
-		const toggle = findRow(rows, /^Advanced/);
+		const toggle = findRow(rows, /^Advanced/, "shown");
 		await toggle.action(fakeInline());
 		assert.equal(detail().length, 14, "expanding reveals the fourteen detailed rows");
-		await toggle.action(fakeInline());
+		await findRow(rows, /^Advanced/, "hidden").action(fakeInline());
 		assert.equal(detail().length, 0, "collapsing folds them again");
 		assert.equal(h.writes, 0); assert.equal(h.probes, 0); assert.equal(h.played, 0);
 	} finally { h.owner.retire(); }
@@ -394,7 +416,7 @@ test("global controls and the fold toggle advertise no sound key while group and
 		for (const prefix of ["Audio notifications:", "Audio: unmuted", "Advanced"])
 			assert.doesNotMatch(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} is not a per-type file target`);
 		for (const { prefix } of GROUPS) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/, `${prefix} assigns its own sound`);
-		await findRow(rows, /^Advanced/).action(fakeInline());
+		await findRow(rows, /^Advanced/, "shown").action(fakeInline());
 		for (const prefix of ["agent.failed:", "agent.completed:"]) assert.match(keyhintOf(findRow(rows, prefix)), /f sound/);
 	} finally { h.owner.retire(); }
 });
@@ -402,7 +424,7 @@ test("global controls and the fold toggle advertise no sound key while group and
 test("a group edit writes exactly its target events and preserves every other override", async () => {
 	const h = harness(); try {
 		const rows = h.rows();
-		await findRow(rows, "Success:").action(fakeInline());
+		await findRow(rows, "Success:", "error tone").action(fakeInline());
 		const events = getNotificationService()!.getState().settings.audio.events;
 		assert.equal(events["agent.completed"], "builtin:error");
 		assert.equal(events["subagent.completed"], "builtin:error");
@@ -416,7 +438,7 @@ test("a group edit writes exactly its target events and preserves every other ov
 test("error and attention groups target verified events only and never add subagent.waiting", async () => {
 	const h = harness({ events: { "agent.failed": "builtin:error", "subagent.failed": "builtin:error", "subagent.timed_out": "builtin:error", "agent.attention": "builtin:attention", "subagent.waiting": "builtin:error" } }); try {
 		const rows = h.rows();
-		await findRow(rows, "Error:").action(fakeInline());
+		await findRow(rows, "Error:", "attention tone").action(fakeInline());
 		let events = getNotificationService()!.getState().settings.audio.events;
 		assert.equal(events["agent.failed"], "builtin:attention");
 		assert.equal(events["subagent.failed"], "builtin:attention");
@@ -428,10 +450,10 @@ test("error and attention groups target verified events only and never add subag
 	} finally { h.owner.retire(); }
 });
 
-test("a group whose targets diverge reads Custom until an explicit Enter applies the recommended tone", async () => {
+test("a group whose targets diverge reads Custom until an explicit choice applies the success tone", async () => {
 	const h = harness({ events: { "agent.completed": "builtin:success", "subagent.completed": null } }); try {
 		const rows = h.rows();
-		const success = findRow(rows, "Success:");
+		const success = findRow(rows, "Success:", "success tone");
 		assert.equal(label(success), "Success: Custom (varies)");
 		assert.equal(h.writes, 0);
 		await success.action(fakeInline());
@@ -445,7 +467,7 @@ test("a group whose targets diverge reads Custom until an explicit Enter applies
 test("an omitted group reads silence and its edit writes only its targets without merging the preset", async () => {
 	const h = harness({ events: {} }); try {
 		const rows = h.rows();
-		const success = findRow(rows, "Success:");
+		const success = findRow(rows, "Success:", "success tone");
 		assert.equal(label(success), "Success: silence");
 		await success.action(fakeInline());
 		const events = getNotificationService()!.getState().settings.audio.events;
@@ -480,7 +502,7 @@ test("group p previews an unambiguous tone and mixed groups only point at Advanc
 test("Advanced expansion is ephemeral: rebuilding the card starts folded", async () => {
 	const h = harness(); try {
 		const first = h.rows();
-		await findRow(first, /^Advanced/).action(fakeInline());
+		await findRow(first, /^Advanced/, "shown").action(fakeInline());
 		assert.equal(visibleRows(first).map(label).filter(text => /^(?:agent|subagent|session)\./.test(text)).length, 13);
 		const second = h.rows();
 		assert.equal(visibleRows(second).map(label).filter(text => /^(?:agent|subagent|session)\./.test(text)).length, 0, "reopening folds the detailed rows");
@@ -557,7 +579,7 @@ test("a uniform file group shows the basename, prefills its path and previews th
 		assert.doesNotMatch(label(success), /builtin:|file:|agent\.|subagent\./, "the main label stays human and raw-reference free");
 		getNotificationService()!.validateFile = async () => true;
 		const requests: string[] = [];
-		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return WAV_FIXTURES.success; }, confirm: async () => false, disposed: false };
+		const inline: CustomizeInline = { input: async request => { requests.push(request.value); return WAV_FIXTURES.success; }, capture: async () => undefined, confirm: async () => false, disposed: false };
 		await Promise.resolve(success.key!("f", inline));
 		await tick(); await tick();
 		assert.deepEqual(requests, [WAV_FIXTURES.success], "the field is prefilled with the current file path");
@@ -602,14 +624,15 @@ test("the rendered basic card shows three independent group choices and hides pe
 		view.render(76);
 		view.handleInput("\x1b[C");
 		const frame = () => view.render(76).join("\n");
-		for (const { prefix } of GROUPS) assert.match(frame(), new RegExp(prefix), `${prefix} must be visible on the basic card`);
+		for (const { prefix } of GROUPS) assert.match(frame(), new RegExp(`${prefix.slice(0, -1)}\\s+`), `${prefix} must be visible on the basic card`);
 		assert.doesNotMatch(frame(), /agent\.failed:/, "no per-event technical row is visible before Advanced");
 		selectControl(view, "Success:");
 		assert.match(frame(), /f sound/, "the selected group advertises its own file key");
 		selectControl(view, "Advanced:");
+		view.handleInput("\x1b[C");
 		view.handleInput("\r");
 		await tick();
-		assert.match(frame(), /agent\.failed:/, "Advanced reveals the per-event exceptions");
+		assert.match(frame(), /agent\.failed\s+/, "Advanced reveals the per-event exceptions");
 	} finally { h.owner.retire(); }
 });
 
@@ -658,6 +681,7 @@ test("the Advanced per-event rows intentionally keep raw ids and builtin refs", 
 		view.render(76);
 		view.handleInput("\x1b[C");
 		selectControl(view, "Advanced:");
+		view.handleInput("\x1b[C");
 		view.handleInput("\r");
 		await tick();
 		selectControl(view, "agent.failed:");

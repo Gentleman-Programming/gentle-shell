@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import gentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import installGentleTodo, { todoCollapseKey, todoEnabled } from "../extensions/gentle-todo.ts";
+import { isolatedConfigEnv, keymapsConfigHome, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
+
+const gentleTodo: typeof installGentleTodo = (pi, env) => installGentleTodo(pi, isolatedConfigEnv(env));
+after(removeIsolatedConfigHomes);
 
 // The card style defaults to float; these assertions pin the outlined (neon)
 // panels unless a test switches the style itself.
@@ -122,6 +126,15 @@ test("long Todo widgets stay bounded, scroll, resize and keep their collapse con
 		assert.notDeepEqual(bottom.render(40), collapsed, "keyboard scrolling is available without mouse");
 	}
 	t.after(() => setCardStyle(CARD_STYLE.NEON));
+});
+
+test("a saved keymap replaces the todo collapse key", () => {
+	const { pi, shortcuts } = fakePi();
+	gentleTodo(pi, { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "todo.collapse": "alt+t" }) });
+	assert.deepEqual([...shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up", "alt+t"]);
+	const envWins = fakePi();
+	gentleTodo(envWins.pi, { GENTLE_PI_CONFIG_HOME: keymapsConfigHome({ "todo.collapse": "alt+t" }), GENTLE_PI_TODO_KEY: "off" });
+	assert.deepEqual([...envWins.shortcuts.keys()].sort(), ["alt+shift+down", "alt+shift+up"]);
 });
 
 test("Todo shortcuts never take a key Pi binds by default, so startup reports no shortcut conflict", async () => {
@@ -287,7 +300,7 @@ test("the rail draws Todos as a panel section whose header row 0 is the collapse
 		const rail = sidebarState(tui as never).parts.get("todo")!;
 		assert.equal((rail as { surface?: string }).surface, "panel", "the rail paints this section on the panel surface");
 		const rows = rail.render(48).map((row) => stripAnsi(row).trimEnd());
-		assert.deepEqual(rows, ["▾ TODOS                                      1/3", "  ✓ 1 done", "  ◐ B", "    └ job-1", "  ○ C"]);
+		assert.deepEqual(rows, ["▾ TODOS                        ctrl+shift+t  1/3", "  ✓ 1 done", "  ◐ B", "    └ job-1", "  ○ C"]);
 		assert.doesNotMatch(rows.join("\n"), /[╭╮╰╯│▎]/u, "no card chrome in the rail");
 		const pointer = (type: "move" | "click", y: number) => ({
 			type, button: type === "move" ? "none" as const : "left" as const, x: 1, y, screenX: 1, screenY: y, width: 48, height: rows.length, shift: false, alt: false, ctrl: false,
@@ -295,7 +308,7 @@ test("the rail draws Todos as a panel section whose header row 0 is the collapse
 		assert.deepEqual(rail.handleMouse?.(pointer("move", 0)), { handled: true, render: true }, "the header row is hoverable");
 		assert.equal(rail.handleMouse?.(pointer("click", 1)), undefined, "a body row is not the control");
 		assert.equal(rail.handleMouse?.(pointer("click", 0))?.handled, true);
-		assert.deepEqual(rail.render(48).map((row) => stripAnsi(row).trimEnd()), ["▸ TODOS                                      1/3", "  ◐ B"]);
+		assert.deepEqual(rail.render(48).map((row) => stripAnsi(row).trimEnd()), ["▸ TODOS                        ctrl+shift+t  1/3", "  ◐ B"]);
 	}
 });
 

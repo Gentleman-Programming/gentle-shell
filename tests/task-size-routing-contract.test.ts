@@ -92,7 +92,7 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		"7. **Context backstop**",
 		"open product or design decision",
 		// Verification by named risk: rule 3 names the escalated high-risk item.
-		"named high-risk item (assess `escalate`)",
+		"named high-risk item (assess `escalate` when RDD is on or unknown)",
 		"never by file count",
 		// gentle-shell#1731: the writer fires on reasons, not on size alone.
 		"never by file count or a large task alone",
@@ -144,7 +144,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// Pain-point iteration S13 (C10): the Preparation trigger tells the parent not to read what the worker will
 	// read and to pass paths, not content (7,000 -> 7,100 B; every other card sentence is pinned by a contract).
 	// S15: units of about 100 changed lines or less always run inline (7,100 -> 7,300 B).
-	"orchestrator-delegation.md": 7_300,
+	// RDD-off verification keeps the named-risk rule while conditioning assess on mode (7,300 -> 7,350 B).
+	"orchestrator-delegation.md": 7_350,
 	"orchestrator-delegation-reference.md": 14_800,
 	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
@@ -154,7 +155,8 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
 	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
-	"orchestrator-verification.md": 7_500,
+	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
+	"orchestrator-verification.md": 7_900,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
 	// invariants to reuse): 4,500 -> 5,300 B.
 	// Pain-point iteration S10 (C7): writer handoffs keep test scratch outside the worktree (5,300 -> 5,500 B).

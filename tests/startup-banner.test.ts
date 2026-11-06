@@ -527,3 +527,43 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
 	});
 }
+
+test("the banner ends with a /gentle:guide reminder on every start, only when the command exists", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-guide-"));
+	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	const render = async (commands: { name: string }[]) => {
+		let start: Function;
+		let header: { render(width: number): string[]; dispose(): void };
+		startup({ on: (name: string, fn: Function) => { if (name === "session_start") start = fn; }, registerCommand() {}, getCommands: () => commands, getAllTools: () => [] } as unknown as ExtensionAPI);
+		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+		} } });
+		t.mock.timers.tick(50);
+		const lines = header!.render(160).map(stripAnsi);
+		header!.dispose();
+		return lines;
+	};
+	const withGuide = await render([{ name: "gentle:guide" }]);
+	assert.equal(withGuide.filter((line) => line.trim() !== "").at(-1)?.trim(), "Tip: run /gentle:guide for a guided tour of Gentle Shell");
+	assert.equal((await render([{ name: "gentle:guide" }])).filter((line) => line.includes("/gentle:guide")).length, 1, "shown again on the next start, once");
+	assert.equal((await render([])).some((line) => line.includes("/gentle:guide")), false);
+});

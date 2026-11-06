@@ -28,7 +28,7 @@ const WINDOWS_ADMINISTRATORS = "S-1-5-32-544";
 const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
 
 // Cold or contended Windows hosts can take several seconds to start a process
-// (whoami/PowerShell/icacls), and owner preparation runs many probes in
+// (whoami/PowerShell), and owner preparation runs many probes in
 // sequence. Each probe gets a bounded, configurable timeout, plus one bounded
 // retry of the idempotent system probe; authority validation is never retried
 // or weakened because it happens after the probe returns.
@@ -56,7 +56,7 @@ export function withWindowsSystemProbeRetry<T>(probe: () => T): T {
 	}
 }
 
-function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
+function windowsSystemExecutable(name: "whoami.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
 	try {
 		return realpathSync.native(join(WINDOWS_SYSTEM_DIRECTORY, name));
 	} catch {
@@ -69,28 +69,6 @@ function windowsUserSid(): string {
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1) throw new Error("Windows user SID is unavailable");
 	return matches[0]!.toUpperCase();
-}
-
-function windowsLocalAdministratorSid(): string {
-	const script = "$ErrorActionPreference='Stop';$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)';$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value";
-	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
-	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
-	if (matches.length !== 1 || !isWindowsSid(matches[0]!)) throw new Error("Windows local Administrator SID is unavailable");
-	return matches[0]!.toUpperCase();
-}
-
-function windowsDacl(path: string): string {
-	const archive = `.gentle-ai-acl-${randomUUID()}.txt`;
-	const archivePath = join(dirname(path), archive);
-	try {
-		withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("icacls.exe"), [path, "/save", archive, "/c"], { cwd: dirname(path), encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
-		const sddl = readFileSync(archivePath, "utf16le").match(/D:[^\r\n]+/)?.[0];
-		if (sddl === undefined) throw new Error("Windows DACL is unavailable");
-		return sddl;
-	} finally {
-		try { unlinkSync(archivePath); } catch {}
-	}
 }
 
 export type WindowsDaclValidationReason = "protection" | "ace-count" | "ace-shape" | "ace-type" | "ace-flags" | "ace-rights" | "ace-reserved-fields" | "ace-trustee" | "ace-duplicate";
@@ -168,8 +146,68 @@ interface WindowsAclIdentity {
 
 type WindowsObjectKind = "file" | "directory";
 
-function windowsAclIdentity(): WindowsAclIdentity {
-	return { user: windowsUserSid(), localAdministrator: windowsLocalAdministratorSid() };
+interface WindowsAclProbeSnapshot extends WindowsAclIdentity {
+	entries: readonly { index: number; owner: string; dacl: string }[];
+}
+
+export function decodeWindowsAclProbe(payload: string, count: number): WindowsAclProbeSnapshot {
+	const invalid = () => new Error("Windows ACL probe response is invalid");
+	if (!Number.isInteger(count) || count < 1 || count > 3 || payload.length > 65536) throw invalid();
+	let parsed: unknown;
+	try { parsed = JSON.parse(payload); } catch { throw invalid(); }
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid();
+	const value = parsed as Record<string, unknown>;
+	if (Object.keys(value).sort().join(",") !== "entries,localAdministrator,schema,user" || value.schema !== "gentle-pi.windows-acl-probe/v1" ||
+		typeof value.user !== "string" || !isWindowsSid(value.user) || typeof value.localAdministrator !== "string" || !isWindowsSid(value.localAdministrator) ||
+		!Array.isArray(value.entries) || value.entries.length !== count) throw invalid();
+	const entries = value.entries.map((entry: unknown, index) => {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw invalid();
+		const item = entry as Record<string, unknown>;
+		if (Object.keys(item).sort().join(",") !== "dacl,index,owner" || item.index !== index || typeof item.owner !== "string" || !isWindowsSid(item.owner) ||
+			typeof item.dacl !== "string" || item.dacl.length === 0 || item.dacl.length > 16384) throw invalid();
+		return { index, owner: item.owner.toUpperCase(), dacl: item.dacl };
+	});
+	return { user: value.user.toUpperCase(), localAdministrator: value.localAdministrator.toUpperCase(), entries };
+}
+
+// One fresh, read-only observation per synchronous boundary. Never retain a
+// snapshot across calls, Git or makeWritable callbacks. Paths travel through
+// UTF-8 stdin, not interpolated script text or length-limited environment values.
+function windowsAclProbe(requests: readonly { path: string; kind: WindowsObjectKind }[]): WindowsAclProbeSnapshot {
+	if (requests.length < 1 || requests.length > 3 || requests.some(request => request.path.length === 0 || request.path.length > 32767 || request.path.includes("\0") || !["file", "directory"].includes(request.kind))) throw new WindowsOwnerValidationError();
+	const script = `$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::InputEncoding=[System.Text.Encoding]::UTF8
+[object[]]$requests=ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)'
+$administrator=$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value
+$sections=[System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Access
+$entries=@(for($i=0;$i -lt $requests.Count;$i++) {
+  $request=$requests[$i]
+  if($request.kind -eq 'file') { $acl=[System.IO.File]::GetAccessControl($request.path,$sections) }
+  elseif($request.kind -eq 'directory') { $acl=[System.IO.Directory]::GetAccessControl($request.path,$sections) }
+  else { throw 'Invalid object kind' }
+  [pscustomobject]@{index=$i;owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;dacl=$acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)}
+})
+@{schema='gentle-pi.windows-acl-probe/v1';user=$user;localAdministrator=$administrator;entries=$entries} | ConvertTo-Json -Compress -Depth 4`;
+	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
+	let output: string;
+	try {
+		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", input: JSON.stringify(requests), timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 65536, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
+	} catch { throw new WindowsOwnerValidationError(); }
+	// Invalid responses and authority failures are validated outside the retry.
+	return decodeWindowsAclProbe(output, requests.length);
+}
+
+function assertWindowsAclObservations(requests: readonly { path: string; kind: WindowsObjectKind; protectedDacl: boolean }[], identity?: WindowsAclIdentity): WindowsAclIdentity {
+	const snapshot = windowsAclProbe(requests);
+	if (identity !== undefined && (snapshot.user !== identity.user || snapshot.localAdministrator !== identity.localAdministrator)) throw new WindowsOwnerValidationError();
+	for (const entry of snapshot.entries) {
+		validatePrivateWindowsOwner(entry.owner, snapshot.user);
+		validatePrivateWindowsDacl(entry.dacl, snapshot.user, requests[entry.index]!.protectedDacl, snapshot.localAdministrator);
+	}
+	return { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
 }
 
 function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
@@ -193,12 +231,11 @@ export function assertTrustedWindowsOwner(path: string, kind: WindowsObjectKind)
 	validatePrivateWindowsOwner(windowsOwnerSid(path, kind), windowsUserSid());
 }
 
-function assertPrivateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, identity: WindowsAclIdentity = windowsAclIdentity()): void {
-	validatePrivateWindowsOwner(windowsOwnerSid(path, kind), identity.user);
-	validatePrivateWindowsDacl(windowsDacl(path), identity.user, protectedDacl, identity.localAdministrator);
+function assertPrivateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, identity?: WindowsAclIdentity): void {
+	assertWindowsAclObservations([{ path, kind, protectedDacl }], identity);
 }
 
-function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = windowsAclIdentity()): void {
+function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity): void {
 	validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
 	const { user, localAdministrator } = identity;
 	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
@@ -208,25 +245,26 @@ function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = 
 	assertPrivateWindowsDacl(path, "directory", true, identity);
 }
 
-function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, enforce = false, windowsIdentity?: WindowsAclIdentity): void {
+function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, windowsIdentity?: WindowsAclIdentity): void {
 	if (testingWindowsAclAuthority !== undefined) return testingWindowsAclAuthority(path);
-	if (enforce) enforcePrivateWindowsDacl(path, windowsIdentity);
-	else assertPrivateWindowsDacl(path, kind, protectedDacl, windowsIdentity);
+	assertPrivateWindowsDacl(path, kind, protectedDacl, windowsIdentity);
 }
 
-function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false, windowsIdentity?: WindowsAclIdentity): void {
+function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false): WindowsAclIdentity | undefined {
 	const boundary = [commonDir, join(commonDir, "gentle-ai"), join(commonDir, "gentle-ai", "candidate-views")];
 	if (testingWindowsAclAuthority !== undefined) {
 		for (const path of boundary) testingWindowsAclAuthority(path);
 		return;
 	}
-	const identity = windowsIdentity ?? windowsAclIdentity();
-	if (enforce) {
-		for (const path of boundary) validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
-		for (const path of boundary) enforcePrivateWindowsDacl(path, identity);
-		return;
-	}
-	for (const path of boundary) assertPrivateWindowsDacl(path, "directory", true, identity);
+	if (!enforce) return assertWindowsAclObservations(boundary.map(path => ({ path, kind: "directory", protectedDacl: true })));
+	// Take the identity from the same probe that later reads owners and DACLs
+	// back, so enforcement never compares two different identity sources. The
+	// DACLs are not validated yet: this boundary is about to rewrite them.
+	const snapshot = windowsAclProbe(boundary.map(path => ({ path, kind: "directory" })));
+	const identity = { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
+	for (const entry of snapshot.entries) validatePrivateWindowsOwner(entry.owner, identity.user);
+	for (const path of boundary) enforcePrivateWindowsDacl(path, identity);
+	return identity;
 }
 
 // A hostname or a repository-local nonce cannot prove that a PID is local.
@@ -311,8 +349,7 @@ function checkedCandidateOwnerParent(commonDir: string, platform: NodeJS.Platfor
 	const parent = join(commonDir, "gentle-ai", "candidate-views");
 	if (platform === "win32") {
 		directory(parent, false, platform);
-		const windowsIdentity = testingWindowsAclAuthority === undefined ? windowsAclIdentity() : undefined;
-		privateWindowsCandidateOwnerBoundary(commonDir, false, windowsIdentity);
+		const windowsIdentity = privateWindowsCandidateOwnerBoundary(commonDir);
 		return { parent, windowsIdentity };
 	}
 	directory(parent, true, platform, true);
@@ -342,7 +379,7 @@ function regular(path: string, privateMode = false, platform: NodeJS.Platform = 
 	const uid = process.getuid?.();
 	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || !samePath(realpathSync(path), path, platform) || stat.size > 16384n ||
 		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== BigInt(uid) || (stat.mode & 0o777n) !== 0o600n))) throw new Error("Unsafe candidate owner file");
-	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false, false, windowsIdentity);
+	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false, windowsIdentity);
 	return `${stat.dev}:${stat.ino}`;
 }
 

@@ -3,6 +3,7 @@ import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme,
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { paintHoverable } from "./shell-hover.ts";
 import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow, type PanelSummary } from "./shell-panel.ts";
+import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 
 // Gentle Todo: the task list the model keeps while it works. Everything here
 // is pure. The state lives in the session branch (every tool result carries
@@ -124,13 +125,9 @@ const NOTE_ROLE = "muted";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
-
-/** The key that folds the Todos card and section; GENTLE_PI_TODO_KEY overrides it, "" or "off" disables it. */
-export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_TODO_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
+/** The key that folds the Todos card and section; GENTLE_PI_TODO_KEY overrides it ("" or "off" disables it), then keymaps.json. */
+export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
+	return effectiveKey("todo.collapse", env, bindings);
 }
 
 export function emptyTodo(): TodoState {
@@ -419,14 +416,16 @@ function sectionTaskRows(task: TodoTask, theme: TodoTheme, width: number): strin
 	return [...rows, ...wrapTextWithAnsi(task.note, noteWidth).map((line, index) => renderPanelRow(width, `${index === 0 ? theme.fg("dim", "└") : " "} ${theme.fg(NOTE_ROLE, line)}`, "", PANEL_ROW_INDENT + 2))];
 }
 
-export function renderTodoSection(state: TodoState, theme: TodoTheme, width: number, options: Pick<TodoRenderOptions, "collapsed" | "staleTurns" | "hovered">): TodoSection {
+export function renderTodoSection(state: TodoState, theme: TodoTheme, width: number, options: Pick<TodoRenderOptions, "collapsed" | "staleTurns" | "hovered" | "collapseKey">): TodoSection {
 	if (state.tasks.length === 0) return { header: "", body: [] };
 	const { done, total } = todoSummary(state);
 	const planned = total - countStatus(state, TODO_STATUS.DROPPED);
 	const stale = options.staleTurns >= STALE_AFTER_TURNS;
+	// The collapse key rides the header, small and dim, as the only rail key hint.
+	const keyHint = options.collapseKey ? `${theme.fg("dim", options.collapseKey)}  ` : "";
 	const header = renderPanelHeader(theme, width, {
 		title: "Todos",
-		count: `${stale ? `stale · ${options.staleTurns} turns · ` : ""}${done}/${planned}`,
+		count: `${keyHint}${stale ? `stale · ${options.staleTurns} turns · ` : ""}${done}/${planned}`,
 		countRole: stale ? "warning" : "muted",
 		open: !options.collapsed,
 		hovered: options.hovered,

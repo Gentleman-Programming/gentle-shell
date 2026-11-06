@@ -48,10 +48,11 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 ## Execution Steps
 
 1. Take the brief: goal, layout, content, audience.
-2. Choose a kebab-case slug from the brief.
-3. Make the directions differ in structure or visual strategy, not only in color. Label each with the tradeoff it makes.
-4. Write `design/<slug>/NN-<name>.html` per artboard (`01-…`, `02-…`; kebab-case name).
-5. Write `design/<slug>/design.json`:
+2. Load `gentle-ui-design`: read its `SKILL.md` and only the references that match the brief's audience, primary job, and success condition. This skill owns delivery; that one owns UX quality.
+3. Choose a kebab-case slug from the brief.
+4. Make the directions differ in structure or visual strategy, not only in color. Label each with the tradeoff it makes.
+5. Write `design/<slug>/NN-<name>.html` per artboard (`01-…`, `02-…`; kebab-case name).
+6. Write `design/<slug>/design.json`:
 
 ```json
 {
@@ -65,9 +66,10 @@ Run this gate before every new brief: call the `gentle_design` tool with `action
 }
 ```
 
-6. Set `width`/`height` to the artboard's intended viewport in CSS pixels; keep the manifest in sync with the files on every change. Fields: `title`, `brief`, optional `feature`, and `artboards[]` with `file`, `title`, `tradeoff`, `width`, `height`.
-7. ODD link: when the design comes from a tracked ODD feature (an existing `odd/tasks/<feature>.md` for the current work), set `feature` to that path and append one entry to that document's `## Log` naming `design/<slug>/` and its artboards. When an artboard of that design is handed off to implement, the Log entry also names the chosen artboard (the one handed off; `list` reports it as `Chosen`) and that the others are alternatives. For small untracked work, omit `feature` and leave the design standalone; never create a feature document just to link it.
-8. After writing or changing artboards, call the `gentle_design` tool with `action: "open"` and the slug, unless the user said not to. When a canvas tab is already open it refreshes that tab instead of opening a new one, so call it after every change. Report the URL it returns.
+7. Set `width`/`height` to the artboard's intended viewport in CSS pixels; keep the manifest in sync with the files on every change. Fields: `title`, `brief`, optional `feature`, and `artboards[]` with `file`, `title`, `tradeoff`, `width`, `height`.
+8. ODD link: when the design comes from a tracked ODD feature (an existing `odd/tasks/<feature>.md` for the current work), set `feature` to that path and append one entry to that document's `## Log` naming `design/<slug>/` and its artboards. When an artboard of that design is handed off to implement, the Log entry also names the chosen artboard (the one handed off; `list` reports it as `Chosen`) and that the others are alternatives. For small untracked work, omit `feature` and leave the design standalone; never create a feature document just to link it.
+9. UX self-check, for every artboard you finish: pass it against the `gentle-ui-design` composition-and-feedback (hierarchy, density, feedback) and adaptive-interfaces (narrow screens, input access, states) guidance, and fix every gap before you report.
+10. After writing or changing artboards, call the `gentle_design` tool with `action: "open"` and the slug, unless the user said not to. When a canvas tab is already open it refreshes that tab instead of opening a new one, so call it after every change. Report the URL it returns.
 
 ## Design system sync
 
@@ -103,8 +105,9 @@ Never delete or reorder entries, and keep the file valid JSON: the canvas refuse
 
 ## Output Contract
 
-Return: the slug, each artboard file with its title and tradeoff, which files changed in this turn, the comment ids resolved in this turn, and any open question. Give the canvas URL from step 8, or mention that `/gentle:design open <slug>` shows the canvas when you did not open it. For a sync, return the source paths read, the token counts per group, and whether the system is a proposed starter; after an automatic sync from "Before designing", say it ran and report it the same way.
+Return: the slug, each artboard file with its title and tradeoff, which files changed in this turn, the comment ids resolved in this turn, and any open question. Give the canvas URL from step 10, or mention that `/gentle:design open <slug>` shows the canvas when you did not open it. For a sync, return the source paths read, the token counts per group, and whether the system is a proposed starter; after an automatic sync from "Before designing", say it ran and report it the same way.
 
 ## References
 
 - `design/system.md` in the project, when present — the design tokens to follow.
+- `gentle-ui-design` skill — UX quality guidance paired with every artboard.

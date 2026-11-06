@@ -36,7 +36,10 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // Weak-model economy (small path reads one batch with no todo; item 1 excludes rebuildable dev/test data), measured in
 // gentle-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
 // 2026-10-22: 9,100 -> 9,250 B.
-const BUDGET_BYTES = 9250;
+// Issue #2935 (user decision 2026-11-06): 9,250 -> 9,350 B so the confinement clause keeps its full wording
+// (registered same-clone worktrees, never-blanket grants) while adding the resolved-skill-read exception; the
+// controlled 128-char assets root needs the headroom for platform-independent rendering.
+const BUDGET_BYTES = 9350;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -129,7 +132,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 9,250 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,350 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),
@@ -332,6 +335,8 @@ for (const range of DISPOSITION_MAP) {
 				if (raw === undefined || !isNormativeLine(raw)) continue;
 				const trimmed = raw.trim();
 				const expected =
+					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
 					trimmed;
 				if (SUPERSEDED_LIFECYCLE_REVIEW_LINES.has(ln)) {

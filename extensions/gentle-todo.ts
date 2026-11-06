@@ -6,6 +6,7 @@ import { panelHeaderRow } from "../lib/shell-card.ts";
 import { renderPanelRow } from "../lib/shell-panel.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
 import {
 	applyTodo,
 	emptyTodo,
@@ -109,7 +110,7 @@ function sessionKey(ctx: ExtensionContext): string {
 export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
 	if (!todoEnabled(env)) return;
 	const sessions = new Map<string, TodoSession>();
-	const collapseKey = todoCollapseKey(env);
+	const collapseKey = todoCollapseKey(env, loadKeymaps(env).bindings);
 
 	const session = (ctx: ExtensionContext): TodoSession => {
 		const key = sessionKey(ctx);
@@ -175,7 +176,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					foot = lines.slice(-1);
 				} else {
 					headerRow = 0;
-					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered });
+					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered, ...(collapseKey ? { collapseKey } : {}) });
 					head = section.header ? [section.header] : [];
 					body = section.body;
 					foot = [];

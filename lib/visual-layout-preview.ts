@@ -14,7 +14,9 @@ const rule = (label: string, width: number) => (label ? `─ ${label} ` : "").pa
 
 export function layoutSchematic(settings: VisualSettings): string {
 	const rail = settings.statusPlacement === "right" || settings.statusPlacement === "auto";
-	const top = settings.headerPlacement === "top";
+	// A split header draws its title row on top and its counters in a bottom status bar.
+	const split = settings.headerPlacement === "split";
+	const top = settings.headerPlacement === "top" || split;
 	// Two rail rows, filled word by word in rail order.
 	const railRows = ["", ""];
 	let row = 0;
@@ -24,15 +26,17 @@ export function layoutSchematic(settings: VisualSettings): string {
 		if (next.length > RAIL - 1 && row === 0) { row = 1; railRows[1] = name; }
 		else railRows[row] = next;
 	}
-	const input = top ? "› input" : "› input · header";
+	// With a rail, below-input places the bar below both columns, like split.
+	const input = top || rail ? "› input" : "› input · header";
 	const main = ["conversation", input];
 	const width = MAIN + (rail ? RAIL + 1 : 0);
-	const bottom = settings.statusPlacement === "bottom" ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
+	const railBottomBar = rail && (split || !top);
+	const bottom = settings.statusPlacement === "bottom" || railBottomBar ? "status bar" : settings.statusPlacement === "auto" ? "bar under 140 cols" : "";
 	if (rail) {
 		return [
-			`┌${rule(top ? "header" : "", MAIN)}┬${rule("Status", RAIL)}┐`,
+			top ? `┌${rule(split ? "title" : "header", width)}┐` : `┌${rule("", MAIN)}┬${rule("Status", RAIL)}┐`,
 			...main.map((text, line) => `│ ${fill(text, MAIN - 1)}│ ${fill(railRows[line] ?? "", RAIL - 1)}│`),
-			`└${rule(bottom, MAIN)}┴${"─".repeat(RAIL)}┘`,
+			railBottomBar ? `└${rule(bottom, width)}┘` : `└${rule(bottom, MAIN)}┴${"─".repeat(RAIL)}┘`,
 		].join("\n");
 	}
 	return [

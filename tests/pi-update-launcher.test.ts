@@ -95,6 +95,14 @@ test('public all updates only its owner and then forwards extension updates', ()
  assert.equal(result.stderr, '');
 });
 
+test('public all stops on ambiguous ownership before forwarding extensions', () => {
+ const result = launch(['update', '--all'], 'ambiguous');
+ assert.equal(result.status, 1);
+ assert.equal(result.stdout, '');
+ assert.match(result.stderr, /ownership/);
+ assert.doesNotMatch(result.stdout + result.stderr, /MUTATION|FORWARD/);
+});
+
 for (const scenario of ['ambiguous', 'malformed', 'npm-link', 'npm-file', 'shared', 'adjacent-shared']) test(`public update rejects ${scenario} ownership without mutation`, () => {
  const result = launch(['update'], scenario);
  assert.equal(result.status, 1, result.stdout);

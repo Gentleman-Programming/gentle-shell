@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { paintSurfaceRow, surfaceOpener, type CardTheme } from "./shell-card.ts";
-import { paintHoverable } from "./shell-hover.ts";
+import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
+import type { ChromeSurface } from "./visual-customization-policy.ts";
 
 // Fullscreen rail sections drawn as one IDE-like panel (design/shell-rework/02-proposal.html):
 // a one-row header `▾ NAME … count`, dense rows indented under it, and one
@@ -8,6 +9,18 @@ import { paintHoverable } from "./shell-hover.ts";
 
 /** The theme background the rail panel paints behind its sections. */
 export const PANEL_SURFACE_ROLE = "customMessageBg";
+let surface: ChromeSurface = "tinted";
+/** The live chrome surface (Layout → Surface); `transparent` leaves the panel rows unpainted. */
+export function chromeSurface(): ChromeSurface { return surface; }
+export function setChromeSurface(value: ChromeSurface): void { surface = value; }
+/** The SGR that opens the panel surface, or "" when the chrome is transparent or the theme cannot paint it. */
+export function panelSurfaceOpener(theme: CardTheme): string {
+	return surface === "transparent" ? "" : surfaceOpener(theme, PANEL_SURFACE_ROLE);
+}
+/** Rail sections keep a blank row between them in comfortable density, whatever the surface. */
+export function sectionGap(density: string | undefined): boolean {
+	return density === undefined || density === "comfortable";
+}
 /** Columns a panel row is indented under its header. */
 export const PANEL_ROW_INDENT = 2;
 
@@ -55,7 +68,8 @@ export function fitPanelLine(left: string, right: string, width: number): string
 export function renderPanelHeader(theme: PanelTheme, width: number, header: PanelHeader): string {
 	const glyph = paintHoverable(theme, header.open ? "▾" : "▸", header.hovered ?? false, "muted");
 	const name = header.title.toUpperCase();
-	const title = theme.fg("text", theme.bold ? theme.bold(name) : name);
+	// The hover paints the name too: a lone glyph is too small a signal, and other rail controls paint their text.
+	const title = theme.fg(header.hovered ? HOVER_ROLE : "text", theme.bold ? theme.bold(name) : name);
 	const count = header.count ? theme.fg(header.countRole ?? "muted", header.count) : "";
 	return fitPanelLine(`${glyph} ${title}`, count, width);
 }
@@ -67,7 +81,7 @@ export function renderPanelRow(width: number, left: string, right = "", indent =
 
 /** Paints every row behind the rail surface; a theme that cannot paint it leaves rows as they are. */
 export function paintPanelSurface(theme: CardTheme, rows: readonly string[]): string[] {
-	const open = surfaceOpener(theme, PANEL_SURFACE_ROLE);
+	const open = panelSurfaceOpener(theme);
 	return rows.map((row) => paintSurfaceRow(row, open));
 }
 
@@ -83,9 +97,18 @@ export interface PanelSummary {
 }
 
 /** ` ▸ <lead> … <count>`: the section that matters most, plus the todo count; undefined without live work. */
+/** The index of the summary that leads the mobile work row (highest priority, first on ties); -1 when there is none. */
+export function workRowLead(summaries: readonly PanelSummary[]): number {
+	let lead = -1;
+	summaries.forEach((summary, index) => {
+		if (lead === -1 || (summary.priority ?? 0) > (summaries[lead]!.priority ?? 0)) lead = index;
+	});
+	return lead;
+}
+
 export function renderWorkRow(summaries: readonly PanelSummary[], theme: PanelTheme, width: number, hovered = false): string | undefined {
 	if (summaries.length === 0) return undefined;
-	const lead = [...summaries].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0]!;
+	const lead = summaries[workRowLead(summaries)]!;
 	const counted = lead.right ? lead : summaries.find((summary) => summary.right);
 	const right = !counted ? "" : counted === lead ? counted.right! : `${counted.right} ${counted.rightLabel ?? ""}`.trimEnd();
 	// The ▸ is the row's tap affordance; hovering paints it like every other clickable surface.
@@ -135,5 +158,6 @@ export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: numb
 		const remaining = content.length - top - shown.length;
 		shown.push(` ${fitPanelLine(`${theme.fg("accent", "↓")} ${theme.fg("muted", `${remaining} more · scroll`)}`, "", inner)} `);
 	}
+	while (shown.length < viewport) shown.push(fitPanelLine("", "", target));
 	return { lines: paintPanelSurface(theme, [title, ...shown]), maxScroll };
 }

@@ -21,6 +21,9 @@ const LEGACY_MANAGED_ASSET_MANIFESTS = Object.freeze([
 	{ path: join(ASSETS_DIR, "migrations", "managed-assets-v0.14.json"), version: "0.14.0" },
 	{ path: join(ASSETS_DIR, "migrations", "managed-assets-v2.5.0.json"), version: "2.5.0" },
 ]);
+// Hashes of every agent body (text after the frontmatter) the package has
+// shipped. Regenerate with `node scripts/update-agent-body-history.mjs`.
+const AGENT_BODY_HISTORY = join(ASSETS_DIR, "migrations", "agent-body-history.json");
 
 const ASSET_OWNER_BY_KEY = Object.freeze({
 	"agents/gentle-ai-explore.md": "delegation",
@@ -236,6 +239,43 @@ function readLegacyManagedAssetHashes(): Record<string, readonly string[]> {
 	return hashes;
 }
 
+/** @internal Exported for the history generator and its freshness test. */
+export function agentBody(content: string): string {
+	if (!content.startsWith("---\n")) return content;
+	const endIndex = content.indexOf("\n---", 4);
+	return endIndex === -1 ? content : content.slice(endIndex);
+}
+
+/** @internal */
+export function readAgentBodyHistory(): Record<string, readonly string[]> {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(AGENT_BODY_HISTORY, "utf8"));
+		if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isRecord(parsed.bodies)) return {};
+		return Object.fromEntries(
+			Object.entries(parsed.bodies).filter(
+				(entry): entry is [string, string[]] =>
+					Array.isArray(entry[1]) && entry[1].every((hash) => typeof hash === "string"),
+			),
+		);
+	} catch {
+		return {};
+	}
+}
+
+// A package agent whose body still matches a shipped version was only touched
+// in its frontmatter (model routing, or a tool that reformatted it), so it
+// stays package-owned instead of freezing on an outdated contract.
+function hasShippedAgentBody(
+	ownershipKey: string,
+	installedContent: string,
+	bodyHistory: () => Readonly<Record<string, readonly string[]>>,
+): boolean {
+	return (
+		ownershipKey.startsWith("agents/") &&
+		(bodyHistory()[ownershipKey] ?? []).includes(managedAssetHash(agentBody(installedContent)))
+	);
+}
+
 function updateAgentFrontmatterRouting(
 	content: string,
 	routingLines: readonly string[],
@@ -403,6 +443,8 @@ function copyDirectoryFiles(
 	selected?: ReadonlySet<string>,
 ): { copied: number; skipped: number } {
 	if (!existsSync(sourceDir)) return { copied: 0, skipped: 0 };
+	let cachedBodyHistory: Record<string, readonly string[]> | undefined;
+	const bodyHistory = () => (cachedBodyHistory ??= readAgentBodyHistory());
 	if (selected && ![...selected].some(key => key.startsWith(`${ownershipPrefix}/`))) {
 		return { copied: 0, skipped: 0 };
 	}
@@ -430,6 +472,7 @@ function copyDirectoryFiles(
 		if (!entry.isFile() || (selected && !selected.has(ownershipKey))) continue;
 		const source = readFileSync(sourcePath, "utf8");
 		let nextSource = source;
+		let keepsLocalRouting = false;
 		if (existsSync(targetPath)) {
 			if (!force) {
 				skipped += 1;
@@ -445,27 +488,40 @@ function copyDirectoryFiles(
 			const installedHash = installedContent === undefined
 				? undefined
 				: managedAssetHash(installedContent);
-			if (managedHash === undefined) {
-				const legacyHashes = legacyAssetHashes?.()[ownershipKey];
-				const comparableLegacyHash = installedContent === undefined
-					? undefined
-					: managedAssetHash(
-							legacyComparableAssetContent(ownershipKey, installedContent),
-						);
-				if (
-					legacyHashes === undefined ||
-					comparableLegacyHash === undefined ||
-					!legacyHashes.includes(comparableLegacyHash)
-				) {
-					delete manifest.assets[ownershipKey];
-					skipped += 1;
-					continue;
-				}
+			const comparableHash = installedContent === undefined
+				? undefined
+				: managedAssetHash(
+						legacyComparableAssetContent(ownershipKey, installedContent),
+					);
+			const legacyHashes = managedHash === undefined
+				? legacyAssetHashes?.()[ownershipKey]
+				: undefined;
+			if (
+				managedHash === undefined &&
+				comparableHash !== undefined &&
+				legacyHashes?.includes(comparableHash) === true
+			) {
 				nextSource = migrateLegacyAssetContent(
 					ownershipKey,
 					installedContent,
 					source,
 				);
+			} else if (
+				installedContent !== undefined &&
+				installedHash !== managedHash &&
+				// Only outdated instructions are refreshed; a frontmatter edit on the
+				// current agent (routing, tool allowlist) keeps the local-edit rules below.
+				agentBody(installedContent) !== agentBody(source) &&
+				hasShippedAgentBody(ownershipKey, installedContent, bodyHistory)
+			) {
+				nextSource = migrateLegacyAssetContent(ownershipKey, installedContent, source);
+				// Saved model config owns managed routing and a refresh resets it, so a
+				// copy carrying its own routing stays unmanaged to keep that routing.
+				keepsLocalRouting = nextSource !== source;
+			} else if (managedHash === undefined) {
+				delete manifest.assets[ownershipKey];
+				skipped += 1;
+				continue;
 			} else if (installedHash !== managedHash) {
 				delete manifest.assets[ownershipKey];
 				skipped += 1;
@@ -476,7 +532,8 @@ function copyDirectoryFiles(
 			}
 		}
 		writeFileSync(targetPath, nextSource);
-		manifest.assets[ownershipKey] = managedAssetHash(nextSource);
+		if (keepsLocalRouting) delete manifest.assets[ownershipKey];
+		else manifest.assets[ownershipKey] = managedAssetHash(nextSource);
 		copied += 1;
 	}
 	return { copied, skipped };

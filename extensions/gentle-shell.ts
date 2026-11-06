@@ -1673,17 +1673,24 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 			// Without a tree killer execFile owns the timeout and reports its kill on the error.
 			resolve({ stdout, code, ...(timedOut || (treeKiller === undefined && error?.killed) ? { timedOut: true } : {}) });
 		};
-		const child = run("git", ["-C", cwd, ...args], {
-			env: childEnv,
-			encoding: "utf8",
-			shell: false,
-			windowsHide: true,
-			...(treeKiller === undefined ? { timeout: GIT_TIMEOUT_MS } : {}),
-			// Pi exec accumulates output without a maxBuffer cap. In particular,
-			// large porcelain inventories must not become partial successful scans.
-			// Only a single diff passes a bound, and is told when it hit it.
-			maxBuffer,
-		}, (error, stdout) => settle(error, stdout));
+		let child: ReturnType<typeof execFile>;
+		try {
+			child = run("git", ["-C", cwd, ...args], {
+				env: childEnv,
+				encoding: "utf8",
+				shell: false,
+				windowsHide: true,
+				...(treeKiller === undefined ? { timeout: GIT_TIMEOUT_MS } : {}),
+				// Pi exec accumulates output without a maxBuffer cap. In particular,
+				// large porcelain inventories must not become partial successful scans.
+				// Only a single diff passes a bound, and is told when it hit it.
+				maxBuffer,
+			}, (error, stdout) => settle(error, stdout));
+		} catch (error) {
+			// A spawn that throws (invalid options, an injected runner) is a failed scan.
+			settle(error as { code?: unknown }, "");
+			return;
+		}
 		// The callback may already have settled a synchronous run (a fake in
 		// tests, a spawn error), so only arm the deadline while it is pending.
 		if (settled || treeKiller === undefined || child?.pid === undefined) return;

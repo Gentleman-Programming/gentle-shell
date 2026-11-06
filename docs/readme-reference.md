@@ -1196,6 +1196,15 @@ The `profiles` values use the same per-agent shape as `models.json`. Profile nam
 
 The store is replaced atomically through a sibling temp file and a rename, so an interrupted write cannot leave truncated JSON behind. **Make default** writes `profiles.json` first and then materializes routing; if materialization fails, the previous active marker is restored, and the previous routing is restored when a profile was active before. With no previously active profile there is no routing to restore: `models.json` keeps the new routing and the warning says so. Anything that could not be restored is named in the warning.
 
+### Full delegation mode
+
+Every profile also carries an orchestrator workflow mode: `organic` (the default) or `full-delegation`. On the models screen, press `w` to toggle the profile on screen and `s` to save it together with that profile's routing; the footer shows the mode of the profile you are looking at, with `⚡ full-delegation` in accent.
+
+- **organic** — today's rules: the orchestrator may implement inline and delegates to a writer only when a delegation trigger fires.
+- **full-delegation** — the orchestrator never implements. Every authorized mutation goes to a bounded writer with its code, tests and docs together, while the orchestrator keeps authorize, explore-for-routing, decide, ask, track, commit, verify and report. Use it when the orchestrator runs on a frontier model and the implementation should run on local models: the injected rules are replaced rather than extended, and the variant costs about 3.5 KB less context than the organic rules it replaces.
+
+The mode travels with the profile and is resolved on every prompt build, so switching profiles changes the orchestrator's rules on the next turn in both directions, with no restart. It is stored beside the profiles in `profiles.json`, under `workflow` keyed by profile name; a profile with no entry is organic, and only a non-default mode is written. `GENTLE_PI_ORCHESTRATOR_MODE=organic|full-delegation` overrides the profile for the process, which is meant for CI and headless runs.
+
 ### Model fallback chains
 
 Each profile can give every agent an ordered list of fallback models, kept in `profile-fallbacks.json` next to `profiles.json` (older versions keep reading `profiles.json` and simply never fall back):

@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { chmodSync, mkdirSync, mkdtempSync, lstatSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import test, { after } from "node:test";
+import { chmodSync, mkdirSync, mkdtempSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activitySummary } from "../lib/herdr-activity.ts";
+
+const temporaryRoots: string[] = [];
+const temporaryDirectory = (prefix: string) => {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	temporaryRoots.push(root);
+	return root;
+};
+after(() => { for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true }); });
 
 const input = { agent: "pi" as const, session: "../session", pid: 42, cwd: "/workspace", state: "working" as const, task: null };
 test("S2: exact schema and UTC timestamp", async () => {
@@ -22,7 +30,7 @@ test("S2/S4: shared title selection, sanitizing, bounds and null cases; Herdr by
 });
 test("S5: private modes, safe stable filename and atomic replacement", async () => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
-	const home = mkdtempSync(join(tmpdir(), "agent-status-"));
+	const home = temporaryDirectory("agent-status-");
 	const store = createAgentStatusStore(home, input.session);
 	assert.equal(store.write(agentStatus(input, 0)), true);
 	const before = lstatSync(store.path);
@@ -38,8 +46,8 @@ test("S5: private modes, safe stable filename and atomic replacement", async () 
 });
 test("S5/S6: symlink directories/files refused and failures contained", async (t) => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
-	const home = mkdtempSync(join(tmpdir(), "agent-status-"));
-	const target = mkdtempSync(join(tmpdir(), "agent-status-target-"));
+	const home = temporaryDirectory("agent-status-");
+	const target = temporaryDirectory("agent-status-target-");
 	await t.test("symlinked status directory", (t) => {
 		try { symlinkSync(target, join(home, "agent-status"), "dir"); }
 		catch (error) { if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.skip("symlink privileges unavailable"); return; } throw error; }
@@ -61,12 +69,12 @@ test("S5/S6: symlink directories/files refused and failures contained", async (t
 test("S5: group/world-writable config home and loose status directory refused", { skip: process.platform === "win32" }, async () => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
 	for (const mode of [0o777, 0o775]) {
-		const open = mkdtempSync(join(tmpdir(), "agent-status-open-"));
+		const open = temporaryDirectory("agent-status-open-");
 		chmodSync(open, mode);
 		assert.equal(createAgentStatusStore(open, "s").write(agentStatus(input, 0)), false, `config home mode ${mode.toString(8)}`);
 		assert.deepEqual(readdirSync(open), []);
 	}
-	const loose = mkdtempSync(join(tmpdir(), "agent-status-loose-"));
+	const loose = temporaryDirectory("agent-status-loose-");
 	mkdirSync(join(loose, "agent-status"), { mode: 0o755 }); chmodSync(join(loose, "agent-status"), 0o755);
 	assert.equal(createAgentStatusStore(loose, "s").write(agentStatus(input, 0)), false);
 	assert.deepEqual(readdirSync(join(loose, "agent-status")), []);
@@ -74,7 +82,7 @@ test("S5: group/world-writable config home and loose status directory refused", 
 });
 test("S5: config home under a symlinked ancestor writes and removes", async (t) => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
-	const parent = mkdtempSync(join(tmpdir(), "agent-status-ancestor-"));
+	const parent = temporaryDirectory("agent-status-ancestor-");
 	const target = join(parent, "target"); mkdirSync(target);
 	const link = join(parent, "link");
 	try { symlinkSync(target, link, "dir"); }
@@ -91,7 +99,7 @@ test("S5: config home under a symlinked ancestor writes and removes", async (t) 
 });
 test("S5: symlinked config home is refused", async (t) => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
-	const parent = mkdtempSync(join(tmpdir(), "agent-status-home-link-"));
+	const parent = temporaryDirectory("agent-status-home-link-");
 	const target = join(parent, "target"); mkdirSync(target);
 	const home = join(parent, "config");
 	try { symlinkSync(target, home, "dir"); }
@@ -103,7 +111,7 @@ test("S5: symlinked config home is refused", async (t) => {
 });
 test("S5: a missing config home is created privately on first write", async () => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
-	const home = join(mkdtempSync(join(tmpdir(), "agent-status-new-")), "config");
+	const home = join(temporaryDirectory("agent-status-new-"), "config");
 	const store = createAgentStatusStore(home, "s");
 	assert.equal(store.write(agentStatus(input, 0)), true);
 	assert.equal(JSON.parse(readFileSync(store.path, "utf8")).session, "../session");

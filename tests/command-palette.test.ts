@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { CommandPalette, commandsKey, rankPaletteGroups, type CommandPaletteGroup, type CommandPaletteItem, type CommandPaletteResult, type CommandPaletteTheme } from "../lib/command-palette.ts";
 import { buildCommandPaletteGroups, COMMAND_PALETTE_CATALOG } from "../lib/command-palette-catalog.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import startupBanner from "../extensions/startup-banner.ts";
 
 // Command palette: a pure, curated, grouped overlay component for
 // `/gentle:commands` and its `alt+k` shortcut. These tests drive ranking,
@@ -47,7 +50,7 @@ test("Vim palette help names the opt-in editor and Pi slash handoff without prom
 test("Vim reference distinguishes supported commands, scope and slash divergence", () => {
 	const reference = readFileSync(new URL("../docs/readme-reference.md", import.meta.url), "utf8");
 	const section = reference.split("### Vim prompt editing\n")[1]?.split("\n### ")[0] ?? "";
-	for (const term of ["`/gentle:vim enable`", "`/gentle:vim disable`", "`status`", "VISUAL", "`Ctrl+[`", "`gg/G`", "`f/F/t/T`", "`d/c/y`", "`u`", "`.`", "Pi", "first line", "reverse prompt-history search", "0.85.1", "paste marker"]) {
+	for (const term of ["`/gentle:vim enable`", "`/gentle:vim disable`", "`status`", "VISUAL", "`Ctrl+[`", "`gg/G`", "`f/F/t/T`", "`d/c/y`", "`u`", "`.`", "Pi", "first line", "reverse prompt-history search", "0.99.1", "paste marker"]) {
 		assert.ok(section.includes(term), `Vim reference missing ${term}`);
 	}
 	assert.doesNotMatch(section, /full Claude (?:Code )?parity/i);
@@ -136,7 +139,7 @@ const GROUPS: CommandPaletteGroup[] = [
 	},
 	{
 		title: "Session",
-		items: [{ command: "gentle:changes", label: "Browse captured changes", shortcut: "alt+g" }],
+		items: [{ command: "gentle:changes", label: "Browse changes", shortcut: "alt+g" }],
 	},
 ];
 
@@ -184,6 +187,20 @@ test("ctrl+j and ctrl+k also move the selection", () => {
 	palette.handleInput(KEY.CTRL_K); // gentle:models
 	palette.handleInput(KEY.ENTER);
 	assert.deepEqual(results, [{ type: "run", name: "gentle:models" }]);
+});
+
+test("tab captures the next key for the highlighted command, and esc cancels the capture", () => {
+	const results: CommandPaletteResult[] = [];
+	const palette = new CommandPalette([{ title: "Session", items: [{ command: "gentle:design", label: "Design" }, { command: "gentle:voice", label: "Voice" }] }], (result) => results.push(result));
+	palette.handleInput("\x1b[B");
+	palette.handleInput("\t");
+	assert.match(palette.render(80).join("\n"), /Press the new key for Voice · esc cancel/);
+	palette.handleInput("\x1b");
+	assert.deepEqual(results, [], "esc only cancels the capture");
+	assert.match(palette.render(80).join("\n"), /tab set key/);
+	palette.handleInput("\t");
+	palette.handleInput("\x1bv");
+	assert.deepEqual(results, [{ type: "bind", name: "gentle:voice", data: "\x1bv" }]);
 });
 
 test("enter runs the highlighted item and is a no-op with no match", () => {
@@ -245,9 +262,9 @@ test("render shows group titles and one row per item, with the shortcut right-al
 	assert.match(lines, /Session/);
 	assert.match(lines, /Assign models and effort/);
 	assert.match(lines, /Agent-model profiles/);
-	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse captured changes"));
-	assert.ok(changesLine, "expected a row for Browse captured changes");
-	assert.match(changesLine!, /Browse captured changes[\s\S]*alt\+g/);
+	const changesLine = render(GROUPS, "").find((line) => line.includes("Browse changes"));
+	assert.ok(changesLine, "expected a row for Browse changes");
+	assert.match(changesLine!, /Browse changes[\s\S]*alt\+g/);
 });
 
 test("render omits the shortcut column for an item without one", () => {
@@ -294,7 +311,7 @@ test("render escapes control characters in labels and shortcuts", () => {
 
 test("render footer lists the key bindings", () => {
 	const lines = render(GROUPS, "").join("\n");
-	assert.match(lines, /type to search • ↑\/↓ move • enter run • esc close/);
+	assert.match(lines, /↑\/↓ move • enter run • tab set key • esc close/);
 });
 
 test("render keeps the right border aligned when a label has wide characters", () => {
@@ -335,6 +352,288 @@ test("a small terminal still renders at least the minimum 12-line card", () => {
 	assert.ok(lines.length <= 12, `expected at most 12 total lines for a tiny terminal, got ${lines.length}`);
 });
 
+// --- fullscreen pointer interaction ------------------------------------------
+
+function point(frame: string[], text: string): { x: number; y: number } {
+	const y = frame.findIndex((line) => line.includes(text));
+	assert.ok(y >= 0, `missing ${JSON.stringify(text)} in rendered frame`);
+	const line = frame[y]!;
+	return { x: visibleWidth(line.slice(0, line.indexOf(text))), y };
+}
+
+function mouse(frame: string[], x: number, y: number, type: TuiMouseEvent["type"] = "click", button: TuiMouseEvent["button"] = "left"): TuiMouseEvent {
+	return { type, button, x, y, screenX: x + 10, screenY: y + 5, width: visibleWidth(frame[0]!), height: frame.length, shift: false, alt: false, ctrl: false };
+}
+
+function at(frame: string[], text: string, type: TuiMouseEvent["type"] = "click", button: TuiMouseEvent["button"] = "left"): TuiMouseEvent {
+	const { x, y } = point(frame, text);
+	return mouse(frame, x, y, type, button);
+}
+
+const pointerTheme: CommandPaletteTheme = {
+	fg: (role, text) => role === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+	bg: (_role, text) => `\x1b[44m${text}\x1b[49m`,
+};
+
+test("visible command rows use primary click; headings, blanks, borders and other buttons do not run", () => {
+	const { palette, results } = createPalette(GROUPS);
+	const frame = palette.render(80);
+	for (const event of [
+		at(frame, "Configuration"), at(frame, "Session"), mouse(frame, 5, 3),
+		mouse(frame, 0, point(frame, "Agent-model profiles").y),
+		mouse(frame, 79, point(frame, "Agent-model profiles").y),
+		at(frame, "Agent-model profiles", "click", "right"),
+		at(frame, "Agent-model profiles", "click", "middle"),
+	]) palette.handleMouse(event);
+	assert.deepEqual(results, []);
+	assert.equal(palette.handleMouse(at(frame, "Agent-model profiles", "press"))?.handled, true);
+	assert.deepEqual(results, [], "press alone cannot run a command");
+	assert.equal(palette.handleMouse(at(frame, "Agent-model profiles"))?.handled, true);
+	assert.deepEqual(results, [{ type: "run", name: "gentle:profiles" }]);
+	palette.handleMouse(at(frame, "Assign models and effort"));
+	assert.deepEqual(results, [{ type: "run", name: "gentle:profiles" }], "completion is once only");
+});
+
+test("hover paints only the visible row with the shared warning role, without selecting it", () => {
+	const { palette, results } = createPalette(GROUPS, pointerTheme);
+	let frame = palette.render(80);
+	const motion = at(frame, "Agent-model profiles", "move", "none");
+	const hoverResult = palette.handleMouse(motion);
+	assert.equal(hoverResult?.render, true);
+	assert.equal(hoverResult?.focus, undefined, "hover cannot request focus");
+	frame = palette.render(80);
+	const hovered = frame.find((line) => line.includes("Agent-model profiles"))!;
+	assert.match(hovered, /\x1b\[33m/);
+	assert.doesNotMatch(frame.find((line) => line.includes("Assign models and effort"))!, /\x1b\[33m/);
+	assert.deepEqual(results, []);
+	assert.equal(palette.handleMouse(motion)?.render, false, "repeated motion does not redraw");
+	assert.equal(palette.handleMouse(at(frame, "Configuration", "move", "none"))?.render, true);
+	frame = palette.render(80);
+	assert.doesNotMatch(frame.find((line) => line.includes("Agent-model profiles"))!, /\x1b\[33m/);
+	palette.handleInput(KEY.ENTER);
+	assert.deepEqual(results, [{ type: "run", name: "gentle:models" }], "hover never changes keyboard selection");
+});
+
+test("hover retains the selected background and uses the warning role for the hovered label and shortcut", () => {
+	const { palette } = createPalette(GROUPS, pointerTheme);
+	palette.handleInput(KEY.DOWN);
+	palette.handleInput(KEY.DOWN);
+	let frame = palette.render(80);
+	palette.handleMouse(at(frame, "Browse changes", "move", "none"));
+	frame = palette.render(80);
+	const selected = frame.find((line) => line.includes("Browse changes"))!;
+	assert.match(selected, /\x1b\[44m/);
+	assert.match(selected, /\x1b\[33m[^\x1b]*Browse changes[^\x1b]*alt\+g/);
+});
+
+test("filtering rejects stale hit geometry and runs the newly rendered matching command", () => {
+	const { palette, results } = createPalette(GROUPS);
+	let frame = palette.render(80);
+	const stale = at(frame, "Agent-model profiles");
+	type(palette, "changes");
+	palette.handleMouse(stale);
+	assert.deepEqual(results, []);
+	frame = palette.render(80);
+	assert.doesNotMatch(frame.join("\n"), /Agent-model profiles|Configuration/);
+	palette.handleMouse(at(frame, "Browse changes"));
+	assert.deepEqual(results, [{ type: "run", name: "gentle:changes" }]);
+});
+
+test("geometry and item identity are invalidated by resize, data changes, invalidate and dispose", () => {
+	let height = 24;
+	const groups: CommandPaletteGroup[] = [{ title: "Group", items: [{ command: "safe", label: "Safe command" }] }];
+	const { palette, results } = createPalette(groups, pointerTheme, () => height);
+	let frame = palette.render(80);
+	const original = at(frame, "Safe command");
+	height = 20;
+	palette.handleMouse(original);
+	height = 24;
+	frame = palette.render(80);
+	palette.handleMouse({ ...at(frame, "Safe command"), width: 79 });
+	frame = palette.render(80);
+	groups[0]!.items[0]!.command = "changed";
+	palette.handleMouse(at(frame, "Safe command"));
+	assert.deepEqual(results, [], "a stale frame cannot target changed content or dimensions");
+	groups[0]!.items[0]!.command = "safe";
+	frame = palette.render(80);
+	palette.handleMouse(at(frame, "Safe command", "move", "none"));
+	palette.invalidate();
+	palette.handleMouse(at(frame, "Safe command"));
+	assert.deepEqual(results, []);
+	frame = palette.render(80);
+	assert.doesNotMatch(frame.join("\n"), /\x1b\[33m/, "invalidation clears hover");
+	palette.dispose();
+	palette.handleMouse(at(frame, "Safe command"));
+	palette.handleInput(KEY.ENTER);
+	assert.deepEqual(results, [], "disposed palettes cannot act");
+});
+
+test("resize clears hover and clipped or empty command rows cannot be activated", () => {
+	const groups: CommandPaletteGroup[] = [{ title: "Group", items: [
+		{ command: "first", label: "First" },
+		{ command: "long", label: "A long command name that cannot fit" },
+		{ command: "empty", label: "" },
+	] }];
+	const { palette, results } = createPalette(groups, pointerTheme, () => 24);
+	let frame = palette.render(80);
+	palette.handleMouse(at(frame, "First", "move", "none"));
+	frame = palette.render(20);
+	assert.doesNotMatch(frame.join("\n"), /\x1b\[33m/, "a new width clears hover");
+	const clippedY = frame.findIndex((line) => line.includes("A long comm"));
+	assert.ok(clippedY >= 0);
+	palette.handleMouse(mouse(frame, 4, clippedY));
+	palette.handleMouse(mouse(frame, 4, clippedY + 1));
+	assert.deepEqual(results, [], "clipped and blank entries are not actionable");
+	palette.handleMouse(at(frame, "First"));
+	assert.deepEqual(results, [{ type: "run", name: "first" }]);
+});
+
+test("wheel reaches scrolled commands and keeps keyboard navigation working", () => {
+	const groups: CommandPaletteGroup[] = [{ title: "Many", items: Array.from({ length: 20 }, (_, i) => ({ command: `cmd:${i}`, label: `Item ${String(i).padStart(2, "0")}` })) }];
+	const { palette, results } = createPalette(groups, undefined, () => 16);
+	let frame = palette.render(80);
+	assert.doesNotMatch(frame.join("\n"), /Item 19/);
+	for (let i = 0; i < 19; i++) {
+		const event = { ...mouse(frame, 4, 4, "wheel", "none"), wheelDelta: 1 };
+		assert.equal(palette.handleMouse(event)?.handled, true);
+		frame = palette.render(80);
+	}
+	assert.match(frame.join("\n"), /Item 19/);
+	palette.handleInput(KEY.UP);
+	frame = palette.render(80);
+	assert.match(frame.join("\n"), /Item 18/);
+	palette.handleMouse(at(frame, "Item 18"));
+	assert.deepEqual(results, [{ type: "run", name: "cmd:18" }]);
+});
+
+test("mouse cannot select, run, scroll or bind while the next key is being captured", () => {
+	const { palette, results } = createPalette(GROUPS, pointerTheme);
+	palette.handleInput(KEY.DOWN);
+	palette.handleInput("\t");
+	const frame = palette.render(80);
+	palette.handleMouse(at(frame, "Browse changes", "move", "none"));
+	palette.handleMouse(at(frame, "Browse changes", "press"));
+	palette.handleMouse(at(frame, "Browse changes"));
+	palette.handleMouse({ ...at(frame, "Browse changes", "wheel", "none"), wheelDelta: 1 });
+	assert.deepEqual(results, []);
+	assert.doesNotMatch(palette.render(80).join("\n"), /\x1b\[33m/);
+	palette.handleInput("\x1bv");
+	assert.deepEqual(results, [{ type: "bind", name: "gentle:profiles", data: "\x1bv" }]);
+});
+
+test("centered native overlay receives real SGR motion, click and outside-card motion", (t) => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const theme = getThemeByName("dark");
+	assert.ok(theme);
+	const { palette, results } = createPalette(GROUPS, theme, () => terminal.rows);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(palette, { anchor: "center", width: 80, maxHeight: "85%" });
+	tui.start();
+	tui.renderNow(true);
+	try {
+		let frame = palette.render(80);
+		const beforeFrame = frame.join("\n");
+		const before = frame.find((line) => line.includes("Agent-model profiles"))!;
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.col > 0 && bounds.row > 0);
+		const target = point(frame, "Agent-model profiles");
+		const x = bounds.col + target.x + 1, y = bounds.row + target.y + 1;
+		input?.(`\x1b[<35;${x};${y}M`);
+		frame = palette.render(80);
+		const after = frame.find((line) => line.includes("Agent-model profiles"))!;
+		if (process.env.GENTLE_PI_PALETTE_VISUAL === "1") {
+			t.diagnostic(`before ANSI base64: ${Buffer.from(beforeFrame).toString("base64")}`);
+			t.diagnostic(`after ANSI base64: ${Buffer.from(frame.join("\n")).toString("base64")}`);
+		}
+		assert.notEqual(after, before, "real SGR motion paints hover");
+		assert.deepEqual(results, []);
+		input?.("\x1b[<35;1;1M");
+		frame = palette.render(80);
+		assert.equal(frame.find((line) => line.includes("Agent-model profiles")), after,
+			"native overlay routing does not deliver outside-card motion to the palette");
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.deepEqual(results, [{ type: "run", name: "gentle:profiles" }]);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("native SGR wheel reaches and clicks an initially hidden command", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 100; }, get rows() { return 16; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const groups: CommandPaletteGroup[] = [{ title: "Many", items: Array.from({ length: 15 }, (_, i) => ({ command: `cmd:${i}`, label: `Item ${String(i).padStart(2, "0")}` })) }];
+	const { palette, results } = createPalette(groups, undefined, () => terminal.rows);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(palette, { anchor: "center", width: 80, maxHeight: "85%" });
+	tui.start();
+	tui.renderNow(true);
+	try {
+		assert.doesNotMatch(palette.render(80).join("\n"), /Item 14/);
+		for (let i = 0; i < 14; i++) {
+			const bounds = overlay.getBounds();
+			assert.ok(bounds);
+			input?.(`\x1b[<65;${bounds.col + 5};${bounds.row + 5}M`);
+			tui.renderNow(true);
+		}
+		const frame = palette.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds);
+		const target = point(frame, "Item 14");
+		const x = bounds.col + target.x + 1, y = bounds.row + target.y + 1;
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.deepEqual(results, [{ type: "run", name: "cmd:14" }]);
+	} finally {
+		tui.stop();
+	}
+});
+
+test("a height-clipped native overlay never dispatches a hidden row", () => {
+	let input: ((data: string) => void) | undefined;
+	const terminal: Terminal = {
+		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {},
+		get columns() { return 100; }, get rows() { return 8; }, get kittyProtocolActive() { return false; },
+		moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const groups: CommandPaletteGroup[] = [{ title: "Group", items: [
+		{ command: "first", label: "First" }, { command: "hidden", label: "Hidden" },
+	] }];
+	const { palette, results } = createPalette(groups, undefined, () => terminal.rows);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+	const overlay = tui.showOverlay(palette, { anchor: "center", width: 80, maxHeight: "85%" });
+	tui.start();
+	tui.renderNow(true);
+	try {
+		const frame = palette.render(80);
+		const bounds = overlay.getBounds();
+		assert.ok(bounds && bounds.height < frame.length);
+		const hidden = point(frame, "Hidden");
+		assert.ok(hidden.y >= bounds.height);
+		const hiddenX = bounds.col + hidden.x + 1, hiddenY = bounds.row + hidden.y + 1;
+		input?.(`\x1b[<0;${hiddenX};${hiddenY}M`);
+		input?.(`\x1b[<0;${hiddenX};${hiddenY}m`);
+		assert.deepEqual(results, []);
+		const first = point(frame, "First");
+		assert.ok(first.y < bounds.height);
+		const x = bounds.col + first.x + 1, y = bounds.row + first.y + 1;
+		input?.(`\x1b[<0;${x};${y}M`);
+		input?.(`\x1b[<0;${x};${y}m`);
+		assert.deepEqual(results, [{ type: "run", name: "first" }]);
+	} finally {
+		tui.stop();
+	}
+});
+
 // --- commandsKey ---------------------------------------------------------------
 
 test("commandsKey defaults to alt+k", () => {
@@ -360,7 +659,6 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 	);
 	const byTitle = (title: string) => COMMAND_PALETTE_CATALOG.find((group) => group.title === title)?.items.map((item) => item.command);
 	assert.deepEqual(byTitle("Configuration"), [
-		"gentle:models",
 		"gentle:profiles",
 		"gentle:persona",
 		"gentle:review-mode",
@@ -370,16 +668,24 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"gentle:animations",
 		"gentle:vim",
 		"gentle:telemetry",
-		"gentle:banner",
-		"gentle:banner-color",
-		"gentle:toggle-rose",
-		"gentle:toggle-text-logo",
 		"gentle:dev-binary",
 	]);
-	assert.deepEqual(byTitle("Session"), ["gentle:changes", "gentle:agents", "gentle:usage", "gentle:review-session-permission"]);
+	assert.deepEqual(byTitle("Session"), ["gentle:guide", "gentle:yolo", "gentle:changes", "gentle:agents", "gentle:jobs", "gentle:usage", "gentle:review-session-permission", "gentle:voice", "gentle:design"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["gentle:status", "gentle:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);
+});
+
+// #1664: banner settings live under Customization > Banner; the palette keeps
+// one route while the slash commands stay registered for compatibility.
+test("banner settings have one palette route and keep their slash commands", () => {
+	const banner = ["gentle:banner", "gentle:banner-color", "gentle:toggle-rose", "gentle:toggle-text-logo"];
+	const catalogCommands = COMMAND_PALETTE_CATALOG.flatMap((group) => group.items.map((item) => item.command));
+	for (const command of banner) assert.ok(!catalogCommands.includes(command), `${command} must not appear in the palette`);
+	assert.ok(catalogCommands.includes("gentle:customize"));
+	const registered: string[] = [];
+	startupBanner({ on() {}, registerCommand(name: string) { registered.push(name); }, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+	for (const command of banner) assert.ok(registered.includes(command), `${command} stays registered`);
 });
 
 test("retired SDD commands are absent from the palette and extension registrations", () => {
@@ -397,7 +703,7 @@ test("retired SDD commands are absent from the palette and extension registratio
 
 test("buildCommandPaletteGroups keeps only registered commands, attaches descriptions and shortcuts, drops empty groups, preserves catalog order", () => {
 	const registered = [
-		{ name: "gentle:models", description: "Configure models" },
+		{ name: "gentle:profiles", description: "Configure models" },
 		{ name: "gentle:changes", description: "Browse changes" },
 		{ name: "gentle:status", description: "Show status" },
 		{ name: "skill-registry:refresh", description: "Refresh registry" },
@@ -409,7 +715,8 @@ test("buildCommandPaletteGroups keeps only registered commands, attaches descrip
 		["Configuration", "Session", "Diagnostics", "Skills"],
 	);
 	const configuration = groups.find((group) => group.title === "Configuration");
-	assert.deepEqual(configuration?.items.map((item) => item.command), ["gentle:models"]);
+	assert.deepEqual(configuration?.items.map((item) => item.command), ["gentle:profiles"]);
+	assert.equal(configuration?.items[0]?.label, "Models and profiles");
 	assert.equal(configuration?.items[0]?.description, "Configure models");
 	assert.equal(configuration?.items[0]?.shortcut, undefined);
 	const session = groups.find((group) => group.title === "Session");

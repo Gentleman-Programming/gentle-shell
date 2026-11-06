@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import gentleTodo from "../extensions/gentle-todo.ts";
@@ -15,7 +18,37 @@ import gentleTodo from "../extensions/gentle-todo.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
-function gentleAiHandlers(): Map<string, Handler> {
+let fixtureCwd: string;
+let fixtureRoot: string | undefined;
+const fixtureEnvironment: NodeJS.ProcessEnv = {};
+const previousEnvironment = new Map<string, string | undefined>();
+before(async () => {
+	const root = await mkdtemp(join(tmpdir(), "gentle-pi-append-route-"));
+	fixtureRoot = root;
+	fixtureCwd = join(root, "project");
+	const home = join(root, "home");
+	for (const directory of [fixtureCwd, home]) await mkdir(directory);
+	Object.assign(fixtureEnvironment, {
+		HOME: home, USERPROFILE: home,
+		GENTLE_PI_CONFIG_HOME: join(home, "config"),
+		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		PI_CODING_AGENT_DIR: join(home, "pi"),
+		XDG_CONFIG_HOME: join(home, "xdg"),
+	});
+	for (const [key, value] of Object.entries(fixtureEnvironment)) {
+		previousEnvironment.set(key, process.env[key]);
+		process.env[key] = value;
+	}
+});
+after(async () => {
+	for (const [key, value] of previousEnvironment) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	if (fixtureRoot !== undefined) await rm(fixtureRoot, { recursive: true, force: true });
+});
+
+function gentleAiHandlers(processEnv: NodeJS.ProcessEnv = {}): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	const pi = {
 		on(name: string, handler: Handler) {
@@ -25,7 +58,12 @@ function gentleAiHandlers(): Map<string, Handler> {
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({
+		nativeReviewCli: null,
+		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
+		telemetryTriggerSpawn: () => assert.fail("Route fixtures must not spawn telemetry"),
+	})(pi);
 	return handlers;
 }
 
@@ -47,7 +85,7 @@ function gentleTodoHandlers(): { handlers: Map<string, Handler[]>; tools: Map<st
 
 function ctx(): ExtensionContext {
 	return {
-		cwd: process.cwd(),
+		cwd: fixtureCwd,
 		hasUI: true,
 		ui: { notify() {}, setWidget() {} },
 		sessionManager: { getSessionId: () => "append-route-session", getBranch: () => [] },
@@ -77,8 +115,28 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /el Gentleman Identity and Harness/);
+	const continuityStart = appended.indexOf("## Authorized work continuity");
+	const coreStart = appended.indexOf("# el Gentleman Orchestrator");
+	assert.ok(continuityStart >= 0 && continuityStart < coreStart,
+		"continuity must be always injected in the identity/harness, outside the budgeted core");
+	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
+	const continuity = appended.slice(continuityStart, coreStart);
+	for (const clause of [
+		"necessary in-scope implementation, documentation and verification steps",
+		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
+		"required explicit consent, a denied action, or the human's explicit stop",
+		"Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it.",
+		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
+		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.",
+		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
+		"Report a concrete blocker and the exact decision needed",
+		"launch the bounded action and end the turn when no independent in-scope work remains",
+		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
+		"do not ask the human to say \"continue\", poll, or claim completion while checks remain pending",
+	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
 	assert.match(appended, /## Todo list/);
-	assert.match(appended, /1\. \[pending\] Fix the bug/);
+	// gentle-shell#1662: the list itself travels as a request-local message, never in the prompt.
+	assert.doesNotMatch(appended, /Fix the bug/);
 	assert.ok(
 		appended.indexOf("el Gentleman Identity and Harness") < appended.indexOf("## Todo list"),
 		"gentle-ai's block must precede gentle-todo's, matching handler registration order",
@@ -105,3 +163,18 @@ test("re-running both handlers on the same already-populated options object does
 	const gentleAiOccurrencesAfterSecondRun = event.systemPromptOptions.appendSystemPrompt.split("el Gentleman Identity and Harness").length - 1;
 	assert.equal(gentleAiOccurrencesAfterSecondRun, 1, "a second gentle-ai run on the same options object must not duplicate the harness");
 });
+
+for (const scenario of ["child", "named-agent"] as const) {
+	test(`${scenario} start leaves shared prompt options unchanged and returns no replacement`, async () => {
+		const handlers = gentleAiHandlers(scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
+		const event = {
+			systemPrompt: "base",
+			systemPromptOptions: { appendSystemPrompt: "Existing provider section" },
+			...(scenario === "named-agent" ? { agentName: "gentle-ai-worker" } : {}),
+		};
+		const result = await handlers.get("before_agent_start")!(event, ctx());
+		assert.equal(result, undefined, "excluded sessions must not return a replacement system prompt");
+		assert.equal(event.systemPromptOptions.appendSystemPrompt, "Existing provider section");
+		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /el Gentleman Identity and Harness/);
+	});
+}

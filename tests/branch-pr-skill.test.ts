@@ -18,6 +18,14 @@ test("issue linkage and protected labels retain human decisions without extra pr
 	assert.doesNotMatch(skill, /Every PR body MUST contain:[\s\S]*?```markdown\s*Closes #<issue-number>/i);
 });
 
+test("oversized single PR does not impose Gentle size labels on generic users", () => {
+	assert.match(skill, /size:exception.*Gentle-owned.*not.*universal/i);
+	assert.match(skill, /destination repository's documented contribution\/size policy/i);
+	assert.match(skill, /only when.*policy.*size:exception/i);
+	assert.match(skill, /(?:never|do not).*request.*(?:create|add).*label.*generic/i);
+	assert.match(skill, /single-pr.*not.*(?:waive|bypass).*authorization/i);
+});
+
 test("required checks are target-policy based and actions are not automatic", () => {
 	assert.match(skill, /REQUIRED CI.*target policy/i);
 	assert.match(skill, /CodeRabbit.*optional.*unless required/i);

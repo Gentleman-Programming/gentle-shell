@@ -4,6 +4,34 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
+import { colorToRgb, parseColor } from "@earendil-works/pi-tui";
+
+test("Pi 0.99.1 source palette matches the public host OKHSL conversion", () => {
+	const source = new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url);
+	const document = JSON.parse(readFileSync(source, "utf8"));
+	const accent = document.vars[document.colors.accent];
+	const text = document.vars[document.colors.text];
+	assert.match(accent, /^okhsl\(/);
+	assert.match(text, /^okhsl\(/);
+	const a = colorToRgb(parseColor(accent));
+	const b = colorToRgb(parseColor(text));
+	assert.equal(sourcePalettePreview("dark", source.pathname).sample,
+		`\x1b[48;2;${a.r};${a.g};${a.b}m  \x1b[0m \x1b[38;2;${b.r};${b.g};${b.b}mAa  sample text\x1b[0m`);
+});
+
+test("OKHSL extremes have exact RGB values and unsupported colors fail closed", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "theme-preview-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const source = join(root, "theme.json");
+	const write = (accent: unknown) => writeFileSync(source, JSON.stringify({ name: "dark", colors: { accent, text: "okhsl(120 0% 100%)" } }));
+	write("okhsl(0 0% 0%)");
+	assert.equal(sourcePalettePreview("dark", source).sample,
+		"\x1b[48;2;0;0;0m  \x1b[0m \x1b[38;2;255;255;255mAa  sample text\x1b[0m");
+	for (const invalid of ["okhsl(0 101% 50%)", "okhsl(0 10% -1%)", "okhsl(NaN 10% 50%)", "okhsl(0 10% 50%)suffix", "rgb(1 2 3)", "red", "", {}, 256]) {
+		write(invalid);
+		assert.throws(() => sourcePalettePreview("dark", source));
+	}
+});
 
 test("installed source palette resolves vars without activating a theme", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "theme-preview-"));

@@ -27,7 +27,7 @@ const TREE = {
 	FIX_TWO: "4".repeat(40),
 } as const;
 
-function judgmentDayState(mode = REVIEW_MODE.JUDGMENT_DAY): ReviewStateV1 {
+function judgmentDayState(mode: ReviewStateV1["mode"] = REVIEW_MODE.JUDGMENT_DAY): ReviewStateV1 {
 	return createReviewState({
 		lineageId: "judgment-day-lineage",
 		mode,

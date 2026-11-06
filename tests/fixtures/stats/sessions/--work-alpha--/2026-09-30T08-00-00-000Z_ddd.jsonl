@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"ddd","timestamp":"2026-09-30T08:00:00.000Z","cwd":"/work/alpha"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-09-30T08:00:10.000Z","message":{"role":"user","content":"no reply yet"}}

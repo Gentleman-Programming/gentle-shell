@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { TASK_STATUS, type TaskRecord } from "../lib/agents-protocol.ts";
-import { formatElapsed, renderAgentsCard, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
+import installGentleAgents from "../extensions/gentle-agents.ts";
+import { PresencePublisher } from "../lib/orchestrator-presence.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
+import { installSidebar } from "../lib/shell-sidebar-layout.ts";
+import { TuiAltScreen, VStack, type Component, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { agentsSpend, agentsSummary, formatElapsed, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows, widgetTasks } from "../lib/agents-widget.ts";
+import { formatTokens } from "../lib/shell-bar.ts";
+import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // Gentle Agents widget: the card above the editor that shows what the
@@ -10,6 +17,42 @@ import { stripAnsi } from "../lib/terminal-theme.ts";
 // Layout: glyph, agent, task summary (wrapped), then model · tokens · cost · time.
 
 const plainTheme = { fg: (_color: string, text: string) => text };
+
+// The card style defaults to float; these assertions pin the outlined (neon)
+// panels unless a test switches the style itself.
+const initialCardStyle = cardStyle();
+before(() => setCardStyle(CARD_STYLE.NEON));
+after(() => setCardStyle(initialCardStyle));
+
+function useCardStyle(t: TestContext, style: CardStyle): void {
+	const found = cardStyle();
+	t.after(() => setCardStyle(found));
+	setCardStyle(style);
+}
+
+const BG_OPEN = "\x1b[48;5;22m";
+const BG_CLOSE = "\x1b[49m";
+
+/** The same theme with a background, so the float style applies (without one panels keep the frame). */
+function withBackground<T extends object>(theme: T): T & { bg(color: string, text: string): string } {
+	return { ...theme, bg: (_color: string, text: string) => `${BG_OPEN}${text}${BG_CLOSE}` };
+}
+
+/** Float panel rows: a painted panel inside transparent one-column margins, between padding rows that keep the accent bar. */
+function assertFloatRows(lines: readonly string[], width: number): void {
+	for (const line of lines) {
+		assert.equal(visibleWidth(line), width, `"${stripAnsi(line)}" is not ${width} wide`);
+		assert.ok(line.startsWith(` ${BG_OPEN}`) && line.endsWith(`${BG_CLOSE} `), `painted inside the margins: ${JSON.stringify(line)}`);
+	}
+	const padding = ` ▎${" ".repeat(width - 3)} `;
+	assert.equal(stripAnsi(lines[0]!), padding, "a padding row with the accent bar sits above the header");
+	assert.equal(stripAnsi(lines.at(-1)!), padding, "a padding row with the accent bar replaces the bottom rule");
+}
+
+/** The text of a body row, without the neon side rails or the float accent bar. */
+function bodyText(row: string): string {
+	return stripAnsi(row).replace(/^ ?[│▎] /u, "").replace(/ ?│? ?$/u, "").trimEnd();
+}
 
 function task(overrides: Partial<TaskRecord>): TaskRecord {
 	return { id: "t", agent: "sdd-explore", mode: "task", prompt: "map footer data sources", label: "map footer data sources", cwd: "/r", parentSessionId: "s", status: TASK_STATUS.RUNNING, createdAt: 1000, startedAt: 1000, endedAt: null, model: "anthropic/claude-sonnet-5", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "grep", lastActivityAt: 1000, turns: 0, toolCalls: 0, tokens: 34_000, cost: 0.27, ...overrides };
@@ -63,6 +106,51 @@ test("renderAgentsCard draws columns for agent, task, and model · tokens · cos
 	assert.match(plain[2], /^│ ◐  sdd-apply    write gentle-shell footer +claude-sonnet-5 · 12k · \$0\.090 · 41s │$/);
 	assert.match(plain[3], /^╰─+╯$/);
 	assert.deepEqual(renderAgentsCard([], plainTheme, 60, 0, { collapsed: false }), []);
+});
+
+test("sidebar activity appears below each agent without changing the capped above-editor view", () => {
+	const tasks = [
+		task({ id: "a", agent: "explore", label: "Investigando estado de subagentes" }),
+		task({ id: "b", agent: "writer", label: "Preparando pruebas", createdAt: 2000, startedAt: 2000 }),
+	];
+	const sidebar = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(sidebar[1]!, /explore.*34k · \$0\.270 · 4s/);
+	assert.equal(bodyText(sidebar[2]!), "Investigando estado de subagentes");
+	assert.match(sidebar[3]!, /writer.*34k · \$0\.270 · 3s/);
+	assert.equal(bodyText(sidebar[4]!), "Preparando pruebas");
+	for (const line of sidebar) assert.equal(visibleWidth(line), 44);
+
+	const above = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
+	assert.equal(above.length, 4);
+	assert.match(above[1]!, /explore.*34k · \$0\.270 · 4s/);
+	assert.match(above[2]!, /writer.*34k · \$0\.270 · 3s/);
+	assert.doesNotMatch(above.join("\n"), /Investigando|Preparando/);
+});
+
+test("sidebar activity uses waiting and error text, clips to width, and preserves fallback metadata", () => {
+	const tasks = [
+		task({ id: "a", agent: "explore", status: TASK_STATUS.WAITING, lastStep: "asked: ¿Continuar?", label: "not waiting text", model: "long-model-name", thinking: "high" }),
+		task({ id: "b", agent: "writer", status: TASK_STATUS.FAILED, endedAt: 4_000, error: "falló la ejecución", label: "not error text", model: "long-model-name", thinking: "high", createdAt: 2000, startedAt: 2000 }),
+	];
+	const sidebar = renderAgentsCard(tasks, plainTheme, 16, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.ok(sidebar.some((line) => bodyText(line) === "asked: ¿Con…"));
+	assert.ok(sidebar.some((line) => bodyText(line) === "falló la ej…"));
+	assert.equal(sidebar.filter((line) => line.includes(" · high")).length, 2, "fallback execution metadata survives on its own row");
+	assert.doesNotMatch(sidebar.join("\n"), /not waiting|not error/);
+	for (const line of sidebar) assert.equal(visibleWidth(line), 16);
+	for (const width of [0, 1, 2, 3, 4, 8, 16, 24, 28, 44]) {
+		for (const line of renderAgentsCard(tasks, plainTheme, width, 5_000, { collapsed: false })) assert.equal(visibleWidth(line), width);
+	}
+});
+
+test("sidebar activity is not duplicated when inline and includes queued tasks", () => {
+	const queued = task({ id: "q", agent: "writer", status: TASK_STATUS.QUEUED, startedAt: null, label: "Preparando pruebas" });
+	const narrow = renderAgentsCard([queued], plainTheme, 28, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.match(narrow[1]!, /writer.*queued/);
+	assert.equal(bodyText(narrow[2]!), "Preparando pruebas");
+	const wide = renderAgentsCard([queued], plainTheme, 100, 5_000, { collapsed: false }).map(stripAnsi);
+	assert.equal(wide.length, 3);
+	assert.match(wide[1]!, /writer\s+Preparando pruebas/);
 });
 
 test("renderAgentsCard right-aligns model·effort, tokens, cost, and elapsed in fixed columns that line up across rows", () => {
@@ -122,7 +210,7 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 	// Narrow cards degrade per column: task text first, then the model name,
 	// then tokens and cost. Elapsed is the one value the reader cannot rebuild
 	// from anything else on screen, so it is the last to go.
-	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false }).map(stripAnsi);
+	const narrow = renderAgentsCard(tasks, plainTheme, 44, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.equal(narrow.length, 3);
 	assert.match(narrow[1], /^│ ◐  sdd-explore +34k · \$0\.270 · 4s │$/, "the model name goes before tokens, cost and elapsed");
 });
@@ -131,12 +219,12 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 // model-only fallback, silently dropping tokens, cost and the running time.
 test("renderAgentsCard keeps tokens, cost and elapsed when a long model name no longer fits", () => {
 	const tasks = [task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42, startedAt: 5_000 - 184_000 })];
-	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.equal(lines.length, 3);
 	assert.match(lines[1], /^│ ◐  sdd-explore +12k · \$0\.420 · 3m04s │$/, "tokens, cost and elapsed survive; the model name is what gives way");
-	const tighter = renderAgentsCard(tasks, plainTheme, 34, 5_000, { collapsed: false }).map(stripAnsi);
+	const tighter = renderAgentsCard(tasks, plainTheme, 34, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(tighter[1], /^│ ◐  sdd-explore +\$0\.420 · 3m04s │$/, "then tokens go, then cost, elapsed last");
-	const tightest = renderAgentsCard(tasks, plainTheme, 28, 5_000, { collapsed: false }).map(stripAnsi);
+	const tightest = renderAgentsCard(tasks, plainTheme, 28, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(tightest[1], /^│ ◐  sdd-explore +3m04s │$/, "elapsed is the last column standing");
 });
 
@@ -145,7 +233,7 @@ test("renderAgentsCard degrades every row of a mixed card together so columns st
 		task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42 }),
 		task({ id: "b", agent: "writer", model: "openai/gpt-5", tokens: 900, cost: 0.01 }),
 	];
-	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false }).map(stripAnsi);
+	const lines = renderAgentsCard(tasks, plainTheme, 46, 5_000, { collapsed: false, maxRows: 8 }).map(stripAnsi);
 	assert.match(lines[1], /12k · \$0\.420 · 4s │$/);
 	assert.match(lines[2], /900 · \$0\.010 · 4s │$/);
 	assert.equal(lines[1].indexOf("· 4s"), lines[2].indexOf("· 4s"), "elapsed stays in one column across rows");
@@ -178,14 +266,14 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 // the label is the one value the user already chose and can look up.
 test("usage outranks the model label at narrow widths without inventing unknown values", () => {
 	for (const width of [60, 100]) {
-		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
 		assert.match(lines[1], /gpt-5 · high · 34k · \$0\.270 · 4s/, "wide enough for every column");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
 	for (const width of [32, 44]) {
-		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "worker", model: "openai/gpt-5", thinking: "high" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.equal(lines.length, 3);
 		assert.match(lines[1], /worker/);
 		assert.doesNotMatch(lines[1], /gpt-5/, "the model label is the first column to go");
@@ -193,7 +281,7 @@ test("usage outranks the model label at narrow widths without inventing unknown 
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
 	for (const width of [0, 1, 2, 3, 4, 8, 16, 24]) {
-		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false });
+		const lines = renderAgentsCard([task({ agent: "界worker", thinking: "xhigh" })], plainTheme, width, 5000, { collapsed: false, maxRows: 8 });
 		assert.ok(lines.length <= 4, "narrow metadata gets at most one dedicated row");
 		for (const line of lines) assert.equal(visibleWidth(line), width);
 	}
@@ -228,6 +316,68 @@ test("renderAgentsCard caps the rows at maxRows, keeps active tasks ahead of fin
 	assert.match(renderAgentsCard(waiting, plainTheme, 80, 5000, { collapsed: false, maxRows: 2 }).map(stripAnsi)[1], /^│ \?  sdd-explore  asked: Delete\?/, "a question is never hidden");
 });
 
+test("renderAgentsCard in the float style spends its padding and separator rows from maxRows, so a capped card is exactly as tall as neon", (t) => {
+	const tasks = [
+		task({ id: "done", status: TASK_STATUS.COMPLETED, startedAt: 500, endedAt: 2000 }),
+		...Array.from({ length: 6 }, (_, index) => task({ id: `run${index}`, label: `job ${index}`, createdAt: 1000 + index, startedAt: 1000 + index })),
+	];
+	const theme = withBackground(plainTheme);
+	const neon = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" });
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const float = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" }).map(stripAnsi);
+	assert.equal(neon.length, 6, "neon: frame plus four rows");
+	assert.equal(float.length, neon.length, "float: padding, header, separator, two rows, padding");
+	assert.match(float[1]!, /6 active · 1 done/, "the title still counts every shown task");
+	assert.match(float[2]!, /^ ▎ +$/, "a blank separator row follows the header");
+	assert.match(float[3]!, /◐  sdd-explore  job 0/);
+	assert.match(float[4]!, /^ ▎ … 6 more · alt\+a to view +$/, "two more tasks fold into the overflow row");
+	for (const maxRows of [3, 4, 5, 7, 8, 9]) {
+		const capped = renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows });
+		assert.ok(capped.length <= maxRows + 2, `maxRows ${maxRows}: ${capped.length} rows exceed the neon cap`);
+	}
+	assert.match(stripAnsi(renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 8 }).at(-2)!), /… 2 more/, "seven tasks no longer fit eight rows once the padding and separator rows are spent");
+	assert.equal(renderAgentsCard(tasks, theme, 80, 5000, { collapsed: false, maxRows: 9 }).length, 11, "at the cap no row is hidden");
+});
+
+test("the minimum widget budget fits an overflow-only float body without changing neon", (t) => {
+	const maxRows = widgetRows(12);
+	assert.equal(maxRows, 3, "small terminals reach the three-row task budget");
+	const theme = withBackground(plainTheme);
+	for (const count of [1, 2, 6]) {
+		const tasks = Array.from({ length: count }, (_, index) => task({ id: `run${index}`, label: `job ${index}`, startedAt: 1000 + index }));
+		const options = { collapsed: false, maxRows, viewKey: "alt+a" };
+		setCardStyle(CARD_STYLE.NEON);
+		const neon = renderAgentsCard(tasks, plainTheme, 80, 5000, options);
+		assert.deepEqual(renderAgentsCard(tasks, theme, 80, 5000, options), neon, "neon stays byte-identical with background support");
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		assert.deepEqual(renderAgentsCard(tasks, plainTheme, 80, 5000, options), neon, "missing-background fallback keeps neon rows");
+		setCardStyle(CARD_STYLE.NEON);
+		const neonNarrow = renderAgentsCard(tasks, theme, 9, 5000, options);
+		setCardStyle(CARD_STYLE.FLOAT);
+		assert.deepEqual(renderAgentsCard(tasks, theme, 9, 5000, options), neonNarrow, "narrow fallback keeps neon rows");
+		const rows = renderAgentsCard(tasks, theme, 80, 5000, options);
+		assert.equal(rows.length, maxRows + 2, `${count} tasks must fit five total float rows`);
+		assertFloatRows(rows, 80);
+		assert.match(stripAnsi(rows[2]!), /^ ▎ +$/, "separator stays intact");
+		if (count === 1) assert.match(stripAnsi(rows[3]!), /job 0/, "a single task fits directly");
+		else assert.match(stripAnsi(rows[3]!), new RegExp(`^ ▎ … ${count} more · alt\\+a to view +$`), "the only body row truthfully counts every hidden task");
+		assert.equal(renderAgentsCard(tasks, theme, 80, 5000, { ...options, collapsed: true }).length, maxRows + 2, "collapsed cards keep one task and fit");
+	}
+});
+
+test("float row budgets still prioritize a question when a task and overflow both fit", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tasks = [
+		task({ id: "first", label: "running first", startedAt: 1000 }),
+		task({ id: "second", label: "running second", startedAt: 2000 }),
+		task({ id: "question", status: TASK_STATUS.WAITING, lastStep: "asked: Delete?", startedAt: 3000 }),
+	];
+	const rows = renderAgentsCard(tasks, withBackground(plainTheme), 80, 5000, { collapsed: false, maxRows: 4, viewKey: "alt+a" });
+	assert.equal(rows.length, 6);
+	assert.match(stripAnsi(rows[3]!), /^ ▎ \?  sdd-explore  asked: Delete\?/);
+	assert.match(stripAnsi(rows[4]!), /^ ▎ … 2 more · alt\+a to view +$/);
+});
+
 test("renderAgentsCard formats subagent cost with formatCost (three decimals below $1, two at or above $1)", () => {
 	const tasks = [
 		task({ id: "small", agent: "scout", cost: 0.09, tokens: 1000, startedAt: 1000, endedAt: 2000 }),
@@ -236,4 +386,285 @@ test("renderAgentsCard formats subagent cost with formatCost (three decimals bel
 	const card = renderAgentsCard(tasks, plainTheme, 80, 5000, { collapsed: false });
 	assert.ok(card.some((line) => line.includes("$0.090")), "cost below $1 shows 3 decimals");
 	assert.ok(card.some((line) => line.includes("$12.50")), "cost at or above $1 shows 2 decimals");
+});
+
+test("renderAgentsCard in the float style is a float panel two rows taller than neon with unclipped columns", (t) => {
+	const tasks = [
+		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),
+		task({ id: "b", agent: "sdd-apply", label: "write gentle-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
+	];
+	const theme = withBackground(plainTheme);
+	for (const options of [{ collapsed: false }, { collapsed: true, collapseKey: "ctrl+a" }, { collapsed: false, maxRows: 1, viewKey: "ctrl+v" }]) {
+		const neon = renderAgentsCard(tasks, theme, 84, 85_000, options);
+		useCardStyle(t, CARD_STYLE.FLOAT);
+		const float = renderAgentsCard(tasks, theme, 84, 85_000, options);
+		setCardStyle(CARD_STYLE.NEON);
+		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
+		assert.match(stripAnsi(float[1]!), /^ ▎ ❀ Agents  1 active · 1 done +\S.*\S {3}$/, "header on row 1, hint right-aligned");
+		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
+		assertFloatRows(float, 84);
+		for (const [index, row] of float.slice(3, -1).entries()) {
+			assert.match(stripAnsi(row), /^ ▎ \S/u);
+			if (bodyText(row).startsWith("…")) continue;
+			// Task columns fit the float body, so the right-aligned time is never clipped.
+			const tail = bodyText(neon[index + 1]!).split(" ").at(-1)!;
+			assert.ok(bodyText(row).endsWith(tail), `"${stripAnsi(row)}" keeps "${tail}"`);
+			assert.match(stripAnsi(row), /\S {3}$/u, "the time ends where the float body ends");
+		}
+	}
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
+	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
+	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
+});
+
+// The fullscreen rail draws Agents as a panel section (design/shell-rework/06-many-agents.html):
+// one row per agent, the task first, then the agent kind and its tokens and
+// time, ordered by what needs you; finished work folds into one row.
+
+test("the Agents section orders rows by what needs you and aligns kind and time columns", () => {
+	const now = 400_000;
+	const tasks = [
+		task({ id: "done", agent: "gentle-ai-verify", label: "verify T1 title row", status: TASK_STATUS.COMPLETED, startedAt: 0, endedAt: 380_000 }),
+		task({ id: "worker", agent: "gentle-ai-worker", label: "T3 rail panel sections", startedAt: 28_000, tokens: 2_100_000 }),
+		task({ id: "asks", agent: "gentle-ai-explore", label: "map sidebar render paths", lastStep: "Which base branch should the chain use?", status: TASK_STATUS.WAITING, startedAt: 10_000 }),
+		task({ id: "queued", agent: "gentle-ai-worker", label: "T5 mobile work row", status: TASK_STATUS.QUEUED, startedAt: null, createdAt: 50_000, tokens: 0 }),
+		task({ id: "failed", agent: "gentle-ai-worker", label: "T6 customize presets", status: TASK_STATUS.FAILED, error: "T6 customize presets", startedAt: 300_000, endedAt: 370_000 }),
+		task({ id: "verify", agent: "gentle-ai-verify", label: "verify T2 editor rule", startedAt: 277_000, tokens: 800_000 }),
+	];
+	const lines = renderAgentsSection(tasks, plainTheme, 50, now, { collapsed: false });
+	for (const line of lines) assert.equal(visibleWidth(line), 50, `row fills the section: ${line}`);
+	const rows = lines.map((line) => line.trimEnd());
+	assert.match(rows[0]!, /^▾ AGENTS +2 running · 1 waiting$/);
+	const worker = `${formatTokens(2_100_000)} ${formatElapsed(372_000)}`;
+	const verify = `${formatTokens(800_000)} ${formatElapsed(123_000)}`;
+	assert.deepEqual(rows.slice(1).map((row) => row.replace(/\s{2,}/g, " | ")), [
+		" | ? Which base branch should… explore | asks you",
+		` | ◐ T3 rail panel sections | worker | ${worker}`,
+		` | ◐ verify T2 editor rule | verify | ${verify}`,
+		" | ○ T5 mobile work row | worker | queued",
+		` | ✗ T6 customize presets | worker | failed ${formatElapsed(70_000)}`,
+		" | ✓ 1 done · /gentle:agents",
+	]);
+	const kindColumn = rows.slice(1, 6).map((row) => [...row.matchAll(/(explore|worker|verify)(?= )/g)].at(-1)!.index);
+	assert.equal(new Set(kindColumn).size, 1, `agent kinds line up in one column: ${kindColumn}`);
+});
+
+test("agent row hover paints only the pointed task text in the shared warning role", () => {
+	const roles: Record<string, number> = { warning: 208, accent: 30, text: 250, muted: 245, dim: 240, error: 160, border: 238 };
+	const theme = { fg: (role: string, text: string) => `\x1b[38;5;${roles[role] ?? 255}m${text}\x1b[39m` };
+	const tasks = [task({ id: "a", agent: "scout", label: "map files" }), task({ id: "b", agent: "writer", label: "write tests", status: TASK_STATUS.FAILED, endedAt: 4_000 })];
+	const warning = "\x1b[38;5;208m";
+	const error = "\x1b[38;5;160m✗";
+	for (const render of [
+		(hoveredRow?: number) => renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, hoveredRow }),
+		(hoveredRow?: number) => renderAgentsSection(tasks, theme, 80, 5_000, { collapsed: false, hoveredRow }),
+	]) {
+		const idle = render();
+		const hovered = render(2);
+		assert.equal(hovered[1], idle[1], "the neighboring task is not highlighted");
+		assert.match(hovered[2]!, new RegExp(`${warning.replaceAll("[", "\\[")}[^\\x1b]*write tests`));
+		assert.ok(hovered[2]!.includes(error), "the failed status glyph keeps its error role");
+		assert.deepEqual(render(), idle, "leaving restores every original role");
+	}
+});
+
+test("agent hover geometry excludes float padding, overflow and idle rows", (t) => {
+	useCardStyle(t, CARD_STYLE.FLOAT);
+	const theme = withBackground({ fg: (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : 250}m${text}\x1b[39m` });
+	const tasks = Array.from({ length: 4 }, (_, index) => task({ id: String(index), agent: `worker-${index}`, label: `task-${index}` }));
+	const agentRows: number[] = [];
+	const idle = renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, maxRows: 4, onAgentRow: (row) => agentRows.push(row) });
+	assert.deepEqual(agentRows, [3]);
+	assert.match(stripAnsi(idle[4]!), /… 3 more/);
+	const hovered = renderAgentsCard(tasks, theme, 80, 5_000, { collapsed: false, maxRows: 4, hoveredRow: 3 });
+	assert.ok(hovered[3]!.includes("\x1b[38;5;208m"));
+	assert.equal(hovered[2], idle[2], "float separator stays unpainted");
+	assert.equal(hovered[4], idle[4], "overflow stays unpainted");
+	const idleRows: number[] = [];
+	renderAgentsSection([], theme, 50, 5_000, { collapsed: false, onAgentRow: (row) => idleRows.push(row) });
+	assert.deepEqual(idleRows, []);
+});
+
+test("agent widget routes row hover, reset, collapse and clicks through its public component", async (t) => {
+	const tasks = [task({ id: "a", agent: "scout", label: "map files" }), task({ id: "b", agent: "writer", label: "write tests" })];
+	t.mock.method(TaskStore.prototype, "list", () => tasks);
+	t.mock.method(PresencePublisher, "start", () => { throw new Error("presence disabled in this test"); });
+	const handlers = new Map<string, Array<(event: { reason: string }, ctx: unknown) => unknown>>();
+	const pi = {
+		on(name: string, handler: (event: { reason: string }, ctx: unknown) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		events: { on: () => () => {}, emit() {} },
+		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMarkdownTransformer() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+	};
+	installGentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: "/dev/null" }, {
+		home: "/dev/null", agentHome: "/dev/null", env: { GENTLE_PI_CONFIG_HOME: "/dev/null" },
+		now: () => 5_000, schedule: () => () => {}, resolveWorktree: () => undefined,
+	});
+	let factory: ((tui: unknown, theme: unknown) => Component) | undefined;
+	let opens = 0;
+	const ctx = {
+		hasUI: true, mode: "tui", cwd: "/repo", modelRegistry: {},
+		sessionManager: { getSessionId: () => "bad id", getCwd: () => "/repo", getEntries: () => [], getBranch: () => [] },
+		ui: { setWidget: (_key: string, value: typeof factory) => { factory = value; }, custom: async () => { opens++; return null; }, notify() {} },
+	};
+	await handlers.get("session_start")!.at(-1)!({ reason: "new" }, ctx);
+	const tui = { terminal: { columns: 160, rows: 40 }, requestRender() {} };
+	const theme = { fg: (role: string, text: string) => `\x1b[38;5;${role === "warning" ? 208 : 250}m${text}\x1b[39m` };
+	const component = factory!(tui, theme);
+	const rows = component.render(80);
+	const event = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], y: number): TuiMouseEvent => ({ type, button, x: 5, y, screenX: 15, screenY: 20 + y, width: 80, height: rows.length, shift: false, alt: false, ctrl: false });
+	const rail = sidebarState(tui as unknown as TUI).parts.get("agents")!;
+	const before = rail.digest!();
+	component.handleMouse?.(event("move", "none", 1));
+	assert.ok(component.render(80)[1]!.includes("\x1b[38;5;208m"), "the pointed agent row uses the hover role");
+	component.handleMouse?.(event("move", "none", 2));
+	assert.ok(component.render(80)[2]!.includes("\x1b[38;5;208m"), "moving selects the other row");
+	component.handleMouse?.(event("move", "none", rows.length - 1));
+	assert.ok(!component.render(80)[2]!.includes("\x1b[38;5;208m"), "moving to the spacer clears row hover");
+	assert.equal(rail.digest!(), before, "hover is cleared from the cache digest");
+	const railRows = rail.render(46);
+	const railEvent = (type: TuiMouseEvent["type"], button: TuiMouseEvent["button"], y: number): TuiMouseEvent => ({ type, button, x: 5, y, screenX: 105, screenY: 5 + y, width: 46, height: railRows.length, shift: false, alt: false, ctrl: false });
+	rail.handleMouse?.(railEvent("move", "none", 1));
+	assert.notEqual(rail.digest!(), before, "rail hover invalidates the section digest");
+	assert.ok(rail.render(46)[1]!.includes("\x1b[38;5;208m"));
+	rail.invalidate();
+	assert.equal(rail.digest!(), before);
+	component.handleMouse?.(event("move", "none", rows.length - 1));
+	assert.ok(!component.render(80).at(-1)!.includes("\x1b[38;5;208m"), "spacer and border never light up");
+	component.handleMouse?.(event("click", "right", 1));
+	assert.equal(opens, 0);
+	component.handleMouse?.(event("click", "left", 1));
+	assert.equal(opens, 1, "an agent row still opens the agents view");
+	component.handleMouse?.(event("click", "left", 0));
+	assert.match(stripAnsi(component.render(80)[0]!), /Expand/, "the header still collapses");
+	assert.equal(opens, 1);
+	await t.test("native fullscreen motion into a sibling clears agent hover", () => {
+		let input: ((data: string) => void) | undefined;
+		const terminal: Terminal = {
+			start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, columns: 80, rows: 24, kittyProtocolActive: false,
+			moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+		};
+		const nativeTui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+		const nativeCard = factory!(nativeTui, theme);
+		const outside = { render: () => ["outside"], invalidate() {} };
+		nativeTui.setLayoutRoot(new VStack([nativeCard, outside]));
+		const uninstall = installSidebar(nativeTui, { fg: theme.fg, bold: (text) => text });
+		nativeTui.start();
+		try {
+			nativeTui.renderNow(true);
+			const rendered = nativeCard.render(80);
+			input?.("\x1b[<35;6;2M");
+			assert.ok(nativeCard.render(80)[1]!.includes("\x1b[38;5;208m"), "native motion enters an agent row");
+			input?.(`\x1b[<35;1;${rendered.length + 1}M`);
+			assert.ok(!nativeCard.render(80)[1]!.includes("\x1b[38;5;208m"), "native motion into a sibling clears hover");
+		} finally {
+			uninstall();
+			(nativeCard as Component & { dispose?(): void }).dispose?.();
+			nativeTui.stop();
+		}
+	});
+	tasks.length = 0;
+	const idle = rail.render(46);
+	rail.handleMouse?.(railEvent("move", "none", 1));
+	assert.equal(rail.render(46)[1], idle[1], "the idle row is not an agent hover target");
+	(component as Component & { dispose?(): void }).dispose?.();
+});
+
+test("an idle Agents section keeps one muted row pointing at /gentle:agents", () => {
+	const lines = renderAgentsSection([], plainTheme, 50, 0, { collapsed: false }).map((line) => line.trimEnd());
+	assert.deepEqual(lines.map((row) => row.replace(/\s{2,}/g, " | ")), ["▾ AGENTS | idle", " | none running · /gentle:agents"]);
+});
+
+test("a collapsed Agents section keeps the row that needs you most", () => {
+	const tasks = [task({ id: "run", label: "running one" }), task({ id: "ask", label: "asking", lastStep: "Pick one?", status: TASK_STATUS.WAITING })];
+	const lines = renderAgentsSection(tasks, plainTheme, 50, 10_000, { collapsed: true }).map((line) => line.trimEnd());
+	assert.equal(lines.length, 2);
+	assert.match(lines[0]!, /^▸ AGENTS/);
+	assert.match(lines[1]!, /^ {2}\? Pick one\?/);
+});
+
+test("more agents than the section's rows keep waiting and running rows and count the rest", () => {
+	const tasks = Array.from({ length: 12 }, (_, index) => task({ id: `q${index}`, label: `queued ${index}`, status: TASK_STATUS.QUEUED, startedAt: null, createdAt: index }))
+		.concat(task({ id: "run", label: "the running one", createdAt: 100 }), task({ id: "ask", label: "asking", lastStep: "Need you?", status: TASK_STATUS.WAITING, createdAt: 101 }));
+	const rows = renderAgentsSection(tasks, plainTheme, 50, 10_000, { collapsed: false }).map((line) => line.trim());
+	assert.match(rows[1]!, /^\? Need you\?/);
+	assert.match(rows[2]!, /^◐ the running one/);
+	assert.equal(rows.length, 1 + 8, "eight rows, the last one counting the rest");
+	assert.match(rows.at(-1)!, /^… 7 more · \/gentle:agents$/);
+});
+
+test("the agents alert names the agent asking the user and its question, above the editor", () => {
+	const painted = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => `\x1b[48;5;52m${text}\x1b[49m` };
+	const waiting = [
+		task({ id: "a", agent: "gentle-ai-explore", status: TASK_STATUS.WAITING, lastStep: "asked: Which base branch should the chain use?", createdAt: 1 }),
+		task({ id: "b", agent: "gentle-ai-worker", status: TASK_STATUS.WAITING, lastStep: "asked: Overwrite the fixture?", createdAt: 2 }),
+		task({ id: "c", label: "running" }),
+	];
+	const lines = renderAgentsAlert(waiting, painted, 110);
+	assert.equal(lines.length, 1);
+	assert.ok(lines[0]!.startsWith("\x1b[48;5;52m"), "the alert sits on the selection surface");
+	const row = stripAnsi(lines[0]!);
+	assert.equal(visibleWidth(row), 110);
+	assert.match(stripAnsi(renderAgentsAlert(waiting, painted, 60)[0]!), /…\s+\+1 more · \/gentle:agents $/, "a narrow row clips the question, never the way to the agents view");
+	assert.match(row, /^ \? explore asked: Which base branch should the chain use\? +\+1 more · \/gentle:agents $/);
+	assert.deepEqual(renderAgentsAlert([task({ id: "c" })], painted, 80), [], "nothing waits, nothing paints");
+});
+
+test("the agents summary counts running, waiting and failed agents for the mobile work row", () => {
+	const tasks = [task({ id: "a" }), task({ id: "b" }), task({ id: "c", status: TASK_STATUS.WAITING, lastStep: "asked: x" }), task({ id: "d", status: TASK_STATUS.FAILED, endedAt: 9_000 })];
+	assert.deepEqual(agentsSummary(tasks, plainTheme, 10_000), { left: "◐ 3 agents · ? 1 waiting · ✗ 1", priority: 1 });
+	assert.equal(agentsSummary([task({ id: "e", status: TASK_STATUS.COMPLETED, endedAt: 9_000 })], plainTheme, 10_000), undefined, "finished work alone is not live work");
+});
+
+test("agentsSpend totals every started subagent's tokens and cost for the Stats section", () => {
+	assert.equal(agentsSpend([]), undefined);
+	assert.equal(agentsSpend([task({ id: "q", status: TASK_STATUS.QUEUED, tokens: 0, cost: 0 })]), undefined, "queued tasks have not spent anything");
+	const spend = agentsSpend([
+		task({ id: "a", status: TASK_STATUS.COMPLETED, tokens: 1200, cost: 0.12 }),
+		task({ id: "b", status: TASK_STATUS.RUNNING, tokens: 2300, cost: 0.08 }),
+		task({ id: "c", status: TASK_STATUS.FAILED, tokens: 0, cost: 0 }),
+		task({ id: "q", status: TASK_STATUS.QUEUED, tokens: 0, cost: 0 }),
+	])!;
+	assert.equal(spend.runs, 3);
+	assert.equal(spend.tokens, 3500);
+	assert.equal(Math.round(spend.cost * 100), 20);
+});
+
+test("an agent that fell back to another model says so on its row", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const now = 10_000;
+	const moved = task({ id: "m", status: TASK_STATUS.RUNNING, startedAt: 1_000, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5", tokens: 1200 });
+	const stayed = task({ id: "s", status: TASK_STATUS.RUNNING, startedAt: 2_000, model: "anthropic/claude-opus-5-5", tokens: 800 });
+	const rows = renderAgentsSection([moved, stayed], theme as never, 60, now, { collapsed: false }).map((row) => row.trimEnd());
+	assert.ok(rows.some((row) => /↪ .+ · gpt-5\.5/.test(row)), rows.join("\n"));
+	assert.equal(rows.filter((row) => row.includes("↪")).length, 1, "only the agent that moved");
+});
+
+test("a moved agent's ↪ mark never changes the other rows, at any rail width", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const now = 70_000;
+	const others = [
+		task({ id: "w", status: TASK_STATUS.WAITING, startedAt: 1_000, prompt: "grep the repo", agent: "sdd-explore" }),
+		task({ id: "f", status: TASK_STATUS.FAILED, startedAt: 2_000, endedAt: 59_000, prompt: "verify the change", agent: "gentle-ai-verify" }),
+	];
+	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", agent: "gentle-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5" });
+	for (const width of [46, 30, 20]) {
+		const plain = renderAgentsSection([...others, running], theme as never, width, now, { collapsed: false });
+		const moved = renderAgentsSection([...others, { ...running, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5" }], theme as never, width, now, { collapsed: false });
+		const movedRow = moved.findIndex((row) => /34k/.test(row));
+		moved.forEach((row, index) => {
+			if (index !== movedRow) assert.equal(row, plain[index], `row ${index} is untouched at ${width}`);
+			assert.ok(visibleWidth(row) <= width);
+		});
+		if (width >= 30) assert.match(moved[movedRow]!, /↪/, `the mark shows at ${width}`);
+	}
+});
+
+test("a moved agent's row keeps its task readable and adds the model when there is room", () => {
+	const theme = { fg: (_role: string, text: string) => text };
+	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", label: "write the parser", agent: "gentle-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5", fallbackFrom: "openai/gpt-5.5" });
+	const at46 = renderAgentsSection([running], theme as never, 46, 70_000, { collapsed: false }).join("\n");
+	assert.match(at46, /↪ write the/, "the task comes first after the mark");
+	const at90 = renderAgentsSection([running], theme as never, 90, 70_000, { collapsed: false }).join("\n");
+	assert.match(at90, /↪ write the parser · claude-opus-5-5/);
 });

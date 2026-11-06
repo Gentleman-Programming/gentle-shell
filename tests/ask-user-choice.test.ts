@@ -33,6 +33,7 @@ interface ChoiceTool {
 	promptGuidelines?: string[];
 	parameters: ChoiceParameters;
 	execute: (...args: unknown[]) => Promise<ChoiceResult>;
+	renderResult?: (result: unknown, options: unknown, theme: ChoiceTheme) => { render(width: number): string[] };
 }
 
 interface ChoiceLifecycleEvent {
@@ -233,7 +234,7 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 		ui: { custom: async (factory: ChoiceCustomFactory) => {
 			let completed: unknown;
 			const component = factory({ requestRender() {} }, {
-				fg: (_color, text) => `\u001b[38;5;39m${text}\u001b[39m`,
+				fg: (color, text) => color === "warning" ? `\u001b[33m${text}\u001b[39m` : `\u001b[38;5;39m${text}\u001b[39m`,
 				bg: (_color, text) => `\u001b[48;5;236m${text}\u001b[49m`, bold: (text) => text,
 			}, {}, (value) => { completionCalls++; completed = value; });
 			const lines = component.render(80);
@@ -248,9 +249,10 @@ test("ask_user_choice hover preserves the keyboard-selected opaque value", async
 			assert.equal(component.handleMouse?.(hover)?.render, true);
 			assert.equal(completed, undefined, "hover never submits");
 			const hovered = component.render(80);
-			assert.ok(hovered[second]?.includes("\u001b[48;5;236m"), "only the second option is hovered");
+			assert.ok(hovered[second]?.includes("\u001b[33m"), "the second option uses the shared warning foreground");
+			assert.ok(!hovered[second]?.includes("\u001b[48;5;236m"), "hover does not use toolPendingBg");
 			assert.ok(
-				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[48;5;236m"),
+				hovered[first]?.includes("\u001b[38;5;39m") && !hovered[first]?.includes("\u001b[33m"),
 				"hover does not change keyboard selection",
 			);
 			component.handleInput("\r");
@@ -710,4 +712,33 @@ test("ask_user_choice is offered on an interactive rpc host and withdrawn once t
 	delete process.env[INTERACTIVE_HOST_ENV];
 	for (const hook of registration.hooks) await hook({}, { mode: "rpc" });
 	assert.deepEqual(registration.activeTools(), ["read"]);
+});
+
+test("ask_user_choice renderResult renders selected, custom response with text, and cancelled states (#1692)", () => {
+	const registration = registerChoiceTool();
+	const theme: ChoiceTheme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+
+	// 1. Selected option
+	const selected = registration.tool.renderResult!(
+		{ details: { selection: { index: 1, label: "Deploy to production" } } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(selected, /✓ 1\. Deploy to production/);
+
+	// 2. Custom response with submitted text (#1692)
+	const custom = registration.tool.renderResult!(
+		{ details: { customResponse: "use the staging bucket" } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(custom, /✓ Custom response — use the staging bucket/);
+
+	// 3. Cancelled
+	const cancelled = registration.tool.renderResult!(
+		{ details: { cancelled: true } },
+		{},
+		theme,
+	).render(80).join("\n");
+	assert.match(cancelled, /Cancelled/);
 });

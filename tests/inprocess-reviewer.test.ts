@@ -388,13 +388,17 @@ function deferred<T>() {
 	const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
 	return { promise, resolve, reject };
 }
+// Capture real timers before per-test mocks: a broken handshake must still
+// fail independently even while the reviewer deadline is driven manually.
+const watchdogSetTimeout = setTimeout;
+const watchdogClearTimeout = clearTimeout;
 async function bounded<T>(promise: Promise<T>): Promise<T> {
 	let timer: ReturnType<typeof setTimeout>;
 	try {
 		return await Promise.race([promise, new Promise<never>((_, reject) => {
-			timer = setTimeout(() => reject(new Error("reviewer did not settle within the independent 250ms watchdog")), 250);
+			timer = watchdogSetTimeout(() => reject(new Error("reviewer did not settle within the independent 250ms watchdog")), 250);
 		})]);
-	} finally { clearTimeout(timer!); }
+	} finally { watchdogClearTimeout(timer!); }
 }
 
 test("host deadline bounds authentication that never resolves", async () => {
@@ -439,18 +443,27 @@ for (const stop of ["caller", "deadline"] as const) {
 
 for (const composed of [false, true]) {
 	for (const late of ["fulfill", "reject"] as const) {
-		test(`host deadline settles non-cooperative ${composed ? "composed" : "compat"} completion and consumes late ${late}`, async () => {
-			const completion = deferred<AssistantMessage>();
+		test(`host deadline settles non-cooperative ${composed ? "composed" : "compat"} completion and consumes late ${late}`, { timeout: 5_000 }, async t => {
+			let clock = 0;
+			t.mock.method(performance, "now", () => clock);
+			t.mock.timers.enable({ apis: ["setTimeout"] });
+			const completion = deferred<AssistantMessage>(), entered = deferred<void>();
 			const registry = fakeRegistry([fakeModel()]);
 			let calls = 0, providerSignal: AbortSignal | undefined;
-			const complete = (async (_model, _context, options) => { calls++; providerSignal = options?.signal; return await completion.promise; }) as typeof completeSimple;
+			const complete = (async (_model, _context, options) => { calls++; providerSignal = options?.signal; entered.resolve(); return await completion.promise; }) as typeof completeSimple;
 			if (composed) registry.getProvider = () => ({ streamSimple: (model, context, options) => ({ result: () => complete(model, context, options) }) });
+			const pending = runInProcessReviewer(baseRequest({ timeoutMs: 15 }), { registry, complete });
 			try {
-				const outcome = await bounded(runInProcessReviewer(baseRequest({ timeoutMs: 15 }), { registry, complete }));
+				// This test targets a completion already dispatched. Contention
+				// before auth/dispatch must not expire its deadline accidentally.
+				await bounded(entered.promise);
+				assert.equal(calls, 1);
+				clock = 15; t.mock.timers.tick(15);
+				const outcome = await bounded(pending);
 				assert.equal(expectRefused(outcome).code, INPROCESS_REVIEWER_FAILURE.TIMED_OUT);
 				assert.equal(providerSignal?.aborted, true); assert.equal(calls, 1);
 			} finally {
-				if (late === "fulfill") completion.resolve(assistantText("late text must never be admitted"));
+				if (late === "fulfill" || calls === 0) completion.resolve(assistantText("late text must never be admitted"));
 				else completion.reject(new Error("late provider rejection must be consumed"));
 			}
 			await nextTurn();

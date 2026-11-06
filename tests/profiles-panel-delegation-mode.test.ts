@@ -118,17 +118,24 @@ const TONE_THEME = {
 
 test("the orchestrator row shows the drafted mode beside the tier, in both modes", () => {
 	const organic = orchestratorRow(renderPanel([], panelFile()));
-	assert.match(organic, /Orchestrator\s+openai\/gpt-6\.1-sol\s+max\s+organic/, "the committed organic mode rides the orchestrator row");
+	assert.match(organic, /Orchestrator\s+openai\/gpt-6\.1-sol\s+max\s+◎ organic/, "the committed organic mode rides the orchestrator row");
 	const delegated = orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } })));
-	assert.match(delegated, /Orchestrator\s+openai\/gpt-6\.1-sol\s+max\s+⚡ full-delegation/, "the committed full-delegation mode rides the orchestrator row");
+	assert.match(delegated, /Orchestrator\s+openai\/gpt-6\.1-sol\s+max\s+⚡ full delegation/, "the committed full-delegation mode rides the orchestrator row");
 	// The chip mirrors the draft: one `w` flips it before anything is saved.
-	assert.match(orchestratorRow(renderPanel(["w"], panelFile())), /max\s+⚡ full-delegation/);
-	assert.match(orchestratorRow(renderPanel(["w"], panelFile({ team: { orchestratorMode: "full-delegation" } }))), /max\s+organic/);
-	// Tones: organic dim, full-delegation accent (and it is the only new row segment).
-	assert.match(orchestratorRow(renderPanel([], panelFile(), [], 100, TONE_THEME)), /organic/, "organic stays lowercase under a dim tone");
-	const delegatedTone = orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 100, TONE_THEME));
-	assert.match(delegatedTone, /⚡ FULL-DELEGATION/, "the full-delegation chip renders in the accent tone");
-	assert.doesNotMatch(delegatedTone, /organic/, "the tones differ between the two modes");
+	assert.match(orchestratorRow(renderPanel(["w"], panelFile())), /max\s+⚡ full delegation/);
+	assert.match(orchestratorRow(renderPanel(["w"], panelFile({ team: { orchestratorMode: "full-delegation" } }))), /max\s+◎ organic/);
+	// No hierarchy: the rows are byte-identical apart from the chip itself, so
+	// the two modes render with the same tone by construction.
+	const stripChip = (row: string) => row
+		.replace(/ ⚡ full delegation/, "")
+		.replace(/ ◎ organic/, "")
+		.replace(/ ⚡ full(?![a-z])/, "")
+		.replace(/ ◎ org(?![a-z])/, "")
+		.replace(/\s+│$/, " │");
+	assert.equal(stripChip(delegated), stripChip(organic), "peer modes: only the chip's glyph and label differ");
+	// A per-mode accent ranking is gone: the chip survives the case probe unchanged.
+	assert.match(orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 100, TONE_THEME)), /⚡ full delegation(?!…)/, "not uppercased, so no accent tone");
+	assert.doesNotMatch(orchestratorRow(renderPanel([], panelFile(), [], 100, TONE_THEME)), /ORGANIC/, "organic is not ranked with an accent tone either");
 	// The chip belongs to the orchestrator row only.
 	assert.doesNotMatch(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } })).join("\n"), /gentle-ai-worker\s+nan\/deepseek-v4-flash\s+inherit\s+⚡/);
 });
@@ -140,29 +147,33 @@ test("the mode chip keeps the full orchestrator row intact at 100 columns", () =
 	assert.match(renderPanel([], panelFile()).join("\n"), /gentle-ai-worker\s+nan\/deepseek-v4-flash\s+inherit/);
 	// With a Fast tier on the row, chip and tier share the line at 100 columns.
 	const tiered = orchestratorRow(renderPanel([], panelFile(), [], 100, undefined, { fastModels: ["openai/gpt-6.1-sol"] }));
-	assert.match(tiered, /Standard ▾\s+organic/);
+	assert.match(tiered, /Standard ▾\s+◎ organic/);
 });
 
 test("the mode chip degrades before it disappears: full form at 100 with a tier, half form one tier-width earlier", () => {
 	// The human's case: a Fast-capable orchestrator at exactly 100 columns still
 	// shows the mode (here the widest form fits beside the tier).
 	const tiered = orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 100, undefined, { fastModels: ["openai/gpt-6.1-sol"] }));
-	assert.match(tiered, /Standard ▾\s+⚡ full-delegation/, "the mode is never gone at the default width");
+	assert.match(tiered, /Standard ▾\s+⚡ full delegation/, "the mode is never gone at the default width");
 	// One tier-width narrower the wide form no longer fits and the ladder steps down.
 	const stepped = orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 95, undefined, { fastModels: ["openai/gpt-6.1-sol"] }));
-	assert.match(stepped, /Standard ▾\s+⚡ full(?![a-z-])/, "the half-width form rides beside the tier when the wide one cannot");
-	assert.doesNotMatch(stepped, /full-delegation/, "the wide form is the one that yields");
+	assert.match(stepped, /Standard ▾\s+⚡ full(?![a-z])/, "the half-width form rides beside the tier when the wide one cannot");
+	assert.doesNotMatch(stepped, /full delegation/, "the wide form is the one that yields");
 	// The organic forms share the ladder: beside a tier the full word still fits.
 	const organicTiered = orchestratorRow(renderPanel([], panelFile(), [], 100, undefined, { fastModels: ["openai/gpt-6.1-sol"] }));
-	assert.match(organicTiered, /Standard ▾\s+organic/);
+	assert.match(organicTiered, /Standard ▾\s+◎ organic/);
 });
 
 test("only the last-resort form fitting renders it, and never for the wrong mode", () => {
-	// At 64 columns the full and half forms do not fit; the shape remains.
+	// At 64 columns the two wide forms do not fit; the shapes remain, one rung
+	// apart because the organic word is shorter (symmetric ladder, equal rungs).
 	const delegated = orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 64));
 	assert.match(delegated, /max\s+⚡\s*│/, "the last-resort full-delegation shape is still on the row");
 	const organic = orchestratorRow(renderPanel([], panelFile(), [], 64));
-	assert.match(organic, /max\s+○\s*│/, "the last-resort organic shape is still on the row");
+	assert.match(organic, /max\s+◎ org(?![a-z])/, "the organic ladder is one step above its own last resort");
+	// At 53 columns even the shorthand does not fit; both shapes remain.
+	assert.match(orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 53)), /max\s+⚡\s*│/);
+	assert.match(orchestratorRow(renderPanel([], panelFile(), [], 53)), /max\s+◎\s*│/);
 	// The shape states its mode: the mapping is per form, not per width.
 	assert.doesNotMatch(orchestratorRow(renderPanel([], panelFile(), [], 64, TONE_THEME)), /⚡/, "an organic profile never renders the bolt");
 });
@@ -176,10 +187,38 @@ test("short space shortens or drops the fallback chain before the chip, and drop
 	// The ladder degrades before dropping: at 60 columns the last-resort shape
 	// remains (and it costs the chain its slot), below that the chip is gone.
 	const tight = orchestratorRow(renderPanel([], panelFile(), [], 60, undefined, { fallbacks }));
-	assert.match(tight, /○(?![a-z])/, "the last-resort shape survives where the word did not");
-	assert.doesNotMatch(tight, /organic|↪/, "the chain yields before the last-resort shape does");
+	assert.match(tight, /◎ org(?![a-z])/, "the last-resort ladder survives where the word did not");
+	assert.doesNotMatch(tight, /◎ organic|↪/, "the chain yields before the chip degrades");
 	const dropped = orchestratorRow(renderPanel([], panelFile(), [], 50, undefined, { fallbacks }));
-	assert.doesNotMatch(dropped, /organic|full-delegation|○|⚡/, "only when even the last resort cannot fit is the chip gone");
+	assert.doesNotMatch(dropped, /◎|⚡|org/, "only when even the last resort cannot fit is the chip gone");
+});
+
+// ---- focused-Orchestrator mode explainer ----------------------------------
+
+/** The description slot of a rendered screen: the line carrying the profile's scope sentence. */
+function descriptionLine(rendered: string[]): string {
+	const line = rendered.find((line) => /Default for new sessions|Not in use|Used in this session|not in use/i.test(line));
+	assert.ok(line, "no description slot on screen");
+	return line;
+}
+
+test("the focused Orchestrator row explains both modes in the existing description slot", () => {
+	// The slot previously carried only the profile's scope sentence; the mode
+	// explainer appends to it while the Orchestrator row is the focused row.
+	const line = descriptionLine(renderPanel([], panelFile()));
+	assert.match(line, /Default for new sessions\.\s+◎ inline · ⚡ writer · w switches/);
+	// One line for both modes: it does not depend on the current mode at all.
+	const delegated = descriptionLine(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } })));
+	assert.equal(delegated, line, "both modes read the exact same explanation");
+	// Another row in focus: the slot stays the profile's own sentence.
+	const moved = descriptionLine(renderPanel(["j"], panelFile()));
+	assert.match(moved, /Default for new sessions\./);
+	assert.doesNotMatch(moved, /◎ inline/, "the mode explainer never hijacks another row's focus");
+	// Truncation: when the slot's room cannot hold both, the explainer yields
+	// before the scope sentence, and the line never grows an extra body row.
+	const narrow = descriptionLine(renderPanel([], panelFile(), [], 60));
+	assert.match(narrow, /Default for new sessions\./);
+	assert.doesNotMatch(narrow, /◎ inline/);
 });
 
 // ---- loop-level persistence ------------------------------------------------

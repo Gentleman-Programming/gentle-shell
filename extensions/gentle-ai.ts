@@ -3870,17 +3870,29 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
 };
 
 /**
- * The orchestrator row's mode chip, widest form first. Each form carries its
- * mode, so the renderer can never show `⚡` for an organic profile: the draft
- * picks among its own mode's forms only.
+ * The orchestrator row's mode chip, widest form first. Each form carries only
+ * its mode — never a tone — because the two modes are peers, not ranks: one
+ * shared tone below renders every form alike, and a later edit cannot
+ * reintroduce a per-mode ranking through this table.
  */
-const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode; tone: PanelTone }> = [
-	{ text: "  ⚡ full-delegation", mode: "full-delegation", tone: "accent" },
-	{ text: "  ⚡ full", mode: "full-delegation", tone: "accent" },
-	{ text: "  ⚡", mode: "full-delegation", tone: "accent" },
-	{ text: "  organic", mode: "organic", tone: "dim" },
-	{ text: "  ○", mode: "organic", tone: "dim" },
+const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode }> = [
+	{ text: "  ⚡ full delegation", mode: "full-delegation" },
+	{ text: "  ◎ organic", mode: "organic" },
+	{ text: "  ⚡ full", mode: "full-delegation" },
+	{ text: "  ◎ org", mode: "organic" },
+	{ text: "  ⚡", mode: "full-delegation" },
+	{ text: "  ◎", mode: "organic" },
 ];
+/** One tone for every mode form: the modes are peers, never ranked. */
+const ORCHESTRATOR_MODE_CHIP_TONE: PanelTone = "status";
+/**
+ * The focused-Orchestrator explainer, appended to the description slot only
+ * while that row is the focused one. Symmetric by construction: one line
+ * states both behaviours and the key, so neither mode reads as the special
+ * case. Sized to fit beside the scope sentence at 100 columns (35 chars of
+ * budget on the fixtures' titles); it drops before it displaces the sentence.
+ */
+const ORCHESTRATOR_MODE_EXPLAINER = "◎ inline · ⚡ writer · w switches";
 
 /**
  * `/gentle:profiles` — one screen, one table, profiles as
@@ -4790,7 +4802,16 @@ class RoutingTablePanel implements OverlayComponent {
 		const room = inner - 1 - visibleWidth(title) - 3;
 		const sentence = [this.scopeSentence(this.profileName), this.shortScope(this.profileName)]
 			.find((candidate) => visibleWidth(candidate) <= room) ?? "";
-		lines.push(` ${this.renderText(title, "title")}${sentence ? `   ${this.renderText(sentence, "muted")}` : ""}`);
+		// While the Orchestrator row is the focused row, the description slot also
+		// states what each orchestrator mode does — the same line for both modes.
+		// It appends after the scope sentence and yields to it: it never displaces
+		// the sentence nor wraps the line into an extra body row.
+		let described = sentence;
+		if (this.rows[this.cursor] === PROFILE_ORCHESTRATOR_KEY) {
+			const combined = described ? `${described}   ${ORCHESTRATOR_MODE_EXPLAINER}` : ORCHESTRATOR_MODE_EXPLAINER;
+			if (visibleWidth(combined) <= room) described = combined;
+		}
+		lines.push(` ${this.renderText(title, "title")}${described ? `   ${this.renderText(described, "muted")}` : ""}`);
 		const notices = this.noticeLines(inner);
 		for (const notice of notices) lines.push(this.renderText(notice, "edited"));
 		lines.push("");
@@ -4834,7 +4855,7 @@ class RoutingTablePanel implements OverlayComponent {
 				+ this.renderText(truncateToWidth(model, modelCol - 1, "…").padEnd(modelCol), modelTone)
 				+ this.renderText(effort, effortTone)
 				+ this.renderText(tier, this.isEdited(key, "tier") ? "edited" : "status")
-				+ (chip ? this.renderText(chip.text, chip.tone) : "")
+				+ (chip ? this.renderText(chip.text, ORCHESTRATOR_MODE_CHIP_TONE) : "")
 				+ (fallback ? `   ${this.renderText(fallback, "dim")}` : "");
 			if (tier) region({ kind: "tier", row: key }, effortStart + visibleWidth(effort), Math.min(inner, effortStart + visibleWidth(effort + tier)));
 			if (effort) region({ kind: "effort", row: key }, effortStart, inner);

@@ -44,7 +44,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - Registered worktrees survive reloads. `/gentle:changes` groups each dirty root (the session's repository and its subagents' worktrees) and shows Git status, line counts, and lazy diffs against HEAD without conflating identical paths from different worktrees.
 - Fullscreen pointer navigation and the responsive sidebar keep changes, agents, and TODO usable at changing terminal widths; cached frames avoid redrawing inactive sidebar content while live status still updates.
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
-- Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles, and carry a per-profile orchestrator workflow mode (`w` on the models screen: organic, or full delegation where every implementation goes to a subagent); see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
+- Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles, and carry a per-profile orchestrator workflow mode (`w` on the models screen: organic, where the orchestrator may implement inline, or full delegation, where every implementation goes to a subagent); see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model.
 
 The source checkout prepares `gentle-pi` `4.0.0` with a package-local Gentle AI `v4.3.1` pin; this does not imply that the package release has been published.
 

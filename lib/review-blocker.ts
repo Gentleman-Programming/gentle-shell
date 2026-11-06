@@ -2,7 +2,7 @@ export const REVIEW_BLOCKER_GUIDANCE = "When blocker is present, explain its cat
 
 /** Informational host diagnosis; native continuations and repository policy remain authoritative. */
 export interface ReviewBlocker {
-	category: "configuration" | "input" | "consent" | "stale-binding" | "provider-capability" | "provider-unavailable" | "admission-refused" | "generation-invalid" | "authority-unavailable" | "provider-stop" | "diagnosis-required";
+	category: "configuration" | "input" | "consent" | "continuation" | "stale-binding" | "provider-capability" | "provider-unavailable" | "admission-refused" | "generation-invalid" | "authority-unavailable" | "provider-stop" | "diagnosis-required";
 	scope: "review-step";
 	actor: "user" | "caller" | "authorized-operator" | "unknown";
 	next_step: string;
@@ -34,7 +34,7 @@ export function withReviewBlocker(result: Record<string, unknown>): Record<strin
 	if (nativeAction === "explicit-maintainer-action") {
 		return diagnose("authority-unavailable", "authorized-operator", "Use the provider-supported maintenance route with its required fresh authorization. Do not infer permission to repair or replay.");
 	}
-	if (result.outcome === "native-status-unsupported" || result.outcome === "request-context-unsupported" || failure.kind === "relay-unavailable" || failure.kind === "handshake-refused" || result.outcome === "pi-host-relay-handshake-refused" || result.outcome === "pi-host-relay-unavailable") {
+	if (result.outcome === "native-status-unsupported" || result.outcome === "request-context-unsupported" || failure.kind === "relay-unavailable" || failure.kind === "handshake-refused" || result.outcome === "pi-host-relay-handshake-refused" || result.outcome === "pi-host-relay-unavailable" || result.outcome === "pi-host-relay-transport-unavailable") {
 		return diagnose("provider-capability", "user", "Check the package-selected native provider, its supported capabilities and the host handshake; reload the host after a supported installation change. Escalate only if the required capability is still unavailable.");
 	}
 	if (result.outcome === "native-status-package-binary-missing" || native.code === "managed_assets_outdated") {
@@ -57,6 +57,14 @@ export function withReviewBlocker(result: Record<string, unknown>): Record<strin
 	}
 	if (result.outcome === "consent-binding-stale" || (result.outcome === "intended-untracked-selection-binding-rejected" && ["binding-mismatch", "status-field-mismatch"].includes(String(result.reason)))) {
 		return diagnose("stale-binding", "caller", "Do not resend this binding. Follow the host's current continuation to obtain the exact binding for the current candidate, preserving any stop or authorization requirement.");
+	}
+	// A blocked facade response can be a normal offer awaiting its next host
+	// operation. Do not diagnose a ready ACK or collect offer as an unknown error.
+	if (result.outcome === undefined && result.failure === undefined && result.native_failure === undefined && result.reconciliation_failure === undefined && result.reconciliation === undefined && (
+		(transition.kind === "execute" && ["review.start", "review.status", "review.acknowledge-approved"].includes(String(record(transition.execute).operation))) ||
+		(Array.isArray(result.collectBindings) && result.collectBindings.length > 0)
+	)) {
+		return diagnose("continuation", "caller", "Follow the exact offered host continuation and its required model-run confirmation or consent. This is a pending review step, not an unknown failure or a new execution permission.");
 	}
 	if (native.code === "invalid_request" || typeof result.selectionBinding === "string" || Array.isArray(result.collectBindings) || result.outcome === "capture-binding-rejected" || result.outcome === "capture-group-rejected" || (typeof result.outcome === "string" && result.outcome.startsWith("native-start-"))) {
 		return diagnose("input", "caller", "Supply the exact requested fields or current host-issued binding. Follow any native stop or no-retry action; a corrected input is not automatic replay permission.");

@@ -143,9 +143,12 @@ test("STATUS renders the managed_assets_outdated continuation command as the act
 test("caller-relative STATUS approved guidance preserves selected root against a different session", async () => {
 	const lineageId = "caller-relative-status";
 	const root = realpathSync(process.cwd());
-	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId, root) } as unknown as NativeReviewCli;
+	const offered = approvedAcknowledgementStatus(lineageId, root);
+	offered.raw = { ...offered.raw, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
+	const native = { targetStatus: async () => offered } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: root }, dirname(root), native);
 	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	assert.equal((result.blocker as Record<string, unknown>).category, "continuation");
 });
 
 test("caller-relative approved closure guidance preserves selected root and canonical omission", async () => {

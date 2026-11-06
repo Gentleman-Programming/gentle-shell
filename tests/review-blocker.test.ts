@@ -64,6 +64,39 @@ test("stale consent remains scoped to the review step rather than delivery polic
 	assert.equal(result.next_action, "restart-for-fresh-consent");
 });
 
+test("negotiated transport refusal is a known capability problem rather than an unknown blocker", () => {
+	const relay_transport = { supported: false, code: "unsupported_transport", message: "opaque diagnostic" };
+	const result = withReviewBlocker({ status: "blocked", outcome: "pi-host-relay-transport-unavailable", relay_transport, next_action: "exact host continuation" });
+	assert.equal((result.blocker as Record<string, unknown>).category, "provider-capability");
+	assert.equal((result.blocker as Record<string, unknown>).actor, "user");
+	assert.equal(result.relay_transport, relay_transport);
+	assert.equal(result.next_action, "exact host continuation");
+});
+
+test("an offered acknowledgement is a normal continuation with no diagnostic investigation required", () => {
+	const raw = { next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
+	const result = withReviewBlocker({ status: "blocked", result: raw, next_action: "exact host acknowledgement" });
+	assert.equal((result.blocker as Record<string, unknown>).category, "continuation");
+	assert.equal((result.blocker as Record<string, unknown>).actor, "caller");
+	assert.equal(result.result, raw);
+	assert.equal(result.next_action, "exact host acknowledgement");
+});
+
+test("normal collect offers remain continuations while contradictory failure evidence never becomes permission", () => {
+	const offer = { status: "blocked", collectBindings: [{ collectBinding: "opaque" }] };
+	assert.equal((withReviewBlocker(offer).blocker as Record<string, unknown>).category, "continuation");
+	const native_failure = { next_action: "stop" };
+	const failed = withReviewBlocker({ ...offer, native_failure });
+	assert.notEqual((failed.blocker as Record<string, unknown>).category, "continuation");
+	assert.equal((failed.blocker as Record<string, unknown>).native_next_action, "stop");
+	assert.equal((failed.blocker as Record<string, unknown>).automatic_retry, false);
+});
+
+test("unsupported execute operations are never labelled as supported continuations", () => {
+	const result = withReviewBlocker({ status: "blocked", result: { next_transition: { kind: "execute", execute: { operation: "arbitrary.command" } } } });
+	assert.equal((result.blocker as Record<string, unknown>).category, "diagnosis-required");
+});
+
 test("native stop remains authoritative even when an invalid request has a diagnostic category", async () => {
 	const failure = decodeReviewFailureV2({
 		schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2",

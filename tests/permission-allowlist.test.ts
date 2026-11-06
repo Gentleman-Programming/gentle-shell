@@ -14,6 +14,7 @@ const { confirmCommand, evaluateGuardedCommand, loadRuntimeGuardrailsConfig, sav
 
 interface Harness {
 	home: string;
+	pendingSelection: string | undefined;
 	selectCalls: Array<{ prompt: string; choices: string[] }>;
 	confirmCalls: string[];
 	selectWith(value: string | undefined): void;

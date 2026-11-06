@@ -91,6 +91,14 @@ flowchart TD
 
 This is guidance through existing tools, not a new CLI, phase, state engine, or execution harness. Static prompt tests and scripted hook checks prove instruction delivery, not autonomous model adherence; actual create/update/resume behavior requires observed Pi sessions.
 
+## Universal agent-status file
+
+Interactive top-level sessions publish private, per-session JSON status files for
+small adapters in any terminal tool, independently of Herdr. See
+[agent-status format and reader example](agent-status.md) for the location, fields,
+heartbeat/staleness rules and privacy guidance. The task-summary preference also
+controls titles in these files; existing Herdr behavior is unchanged.
+
 ## Herdr active-work summary
 
 Under Herdr, root interactive Pi sessions publish only the `in_progress` Todo

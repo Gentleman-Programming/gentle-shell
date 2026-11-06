@@ -12,6 +12,8 @@ export interface AgentStatus {
 	task: { title: string } | null;
 	updatedAt: string;
 }
+const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
+const ORPHAN_MAX_BYTES = 64 * 1024;
 export function agentStatus(input: Omit<AgentStatus, "schema" | "updatedAt">, now: number): AgentStatus {
 	return { schema: "gentle-shell.agent-status/v1", ...input, updatedAt: new Date(now).toISOString() };
 }
@@ -57,6 +59,34 @@ export function createAgentStatusStore(home: string, session: string) {
 			if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !owned(stat)) throw Error("unsafe-file");
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	};
+	// Probe a recorded owner PID: only ESRCH proves it dead; EPERM means alive.
+	const gone = (pid: unknown) => {
+		if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+		try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+		return false;
+	};
+	const orphaned = (value: { pid?: unknown; updatedAt?: unknown }) => {
+		const updated = typeof value.updatedAt === "string" ? Date.parse(value.updatedAt) : Number.NaN;
+		return (Number.isFinite(updated) && Date.now() - updated > ORPHAN_AGE_MS) || gone(value.pid);
+	};
+	// A crashed session leaves its file behind; a bounded startup sweep drops proven
+	// orphans only. Unreadable, oversized, foreign, linked or unparsable files stay.
+	const sweep = () => {
+		let entries: string[];
+		try { directory(false); entries = fs.readdirSync(root); } catch { return; }
+		for (const entry of entries) {
+			const candidate = join(root, entry);
+			if (!entry.endsWith(".json") || candidate === path) continue;
+			try {
+				const stat = fs.lstatSync(candidate);
+				if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !owned(stat) || stat.size > ORPHAN_MAX_BYTES) continue;
+				const value = JSON.parse(fs.readFileSync(candidate, "utf8")) as { pid?: unknown; updatedAt?: unknown } | null;
+				if (typeof value !== "object" || value === null || !orphaned(value)) continue;
+				fs.unlinkSync(candidate);
+			} catch { /* Never touch what cannot be proven an orphan. */ }
+		}
+	};
+	try { sweep(); } catch { /* The sweep never interrupts a session start. */ }
 	return { path, write(value: AgentStatus): boolean {
 		let temporary: string | undefined;
 		try {

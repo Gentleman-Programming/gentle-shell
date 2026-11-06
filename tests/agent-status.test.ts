@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +110,29 @@ test("S5: symlinked config home is refused", async (t) => {
 	assert.equal(store.write(agentStatus(input, 0)), false);
 	assert.doesNotThrow(() => store.remove());
 	assert.deepEqual(readdirSync(target), []);
+});
+test("S6: startup sweep unlinks time- or pid-stale orphans only", async () => {
+	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");
+	const home = temporaryDirectory("agent-status-sweep-");
+	const root = join(home, "agent-status");
+	mkdirSync(root, { mode: 0o700 }); chmodSync(root, 0o700);
+	const statusPath = (session: string) => join(root, `${createHash("sha256").update(session).digest("hex")}.json`);
+	const record = (session: string, pid: number, updatedAt: string) => JSON.stringify({ ...agentStatus({ ...input, session, pid }, 0), updatedAt });
+	const dead = spawnSync(process.execPath, ["-e", ""]);
+	assert.throws(() => process.kill(dead.pid!, 0), { code: "ESRCH" }, "the probe pid must be reaped before the sweep");
+	const staleAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+	const freshAt = new Date().toISOString();
+	writeFileSync(statusPath("own"), record("own", dead.pid!, staleAt));
+	writeFileSync(statusPath("stale-time"), record("stale-time", process.pid, staleAt));
+	writeFileSync(statusPath("dead-pid"), record("dead-pid", dead.pid!, freshAt));
+	writeFileSync(statusPath("live"), record("live", process.pid, freshAt));
+	writeFileSync(statusPath("malformed"), "{not json");
+	const store = createAgentStatusStore(home, "own");
+	assert.equal(JSON.parse(readFileSync(statusPath("own"), "utf8")).updatedAt, staleAt, "the sweep never removes its own session file");
+	assert.equal(store.write(agentStatus(input, 1)), true);
+	assert.deepEqual(readdirSync(root).sort(), ["live", "malformed", "own"].map((session) => statusPath(session).split(/[\\/]/).at(-1)!).sort());
+	assert.equal(JSON.parse(readFileSync(statusPath("live"), "utf8")).updatedAt, freshAt);
+	assert.deepEqual(JSON.parse(readFileSync(statusPath("own"), "utf8")).state, "working");
 });
 test("S5: a missing config home is created privately on first write", async () => {
 	const { createAgentStatusStore, agentStatus } = await import("../lib/agent-status.ts");

@@ -1,11 +1,14 @@
 # Pasted images: give the chips a disk path the agent can use
 
-Estado: **implementado en esta rama**. Retención y limpieza resueltas (ver
-*Decisiones tomadas*); el código está en `lib/image-disk-cache.ts`, cableado en
-`extensions/gentle-shell.ts` y cubierto por `tests/image-disk-cache.test.ts`.
+Estado: **implementado en esta rama**. Retención, limpieza, ubicación y
+permisos resueltos (ver *Decisiones tomadas*); el código está en
+`lib/image-disk-cache.ts`, cableado en `extensions/gentle-shell.ts` y cubierto
+por `tests/image-disk-cache.test.ts` (14 tests). Lo que sigue abierto, sin
+bloquear el merge, está en *Pendientes*.
 
-Riesgo: **ítem 1** (datos nuevos que persisten y no se reconstruyen). Mitigado
-por: opt-in, directorio por sesión, borrado al cerrar y barrido de restos.
+Riesgo: **datos nuevos que persisten y no se reconstruyen**. Mitigado por:
+opt-in apagado por defecto, directorio por sesión con `0700`/`0600`, borrado al
+cerrar y barrido de restos.
 
 ## Specs
 
@@ -14,14 +17,18 @@ por: opt-in, directorio por sesión, borrado al cerrar y barrido de restos.
 - S3: La ruta debe ser accesible para el agente sin romper el contrato de chips: `base64` sigue siendo la fuente de verdad del envío; el path es información adicional.
 - S4: Nada de esto puede cambiar el comportamiento actual cuando la feature está apagada.
 
-## Decisiones abiertas (bloqueantes)
+## Pendientes (no bloquean el merge)
 
-1. **Retención**: ¿cuánto vive el archivo? ¿Se borra al enviar el draft, al cerrar la sesión, al hacer GC del historial, o nunca?
-2. **Limpieza**: ¿quién la ejecuta — `dispose()` de la sesión, un barrido al arrancar, o el mismo GC del historial (`history-gc`)?
-3. **Ubicación**: ¿`$XDG_CACHE_HOME/gentle-shell/images/<session>/`? ¿Qué pasa si no hay `XDG_CACHE_HOME` (fallback a `~/.cache`)?
-4. **Exposición al modelo**: ¿el path viaja en el mensaje del usuario, en metadatos del tool, o solo queda disponible para que un tool lo lea?
-5. **Privacidad**: una imagen pegada puede contener datos sensibles. Persistirla en disco es una decisión de seguridad, no un detalle de implementación.
-6. **Multi-tenant / sesiones concurrentes**: el directorio debe ser por sesión y con permisos `0700`, archivos `0600`.
+1. **Exposición al agente (S3)**: hoy el path solo lo ve el usuario con
+   `/gentle:images`; todavía no hay tool ni API que se lo entregue al modelo. La
+   decisión de *no* inyectarlo en el prompt está tomada (ver *Decisiones tomadas*
+   #3), pero cómo lo consume un agente queda por definir.
+2. **Cobertura del cableado**: ningún test ejercita el cableado de la extensión
+   (alta del cache en `session_start`, borrado en `session_shutdown`, salida de
+   `/gentle:images`). Si eso se rompe, no hay test que lo detecte.
+3. **Aviso de privacidad en la UI**: activar `GENTLE_PI_IMAGES_DISK_CACHE=session`
+   deja imágenes pegadas en disco y hoy eso solo se explica en la ayuda del
+   comando, no con una advertencia visible al activarlo.
 
 ## Intento descartado (2026-11-05)
 
@@ -46,13 +53,19 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 1. **Retención**: la vida de la sesión. El directorio se borra en el cierre; un barrido al arrancar limpia restos de sesiones que crashearon (más de 7 días).
 2. **Activación**: apagada por defecto, opt-in por variable de entorno `GENTLE_PI_IMAGES_DISK_CACHE=session` (la extensión no lee un archivo de configuración para esto). Nadie persiste imágenes sin pedirlo.
 3. **Exposición**: solo por comando (`/gentle:images`). El path **nunca** se inyecta en el prompt ni viaja al proveedor.
-4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images/<session>/`, directorio `0700`, archivos `0600`.
+4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images/<session>/`, directorio `0700`, archivos `0600`. Un `XDG_CACHE_HOME` relativo se ignora y cae al fallback.
+5. **Privacidad**: se acepta persistir la imagen solo con opt-in explícito y en
+   un directorio privado por sesión; apagada por defecto, ninguna imagen toca el
+   disco sin que el usuario lo pida.
+6. **Multi-tenant / sesiones concurrentes**: directorio por sesión con id
+   saneado (un `../../etc` cae dentro del root), `0700`/`0600`, y borrado
+   limitado a la sesión propia.
 
 ## Hecho
 
 - `lib/image-disk-cache.ts`: `ImageDiskCache` (`write`, `dispose`, `sweepStale` estático), `defaultCacheRoot()` con XDG, y saneamiento del id de sesión (un `../../etc` cae dentro del root). El barrido solo toca directorios que contienen archivos propios (`image-<id>.<ext>`), así que un root equivocado no puede borrar datos ajenos.
 - `lib/image-attachments.ts`: constructor opcional `constructor(cache?: ImageDiskCache)`, campo `diskPath?` y `dispose()`. Sin cache el comportamiento es **idéntico** al anterior (los 9 tests de contrato y los 18 de chips siguen verdes).
-- `tests/image-disk-cache.test.ts`: 9 tests (root XDG, escape de sesión, bytes y permisos, extensión por mime, degradación sin disco, dispose aislado, barrido, barrido seguro, contrato de la clase).
+- `tests/image-disk-cache.test.ts`: 14 tests (root XDG y fallback, XDG relativo ignorado, escape de sesión, bytes y permisos, extensión por mime, degradación sin disco, dispose aislado, barrido de sesiones viejas, barrido que respeta directorios ajenos, barrido que no sale del root, `setCache` en runtime, `cachedPaths` limitado al draft, chip usable sin path y contrato del adjunto en memoria).
 
 ## Cableado (hecho)
 
@@ -67,14 +80,14 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 - T1: S1/S4 — decisiones de retención y limpieza ✅
 - T2: S3 — `diskPath` opcional y contrato de chips intacto ✅
 - T3: S1 — cableado del call site con id de sesión real ✅
-- T4: S2 — tests: contrato, permisos, degradación y barrido seguro ✅ (9 nuevos)
+- T4: S2 — tests: contrato, permisos, degradación y barrido seguro ✅ (14 nuevos)
 - T5: S1 — documentar en la ayuda: el comando explica cómo se activa ✅
 
 ## Verificación
 
 ```
 tsc --noEmit                      exit 0
-tests/image-disk-cache.test.ts    9/9
+tests/image-disk-cache.test.ts    14/14
 tests/image-attachments.test.ts   9/9
 tests/image-paste-chips.test.ts   18/18
 runtime-harness (carga extensions/) exit 0

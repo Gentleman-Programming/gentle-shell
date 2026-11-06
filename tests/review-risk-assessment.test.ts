@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
@@ -636,6 +638,75 @@ const ctx = { cwd: process.cwd() } as ExtensionContext;
 // removes the verifier the plan requires" pass it so a verifier is required.
 const ESCALATE = { escalate: { item: 3, reason: "changes a published export" } } as const;
 
+for (const [label, input] of [["normal", undefined], ["escalated", ESCALATE], ["untrusted closure", { nativeReviewOutcome: "closed" }]] as const) test(`RDD off registered assess ${label} skips native calls and retains verification`, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "rdd-off-assess-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q"], { cwd: root, env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+	const state = join(root, "state.json");
+	writeFileSync(state, '{"unchanged":true}\n');
+	const calls = { mode: 0, assess: 0, target: 0 };
+	const cli = {
+		reviewMode: async () => { calls.mode++; return { operation: "status", scope: "clone", status: { global: "off", cloneLocal: "", effective: "off", source: "global" } }; },
+		assess: async () => { calls.assess++; return decodeReviewAssessmentV1(newEnvelope()); },
+		targetStatus: async () => { calls.target++; return { applicability: "current_target", targetIdentity: "fixture" }; },
+	} as unknown as NativeReviewCli;
+	const tool = reviewControllerTool(cli);
+	const context = { cwd: root } as ExtensionContext;
+	{
+		const result = await tool.execute("off", { operation: "assess", ...(input === undefined ? {} : { input: JSON.stringify(input) }) }, undefined, undefined, context);
+		const escalated = input !== undefined && "escalate" in input;
+		const risk = escalated ? VERIFICATION_TIER.HIGH : VERIFICATION_TIER.MEDIUM;
+		assert.deepEqual(result.details, {
+			operation: "assess", schema: "gentle-pi.review-assessment-plan/v1", risk, nativeRisk: "unassessable",
+			...(escalated ? { agentEscalation: { item: 3, label: "changing or removing contracts others already consume", reason: ESCALATE.escalate.reason, applied: true } } : {}),
+			reasons: [{ code: "rdd-off-assessment-skipped", detail: "Native assessment skipped because receipt-driven development is off; changed counts were not measured." }],
+			changedPaths: 0, changedLines: 0, candidate: null, rddLine: "off", nativeReviewOutcome: "unknown", outcome_source: "unknown",
+			writerProfile: "small", writerProfileSource: "fallback",
+			plan: verificationPlan({ rddLine: RDD_LINE.OFF, risk, writerProfile: WRITER_PROFILE.SMALL, nativeReviewOutcome: NATIVE_REVIEW_OUTCOME.UNKNOWN }),
+			workspace_root: realpathSync(root),
+		});
+		assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(result.details) }]);
+	}
+	assert.deepEqual(calls, { mode: 1, assess: 0, target: 0 });
+	await assert.rejects(() => tool.execute("invalid", { operation: "assess", input: JSON.stringify({ baseRef: "HEAD" }) }, undefined, undefined, context), { message: "Review assess baseRef requires committedOnly: true" });
+	await assert.rejects(() => tool.execute("cancelled", { operation: "assess" }, AbortSignal.abort(), undefined, context), { message: "Review controller operation was cancelled" });
+	assert.deepEqual(calls, { mode: 1, assess: 0, target: 0 });
+	assert.equal(readFileSync(state, "utf8"), '{"unchanged":true}\n');
+});
+
+test("registered assess preserves on, malformed and failed mode paths without using a prior off result", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "rdd-assess-modes-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	execFileSync("git", ["init", "-q"], { cwd: root, env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+	for (const mode of ["on", "malformed", "failed"] as const) {
+		const calls = { mode: 0, assess: 0, target: 0 };
+		let first = true;
+		const cli = {
+			reviewMode: async () => {
+				calls.mode++;
+				if (first) { first = false; return { status: { effective: "off", source: "global" } }; }
+				if (mode === "failed") throw new Error("mode unavailable");
+				return { status: { effective: mode === "on" ? "on" : "off", source: mode === "malformed" ? "invalid" : "global" } };
+			},
+			assess: async () => { calls.assess++; return decodeReviewAssessmentV1(newEnvelope()); },
+			targetStatus: async () => { calls.target++; return { applicability: "current_target", targetIdentity: "fixture" }; },
+		} as unknown as NativeReviewCli;
+		const tool = reviewControllerTool(cli);
+		const context = { cwd: root } as ExtensionContext;
+		await tool.execute("off", { operation: "assess" }, undefined, undefined, context);
+		assert.deepEqual(calls, { mode: 1, assess: 0, target: 0 });
+		const result = await tool.execute(mode, { operation: "assess" }, undefined, undefined, context);
+		const details = result.details as Record<string, unknown>;
+		assert.deepEqual(calls, { mode: 2, assess: 1, target: 1 }, mode);
+		assert.equal(details.rddLine, mode === "on" ? "on" : "unknown");
+		assert.equal(details.nativeRisk, "high");
+		assert.equal(details.risk, "medium");
+		assert.equal(details.reviewDue, true);
+		assert.deepEqual(details.nextTransition, nextTransition());
+		assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(result.details) }]);
+	}
+});
+
 // Changed with verification by named risk: an unassessable candidate no longer
 // verifies like high; the plan is medium and the native tier stays visible.
 test("gentle_review assess: an older binary without the assess verb informs only (no verifier without escalate)", async () => {
@@ -1028,9 +1099,9 @@ test("gentle_review assess: an unassessable candidate is never closed", async ()
 test("gentle_review assess: derived closure only changes the RDD on-path; RDD off plans are unchanged", async () => {
 	for (const risk of ["passive", "medium", "high"] as const) {
 		for (const consumed of [true, false]) {
-			// The plan follows verificationRisk (native high without escalate is medium).
+			// Off skips native assessment, so its fallback is unassessable even for a passive fixture.
 			const off = await assessWith(closureCli({ rdd: "off", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
-			const expectedOff = verificationPlan({ rddLine: RDD_LINE.OFF, risk: verificationRisk(risk, undefined), writerProfile: WRITER_PROFILE.LARGE });
+			const expectedOff = verificationPlan({ rddLine: RDD_LINE.OFF, risk: verificationRisk(VERIFICATION_TIER.UNASSESSABLE, undefined), writerProfile: WRITER_PROFILE.LARGE });
 			assert.deepEqual(off.plan, { ...expectedOff }, `off ${risk} consumed ${consumed}`);
 			const on = await assessWith(closureCli({ rdd: "on", risk, consumed }), { writerModelId: "claude-sonnet-5", writerEffort: "high" });
 			const expectedOn = verificationPlan({ rddLine: RDD_LINE.ON, risk: verificationRisk(risk, undefined), writerProfile: WRITER_PROFILE.LARGE, nativeReviewOutcome: consumed ? NATIVE_REVIEW_OUTCOME.CLOSED : NATIVE_REVIEW_OUTCOME.UNKNOWN });

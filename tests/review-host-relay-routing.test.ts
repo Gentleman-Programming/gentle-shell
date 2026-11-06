@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
@@ -14,6 +14,11 @@ import { NativeReviewIntegrationError, type NativeReviewCli, type NativeReviewUn
 import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { decodeReviewFailureV2, decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { InProcessReviewerRegistry } from "../lib/inprocess-reviewer.ts";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
+import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
+import { resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { resetFrozenInheritedProfilesForTesting, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
 
 // One-slot capture routing: the host relay runs only when the selected
 // provider-returned collect input carries the --materialize token. Every
@@ -1486,4 +1491,155 @@ test("a lens slot with no routing entry never borrows Pi's persisted default mod
 
 	assert.equal(relayed.length, 1);
 	assert.equal(relayed[0]!.selection, undefined);
+});
+
+// gentle-shell#2742, section 7: reviewers check session profile authority as
+// launches do. A saved Pi session whose newest record is the given one.
+function profileSession(t: test.TestContext, customType: string, data: unknown): SessionManager {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-relay-session-"));
+	t.after(() => { rmSync(dir, { recursive: true, force: true }); resetSessionProfileBindingsForTesting(); resetFrozenInheritedProfilesForTesting(); });
+	const manager = SessionManager.create(dir, join(dir, "sessions"));
+	manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
+	manager.appendCustomEntry(customType, data);
+	return manager;
+}
+
+const transcript = (manager: SessionManager) => readFileSync(manager.getSessionFile()!, "utf8");
+
+// The v9 host-mediated validator: the refuter slot under the validation operation.
+const hostMediatedValidatorCollectInput = (lineageId: string): ReviewCollectInputV3 => ({ ...hostMediatedRefuterCollectInput(lineageId), name: "provider_validation", schema: "https://gentle-ai.dev/schema/review/validator/v1", captureOperation: "review.capture-validation" });
+
+for (const role of ["lens", "refuter", "validator"] as const)
+	test(`unavailable session profile authority blocks a ${role} capture before any reviewer run, then the same binding resumes`, async (t) => {
+		t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+		const cwd = pinFixture(t);
+		isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+		const lineageId = `relay-authority-${role}`;
+		const input = role === "lens" ? relayCollectInput(lineageId, "review-risk", 0) : role === "refuter" ? hostMediatedRefuterCollectInput(lineageId) : hostMediatedValidatorCollectInput(lineageId);
+		const harness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId, [input])]);
+		const relays: string[] = [];
+		__testing.setReviewHostRelayRunnerForTesting(async (request) => { relays.push(request.routingKey); return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' }; });
+		const before = transcript(manager);
+		const capture = () => __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, undefined, manager.getSessionId(), undefined, manager);
+
+		const blocked = await capture();
+
+		assert.deepEqual([blocked.status, blocked.outcome, blocked.mutation_performed, blocked.mutation_outcome], ["blocked", "session-profile-authority-unavailable", false, "none"]);
+		assert.match(String(blocked.reason), /^Session profile authority unavailable; affected launches are blocked/);
+		assert.deepEqual(relays, [], "no reviewer run starts");
+		assert.equal(transcript(manager), before, "the transcript gains no entry");
+		manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear());
+		assert.equal((await capture()).status, "captured", "the untouched review resumes once authority is available");
+		assert.deepEqual(relays, [role === "lens" ? "review-risk" : `review-${role}`]);
+	});
+
+// An older provider's self-contained --execute=true role vector: Go spawns its
+// own pi for the refuter or validator, so it is a reviewer run too.
+function providerRoleVectorInput(lineageId: string, captureOperation: string): ReviewCollectInputV3 {
+	return { name: "provider_role", schema: `https://gentle-ai.dev/schema/review/${captureOperation === "review.capture-refuter" ? "refuter" : "validator"}/v1`, captureOperation, arguments: [...roleBindingArguments(lineageId), { name: "agent", value: "pi", token: "--agent=pi" }, { name: "execute", value: "true", token: "--execute=true" }] };
+}
+
+for (const captureOperation of ["review.capture-refuter", "review.capture-validation"])
+	test(`unavailable session profile authority blocks a self-contained ${captureOperation} vector before Go spawns its reviewer, then the same binding resumes`, async (t) => {
+		const cwd = pinFixture(t);
+		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+		const lineageId = `relay-authority-${captureOperation}`, input = providerRoleVectorInput(lineageId, captureOperation);
+		const harness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId, [input])]);
+		let spawned = 0;
+		const native: NativeReviewCli = { ...harness.native, captureProviderRole: async () => { spawned += 1; return { schema: "gentle-ai.review-provider-role-capture/v1", lineageId, targetIdentity: SHA, role: "refuter", captured: true } as never; } };
+		const before = transcript(manager);
+		const capture = () => __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input) }, cwd, native, undefined, undefined, undefined, false, undefined, manager.getSessionId(), undefined, manager);
+
+		const blocked = await capture();
+
+		assert.deepEqual([blocked.status, blocked.outcome, blocked.mutation_performed, blocked.mutation_outcome], ["blocked", "session-profile-authority-unavailable", false, "none"]);
+		assert.equal(spawned, 0, "no reviewer run starts");
+		assert.equal(transcript(manager), before, "the transcript gains no entry");
+		manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear());
+		assert.equal((await capture()).outcome, "native-provider-role-captured", "the untouched review resumes once authority is available");
+		assert.equal(spawned, 1);
+	});
+
+test("unavailable session profile authority blocks a grouped capture before any reviewer run, then the same group resumes", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const cwd = pinFixture(t);
+	const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+	const lineageId = "relay-authority-group", inputs = groupInputs(lineageId);
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), ...inputs.map((_input, index) => finalizeStatus(lineageId, inputs.slice(index))), finalizeStatus(lineageId)]);
+	let relays = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => { relays += requests.length; return requests.map(prepared); }, async () => ({ promptByteLength: 64, resultByteLength: 32, submission: "{}" }));
+	const before = transcript(manager);
+	const capture = () => __testing.executeReviewCaptureGroupOperation({ lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, undefined, manager.getSessionId(), undefined, manager);
+
+	const blocked = await capture();
+
+	assert.deepEqual([blocked.status, blocked.outcome, blocked.mutation_performed, blocked.mutation_outcome], ["blocked", "session-profile-authority-unavailable", false, "none"]);
+	assert.equal(relays, 0, "no reviewer run starts");
+	assert.equal(harness.statusCalls.length, 1, "only the selecting STATUS ran");
+	assert.equal(transcript(manager), before, "the transcript gains no entry");
+	manager.appendCustomEntry(SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileClear());
+	assert.equal((await capture()).outcome, "native-reviewer-group-status-reconciled", "the untouched group resumes once authority is available");
+	assert.equal(relays, 4);
+});
+
+// The registered tools read the session manager from Pi's ctx, as a real turn does.
+for (const name of ["gentle_review_capture", "gentle_review_capture_group"])
+	test(`the registered ${name} tool blocks on the unavailable authority of ctx.sessionManager`, async (t) => {
+		t.after(() => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); });
+		const cwd = pinFixture(t);
+		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+		const lineageId = `relay-authority-tool-${name}`, inputs = name === "gentle_review_capture" ? [relayCollectInput(lineageId, "review-risk", 0)] : groupInputs(lineageId);
+		const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+		let relays = 0;
+		__testing.setReviewHostRelayRunnerForTesting(async () => { relays += 1; return { promptByteLength: 64, resultByteLength: 32, submission: "{}" }; });
+		__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => { relays += requests.length; return requests.map(prepared); }, async () => ({ promptByteLength: 64, resultByteLength: 32, submission: "{}" }));
+		const tools = new Map<string, { execute: (id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details: Record<string, unknown> }> }>();
+		createGentleAiExtension({ nativeReviewCli: harness.native })({ on() {}, registerTool(definition: { name: string }) { tools.set(definition.name, definition as never); }, registerCommand() {} } as unknown as ExtensionAPI);
+		const params = name === "gentle_review_capture" ? { lineageId, collectBinding: JSON.stringify(inputs[0]), reviewerRunAcknowledged: true } : { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true };
+
+		const { details } = await tools.get(name)!.execute("call-1", params, undefined, undefined, { cwd, hasUI: false, sessionManager: manager } as unknown as ExtensionContext);
+
+		assert.deepEqual([details.tool, details.status, details.outcome], [name, "blocked", "session-profile-authority-unavailable"]);
+		assert.equal(relays, 0, "no reviewer run starts");
+	});
+
+test("a review without a session id runs as today, with no record to distrust", async (t) => {
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	const cwd = pinFixture(t);
+	const lineageId = "relay-authority-no-session", input = relayCollectInput(lineageId, "review-risk", 0);
+	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => { relayed.push(request); return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' }; });
+	const unsaved = { getSessionId: () => "", getBranch: () => [{ type: "custom", customType: "gentle-pi.session-profile/v99", data: { kind: "future" } }], getSessionFile: () => undefined };
+
+	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, undefined, undefined, undefined, unsaved as never);
+
+	assert.equal(result.status, "captured");
+	assert.equal(relayed[0]!.selection, "global/risk-model");
+});
+
+// gentle-shell#2742, section 8: a startup record carries the profile's
+// orchestrator, so the provider review roles fall back to it as they do for
+// Use in this session; launch routing still ignores the key.
+test("a startup record's orchestrator feeds the provider review roles while launches ignore it", async (t) => {
+	const cwd = pinFixture(t);
+	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
+	const team: AgentModelConfig = { orchestrator: { model: "team/orchestrator", thinking: "high" }, "review-risk": { model: "team/risk-model" } };
+	const manager = profileSession(t, SESSION_PROFILE_CUSTOM_TYPE, createSessionProfileStartupBind("global", "team", team));
+	assert.equal(readSessionProfileAuthority(manager).available, true);
+	const sessionId = manager.getSessionId(), lineageId = "relay-startup-orchestrator";
+	const harness = nativeHarness([finalizeStatus(lineageId, [hostMediatedRefuterCollectInput(lineageId)])]);
+	const relayed: ReviewHostRelayRequest[] = [];
+	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
+	__testing.setReviewHostRelayRunnerForTesting(async (request) => { relayed.push(request); return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' }; });
+
+	await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(hostMediatedRefuterCollectInput(lineageId)), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, undefined, sessionId, undefined, manager);
+
+	assert.deepEqual([relayed[0]!.routingKey, relayed[0]!.selection, relayed[0]!.thinking], ["review-refuter", "team/orchestrator", "high"]);
+	const routing = __testing.readReviewerModelConfig(cwd, sessionId);
+	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "team/orchestrator");
+	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "team/risk-model");
+	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! });
+	assert.deepEqual([resolution.kind, sessionProfileRoutingAt(resolution, { cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! })], ["inherited", { "review-risk": { model: "team/risk-model" } }], "launch routing stays role-only");
 });

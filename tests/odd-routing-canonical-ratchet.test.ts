@@ -168,8 +168,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		canonical: "**Verification trigger:** only a change whose Risk line names a high-risk item gets an independent verifier",
 		mirrors: [
 			// Verification by named risk: the core row names the escalate-only verifier.
-			{ surface: CORE, includes: "**Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`" },
-			{ surface: DELEGATION, includes: "only a change whose Risk line names a high-risk item (Task Size, assess `escalate`) gets an independent `gentle-ai-verify` run" },
+			{ surface: CORE, includes: "**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`" },
+			{ surface: DELEGATION, includes: "only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run" },
 		],
 	},
 	{
@@ -238,7 +238,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 // rows, so they are mirror-only and not anchors of the canonical routing block.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
-	"**Verification rule** — only a named high-risk item (assess `escalate`) → independent `gentle-ai-verify`",
+	"**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`",
 ] as const;
 
 // The verified mirrored routing/pi.md: the bundle tree must pass the strict

@@ -98,7 +98,7 @@ function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
 		...model,
 		input: [...model.input],
 		cost: { ...model.cost },
-		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		thinkingLevelMap: isRecord(model.thinkingLevelMap) ? { ...model.thinkingLevelMap } : undefined,
 		...(model.compat ? { compat: { ...model.compat } } : {}),
 	};
 }

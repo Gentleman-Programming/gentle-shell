@@ -13,9 +13,10 @@ function tempRoot(): string {
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 test("the cache root honours XDG_CACHE_HOME and falls back to ~/.cache", () => {
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "/custom/cache" }, "/home/u"), "/custom/cache/gentle-shell/images");
-	assert.equal(defaultCacheRoot({}, "/home/u"), "/home/u/.cache/gentle-shell/images");
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "" }, "/home/u"), "/home/u/.cache/gentle-shell/images");
+	const xdg = join(tmpdir(), "custom-cache");
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: xdg }, "/home/u"), join(xdg, "gentle-shell", "images"));
+	assert.equal(defaultCacheRoot({}, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "" }, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
 });
 
 test("a session id cannot escape its own directory", () => {
@@ -82,7 +83,7 @@ test("the sweep removes stale sessions and keeps fresh ones", () => {
 });
 
 test("a relative XDG_CACHE_HOME is ignored, as the spec requires", () => {
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "cache" }, "/home/u"), "/home/u/.cache/gentle-shell/images");
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "cache" }, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
 });
 
 test("runtime cache changes work: setCache reports paths, dropping it stops them", () => {
@@ -120,6 +121,21 @@ test("a failed cache write leaves the chip usable without a path", () => {
 	assert.equal(attachment.diskPath, undefined);
 	assert.ok(attachment.base64.length > 0, "the payload is still intact");
 	assert.deepEqual(attachments.cachedPaths(), [], "nothing to report");
+});
+
+test("the sweep leaves a directory that also holds a file it did not write", () => {
+	const root = tempRoot();
+	const mixed = new ImageDiskCache({ root, sessionId: "mixed" });
+	const own = mixed.write(1, PNG, "image/png")!;
+	const foreign = join(mixed.directory, "notes.txt");
+	writeFileSync(foreign, "someone else");
+	const longAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+	utimesSync(own, longAgo, longAgo);
+
+	const removed = ImageDiskCache.sweepStale(root, 7 * 24 * 60 * 60 * 1000);
+
+	assert.equal(removed, 0, "a directory with foreign content is not removed");
+	assert.ok(existsSync(foreign), "the foreign file survives");
 });
 
 test("the sweep never deletes outside the cache root", () => {

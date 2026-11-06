@@ -97,14 +97,18 @@ export class ImageDiskCache {
 		let removed = 0;
 		for (const entry of entries) {
 			const directory = join(root, entry);
-			let files: string[];
+			let all: string[];
 			try {
 				if (!statSync(directory).isDirectory()) continue;
-				files = readdirSync(directory).filter((file) => OWN_FILE.test(file));
+				all = readdirSync(directory);
 			} catch {
 				continue;
 			}
+			const files = all.filter((file) => OWN_FILE.test(file));
 			if (files.length === 0) continue; // not ours
+			// A directory holding anything this cache did not write is somebody
+			// else's too, so the sweep leaves it alone.
+			if (files.length !== all.length) continue;
 
 			let newest = 0;
 			for (const file of files) {

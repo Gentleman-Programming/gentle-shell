@@ -1,11 +1,11 @@
 # Pasted images: give the chips a disk path the agent can use
 
-Estado: **spec abierta**. No hay implementación en esta rama: el intento anterior
-se revirtió (ver *Intento descartado*). Las decisiones de retención y limpieza son
-requisito previo al código.
+Estado: **implementado en esta rama**. Retención y limpieza resueltas (ver
+*Decisiones tomadas*); el código está en `lib/image-disk-cache.ts`, cableado en
+`extensions/gentle-shell.ts` y cubierto por `tests/image-disk-cache.test.ts`.
 
-Riesgo: **ítem 1** (datos nuevos que persisten y no se reconstruyen). Requiere
-decisión explícita de retención antes del primer write.
+Riesgo: **ítem 1** (datos nuevos que persisten y no se reconstruyen). Mitigado
+por: opt-in, directorio por sesión, borrado al cerrar y barrido de restos.
 
 ## Specs
 
@@ -44,7 +44,7 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 ## Decisiones tomadas (2026-11-05)
 
 1. **Retención**: la vida de la sesión. El directorio se borra en el cierre; un barrido al arrancar limpia restos de sesiones que crashearon (más de 7 días).
-2. **Activación**: apagada por defecto, opt-in por configuración (`images.diskCache: off | session`). Nadie persiste imágenes sin pedirlo.
+2. **Activación**: apagada por defecto, opt-in por variable de entorno `GENTLE_PI_IMAGES_DISK_CACHE=session` (la extensión no lee un archivo de configuración para esto). Nadie persiste imágenes sin pedirlo.
 3. **Exposición**: solo por comando (`/gentle:images`). El path **nunca** se inyecta en el prompt ni viaja al proveedor.
 4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images/<session>/`, directorio `0700`, archivos `0600`.
 

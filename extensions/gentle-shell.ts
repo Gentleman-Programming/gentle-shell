@@ -2456,12 +2456,13 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		if (imagesDiskCachePolicy === "session") {
+			const cacheRoot = defaultCacheRoot(env);
 			try {
-				ImageDiskCache.sweepStale(defaultCacheRoot(), 7 * 24 * 60 * 60 * 1000);
+				ImageDiskCache.sweepStale(cacheRoot, 7 * 24 * 60 * 60 * 1000);
 			} catch {
 				// A sweep that cannot run must never block the session.
 			}
-			imageAttachments.setCache(new ImageDiskCache({ sessionId: ctx.sessionManager.getSessionId() }));
+			imageAttachments.setCache(new ImageDiskCache({ root: cacheRoot, sessionId: ctx.sessionManager.getSessionId() }));
 		}
 		closeCustomize?.();
 		runningJobs = undefined;

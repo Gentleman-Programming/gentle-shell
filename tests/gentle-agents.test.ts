@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -19,7 +19,7 @@ import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib
 import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
-import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
@@ -4460,6 +4460,124 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	await opened;
 });
 
+test("an in-flight task is persisted on launch, and reconciles to interrupted if the parent dies before it finishes (#1741)", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Survive abrupt crash", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	assert.ok(id, "task ID allocated");
+
+	// Wait for the async launch persistence to write the file
+	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 10 && !stored; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	assert.ok(stored, "the in-flight task is written to disk upon launch");
+	assert.equal(stored.task.id, id);
+	assert.ok(stored.task.status === "queued" || stored.task.status === "running", "task status is in-flight on disk");
+	assert.equal(stored.task.endedAt, null, "task is not ended yet");
+
+	// Simulate abrupt death of parent: no session_shutdown, no runner.cancelAll.
+	// A completely new session in another process starts up with the same disk store.
+	const fresh = fakePi();
+	const freshHarness = deps();
+	gentleAgents(fresh.pi, {}, freshHarness.deps);
+	const freshCtx = fakeContext();
+	await fresh.fire("session_start", freshCtx.ctx);
+
+	// In the new session, subagent_status must NOT fail with "Error: no task <id>"
+	const statusResult = await fresh.tools.get("subagent_status")!.execute("s1", { task_id: id }, undefined, undefined, freshCtx.ctx);
+	assert.doesNotMatch(statusResult.content[0].text, /Error: no task/, "interrupted task must resolve");
+	assert.match(statusResult.content[0].text, /failed/, "status must report terminal failure");
+	assert.match(statusResult.content[0].text, /interrupted/i, "status must explain interruption");
+
+	// The disk record must now be updated to the terminal reconciled state
+	const reconciledOnDisk = await loadStoredTask(tasksDir, id);
+	assert.ok(reconciledOnDisk, "reconciled record on disk");
+	assert.equal(reconciledOnDisk.task.status, "failed");
+	assert.match(reconciledOnDisk.task.error ?? "", /interrupted/i);
+	assert.ok(typeof reconciledOnDisk.task.endedAt === "number", "endedAt is populated");
+
+	// On resume of the original session, subagent_list_tasks must list the interrupted task
+	const resumedPi = fakePi();
+	const resumedHarness = deps();
+	gentleAgents(resumedPi.pi, {}, resumedHarness.deps);
+	const resumedCtx = fakeContext();
+	(resumedCtx.ctx.sessionManager as { getSessionId(): string }).getSessionId = () => ctx.sessionManager.getSessionId();
+	(resumedCtx.ctx.sessionManager as { getEntries(): unknown[] }).getEntries = () => [{ type: "custom" }];
+	await resumedPi.fire("session_start", resumedCtx.ctx, { reason: "resume" });
+	// No delay: list_tasks waits for the resumed session's restoration itself.
+	const listResult = await resumedPi.tools.get("subagent_list_tasks")!.execute("l1", {}, undefined, undefined, resumedCtx.ctx);
+	assert.match(listResult.content[0].text, new RegExp(id), "interrupted task must appear in resumed session task list");
+	assert.match(listResult.content[0].text, /interrupted/i);
+});
+
+test("a task that finishes before its launch save settles ends terminal on disk (#1741)", async (t) => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	// A large in-flight thread makes the stale launch write slower than the terminal one.
+	const thread = TaskStore.prototype.thread;
+	const slow = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TEXT, text: "x".repeat(32 * 1024 * 1024) });
+	t.mock.method(TaskStore.prototype, "thread", function (this: TaskStore, id: string) {
+		const current = this.get(id);
+		return current && current.status !== TASK_STATUS.COMPLETED ? slow : thread.call(this, id);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("race", { agent: "explore", task: "Finish fast", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	const tasksDir = historyDir(home);
+	const pendingWrites = () => { try { return readdirSync(tasksDir).filter((name) => name.startsWith(`${id}.json.`)).length; } catch { return 1; } };
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 120 && (stored?.task.status !== TASK_STATUS.COMPLETED || pendingWrites() > 0); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	// Give any stale launch write that is still in flight time to land.
+	for (let settle = 0; settle < 8; settle += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(pendingWrites(), 0);
+	}
+	stored = await loadStoredTask(tasksDir, id);
+	assert.equal(stored?.task.status, TASK_STATUS.COMPLETED, "the terminal record is never overwritten by a launch write");
+	assert.equal(stored?.task.result, "done");
+});
+
+test("a resumed session reconciles an interrupted task before publishing restored history (#1741)", async (t) => {
+	const { pi, fire } = fakePi();
+	const harness = deps();
+	const resumeHome = join(root, "reconcile-resume-home");
+	const interrupted: TaskRecord = { id: "interrupted-1", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "reconcile-session", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(resumeHome), interrupted, emptyThread());
+	harness.deps.home = resumeHome;
+	let store: TaskStore | undefined;
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		store = this;
+		return restore.apply(this, args);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "reconcile-session";
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => store?.get("interrupted-1") !== undefined, "restored history published");
+	const restored = store!.get("interrupted-1")!;
+	assert.equal(restored.status, TASK_STATUS.FAILED);
+	assert.match(restored.error ?? "", /interrupted/);
+	assert.equal(typeof restored.endedAt, "number");
+	assert.equal((await loadStoredTask(historyDir(resumeHome), "interrupted-1"))?.task.status, TASK_STATUS.FAILED);
+	await fire("session_shutdown", ctx);
+});
+
 test("the overlay confirms a running task once and reports when it finishes during confirmation", async () => {
 	const { pi, tools, fire, commands, sent } = fakePi();
 	const harness = deps();
@@ -4589,7 +4707,10 @@ test("restored task history cannot enter the live panel or discovery during sync
 	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
+	// The interrupted record is reconciled on resume, so it shows as finished history, never as stoppable work (#1741).
+	const rendered = stripAnsi(overlays[0]!.render(80).join("\n"));
+	assert.doesNotMatch(rendered, /Stop selected|running/);
+	assert.match(rendered, /failed/);
 	overlays[0]!.handleInput("s");
 	overlays[0]!.handleInput("c");
 	await tick();

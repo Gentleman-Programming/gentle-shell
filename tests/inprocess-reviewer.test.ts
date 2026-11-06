@@ -484,14 +484,14 @@ for (const composed of [false, true]) {
 		const complete = (async (_model, _context, options) => { providerSignal = options?.signal; entered.resolve(); return await completion.promise; }) as typeof completeSimple;
 		if (composed) registry.getProvider = () => ({ streamSimple: (model, context, options) => ({ result: () => complete(model, context, options) }) });
 		const pending = runInProcessReviewer(baseRequest({ signal: caller.signal }), { registry, complete });
-		await entered.promise;
-		caller.abort();
 		try {
+			await bounded(entered.promise);
+			caller.abort();
 			assert.equal(expectRefused(await bounded(pending)).code, INPROCESS_REVIEWER_FAILURE.ABORTED);
 			assert.equal(providerSignal?.aborted, true);
 			assert.equal(getEventListeners(caller.signal, "abort").length, 0);
 			assert.equal(getEventListeners(providerSignal!, "abort").length, 0);
-		} finally { completion.resolve(assistantText("late text")); }
+		} finally { caller.abort(); completion.resolve(assistantText("late text")); }
 		await nextTurn();
 	});
 }

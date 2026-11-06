@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -16,10 +16,10 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@earen
 import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
-import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
-import { historyDir, loadHistory, saveTask } from "../lib/agents-history.ts";
+import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
 import { STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 import { applyTaskEvent, emptyThread, MISSING_TOOLS_NOTE_PREFIX, TASK_EVENT, TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
 import { NativePointerScope } from "../lib/native-pointer-region.ts";
@@ -4460,6 +4460,124 @@ test("a task that finishes live stays visible as history, in both scopes, and it
 	await opened;
 });
 
+test("an in-flight task is persisted on launch, and reconciles to interrupted if the parent dies before it finishes (#1741)", async () => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Survive abrupt crash", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	assert.ok(id, "task ID allocated");
+
+	// Wait for the async launch persistence to write the file
+	const tasksDir = join(home, ".pi", "agent", "gentle-agents", "tasks");
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 10 && !stored; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	assert.ok(stored, "the in-flight task is written to disk upon launch");
+	assert.equal(stored.task.id, id);
+	assert.ok(stored.task.status === "queued" || stored.task.status === "running", "task status is in-flight on disk");
+	assert.equal(stored.task.endedAt, null, "task is not ended yet");
+
+	// Simulate abrupt death of parent: no session_shutdown, no runner.cancelAll.
+	// A completely new session in another process starts up with the same disk store.
+	const fresh = fakePi();
+	const freshHarness = deps();
+	gentleAgents(fresh.pi, {}, freshHarness.deps);
+	const freshCtx = fakeContext();
+	await fresh.fire("session_start", freshCtx.ctx);
+
+	// In the new session, subagent_status must NOT fail with "Error: no task <id>"
+	const statusResult = await fresh.tools.get("subagent_status")!.execute("s1", { task_id: id }, undefined, undefined, freshCtx.ctx);
+	assert.doesNotMatch(statusResult.content[0].text, /Error: no task/, "interrupted task must resolve");
+	assert.match(statusResult.content[0].text, /failed/, "status must report terminal failure");
+	assert.match(statusResult.content[0].text, /interrupted/i, "status must explain interruption");
+
+	// The disk record must now be updated to the terminal reconciled state
+	const reconciledOnDisk = await loadStoredTask(tasksDir, id);
+	assert.ok(reconciledOnDisk, "reconciled record on disk");
+	assert.equal(reconciledOnDisk.task.status, "failed");
+	assert.match(reconciledOnDisk.task.error ?? "", /interrupted/i);
+	assert.ok(typeof reconciledOnDisk.task.endedAt === "number", "endedAt is populated");
+
+	// On resume of the original session, subagent_list_tasks must list the interrupted task
+	const resumedPi = fakePi();
+	const resumedHarness = deps();
+	gentleAgents(resumedPi.pi, {}, resumedHarness.deps);
+	const resumedCtx = fakeContext();
+	(resumedCtx.ctx.sessionManager as { getSessionId(): string }).getSessionId = () => ctx.sessionManager.getSessionId();
+	(resumedCtx.ctx.sessionManager as { getEntries(): unknown[] }).getEntries = () => [{ type: "custom" }];
+	await resumedPi.fire("session_start", resumedCtx.ctx, { reason: "resume" });
+	// No delay: list_tasks waits for the resumed session's restoration itself.
+	const listResult = await resumedPi.tools.get("subagent_list_tasks")!.execute("l1", {}, undefined, undefined, resumedCtx.ctx);
+	assert.match(listResult.content[0].text, new RegExp(id), "interrupted task must appear in resumed session task list");
+	assert.match(listResult.content[0].text, /interrupted/i);
+});
+
+test("a task that finishes before its launch save settles ends terminal on disk (#1741)", async (t) => {
+	const { pi, tools, fire } = fakePi();
+	const harness = deps();
+	// A large in-flight thread makes the stale launch write slower than the terminal one.
+	const thread = TaskStore.prototype.thread;
+	const slow = applyTaskEvent(emptyThread(), { type: TASK_EVENT.TEXT, text: "x".repeat(32 * 1024 * 1024) });
+	t.mock.method(TaskStore.prototype, "thread", function (this: TaskStore, id: string) {
+		const current = this.get(id);
+		return current && current.status !== TASK_STATUS.COMPLETED ? slow : thread.call(this, id);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	const started = await tools.get("subagent_run")!.execute("race", { agent: "explore", task: "Finish fast", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	const tasksDir = historyDir(home);
+	const pendingWrites = () => { try { return readdirSync(tasksDir).filter((name) => name.startsWith(`${id}.json.`)).length; } catch { return 1; } };
+	let stored = await loadStoredTask(tasksDir, id);
+	for (let attempt = 0; attempt < 120 && (stored?.task.status !== TASK_STATUS.COMPLETED || pendingWrites() > 0); attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		stored = await loadStoredTask(tasksDir, id);
+	}
+	// Give any stale launch write that is still in flight time to land.
+	for (let settle = 0; settle < 8; settle += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(pendingWrites(), 0);
+	}
+	stored = await loadStoredTask(tasksDir, id);
+	assert.equal(stored?.task.status, TASK_STATUS.COMPLETED, "the terminal record is never overwritten by a launch write");
+	assert.equal(stored?.task.result, "done");
+});
+
+test("a resumed session reconciles an interrupted task before publishing restored history (#1741)", async (t) => {
+	const { pi, fire } = fakePi();
+	const harness = deps();
+	const resumeHome = join(root, "reconcile-resume-home");
+	const interrupted: TaskRecord = { id: "interrupted-1", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "reconcile-session", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "working", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(resumeHome), interrupted, emptyThread());
+	harness.deps.home = resumeHome;
+	let store: TaskStore | undefined;
+	const restore = TaskStore.prototype.restore;
+	t.mock.method(TaskStore.prototype, "restore", function (this: TaskStore, ...args: Parameters<TaskStore["restore"]>) {
+		store = this;
+		return restore.apply(this, args);
+	});
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "reconcile-session";
+	await fire("session_start", ctx, { reason: "resume" });
+	await eventually(() => store?.get("interrupted-1") !== undefined, "restored history published");
+	const restored = store!.get("interrupted-1")!;
+	assert.equal(restored.status, TASK_STATUS.FAILED);
+	assert.match(restored.error ?? "", /interrupted/);
+	assert.equal(typeof restored.endedAt, "number");
+	assert.equal((await loadStoredTask(historyDir(resumeHome), "interrupted-1"))?.task.status, TASK_STATUS.FAILED);
+	await fire("session_shutdown", ctx);
+});
+
 test("the overlay confirms a running task once and reports when it finishes during confirmation", async () => {
 	const { pi, tools, fire, commands, sent } = fakePi();
 	const harness = deps();
@@ -4589,7 +4707,10 @@ test("restored task history cannot enter the live panel or discovery during sync
 	assert.deepEqual(readDiscovery(profile, listPresence(profile).entries[0])?.tasks, []);
 	const opened = commands.get("gentle:agents")!.handler("", ctx);
 	for (let attempt = 0; attempt < 40 && overlays.length === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.doesNotMatch(stripAnsi(overlays[0]!.render(80).join("\n")), /Stop selected|Subagent explore/);
+	// The interrupted record is reconciled on resume, so it shows as finished history, never as stoppable work (#1741).
+	const rendered = stripAnsi(overlays[0]!.render(80).join("\n"));
+	assert.doesNotMatch(rendered, /Stop selected|running/);
+	assert.match(rendered, /failed/);
 	overlays[0]!.handleInput("s");
 	overlays[0]!.handleInput("c");
 	await tick();
@@ -4802,6 +4923,70 @@ test("default session transport selects Windows or POSIX classes without mutatin
 	assert.equal(posix.createRegistry, createDefaultSessionTransport("darwin").createRegistry);
 	assert.equal(windows.createRegistry, createDefaultSessionTransport("win32").createRegistry);
 	assert.notEqual(windows.createRegistry, posix.createRegistry);
+});
+
+test("session transport startup diagnostic reports only bounded current failures", async (t) => {
+	for (const mode of ["initialize", "registry", "listener", "malformed", "success", "stale-id", "reload", "shutdown"] as const) {
+		await t.test(mode, async () => {
+			const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+			const notices: Array<{ message: string; level: unknown }> = [];
+			ctx.ui.notify = (message, level) => { notices.push({ message, level }); };
+			let release!: () => void;
+			const pending = new Promise<void>((resolve) => { release = resolve; });
+			let entered = false;
+			let starts = 0;
+			let observerResult: unknown = "not called";
+			const registry = { list: async () => [], listActivations: async () => [] };
+			runtime.deps.sessionTransport = {
+				createRegistry: async (_home, observe) => {
+					if (mode === "initialize") {
+						observerResult = observe?.({ phase: "start", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+						observe?.({ phase: "initialize", status: "failed", error: { class: "timed-out", code: "deadline" }, lastStartupMarker: "native-ready" });
+						observe?.({ phase: "cleanup", status: "succeeded", error: null, lastStartupMarker: "native-ready" });
+						throw new Error("SECRET path SID stderr session-id");
+					}
+					if (mode === "malformed") {
+						observe?.({ phase: "SECRET", status: "failed", error: { class: "SECRET", code: "SECRET" }, lastStartupMarker: "SECRET" } as never);
+						throw new Error("SECRET");
+					}
+					if (mode === "registry") throw new Error("SECRET path SID stderr session-id");
+					if (mode === "stale-id" || mode === "reload" || mode === "shutdown") {
+						entered = true;
+						await pending;
+						throw new Error("SECRET");
+					}
+					return registry;
+				},
+				createListener: () => ({ registry, start: async () => { starts++; if (mode === "listener") throw new Error("SECRET"); }, close: async () => {} }),
+				createClient: inertSessionTransport.createClient,
+			};
+			gentleAgents(h.pi, {}, runtime.deps);
+			await h.fire("session_start", ctx);
+			if (mode === "stale-id" || mode === "reload" || mode === "shutdown") {
+				await eventually(() => entered, "registry startup entered");
+				if (mode === "stale-id") Object.assign(ctx.sessionManager, { getSessionId: () => "replacement" });
+				if (mode === "reload") await h.fire("session_start", fakeContext().ctx);
+				if (mode === "shutdown") {
+					const closing = h.fire("session_shutdown", ctx);
+					release();
+					await closing;
+				}
+				release();
+			}
+			// Shutdown drains tracked startup operations, including catch and cleanup.
+			if (mode === "success") await eventually(() => starts === 1, "successful listener start");
+			if (["initialize", "registry", "listener", "malformed"].includes(mode)) {
+				await eventually(() => notices.length === 1, "startup diagnostic notification");
+			}
+			await h.fire("session_shutdown", ctx);
+			const expected = mode === "initialize"
+				? "Session transport startup failed: phase=initialize class=timed-out code=deadline lastStartupMarker=native-ready."
+				: mode === "listener" ? "Session transport startup failed: phase=listener diagnostics=unavailable."
+				: mode === "registry" || mode === "malformed" ? "Session transport startup failed: phase=registry diagnostics=unavailable." : undefined;
+			assert.deepEqual(notices, expected ? [{ message: expected, level: "warning" }] : []);
+			if (mode === "initialize") assert.equal(observerResult, undefined);
+		});
+	}
 });
 
 test("session transport startup failure cleans the constructed Windows-capable transport and stays unavailable", async () => {
@@ -5383,6 +5568,9 @@ test("session transport adds host tools, forwards notifications, and closes on s
 	assert.match((await h.tools.get("orchestrator_list")!.execute("list", {}, undefined, undefined, ctx)).content[0].text, /peer/);
 	assert.ok(callback, "listener receives the inbound callback");
 	Object.assign(ctx.sessionManager, { getSessionName: () => "Integration" });
+	// Idle and held routing are covered by the orchestrator delivery tests; a
+	// running parent keeps the original follow-up delivery.
+	await h.fire("agent_start", ctx);
 	await callback!({ id: "message-1", senderSessionId: "peer", message: "\u001b[31mraw model content" });
 	assert.equal(h.sent.at(-1)?.message.customType, "gentle-agents.orchestrator-message");
 	assert.match(String(h.sent.at(-1)?.message.content), /\u001b\[31mraw model content/);
@@ -6021,6 +6209,104 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 		await fire("session_shutdown", ctx);
 	});
 }
+
+// Incoming orchestrator session messages share the child-content delivery
+// router: an idle parent must be woken through the prompt lifecycle, a busy
+// run keeps the follow-up route, and a parent compacting without a run holds
+// the message for the next boundary.
+async function orchestratorHost() {
+	const host = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	let received: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	harness.deps.sessionTransport = {
+		...inertSessionTransport,
+		createListener: (registry, _sessionId, callback) => {
+			received = callback;
+			return { registry, start: async () => {}, close: async () => {} };
+		},
+	};
+	gentleAgents(host.pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await host.fire("session_start", ctx);
+	await eventually(() => received !== undefined, "session transport listener starts");
+	const notify = (message: string) => received!({ id: "m1", senderSessionId: "peer", message });
+	return { ...host, ctx, timers, notify };
+}
+
+test("an orchestrator message to an idle parent is stored without a direct turn and wakes the parent once", async () => {
+	const { fire, ctx, sent, userMessages, delivery, notify } = await orchestratorHost();
+	await notify("hello idle");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the message is stored without triggerTurn");
+	assert.equal(sent[0]!.message.customType, "gentle-agents.orchestrator-message");
+	assert.match(String(sent[0]!.message.content), /hello idle/);
+	assert.equal(userMessages.length, 1, "one wake starts the turn through the prompt lifecycle");
+	assert.doesNotMatch(String(userMessages[0]!.content), /hello idle/, "the wake never repeats the message");
+	assert.deepEqual(delivery, ["custom:gentle-agents.orchestrator-message", "user"]);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message during a parent run keeps the follow-up route and sends no wake", async () => {
+	const { fire, ctx, sent, userMessages, notify } = await orchestratorHost();
+	await fire("agent_start", ctx);
+	await notify("hello run");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ deliverAs: "followUp", triggerTurn: true }]);
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message held while the parent compacts is routed after the boundary", async () => {
+	const { fire, ctx, sent, userMessages, delivery, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello compaction");
+	await tick();
+	assert.equal(sent.length, 0, "no direct turn starts while the parent compacts");
+	assert.equal(userMessages.length, 0, "no wake is sent while the parent compacts");
+	await fire("session_compact", ctx);
+	setIdle(true);
+	assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the boundary");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the held message is stored without a direct turn");
+	assert.deepEqual(delivery, ["custom:gentle-agents.orchestrator-message", "user"]);
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message held for a busy parent is delivered by the next turn boundary flush", async () => {
+	const { fire, ctx, sent, notify, setIdle } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello hold");
+	assert.equal(sent.length, 0, "nothing is sent while the parent is busy without a run");
+	await fire("agent_start", ctx);
+	await fire("turn_end", ctx);
+	assert.deepEqual(sent.map((entry) => entry.options), [{ deliverAs: "followUp", triggerTurn: true }], "a run that started meanwhile receives it as a follow-up");
+	await fire("session_shutdown", ctx);
+});
+
+test("an orchestrator message to a parent with a stale context fails delivery so the sender learns", async () => {
+	const { fire, ctx, sent, userMessages, notify } = await orchestratorHost();
+	Object.assign(ctx, { isIdle: () => { throw new Error("This extension ctx is stale after session replacement or reload."); } });
+	await assert.rejects(notify("hello stale"), /stale/);
+	assert.equal(sent.length, 0);
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
+
+test("a held orchestrator message does not survive a session change", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello dropped");
+	await fire("session_start", ctx, { reason: "new" });
+	setIdle(true);
+	await fire("agent_settled", ctx);
+	await fire("session_compact", ctx);
+	timers.run(0);
+	await tick();
+	assert.equal(sent.length, 0, "the old session's held message is not replayed into the new one");
+	assert.equal(userMessages.length, 0);
+	await fire("session_shutdown", ctx);
+});
 
 test("between agent_end and agent_settled the parent run is still active, so child content keeps the steer route", async () => {
 	const { pi, tools, fire, sent, userMessages } = fakePi();
@@ -7232,6 +7518,160 @@ test("a human stop of a monitor from /gentle:jobs delivers its pending lines, th
 	}
 });
 
+// gentle-shell#626: the herdr pane stays busy while owned background subagents
+// of the active session run, even after the parent itself settles. Mirrors the
+// pi-subagents edge-triggered herdr producer exactly.
+const busyEvents = (h: ReturnType<typeof fakePi>) => h.events.filter((entry) => entry.name === "herdr:busy").map((entry) => entry.data);
+
+test("herdr:busy follows owned background subagents, not the parent run", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+	assert.deepEqual(busyEvents(h), [], "no busy event before any subagent work");
+
+	await h.tools.get("subagent_run")!.execute("busy-a", { agent: "explore", task: "Map one", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+
+	await h.tools.get("subagent_run")!.execute("busy-b", { agent: "explore", task: "Map two", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [
+		{ active: true, label: "1 subagent running" },
+		{ active: false },
+		{ active: true, label: "2 subagents running" },
+	], "a label change emits the lower before the raise, in one step");
+
+	// The parent's own run settling must not drop busy while children still run.
+	const raised = busyEvents(h).length;
+	await h.fire("agent_start", ctx);
+	await h.fire("agent_settled", ctx);
+	assert.equal(busyEvents(h).length, raised, "an idle parent never lowers busy while a child still runs");
+
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.deepEqual(busyEvents(h).slice(-2), [{ active: false }, { active: true, label: "1 subagent running" }], "the first settlement relabels with lower then raise");
+
+	runtime.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }] });
+	runtime.children[1].emit({ type: "agent_settled" });
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "the last settlement lowers busy exactly once");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "no stale busy after the last settlement");
+});
+
+test("herdr:busy lowers on failure and cancellation", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+
+	await h.tools.get("subagent_run")!.execute("busy-fail", { agent: "explore", task: "Fail", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+	runtime.children[0].fail("boom");
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }, { active: false }], "a failed child lowers busy");
+
+	const cancelled = await h.tools.get("subagent_run")!.execute("busy-cancel", { agent: "explore", task: "Cancel me", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" });
+	const cancelId = (cancelled.details.gentleAgents as { taskId: string }).taskId;
+	await h.tools.get("subagent_cancel")!.execute("busy-stop", { task_id: cancelId }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "a cancelled task lowers busy");
+});
+
+test("herdr:busy restores on session_start and lowers on session_shutdown", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	await h.fire("session_start", ctx);
+
+	await h.tools.get("subagent_run")!.execute("busy-edge", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }]);
+
+	// A reload of the same session keeps the pane busy: the consumer already
+	// holds the raise, so the unchanged label dedups to nothing.
+	await h.fire("session_start", ctx, { reason: "reload" });
+	assert.deepEqual(busyEvents(h), [{ active: true, label: "1 subagent running" }], "reload neither duplicates nor drops the raise");
+
+	// Switching to a session that owns no running work lowers busy.
+	const other = fakeContext();
+	other.ctx.sessionManager = { ...other.ctx.sessionManager, getSessionId: () => "s2" };
+	await h.fire("session_start", other.ctx, { reason: "new" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "a session without owned running work is not busy");
+
+	// Resuming the original session restores busy from its still-running child.
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" }, "session_start restores busy for owned running work");
+
+	await h.fire("session_shutdown", ctx);
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "session_shutdown lowers busy");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "no busy event trails the shutdown lower");
+});
+
+test("herdr:busy ignores a disk-restored running task via the ownership filter", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	const historyHome = join(root, "busy-restore-history-home");
+	const restored: TaskRecord = { id: "busy-restored", agent: "explore", mode: "background", prompt: "p", label: "p", cwd, parentSessionId: "busy-restore-session", status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: null, error: null, result: null, lastStep: "running", lastActivityAt: 1, turns: 1, toolCalls: 0, tokens: 0, cost: 0 };
+	await saveTask(historyDir(historyHome), restored, emptyThread());
+	runtime.deps.home = historyHome;
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "busy-restore-session";
+	await h.fire("session_start", ctx, { reason: "resume" });
+
+	// Pull the task from disk into the store: it lands in restoredTaskIds,
+	// never ownedTaskIds, so the pane must stay quiet -- it is not live work
+	// this runtime owns, and counting it would report busy for work that no
+	// longer exists.
+	await h.tools.get("subagent_status")!.execute("status", { task_id: "busy-restored" }, undefined, undefined, ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h), [], "a disk-restored running task never raises busy");
+	await h.fire("session_shutdown", ctx);
+});
+
+test("herdr:busy treats an empty session id as no active session", async () => {
+	const h = fakePi();
+	const runtime = deps();
+	gentleAgents(h.pi, {}, runtime.deps);
+	const { ctx } = fakeContext();
+	ctx.sessionManager.getSessionId = () => "";
+	await h.fire("session_start", ctx);
+
+	// An empty session id has no session profile authority, so the launch is
+	// rejected before it becomes owned work and busy is never raised.
+	await assert.rejects(
+		h.tools.get("subagent_run")!.execute("busy-blank", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, ctx),
+		/Session profile authority unavailable/,
+	);
+	await tick();
+	assert.deepEqual(busyEvents(h), [], "an empty session id never raises busy");
+
+	// A busy state raised by a real session must lower once the active session
+	// id becomes empty, even though the blank session still owns running work.
+	const real = fakeContext();
+	await h.fire("session_start", real.ctx, { reason: "new" });
+	await h.tools.get("subagent_run")!.execute("busy-real", { agent: "explore", task: "Map", mode: "background" }, undefined, undefined, real.ctx);
+	await tick();
+	assert.deepEqual(busyEvents(h).at(-1), { active: true, label: "1 subagent running" });
+	await h.fire("session_start", ctx, { reason: "resume" });
+	assert.deepEqual(busyEvents(h).at(-1), { active: false }, "an empty session id lowers already-raised busy");
+	const lowered = busyEvents(h).length;
+	await tick();
+	assert.equal(busyEvents(h).length, lowered, "an empty session id never re-raises busy");
+});
+
 // Harness roadmap T6: todo progress reaches peers without a model turn spent on
 // orchestrator_session_id, and never replaces the owner's curated fields.
 test("todo progress publishes merged into the owner's curated state, only for this session", async () => {
@@ -7560,4 +8000,245 @@ test("the orchestrator's usage limit moves the session to the profile's orchestr
 	assert.match(String(parent.userMessages[0]!.content), /continue/i);
 	const child = await run({ GENTLE_PI_AGENTS_CHILD: "1" });
 	assert.deepEqual(child.selected, [], "a child leaves its fallback to the parent's runner");
+});
+
+// Held content is released by lifecycle events (the fast path), and by a
+// held-only re-check that does not depend on any event: a cancelled `/tree`
+// summarization emits none.
+test("session_tree releases content held while the parent summarized a branch", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello tree");
+	assert.equal(sent.length, 0, "nothing is sent while the parent is busy without a run");
+	await fire("session_tree", ctx);
+	setIdle(true);
+	assert.equal(timers.run(0), 1, "one deferred flush is scheduled for the tree boundary");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }]);
+	assert.equal(userMessages.length, 1, "one wake follows the held content");
+	await fire("session_shutdown", ctx);
+});
+
+test("a held-only re-check releases content when the busy state ends without any event", async () => {
+	const { fire, ctx, sent, userMessages, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello cancelled summary");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1, "holding content arms exactly one re-check");
+	assert.equal(timers.run(HOLD_RECHECK_MS), 1);
+	assert.equal(sent.length, 0, "still busy: nothing is delivered");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1, "a still-busy parent keeps one re-check armed");
+	setIdle(true);
+	assert.equal(timers.run(HOLD_RECHECK_MS), 1);
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }]);
+	assert.equal(userMessages.length, 1);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "the re-check stops once the content was delivered");
+	await fire("session_shutdown", ctx);
+});
+
+test("the held-only re-check also releases child completions and child messages", async () => {
+	const { pi, tools, fire, sent, userMessages, setIdle } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Asks while busy", mode: "background" }, undefined, undefined, ctx);
+	await tools.get("subagent_run")!.execute("c2", { agent: "explore", task: "Ends while busy", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+	const clockTicks = timers.pending(HOLD_RECHECK_MS);
+	setIdle(false);
+	harness.children[0].message({ id: "q1", kind: "query", message: "Which branch?" });
+	harness.children[1].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	harness.children[1].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 0);
+	const armed = timers.pending(HOLD_RECHECK_MS) - clockTicks;
+	assert.equal(armed, 1, "held child content arms exactly one re-check");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	assert.equal(sent.length, 2, "the query and the completion are both delivered");
+	assert.equal(userMessages.length, 1);
+	assert.equal(timers.pending(HOLD_RECHECK_MS) <= clockTicks, true, "the re-check stops once the content was delivered");
+	await fire("session_shutdown", ctx);
+});
+
+test("a completion re-queued after a failed forward still arms the held-only re-check", async () => {
+	const { pi, tools, fire, sent, setIdle } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, harness.deps);
+	const { ctx } = fakeContext();
+	await fire("session_start", ctx);
+	await tools.get("subagent_run")!.execute("c1", { agent: "explore", task: "Fails to forward", mode: "background" }, undefined, undefined, ctx);
+	await tick();
+	const sendMessage = pi.sendMessage;
+	Object.assign(pi, { sendMessage: () => { throw new Error("host busy"); } });
+	harness.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "Requeued answer." }] }] });
+	harness.children[0].emit({ type: "agent_settled" });
+	await tick();
+	assert.equal(sent.length, 0, "the idle forward failed and the completion was re-queued");
+	Object.assign(pi, { sendMessage });
+	// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+	const clockTicks = timers.pending(HOLD_RECHECK_MS);
+	// The bounded retry fires while the parent compacts without a run, so the
+	// re-queued completion is held and only the re-check can release it.
+	setIdle(false);
+	assert.equal(timers.run(PARENT_WAKE_GRACE_MS), 1, "the idle failure armed one bounded retry");
+	await tick();
+	assert.equal(sent.length, 0, "still busy: nothing is delivered");
+	assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the re-queued completion arms exactly one re-check");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	const results = sent.filter((entry) => entry.message.customType === "gentle-agents.result");
+	assert.equal(results.length, 1, "the re-check delivers the re-queued completion");
+	assert.match(String(results[0]!.message.content), /Requeued answer\./);
+	await fire("session_shutdown", ctx);
+});
+
+test("no held-only re-check is armed when nothing is held", async () => {
+	const { fire, ctx, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await fire("turn_end", ctx);
+	await fire("session_tree", ctx);
+	timers.run(0);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "a busy parent with nothing held is never polled");
+	setIdle(true);
+	await notify("hello idle");
+	await tick();
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "an idle parent is never polled");
+	await fire("agent_start", ctx);
+	await notify("hello run");
+	await tick();
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "a running parent is never polled");
+	await fire("session_shutdown", ctx);
+});
+
+test("a boundary flush that delivers held content cancels the re-check", async () => {
+	const { fire, ctx, sent, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello boundary");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1);
+	await fire("agent_start", ctx);
+	await fire("turn_end", ctx);
+	assert.equal(sent.length, 1, "the boundary flush delivered the held message");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "nothing is left to re-check");
+	await fire("session_shutdown", ctx);
+});
+
+test("a session change cancels the held-only re-check and drops the held content", async () => {
+	const { fire, ctx, sent, notify, setIdle, timers } = await orchestratorHost();
+	setIdle(false);
+	await notify("hello replaced");
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 1);
+	await fire("session_start", fakeContext().ctx);
+	assert.equal(timers.pending(HOLD_RECHECK_MS), 0, "the old session's re-check is cancelled");
+	setIdle(true);
+	timers.run(HOLD_RECHECK_MS);
+	await tick();
+	assert.equal(sent.length, 0, "the old session's message is not replayed into the new one");
+	await fire("session_shutdown", ctx);
+});
+
+// A user prompt is "starting" from `input` until `before_agent_start`, while
+// the host still reports idle. A wake dispatched in that window races the
+// user's prompt into Agent.prompt().
+test("content stored while a user prompt is starting sends no wake and rides that prompt's run", async () => {
+	const { fire, ctx, sent, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "hi", source: "interactive" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 1, "the starting prompt is bounded by its own grace");
+	await notify("hello starting");
+	await tick();
+	assert.deepEqual(sent.map((entry) => entry.options), [{ triggerTurn: false }], "the message is stored");
+	assert.equal(userMessages.length, 0, "no wake races the starting prompt");
+	await fire("before_agent_start", ctx, { prompt: "hi" });
+	await fire("agent_start", ctx);
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0);
+	assert.equal(timers.pending(PARENT_WAKE_GRACE_MS), 0);
+	await fire("agent_settled", ctx);
+	await tick();
+	assert.equal(userMessages.length, 0, "the run that started carried the content, so no wake is owed");
+	await fire("session_shutdown", ctx);
+});
+
+test("an input that never starts a run lets the owed wake go out after INPUT_PROMPT_GRACE_MS", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "handled elsewhere", source: "interactive" });
+	await notify("hello expired");
+	await tick();
+	assert.equal(userMessages.length, 0);
+	assert.equal(timers.run(INPUT_PROMPT_GRACE_MS), 1);
+	await tick();
+	assert.equal(userMessages.length, 1, "the owed wake is sent once the starting state expires");
+	await fire("session_shutdown", ctx);
+});
+
+// A dispatched wake is itself a prompt: it reaches `input` too. That must not
+// shorten the wake's own PARENT_WAKE_GRACE_MS window to INPUT_PROMPT_GRACE_MS,
+// or content arriving while the wake is still in its pre-run phase would send
+// a second wake that races the first into Agent.prompt().
+test("the dispatched wake's own input does not shorten its start window", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await notify("first");
+	await tick();
+	assert.equal(userMessages.length, 1, "the idle wake is dispatched");
+	await fire("input", ctx, { type: "input", text: String(userMessages[0]!.content), source: "extension" });
+	await notify("second");
+	await tick();
+	timers.run(INPUT_PROMPT_GRACE_MS);
+	await tick();
+	assert.equal(userMessages.length, 1, "no second wake while the first is still starting");
+	assert.equal(timers.pending(PARENT_WAKE_GRACE_MS), 1, "the wake keeps its own start window");
+	await fire("session_shutdown", ctx);
+});
+
+test("an input during a run or with a streaming behavior changes nothing", async () => {
+	const { fire, ctx, userMessages, notify, timers } = await orchestratorHost();
+	await fire("input", ctx, { type: "input", text: "queued", source: "interactive", streamingBehavior: "steer" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0, "a queued input is not a starting prompt");
+	await notify("hello idle");
+	await tick();
+	assert.equal(userMessages.length, 1, "the idle wake is unaffected");
+	await fire("agent_start", ctx);
+	await fire("input", ctx, { type: "input", text: "mid-run", source: "interactive" });
+	assert.equal(timers.pending(INPUT_PROMPT_GRACE_MS), 0, "an input during a run is not a starting prompt");
+	await fire("session_shutdown", ctx);
+});
+
+// A job notice is held content too: one stored while the parent is busy
+// without a run (a cancelled `/tree` summarization emits no event) must arm the
+// held-only re-check like any other held content.
+test("a job notice held for a parent busy without a run is delivered by the held-only re-check", async () => {
+	const { pi, tools, fire, sent, userMessages, setIdle } = fakePi();
+	const jobs = fakeJobShell();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("bash_background")!.execute("b1", { command: "make build" }, undefined, undefined, ctx);
+		// The runner's own clock tick shares HOLD_RECHECK_MS, so count against it.
+		const clockTicks = timers.pending(HOLD_RECHECK_MS);
+		setIdle(false);
+		jobs.runs[0]!.exit(0);
+		await jobIo();
+		assert.equal(sent.length, 0, "a parent busy without a run gets nothing yet");
+		assert.equal(timers.pending(HOLD_RECHECK_MS) - clockTicks, 1, "the held job notice arms exactly one re-check");
+		setIdle(true);
+		timers.run(HOLD_RECHECK_MS);
+		await tick();
+		const notices = sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1, "the re-check delivers the held job notice");
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false });
+		assert.match(String(notices[0]!.message.content), /job-1 \("make build"\) exited with code 0/);
+		assert.equal(userMessages.length, 1, "one wake follows the notice");
+		assert.equal(timers.pending(HOLD_RECHECK_MS) <= clockTicks, true, "the re-check stops once the notice was delivered");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
 });

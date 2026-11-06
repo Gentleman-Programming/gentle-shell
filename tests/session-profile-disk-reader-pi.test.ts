@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,17 +27,15 @@ const packagePath = join(
 const version: string = JSON.parse(readFileSync(packagePath, "utf8")).version;
 // Fail closed rather than silently skipping tests against stale feature deps.
 assert.match(version, /^\d+\.\d+\.\d+$/);
+const [major, minor] = version.split(".").map(Number);
 assert.ok(
-	Number(version.split(".")[0]) >= 1,
+	major >= 1,
 	`Pi >=1.0.0 required, installed ${version}`,
 );
+const rollsBackFailedAppend = major > 1 || (major === 1 && minor >= 5);
 console.info(
 	`Public SessionManager fixture API: ${version}; minimum tested baseline 1.0.0`,
 );
-// Pi 1.5 rolls a failed session write back out of memory (#11460); older Pi
-// keeps it on the branch as a ghost entry absent from disk.
-const [major, minor] = version.split(".").map(Number);
-const rollsBackFailedWrites = major > 1 || minor >= 5;
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "profile-reader-pi-"));
@@ -126,17 +125,19 @@ test("public selected branch, sibling and extracted session stay separated", (t)
 });
 
 for (const recovery of ["bind", "clear"] as const) {
-	test(`real EISDIR ghost quarantined; new ${recovery} corroborates missing parent even after reopen`, (t) => {
+	test(`real EISDIR preserves corroboration; new ${recovery} survives a missing parent`, (t) => {
 		const { manager, sessions } = fixture(t);
 		manager.appendCustomEntry(customType, bind("good"));
 		flushFixture(manager);
 		const file = manager.getSessionFile();
 		assert.ok(file);
+		const original = readFileSync(file, "utf8");
+		const before = structuredClone(manager.getBranch());
+		const retained = manager.getLeafId();
+		assert.ok(retained);
 		const saved = `${file}.saved`;
 		renameSync(file, saved);
 		mkdirSync(file);
-		const goodId = manager.getLeafId();
-		assert.ok(goodId);
 		assert.throws(
 			() => manager.appendCustomEntry(customType, bind("failed")),
 			(error: unknown) => {
@@ -144,35 +145,52 @@ for (const recovery of ["bind", "clear"] as const) {
 				return true;
 			},
 		);
-		const failedId = rollsBackFailedWrites ? undefined : manager.getLeafId();
-		if (rollsBackFailedWrites) assert.equal(manager.getLeafId(), goodId);
-		else assert.ok(failedId && failedId !== goodId);
+		const after = manager.getBranch();
+		let failedLeaf = retained;
+		const knownFailedEntryIds = new Set<string>();
+		if (rollsBackFailedAppend) {
+			assert.deepEqual(after, before, "SDK rolls back the failed entry and leaf");
+			assert.equal(manager.getLeafId(), retained);
+		} else {
+			assert.equal(after.length, before.length + 1);
+			assert.deepEqual(after.slice(0, before.length), before);
+			const ghost = after.at(-1);
+			assert.ok(ghost);
+			assert.equal(ghost.type, "custom");
+			assert.equal(ghost.customType, customType);
+			assert.deepEqual(ghost.data, bind("failed"));
+			assert.equal(ghost.parentId, retained);
+			assert.ok(ghost.id);
+			assert.notEqual(ghost.id, retained);
+			assert.equal(manager.getLeafId(), ghost.id);
+			failedLeaf = ghost.id;
+			knownFailedEntryIds.add(ghost.id);
+		}
+		assert.equal(readFileSync(saved, "utf8"), original);
 		assert.equal(readSessionProfileDisk(manager).status, "indeterminate");
 		renameSync(file, `${file}.fault-directory`);
 		renameSync(saved, file);
-		// Without a ghost the leaf is the persisted good record, so the disk corroborates it.
-		const unquarantined = readSessionProfileDisk(manager);
-		assert.equal(unquarantined.status, rollsBackFailedWrites ? "bound" : "indeterminate");
-		if (unquarantined.status === "bound") assert.equal(unquarantined.binding.name, "good");
-		const knownFailedEntryIds = new Set(failedId ? [failedId] : []);
-		const old = readSessionProfileDisk(manager, { knownFailedEntryIds });
-		assert.equal(old.status, "bound");
-		if (old.status === "bound") assert.equal(old.binding.name, "good");
+		if (rollsBackFailedAppend) {
+			expectBound(manager, "good");
+		} else {
+			assert.deepEqual(readSessionProfileDisk(manager), { status: "indeterminate", reason: "selected-record-missing" });
+			const old = readSessionProfileDisk(manager, { knownFailedEntryIds });
+			assert.equal(old.status, "bound");
+			if (old.status === "bound") assert.equal(old.binding.name, "good");
+		}
 		manager.appendCustomEntry(
 			customType,
 			recovery === "bind" ? bind("recovered") : { kind: "clear" },
 		);
 		const latest = manager.getBranch().at(-1);
 		assert.ok(latest);
-		assert.equal(latest.parentId, failedId ?? goodId);
+		assert.equal(latest.parentId, failedLeaf);
 		const disk = readFileSync(file, "utf8")
 			.trim()
 			.split("\n")
 			.map((line) => JSON.parse(line));
-		assert.equal(
-			disk.some((row) => row.id === failedId),
-			false,
-		);
+		assert.equal(disk.some((row) => row.id === retained), true);
+		if (!rollsBackFailedAppend) assert.equal(disk.some((row) => row.id === failedLeaf), false);
 		assert.deepEqual(
 			disk.find((row) => row.id === latest.id),
 			JSON.parse(JSON.stringify(latest)),
@@ -182,10 +200,22 @@ for (const recovery of ["bind", "clear"] as const) {
 			recovery === "bind" ? "bound" : "cleared",
 		);
 		const reopened = SessionManager.open(file, sessions);
-		assert.equal(reopened.getBranch().at(-1)?.id, latest.id);
-		// Pi truncates the resumed branch at a missing failed parent; without one it keeps the good parent.
-		if (failedId) assert.equal(reopened.getBranch().length, 1);
-		else assert.equal(reopened.getBranch().at(-1)?.parentId, goodId);
+		if (rollsBackFailedAppend) {
+			assert.deepEqual(reopened.getBranch(), manager.getBranch());
+			// With rollback, use a separately damaged test-owned file for a disk gap.
+			const orphanFile = `${file}.orphan.jsonl`;
+			writeFileSync(orphanFile,
+				disk.filter((row) => row.id !== retained)
+					.map((row) => JSON.stringify(row)).join("\n") + "\n",
+			);
+			const orphan = SessionManager.open(orphanFile, sessions);
+			assert.deepEqual(orphan.getBranch(), [JSON.parse(JSON.stringify(latest))]);
+			assert.equal(readSessionProfileDisk(orphan).status, recovery === "bind" ? "bound" : "cleared");
+			if (recovery === "bind") expectBound(orphan, "recovered");
+		} else {
+			// The real failed parent is absent on disk; Pi reopens the recovered suffix.
+			assert.deepEqual(reopened.getBranch(), [JSON.parse(JSON.stringify(latest))]);
+		}
 		assert.equal(
 			readSessionProfileDisk(reopened).status,
 			recovery === "bind" ? "bound" : "cleared",

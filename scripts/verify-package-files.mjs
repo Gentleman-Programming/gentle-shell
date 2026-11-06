@@ -119,6 +119,7 @@ export const requiredPaths = [
   "lib/gentle-shell-resume-hint.ts",
   "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
+  "lib/review-coordinator.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
   "lib/review-host-relay.ts",

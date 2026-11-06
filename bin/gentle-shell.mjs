@@ -1272,13 +1272,37 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs, homeHadCo
 			process.stderr.write(`gentle-shell: kept your Pi theme unchanged (gentle-ai rewrote ${settingsPath}; tracked upstream)\n`);
 		}
 	}
-	if (installResult.timedOut) {
-		return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
-	}
 	if (installResult.error) {
 		return { ok: false, exitCode: 1, message: `Could not start the gentle-ai binary: ${installResult.error.message}` };
 	}
-	if (!installResult.ok) return installResult;
+	if (!installResult.ok || installResult.timedOut) {
+		// Run post-install cleanup even on failure or timeout so a failed setup
+		// does not leave npm:gentle-pi declared in settings.json, which would make
+		// subsequent launches silently run the published npm package instead of
+		// the launcher's own package (#1647).
+		if (!dryRun && !installResult.interrupted) {
+			// A cleanup that throws (e.g. an unreadable settings.json) must not
+			// replace the install's own failure; it only adds a diagnostic.
+			let cleanupResult;
+			try {
+				cleanupResult = await runPostInstallCleanup(home, runtime, false, stdio, timeoutMs);
+			} catch (error) {
+				cleanupResult = { ok: false, exitCode: 1, message: `gentle-shell: post-install cleanup failed: ${error.message}` };
+			}
+			if (cleanupResult.interrupted) return cleanupResult;
+			if (!cleanupResult.ok && cleanupResult.message !== undefined) {
+				const baseMessage = installResult.timedOut
+					? `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}`
+					: installResult.message;
+				const message = baseMessage ? `${baseMessage}\n${cleanupResult.message}` : cleanupResult.message;
+				return { ok: false, exitCode: installResult.exitCode, message };
+			}
+		}
+		if (installResult.timedOut) {
+			return { ok: false, exitCode: 1, message: `gentle-shell: gentle-ai install timed out after ${formatTimeoutCeiling(timeoutMs)}` };
+		}
+		return installResult;
+	}
 
 	const cleanupResult = await runPostInstallCleanup(home, runtime, dryRun, stdio, timeoutMs);
 	if (cleanupResult.ok && !dryRun) {

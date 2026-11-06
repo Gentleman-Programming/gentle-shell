@@ -1,17 +1,21 @@
 import assert from "node:assert/strict";
 import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join, resolve } from "node:path";
-import test from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import {
 	DEFAULT_HERDR_TASK_SUMMARY_SETTINGS, HERDR_SUMMARY_COLORS, HERDR_TASK_SUMMARY_SCHEMA,
 	resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings,
 	type HerdrTaskSummarySettings,
 } from "../lib/herdr-task-summary-policy.ts";
 
+// Fixtures live under the system temp directory, never inside the worktree.
+// fs.rmSync (not the named export) because one test mocks it on the fs object.
+const root = mkdtempSync(join(tmpdir(), "gentle-herdr-task-summary-"));
+after(() => fs.rmSync(root, { recursive: true, force: true }));
+
 function fixture() {
-	const root = resolve("odd/work/herdr-c65-pure/fixtures/task-summary-policy");
-	mkdirSync(root, { recursive: true });
 	const home = mkdtempSync(join(root, "case-"));
 	return { options: { gentlePiConfigHome: home }, home, file: join(home, "herdr-task-summary.json") };
 }

@@ -124,7 +124,10 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	for (const clause of [
 		"necessary in-scope implementation, documentation and verification steps",
 		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
-		"required explicit consent, a denied action, unavailable required proof, or the human's explicit stop",
+		"required explicit consent, a denied action, or the human's explicit stop",
+		"Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it.",
+		"After a setup prerequisite is repaired, the human may explicitly request one new bounded verification attempt.",
+		"Never bypass consent, a denial, explicit one-run or no-retry limits, terminal native outcomes, or exhausted native budgets.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
 		"Report a concrete blocker and the exact decision needed",
 		"launch the bounded action and end the turn when no independent in-scope work remains",

@@ -176,7 +176,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					foot = lines.slice(-1);
 				} else {
 					headerRow = 0;
-					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered });
+					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered, ...(collapseKey ? { collapseKey } : {}) });
 					head = section.header ? [section.header] : [];
 					body = section.body;
 					foot = [];

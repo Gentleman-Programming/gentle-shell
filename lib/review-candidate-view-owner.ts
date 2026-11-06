@@ -28,7 +28,7 @@ const WINDOWS_ADMINISTRATORS = "S-1-5-32-544";
 const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
 
 // Cold or contended Windows hosts can take several seconds to start a process
-// (whoami/PowerShell/icacls), and owner preparation runs many probes in
+// (whoami/PowerShell), and owner preparation runs many probes in
 // sequence. Each probe gets a bounded, configurable timeout, plus one bounded
 // retry of the idempotent system probe; authority validation is never retried
 // or weakened because it happens after the probe returns.
@@ -56,7 +56,7 @@ export function withWindowsSystemProbeRetry<T>(probe: () => T): T {
 	}
 }
 
-function windowsSystemExecutable(name: "whoami.exe" | "icacls.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
+function windowsSystemExecutable(name: "whoami.exe" | "WindowsPowerShell\\v1.0\\powershell.exe"): string {
 	try {
 		return realpathSync.native(join(WINDOWS_SYSTEM_DIRECTORY, name));
 	} catch {
@@ -68,15 +68,6 @@ function windowsUserSid(): string {
 	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
 	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
 	if (matches.length !== 1) throw new Error("Windows user SID is unavailable");
-	return matches[0]!.toUpperCase();
-}
-
-function windowsLocalAdministratorSid(): string {
-	const script = "$ErrorActionPreference='Stop';$descriptor=New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;LA)';$descriptor.DiscretionaryAcl[0].SecurityIdentifier.Value";
-	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	const output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot } }));
-	const matches = output.match(/S-\d+(?:-\d+)+/gi) ?? [];
-	if (matches.length !== 1 || !isWindowsSid(matches[0]!)) throw new Error("Windows local Administrator SID is unavailable");
 	return matches[0]!.toUpperCase();
 }
 
@@ -219,10 +210,6 @@ function assertWindowsAclObservations(requests: readonly { path: string; kind: W
 	return { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
 }
 
-function windowsAclIdentity(): WindowsAclIdentity {
-	return { user: windowsUserSid(), localAdministrator: windowsLocalAdministratorSid() };
-}
-
 function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
 	if (path.length === 0 || path.length > 32767 || path.includes("\0")) throw new WindowsOwnerValidationError();
 	const script = kind === "file"
@@ -248,7 +235,7 @@ function assertPrivateWindowsDacl(path: string, kind: WindowsObjectKind, protect
 	assertWindowsAclObservations([{ path, kind, protectedDacl }], identity);
 }
 
-function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = windowsAclIdentity()): void {
+function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity): void {
 	validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
 	const { user, localAdministrator } = identity;
 	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
@@ -258,25 +245,26 @@ function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity = 
 	assertPrivateWindowsDacl(path, "directory", true, identity);
 }
 
-function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, enforce = false, windowsIdentity?: WindowsAclIdentity): void {
+function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl: boolean, windowsIdentity?: WindowsAclIdentity): void {
 	if (testingWindowsAclAuthority !== undefined) return testingWindowsAclAuthority(path);
-	if (enforce) enforcePrivateWindowsDacl(path, windowsIdentity);
-	else assertPrivateWindowsDacl(path, kind, protectedDacl, windowsIdentity);
+	assertPrivateWindowsDacl(path, kind, protectedDacl, windowsIdentity);
 }
 
-function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false, windowsIdentity?: WindowsAclIdentity): WindowsAclIdentity | undefined {
+function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false): WindowsAclIdentity | undefined {
 	const boundary = [commonDir, join(commonDir, "gentle-ai"), join(commonDir, "gentle-ai", "candidate-views")];
 	if (testingWindowsAclAuthority !== undefined) {
 		for (const path of boundary) testingWindowsAclAuthority(path);
 		return;
 	}
-	if (!enforce) return assertWindowsAclObservations(boundary.map(path => ({ path, kind: "directory", protectedDacl: true })), windowsIdentity);
-	const identity = windowsIdentity ?? windowsAclIdentity();
-	if (enforce) {
-		for (const path of boundary) validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
-		for (const path of boundary) enforcePrivateWindowsDacl(path, identity);
-		return identity;
-	}
+	if (!enforce) return assertWindowsAclObservations(boundary.map(path => ({ path, kind: "directory", protectedDacl: true })));
+	// Take the identity from the same probe that later reads owners and DACLs
+	// back, so enforcement never compares two different identity sources. The
+	// DACLs are not validated yet: this boundary is about to rewrite them.
+	const snapshot = windowsAclProbe(boundary.map(path => ({ path, kind: "directory" })));
+	const identity = { user: snapshot.user, localAdministrator: snapshot.localAdministrator };
+	for (const entry of snapshot.entries) validatePrivateWindowsOwner(entry.owner, identity.user);
+	for (const path of boundary) enforcePrivateWindowsDacl(path, identity);
+	return identity;
 }
 
 // A hostname or a repository-local nonce cannot prove that a PID is local.
@@ -391,7 +379,7 @@ function regular(path: string, privateMode = false, platform: NodeJS.Platform = 
 	const uid = process.getuid?.();
 	if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || !samePath(realpathSync(path), path, platform) || stat.size > 16384n ||
 		(privateMode && platform !== "win32" && (uid === undefined || stat.uid !== BigInt(uid) || (stat.mode & 0o777n) !== 0o600n))) throw new Error("Unsafe candidate owner file");
-	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false, false, windowsIdentity);
+	if (privateMode && platform === "win32") privateWindowsDacl(path, "file", false, windowsIdentity);
 	return `${stat.dev}:${stat.ino}`;
 }
 

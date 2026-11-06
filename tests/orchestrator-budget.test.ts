@@ -332,6 +332,8 @@ for (const range of DISPOSITION_MAP) {
 				if (raw === undefined || !isNormativeLine(raw)) continue;
 				const trimmed = raw.trim();
 				const expected =
+					// Preserve the synthesis rule while reserving core bytes for the RDD scope condition.
+					ln === 13 ? "Default to concise synthesis: decision, outcome, next action. Expand on request or when detail is needed." :
 					ln === 36 ? "- Substantial authorized work: use ODD; track feature progress automatically." :
 					trimmed;
 				if (SUPERSEDED_LIFECYCLE_REVIEW_LINES.has(ln)) {

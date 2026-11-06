@@ -189,6 +189,7 @@ test("a session keeps its first RDD status line until the off state changes", as
 		return /Receipt-driven development: [^;\n]*/.exec(event.systemPromptOptions.appendSystemPrompt)?.[0];
 	};
 	await handlers.get("session_shutdown")!({}, ctx);
+	await handlers.get("session_start")!({}, ctx);
 	assert.equal(await line(), "Receipt-driven development: unknown (native status unavailable)");
 	status = { effective: "on", source: "clone_local" };
 	assert.equal(await line(), "Receipt-driven development: unknown (native status unavailable)", "unknown to on keeps the prompt prefix");
@@ -200,5 +201,6 @@ test("a session keeps its first RDD status line until the off state changes", as
 	assert.equal(await line(), "Receipt-driven development: on (decided by global)", "turning RDD back on re-renders");
 	await handlers.get("session_shutdown")!({}, ctx);
 	status = { effective: "on", source: "clone_local" };
+	await handlers.get("session_start")!({}, ctx);
 	assert.equal(await line(), "Receipt-driven development: on (decided by clone_local)", "a new session renders the current line");
 });

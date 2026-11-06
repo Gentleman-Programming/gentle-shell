@@ -24,7 +24,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 	const statuses = new Map<string, unknown>();
 	const widgets = new Map<string, unknown>();
 	const notices: string[] = [];
-	let renders = 0, sessionId = "menu-session";
+	let renders = 0, sessionId = "menu-session", slashMode: string | undefined;
 	let view: View | undefined, finish: (() => void) | undefined;
 	let component: VisualCustomizeView | undefined, actionReady: (() => void) | undefined;
 	if (observeActionReady) {
@@ -51,10 +51,11 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		sendUserMessage() { assert.fail("menu must not send synthetic user messages"); },
 	} as unknown as ExtensionAPI;
 	const ctx = {
-		cwd: process.cwd(), mode: "tui", hasUI: true,
+		cwd: home, mode: "tui", hasUI: true,
 		sessionManager: { getSessionId: () => sessionId },
 		ui: {
 			theme, getAllThemes: () => [{ name: "dark" }], getTheme: () => theme, getEditorComponent: () => undefined,
+			select: async (_title: string, choices: string[]) => choices.find(choice => choice.startsWith(`${slashMode} —`)),
 			notify: (text: string) => notices.push(text),
 			setStatus: (key: string, value: unknown) => statuses.set(key, value),
 			setWidget: (key: string, value: unknown) => widgets.set(key, value),
@@ -68,7 +69,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		},
 	} as unknown as ExtensionContext;
 	let controller: yolo.YoloSessionController | undefined;
-	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }); };
+	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }, { resolveIdentity: async () => undefined }); };
 	const shell = () => gentleShell(pi, { ...env, GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		fetch: async () => { assert.fail("network disabled"); }, activeProfile: () => undefined, devBinary: () => undefined,
 	});
@@ -77,7 +78,8 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 	const snapshot = () => Object.fromEntries(readdirSync(home).sort().map(name => [name, readFileSync(join(home, name), "utf8")]));
 	return {
 		pi, ctx, home, events, notices, statuses, widgets, snapshot, controller: () => controller!, renders: () => renders,
-		setSessionId: (id: string) => { sessionId = id; }, view: () => { assert.ok(view); return view; },
+		setSessionId: (id: string) => { sessionId = id; }, setSlashMode: (mode: string) => { slashMode = mode; },
+		view: () => { assert.ok(view); return view; },
 		async command(args: string) { await commands.get("gentle:yolo")!.handler(args, ctx); },
 		async apply(data: string) {
 			assert.ok(observeActionReady && view, "action-ready observation is enabled");
@@ -145,6 +147,19 @@ test("Customize selects Auto for this session and saves either elevated default 
  open.close();await open.result;
 });
 
+test("slash mode selection refreshes the open Customize view without saving a default", async t => {
+	const h = fixture(t); const before = h.snapshot();
+	const open = await h.open(); const view = h.view();
+	assert.ok(view.focus("Session permissions: SUPER-YOLO")); view.render(140);
+	h.setSlashMode("super-yolo"); await h.command("");
+	await settle(() => view.focus("Session permissions: SUPER-YOLO (current)"));
+	assert.match(text(view), /Session permissions[^\n]*(?:● SUPER-YOLO|‹ SUPER-YOLO ›)/);
+	assert.equal(h.statuses.get(yolo.MODE_STATUS_KEY), "Permissions: SUPER-YOLO");
+	await h.command("status"); assert.equal(h.notices.at(-1), yolo.SUPER_YOLO_STATUS_TEXT);
+	assert.deepEqual(h.snapshot(), before);
+	open.close(); await open.result;
+});
+
 for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and slash share one owner (${order})`, async t => {
 	const h = fixture(t, order, {}, true);
 	for (const name of ["vim-policy.json", "visual-settings.json", "visual-profiles.json", "runtime-guardrails.json", "history-capture-policy.json", "agent-profiles.json"]) writeFileSync(join(h.home, name), "{}\n");
@@ -188,6 +203,14 @@ for (const invalid of [false, true]) test(`absent/invalid owner is unavailable, 
 
 test("scope revocation refreshes without notification recursion or Git during render", async t => {
 	const h = fixture(t); await h.command("enable");
+	// Resolve the unrelated RDD discovery immediately so its timeout repaint
+	// cannot be mistaken for a recursive YOLO revocation notification.
+	h.events.on("gentle:rdd:host-ui", data => {
+		(data as { respond(value: unknown): void }).respond({
+			read: async () => undefined,
+			open: async () => { throw new Error("YOLO revocation must not open RDD"); },
+		});
+	});
 	const open = await h.open(); const view = h.view(); selectYolo(view);
 	assert.match(text(view), /YOLO: ON/);
 	const count = h.renders();

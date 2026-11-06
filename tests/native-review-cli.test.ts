@@ -15,12 +15,14 @@ import {
 	NativeReviewCliV216,
 	NativeReviewIntegrationError,
 	NativeReviewConsentRequiredError,
+	createNativeReviewCli,
 	createNodeExecFileAdapter,
 	createWindowsProcessTreeKiller,
 	windowsTaskkillPath,
 	gentleAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
+	type NativeReviewModeRequest,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
@@ -65,6 +67,114 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
 	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
 }
+
+const modeClients = [
+	["factory", (adapter: ExecFileAdapter, executable: () => string) => createNativeReviewCli(adapter, executable)],
+	["constructor", (adapter: ExecFileAdapter, executable: () => string) => new NativeReviewCliV216(adapter, executable)],
+] as const;
+const modeCwd = "/isolated-review-mode-test";
+const modeExecutable = "/package/.gentle-ai/gentle-ai";
+
+function modeOutput(operation: "status" | "enable" | "disable", scope: "clone" | "global" | "both", global: "on" | "off", cloneLocal: "" | "off") {
+	const effective = cloneLocal === "off" || global === "off" ? "off" : "on";
+	const source = cloneLocal === "off" ? "clone_local" : "global";
+	return {
+		wire: JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation, scope, status: { schema: "gentle-ai.rdd-mode-status/v1", global, clone_local: cloneLocal, effective, source } }),
+		decoded: { operation, scope, status: { global, cloneLocal, effective, source } },
+	};
+}
+
+test("native mode mutations honor each explicit clone or global scope", async (t) => {
+	const cases = [
+		{ operation: "enable", scope: "clone", global: "off", cloneLocal: "" },
+		{ operation: "disable", scope: "clone", global: "on", cloneLocal: "off" },
+		{ operation: "enable", scope: "global", global: "on", cloneLocal: "off" },
+		{ operation: "disable", scope: "global", global: "off", cloneLocal: "" },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${scenario.scope}`, async () => {
+			const expected = modeOutput(scenario.operation, scenario.scope, scenario.global, scenario.cloneLocal);
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const result = await review.reviewMode!({ cwd: modeCwd, operation: scenario.operation, scope: scenario.scope });
+			assert.deepEqual(result, expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", scenario.operation, "--cwd", modeCwd, "--scope", scenario.scope, "--json"], cwd: modeCwd, timeoutMs: undefined }]);
+		});
+	}
+});
+
+test("native mode status and mutations without scope preserve their exact argv and decoded status", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable", "disable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "clone", "on", operation === "disable" ? "off" : "");
+			const queue = queuedAdapter([{ stdout: expected.wire, stderr: "", exitCode: 0 }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			assert.deepEqual(await review.reviewMode!({ cwd: modeCwd, operation }), expected.decoded);
+			assert.deepEqual(queue.calls, [{ file: modeExecutable, arguments: ["review", "mode", operation, "--cwd", modeCwd, ...(operation === "status" ? [] : ["--scope", "clone"]), "--json"], cwd: modeCwd, timeoutMs: operation === "status" ? 30_000 : undefined }]);
+		});
+	}
+});
+
+test("native mode rejects unsupported scopes and status scopes before cwd or native access", async (t) => {
+	const cases = [
+		...(["enable", "disable"] as const).flatMap(operation => ["both", "", "GLOBAL", " global", null, 17].map(scope => ({ operation, scope, message: "Native review mode scope must be clone or global" }))),
+		...(["clone", "global"] as const).map(scope => ({ operation: "status", scope, message: "Native review mode scope is only valid for enable or disable" })),
+	];
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.operation} ${String(scenario.scope)}`, async () => {
+			let cwdReads = 0, binaryResolutions = 0;
+			const expected = modeOutput(scenario.operation as "status" | "enable" | "disable", "clone", "on", "");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => { binaryResolutions++; return modeExecutable; });
+			const request = { get cwd() { cwdReads++; return modeCwd; }, operation: scenario.operation, scope: scenario.scope } as unknown as NativeReviewModeRequest;
+			await assert.rejects(() => review.reviewMode!(request), { name: "TypeError", message: scenario.message });
+			assert.deepEqual({ cwdReads, binaryResolutions, calls: queue.calls.length }, { cwdReads: 0, binaryResolutions: 0, calls: 0 });
+		});
+	}
+});
+
+test("native mode binds operation and scope before asynchronous cwd resolution", async (t) => {
+	for (const [name, makeClient] of modeClients) for (const operation of ["status", "enable"] as const) {
+		await t.test(`${name}: ${operation}`, async () => {
+			const expected = modeOutput(operation, operation === "status" ? "both" : "global", "on", "off");
+			const queue = queuedAdapter([{ stdout: expected.wire }]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request: NativeReviewModeRequest = { cwd: modeCwd, operation, ...(operation === "enable" ? { scope: "global" } : {}) };
+			const pending = review.reviewMode!(request);
+			request.operation = "disable";
+			request.scope = "clone";
+			assert.deepEqual(await pending, expected.decoded);
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", operation, "--cwd", modeCwd, ...(operation === "enable" ? ["--scope", "global"] : []), "--json"]]);
+		});
+	}
+});
+
+test("scoped native mode surfaces stderr, exit, and malformed responses without claiming success", async (t) => {
+	const expected = modeOutput("enable", "global", "on", "off");
+	const cases = [
+		{ name: "nonzero", result: { stdout: "{}", stderr: "native refused\n", exitCode: 17 }, code: NATIVE_REVIEW_ERROR_CODE.NON_ZERO, stderr: "native refused", exit: 17 },
+		{ name: "stderr", result: { stdout: expected.wire, stderr: "unexpected notice\n", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, stderr: "unexpected notice", exit: 0 },
+		{ name: "malformed JSON", result: { stdout: "not-json", stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.MALFORMED_JSON, stderr: undefined, exit: 0 },
+		{ name: "foreign operation", result: { stdout: modeOutput("disable", "global", "off", "").wire, stderr: "", exitCode: 0 }, code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, stderr: undefined, exit: undefined },
+	] as const;
+	for (const [name, makeClient] of modeClients) for (const scenario of cases) {
+		await t.test(`${name}: ${scenario.name}`, async () => {
+			const queue = queuedAdapter([scenario.result]);
+			const review = makeClient(queue.adapter, () => modeExecutable);
+			const request = { cwd: modeCwd, operation: "enable", scope: "global" } as const;
+			await assert.rejects(() => review.reviewMode!(request), (error: unknown) => {
+				assert.ok(error instanceof NativeReviewCliError);
+				assert.equal(error.code, scenario.code);
+				assert.equal(error.operation, NATIVE_REVIEW_OPERATION.MODE);
+				assert.equal(error.mutationOutcome, "unknown");
+				assert.equal(error.diagnostics.stderr, scenario.stderr);
+				assert.equal(error.diagnostics.exit_code, scenario.exit);
+				return true;
+			});
+			assert.deepEqual(queue.calls.map(call => call.arguments), [["review", "mode", "enable", "--cwd", modeCwd, "--scope", "global", "--json"]]);
+		});
+	}
+});
 
 test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
 	const status = fixture("status-v5.captured.json");

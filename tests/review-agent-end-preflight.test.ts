@@ -598,7 +598,7 @@ for (const scenario of ["reload", "fork", "new", "off-branch"] as const) {
 }
 
 for (const scenario of ["concurrent-write", "shutdown"] as const) {
-	test(`agent_end binds consumption to the captured mutation during async STATUS: ${scenario}`, async () => {
+	test(`agent_end binds consumption to the captured mutation during async STATUS: ${scenario}`, { timeout: 5_000 }, async () => {
 		const session = ctx(`status-race-${scenario}`);
 		let resolveStatus!: (status: ReviewStatusV3) => void;
 		let entered!: () => void;

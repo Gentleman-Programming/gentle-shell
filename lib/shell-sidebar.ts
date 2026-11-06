@@ -35,6 +35,13 @@ export interface SidebarState {
 /** A rail slot in the fullscreen sidebar. */
 export interface SidebarRail extends Component {
 	/**
+	 * Row ranges of the sections this part renders, for a transparent rail that
+	 * draws every section as its own card: each group starts at its header row
+	 * and ends before `end`; `loose` rows (key hints) sit outside the cards.
+	 * Without it the whole part is one section headed by its first row.
+	 */
+	cardGroups?(width: number): { groups: Array<{ start: number; end: number }>; loose?: number[] } | undefined;
+	/**
 	 * Cheap digest of the live state this rail paints. The fullscreen layout memo
 	 * re-renders a part only when its digest changes, so a rail that reads session
 	 * data (model, thinking level, context, cost, extension statuses) must declare

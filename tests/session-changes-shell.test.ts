@@ -39,7 +39,7 @@ function fixture(entries: any[] = [], options: { root?: string; sessionId?: stri
 		for(let i=0;i<200&&!overlay.view;i++){ if(await Promise.race([opened.then(()=>true),new Promise(r=>setTimeout(()=>r(false),5))])) break; }
 		if(!overlay.view) return undefined;
 		const text=overlay.view.render(200).join("\n");
-		const trees=(overlay.view.trees as any[]).map(tree=>({root:tree.root as string,branch:tree.branch as string|undefined,files:tree.model.files.map((file:any)=>file.path) as string[],added:tree.model.added as number,deleted:tree.model.deleted as number}));
+		const trees=(overlay.view.children[0].trees as any[]).map(tree=>({root:tree.root as string,branch:tree.branch as string|undefined,files:tree.model.files.map((file:any)=>file.path) as string[],added:tree.model.added as number,deleted:tree.model.deleted as number}));
 		overlay.close!(); await opened;
 		return {text,trees,files:trees.flatMap(tree=>tree.files)};
 	};

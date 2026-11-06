@@ -1,13 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
-import { bundledGentlePiConfigHome } from "../lib/gentle-shell-bundled.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 
 
 export type BannerColor = "pink" | "cyan" | "yellow" | "green";
@@ -68,7 +67,7 @@ function rgb(r: number, g: number, b: number, text: string): string {
 }
 
 function gentleAiConfigHome(): string {
-  return bundledGentlePiConfigHome(process.env) ?? process.env.GENTLE_PI_CONFIG_HOME ?? join(os.homedir(), ".pi", "gentle-ai");
+  return gentlePiConfigHome(process.env);
 }
 
 function bannerConfigPath(configHome = gentleAiConfigHome()): string {
@@ -574,6 +573,9 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile, time
 // Pi dispatches its subcommands purely on the first argument, so only that
 // token decides. Flag values such as the package directory the Gentle Shell
 // launcher injects with `-e <dir>` must not be mistaken for a subcommand.
+const GUIDE_COMMAND = "gentle:guide";
+export const GUIDE_REMINDER = "Tip: run /gentle:guide for a guided tour of Gentle Shell";
+
 export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
   const first = argv[2];
   return first !== undefined && (PI_SUBCOMMANDS as readonly string[]).includes(first);
@@ -677,6 +679,8 @@ export default function (pi: ExtensionAPI) {
     let backgroundAgentsCount = 0;
 
     const allCommands = pi.getCommands();
+    // A one-line reminder under the banner on every start, while the tour exists.
+    const guideReminder = allCommands.some((c) => c.name === GUIDE_COMMAND) ? GUIDE_REMINDER : undefined;
     const skills = allCommands.filter((c) => c.source === "skill");
     const allTools = pi.getAllTools();
     const customTools = allTools.filter(
@@ -775,6 +779,9 @@ export default function (pi: ExtensionAPI) {
             if (finished || Date.now() - animStart > 5000) {
               clearInterval(state.timer!);
               state.timer = null;
+              if (!finished) {
+                tick = Number.MAX_SAFE_INTEGER;
+              }
             }
             try { tui.requestRender(); } catch { cleanup(); }
           }, performance ? 250 : 25);
@@ -827,13 +834,23 @@ export default function (pi: ExtensionAPI) {
             b.center(width);
 
             if (state.mode === "minimal") {
-              if (bannerConfig.showTextLogo) for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
-                const logoLine = logoBase.lines[logoI];
-                b.addRow();
-                b.lines[b.lines.length - 1].push(
-                  ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
-                );
-                b.center(width);
+              if (bannerConfig.showTextLogo) {
+                if (width >= logoBase.width + 2) {
+                  for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
+                    const logoLine = logoBase.lines[logoI];
+                    b.addRow();
+                    b.lines[b.lines.length - 1].push(
+                      ...buildPenLogoLine(logoLine, logoI, logoBase.lines.length, tick),
+                    );
+                    b.center(width);
+                  }
+                } else {
+                  b.addRow();
+                  b.add("accent", "✿ ");
+                  b.add("value", "Gentle Shell");
+                  b.add("accent", " ✿");
+                  b.center(width);
+                }
               }
             } else if (horizontal) {
               const rowCount = Math.max(roseBase.lines.length, logoBase.lines.length);
@@ -870,6 +887,16 @@ export default function (pi: ExtensionAPI) {
                   );
                   b.center(width);
                 }
+                if (showRose) {
+                  b.addRow();
+                  b.center(width);
+                }
+              } else if (bannerConfig.showTextLogo) {
+                b.addRow();
+                b.add("accent", "✿ ");
+                b.add("value", "Gentle Shell");
+                b.add("accent", " ✿");
+                b.center(width);
                 if (showRose) {
                   b.addRow();
                   b.center(width);
@@ -1102,6 +1129,10 @@ export default function (pi: ExtensionAPI) {
               out.push(truncateToWidth(line, Math.max(1, width), ""));
             }
 
+            if (guideReminder) {
+              const pad = " ".repeat(Math.max(0, Math.floor((width - guideReminder.length) / 2)));
+              out.push(truncateToWidth(theme.fg("muted", pad + guideReminder), Math.max(1, width), ""));
+            }
             headerCache = { key: headerKey, out };
             return out;
           },

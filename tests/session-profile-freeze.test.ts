@@ -6,15 +6,17 @@ import test, { after, beforeEach } from "node:test";
 import { createProfile, emptyProfilesFile, profilesFilePath, setActiveProfile, writeProfilesFileSync } from "../lib/agent-profiles.ts";
 import { clearProfilePinSync, localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
-import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { bindSessionProfile, recordSessionProfileStartupNone, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import {
 	PROFILE_FOLLOW_ENV,
+	freezeSessionProfileAtOwnStart,
 	freezeSessionProfileAtStartup,
 	inheritedProfileDriftNotice,
 	profileFollowEnabled,
 	sessionProfileRoutingAt,
 	readFrozenInheritedProfile,
 	resetFrozenInheritedProfilesForTesting,
+	readSessionProfileOwnStartup,
 	resolveInheritedProfile,
 	resolveSessionProfile,
 	sessionProfileLabel,
@@ -282,17 +284,42 @@ test("drift notice: shown once per distinct change of the defaults", () => {
 	f.pinLocal("local");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 	f.pinLocal(undefined);
 	f.setActive("team");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined);
 	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "frontier", "the notice never adopts the new default");
+});
+
+test("drift notice: an explicit binding learns its profile definition changed in profiles.json", () => {
+	const f = fixture({ team: { worker: { model: "openai/old" } } });
+	const opts = options(f, "session-a");
+	bindSessionProfile("session-a", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "no drift while the definition matches the binding");
+
+	f.editProfile("team", { worker: { model: "openai/new" } });
+	const notice = inheritedProfileDriftNotice(opts);
+	assert.match(notice ?? "", /the profile definition changed to "team"/);
+	assert.match(notice ?? "", /this session keeps the binding from selection/);
+	assert.match(notice ?? "", /Open \/gentle:profiles and choose Use in this session to adopt one\.$/, "the notice names the current adoption action");
+	assert.doesNotMatch(notice ?? "", /Press Enter/, "the retired Enter instruction never comes back");
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
+
+	f.editProfile("team", { worker: { model: "openai/older" } });
+	assert.match(inheritedProfileDriftNotice(opts) ?? "", /the profile definition changed to "team"/, "a different edit is a distinct change");
+	assert.equal(inheritedProfileDriftNotice(opts), undefined);
+	f.editProfile("team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "reverting to the bound content is not drift");
+
+	const childOpts = options(f, "session-b", { GENTLE_PI_AGENTS_CHILD: "1" });
+	bindSessionProfile("session-b", "team", { worker: { model: "openai/old" } });
+	assert.equal(inheritedProfileDriftNotice(childOpts), undefined, "children never get the notice");
 });
 
 test("drift notice: an edit of the default profile's content counts as a change", () => {
@@ -321,14 +348,14 @@ test("drift notice covers a session frozen without a profile and a default that 
 	f.pinLocal("frontier");
 	assert.equal(
 		inheritedProfileDriftNotice(none),
-		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 	const kept = options(f, "session-kept");
 	freezeSessionProfileAtStartup(kept);
 	f.pinLocal(undefined);
 	assert.equal(
 		inheritedProfileDriftNotice(kept),
-		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Press Enter on a profile in /gentle:profiles to adopt it.',
+		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
 	);
 });
 
@@ -361,7 +388,8 @@ test("sessionProfileRoutingAt: explicit and frozen profiles apply to any target,
 	const target = { cwd: foreign.cwd, configHome: foreign.configHome, resolveWorktree: foreign.resolveWorktree, foreignRepository: true };
 	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-a")), target), FRONTIER);
 	bindSessionProfile("session-b", "team", TEAM);
-	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-b")), target), TEAM);
+	// The binding keeps the whole profile; routing carries its role keys, never the reserved orchestrator key.
+	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(session, "session-b")), target), { worker: TEAM.worker });
 });
 
 test("sessionProfileRoutingAt: a session frozen without a profile keeps a foreign repository's own defaults", () => {
@@ -391,4 +419,109 @@ test("sessionProfileRoutingAt: follow reads the defaults of the target", () => {
 	other.pinLocal("local");
 	const resolution = resolveSessionProfile(options(session, "session-a", { [PROFILE_FOLLOW_ENV]: "1" }));
 	assert.deepEqual(sessionProfileRoutingAt(resolution, { cwd: other.cwd, configHome: other.configHome, resolveWorktree: other.resolveWorktree }), LOCAL);
+});
+
+// A2 (gentle-shell#2742, section 4): a published startup record is the
+// session's inherited profile, taken as recorded instead of freezing again.
+test("a startup record resolves as the inherited profile with its origin and label, without a new freeze", () => {
+	const f = fixture();
+	f.setActive("frontier");
+	const records = [["local", "local", "local (local)", LOCAL, LOCAL], ["repo", "frontier", "frontier (repo)", FRONTIER, FRONTIER], ["global", "team", "team", TEAM, { worker: TEAM.worker }]] as const;
+	for (const [origin, name, label, definition, roles] of records) {
+		bindSessionProfile(`s-${origin}`, name, definition, { origin });
+		const resolution = resolveSessionProfile(options(f, `s-${origin}`));
+		assert.deepEqual(resolution, { kind: "inherited", profile: { name, origin, modelProfiles: roles } }, "launch routing drops the orchestrator key");
+		assert.equal(sessionProfileLabel(resolution), label);
+		assert.equal(readFrozenInheritedProfile(`s-${origin}`), undefined);
+	}
+	const foreign = fixture();
+	foreign.pinLocal("local");
+	const target = { cwd: foreign.cwd, configHome: foreign.configHome, resolveWorktree: foreign.resolveWorktree, foreignRepository: true };
+	assert.deepEqual(sessionProfileRoutingAt(resolveSessionProfile(options(f, "s-repo")), target), FRONTIER, "the recorded profile applies in a foreign repository");
+});
+
+test("an explicit choice stays explicit with or without a recorded startup state", () => {
+	const f = fixture();
+	bindSessionProfile("s-known", "local", LOCAL, { startup: { origin: "global", name: "team", modelProfiles: TEAM } });
+	bindSessionProfile("s-none", "local", LOCAL, { startup: "none" });
+	for (const id of ["s-known", "s-none"]) {
+		assert.deepEqual(resolveSessionProfile(options(f, id)), { kind: "explicit", name: "local", modelProfiles: LOCAL });
+		assert.equal(sessionProfileLabel(resolveSessionProfile(options(f, id))), "local (session)");
+	}
+});
+
+test("a startup-none record resolves no session profile without freezing the current defaults", () => {
+	const f = fixture();
+	f.setActive("frontier");
+	recordSessionProfileStartupNone("session-a");
+	freezeSessionProfileAtStartup(options(f, "session-a"));
+	const resolution = resolveSessionProfile(options(f, "session-a"));
+	assert.deepEqual(resolution, { kind: "inherited", profile: undefined });
+	assert.equal(sessionProfileLabel(resolution), undefined);
+	const foreign = fixture();
+	foreign.pinLocal("local");
+	const target = { cwd: foreign.cwd, configHome: foreign.configHome, resolveWorktree: foreign.resolveWorktree, foreignRepository: true };
+	assert.deepEqual(sessionProfileRoutingAt(resolution, target), LOCAL, "a foreign repository uses its own pins");
+});
+
+test("follow mode routes a recorded startup profile and resolves the current defaults after a startup-none record", () => {
+	const f = fixture();
+	const env = { [PROFILE_FOLLOW_ENV]: "1" };
+	f.pinLocal("frontier");
+	bindSessionProfile("s-bind", "team", TEAM, { origin: "global" });
+	assert.deepEqual(sessionProfileModelProfiles(resolveSessionProfile(options(f, "s-bind", env))), { worker: TEAM.worker });
+	recordSessionProfileStartupNone("s-none");
+	assert.deepEqual(resolveSessionProfile(options(f, "s-none", env)), { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } });
+});
+
+// A2 (gentle-shell#2742, section 3): only a freeze at the session's own start
+// knows the startup state, with the profile's full definition.
+test("own start captures the startup profile with its full definition, orchestrator included", () => {
+	const f = fixture();
+	f.setActive("team");
+	freezeSessionProfileAtOwnStart(options(f, "session-a"));
+	assert.deepEqual(JSON.parse(JSON.stringify(readSessionProfileOwnStartup("session-a"))), { origin: "global", name: "team", modelProfiles: TEAM });
+});
+
+test("a session frozen by a plain resume has no known startup state", () => {
+	const f = fixture();
+	f.setActive("team");
+	freezeSessionProfileAtStartup(options(f, "session-a"));
+	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "team", "the resume froze the default");
+	assert.equal(readSessionProfileOwnStartup("session-a"), undefined);
+});
+
+test("own start with no profile anywhere records the startup state as none", () => {
+	const f = fixture();
+	freezeSessionProfileAtOwnStart(options(f, "session-a"));
+	assert.equal(readSessionProfileOwnStartup("session-a"), "none");
+});
+
+test("own start leaves the startup state unknown when the stored definition no longer matches the frozen routing", () => {
+	const f = fixture();
+	f.setActive("team");
+	const edited = fixture({ team: { worker: { model: "ollama/qwen" }, orchestrator: { model: "openai/gpt-5" } } });
+	// The freeze reads profiles.json twice: once to resolve the default, once for
+	// its definition. A configHome that moves to an edited store between the two
+	// reads stands in for an edit landing in between, without racing a writer.
+	let reads = 0;
+	const opts = { ...options(f, "session-a"), readDefaultOrchestrator: () => undefined };
+	Object.defineProperty(opts, "configHome", { get: () => (reads++ < 2 ? f.configHome : edited.configHome) });
+	freezeSessionProfileAtOwnStart(opts);
+	assert.equal(reads, 3, "two reads resolve the default, the third reads its definition");
+	assert.deepEqual(JSON.parse(JSON.stringify(readFrozenInheritedProfile("session-a")?.profile)), { name: "team", origin: "global", modelProfiles: { worker: TEAM.worker } });
+	assert.equal(readSessionProfileOwnStartup("session-a"), undefined);
+});
+
+test("drift notice after a resume that took a startup record is the inherited notice", () => {
+	const f = fixture();
+	f.setActive("team");
+	const opts = options(f, "session-a");
+	bindSessionProfile("session-a", "team", TEAM, { origin: "global" });
+	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the recorded definition, orchestrator included, matches the default");
+	f.setActive("frontier");
+	assert.equal(
+		inheritedProfileDriftNotice(opts),
+		'el Gentleman: the default profile changed to "frontier" (global), this session keeps "team" (global). Open /gentle:profiles and choose Use in this session to adopt one.',
+	);
 });

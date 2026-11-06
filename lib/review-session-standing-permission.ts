@@ -15,6 +15,7 @@ export interface GitCommandOptions {
 	timeout: number;
 	maxBuffer: number;
 	windowsHide?: boolean;
+	stdio?: ["ignore", "pipe", "pipe"];
 }
 
 export type GitAsyncRunner = (command: string, args: readonly string[], options: GitCommandOptions) => Promise<{ stdout: string }>;
@@ -133,7 +134,8 @@ export function resolveCanonicalGitRepositoryIdentitySync(
 	run: GitSyncRunner = execFileSync as unknown as GitSyncRunner,
 ): string | undefined {
 	try {
-		const output = run("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true }).trim();
+		// execFileSync otherwise echoes stderr on failure, even when caught below.
+		const output = run("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 		if (output.length === 0 || output.includes("\n") || output.includes("\r")) return undefined;
 		return canonicalRepositoryIdentity(realpathSync(resolve(cwd, output)));
 	} catch {

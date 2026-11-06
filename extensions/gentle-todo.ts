@@ -3,18 +3,26 @@ import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@ea
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
+import { renderPanelRow } from "../lib/shell-panel.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
 import {
 	applyTodo,
 	emptyTodo,
 	renderTodoCard,
+	renderTodoSection,
+	todoCollapseKey,
+	todoWorkSummary,
 	replayTodo,
 	staleTurns,
 	TODO_DETAILS_KEY,
 	TODO_GLYPH,
+	TODO_PROGRESS_EVENT,
 	TODO_TOOL_NAME,
 	todoCardTone,
+	TODO_CLOSED_STATE,
+	todoProgress,
 	todoPromptBlock,
 	todoStateMessage,
 	todoSummary,
@@ -26,15 +34,15 @@ import {
 // Gentle Shell card above the editor. Three things keep it current that a
 // static tool description cannot: `write` replaces the whole list in one
 // call, each run's system prompt carries a byte-stable rules block while the
-// open tasks reach the model as a request-local trailing message (so list
-// changes never invalidate the cached prompt prefix, gentle-shell#1662), and
+// open tasks reach the model as a hidden transcript message appended when the
+// list changes (so list changes never invalidate the cached prompt prefix and
+// requests stay append-only, gentle-shell#1662, #2195), and
 // a list that goes untouched while tasks stay open is marked stale for the
 // human. Long runs also receive one request-local reminder after several
 // tool-use turns, without waking the agent or changing tasks.
 
 const WIDGET_KEY = "gentle-todo";
 const STATUS_ENUM = ["pending", "in_progress", "blocked", "done", "dropped"];
-const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
 const REMIND_AFTER_TOOL_TURNS = 4;
 const TODO_REMINDER = "The todo plan has not been reviewed during several tool-use turns. Check whether it still matches the work performed and update tasks where needed. Do not mark work done without verification.";
 const TOOL_PARAMETERS = {
@@ -71,11 +79,8 @@ export function todoEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 	return !(value === "0" || value === "false" || value === "off");
 }
 
-export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const value = env.GENTLE_PI_TODO_KEY?.trim();
-	if (value === undefined) return COLLAPSE_KEY_DEFAULT;
-	return value === "" || value.toLowerCase() === "off" ? undefined : value;
-}
+// The collapse key moved to lib/shell-todo.ts so the rail's key hints can read it.
+export { todoCollapseKey } from "../lib/shell-todo.ts";
 
 interface TodoSession {
 	state: TodoState;
@@ -87,6 +92,10 @@ interface TodoSession {
 	collapsed: boolean;
 	/** A finished list stays on screen for the turn it finished in, then clears. */
 	clearOnNextTurn: boolean;
+	/** The last state snapshot sent to the transcript. */
+	lastSent: string | undefined;
+	/** A snapshot queued during the current turn; Pi appends it at turn_end. */
+	pending: string | undefined;
 	ui: ExtensionContext["ui"] | undefined;
 	host: { requestRender(): void } | undefined;
 	tui: TUI | undefined;
@@ -101,16 +110,25 @@ function sessionKey(ctx: ExtensionContext): string {
 export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
 	if (!todoEnabled(env)) return;
 	const sessions = new Map<string, TodoSession>();
-	const collapseKey = todoCollapseKey(env);
+	const collapseKey = todoCollapseKey(env, loadKeymaps(env).bindings);
 
 	const session = (ctx: ExtensionContext): TodoSession => {
 		const key = sessionKey(ctx);
 		let current = sessions.get(key);
 		if (!current) {
-			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, ui: undefined, host: undefined, tui: undefined };
+			current = { state: emptyTodo(), turn: 0, toolTurnsSinceWrite: 0, reminded: false, wroteThisTurn: false, collapsed: false, clearOnNextTurn: false, lastSent: undefined, pending: undefined, ui: undefined, host: undefined, tui: undefined };
 			sessions.set(key, current);
 		}
 		return current;
+	};
+
+	// While the agent streams, Pi appends this hidden message at turn_end, after
+	// the tool results and before the next model request; it never starts a turn.
+	const persistState = (current: TodoSession, state: string) => {
+		if (!pi.sendMessage) return;
+		pi.sendMessage({ customType: "gentle-todo-state", content: state, display: false }, { triggerTurn: false });
+		current.lastSent = state;
+		current.pending = state;
 	};
 
 	const toggle = (current: TodoSession) => {
@@ -119,7 +137,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.host?.requestRender();
 	};
 
-	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void } => {
+	const todoCard = (current: TodoSession, theme: Parameters<typeof renderTodoCard>[1], spacer: boolean): Component & { dispose(): void; digest(): string; scrollBy(lines: number): void; surface?: "panel"; summary?(): ReturnType<typeof todoWorkSummary> } => {
 		let hovered = false;
 		let body: string[] = [];
 		let collapsed = current.collapsed;
@@ -139,14 +157,30 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const card: Component = {
 			render(width: number) {
 				const stale = staleTurns(current.state, current.turn);
-				headerRow = panelHeaderRow(theme, width, todoCardTone(stale));
-				const lines = renderTodoCard(current.state, theme, width, {
-					collapsed: current.collapsed,
-					staleTurns: stale,
-					collapseKey,
-					hovered,
-					scrollable: true,
-				});
+				// The fullscreen rail draws a panel section (header row, task rows, no
+				// closing rule); the bottom widget keeps the card with its chrome.
+				let head: string[];
+				let foot: string[];
+				if (spacer) {
+					headerRow = panelHeaderRow(theme, width, todoCardTone(stale));
+					const lines = renderTodoCard(current.state, theme, width, {
+						collapsed: current.collapsed,
+						staleTurns: stale,
+						collapseKey,
+						hovered,
+						scrollable: true,
+					});
+					const bodyStart = headerRow === 1 ? 3 : 1;
+					head = lines.slice(0, bodyStart);
+					body = lines.slice(bodyStart, -1);
+					foot = lines.slice(-1);
+				} else {
+					headerRow = 0;
+					const section = renderTodoSection(current.state, theme, width, { collapsed: current.collapsed, staleTurns: stale, hovered, ...(collapseKey ? { collapseKey } : {}) });
+					head = section.header ? [section.header] : [];
+					body = section.body;
+					foot = [];
+				}
 				if (collapsed !== current.collapsed) {
 					collapsed = current.collapsed;
 					scroll.scrollToStart();
@@ -155,14 +189,16 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 				// on every render so a mobile resize immediately releases chat space.
 				const terminalRows = current.tui?.terminal?.rows ?? 48;
 				const height = Math.min(16, Math.floor(terminalRows / 3));
-				const bodyStart = headerRow === 1 ? 3 : 1;
-				body = lines.slice(bodyStart, -1);
-				const overflow = !current.collapsed && lines.length + Number(spacer) > height;
-				const room = Math.max(1, height - bodyStart - 1 - Number(spacer) - Number(overflow));
+				if (head.length === 0) return [];
+				const overflow = !current.collapsed && head.length + body.length + foot.length + Number(spacer) > height;
+				const room = Math.max(1, height - head.length - foot.length - Number(spacer) - Number(overflow));
 				scroll.updateLayout(body.length, current.collapsed ? body.length : room, () => current.host?.requestRender());
 				const visible = scroll.render(width).slice(scroll.scrollTop, scroll.scrollTop + scroll.viewportHeight);
-				const output = [...lines.slice(0, bodyStart), ...visible, ...lines.slice(-1)];
-				if (overflow) output.push(theme.fg("muted", truncateToWidth(`↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · ctrl+shift+↑/↓`, width)));
+				const output = [...head, ...visible, ...foot];
+				if (overflow) {
+					const position = `↑↓ ${scroll.scrollTop + 1}–${scroll.scrollTop + visible.length}/${body.length} · alt+shift+↑/↓`;
+					output.push(spacer ? theme.fg("muted", truncateToWidth(position, width)) : renderPanelRow(width, theme.fg("muted", position)));
+				}
 				return spacer && output.length > 0 ? [...output, ""] : output;
 			},
 			invalidate() {
@@ -199,6 +235,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			scrollBy,
 			// Sidebar caches must observe height-only resizes and local viewport
 			// changes, even when terminal width and task content stay the same.
+			...(spacer ? {} : { surface: "panel" as const, summary: () => todoWorkSummary(current.state, theme) }),
 			digest: () => JSON.stringify([current.tui?.terminal?.rows, current.collapsed, current.turn, hovered, scroll.scrollTop]),
 			render: (width) => region.render(width),
 			handleMouse: (event) => region.handleMouse(event),
@@ -265,6 +302,11 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 					current.toolTurnsSinceWrite = 0;
 					current.reminded = false;
 					current.wroteThisTurn = true;
+					// A closed list persists the closing marker, so the last open
+					// snapshot in the transcript never reads as current work.
+					const state = todoStateMessage(current.state) ?? (current.lastSent === undefined ? undefined : TODO_CLOSED_STATE);
+					if (state !== undefined && state !== current.lastSent) persistState(current, state);
+					pi.events?.emit(TODO_PROGRESS_EVENT, todoProgress(current.state, ctx.sessionManager.getSessionId()));
 				}
 				if (current.tui) invalidateSidebar(current.tui);
 			}
@@ -303,6 +345,8 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		current.toolTurnsSinceWrite = 0;
 		current.reminded = false;
 		current.wroteThisTurn = false;
+		current.lastSent = undefined;
+		current.pending = undefined;
 		current.ui = ctx.hasUI ? ctx.ui : undefined;
 		show(current);
 	});
@@ -335,17 +379,27 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.toolTurnsSinceWrite += 1;
 		}
 		current.wroteThisTurn = false;
+		// Pi flushes the queued snapshot right after this event.
+		current.pending = undefined;
 	});
 
 	pi.on("context", (event, ctx) => {
 		const current = session(ctx);
-		// Context transforms are request-local: no transcript entry, UI
-		// notification, continuation or provider-specific wake is needed. The
-		// current list trails the transcript (gentle-shell#1662), then the
-		// one-shot reminder when it is due.
+		// gentle-shell#1662, #2195: providers cache the request prefix up to the
+		// last message (Anthropic) or send only the delta after the previous input
+		// (openai-codex), so a trailing message that the next request drops breaks
+		// both. The list is persisted when it changes; this transform only covers a
+		// transcript that lacks the current snapshot (compaction, branch navigation,
+		// sessions recorded earlier): it trails this one request and persists the
+		// snapshot once, so the following requests are append-only again.
 		const trailing: Array<{ role: "custom"; customType: string; content: string; display: false; timestamp: number }> = [];
-		const state = todoStateMessage(current.state);
-		if (state !== undefined) trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
+		const last = [...event.messages].reverse().find((message) => (message as { customType?: string }).customType === "gentle-todo-state") as { content?: unknown } | undefined;
+		const seen = typeof last?.content === "string" ? last.content : undefined;
+		const state = todoStateMessage(current.state) ?? (seen === undefined || seen === TODO_CLOSED_STATE ? undefined : TODO_CLOSED_STATE);
+		if (state !== undefined && seen !== state) {
+			trailing.push({ role: "custom", customType: "gentle-todo-state", content: state, display: false, timestamp: Date.now() });
+			if (current.pending !== state) persistState(current, state);
+		}
 		const actionable = current.state.tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		if (!current.reminded && current.toolTurnsSinceWrite >= REMIND_AFTER_TOOL_TURNS && actionable) {
 			current.reminded = true;

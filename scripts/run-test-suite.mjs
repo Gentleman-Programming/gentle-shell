@@ -10,7 +10,7 @@
 // POSIX and Windows CI.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,15 +22,47 @@ export const DEFAULT_STAGES = Object.freeze([
 ]);
 
 export async function runStage(stage) {
-	// Unit fixtures must not inherit the terminal's Git overrides, child-session
-	// identity, or personal guardrails. Other stages retain their existing env.
-	const configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-config-")) : undefined;
-	const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
-		const normalizedKey = key.toUpperCase();
-		return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") && normalizedKey !== "GENTLE_PI_CONFIG_HOME";
-	})) : process.env;
-	if (configHome) env.GENTLE_PI_CONFIG_HOME = configHome;
+	let configHome;
+	let unitTmp;
 	try {
+		// Unit fixtures must not inherit the terminal's Git overrides, child-session
+		// identity, launcher marker, or guardrails. Later stages retain their env.
+		configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-config-")) : undefined;
+		const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
+			const normalizedKey = key.toUpperCase();
+			return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") &&
+				normalizedKey !== "GENTLE_PI_CONFIG_HOME" && normalizedKey !== "GENTLE_SHELL_CONFIG_HOME";
+		})) : process.env;
+		if (configHome) env.GENTLE_PI_CONFIG_HOME = configHome;
+		// Unix sockets have short path limits; an inherited TMPDIR can already be
+		// too long. Use the short system temp root on POSIX and a private directory
+		// on every platform, removed even when stage setup or execution fails.
+		unitTmp = configHome ? mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "gentle-pi-unit-tmp-")) : undefined;
+		if (unitTmp) {
+			env.TMPDIR = unitTmp;
+			// Node's Windows tmpdir() uses TEMP/TMP, not TMPDIR.
+			if (process.platform === "win32") {
+				for (const key of Object.keys(env)) if (["TEMP", "TMP"].includes(key.toUpperCase())) delete env[key];
+				env.TEMP = unitTmp;
+				env.TMP = unitTmp;
+			}
+		}
+		// Stripping GIT_* environment still leaves Git's config files, which it reads
+		// by path: a host-level global ignore (e.g. ".agents/" in ~/.gitconfig or the
+		// XDG ignore file) made `git add -A` inside fixtures drop an untracked
+		// symlink target, so the candidate view materialized a dangling link and the
+		// suite saw an ENOENT (gentle-shell#2552). Pin every remaining config source
+		// to an empty file for the stage; fixtures that need identity pass -c flags.
+		if (configHome) {
+			const emptyGitConfig = join(configHome, "empty.gitconfig");
+			writeFileSync(emptyGitConfig, "");
+			env.GIT_CONFIG_GLOBAL = emptyGitConfig;
+			env.GIT_CONFIG_NOSYSTEM = "1";
+			// An empty GIT_CONFIG_GLOBAL does not disable Git's default ignore file:
+			// it still reads $XDG_CONFIG_HOME/git/ignore, so a host ignore (e.g.
+			// ".agents/") would keep dropping fixture files from `git add -A`.
+			env.XDG_CONFIG_HOME = configHome;
+		}
 		return await new Promise((resolve) => {
 			const child = spawn(stage.command, { shell: true, stdio: "inherit", env });
 			child.on("close", (code) => resolve({ name: stage.name, code: code ?? 1 }));
@@ -41,6 +73,7 @@ export async function runStage(stage) {
 		});
 	} finally {
 		if (configHome) rmSync(configHome, { recursive: true, force: true });
+		if (unitTmp) rmSync(unitTmp, { recursive: true, force: true });
 	}
 }
 

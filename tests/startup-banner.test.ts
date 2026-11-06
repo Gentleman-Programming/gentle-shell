@@ -223,6 +223,16 @@ test("animation modes retain banner lifetime policy, final artwork and approxima
 			}
 			header!.dispose();
 		}
+
+		// Slow device: 5s wall-clock cap hits before animation reaches natural finish.
+		save("quality");
+		await start!({}, ctx); boot!();
+		for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+		clock += 5100;
+		pulse!();
+		assert.equal(active, false, "clears interval on 5s timeout");
+		assert.equal(stripAnsi(header!.render(200).join("\n")), staticArt, "fast-forwards to complete static artwork on 5s timeout without frozen letters or sparkle");
+		header!.dispose();
 	} finally { shutdown!(); }
 });
 
@@ -274,6 +284,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				if (width >= 160) {
 					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
+				} else if (width === 80 && showTextLogo) {
+					assert.match(text, /✿ Gentle Shell ✿/, "narrow terminal shows graceful fallback branding");
 				}
 				assert.match(lines.join("\n"), /\x1b\[38;2;85;170;205m/, "startup labels use the saved cyan palette");
 			}
@@ -290,7 +302,11 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 			t.mock.timers.tick(150);
 			const minimal = stripAnsi(header!.render(80).join("\n"));
 			assert.doesNotMatch(minimal, /[\u2800-\u28ff]/);
-			assert.equal(/[▒▄▀█]/.test(minimal), showTextLogo);
+			assert.equal(/✿ Gentle Shell ✿/.test(minimal), showTextLogo);
+			if (showTextLogo) {
+				const wideMinimal = stripAnsi(header!.render(160).join("\n"));
+				assert.equal(/[▒▄▀█]/.test(wideMinimal), true);
+			}
 			assert.deepEqual(writes, [], "Pi owns stdout during startup and resize");
 		} finally {
 			shutdown!();
@@ -462,19 +478,20 @@ test("delegated children never paint the startup banner", async (t) => {
 
 // S9: the config home each of these reads resolves, per case. The OS home is
 // a temporary folder in every case, so no case can reach the real one.
-// "unset" and "empty" are exactly as before: an empty GENTLE_PI_CONFIG_HOME
-// names the current folder. "bundled" stands in for this package running from
+// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
+// counts as unset (#2201; it used to name the current folder). "bundled" stands in for this package running from
 // a bundled install (testing overlay) whose prefix the launcher passed; the
 // user's own GENTLE_PI_CONFIG_HOME is then not this install's.
 type ConfigHomeCase = "unset" | "empty" | "bundled";
 function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
-	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX };
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
 	const cwd = process.cwd();
 	process.env.HOME = join(base, "home");
 	process.env.USERPROFILE = join(base, "home");
 	delete process.env.GENTLE_PI_CONFIG_HOME;
 	delete process.env.GENTLE_SHELL_PREFIX;
+	delete process.env.GENTLE_SHELL_CONFIG_HOME;
 	t.after(() => {
 		process.chdir(cwd);
 		setBundledInstallForTesting(undefined);
@@ -489,7 +506,7 @@ function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHome
 	if (kind === "empty") {
 		mkdirSync(join(base, "cwd"));
 		process.chdir(join(base, "cwd"));
-		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "cwd"), userConfig };
+		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
 	}
 	const prefix = join(base, "prefix");
 	mkdirSync(prefix);
@@ -510,3 +527,43 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
 	});
 }
+
+test("the banner ends with a /gentle:guide reminder on every start, only when the command exists", async (t) => {
+	const home = mkdtempSync(join(tmpdir(), "gp-banner-guide-"));
+	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
+	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		rmSync(home, { recursive: true, force: true });
+	});
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	for (const [key, value] of [["rows", 40], ["columns", 160]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	const render = async (commands: { name: string }[]) => {
+		let start: Function;
+		let header: { render(width: number): string[]; dispose(): void };
+		startup({ on: (name: string, fn: Function) => { if (name === "session_start") start = fn; }, registerCommand() {}, getCommands: () => commands, getAllTools: () => [] } as unknown as ExtensionAPI);
+		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+		} } });
+		t.mock.timers.tick(50);
+		const lines = header!.render(160).map(stripAnsi);
+		header!.dispose();
+		return lines;
+	};
+	const withGuide = await render([{ name: "gentle:guide" }]);
+	assert.equal(withGuide.filter((line) => line.trim() !== "").at(-1)?.trim(), "Tip: run /gentle:guide for a guided tour of Gentle Shell");
+	assert.equal((await render([{ name: "gentle:guide" }])).filter((line) => line.includes("/gentle:guide")).length, 1, "shown again on the next start, once");
+	assert.equal((await render([])).some((line) => line.includes("/gentle:guide")), false);
+});

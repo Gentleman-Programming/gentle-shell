@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { bundledGentlePiConfigHome, runningBundledPrefix } from "./gentle-shell-bundled.ts";
+import { resolveGentlePiConfigHome, runningBundledPrefix } from "./gentle-shell-bundled.ts";
+
+export { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 
 // Pi Subagents resolves its global directory as `PI_CODING_AGENT_DIR || ~/.pi/agent`,
 // so an empty value must fall through here too or the two homes diverge again.
@@ -12,9 +14,12 @@ export function resolveGentlePiAgentHome(env: NodeJS.ProcessEnv = process.env): 
 // commands own lives here. It is defined once because the launch-time profile pin
 // resolver reads the same profiles store the `/gentle:profiles` panel writes, and
 // two spellings of the override would silently read two different stores.
-// A bundled Gentle Shell keeps it inside its prefix (S9, bundledGentlePiConfigHome).
+// A bundled Gentle Shell keeps it inside its prefix (S9, bundledGentlePiConfigHome),
+// the standalone launcher's isolated home next to its agent dir (#2201). The rule
+// itself lives in resolveGentlePiConfigHome, a generated runtime module, so the
+// launcher and the Gentle AI process environment share it too.
 export function gentlePiConfigHome(env: NodeJS.ProcessEnv = process.env): string {
-	return bundledGentlePiConfigHome(env) ?? (env.GENTLE_PI_CONFIG_HOME || join(homedir(), ".pi", "gentle-ai"));
+	return resolveGentlePiConfigHome(env, homedir());
 }
 
 // The agent home Pi runs with, only in a bundled Gentle Shell (S9): there the

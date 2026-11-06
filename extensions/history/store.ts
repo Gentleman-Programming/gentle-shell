@@ -23,6 +23,12 @@ import {
   type ExtractedPrompt,
 } from "./session-scan.ts";
 
+// Prompts can carry anything pasted into the composer, so the store keeps its
+// files private and the directories it creates owner-only, like the package's
+// other state files. Modes apply on creation; rewrites recreate the file.
+const PRIVATE_DIR = 0o700;
+const PRIVATE_FILE = { encoding: "utf8", mode: 0o600 } as const;
+
 // ===========================================================================
 // Paths (formerly store-paths.ts)
 // ===========================================================================
@@ -107,8 +113,8 @@ function readRegistry(root: string): RegistryData {
 function writeRegistryAtomic(root: string, data: RegistryData): void {
   const target = registryPath(root);
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+  fs.mkdirSync(root, { recursive: true, mode: PRIVATE_DIR });
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", PRIVATE_FILE);
   fs.renameSync(tmp, target);
 }
 
@@ -250,8 +256,8 @@ export function appendSessionCapture(
 
   const entry: StoreEntry = { v: 1, text };
   if (ts !== undefined) entry.ts = ts;
-  fs.mkdirSync(path.dirname(state.filePath), { recursive: true });
-  fs.appendFileSync(state.filePath, serializeEntry(entry) + "\n", "utf8");
+  fs.mkdirSync(path.dirname(state.filePath), { recursive: true, mode: PRIVATE_DIR });
+  fs.appendFileSync(state.filePath, serializeEntry(entry) + "\n", PRIVATE_FILE);
   state.lineCount += 1;
 }
 
@@ -524,7 +530,7 @@ function sweepFile(file: string, key: string): number {
     }
     if (removed === 0) return 0;
     tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(tmp, kept.length > 0 ? kept.join("\n") + "\n" : "", "utf8");
+    fs.writeFileSync(tmp, kept.length > 0 ? kept.join("\n") + "\n" : "", PRIVATE_FILE);
     fs.renameSync(tmp, file);
     tmp = null;
     // Lines another instance appended to the replaced inode since the read.
@@ -556,14 +562,14 @@ function sweepFile(file: string, key: string): number {
  */
 function carryIntoRewrite(file: string, carried: Buffer): void {
   try {
-    fs.appendFileSync(file, carried);
+    fs.appendFileSync(file, carried, { mode: 0o600 });
   } catch {
     trimTornTail(file);
     const text = carried.toString("utf8");
     fs.writeFileSync(
       `${file}.carry-${process.pid}-${Date.now()}.jsonl`,
       text.endsWith("\n") ? text : `${text}\n`,
-      { flag: "wx" },
+      { flag: "wx", mode: 0o600 },
     );
   }
 }
@@ -686,10 +692,10 @@ export function migrateLegacyStores(
   agentDir: string,
 ): MigrationResult {
   const seed = globalSeedPath(root);
-  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(root, { recursive: true, mode: PRIVATE_DIR });
   const lock = `${seed}.migration-lock`;
   try {
-    fs.mkdirSync(lock);
+    fs.mkdirSync(lock, { mode: PRIVATE_DIR });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       return { migrated: 0, ran: false };
@@ -748,7 +754,7 @@ function migrateLegacyStoresLocked(seed: string, agentDir: string): MigrationRes
   fs.writeFileSync(
     tmp,
     [...existing, ...collected].map((e) => JSON.stringify(e)).join("\n") + "\n",
-    "utf8",
+    PRIVATE_FILE,
   );
   fs.renameSync(tmp, seed);
 
@@ -861,12 +867,12 @@ export function bootstrapProjectSeed(
 
   collected.reverse(); // chronological (oldest first)
   const seed = seedFilePath(root, cwd);
-  fs.mkdirSync(path.dirname(seed), { recursive: true });
+  fs.mkdirSync(path.dirname(seed), { recursive: true, mode: PRIVATE_DIR });
   const tmp = `${seed}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(
     tmp,
     collected.map((e) => JSON.stringify(e)).join("\n") + "\n",
-    "utf8",
+    PRIVATE_FILE,
   );
   fs.renameSync(tmp, seed);
   return { seeded: collected.length, ran: true };

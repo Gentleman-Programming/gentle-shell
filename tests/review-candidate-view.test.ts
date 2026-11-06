@@ -268,7 +268,7 @@ test("private candidate owner ignores a spoofed SystemRoot when invoking Windows
 	const execFile = childProcess.execFileSync;
 	const aclExecutables: string[] = [];
 	t.mock.method(childProcess, "execFileSync", (file, arguments_, options) => {
-		if (typeof file === "string" && /\\(?:whoami|icacls)\.exe$/i.test(file)) {
+		if (typeof file === "string" && /\\(?:whoami|icacls|powershell)\.exe$/i.test(file)) {
 			aclExecutables.push(file);
 			assert.equal(file.toLowerCase().startsWith(spoofedSystemRoot.toLowerCase()), false);
 		}
@@ -730,6 +730,31 @@ test("owner preparation failure names the transient cause code in the wrapper me
 		() => new CandidateViewRegistry().create({ contributorRoot: cwd }),
 		(error: unknown) => error instanceof CandidateViewError && error.reason === "candidate-owner-preparation-failed" && error.cause instanceof Error && (error.cause as NodeJS.ErrnoException).code === "ETIMEDOUT" && /candidate view owner preparation failed \(ETIMEDOUT\)$/.test(error.message),
 	);
+});
+
+test("owner preparation failure surfaces a denial code and omits a code outside the bounded set", (t) => {
+	const cwd = repository(t);
+	let code = "EACCES";
+	t.mock.method(fs, "fsyncSync", () => {
+		const error = new Error("fixture denial") as NodeJS.ErrnoException;
+		error.code = code;
+		throw error;
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+	const messageFor = (): string => {
+		try {
+			new CandidateViewRegistry().create({ contributorRoot: cwd });
+		} catch (error) {
+			assert.ok(error instanceof CandidateViewError);
+			assert.equal(error.reason, "candidate-owner-preparation-failed");
+			return error.message;
+		}
+		throw new Error("owner preparation was expected to fail");
+	};
+	assert.equal(messageFor(), "candidate view owner preparation failed (EACCES)");
+	code = "ENOSPC";
+	assert.equal(messageFor(), "candidate view owner preparation failed");
 });
 
 test("ordinary cleanup preserves mismatched owner and cleanupAll continues other records", (t) => {
@@ -1326,6 +1351,55 @@ test("candidate view recursively protects nested content and worktree metadata, 
 	}
 });
 
+// macOS File Provider (iCloud-synced Desktop/Documents) asynchronously resets
+// directory modes to exactly 0700 while leaving file modes intact.
+function simulateFileProviderDirectoryReset(root: string, directories: readonly string[]): void {
+	for (const directory of directories) chmodSync(join(root, directory), 0o700);
+}
+
+test("candidate view repairs owner-only directories reset by macOS File Provider and stays verifiable", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested", "deeper"), { recursive: true });
+	writeFileSync(join(contributorRoot, "nested", "deeper", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		simulateFileProviderDirectoryReset(view.root, ["nested/deeper", "nested", "."]);
+		view.verify();
+		for (const directory of [".", "nested", "nested/deeper"]) assert.equal(lstatSync(join(view.root, directory)).mode & 0o777, 0o555, directory);
+		assert.equal(lstatSync(join(view.root, "nested", "deeper", "candidate.txt")).mode & 0o777, 0o444);
+	} finally {
+		view.cleanup();
+	}
+});
+
+test("candidate view does not repair owner-only directories carrying special mode bits", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"), { recursive: true });
+	writeFileSync(join(contributorRoot, "nested", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		chmodSync(join(view.root, "nested"), 0o1700);
+		assert.throws(() => view.verify(), /candidate view directory is unsafe or writable/);
+	} finally {
+		view.cleanup();
+	}
+});
+
+test("candidate view refuses an ignored entry injected into an owner-only directory it would repair", { skip: process.platform === "win32" }, (t) => {
+	const contributorRoot = repository(t);
+	mkdirSync(join(contributorRoot, "nested"), { recursive: true });
+	writeFileSync(join(contributorRoot, ".gitignore"), "*.log\n");
+	writeFileSync(join(contributorRoot, "nested", "candidate.txt"), "candidate\n");
+	const view = createCandidateView({ contributorRoot });
+	try {
+		simulateFileProviderDirectoryReset(view.root, ["nested"]);
+		writeFileSync(join(view.root, "nested", "injected.log"), "injected\n");
+		assert.throws(() => view.verify(), /candidate view directory contains unexpected entries/);
+	} finally {
+		view.cleanup();
+	}
+});
+
 test("candidate view registry rejects unsafe, moved, writable, stale, and unselected lens contexts before dispatch", (t) => {
 	const contributorRoot = repository(t);
 	writeFileSync(join(contributorRoot, "tracked.txt"), "candidate\n");
@@ -1845,15 +1919,41 @@ test("candidate view accepts internal relative symlink targets and rejects unsaf
 		accepted.cleanup();
 	}
 
+	// Issue #1811: symlink targets with a single trailing slash pointing to directories are valid POSIX paths
+	const trailingSlashRoot = repository(t);
+	const trailingSlashTarget = "../../.agents/skills/example/";
+	const trailingSlashLink = join(trailingSlashRoot, ".agent", "skills", "example");
+	mkdirSync(join(trailingSlashRoot, ".agents", "skills", "example"), { recursive: true });
+	mkdirSync(join(trailingSlashRoot, ".agent", "skills"), { recursive: true });
+	writeFileSync(join(trailingSlashRoot, ".agents", "skills", "example", "SKILL.md"), "example\n");
+	try {
+		symlinkSync(trailingSlashTarget, trailingSlashLink);
+	} catch {
+		t.skip("platform does not support symlinks");
+		return;
+	}
+	const trailingAccepted = createCandidateView({ contributorRoot: trailingSlashRoot });
+	try {
+		assert.equal(lstatSync(trailingSlashLink).isSymbolicLink(), true);
+		assert.equal(readFileSync(join(trailingAccepted.root, ".agent", "skills", "example", "SKILL.md"), "utf8"), "example\n");
+		trailingAccepted.verify();
+	} finally {
+		trailingAccepted.cleanup();
+	}
+
 	for (const [name, target] of [
 		["escape", "../escape"],
+		["escape with trailing slash", "../escape/"],
 		["absolute", "/absolute-target"],
 		["Windows drive absolute", "C:/absolute-target"],
 		["lowercase Windows drive absolute", "c:/absolute-target"],
 		["metadata", ".git"],
+		["metadata with trailing slash", ".git/"],
 		["control", "unsafe\ntarget"],
 		["backslash", "unsafe\\target"],
 		["empty segment", "unsafe//target"],
+		["multiple trailing slashes", "unsafe//"],
+		["current directory with trailing slash", "./"],
 	] as const) {
 		const contributorRoot = repository(t);
 		try {

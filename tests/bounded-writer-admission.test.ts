@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
@@ -82,9 +82,17 @@ test("explicit review protects canonical HOME aliases, filesystem root and sensi
 	mkdirSync(home);
 	mkdirSync(join(home, ".ssh"));
 	symlinkSync(home, alias);
-	const previous = process.env.HOME;
+	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+		if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+		rmSync(root, { recursive: true, force: true });
+	});
+	// Node resolves the home from USERPROFILE on Windows and HOME on POSIX.
 	process.env.HOME = home;
-	t.after(() => { if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous; rmSync(root, { recursive: true, force: true }); });
+	process.env.USERPROFILE = home;
+	assert.equal(realpathSync(homedir()), home, "the protected home must be the isolated fixture");
 	let calls = 0;
 	const native = { reviewMode: async () => ({ operation: "status", status: { effective: "on", source: "global", global: "on", cloneLocal: "" } }), targetStatus: async () => { calls++; throw new Error("protected native invocation"); } } as unknown as NativeReviewCli;
 	for (const target of [home, alias, "/", join(home, ".ssh")]) {

@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection, parseChildPackageInjection } from "../lib/child-package-injection.ts";
 import {
+	GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV,
 	MIN_PI_VERSION,
+	withLauncherPackagesExcluded,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	PI_SUBCOMMANDS,
 	buildPiInvocation,
@@ -37,6 +39,7 @@ import {
 	userPiHome,
 	resolvePiRuntime,
 	restoreJsonField,
+	separateHomeHint,
 	settingsDeclareGentlePi,
 	shellQuote,
 	type PackageJsonPeerShape,
@@ -210,13 +213,49 @@ test("help text documents the bundled upgrade, its rollback and the pinned Pi up
 	const text = helpText();
 	assert.ok(text.includes("       gentle-shell upgrade --rollback"));
 	assert.match(text, /bundled install.*release channel only.*--rollback switches back to the previous kept version/s);
-	assert.match(text, /In a bundled install Pi ships pinned: 'update' without a package\n\s+runs 'gentle-shell upgrade'/);
+	assert.match(text, /In a bundled install 'update' installs the newest stable Pi\n\s+without the release's verified lockfile; --latest is an alias\./);
+	assert.match(text, /--all also updates extensions; explicit package pins remain pinned\./);
+	assert.match(text, /--force is not supported for managed Pi self updates\./);
 });
 
 test("parseLauncherArgs treats home as a plain passthrough token when it is not argv[0]", () => {
 	const parsed = parseLauncherArgs(["--isolated", "home"]);
 	assert.equal(parsed.command, undefined);
 	assert.deepEqual(parsed.passthrough, ["home"]);
+});
+
+test("parseLauncherArgs accepts home selectors ahead of home import-pi only", () => {
+	const link = parseLauncherArgs(["--link", "home", "import-pi"]);
+	assert.equal(link.link, true);
+	assert.equal(link.command, "home");
+	assert.deepEqual(link.commandArgs, ["import-pi"]);
+	assert.deepEqual(link.passthrough, []);
+	const path = parseLauncherArgs(["--home", "/x", "home", "import-pi", "--dry-run"]);
+	assert.equal(path.home, "/x");
+	assert.equal(path.command, "home");
+	assert.deepEqual(path.commandArgs, ["import-pi", "--dry-run"]);
+	const first = parseLauncherArgs(["home", "import-pi", "--dry-run"]);
+	assert.equal(first.command, "home");
+	assert.deepEqual(first.commandArgs, ["import-pi", "--dry-run"]);
+	// Anything else after a selector stays pi's, as before.
+	assert.deepEqual(parseLauncherArgs(["--link", "home", "link"]).passthrough, ["home", "link"]);
+	assert.deepEqual(parseLauncherArgs(["-p", "home", "import-pi"]).passthrough, ["-p", "home", "import-pi"]);
+});
+
+test("help text documents gentle-shell home import-pi", () => {
+	const text = helpText();
+	assert.ok(text.includes("       gentle-shell [home selectors] home import-pi [--dry-run]"));
+	assert.match(text, /import-pi\s+Copy your pi sign-ins \(auth\.json\) and MCP servers \(mcp\.json\)/);
+});
+
+test("separateHomeHint mentions home import-pi only when the user's pi home has sign-ins", () => {
+	const isolated: ResolvedHome = { mode: "isolated", dir: "/h/.gentle-shell/agent", source: "default" };
+	const without = separateHomeHint(isolated, { piSignIns: false });
+	assert.equal(without, "gentle-shell: using a separate home at /h/.gentle-shell/agent. Run 'gentle-shell --link' to reuse your pi sign-ins and chats.");
+	const withSignIns = separateHomeHint(isolated, { piSignIns: true });
+	assert.match(withSignIns, /Run 'gentle-shell --link' to reuse your pi sign-ins and chats, or 'gentle-shell home import-pi' to copy your sign-ins and MCP servers into this home\.$/);
+	const path = separateHomeHint({ mode: "path", dir: "/custom", source: "flag" }, { piSignIns: true });
+	assert.match(path, /'gentle-shell --home \/custom home import-pi'/);
 });
 
 // --- setup subcommand ----------------------------------------------------
@@ -305,6 +344,19 @@ test("parseLauncherArgs recognises a pi subcommand as the first token after --",
 	const parsed = parseLauncherArgs(["--", "install", "npm:x"]);
 	assert.equal(parsed.piSubcommand, "install");
 	assert.deepEqual(parsed.passthrough, ["install", "npm:x"]);
+});
+
+test("parseLauncherArgs keeps a separator that follows a pi subcommand (#2140)", () => {
+	const parsed = parseLauncherArgs(["mcp", "add", "demo", "--", "npx", "demo-server"]);
+	assert.equal(parsed.piSubcommand, "mcp");
+	assert.deepEqual(parsed.passthrough, ["mcp", "add", "demo", "--", "npx", "demo-server"]);
+});
+
+test("parseLauncherArgs still consumes a later separator when no pi subcommand started", () => {
+	const parsed = parseLauncherArgs(["hello", "--", "--link"]);
+	assert.equal(parsed.piSubcommand, undefined);
+	assert.equal(parsed.link, false);
+	assert.deepEqual(parsed.passthrough, ["hello", "--link"]);
 });
 
 test("parseLauncherArgs errors when --link is combined with --isolated", () => {
@@ -1223,6 +1275,21 @@ test("package injection relies on Pi's -e resource discovery in isolated and tak
 const linkHome: ResolvedHome = { mode: "link", dir: "/pi/agent", source: "flag" };
 const isolatedHomeResolved: ResolvedHome = { mode: "isolated", dir: "/gentle-shell/agent", source: "default" };
 
+test("buildPiInvocation activates program identity only in its child environment", () => {
+	for (const home of [linkHome, isolatedHomeResolved]) {
+		const baseEnv = Object.freeze({ PATH: "/usr/bin", PI_PROGRAM_STATUS_APP: "pi", PI_PROGRAM_STATUS: "0" });
+		const built = buildPiInvocation({
+			runtime: { kind: "path", command: "/usr/bin/pi", args: [] }, home,
+			packageRoot: "/pkg", declaration: { kind: "npm" }, takeOver: false,
+			otherPackagePaths: [], passthrough: [], baseEnv, homedir: "/home/u", cwd: "/work",
+		});
+		assert.equal(built.env.PI_PROGRAM_STATUS_APP, "gentle-shell");
+		assert.equal(built.env.PI_PROGRAM_STATUS, "0");
+		assert.equal(built.env.PI_CODING_AGENT_DIR, home.dir);
+		assert.deepEqual(baseEnv, { PATH: "/usr/bin", PI_PROGRAM_STATUS_APP: "pi", PI_PROGRAM_STATUS: "0" });
+	}
+});
+
 test("buildPiInvocation injects the launcher env into baseEnv", () => {
 	const built = buildPiInvocation({
 		runtime: { kind: "path", command: "/usr/bin/pi", args: [] },
@@ -1236,7 +1303,7 @@ test("buildPiInvocation injects the launcher env into baseEnv", () => {
 		homedir: "/home/u",
 		cwd: "/work",
 	});
-	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
+	assert.deepEqual(built.env, { PATH: "/usr/bin", PI_CODING_AGENT_DIR: "/pi/agent", PI_PROGRAM_STATUS_APP: "gentle-shell", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent") });
 });
 
 test("buildPiInvocation skips injection when there is a declaration and no takeover (npm matches the launcher's own install)", () => {
@@ -1312,6 +1379,7 @@ test("buildPiInvocation still injects the launcher env for a pi subcommand", () 
 	assert.deepEqual(built.env, {
 		PATH: "/usr/bin",
 		PI_CODING_AGENT_DIR: "/gentle-shell/agent",
+		PI_PROGRAM_STATUS_APP: "gentle-shell",
 		GENTLE_PI_AGENT_HOME: "/gentle-shell/agent",
 		GENTLE_SHELL_USER_PI_HOME: join("/home/u", ".pi", "agent"),
 	});
@@ -1333,7 +1401,7 @@ test("buildPiInvocation in link mode with a pi subcommand is exactly pi <subcomm
 	});
 	assert.equal(built.command, "/usr/bin/pi");
 	assert.deepEqual(built.args, ["auth", "status"]);
-	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
+	assert.deepEqual(built.env, { PI_CODING_AGENT_DIR: "/pi/agent", PI_PROGRAM_STATUS_APP: "gentle-shell", GENTLE_PI_AGENT_HOME: "/pi/agent", GENTLE_SHELL_USER_PI_HOME: "/pi/agent" });
 });
 
 // The isolated home overrides PI_CODING_AGENT_DIR for the session, so the
@@ -1840,8 +1908,34 @@ test("quoteForCmdExe leaves a plain token untouched", () => {
 	assert.equal(quoteForCmdExe("pi"), "pi");
 });
 
-test("quoteForCmdExe quotes a token with a space and escapes an inner double quote", () => {
-	assert.equal(quoteForCmdExe('say "hi" now'), '"say \\"hi\\" now"');
+test("quoteForCmdExe quotes a token with a space and the other cmd.exe specials", () => {
+	assert.equal(quoteForCmdExe("say hi now"), '"say hi now"');
+	assert.equal(quoteForCmdExe("a&b"), '"a&b"');
+});
+
+// cmd.exe has no backslash escape: a `"` inside a quoted token ends the
+// quoted section, so everything after it is parsed as command syntax. The
+// simple quoting cannot represent such a token, so it refuses it instead of
+// emitting a command line that lets the argument inject commands.
+test("quoteForCmdExe rejects a token with a double quote", () => {
+	for (const token of ['say "hi" now', 'x" & whoami & rem "', '"', 'a"b']) {
+		assert.throws(() => quoteForCmdExe(token), /double quote/);
+	}
+});
+
+test("planSpawn refuses a win32 .cmd launch whose argument carries a double quote", () => {
+	const hostile = 'x" & whoami & rem "';
+	for (const command of ["C:\\Program Files\\nodejs\\pi.cmd", "C:\\pi\\pi.BAT"]) {
+		assert.throws(() => planSpawn({ command, args: ["--version", hostile], platform: "win32" }), /double quote/);
+	}
+	assert.throws(() => planSpawn({ command: 'C:\\pi\\a"b.cmd', args: [], platform: "win32" }), /double quote/);
+});
+
+test("planSpawn passes a double quote through when no cmd.exe command line is built", () => {
+	const args = ["--prompt", 'say "hi"'];
+	assert.deepEqual(planSpawn({ command: "C:\\pi\\pi.exe", args, platform: "win32" }), { command: "C:\\pi\\pi.exe", args, shell: false });
+	assert.deepEqual(planSpawn({ command: "/usr/bin/pi", args, platform: "linux" }), { command: "/usr/bin/pi", args, shell: false });
+	assert.deepEqual(planSpawn({ command: "/usr/local/bin/pi.cmd", args, platform: "darwin" }), { command: "/usr/local/bin/pi.cmd", args, shell: false });
 });
 
 test("quoteForCmdExe quotes an empty token", () => {
@@ -2046,3 +2140,18 @@ test("the isolated-home bootstrap creates ~/.gentle-shell as 0700 under umask 00
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+// #2143: Gentle AI installs npm:gentle-pi into the home only for the launcher
+// to remove it again; a Gentle AI with package exclusion (gentle-ai#5503)
+// skips it, and an older one ignores the variable.
+test("withLauncherPackagesExcluded asks Gentle AI to skip npm:gentle-pi, keeping a caller's own exclusions", () => {
+	assert.equal(GENTLE_AI_PI_EXCLUDE_PACKAGES_ENV, "GENTLE_AI_PI_EXCLUDE_PACKAGES");
+	assert.equal(withLauncherPackagesExcluded({ PATH: "/bin" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:pi-btw,npm:gentle-pi");
+	assert.equal(withLauncherPackagesExcluded({ GENTLE_AI_PI_EXCLUDE_PACKAGES: "npm:gentle-pi, npm:pi-btw" }).GENTLE_AI_PI_EXCLUDE_PACKAGES, "npm:gentle-pi,npm:pi-btw");
+	const input = { PATH: "/bin" };
+	assert.equal(withLauncherPackagesExcluded(input).PATH, "/bin");
+	assert.deepEqual(input, { PATH: "/bin" }, "the caller's env is not mutated");
+});
+

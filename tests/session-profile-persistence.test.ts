@@ -4,6 +4,7 @@ import {
 	SESSION_PROFILE_CUSTOM_TYPE,
 	createSessionProfileBind,
 	createSessionProfileClear,
+	createSessionProfileStartupBind,
 	readSessionProfileEntry,
 	replaySessionProfileBranch,
 } from "../lib/session-profile-persistence.ts";
@@ -330,5 +331,61 @@ test("replay sees only caller-supplied active branch, not siblings or later path
 		status: "bound",
 		entryIndex: 0,
 		binding: bind(),
+	});
+});
+
+// A2 record shapes (gentle-shell#2742, section 3).
+const TEAM = { worker: { model: "provider/team" }, orchestrator: { model: "provider/main" } };
+const teamStartup = <O extends string>(origin: O) => ({ origin, name: "team", modelProfiles: TEAM });
+
+test("writer emits a startup bind per origin with the full definition, orchestrator included", () => {
+	for (const origin of ["local", "repo", "global"] as const) {
+		const payload = createSessionProfileStartupBind(origin, "team", TEAM);
+		assert.deepEqual(payload, { kind: "bind", ...teamStartup(origin) });
+		assert.deepEqual(readSessionProfileEntry(custom(payload)), { status: "bound", binding: payload });
+	}
+	assert.throws(() => createSessionProfileStartupBind("user" as "local", "team", TEAM));
+	assert.throws(() => createSessionProfileStartupBind("global", "../team", TEAM));
+});
+
+test("writer records the startup state on an explicit choice and on a clear", () => {
+	for (const startup of [teamStartup("repo"), "none"] as const) {
+		const payload = createSessionProfileBind("work", {}, startup);
+		assert.deepEqual(payload, { ...bind(), startup });
+		assert.deepEqual(readSessionProfileEntry(custom(payload)), { status: "bound", binding: payload });
+	}
+	assert.deepEqual(createSessionProfileClear("none"), { kind: "clear", startup: "none" });
+	assert.deepEqual(readSessionProfileEntry(custom({ kind: "clear", startup: "none" })), {
+		status: "cleared",
+		startup: "none",
+	});
+	assert.throws(() => createSessionProfileBind("work", {}, teamStartup("user") as never));
+	assert.throws(() => createSessionProfileBind("work", {}, { ...teamStartup("local"), modelProfiles: { worker: "bad model" } } as never));
+});
+
+test("a malformed startup state is ignored, never invalidating the record", () => {
+	const malformed: unknown[] = [
+		null,
+		"other",
+		{},
+		teamStartup("user"),
+		{ ...teamStartup("global"), name: "../team" },
+		{ ...teamStartup("global"), modelProfiles: { worker: "bad model" } },
+		{ origin: "global", name: "team" },
+	];
+	for (const startup of malformed) {
+		assert.deepEqual(readSessionProfileEntry(custom({ ...bind(), startup })), { status: "bound", binding: bind() });
+		assert.deepEqual(readSessionProfileEntry(custom({ kind: "clear", startup })), { status: "cleared" });
+	}
+	// A startup record is its own startup state; a nested one carries no meaning.
+	const startupBind = { kind: "bind", ...teamStartup("global") };
+	assert.deepEqual(readSessionProfileEntry(custom({ ...startupBind, startup: "none" })), {
+		status: "bound",
+		binding: startupBind,
+	});
+	assert.deepEqual(replaySessionProfileBranch([custom(bind()), custom({ kind: "clear", startup: "none" })]), {
+		status: "cleared",
+		startup: "none",
+		entryIndex: 1,
 	});
 });

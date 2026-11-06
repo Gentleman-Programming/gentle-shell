@@ -9,6 +9,7 @@ import {
 	GENTLE_AI_BINARY_MISSING_CODE,
 	GENTLE_AI_DEV_BINARY_ENV,
 	GENTLE_AI_VERSION,
+	binaryDigest,
 	gentleAiDevBinaryRegistrationPath,
 	PackageLocalGentleAiBinaryMissingError,
 	registerGentleAiDevBinary,
@@ -98,7 +99,7 @@ async function writeWindowsSourceBinary(packageRoot: string): Promise<{ binaryPa
 		method: "go-sumdb-source-build",
 		package: "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai",
 		module: "github.com/gentleman-programming/gentle-ai/v4",
-		tag: "v4.1.1",
+		tag: "v4.3.1",
 		architecture: process.arch === "x64" ? "x64" : "arm64",
 		binarySha256: createHash("sha256").update(binary).digest("hex"),
 		moduleChecksum: GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM,
@@ -185,6 +186,7 @@ test("runtime reuses the binary digest while the file is unchanged and re-hashes
 	const countingRead = (path: string) => { reads++; return readFileSync(path); };
 	assert.equal(resolveGentleAiBinary(packageRoot, "win32", countingRead), binaryPath);
 	assert.equal(resolveGentleAiBinary(packageRoot, "win32", countingRead), binaryPath);
+	assert.equal(binaryDigest(binaryPath, countingRead), createHash("sha256").update(readFileSync(binaryPath)).digest("hex"));
 	assert.equal(reads, 1, "an unchanged binary is hashed once");
 	await writeFile(binaryPath, "tampered Windows source build");
 	assert.throws(() => resolveGentleAiBinary(packageRoot, "win32", countingRead), /package-local-binary-missing/);

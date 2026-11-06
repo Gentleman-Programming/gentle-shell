@@ -347,7 +347,7 @@ function windowsNpmInvocation() {
 	throw new Error("could not resolve npm-cli.js without a command shell");
 }
 
-function runNpmWithEnv(arguments_, env, options) {
+export function runNpmWithEnv(arguments_, env, options) {
 	const invocation = process.platform === "win32" ? windowsNpmInvocation() : { file: "npm", prefix: [] };
 	return execFileSync(invocation.file, [...invocation.prefix, ...arguments_], { ...options, env });
 }

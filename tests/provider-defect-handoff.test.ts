@@ -93,7 +93,7 @@ test("orchestrator-delegation.md states the admissibility-before-relay rule", ()
 });
 
 test("orchestrator-delegation.md excludes local consent lifecycle outcomes from provider-defect reporting", () => {
-	assert.match(DELEGATION, /`consent-binding-expired` and `consent-binding-already-consumed` are local lifecycle outcomes, not Gentle AI provider defects/i);
+	assert.match(DELEGATION, /Pending consent has no response deadline\. `consent-binding-already-consumed` is a local lifecycle outcome, not a Gentle AI provider defect/i);
 	assert.match(DELEGATION, /An unknown consent binding is reportable only when independent evidence proves a fresh, same-session, unconsumed binding was lost/i);
 	assert.match(DELEGATION, /Never infer that evidence from the old combined stale-binding message/i);
 });

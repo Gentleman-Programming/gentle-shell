@@ -17,6 +17,7 @@ interface Options {
 	enabled?: boolean; mode?: string; child?: boolean; malformed?: boolean; readError?: boolean; absent?: boolean;
 	deferred?: boolean; slowProbe?: boolean; holdPlayback?: boolean; noUnsubscribe?: boolean; unavailable?: boolean; fail?: boolean;
 	capabilities?: Set<"wav" | "ogg" | "flac">;
+	percent?: number | null; visualNotice?: boolean;
 }
 function harness(options: Options = {}) {
 	const id = options.sessionId ?? `parent-${++nextSession}`;
@@ -39,11 +40,14 @@ function harness(options: Options = {}) {
 	let settings = structuredClone(DEFAULT_NOTIFICATION_SETTINGS);
 	settings.enabled = options.enabled ?? !options.absent; settings.audio.minimumIntervalMs = 0; settings.audio.coalesceWindowMs = 0;
 	settings.audio.events = Object.fromEntries(NOTIFICATION_EVENTS.map(e => [e,
-		e.endsWith("failed") ? "builtin:error" : e === "agent.cancelled" ? "builtin:attention" : "builtin:success"]));
-	// SAFETY: this owner reads only mode, session identity and local notify, never session entries/model APIs.
+		e === "context.high" ? "builtin:attention" : e.endsWith("failed") ? "builtin:error" : e === "agent.cancelled" ? "builtin:attention" : "builtin:success"]));
+	// SAFETY: this owner reads only mode, session identity, context usage and local notify, never session entries/model APIs.
+	let percent: number | null = options.percent ?? null;
 	const ctx = { mode: options.mode ?? "tui", hasUI: true, sessionManager: { getSessionId: () => id },
+		getContextUsage: () => ({ tokens: null, contextWindow: 100, percent }),
 		ui: { notify: (s: string) => notes.push(s) } } as unknown as ExtensionContext;
 	const deps = { now: () => time, env: { GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0", GENTLE_SHELL_INTERACTIVE_HOST: "1" },
+		visualNotice: () => options.visualNotice ?? true,
 		setTimeout: (fn: () => void, delay: number) => { const id = ++nextTimer; timers.set(id, { fn, at: time + delay }); return id; },
 		clearTimeout: (id: number) => { timers.delete(id); },
 		read: () => ({ settings: structuredClone(settings), source: options.absent ? "default" as const : "global_file" as const,
@@ -74,6 +78,7 @@ function harness(options: Options = {}) {
 		for (const [id, timer] of [...timers]) if (timer.at <= time) { timers.delete(id); timer.fn(); }
 	};
 	return { id, pi, ctx, deps, retire, emit, start, source, played, signals, permits, releases, probeReleases, notes, native, bus, timers, advance,
+		setPercent: (value: number | null) => { percent = value; },
 		get probes() { return probes; }, get writes() { return writes; }, get attempts() { return attempts; } };
 }
 const listeners = (map: Map<string, Set<any>>) => [...map.values()].reduce((n, set) => n + set.size, 0);
@@ -104,6 +109,97 @@ test("settled uses latest boundary, never agent_end; fallback only corresponding
 		await h.emit("agent_start"); h.played.length = 0; await h.emit("agent_before_settle", { outcome: "unknown" }); await h.emit("agent_settled");
 		assert.deepEqual(h.played, []); assert.equal(h.native.has("agent_end"), false);
 	} finally { h.retire(); }
+});
+
+test("context.high warns once per high episode and rearms only below the threshold", async () => {
+	const h = harness({ visualNotice: false }); try {
+		await h.start();
+		const warnings = () => h.played.filter(sound => sound === "builtin:attention").length;
+		h.setPercent(90); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(warnings(), 1, "reaching the threshold plays once");
+		h.setPercent(92); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(warnings(), 1, "repeated readings above the threshold stay silent");
+		h.played.length = 0;
+		await h.emit("agent_start", {}); await h.emit("model_select", {});
+		assert.equal(warnings(), 0, "agent_start and model_change re-evaluate without warning again");
+		h.setPercent(40); await h.emit("turn_end", { outcome: "completed" });
+		h.setPercent(95); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(warnings(), 1, "dropping below the threshold rearms a new episode");
+	} finally { h.retire(); }
+});
+
+test("same-session reload preserves the context episode until usage drops below 90%", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		assert.equal(h.played.length, 1); assert.equal(h.notes.length, 1);
+		await h.start("reload"); await h.emit("turn_end");
+		assert.equal(h.played.length, 1, "same-session reload must not repeat audio");
+		assert.equal(h.notes.length, 1, "same-session reload must not repeat the visual notice");
+		h.setPercent(40); await h.emit("turn_end");
+		h.setPercent(93); await h.emit("turn_end");
+		assert.equal(h.played.length, 2); assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
+test("shutdown followed by the same session ID rearms the context episode", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		assert.equal(h.played.length, 1); assert.equal(h.notes.length, 1);
+		await h.emit("session_shutdown", { reason: "reload" });
+		await h.start("reload"); await h.emit("turn_end");
+		assert.equal(h.played.length, 2, "a restarted owner warns even with the same ID");
+		assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
+test("changed session ID without shutdown rearms the context episode", async () => {
+	const h = harness({ percent: 93 }); try {
+		await h.start(); await h.emit("turn_end");
+		const fresh = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "fresh-without-shutdown" } };
+		await h.emit("session_start", { reason: "new" }, fresh);
+		await h.emit("turn_end", {}, fresh);
+		assert.equal(h.played.length, 2); assert.equal(h.notes.length, 2);
+	} finally { h.retire(); }
+});
+
+test("successful compaction rearms while a canceled compaction preserves the latch", async () => {
+	const h = harness(); try {
+		await h.start();
+		h.setPercent(91); await h.emit("turn_end", { outcome: "completed" }); assert.equal(h.played.length, 1);
+		h.setPercent(null); await h.emit("session_compact_failed", { aborted: true }); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(h.played.length, 1, "a canceled or failed compaction must not rearm");
+		h.setPercent(93); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(h.played.length, 1, "an unknown reading preserves the latch so the episode cannot warn twice");
+		await h.emit("session_compact", { reason: "threshold" });
+		h.setPercent(93); await h.emit("turn_end", { outcome: "completed" });
+		assert.equal(h.played.length, 2, "a successful compaction rearms");
+	} finally { h.retire(); }
+});
+
+test("a new session rearms the context warning for the fresh session", async () => {
+	const h = harness(); try {
+		await h.start();
+		h.setPercent(91); await h.emit("turn_end", { outcome: "completed" }); assert.equal(h.played.length, 1);
+		await h.emit("session_shutdown", { reason: "new" });
+		const fresh = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, getSessionId: () => "fresh-context" } };
+		await h.emit("session_start", { reason: "new" }, fresh);
+		h.setPercent(91); await h.emit("turn_end", { outcome: "completed" }, fresh);
+		assert.equal(h.played.length, 2, "the new session warns again");
+	} finally { h.retire(); }
+});
+
+test("the visual context warning is independent from the audio switch", async () => {
+	const silent = harness({ enabled: false }); try {
+		await silent.start(); silent.setPercent(93); await silent.emit("turn_end", { outcome: "completed" });
+		assert.equal(silent.played.length, 0, "disabled audio stays silent");
+		assert.equal(silent.notes.length, 1, "the visual warning still fires with audio off");
+		assert.match(silent.notes[0]!, /90/);
+	} finally { silent.retire(); }
+	const visualOff = harness({ visualNotice: false }); try {
+		await visualOff.start(); visualOff.setPercent(93); await visualOff.emit("turn_end", { outcome: "completed" });
+		assert.equal(visualOff.played.length, 1, "audio still fires when the visual warning is off");
+		assert.deepEqual(visualOff.notes, [], "the visual warning stays off");
+	} finally { visualOff.retire(); }
 });
 
 test("subagent validation, highwater beyond cap, foreign/future/history sources silent", async () => {

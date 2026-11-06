@@ -102,6 +102,16 @@ test("omission and null are silence, never preset merging or cross-event fallbac
 	assert.equal(NOTIFICATION_PRIORITY["session.started"], 0);
 });
 
+test("context.high defaults to the attention tone without re-enabling it in saved files", () => {
+	assert.ok(NOTIFICATION_EVENTS.includes("context.high"));
+	assert.equal(NOTIFICATION_PRIORITY["context.high"], 2);
+	assert.equal(DEFAULT_NOTIFICATION_SETTINGS.audio.events["context.high"], "builtin:attention");
+	const saved = parseNotificationSettingsFile(document({ ...DEFAULT_NOTIFICATION_SETTINGS,
+		audio: { ...DEFAULT_NOTIFICATION_SETTINGS.audio, events: { "agent.completed": "builtin:success" } } }))!;
+	assert.equal(notificationSoundFor(saved, "context.high"), null, "an older saved file stays silent for the new event");
+	assert.equal(restoreNotificationPreset(saved).audio.events["context.high"], "builtin:attention", "the preset exposes the new default explicitly");
+});
+
 test("every contractual event is independent and both inclusive timing boundaries round trip", () => {
 	for (const event of NOTIFICATION_EVENTS) {
 		const settings = { ...DEFAULT_NOTIFICATION_SETTINGS, audio: { ...DEFAULT_NOTIFICATION_SETTINGS.audio, events: { [event]: "builtin:attention" } } };

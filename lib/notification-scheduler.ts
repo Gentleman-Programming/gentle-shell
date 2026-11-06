@@ -34,6 +34,8 @@ interface Pending {
 	priority: number;
 	expiresAt: number;
 	readyAt: number;
+	/** Time spent waiting for started playback does not consume the remaining TTL. */
+	pausedAt?: number;
 }
 interface Active {
 	controller: AbortController;
@@ -85,11 +87,12 @@ export class NotificationScheduler {
 		if (!this.automaticEnabled() || !Number.isFinite(occurrence.occurredAt) || occurrence.occurredAt > now || now >= expiresAt) return false;
 		const sound = notificationSoundFor(this.settings!, occurrence.event);
 		if (sound === null) return false;
-		if (this.pending && now >= this.pending.expiresAt) this.pending = undefined;
+		if (this.pending && this.pending.pausedAt === undefined && now >= this.pending.expiresAt) this.pending = undefined;
 		const priority = NOTIFICATION_PRIORITY[occurrence.event];
 		if (this.pending && priority < this.pending.priority) return false;
 		this.pending = { sound, priority, expiresAt,
-			readyAt: this.pending?.readyAt ?? now + this.settings!.audio.coalesceWindowMs };
+			readyAt: this.pending?.readyAt ?? now + this.settings!.audio.coalesceWindowMs,
+			pausedAt: this.active?.started ? now : undefined };
 		this.schedule(); return true;
 	}
 	/** Explicit, bypasses enabled/mute only. Busy when active OR pending; never flushes autos.
@@ -119,7 +122,16 @@ export class NotificationScheduler {
 		this.clearTimer();
 		if (!this.pending || !this.automaticEnabled()) return;
 		const now = this.options.now();
-		if (now >= this.pending.expiresAt) { this.pending = undefined; return; }
+		if (this.pending.pausedAt !== undefined && !this.active?.started) {
+			this.pending.expiresAt += now - this.pending.pausedAt;
+			this.pending.pausedAt = undefined;
+		}
+		if (this.pending.pausedAt === undefined && now >= this.pending.expiresAt) { this.pending = undefined; return; }
+		if (this.active?.started) {
+			// Backend timeout bounds playback. Keep just one candidate, not an accumulating queue.
+			this.pending.pausedAt ??= now;
+			return;
+		}
 		const due = Math.max(this.pending.readyAt, this.lastStart + this.settings!.audio.minimumIntervalMs);
 		if (!this.active && now >= due) {
 			const pending = this.pending; this.pending = undefined;

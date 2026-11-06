@@ -37,6 +37,8 @@ function fakeGitResult(command: string, args: readonly string[], cwd: string): s
 	if (args.includes("--git-common-dir")) return `${cwd}/.git`;
 	if (args.includes("--show-object-format")) return "sha1";
 	if (args.includes("--is-shallow-repository")) return "false";
+	if (args.includes("--is-inside-work-tree")) return "true";
+	if (args.includes("info/exclude")) return join(cwd, ".git", "info", "exclude");
 	if (args.includes("--git-path")) return join(cwd, ".git", "gentle-ai", "reviews");
 	if (args.includes("--max-parents=0")) return "a".repeat(40);
 	if (args[0] === "cat-file" && args[1] === "-t") return "tree";
@@ -161,6 +163,9 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		const fixtures = await import(`./review-test-fixtures.ts${query}`);
 		const publication = await import(`../lib/review-publication-gate.ts${query}`);
 		const gentleAi = await import(`../extensions/gentle-ai.ts${query}`);
+		const sliceSignal = await import(`../lib/commit-slice-signal.ts${query}`);
+		const scratch = await import(`../lib/session-scratch.ts${query}`);
+		const skills = await import(`../extensions/skill-registry.ts${query}`);
 
 		const traces: Trace[] = [];
 		const graph = codegraph.createCodeGraphTool();
@@ -169,6 +174,9 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
 			{ kind: "execFile", command: "codegraph", args: ["init", cwd] },
 			...fallbackCalls,
+			// A successful init keeps .codegraph/ out of git through the local exclude file.
+			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--is-inside-work-tree"] },
+			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-path", "info/exclude"] },
 		]);
 		const graphText = String((graphResult as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? "");
 		assert.match(graphText, /indexed/, "CodeGraph must return the fixture command result");
@@ -251,6 +259,22 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			{ kind: "spawnSync", command: "gh", args: ["api", "repos/{owner}/{repo}/commits/ffffffffffffffffffffffffffffffffffffffff/status", "--jq", ".state"] },
 		]);
 		assert.deepEqual(ci, { proven: false, status: null });
+		// Routes reached through their default runners, so the launch options under
+		// test are the ones production actually uses.
+		await trace(captures, traces, "commit slice report", () => sliceSignal.commitSliceReport(cwd), [
+			{ kind: "execFile", command: "git", args: ["symbolic-ref", "-q", "--short", "HEAD"] },
+			{ kind: "execFile", command: "git", args: ["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"] },
+		]);
+		const artifact = await trace(captures, traces, "scratch artifact check", () => scratch.checkArtifact({ kind: "clone", path: cwd, command: "git clone", recordedAt: "2026-01-01T00:00:00.000Z" }, []), [
+			{ kind: "execFile", command: "git", args: ["rev-parse", "--show-toplevel"] },
+		]);
+		assert.equal(artifact.state, "kept", "an unrelated top-level keeps the recorded directory");
+		await trace(captures, traces, "profile declaration sharing", () => gentleAi.repoDeclarationSharing(cwd, join(cwd, "profile.json")), [
+			{ kind: "execFileSync", command: "git", args: ["check-ignore", "--quiet", "profile.json"] },
+		]);
+		await trace(captures, traces, "skill registry tracking probe", () => skills.automaticWriteWarning(cwd, [".atl/.gitignore"]), [
+			{ kind: "execFile", command: "git", args: ["ls-files", "--cached", "-z", "--", ".atl/.gitignore"] },
+		]);
 		return { captures, traces };
 	} finally {
 		cp.execFileSync = original.execFileSync;
@@ -281,7 +305,11 @@ test("owned public adapters pass windowsHide at every mapped Node child-process 
 		"publication advertised object",
 		"publication remote head",
 		"publication GH CI",
-	], "all twelve mapped public actions must complete before flag assertions");
+		"commit slice report",
+		"scratch artifact check",
+		"profile declaration sharing",
+		"skill registry tracking probe",
+	], "all sixteen mapped public actions must complete before flag assertions");
 	for (const trace of traces) {
 		for (const capture of trace.captures) {
 			assert.equal(capture.options.windowsHide, true, `${trace.label}: ${capture.kind} ${capture.command} must hide Windows consoles`);
@@ -297,7 +325,7 @@ test("external editor remains the explicit interactive exemption", async () => {
 		received = options;
 		return { status: 0 };
 	}) as never, process.cwd()), true);
-	assert.equal(received?.shell, process.platform === "win32");
+	assert.equal(received?.shell, false, "interactive editors must not interpret paths through a shell");
 	assert.equal(received?.stdio, "inherit");
 	assert.equal(received?.windowsHide, undefined, "the interactive editor intentionally remains unhidden");
 });

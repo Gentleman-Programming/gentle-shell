@@ -6,14 +6,31 @@ import { join } from "node:path";
 import { captureReviewSessionIdentity, grantReviewSessionPermission, hasReviewSessionPermission, revokeReviewSessionPermission } from "../lib/review-session-standing-permission.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
+import { YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
+import { sidebarState } from "../lib/shell-sidebar.ts";
 
 const ON_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 const USAGE = "Use /gentle:yolo enable|disable|status. State unchanged.";
 const STALE_MENU = "YOLO unchanged — the session changed while the menu was open.";
-const menuTitle = (state: "ON" | "OFF") => `🚀 Gentle YOLO 🔥 — full speed, destructive actions still ask (current: ${state})`;
+const MODE_CHOICES = [
+	"normal — standard permission prompts",
+	"auto — independent checks; extra model calls",
+	"yolo — scoped work; destructive actions ask",
+	"super-yolo — no permission prompts; private paths blocked; consent remains",
+] as const;
+const menuTitle = (state: "NORMAL" | "YOLO") => `Permissions for this session (current: ${state})`;
 
-export function harness(env: NodeJS.ProcessEnv = {}) {
+// An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
+const isolatedConfigHomes: string[] = [];
+process.once("exit", () => { for (const home of isolatedConfigHomes) rmSync(home, { recursive: true, force: true }); });
+function isolatedConfigHome(): string {
+	const home = mkdtempSync(join(tmpdir(), "yolo-config-"));
+	isolatedConfigHomes.push(home);
+	return home;
+}
+
+export function harness(overrides: NodeJS.ProcessEnv = {}) {
+	const env: NodeJS.ProcessEnv = { GENTLE_PI_CONFIG_HOME: isolatedConfigHome(), ...overrides };
 	const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	const tools: string[] = [];
@@ -68,7 +85,14 @@ test("human command enable/disable/status/invalid and status/widget clearing", a
 	await h.command("status"); assert.match(h.notices.at(-1)!, /OFF/);
 	await h.command("enable");
 	assert.equal(h.statuses.get("gentle:yolo"), ON_TEXT);
-	assert.deepEqual(h.widgets.get("gentle:yolo"), [ON_TEXT]);
+	// The banner is a component: it paints the notice, and steps aside while
+	// the IDE chrome's status bar already shows the permission mode.
+	const banner = h.widgets.get("gentle:yolo") as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+	const tui = { terminal: { columns: 80, rows: 24 }, requestRender() {} };
+	assert.match(banner(tui, {}).render(80).join("\n"), new RegExp(ON_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	sidebarState(tui as never).statusBarShowsMode = () => true;
+	assert.deepEqual(banner(tui, {}).render(80), [], "no banner while the status bar shows the mode");
+	assert.match(banner({ requestRender() {} }, {}).render(80).join("\n"), /YOLO ON/, "a host without terminal state keeps the banner");
 	for (const invalid of ["invalid", "on", "off", "toggle"]) {
 		await h.command(invalid);
 		assert.equal(h.notices.at(-1), USAGE);
@@ -88,32 +112,32 @@ test("no argument without a select-capable UI reports status and never toggles",
 	await h.command(""); assert.equal(h.notices.at(-1), ON_TEXT);
 	assert.equal(h.statuses.get("gentle:yolo"), ON_TEXT);
 	let prompts = 0;
-	h.setSelect(async () => { prompts++; return "disable"; });
+	h.setSelect(async () => { prompts++; return MODE_CHOICES[0]; });
 	Object.assign(h.ctx, { hasUI: false });
 	await h.command("");
 	assert.equal(prompts, 0, "headless callers never see the menu");
 	assert.match(h.notices.at(-1)!, /OFF/, "headless status reflects fail-closed scope, not a menu choice");
 });
 
-test("no-argument menu shows the fire title and live state; only an explicit selection changes it", async () => {
+test("no-argument menu shows the live permission mode; only an explicit selection changes it", async () => {
 	const h = harness();
 	const prompts: Array<{ title: string; options: string[] }> = [];
 	let answer: string | undefined;
 	h.setSelect(async (title, options) => { prompts.push({ title, options }); return answer; });
 	const notices = h.notices.length;
 	await h.command("");
-	assert.deepEqual(prompts.at(-1), { title: menuTitle("OFF"), options: ["enable", "disable", "status"] });
+	assert.deepEqual(prompts.at(-1), { title: menuTitle("NORMAL"), options: MODE_CHOICES });
 	assert.equal(h.notices.length, notices, "cancel does nothing");
 	assert.equal(h.statuses.get("gentle:yolo"), undefined);
-	answer = "status"; await h.command("");
-	assert.equal(h.notices.at(-1), "YOLO OFF"); assert.equal(h.statuses.get("gentle:yolo"), undefined);
-	answer = "enable"; await h.command("");
-	assert.equal(h.statuses.get("gentle:yolo"), ON_TEXT); assert.equal(h.notices.at(-1), ON_TEXT);
+	answer = MODE_CHOICES[0]; await h.command("");
+	assert.equal(h.notices.at(-1), "Permissions: NORMAL"); assert.equal(h.statuses.get("gentle:yolo"), undefined);
+	answer = MODE_CHOICES[2]; await h.command("");
+	assert.equal(h.statuses.get("gentle:yolo"), ON_TEXT); assert.equal(h.notices.at(-1), "Permissions: YOLO");
 	answer = undefined; await h.command("");
-	assert.equal(prompts.at(-1)!.title, menuTitle("ON"));
+	assert.equal(prompts.at(-1)!.title, menuTitle("YOLO"));
 	assert.equal(h.statuses.get("gentle:yolo"), ON_TEXT, "cancel leaves ON unchanged");
-	answer = "disable"; await h.command("");
-	assert.equal(h.statuses.get("gentle:yolo"), undefined); assert.equal(h.notices.at(-1), "YOLO OFF");
+	answer = MODE_CHOICES[0]; await h.command("");
+	assert.equal(h.statuses.get("gentle:yolo"), undefined); assert.equal(h.notices.at(-1), "Permissions: NORMAL");
 	const shown = prompts.length;
 	await h.command("status"); await h.command("invalid");
 	assert.equal(prompts.length, shown, "explicit arguments bypass the menu");
@@ -132,14 +156,14 @@ test("revocation wins over an activation still awaiting Git identity", async () 
 	}
 });
 
-test("child, headless, RPC and unidentified repository cannot activate", async () => {
-	for (const variant of ["child", "headless", "rpc", "no-repository"]) {
+test("child, headless, RPC and nonexistent workspace cannot activate", async () => {
+	for (const variant of ["child", "headless", "rpc", "no-workspace"]) {
 		const h = harness(variant === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
 		if (variant === "headless") Object.assign(h.ctx, { hasUI: false });
 		if (variant === "rpc") Object.assign(h.ctx, { mode: "rpc" });
-		if (variant === "no-repository") Object.assign(h.ctx, { cwd: "/" });
+		if (variant === "no-workspace") Object.assign(h.ctx, { cwd: "/nonexistent-gentle-workspace" });
 		await h.command("enable"); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT);
-		h.setSelect(async () => "enable");
+		h.setSelect(async () => MODE_CHOICES[2]);
 		await h.command(""); assert.notEqual(h.statuses.get("gentle:yolo"), ON_TEXT, `${variant} menu enable fails closed`);
 	}
 });
@@ -182,10 +206,33 @@ test("active YOLO waives only ordinary push after full destructive/guard evaluat
 	await h.command("enable");
 	assert.equal(await call("git push origin main"), undefined);
 	assert.equal(h.confirmations(), 1);
-	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase main", "git push --force origin main", "git push origin main && npm publish", "git -C /other push origin main", "sh -c 'git push origin main'"]) {
+	// gentle-shell#2172: reversible compound delivery is waived too.
+	for (const command of ["git commit -m 'fix: x' && git push -u origin feature/x", "git push origin main && gh pr create --fill", "git -C /other push origin main", "git rebase origin/main && git push"]) {
+		assert.equal(await call(command), undefined, command);
+	}
+	assert.equal(h.confirmations(), 1, "waived commands never reach the confirmation dialog");
+	for (const command of ["git push origin main && rm -rf ./data", `sh -c "psql -c 'DROP TABLE users'"`, "git push origin main && git rebase -i main", "git push --force origin main", "git push origin main && npm publish", "git push origin :main", "sh -c 'git push origin main'"]) {
 		assert.ok(await call(command), command);
 	}
 	await h.command("disable"); assert.ok(await call("git push origin main"));
+});
+
+test("active YOLO waives a push with harmless redirections and a read-only filter; Normal and children still ask", async () => {
+	const command = "git push -u origin feat/x 2>&1 | tail -5";
+	const call = (h: ReturnType<typeof harness>, input: string) => h.emit("tool_call", { toolName: "bash", input: { command: input } });
+	const h = harness();
+	assert.ok(await call(h, "git push origin main 2>&1"), "Normal mode still confirms");
+	assert.equal(h.confirmations(), 1);
+	await h.command("enable");
+	assert.equal(await call(h, command), undefined);
+	assert.equal(await call(h, "git push origin main 2>&1"), undefined);
+	assert.equal(h.confirmations(), 1, "waived pushes never reach the confirmation dialog");
+	for (const asks of ["git push origin main | sh", "git push origin main > out.txt", "git push origin main 2>&1 | tee out"]) {
+		assert.ok(await call(h, asks), asks);
+	}
+	const child = harness({ GENTLE_PI_AGENTS_CHILD: "1" });
+	await child.command("enable");
+	assert.ok(await call(child, command), "children never receive the waiver");
 });
 
 test("active command path preserves configured push confirmations and blocks, including legacy env override", async () => {
@@ -246,17 +293,16 @@ test("tool input and task text cannot activate; scope/UI loss removes instructio
 	assert.equal(h.statuses.get("gentle:yolo"), undefined);
 });
 
-test("a session replaced while the menu is open cannot receive the enable choice", async () => {
+test("a session replaced while the menu is open cannot receive the YOLO choice", async () => {
 	const h = harness();
-	h.setSelect(async () => { h.setSessionId("replacement-session"); return "enable"; });
+	h.setSelect(async () => { h.setSessionId("replacement-session"); return MODE_CHOICES[2]; });
 	await h.command("");
 	assert.equal(h.statuses.get("gentle:yolo"), undefined, "stale menu choice never activates the new session");
 	assert.equal(h.notices.at(-1), STALE_MENU, "the discarded choice is reported, not silent");
-	h.setSelect(async () => { h.setSessionId("another-session"); return "disable"; });
+	h.setSelect(async () => { h.setSessionId("another-session"); return MODE_CHOICES[0]; });
 	await h.command("");
-	assert.equal(h.notices.at(-1), STALE_MENU, "a stale disable is reported too");
-	h.setSelect(async () => "status");
-	await h.command("");
+	assert.equal(h.notices.at(-1), STALE_MENU, "a stale Normal choice is reported too");
+	await h.command("status");
 	assert.equal(h.notices.at(-1), "YOLO OFF");
 });
 
@@ -276,4 +322,10 @@ test("monitor goes through the same command confirmation and YOLO waiver as bash
 	await h.command("enable");
 	assert.equal(await call("git push origin main"), undefined);
 	assert.ok(await call("git push origin main && rm -rf ./data"), "YOLO never waives a destructive command");
+});
+
+test("the YOLO banner stays a plain string widget outside the terminal UI, so RPC hosts still receive it", () => {
+	assert.deepEqual(yoloBannerContent("rpc", ON_TEXT), [ON_TEXT], "RPC forwards only string widgets");
+	assert.deepEqual(yoloBannerContent(undefined, ON_TEXT), [ON_TEXT]);
+	assert.equal(typeof yoloBannerContent("tui", ON_TEXT), "function", "the terminal UI gets the component that can step aside");
 });

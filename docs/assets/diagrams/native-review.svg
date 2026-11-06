@@ -1,16 +1,56 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="570" viewBox="0 0 960 570" role="img" aria-labelledby="review-title review-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="410" viewBox="0 0 1000 410" role="img" aria-labelledby="review-title review-desc">
   <title id="review-title">Native review boundary</title>
-  <desc id="review-desc">A frozen candidate moves through risk-scoped review to a result. A separate, clearly bounded human decision determines repository delivery.</desc>
+  <desc id="review-desc">A frozen candidate moves through risk-scoped review to an evidence outcome, which can surface a bounded correction path. A separate, clearly bounded human decision determines repository delivery: review does not publish.</desc>
   <defs>
-    <linearGradient id="review-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0d0b12"/><stop offset="1" stop-color="#241020"/></linearGradient>
-    <marker id="review-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
+    <linearGradient id="review-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="review-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="review-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="review-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <linearGradient id="review-bar" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c46b9e"/><stop offset="1" stop-color="#f095c8"/></linearGradient>
+    <pattern id="review-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="review-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="review-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
+    <marker id="review-arrow-soft" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#d7a0b8"/></marker>
   </defs>
-  <rect width="960" height="570" rx="20" fill="url(#review-bg)"/>
-  <text x="58" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Review the exact change.</text>
-  <text x="58" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Keep delivery in your hands.</text>
-  <g fill="#1c1420" stroke="#d7a0b8" stroke-width="2"><rect x="50" y="205" width="230" height="130" rx="16"/><rect x="365" y="185" width="230" height="170" rx="16" fill="#2a1426" stroke="#f095c8" stroke-width="3"/><rect x="680" y="205" width="230" height="130" rx="16"/></g>
-  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#review-arrow)"><path d="M280 270H365"/><path d="M595 270H680"/></g>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle"><g fill="#fff7f1" font-size="36" font-weight="700"><text x="165" y="264">Candidate</text><text x="480" y="250">Review</text><text x="795" y="264">Outcome</text></g><g fill="#d7a0b8" font-size="32"><text x="165" y="309">Frozen</text><text x="480" y="300">By risk</text><text x="795" y="309">Evidence</text></g></g>
-  <rect x="120" y="415" width="720" height="94" rx="16" fill="#18121b" stroke="#d7a0b8" stroke-width="2" stroke-dasharray="8 7"/>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle"><text x="480" y="452" fill="#fff7f1" font-size="36" font-weight="700">You decide what ships</text><text x="480" y="493" fill="#d7a0b8" font-size="32">Review does not publish.</text></g>
+  <rect width="1000" height="410" rx="24" fill="url(#review-bg)"/>
+  <rect width="1000" height="410" rx="24" fill="url(#review-dots)"/>
+  <rect width="1000" height="410" rx="24" fill="url(#review-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="409" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">NATIVE REVIEW</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">review the exact change, not a moving target</text>
+    <rect x="36" y="140" width="240" height="116" rx="14" fill="url(#review-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="48" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="59.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">01</text>
+    <g transform="translate(244 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9"/></g>
+    <text x="48" y="198" fill="#fbeff5" font-size="17" font-weight="650">Candidate</text>
+    <text x="48" y="220" fill="#a8939f" font-size="12.5">frozen</text>
+    <text x="48" y="238" fill="#a8939f" font-size="12.5">one exact change</text>
+    <rect x="340" y="138" width="320" height="120" rx="16" fill="#f095c8" opacity="0.22" filter="url(#review-shine)"/>
+    <rect x="330" y="128" width="340" height="140" rx="14" fill="url(#review-accent)" stroke="#f095c8" stroke-width="1.5"/>
+    <rect x="342" y="140" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="353.2" y="153" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">02</text>
+    <g transform="translate(638 137) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></g>
+    <text x="342" y="210" fill="#fbeff5" font-size="17" font-weight="650">Review</text>
+    <text x="342" y="232" fill="#a8939f" font-size="12.5">by risk</text>
+    <text x="342" y="250" fill="#a8939f" font-size="12.5">only the 4R lenses that fit the change</text>
+    <rect x="724" y="140" width="240" height="116" rx="14" fill="url(#review-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="736" y="152" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="747.2" y="165" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">03</text>
+    <g transform="translate(932 149) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 2.5 5-5.5"/></g>
+    <text x="736" y="198" fill="#fbeff5" font-size="17" font-weight="650">Outcome</text>
+    <text x="736" y="220" fill="#a8939f" font-size="12.5">evidence</text>
+    <text x="736" y="238" fill="#a8939f" font-size="12.5">risk-scoped</text>
+    <path d="M276 198H328" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#review-arrow)"/>
+    <path d="M670 198H722" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#review-arrow)"/>
+    <path d="M844 138V112Q844 104 836 104H164Q156 104 156 112V136" fill="none" stroke="#d7a0b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#review-arrow-soft)"/>
+    <rect x="419.4" y="95" width="161" height="19" rx="9.5" fill="#150f17" stroke="#f095c8" stroke-opacity="0.25"/>
+    <text x="500" y="108" fill="#c99bb4" font-size="12" font-weight="600" letter-spacing="0.4" text-anchor="middle">bounded correction path</text>
+    <path d="M36 300H964" stroke="#f095c8" stroke-opacity="0.35" stroke-dasharray="2 6" stroke-linecap="round"/>
+    <rect x="467.4" y="291" width="65" height="19" rx="9.5" fill="#150f17" stroke="#f095c8" stroke-opacity="0.25"/>
+    <text x="500" y="304" fill="#8e7987" font-size="11" font-weight="700" letter-spacing="0.4" text-anchor="middle">BOUNDARY</text>
+    <rect x="36" y="324" width="928" height="56" rx="14" fill="#f095c8" fill-opacity="0.06" stroke="#f095c8" stroke-opacity="0.22"/>
+    <g transform="translate(56 340.0) scale(1)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></g>
+    <text x="92" y="357.5" font-size="15.5"><tspan fill="#fbeff5" font-weight="650">You decide what ships</tspan><tspan fill="#a8939f" dx="10">Review does not publish. What happens next in your repository stays yours.</tspan></text>
+  </g>
 </svg>

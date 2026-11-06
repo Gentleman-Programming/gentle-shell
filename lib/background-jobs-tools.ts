@@ -96,7 +96,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		label: "Bash (background)",
 		description: [
 			"Run a shell command in the background and return a job id at once. You are notified once, automatically, when it exits (exit code, last output lines, output file); do not poll, sleep, or delegate a subagent to wait.",
-			"Use it for anything you would otherwise wait on: CI, builds, long tests, deploys, servers.",
+			"Use synchronous bash for local, finite, deterministic checks reasonably expected to finish within 30 seconds, with an explicit timeout <= 30 seconds (30 included). Use bash_background for longer or unknown duration, external waits, CI, builds, and servers, including deploys and long tests. Report a timeout as failure; never automatically retry, restart, or migrate it to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is guidance, not a performance guarantee.",
 			"Put the wait condition inside the command so its exit is the event, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
 			`Output goes to a file you can read with the read tool. Stop a job with job_stop; list jobs with job_list. At most ${MAX_RUNNING_JOBS} run at once.`,
 		].join(" "),

@@ -1,19 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="700" viewBox="0 0 960 700" role="img" aria-labelledby="agents-title agents-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-labelledby="agents-title agents-desc">
   <title id="agents-title">Focused agent orchestration</title>
-  <desc id="agents-desc">One responsible parent assigns focused mapping, implementation, and verification work. Observed results return through a shared lane outside the worker cards.</desc>
+  <desc id="agents-desc">One responsible parent assigns focused mapping, implementation, and verification work. Each worker returns its observed result to the parent, which stays accountable for scope, decisions, and the final summary.</desc>
   <defs>
-    <linearGradient id="agents-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0d0b12"/><stop offset="1" stop-color="#20101f"/></linearGradient>
-    <marker id="agents-task-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f095c8"/></marker>
-    <marker id="agents-result-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" viewBox="0 0 10 10" refX="10" refY="5" orient="auto"><path d="M0 0 10 5 0 10z" fill="#d7a0b8"/></marker>
+    <linearGradient id="agents-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0f0b13"/><stop offset="1" stop-color="#1a0e19"/></linearGradient>
+    <radialGradient id="agents-glow" cx="0.12" cy="0" r="0.7"><stop stop-color="#f095c8" stop-opacity="0.16"/><stop offset="1" stop-color="#f095c8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="agents-card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#1d1520"/><stop offset="1" stop-color="#151017"/></linearGradient>
+    <linearGradient id="agents-accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3a1932"/><stop offset="1" stop-color="#1e1020"/></linearGradient>
+    <linearGradient id="agents-bar" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c46b9e"/><stop offset="1" stop-color="#f095c8"/></linearGradient>
+    <pattern id="agents-dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.045"/></pattern>
+    <filter id="agents-shine" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+    <marker id="agents-arrow" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#f095c8"/></marker>
+    <marker id="agents-arrow-soft" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" viewBox="0 0 8 8" refX="7" refY="4" orient="auto"><path d="M0 0.5 7 4 0 7.5z" fill="#d7a0b8"/></marker>
   </defs>
-  <rect width="960" height="700" rx="20" fill="url(#agents-bg)"/>
-  <text x="58" y="65" fill="#fff7f1" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">Focused agents.</text>
-  <text x="58" y="120" fill="#d7a0b8" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="700">One responsible parent.</text>
-  <rect x="270" y="178" width="420" height="132" rx="18" fill="#2a1426" stroke="#f095c8" stroke-width="3"/>
-  <g fill="#18131b" stroke="#d7a0b8" stroke-width="2"><rect x="40" y="410" width="240" height="140" rx="16"/><rect x="360" y="410" width="240" height="140" rx="16"/><rect x="680" y="410" width="240" height="140" rx="16"/></g>
-  <g fill="none" stroke="#f095c8" stroke-width="3" stroke-linecap="round" marker-end="url(#agents-task-arrow)"><path d="M340 310V350H160V410"/><path d="M480 310V410"/><path d="M620 310V350H800V410"/></g>
-  <g fill="none" stroke="#d7a0b8" stroke-width="3" stroke-linecap="round" stroke-dasharray="8 8"><path d="M160 550V580"/><path d="M480 550V580"/><path d="M800 550V580"/><path d="M160 580H800"/></g>
-  <path d="M160 580H20V244H270" fill="none" stroke="#d7a0b8" stroke-width="3" stroke-linecap="round" stroke-dasharray="8 8" marker-end="url(#agents-result-arrow)"/>
-  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle"><text x="480" y="240" fill="#fff7f1" font-size="36" font-weight="700">Parent session</text><text x="480" y="282" fill="#d7a0b8" font-size="32">Coordinates</text><g fill="#fff7f1" font-size="36" font-weight="700"><text x="160" y="487">Map</text><text x="480" y="487">Implement</text><text x="800" y="487">Verify</text></g></g>
-  <g font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700"><path d="M58 642H126" stroke="#f095c8" stroke-width="4" stroke-linecap="round"/><text x="142" y="653" fill="#f095c8">Task</text><path d="M310 642H378" stroke="#d7a0b8" stroke-width="4" stroke-linecap="round" stroke-dasharray="9 8"/><text x="394" y="653" fill="#d7a0b8">Result</text></g>
+  <rect width="1000" height="440" rx="24" fill="url(#agents-bg)"/>
+  <rect width="1000" height="440" rx="24" fill="url(#agents-dots)"/>
+  <rect width="1000" height="440" rx="24" fill="url(#agents-glow)"/>
+  <rect x="0.5" y="0.5" width="999" height="439" rx="23.5" fill="none" stroke="#f095c8" stroke-opacity="0.16"/>
+  <g font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="36" y="52" fill="#f095c8" font-size="12.5" font-weight="700" letter-spacing="2.6">FOCUSED AGENTS</text>
+    <text x="964" y="52" fill="#8e7987" font-size="13" text-anchor="end">one parent stays accountable for scope, decisions, and the summary</text>
+    <rect x="340" y="94" width="320" height="76" rx="16" fill="#f095c8" opacity="0.22" filter="url(#agents-shine)"/>
+    <rect x="330" y="84" width="340" height="96" rx="14" fill="url(#agents-accent)" stroke="#f095c8" stroke-width="1.5"/>
+    <g transform="translate(638 93) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.6"/><circle cx="4.5" cy="18" r="1.6"/><circle cx="19.5" cy="18" r="1.6"/><path d="M12 9V5.6M9.4 13.5 5.9 17M14.6 13.5l3.5 3.5"/></g>
+    <text x="342" y="124" fill="#fbeff5" font-size="17" font-weight="650">Parent session</text>
+    <text x="342" y="146" fill="#a8939f" font-size="12.5">coordinates and decides</text>
+    <text x="342" y="164" fill="#a8939f" font-size="12.5">works inline unless a reason fires</text>
+    <rect x="36" y="262" width="288" height="104" rx="14" fill="url(#agents-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="48" y="274" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="59.2" y="287" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">01</text>
+    <g transform="translate(292 271) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/></g>
+    <text x="48" y="326" fill="#fbeff5" font-size="17" font-weight="650">Map</text>
+    <text x="48" y="348" fill="#a8939f" font-size="12.5">read-only explorer</text>
+    <rect x="356" y="262" width="288" height="104" rx="14" fill="url(#agents-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="368" y="274" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="379.2" y="287" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">02</text>
+    <g transform="translate(612 271) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></g>
+    <text x="368" y="326" fill="#fbeff5" font-size="17" font-weight="650">Implement</text>
+    <text x="368" y="348" fill="#a8939f" font-size="12.5">parallel writers, disjoint edits</text>
+    <rect x="676" y="262" width="288" height="104" rx="14" fill="url(#agents-card)" stroke="#f095c8" stroke-opacity="0.22"/>
+    <rect x="688" y="274" width="22" height="18" rx="9" fill="#f095c8" fill-opacity="0.13"/>
+    <text x="699.2" y="287" fill="#f5b8da" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" text-anchor="middle">03</text>
+    <g transform="translate(932 271) scale(0.8)" fill="none" stroke="#f095c8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 2.5 5-5.5"/></g>
+    <text x="688" y="326" fill="#fbeff5" font-size="17" font-weight="650">Verify</text>
+    <text x="688" y="348" fill="#a8939f" font-size="12.5">independent verifier</text>
+    <path d="M420 180V204Q420 210 414 210H176Q170 210 170 216V260" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#agents-arrow)"/>
+    <path d="M190 262V232Q190 226 196 226H430Q436 226 436 220V182" fill="none" stroke="#d7a0b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#agents-arrow-soft)"/>
+    <path d="M492 180V260" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#agents-arrow)"/>
+    <path d="M508 262V182" fill="none" stroke="#d7a0b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#agents-arrow-soft)"/>
+    <path d="M580 180V204Q580 210 586 210H824Q830 210 830 216V260" fill="none" stroke="#f095c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#agents-arrow)"/>
+    <path d="M810 262V232Q810 226 804 226H570Q564 226 564 220V182" fill="none" stroke="#d7a0b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#agents-arrow-soft)"/>
+    <path d="M36 404H70" stroke="#f095c8" stroke-width="2" stroke-linecap="round"/>
+    <text x="80" y="408" fill="#a8939f" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="start">task</text>
+    <path d="M140 404H174" stroke="#d7a0b8" stroke-width="2" stroke-linecap="round" stroke-dasharray="5 5"/>
+    <text x="184" y="408" fill="#a8939f" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="start">observed result</text>
+    <text x="964" y="408" fill="#8e7987" font-size="13" font-weight="500" letter-spacing="0.4" text-anchor="end">delegates for a reason, never for size</text>
+  </g>
 </svg>

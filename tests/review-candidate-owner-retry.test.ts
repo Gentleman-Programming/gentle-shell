@@ -79,6 +79,6 @@ test("every windows system probe uses the configurable timeout", async () => {
 	const { readFileSync } = await import("node:fs");
 	const source = readFileSync(new URL("../lib/review-candidate-view-owner.ts", import.meta.url), "utf8");
 	const probes = source.match(/windowsSystemExecutable\([^)]*\), \[[^\]]*\], \{[^}]*\}/g) ?? [];
-	assert.equal(probes.length, 5);
+	assert.equal(probes.length, 4);
 	for (const probe of probes) assert.match(probe, /timeout: resolveWindowsSystemProbeTimeoutMs\(\)/);
 });

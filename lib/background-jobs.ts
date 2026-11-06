@@ -26,6 +26,19 @@ export const MONITOR_TOOL = "monitor";
  */
 export const SHELL_COMMAND_TOOLS: ReadonlySet<string> = new Set(["bash", BASH_BACKGROUND_TOOL, MONITOR_TOOL]);
 
+const STANDALONE_SLEEP_SEGMENT = /^sleep\s+\d+(?:\.\d+)?[smhd]?$/;
+
+/**
+ * True only for a command that does nothing but sleep: one or more literal
+ * `sleep <number>[smhd]` segments joined by `&&` or `;`. Wait conditions
+ * (`until ...; do sleep 1; done`), loops, pipes and sleeps mixed with real
+ * commands are never standalone (#1903).
+ */
+export function isStandaloneSleep(command: string): boolean {
+	const segments = command.split(/&&|;/).map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+	return segments.length > 0 && segments.every((segment) => STANDALONE_SLEEP_SEGMENT.test(segment));
+}
+
 /** Lines kept for the exit notice and job listings. */
 export const TAIL_LINES = 20;
 /**

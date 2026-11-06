@@ -34,13 +34,20 @@ function closure(operation: string, lineageId: string): Record<string, unknown> 
 	};
 }
 
+function fixtureLens(suffix: string) {
+	const lenses = ["review-risk", "review-reliability", "review-resilience", "review-readability"] as const;
+	const lens = lenses[Number(suffix)];
+	assert.ok(lens, "fixture order must select an authoritative lens");
+	return lens;
+}
+
 function bindingArguments(lineageId: string, suffix = "0", subjectHash = SHA): ReviewCollectInputV3["arguments"] {
 	return [
 		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
 		{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
 		{ name: "target", value: SHA, token: `--target=${SHA}` },
 		{ name: "repository-context", value: `rctx1_${"c".repeat(64)}`, token: `--repository-context=rctx1_${"c".repeat(64)}` },
-		{ name: "lens", value: `review-risk-${suffix}`, token: `--lens=review-risk-${suffix}` },
+		{ name: "lens", value: fixtureLens(suffix), token: `--lens=${fixtureLens(suffix)}` },
 		{ name: "order", value: suffix, token: `--order=${suffix}` },
 		{ name: "subject-hash", value: subjectHash, token: `--subject-hash=${subjectHash}` },
 	];
@@ -66,7 +73,7 @@ function materializeInput(lineageId: string, suffix = "0", subjectHash = SHA): R
 			baseTree: TREE,
 			candidateTree: TREE,
 			changedPathManifestSha256: SHA,
-			lens: `review-risk-${suffix}`,
+			lens: fixtureLens(suffix),
 			selectedOrder: Number(suffix),
 		},
 		submission: {
@@ -483,6 +490,30 @@ test("refuter and validation each execute one self-contained provider vector", a
 		assert.equal(requests[0]!.captureOperation, operation);
 		assert.deepEqual(requests[0]!.argumentTokens, input.arguments.map((argument) => argument.token!));
 	}
+});
+
+test("public STATUS retains only the original opaque binding projection", async () => {
+	const lineageId = "validation-projection";
+	const input = roleInput(lineageId, "review.capture-validation");
+	const native = { targetStatus: async () => status(lineageId, [input]),
+		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+	const entries = result.collectBindings as Array<{ collectBinding: string }>;
+	assert.equal(entries.length, 1);
+	assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
+	assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
+	assert.equal((entries[0] as Record<string, unknown>).forecast, undefined, "legacy execute vectors keep their existing route");
+});
+
+test("public correction STATUS adds no inferred input metadata", async () => {
+ const lineageId = "authored-plan-metadata";
+ const input = correctionPlanInput(lineageId);
+ const native = { targetStatus: async () => status(lineageId, [input]) } as unknown as NativeReviewCli;
+ const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+ const entries = result.collectBindings as Array<{ collectBinding: string }>;
+ assert.deepEqual(Object.keys(entries[0]), ["collectBinding"]);
+ assert.deepEqual(JSON.parse(entries[0].collectBinding), input);
 });
 
 test("terminal capture closes directly, nonterminal capture does not auto-follow, and unknown mutation reconciles once", async (t) => {

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Install Gentle Shell</title>
+<!-- The host's CSP is default-src 'self': no inline script or style, no
+     external resources. wizard.js renders every step with DOM APIs only. -->
+<link rel="stylesheet" href="/wizard.css">
+<script type="module" src="/wizard.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="backdrop" aria-hidden="true"></div>
+<header class="topbar">
+	<p class="wordmark"><span class="wordmark-mark" aria-hidden="true">&gt;_</span> Gentle <span class="wordmark-accent">Shell</span></p>
+	<p class="topbar-note"><span class="dot" aria-hidden="true"></span> Local installer</p>
+</header>
+<main id="main" tabindex="-1">
+	<nav class="stages-nav" aria-label="Installation progress">
+		<ol id="stages" class="stages">
+			<li class="stage stage-current" aria-current="step"><span class="stage-dot" aria-hidden="true">1</span><span class="stage-label">Check</span></li>
+			<li class="stage stage-upcoming"><span class="stage-dot" aria-hidden="true">2</span><span class="stage-label">Review</span></li>
+			<li class="stage stage-upcoming"><span class="stage-dot" aria-hidden="true">3</span><span class="stage-label">Install</span></li>
+			<li class="stage stage-upcoming"><span class="stage-dot" aria-hidden="true">4</span><span class="stage-label">Done</span></li>
+		</ol>
+	</nav>
+	<div id="alert" class="alert-region" role="alert" aria-live="assertive" aria-atomic="true"></div>
+	<div id="view" class="view">
+		<section class="panel" aria-labelledby="view-title" data-stage="check">
+			<p class="eyebrow">Step 1 of 4 · Check</p>
+			<h1 id="view-title" tabindex="-1">Checking this computer</h1>
+			<p class="lead">Looking for Node.js, pnpm, Pi and Gentle Shell. Nothing changes until you confirm a plan.</p>
+			<div class="loader" aria-hidden="true"><span></span><span></span><span></span></div>
+			<noscript>
+				<p class="alert alert-warning">This installer needs JavaScript. Enable it for this page, or close this tab and press Ctrl+C in the terminal. Nothing was installed.</p>
+			</noscript>
+		</section>
+	</div>
+	<div id="status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+</main>
+<footer class="footer">
+	<p>This page talks only to the installer running on this computer at 127.0.0.1. Closing the tab does not stop it; use <strong>Close installer</strong> or press Ctrl+C in the terminal.</p>
+</footer>
+</body>
+</html>

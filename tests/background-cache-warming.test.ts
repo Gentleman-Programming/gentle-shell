@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { installBackgroundCacheWarming, type WarmingState } from "../lib/background-cache-warming.ts";
+import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 test("native warming decisions use only current owned live background work", () => {
 	let handler: Parameters<Parameters<typeof installBackgroundCacheWarming>[0]["on"]>[1];
@@ -49,7 +50,7 @@ test("warming helper has no maintenance capabilities", () => {
 });
 
 test("background prompt prohibits cache polling and documents explicit native idle opt-in", () => {
-	const prompt = readFileSync(new URL("../assets/orchestrator-delegation.md", import.meta.url), "utf8");
+	const prompt = readDelegationDetail();
 	assert.match(prompt, /completion or cache maintenance/);
 	assert.match(prompt, /user-requested inspection, relevant scope change, input request, or suspected abnormal behavior/);
 	assert.match(prompt, /Never relaunch equivalent work merely because it is queued or running/);

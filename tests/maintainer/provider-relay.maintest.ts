@@ -66,8 +66,11 @@ function descriptor(overrides = {}) {
 		...overrides,
 	};
 }
+function isRoleError(error: unknown): error is Error & { kind: string; stage: string; mutationOutcome: string } {
+	return error instanceof Error && error instanceof ProviderRoleVectorError && "kind" in error && typeof error.kind === "string" && "stage" in error && typeof error.stage === "string" && "mutationOutcome" in error && typeof error.mutationOutcome === "string";
+}
 function rejects(obj, fragment) {
-	assert.throws(() => validateDescriptor(obj), (error) => error instanceof DescriptorValidationError && error.message.includes(fragment));
+	assert.throws(() => validateDescriptor(obj), (error) => error instanceof Error && error instanceof DescriptorValidationError && error.message.includes(fragment));
 }
 function tempDescriptor(t, obj) {
 	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-"));
@@ -102,11 +105,9 @@ test("rejects malformed descriptor fields with exact-shape errors (no defaults, 
 	rejects({ ...descriptor(), cases: [{ ...descriptor().cases[0]!, captureArgumentTokens: [...CAPTURE_TOKENS].filter((t) => t !== "--materialize=true") }] }, "--materialize=true");
 });
 test("submission is validated through the real relay resolver before any process launches (exact shape)", () => {
-	const twoValues = structuredClone(SUBMISSION);
-	twoValues.values = [...SUBMISSION.values, { slot: "extra", domain: "artifact_path_or_stdin", substitutionLocation: 0 }];
+	const twoValues = { ...structuredClone(SUBMISSION), values: [...SUBMISSION.values, { slot: "extra", domain: "artifact_path_or_stdin", substitutionLocation: 0 }] };
 	rejects({ ...descriptor(), cases: [{ ...descriptor().cases[0]!, submission: twoValues }] }, "not a bindable provider form");
-	const noSlot = structuredClone(SUBMISSION);
-	noSlot.argumentTokens = [...BINDING_TOKENS, "--input=/no/value/slot"];
+	const noSlot = { ...structuredClone(SUBMISSION), argumentTokens: [...BINDING_TOKENS, "--input=/no/value/slot"] };
 	rejects({ ...descriptor(), cases: [{ ...descriptor().cases[0]!, submission: noSlot }] }, "not a bindable provider form");
 	rejects({ ...descriptor(), cases: [{ ...descriptor().cases[0]!, submission: { ...structuredClone(SUBMISSION), extra: 1 } }] }, "extra");
 });
@@ -245,7 +246,7 @@ test("negative control: a role vector failure (not surface-unavailable) is repor
 });
 test("runProviderRoleVector treats a prelaunch abort as not-started with no mutation", async () => {
 	const controller = new AbortController(); controller.abort();
-	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: process.execPath, signal: controller.signal }), (error) => error instanceof ProviderRoleVectorError && error.kind === ROLE_VECTOR_FAILURE.ROLE_ABORTED && error.stage === "launch" && error.mutationOutcome === "none");
+	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: process.execPath, signal: controller.signal }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_ABORTED && error.stage === "launch" && error.mutationOutcome === "none");
 });
 function roleChild(t: test.TestContext, name: string, source: string) {
 	const path = sandboxPath(`${name} preload.cjs`), savedNodeOptions = process.env.NODE_OPTIONS; writeFileSync(path, `const roleArgv = ["review", ...process.argv.slice(2)], Module = require("node:module"), resolveFilename = Module._resolveFilename; Module._resolveFilename = function (request, ...args) { return /[\\\\/]review$/.test(request) ? ${JSON.stringify(path)} : resolveFilename.call(this, request, ...args); }; ${source}`);
@@ -262,19 +263,19 @@ test("runProviderRoleVector executes both real stub-child verbs and decodes snak
 test("runProviderRoleVector rejects malformed artifact binding shape before stale binding comparison", async (t) => {
 	for (const malformed of [{ lineage_id: "", target_identity: ROLE_TARGET }, { lineage_id: ROLE_LINEAGE, target_identity: "not-a-sha256" }]) {
 		const child = roleChild(t, `malformed-${malformed.lineage_id || "lineage"}.cjs`, `process.stdout.write(JSON.stringify({ schema: ${JSON.stringify(PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA)}, role: "refuter", captured: true, ...${JSON.stringify(malformed)} })); process.exit(0);`);
-		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env }), (error) => error instanceof ProviderRoleVectorError && error.kind === ROLE_VECTOR_FAILURE.ROLE_FAILED && /typed shape/.test(error.message));
+		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_FAILED && /typed shape/.test(error.message));
 	}
 });
 test("runProviderRoleVector classifies an empty successful artifact as unknown and requires STATUS re-query", async (t) => {
 	const child = roleChild(t, "empty-artifact.cjs", "process.exit(0);");
 	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env }), (caught) => {
-		assert.ok(caught instanceof ProviderRoleVectorError); assert.equal(caught.kind, ROLE_VECTOR_FAILURE.EMPTY_ARTIFACT); assert.equal(caught.stage, "execute"); assert.equal(caught.mutationOutcome, "unknown"); assert.match(caught.message, /re-query negotiated STATUS before any retry/); return true;
+		assert.ok(isRoleError(caught)); assert.equal(caught.kind, ROLE_VECTOR_FAILURE.EMPTY_ARTIFACT); assert.equal(caught.stage, "execute"); assert.equal(caught.mutationOutcome, "unknown"); assert.match(caught.message, /re-query negotiated STATUS before any retry/); return true;
 	});
 });
 test("runProviderRoleVector bounds each output stream before JSON or exit handling", async (t) => {
 	for (const stream of ["stdout", "stderr"] as const) {
 		const child = roleChild(t, `overflow-${stream}.cjs`, `process.${stream}.write("x".repeat(${ROLE_STREAM_MAX_BYTES + 1})); setInterval(() => {}, 1_000);`);
-		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, timeoutMs: 1_000 }), (error) => error instanceof ProviderRoleVectorError && error.kind === ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW && error.mutationOutcome === "unknown");
+		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, timeoutMs: 1_000 }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW && error.mutationOutcome === "unknown");
 	}
 });
 async function descendantPid(path: string) {
@@ -293,7 +294,7 @@ test("role watchdog and abort reap descendants on every platform", async (t) => 
 		t.after(() => { if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
 		assert.ok(DEFAULT_ROLE_VECTOR_TIMEOUT_MS > 600_000, "the outer 900s watchdog FIRES after the provider-owned 600s deadline with setup/cancellation margin");
 		if (mode === "abort") controller.abort();
-		await assert.rejects(run, (error) => error instanceof ProviderRoleVectorError && error.kind === (mode === "abort" ? ROLE_VECTOR_FAILURE.ROLE_ABORTED : ROLE_VECTOR_FAILURE.ROLE_TIMED_OUT) && error.mutationOutcome === "unknown");
+		await assert.rejects(run, (error) => isRoleError(error) && error.kind === (mode === "abort" ? ROLE_VECTOR_FAILURE.ROLE_ABORTED : ROLE_VECTOR_FAILURE.ROLE_TIMED_OUT) && error.mutationOutcome === "unknown");
 		await assertReaped(pid);
 	});
 });
@@ -302,7 +303,7 @@ test("failed tree termination settles despite a surviving descendant retaining i
 	const child = roleChild(t, "pipe-holder-role-child.cjs", `const fs = require("node:fs"), { spawn } = require("node:child_process"), grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "" } }); fs.writeFileSync(${JSON.stringify(sandboxPath("ROLE_PID_PLACEHOLDER"))}.replace("ROLE_PID_PLACEHOLDER", ${JSON.stringify("role-pipe-holder.pid")}), String(grandchild.pid)); setInterval(() => {}, 1000);`);
 	const run = runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, signal: controller.signal, terminateProcessTree: (process) => { process.kill("SIGKILL"); return false; } });
 	const pid = await descendantPid(grandchild); t.after(() => { try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
-	const started = Date.now(); controller.abort(); await assert.rejects(run, (error) => error instanceof ProviderRoleVectorError && error.kind === ROLE_VECTOR_FAILURE.ROLE_TERMINATION_FAILED && error.stage === "execute" && error.mutationOutcome === "unknown");
+	const started = Date.now(); controller.abort(); await assert.rejects(run, (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_TERMINATION_FAILED && error.stage === "execute" && error.mutationOutcome === "unknown");
 	assert.ok(Date.now() - started < 500, "failed tree termination must not wait for descendant-held pipes to close"); assert.doesNotThrow(() => process.kill(pid, 0), "the fixture descendant must survive while retaining inherited pipes");
 });
 test("stale-target fail-closed: missing or duplicate required binding tokens are rejected before runner invocation", () => {
@@ -495,7 +496,7 @@ const baselineArmed = typeof baselineBinary === "string" && baselineBinary.lengt
 const baselineReason = () => `${BASELINE_ENV} is unset or not an existing absolute path; supply the baseline gentle-ai binary (external evidence establishes whether it is RC8), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
 if (!baselineArmed && armed) throw new Error(baselineReason());
 if (!baselineArmed) console.log(`tests/maintainer/provider-relay.maintest.ts: ${baselineReason()}`);
-function baselineDescriptor(kind = "relay-unavailable" as const) {
+function baselineDescriptor(kind: "relay-unavailable" | "positive-lens" = "relay-unavailable") {
 	return validateDescriptor({ ...descriptor(), gentleAiExecutable: baselineBinary, cases: [{ name: "baseline-negative-control", kind, captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
 }
 test("negative control: runMatrix proves the baseline fails closed as relay-unavailable with zero mutation", { skip: !baselineArmed }, async () => {

@@ -7,6 +7,7 @@ import {
 	type ReviewMode,
 } from "../lib/review-snapshot.ts";
 import { existsSync, renameSync } from "node:fs";
+import { correctionBudget, REVIEW_RISK_TIER } from "../lib/review-risk.ts";
 import type { ReviewLockPlatformAdapterV1 } from "../lib/review-lock.ts";
 import {
 	REVIEW_EVENT,
@@ -45,6 +46,7 @@ export function testSnapshot(options: TestSnapshotOptions): SnapshotV1 {
 	const lenses = options.lenses ?? [];
 	const initialTree = options.initialTree ?? options.completeTree;
 	const selected = lenses[0];
+	const changedLines = route === REVIEW_ROUTE.FULL_4R ? 401 : route === REVIEW_ROUTE.TRIVIAL ? 1 : 10;
 	return {
 		schema: "gentle-ai.review-snapshot/v1",
 		mode: options.mode ?? REVIEW_MODE.ORDINARY,
@@ -57,9 +59,13 @@ export function testSnapshot(options: TestSnapshotOptions): SnapshotV1 {
 				: { kind: REVIEW_PROJECTION.INTENDED_COMMIT, tree: initialTree },
 		initial_review_tree: initialTree,
 		genesis_paths: options.genesisPaths ?? ["app.ts", "src/auth.ts", "src/retry.ts", "src/review.ts"],
+		intended_untracked: [],
+		risk_tier: route === REVIEW_ROUTE.FULL_4R ? REVIEW_RISK_TIER.HIGH : route === REVIEW_ROUTE.TRIVIAL ? REVIEW_RISK_TIER.LOW : REVIEW_RISK_TIER.MEDIUM,
+		original_changed_lines: changedLines,
+		correction_budget: correctionBudget(changedLines),
 		diff_evidence: {
 			event: REVIEW_EVENT.ORDINARY_START,
-			changedLines: route === REVIEW_ROUTE.FULL_4R ? 401 : route === REVIEW_ROUTE.TRIVIAL ? 1 : 10,
+			changedLines,
 			triviality:
 				route === REVIEW_ROUTE.TRIVIAL
 					? TRIVIALITY.PROVEN

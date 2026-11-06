@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CARD_STYLE_SCHEMA, parseCardStyleFile, resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
@@ -29,6 +30,35 @@ test("the writer rejects values outside the style domain", () => {
 	assert.equal(existsSync(join(dir, "card-style.json")), false);
 });
 
+test("a denied preference read preserves the stored bytes and refuses every write", (t) => {
+	const dir = home();
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const path = writeCardStyle("neon", { gentlePiConfigHome: dir });
+	const before = readFileSync(path);
+	const originalRead = fs.readFileSync;
+	const originalWrite = fs.writeFileSync;
+	let writes = 0;
+	t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+		if (args[0] === path) throw Object.assign(new Error("fixture access denied"), { code: "EACCES" });
+		return originalRead(...args);
+	});
+	t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+		writes++;
+		return originalWrite(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.deepEqual(resolveCardStyle({ gentlePiConfigHome: dir }), { style: "float", source: "global_file", malformed: true, globalFile: path });
+		assert.throws(() => writeCardStyle("float", { gentlePiConfigHome: dir }), { message: `Cannot update malformed or unreadable card style preference: ${path}` });
+		assert.equal(writes, 0);
+	} finally {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	}
+	assert.deepEqual(readFileSync(path), before);
+	assert.deepEqual(readdirSync(dir), ["card-style.json"]);
+});
+
 test("invalid or unreadable preference files read as float and are never overwritten", () => {
 	for (const raw of ["", "{", "[]", "null", `{"schema":"${CARD_STYLE_SCHEMA}","style":"default"}`, `{"schema":"other/v1","style":"float"}`, `{"schema":"${CARD_STYLE_SCHEMA}","style":"float","extra":1}`]) {
 		assert.equal(parseCardStyleFile(raw), undefined, raw);
@@ -42,7 +72,9 @@ test("invalid or unreadable preference files read as float and are never overwri
 	const dir = home();
 	mkdirSync(join(dir, "card-style.json"));
 	assert.equal(resolveCardStyle({ gentlePiConfigHome: dir }).malformed, true, "a directory in its place is unreadable, not missing");
-	if (process.getuid?.() !== 0) {
+	// chmod(000) is a POSIX probe, not a portable access-denial fixture.
+	// The EACCES test above exercises the refusal contract on every platform.
+	if (process.platform !== "win32" && process.getuid?.() !== 0) {
 		const locked = home();
 		writeCardStyle("float", { gentlePiConfigHome: locked });
 		chmodSync(join(locked, "card-style.json"), 0o000);

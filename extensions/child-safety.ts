@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 
 export function blockChildDestructiveCommand(command: string): ToolCallEventResult | undefined {
@@ -12,8 +13,9 @@ export function createChildSafetyExtension(env: NodeJS.ProcessEnv = process.env)
 	return (pi) => {
 		if (env.GENTLE_PI_AGENTS_CHILD !== "1") return;
 		pi.on("tool_call", (event) => {
-			if (event.toolName !== "bash" || typeof event.input.command !== "string") return undefined;
-			return blockChildDestructiveCommand(event.input.command);
+			const command = (event.input as { command?: unknown }).command;
+			if (!SHELL_COMMAND_TOOLS.has(event.toolName) || typeof command !== "string") return undefined;
+			return blockChildDestructiveCommand(command);
 		});
 	};
 }

@@ -61,7 +61,7 @@ test("passed is the only outcome that unlocks targeted validation", () => {
 	assert.equal(step.kind, "run-targeted-validation");
 	assert.equal(step.unlocksTargetedValidation, true);
 	assert.equal(step.transactionOpen, false);
-	assert.equal(step.escalation, undefined);
+	assert.equal(Object.hasOwn(step, "escalation"), false);
 	// The provider issues the request; Pi must re-query STATUS for it rather
 	// than inventing one, which is why the step names the operation instead of
 	// carrying a fabricated payload.
@@ -95,6 +95,7 @@ test("verification_failed carries the prior identity as supersedes and demands a
 test("verification_failed never consumes budget even when lines were already charged", () => {
 	const charged = { ...STATUS, changedLinesCharged: 40 };
 	const step = resolveCorrectionStep(charged, evidence("verification_failed"));
+	assert.equal(step.kind, "recapture-required");
 
 	// The invariant is about what THIS outcome adds, not about resetting prior
 	// accounting: a failed verification must not move the needle at all.

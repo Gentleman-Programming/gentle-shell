@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AGENT_MODE, type AgentDefinition } from "../lib/agents-config.ts";
+import { AGENT_MODE, type AgentDefinition, type AgentMode } from "../lib/agents-config.ts";
 import { CHILD_MESSAGE_MAX_BYTES, ChildMessenger } from "../lib/agents-messaging.ts";
 import { TaskStore } from "../lib/agents-protocol.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
@@ -8,7 +8,7 @@ import { fakeChild } from "./agents-fake-child.ts";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const agent: AgentDefinition = { name: "worker", description: "", filePath: "/a.md", scope: "global", instructions: "", model: undefined, thinking: undefined, mode: undefined, tools: ["read"] };
-const request = (mode = AGENT_MODE.BACKGROUND) => ({ agent, prompt: "work", label: undefined, context: undefined, mode, cwd: "/repo", parentSessionId: "s1", model: undefined, thinking: undefined, sessionDir: "/sessions", resumeSessionPath: undefined, env: {} });
+const request = (mode: AgentMode = AGENT_MODE.BACKGROUND) => ({ agent, prompt: "work", label: undefined, context: undefined, mode, cwd: "/repo", parentSessionId: "s1", model: undefined, thinking: undefined, sessionDir: "/sessions", resumeSessionPath: undefined, env: {} });
 
 test("ChildMessenger validates query replies and settles timeout, callback failure, and disconnect once", async () => {
 	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
@@ -74,7 +74,7 @@ test("ChildMessenger rejects an empty reply error and ignores mixed reply fields
 
 test("runner sends bounded static query rejection frames that settle the child before timeout", async () => {
 	const child = fakeChild();
-	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
+	const listeners = new Map<string, Array<(value: unknown) => void>>();
 	const timers: Array<{ cancelled: boolean; fn: () => void }> = [];
 	child.child.send = (frame, done) => {
 		child.sent.push(frame);
@@ -83,8 +83,8 @@ test("runner sends bounded static query rejection frames that settle the child b
 		return true;
 	};
 	const messenger = new ChildMessenger({
-		send: (frame) => { child.message(frame); return true; },
-		on: (event, listener) => listeners.set(event, [...(listeners.get(event) ?? []), listener as (value: Record<string, unknown>) => void]),
+		send: (frame: Record<string, unknown>) => { child.message(frame); return true; },
+		on: (event, listener) => listeners.set(event, [...(listeners.get(event) ?? []), listener]),
 	}, (fn) => {
 		const timer = { cancelled: false, fn };
 		timers.push(timer);
@@ -102,7 +102,7 @@ test("runner sends bounded static query rejection frames that settle the child b
 
 test("a malformed query with a valid q ID gets a reply that clears the matching child query", async () => {
 	const child = fakeChild();
-	const listeners = new Map<string, Array<(value: Record<string, unknown>) => void>>();
+	const listeners = new Map<string, Array<(value: unknown) => void>>();
 	const timers: Array<{ cancelled: boolean; fn: () => void }> = [];
 	child.child.send = (frame, done) => {
 		child.sent.push(frame);
@@ -111,8 +111,8 @@ test("a malformed query with a valid q ID gets a reply that clears the matching 
 		return true;
 	};
 	const messenger = new ChildMessenger({
-		send: (frame) => { child.message(frame); return true; },
-		on: (event, listener) => listeners.set(event, [...(listeners.get(event) ?? []), listener as (value: Record<string, unknown>) => void]),
+		send: (frame: Record<string, unknown>) => { child.message(frame); return true; },
+		on: (event, listener) => listeners.set(event, [...(listeners.get(event) ?? []), listener]),
 	}, (fn) => {
 		const timer = { cancelled: false, fn };
 		timers.push(timer);
@@ -133,7 +133,7 @@ test("background queries keep correlation, bounds, and ownership before replying
 	const child = fakeChild();
 	const queries: Array<{ taskId: string; requestId: string; message: string }> = [];
 	const runner = new AgentRunner(new TaskStore(), { maxConcurrency: 1, stallTimeoutMs: 10_000 }, { spawn: () => child.child, now: () => 1, schedule: () => () => {}, pi: { command: "pi", args: [] } }, {
-		askUser: async () => ({ cancelled: true }), onQuery: (task, requestId, message) => queries.push({ taskId: task.id, requestId, message }),
+		askUser: async () => ({ cancelled: true }), onQuery: (task, requestId, message) => { queries.push({ taskId: task.id, requestId, message }); },
 	});
 	const task = runner.run(request());
 	await tick();

@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { normalizeContext, validateToolArguments, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+
+const metadata = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))), "..", "package.json");
+const version: string = JSON.parse(readFileSync(metadata, "utf8")).version;
+assert.match(version, /^\d+\.\d+\.\d+$/);
+const [major, minor] = version.split(".").map(Number);
+assert.ok(major >= 1, `Pi AI >=1.0.0 required, installed ${version}`);
+const coercesStringNull = major > 1 || (major === 1 && minor >= 5);
 
 function registeredTools(): Map<string, any> {
 	const tools = new Map<string, any>();
@@ -18,6 +28,15 @@ const tools = registeredTools();
 function validate(name: string, args: Record<string, unknown>): any {
 	return validateToolArguments(tools.get(name), { type: "toolCall", id: "json-arguments", name, arguments: args as ToolCall["arguments"] });
 }
+
+test("registered review schemas have plain object parameters with no root-level union combinators (#1698)", () => {
+	for (const [name, tool] of tools) {
+		assert.equal(tool.parameters.type, "object", `${name} parameters must be an object`);
+		assert.equal(tool.parameters.anyOf, undefined, `${name} parameters must not have root-level anyOf`);
+		assert.equal(tool.parameters.oneOf, undefined, `${name} parameters must not have root-level oneOf`);
+		assert.equal(tool.parameters.allOf, undefined, `${name} parameters must not have root-level allOf`);
+	}
+});
 
 test("public Anthropic non-strict adapter preserves the complete review tool declarations", async () => {
 	const model: Model<"anthropic-messages"> = {
@@ -44,7 +63,7 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 	assert.deepEqual(controller.required, ["operation"]);
 	assert.deepEqual(Object.keys(controller.properties).sort(), ["operation", "lineageId", "selectionBinding", "intendedUntracked", "untrackedScope", "changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "workspaceRoot"].sort());
 	assert.ok(controller.properties.input.anyOf.some((schema: any) => schema.type === "object"));
-	assert.match(controller.properties.input.description, /START\/ASSESS only/);
+	assert.match(controller.properties.input.description, /START\/ASSESS\/answer-consent/);
 	assert.deepEqual(controller.properties.operation.enum, tools.get("gentle_review").parameters.properties.operation.enum);
 	for (const name of ["gentle_review_capture", "gentle_review_capture_group"]) {
 		const schema = emitted.get(name);
@@ -57,7 +76,7 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 	let nativeCalls = 0;
 	const native = new Proxy({}, { get() { return async () => { nativeCalls++; }; } }) as NativeReviewCli;
 	for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
-		const inputs = operation === "start" || operation === "assess" ? [null] : [null, { consentBinding: "opaque", answer: "granted" }];
+		const inputs = operation === "start" || operation === "assess" || operation === "answer-consent" ? [null] : [null, { consentBinding: "opaque", answer: "granted" }];
 		for (const input of inputs) {
 			const args = validateToolArguments({ ...tools.get("gentle_review"), parameters: controller }, { type: "toolCall", id: "provider-shell", name: "gentle_review", arguments: { operation, input } });
 			assert.deepEqual(args.input, input, "provider-shell validation accepts and retains this input");
@@ -80,6 +99,23 @@ test("registered review schemas admit START/ASSESS objects and ordered capture o
 	assert.deepEqual(__testing.parseReviewCaptureGroupParameters(args).collectBindings, [JSON.stringify(binding), ordered[1]]);
 });
 
+test("answer-consent admits JSON object input and coerces it cleanly (#2375)", async () => {
+	const input = { consentBinding: "bound-1", answer: "granted" };
+	assert.deepEqual(validate("gentle_review", { operation: "answer-consent", input }).input, input);
+	assert.equal(
+		__testing.parseReviewControllerParameters(validate("gentle_review", { operation: "answer-consent", input })).input,
+		JSON.stringify(input),
+	);
+	const native = { targetStatus: async () => ({ targetIdentity: "t1" }) } as unknown as NativeReviewCli;
+	const outcome = await __testing.executeReviewControllerOperation(
+		validate("gentle_review", { operation: "answer-consent", input }),
+		process.cwd(),
+		native,
+	);
+	assert.equal(outcome.operation, "answer-consent");
+	assert.match(String(outcome.outcome), /consent-binding-stale/);
+});
+
 test("validated ASSESS objects reach the mocked native facade with parsed fields", async () => {
 	const requests: unknown[] = [];
 	const native = { assess: async (request: unknown) => { requests.push(request); throw new Error("mock assessment unavailable"); } } as unknown as NativeReviewCli;
@@ -100,24 +136,47 @@ test("serialized inputs remain byte-for-byte unchanged at validation and facade 
 	assert.equal(__testing.parseReviewCaptureParameters(validate("gentle_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
 });
 
-test("actual validation rejects arrays, null and coerced primitives rather than admitting native calls", () => {
-	for (const value of [[], null, 123, true, false, "123", "null", "[]"]) {
-		for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
+test("validation and facade keep arrays, primitives and null fail-closed", async () => {
+	const operations = ["start", "assess", "answer-consent", "inspect", "reset", "recover"];
+	for (const value of [[], 123, true, "123", "[]"]) {
+		for (const operation of operations) {
 			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
 		}
 		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
 		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
 	}
+	let calls = 0;
+	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
+	// SDK coercion admits the nullable shell, not native operation input.
+	for (const value of [null, false, "null"]) {
+		for (const operation of operations) {
+			if (value === "null" && !coercesStringNull) {
+				assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
+			} else {
+				const validated = validate("gentle_review", { operation, input: value });
+				assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
+				await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
+			}
+		}
+		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
+		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
+	}
+	for (const operation of operations) {
+		await assert.rejects(__testing.executeReviewControllerOperation({ operation, input: "null" }, process.cwd(), native), /input must be a JSON object/);
+	}
+	assert.equal(calls, 0);
 });
 
-test("all other controller operations keep object input fail-closed in schema and facade", async () => {
-	const operations = tools.get("gentle_review").parameters.anyOf[1].properties.operation.enum;
+test("all other controller operations keep object input fail-closed at the facade boundary (#1698)", async () => {
+	const operations = (tools.get("gentle_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "start" && operation !== "assess" && operation !== "answer-consent" && operation !== "select-intended-untracked");
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
 	for (const operation of operations) {
 		const args = { operation, lineageId: "l", input: { consentBinding: "opaque", answer: "granted" } };
-		assert.throws(() => validate("gentle_review", args), /Validation failed/);
-		await assert.rejects(__testing.executeReviewControllerOperation(args, process.cwd(), native));
+		await assert.rejects(
+			__testing.executeReviewControllerOperation(args, process.cwd(), native),
+			/Review controller input must be a string/,
+		);
 	}
 	assert.equal(calls, 0);
 });

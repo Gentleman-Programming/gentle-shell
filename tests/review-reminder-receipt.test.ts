@@ -5,7 +5,7 @@ import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProf
 function fixture() {
 	let sessionId = "parent";
 	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
-	const session = { getSessionId: () => sessionId, getBranch: () => entries };
+	const session = { getSessionId: () => sessionId, getBranch: () => entries, getLeafId: () => `leaf-${entries.length}`, getEntryCount: () => entries.length };
 	const host = { appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); } };
 	const write = (toolCallId: string, root = "/repo") => recordReviewMutation(host, session, root, { source: "direct", toolName: "write", toolCallId });
 	return { host, session, entries, write, switchSession: (id: string) => { sessionId = id; } };
@@ -59,6 +59,36 @@ test("malformed, unknown-version, and unmatched consumption entries do not estab
 	const captured = pendingReviewMutation(f.session, "/repo");
 	consumeReviewMutation(f.host, f.session, "/repo", "unknown", "acknowledged", "target");
 	assert.equal(pendingReviewMutation(f.session, "/repo"), captured);
+});
+
+test("the ledger scan is memoized until the next append and hosts without leaf identity stay uncached", () => {
+	let scans = 0;
+	const entries: Array<{ type: string; customType: string; data: unknown }> = [];
+	const host = { appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); } };
+	const branch = () => { scans++; return entries; };
+	const session = {
+		getSessionId: () => "parent",
+		getBranch: branch,
+		getLeafId: () => `leaf-${entries.length}`,
+		getEntryCount: () => entries.length,
+	};
+	recordReviewMutation(host, session, "/repo", { source: "direct", toolName: "write", toolCallId: "a" });
+	const captured = pendingReviewMutation(session, "/repo");
+	assert.ok(captured);
+	const afterFirstScan = scans;
+	assert.equal(pendingReviewMutation(session, "/repo"), captured);
+	assert.deepEqual(pendingReviewMutationProfiles(session, "/repo"), [{}]);
+	assert.equal(scans, afterFirstScan, "an unchanged (leafId, entryCount) identity must not rescan the branch");
+	recordReviewMutation(host, session, "/repo", { source: "direct", toolName: "edit", toolCallId: "b" });
+	const afterAppend = scans;
+	const next = pendingReviewMutation(session, "/repo");
+	assert.ok(next && next !== captured, "an append invalidates the memo, so the next call sees the new mutation");
+	assert.equal(scans, afterAppend + 1);
+	const uncached = { getSessionId: () => "parent", getBranch: branch };
+	const beforeUncached = scans;
+	assert.ok(pendingReviewMutation(uncached, "/repo"));
+	assert.ok(pendingReviewMutation(uncached, "/repo"));
+	assert.equal(scans, beforeUncached + 2, "a host without leaf identity stays uncached");
 });
 
 // gentle-pi#1175 (T2): mutation receipts optionally carry the writer profile

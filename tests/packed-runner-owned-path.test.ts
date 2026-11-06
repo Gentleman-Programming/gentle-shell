@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import test from "node:test";
 import { resolveInstalledJitiStaticEntry } from "../scripts/test-packed-runner.mjs";
+import * as packedRunner from "../scripts/test-packed-runner.mjs";
 
 function withAliasedConsumer(run: (consumer: string, sdkManifest: string, jitiRoot: string) => void): void {
 	const disposable = mkdtempSync(join(tmpdir(), "packed-owned-path-"));
@@ -23,6 +24,39 @@ function withAliasedConsumer(run: (consumer: string, sdkManifest: string, jitiRo
 		rmSync(disposable, { recursive: true, force: true });
 	}
 }
+
+test("hooked consumer approves only the canonical local tarball file spec", () => {
+	const disposable = mkdtempSync(join(tmpdir(), "packed-approval-"));
+	try {
+		const consumer = join(disposable, "install");
+		const pack = join(disposable, "pack");
+		mkdirSync(consumer);
+		mkdirSync(pack);
+		const tarball = join(pack, "gentle-pi-4.0.0.tgz");
+		writeFileSync(tarball, "owned tarball fixture");
+		const manifest = packedRunner.createHookedPackedConsumerManifest(consumer, tarball);
+		assert.deepEqual(manifest, {
+			name: "gentle-pi-packed-runner-test", private: true,
+			allowScripts: {
+				"file:../pack/gentle-pi-4.0.0.tgz": true,
+				[`file:${realpathSync.native(tarball).split(sep).join("/")}`]: true,
+			},
+		});
+		assert.equal(manifest.allowScripts["gentle-pi"], undefined);
+		assert.equal(manifest.allowScripts["*"], undefined);
+		for (const spec of Object.keys(manifest.allowScripts)) {
+			const filePath = spec.slice(5);
+			assert.equal(realpathSync.native(resolve(consumer, filePath)), realpathSync.native(tarball));
+		}
+		symlinkSync(consumer, join(disposable, "consumer-alias"), "dir");
+		assert.deepEqual(packedRunner.createHookedPackedConsumerManifest(join(disposable, "consumer-alias"), tarball), manifest);
+		symlinkSync("gentle-pi-4.0.0.tgz", join(pack, "alias.tgz"));
+		assert.throws(() => packedRunner.createHookedPackedConsumerManifest(consumer, join(pack, "alias.tgz")), /symbolic link/);
+		assert.throws(() => packedRunner.createHookedPackedConsumerManifest(consumer, pack), /regular file/);
+	} finally {
+		rmSync(disposable, { recursive: true, force: true });
+	}
+});
 
 const checks = { sdkManifest: "sdk-manifest", sdkVersion: "sdk-version", jitiManifest: "jiti-manifest-owned", jitiStaticExport: "jiti-static-export", jitiEntry: "jiti-entry-owned", jitiVersion: "jiti-version" };
 

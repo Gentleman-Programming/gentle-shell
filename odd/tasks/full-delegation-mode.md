@@ -10,7 +10,7 @@ Branch: `feat/full-delegation-mode` · Delivery: `single-pr` (user decision, L8;
 - **S2** The mode travels with the profile and follows live profile switches. User's words: "la idea es, por las dudas, que si yo estoy en un perfil "normal" siga como siempre pero a la primera que cambio a un perfil cuyo orquestador esta en full delegation mode, que ya cambie su actuar de una, pero si vuelvo al anterior vuelva a las reglas de siempre". Switching takes effect on the next turn (the profiles panel action itself runs between runs); no process restart is required in either direction.
 - **S3** In full delegation mode the orchestrator never implements inline. Every authorized mutation goes to a bounded writer, one writer per unit of behavior with its code, tests and docs together, with an explicit `## Allowed edit surfaces`. The orchestrator keeps authorize, explore-for-routing, decide, ask, feature document plus mirror plus `todo`, work-unit commits, verification, and reporting.
 - **S4** Context does not grow: exactly one variant block is injected per turn, never both, and the rendered core stays within the existing 9250-byte budget asserted by `tests/orchestrator-budget.test.ts`. Detail stays in lazily referenced assets, never inlined.
-- **S5** `/gentle:profiles` exposes the switch on the focused profile with a single key press, and the profile footer shows the profile's current mode so the state is visible without opening a menu.
+- **S5** `/gentle:profiles` exposes the switch on the shown profile with a single key press, and the **Orchestrator row** shows the profile's current (drafted) mode beside the tier indicator, so the mode reads where the orchestrator is read, without opening a menu and without riding on the footer status line.
 - **S6** An unknown or malformed mode value is never silently accepted: it is dropped on read and surfaced through the existing drops channel, the same contract `normalizeProfilesFile` already uses for dropped profiles and dropped agents.
 - **S7** The memoized orchestrator core re-renders when the mode changes. The process-lifetime cache key includes the mode, so no stale block survives a profile switch.
 - **S8** The option and its semantics are documented where the profiles panel and the orchestrator rules are already documented.
@@ -46,3 +46,29 @@ Branch: `feat/full-delegation-mode` · Delivery: `single-pr` (user decision, L8;
 **L9** (accepted deviation, rationale): the approved panel key was `d`, but `d` is already bound to **Make default** (`ROUTING_TABLE_HINTS`, `handleTableKey`). The toggle uses `w` and the hint reads `w mode`; nothing was rebound.
 
 **L10** (measured baseline failure, not caused by this change): `tests/orchestrator-budget.test.ts` fails at the branch point `6b0721bc2` with `getOrchestratorPrompt() returned 9266 B at controlled 128-char assets root, exceeds the 9250 B budget` — 16 B over, reproduced in a detached worktree at that commit with no local changes. Left untouched; the organic path stays byte-identical by design, so this change neither fixes nor worsens it.
+
+**L11** (user requirement change, verbatim): "puedes poner el orcanic o el full-delegation al lado de fast? del orquestador? asi lo tenemos más fácil como referencia"
+
+Rewrote S5 only: the mode moved from the footer status to the Orchestrator row, beside `Fast` / `Standard`. Rationale: the footer status is already pinned by an existing assertion in `tests/gentle-ai.test.ts` and is read far from the routing decision, while the Orchestrator row is where the profile is actually evaluated. The footer chip is dropped rather than duplicated, so the mode keeps exactly one place on screen.
+
+**L12** (known baseline failures, verbatim names, evidence: the identical set reproduces on a `mktemp` scratch clone of the branch point with a symlinked `node_modules` and no local diff, so none is caused by this feature). `tests/gentle-ai.test.ts` reports 196 tests, 180 pass, 16 fail, and the 16 are:
+
+- a frozen profile deleted from profiles.json is named, and no tab carries ◉
+- a profile frozen at startup carries ◉ and opens first after the default changes
+- a session profile edited in profiles.json after the freeze or the binding says its launches keep the older routing
+- clear after a new session's new start, as Pi records it, goes back to the defaults it started with
+- clear after a new session's startup start, as Pi records it, goes back to the defaults it started with
+- clear after a session's own start goes back to the defaults it started with
+- clear right after a session's own start with a startup profile says it is already there and writes nothing
+- clear right after a session's own start with no startup profile says it is already there and writes nothing
+- From what's running now in a frozen session saves the frozen routing, not the global one or a later pin
+- provider review roles skip the orchestrator fallback for a profile frozen at the session's own start
+- provider review roles skip the orchestrator fallback for an inherited profile
+- reviewer routing follows the profile the session froze at startup, not later global routing
+- reviewer routing in follow mode reads the profile the target resolves now
+- reviewer routing keeps a frozen pin snapshot after the pin changes
+- reviewer routing of a session frozen without a profile ignores a pin added later
+- the subagents.json notice follows whether the session resolves a profile, not the pin
+
+The whole cluster is session-freeze, pin and reviewer-routing behavior — the same area this feature reads through `resolveSessionProfile` and deliberately does not freeze. Left untouched: they are the user's to triage, and fixing them inside a delegation-mode feature would be exactly the scope creep that hides a real regression later.
+

@@ -371,9 +371,9 @@ test("failed START gives exact mode and serialization guidance and creates no li
 			operation: "start",
 			lineageId: "nested-start-input",
 			idempotencyKey: "nested-start-input-key",
-			input: { mode: "ordinary" },
+			input: { mode: "standard" },
 		}, undefined, undefined, ctx),
-		/START input must be a JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is,
+		/only "ordinary" or "judgment-day".*no lineage was created.*do not call STATUS or ADVANCE/is,
 	);
 	await assert.rejects(
 		controller.execute("invalid-json-start-input", {
@@ -406,7 +406,7 @@ test("shipped controller fails closed while static prompts defer RDD lifecycle o
 	const core = readFileSync("assets/orchestrator.md", "utf8");
 	assert.match(core, new RegExp(boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-	for (const path of ["assets/orchestrator-delegation.md", "skills/gentle-ai/SKILL.md"]) {
+	for (const path of ["assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "skills/gentle-ai/SKILL.md"]) {
 		const contract = readFileSync(path, "utf8");
 		assert.doesNotMatch(contract, /INSPECT before START|start -> finalize -> validate|next_transition|review\.capture-result/is, path);
 	}

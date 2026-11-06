@@ -74,7 +74,7 @@ described in "What disabling capture does" below.
 
 ## Where the files live
 
-Everything sits under `~/.pi/agent/history/`:
+Everything sits under `~/.pi/agent/history/` (in a bundled Gentle Shell, under `<agent home>/history/` instead, with the legacy files and the transcript scan in that agent home too: [Bundled install](bundled-install.md#isolation-from-the-users-gentle-ai)):
 
 - `registry.json` — advisory map of project hash → cwd, used for display
   labels.

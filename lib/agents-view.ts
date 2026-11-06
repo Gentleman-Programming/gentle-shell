@@ -143,7 +143,9 @@ function sameItemValue(a: unknown, b: unknown): boolean {
 }
 
 export function taskHeader(task: TaskRecord, now: number): string {
-	const parts = [task.agent, task.status, task.model, task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
+	// #2180: the winning profile layer is shown right after the model it supplied;
+	// records without one render exactly as before.
+	const parts = [task.agent, task.status, task.model, ...(task.modelSource === undefined ? [] : [task.modelSource]), task.tokens > 0 ? formatTokens(task.tokens) : "", task.cost > 0 ? formatCost(task.cost) : "", task.startedAt === null ? "" : formatElapsed((task.endedAt ?? now) - task.startedAt)];
 	return parts.filter((part) => part.length > 0).join(" · ");
 }
 
@@ -776,8 +778,13 @@ export class AgentsView {
 	}
 
 	private scrollBy(delta: number): void {
+		const task = this.selectedTask();
+		const layout = this.layout();
+		const lines = task ? this.threadLines(this.remoteThreads.get(task.id) ?? this.deps.store.thread(task.id), layout.threadWidth) : [];
+		const maxScroll = Math.max(0, lines.length - Math.max(0, layout.bodyRows - 1));
 		this.follow = false;
-		this.scroll = Math.max(0, this.scroll + delta);
+		// Clamp the current visible position before moving, including after resize.
+		this.scroll = Math.max(0, Math.min(maxScroll, Math.min(this.scroll, maxScroll) + delta));
 		this.deps.requestRender();
 	}
 

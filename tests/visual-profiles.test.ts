@@ -85,3 +85,14 @@ test("symlinked catalog file is rejected instead of followed, and save/delete le
 	assert.throws(() => deleteVisualProfile("x", { gentlePiConfigHome: home }));
 	assert.equal(readFileSync(target, "utf8"), targetContent);
 });
+
+test("a profile stores the chrome surface only when tinted and reads older profiles as the transparent default", () => {
+	const home = { gentlePiConfigHome: mkdtempSync(join(tmpdir(), "visual-profiles-surface-")) };
+	saveVisualProfile("clear", values, home);
+	saveVisualProfile("tinted", { ...values, visual: { ...structuredClone(DEFAULT_VISUAL_SETTINGS), surface: "tinted" } }, home);
+	const stored = JSON.parse(readFileSync(join(home.gentlePiConfigHome, "visual-profiles.json"), "utf8")) as { profiles: { name: string; visual: Record<string, unknown> }[] };
+	assert.equal(Object.hasOwn(stored.profiles.find((p) => p.name === "clear")!.visual, "surface"), false, "older versions keep reading it");
+	assert.equal(stored.profiles.find((p) => p.name === "tinted")!.visual.surface, "tinted");
+	assert.equal(getVisualProfile("clear", home)?.visual.surface, "transparent");
+	assert.equal(getVisualProfile("tinted", home)?.visual.surface, "tinted");
+});

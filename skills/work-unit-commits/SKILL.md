@@ -18,7 +18,7 @@ Use it for:
 - Turning a large change into chained or stacked PRs.
 - Keeping reviewer cognitive load healthy.
 - Applying SDD tasks without accidentally producing a PR above 400 changed lines.
-- Closing an ODD task with a work-unit commit.
+- Committing ODD work in reviewable slices of about 400 authored changed lines.
 
 ## Critical Rules
 
@@ -80,11 +80,13 @@ Each SDD work unit should map cleanly to a commit or PR with:
 
 ## ODD Relationship
 
-Every ODD task closes with at least one work-unit commit:
+ODD commits work units in reviewable slices of about 400 authored changed lines, not one commit per task:
 
+- A slice holds one or more whole tasks with their tests and docs; the last slice closes the feature.
+- A unit whose Risk line names a high-risk item gets its own commit, so native review takes it alone.
 - The native review candidate is that commit, or the PR slice it belongs to when review is deferred, evaluated against the previous reviewed boundary.
 - The running authored line count from work-unit commits feeds the same delivery-strategy vocabulary as SDD.
-- The feature document records the commit identity and, once a delivery strategy applies, the slice boundaries.
+- The feature document records the commit that holds each task and, once a delivery strategy applies, the slice boundaries.
 
 ## Commands
 

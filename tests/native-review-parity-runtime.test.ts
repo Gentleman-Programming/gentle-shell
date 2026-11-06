@@ -44,7 +44,7 @@ const resolvedBinary = (() => {
 	}
 })();
 const nativeBinaryGate = requireNativeBinary({ resolvedBinary, digestsPinned: true, env: process.env });
-if (!nativeBinaryGate.run) console.log(`native-review-parity-runtime: ${nativeBinaryGate.reason}`);
+if (nativeBinaryGate.run === false) console.log(`native-review-parity-runtime: ${nativeBinaryGate.reason}`);
 const test = nativeBinaryGate.run ? baseTest : baseTest.skip;
 const binary = resolvedBinary ?? "";
 

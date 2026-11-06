@@ -6,12 +6,23 @@ import fsp from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join, resolve, sep } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, type NativeReviewCli } from "../lib/native-review-cli.ts";
-import { decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import { decodeReviewLastEventClosureV1, decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+
+// Coordination tests use fixture authority; real Windows ACL coverage lives
+// in review-candidate-view.test.ts, in a separate test process.
+let fixtureAclChecks = 0;
+before(() => {
+	if (process.platform === "win32") {
+		setWindowsAclAuthorityForTesting(() => { fixtureAclChecks++; });
+	}
+});
+after(() => setWindowsAclAuthorityForTesting());
 
 const SHA = `sha256:${"a".repeat(64)}`;
 const TREE = "b".repeat(40);
@@ -127,6 +138,149 @@ test("STATUS renders the managed_assets_outdated continuation command as the act
 	const degraded = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), noContinuationNative);
 	assert.equal(degraded.status, "blocked");
 	assert.equal(degraded.hint, undefined);
+});
+
+test("caller-relative STATUS approved guidance preserves selected root against a different session", async () => {
+	const lineageId = "caller-relative-status";
+	const root = realpathSync(process.cwd());
+	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId, root) } as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: root }, dirname(root), native);
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+});
+
+test("caller-relative approved closure guidance preserves selected root and canonical omission", async () => {
+	const lineageId = "caller-relative-closure";
+	const root = realpathSync(process.cwd());
+	const { submission: _submission, artifactSubject: _artifactSubject, ...base } = collectInput(lineageId);
+	const input = { ...base, name: "provider_refuter", schema: "https://gentle-ai.dev/schema/review/refuter/v1", captureOperation: "review.capture-refuter", arguments: [
+		{ name: "lineage", value: lineageId, token: `--lineage=${lineageId}` },
+		{ name: "target", value: SHA, token: `--target=${SHA}` },
+		{ name: "agent", value: "pi", token: "--agent=pi" },
+		{ name: "execute", value: "true", token: "--execute=true" },
+	] } as unknown as ReviewCollectInputV3;
+	const transition = approvedAcknowledgementStatus(lineageId, root).nextTransition;
+	assert.equal(transition?.kind, "execute");
+	if (transition?.kind !== "execute") throw new Error("expected acknowledgement transition");
+	const acknowledgement = transition.execute;
+	const native = {
+		targetStatus: async () => ({ ...status(lineageId), nextTransition: { kind: "collect", reasonCode: "provider_role_required", collect: { inputs: [input] } } }),
+		captureProviderRole: async () => ({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-refuter", lineageId, state: "approved", storeRevision: SHA, acknowledgement }),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewCaptureOperation({ lineageId, workspaceRoot: root, collectBinding: JSON.stringify(input) }, dirname(root), native);
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	const canonical = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input) }, root, native);
+	assert.equal(canonical.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+	assert.deepEqual((result.closure as Record<string, unknown>).acknowledgement, (canonical.closure as Record<string, unknown>).acknowledgement);
+	// This root-only registry double models a remembered lineage without a
+	// frozen projection, and enforces the same root identity at admission.
+	const boundViews = {
+		resolveWorkspaceRoot: (requestedLineage: string) => {
+			assert.equal(requestedLineage, lineageId);
+			return root;
+		},
+		assertWorkspaceRoot: (requestedLineage: string, requestedRoot: string) => {
+			assert.equal(requestedLineage, lineageId);
+			assert.equal(realpathSync(requestedRoot), root);
+		},
+		hasProjection: () => false,
+	} as unknown as CandidateViewRegistry;
+	const bound = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input) }, dirname(root), native, undefined, boundViews);
+	assert.equal(bound.next_action, canonical.next_action);
+});
+
+test("caller-relative grouped capture closure preserves selected workspace root", async (t) => {
+	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
+	const lineageId = "caller-relative-grouped";
+	const root = realpathSync(process.cwd());
+	const inputs = (["review-risk", "review-resilience", "review-readability", "review-reliability"] as const).map((lens, order) => {
+		const input = collectInput(lineageId);
+		input.arguments = input.arguments.map((argument) => {
+			const value = argument.name === "lens" ? lens : argument.name === "order" ? String(order) : argument.name === "subject-hash" ? `sha256:${String(order).repeat(64)}` : argument.value;
+			return { ...argument, value, token: `--${argument.name}=${value}` };
+		});
+		input.submission!.argumentTokens = [...input.arguments.map((argument) => argument.token!), "--input={{value}}"];
+		input.arguments = [...input.arguments, { name: "agent", value: "pi", token: "--agent=pi" }, { name: "materialize", value: "true", token: "--materialize=true" }];
+		input.artifactSubject = { ...input.artifactSubject!, lens, selectedOrder: order, subjectHash: `sha256:${String(order).repeat(64)}` };
+		return input;
+	});
+	const transition = approvedAcknowledgementStatus(lineageId, root).nextTransition;
+	if (transition?.kind !== "execute") throw new Error("expected acknowledgement transition");
+	const acknowledgement = transition.execute;
+	const native = { targetStatus: async (request: { cwd: string }) => {
+		assert.equal(request.cwd, root);
+		return { ...status(lineageId, inputs), repositoryContext: { capability: "review.opaque_repository_context", handle: `rctx1_${"c".repeat(64)}`, revision: SHA, targetIdentity: SHA } };
+	} } as unknown as NativeReviewCli;
+	const wireAcknowledgement = { ...acknowledgement, binding: { lineage_id: lineageId, revision: SHA, target_identity: SHA } };
+	const wireClosure = { schema: "gentle-ai.review-last-event-closure/v1", operation: "review/capture-result", lineage_id: lineageId, state: "approved", store_revision: SHA, action: "approved by reviewers", acknowledgement: wireAcknowledgement };
+	const decodedClosure = decodeReviewLastEventClosureV1(wireClosure);
+	assert.equal(decodedClosure.lineageId, lineageId);
+	assert.deepEqual(decodedClosure.acknowledgement?.raw, wireAcknowledgement);
+	let submissions = 0;
+	__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => requests.map((request) => ({ request, promptByteLength: 64, resultByteLength: 32 })), async () => {
+		submissions += 1;
+		return { promptByteLength: 64, resultByteLength: 32, submission: JSON.stringify(wireClosure) };
+	});
+	const result = await __testing.executeReviewCaptureGroupOperation({ lineageId, workspaceRoot: root, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, dirname(root), native);
+	assert.equal(submissions, 1, JSON.stringify(result));
+	assert.equal(result.outcome, "native-last-event-closure", JSON.stringify(result));
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+});
+
+// Issue #1371: approved status mappings and closure envelopes provide additive next_action
+test("STATUS on approved target renders additive next_action naming exact gentle_review acknowledge-approved invocation", async () => {
+	const lineageId = "status-approved-ack";
+	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId) } as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
+	assert.equal(result.status, "blocked");
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+});
+
+test("STATUS on approved target preserves workspaceRoot in next_action when distinct from process cwd", async (t) => {
+	const lineageId = "status-approved-ack-worktree";
+	const worktreeRoot = repository(t);
+	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId, worktreeRoot) } as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: worktreeRoot }, worktreeRoot, native);
+	assert.equal(result.status, "blocked");
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+});
+
+test("invalid acknowledgement input returns self-healing next_action for canonical lineage and fallback slug otherwise", async (t) => {
+	const lineageId = "canonical-lineage-ack";
+	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId) } as unknown as NativeReviewCli;
+
+	// 1. Controller-only input with canonical lineage (no workspaceRoot)
+	const rejectedWithInput = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId, input: "{}" },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedWithInput.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(rejectedWithInput.reason, "controller-only-input");
+	assert.equal(rejectedWithInput.field, "input");
+	assert.equal(rejectedWithInput.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+
+	// 2. Controller-only input with canonical lineage and distinct workspaceRoot
+	const worktreeRoot = repository(t);
+	const rejectedWithWorktree = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId, input: "{}", workspaceRoot: worktreeRoot },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedWithWorktree.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(
+		rejectedWithWorktree.next_action,
+		`gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`,
+	);
+
+	// 3. Non-canonical / invalid lineage returns fallback slug
+	const rejectedNonCanonical = await __testing.executeReviewControllerOperation(
+		{ operation: "acknowledge-approved", lineageId: "invalid lineage with newline\n", input: "{}" },
+		process.cwd(),
+		native,
+	);
+	assert.equal(rejectedNonCanonical.outcome, "native-approved-acknowledgement-input-invalid");
+	assert.equal(rejectedNonCanonical.reason, "controller-only-input");
+	assert.equal(rejectedNonCanonical.next_action, "resubmit-the-exact-lineage-without-controller-only-input");
 });
 
 test("public acknowledgement relays one current provider vector and never replays after authority burn", async () => {
@@ -269,7 +423,7 @@ function candidateRepository(t: test.TestContext): string {
 	writeFileSync(join(cwd, "tracked.txt"), "base\n");
 	git("add", "tracked.txt");
 	git("-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base");
-	return realpathSync(cwd);
+	return realpathSync(git("rev-parse", "--show-toplevel").trim());
 }
 
 test("approved acknowledgement burn tears down the retained candidate view and keeps its projection", async (t) => {
@@ -811,7 +965,7 @@ function repository(t: test.TestContext): string {
 	execFileSync("git", ["add", "tracked.txt"], { cwd, stdio: "ignore" });
 	execFileSync("git", ["-c", "user.name=Routing Test", "-c", "user.email=routing@example.invalid", "commit", "-m", "base"], { cwd, stdio: "ignore" });
 	writeFileSync(join(cwd, "tracked.txt"), "candidate\n");
-	return cwd;
+	return realpathSync(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" }).trim());
 }
 
 test("candidate lifecycle sweeps startup and cleans every shutdown including reload", async (t) => {
@@ -933,7 +1087,9 @@ function reviewContext(cwd: string): ExtensionContext {
 
 function startStatus(cwd: string, baseRef?: string, intendedUntracked: readonly string[] = []): ReviewStatusV3 {
 	const candidateViews = new CandidateViewRegistry();
+	const checksBefore = fixtureAclChecks;
 	const view = candidateViews.create({ contributorRoot: cwd, intendedUntracked, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true }) });
+	if (process.platform === "win32") assert.ok(fixtureAclChecks > checksBefore, "coordination candidates must use the fixture ACL authority");
 	try {
 		return {
 			contract: "gentle-ai.review-integration/v2",
@@ -1779,6 +1935,7 @@ test("plain START adopts the pre-lineage selection retained by inspect and delet
 		retained,
 	);
 	assert.equal(started.operation, "start");
+	assert.ok(typeof started.result === "object" && started.result !== null && "lineage_id" in started.result);
 	assert.equal(started.result.lineage_id, "review-started");
 	assert.equal(starts.length, 1);
 	assert.equal(requests.length, 3);
@@ -2234,6 +2391,7 @@ test("a failed START retains a pre-lineage selection for a same-candidate retry"
 			{ operation: "start", input: JSON.stringify({ mode: "ordinary" }) },
 			cwd, native, undefined, null, undefined, retained,
 		);
+		assert.ok(typeof retried.result === "object" && retried.result !== null && "lineage_id" in retried.result);
 		assert.equal(retried.result.lineage_id, "retried");
 		assert.equal(starts, 2);
 		assert.equal(retained.has(`${cwd}\u0000`), false);
@@ -2437,6 +2595,115 @@ test("targeted-validator provider vectors preserve their nonuniform native closu
 	assert.equal(result.status, "closed");
 	assert.equal(result.outcome, "native-last-event-closure");
 	assert.equal("correction_target_identity" in result, false);
+});
+
+test("approved capture closure envelope carries additive next_action alongside untouched raw acknowledgement", async () => {
+	const closureLineage = "review-approved-closure-next-action";
+	const input = {
+		name: "provider_targeted_validator",
+		schema: "https://gentle-ai.dev/schema/review/targeted-validator/v1",
+		captureOperation: "review.capture-validation",
+		arguments: [
+			{ name: "lineage", value: closureLineage, token: `--lineage=${closureLineage}` },
+			{ name: "target", value: SHA, token: `--target=${SHA}` },
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+			{ name: "execute", value: "true", token: "--execute=true" },
+		],
+	} as unknown as ReviewCollectInputV3;
+	const roleStatus = { ...status(closureLineage), nextTransition: { kind: "collect", reasonCode: "provider_role_required", collect: { inputs: [input] } } } as ReviewStatusV3;
+	const ackContinuation = {
+		operation: "review.acknowledge-approved",
+		command: "gentle-ai review acknowledge-approved --provider-vector",
+		arguments: [
+			{ name: "cwd", value: process.cwd(), token: `--cwd=${process.cwd()}` },
+			{ name: "lineage", value: closureLineage, token: `--lineage=${closureLineage}` },
+			{ name: "target", value: SHA, token: `--target=${SHA}` },
+			{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
+			{ name: "token", value: "provider-tok", token: "--token=provider-tok" },
+		],
+		preconditions: [{ name: "state", value: "approved" }],
+		binding: { lineageId: closureLineage, revision: SHA, targetIdentity: SHA },
+	};
+	const native = {
+		targetStatus: async () => roleStatus,
+		captureProviderRole: async () => ({
+			schema: "gentle-ai.review-last-event-closure/v1",
+			operation: "review/capture-validation",
+			lineageId: closureLineage,
+			state: "approved",
+			action: "approved by validator",
+			storeRevision: SHA,
+			acknowledgement: {
+				operation: "review.acknowledge-approved",
+				command: "gentle-ai review acknowledge-approved --provider-vector",
+				arguments: ackContinuation.arguments,
+				preconditions: ackContinuation.preconditions,
+				binding: ackContinuation.binding,
+				raw: ackContinuation,
+			},
+		}),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewCaptureOperation({ lineageId: closureLineage, collectBinding: JSON.stringify(input) }, process.cwd(), native);
+	assert.equal(result.status, "closed");
+	assert.equal(result.outcome, "native-last-event-closure");
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
+	assert.equal((result.closure as { next_action?: string }).next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
+	assert.deepEqual((result.closure as { acknowledgement?: unknown }).acknowledgement, ackContinuation);
+});
+
+test("approved capture closure envelope preserves workspaceRoot in next_action when distinct from process cwd", async (t) => {
+	const closureLineage = "review-approved-closure-next-action-worktree";
+	const worktreeRoot = repository(t);
+	const input = {
+		name: "provider_targeted_validator",
+		schema: "https://gentle-ai.dev/schema/review/targeted-validator/v1",
+		captureOperation: "review.capture-validation",
+		arguments: [
+			{ name: "lineage", value: closureLineage, token: `--lineage=${closureLineage}` },
+			{ name: "target", value: SHA, token: `--target=${SHA}` },
+			{ name: "agent", value: "pi", token: "--agent=pi" },
+			{ name: "execute", value: "true", token: "--execute=true" },
+		],
+	} as unknown as ReviewCollectInputV3;
+	const roleStatus = { ...status(closureLineage), nextTransition: { kind: "collect", reasonCode: "provider_role_required", collect: { inputs: [input] } } } as ReviewStatusV3;
+	const ackContinuation = {
+		operation: "review.acknowledge-approved",
+		command: "gentle-ai review acknowledge-approved --provider-vector",
+		arguments: [
+			{ name: "cwd", value: worktreeRoot, token: `--cwd=${worktreeRoot}` },
+			{ name: "lineage", value: closureLineage, token: `--lineage=${closureLineage}` },
+			{ name: "target", value: SHA, token: `--target=${SHA}` },
+			{ name: "expected-revision", value: SHA, token: `--expected-revision=${SHA}` },
+			{ name: "token", value: "provider-tok", token: "--token=provider-tok" },
+		],
+		preconditions: [{ name: "state", value: "approved" }],
+		binding: { lineageId: closureLineage, revision: SHA, targetIdentity: SHA },
+	};
+	const native = {
+		targetStatus: async () => roleStatus,
+		captureProviderRole: async () => ({
+			schema: "gentle-ai.review-last-event-closure/v1",
+			operation: "review/capture-validation",
+			lineageId: closureLineage,
+			state: "approved",
+			action: "approved by validator",
+			storeRevision: SHA,
+			acknowledgement: {
+				operation: "review.acknowledge-approved",
+				command: "gentle-ai review acknowledge-approved --provider-vector",
+				arguments: ackContinuation.arguments,
+				preconditions: ackContinuation.preconditions,
+				binding: ackContinuation.binding,
+				raw: ackContinuation,
+			},
+		}),
+	} as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewCaptureOperation({ lineageId: closureLineage, collectBinding: JSON.stringify(input), workspaceRoot: worktreeRoot }, worktreeRoot, native);
+	assert.equal(result.status, "closed");
+	assert.equal(result.outcome, "native-last-event-closure");
+	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+	assert.equal((result.closure as { next_action?: string }).next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+	assert.deepEqual((result.closure as { acknowledgement?: unknown }).acknowledgement, ackContinuation);
 });
 
 test("targeted-validator captures echo the distinct provider correction target identity", async () => {
@@ -2695,20 +2962,95 @@ test("INSPECT rejects malformed committed-range selectors before negotiated STAT
 		},
 	} as unknown as NativeReviewCli;
 
-	for (const input of [
-		{ baseRef: "HEAD", committedOnly: false },
-		{ committedOnly: true },
-		{ baseRef: "HEAD", committedOnly: true, mode: "ordinary" },
+	for (const { input, reason, field } of [
+		{ input: { baseRef: "HEAD", committedOnly: false }, reason: "committed-only-required" },
+		{ input: { baseRef: "HEAD" }, reason: "committed-only-required" },
+		{ input: { committedOnly: true }, reason: "committed-only-invalid" },
+		{ input: { baseRef: " HEAD", committedOnly: true }, reason: "base-ref-invalid" },
+		{ input: { baseRef: 42, committedOnly: true }, reason: "base-ref-invalid" },
+		{ input: { baseRef: "HEAD", committedOnly: true, mode: "ordinary" }, reason: "unknown-field", field: "mode" },
 	]) {
 		const rejected = await __testing.executeReviewControllerOperation(
 			{ operation: "inspect", input: JSON.stringify(input) },
 			cwd,
 			native,
 		);
+		assert.equal(rejected.status, "blocked");
+		assert.equal(rejected.reason, reason);
+		assert.equal(rejected.field, field);
 		assert.equal(rejected.outcome, "native-inspect-input-invalid");
+		assert.equal(rejected.mutation_performed, false);
 		assert.equal(rejected.mutation_outcome, "none");
+		assert.equal(targetCalls, 0);
 	}
 	assert.equal(targetCalls, 0);
+});
+
+test("INSPECT accepts empty object and empty string input for ambient inspection", async (t) => {
+	const cwd = repository(t);
+	let targetCalls = 0;
+	const requests: Array<Record<string, unknown>> = [];
+	const native = {
+		targetStatus: async (request: Record<string, unknown>) => {
+			targetCalls += 1;
+			requests.push(request);
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+
+	for (const input of ["{}", "", "   "]) {
+		const result = await __testing.executeReviewControllerOperation(
+			{ operation: "inspect", input },
+			cwd,
+			native,
+		);
+		assert.equal(result.status, "ready", `expected ready for input ${JSON.stringify(input)}`);
+	}
+	assert.equal(targetCalls, 3);
+	for (const request of requests) {
+		assert.equal(request.baseRef, undefined);
+		assert.equal(request.committedOnly, undefined);
+	}
+});
+
+test("INSPECT ambient input with top-level selected-empty stays read-only when selection is not required", async (t) => {
+	const cwd = repository(t);
+	const requests: Array<Record<string, unknown>> = [];
+	let mutationCalls = 0;
+	const mutationMethods = [
+		"start", "answerConsent", "reclaim", "recover", "abandon",
+		"quarantineLegacy", "reconcileAuthority", "repairLegacyAlias", "repair",
+		"captureResult", "captureCorrectionPlan", "captureProviderRole", "captureUnachievableLens",
+		"reviewMode",
+	] as const satisfies readonly (keyof NativeReviewCli)[];
+	const mutationSpies = Object.fromEntries(mutationMethods.map((method) => [method, async () => {
+		mutationCalls += 1;
+		throw new Error(`Unexpected NativeReviewCli.${method} call during ambient INSPECT`);
+	}]));
+	const native = {
+		...mutationSpies,
+		targetStatus: async (request: Record<string, unknown>) => {
+			requests.push(request);
+			return startStatus(cwd);
+		},
+	} as unknown as NativeReviewCli;
+	for (const input of [undefined, "{}", "", "   "]) {
+		const parameters = { operation: "inspect", ...(input === undefined ? {} : { input }), untrackedScope: "select", intendedUntracked: [] };
+		const result = await __testing.executeReviewControllerOperation(parameters, cwd, native);
+		assert.equal(result.status, "ready");
+		assert.equal(mutationCalls, 0, `unexpected mutation for input ${JSON.stringify(input)}`);
+		assert.equal(result.untracked_selection, "not-required");
+		assert.deepEqual(parameters.intendedUntracked, []);
+	}
+	assert.equal(requests.length, 4);
+	for (const request of requests) {
+		assert.equal(request.cwd, cwd);
+		assert.equal("baseRef" in request, false);
+		assert.equal("committedOnly" in request, false);
+		// Without a provider selection stop, no selection submission is needed.
+		assert.equal("untrackedScope" in request, false);
+		assert.equal("intendedUntracked" in request, false);
+	}
 });
 
 test("ordinary START keeps default and explicit base selection fail-closed before native mutation", async (t) => {
@@ -3006,4 +3348,104 @@ test("collect-state public STATUS, INSPECT, and START serialize each provider co
 		assert.equal(transition.kind, "collect", `${parameters.operation} keeps the transition kind so the orchestrator still sees the collect state`);
 		assert.ok(serialized.length < 2 * JSON.stringify(bindings).length, `${parameters.operation} answer (${serialized.length} characters) must not double the ${JSON.stringify(bindings).length}-character binding projection`);
 	}
+});
+
+test("a correction-plan binding bound to the frozen authority target is captured after the worktree drifts", async () => {
+	// gentle-ai binds correction-plan collect inputs to authority_target_identity
+	// (the frozen candidate), not to the live target_identity, once the
+	// candidate has drifted; the host must accept the target the provider issued.
+	const lineageId = "drifted-correction";
+	const frozenTarget = `sha256:${"c".repeat(64)}`;
+	const input = correctionPlanInput(lineageId);
+	(input.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: frozenTarget, token: `--target=${frozenTarget}` };
+	const drifted = (): ReviewStatusV3 => ({ ...status(lineageId, [input], "correction_required"), authorityTargetIdentity: frozenTarget });
+	let captures = 0;
+	const native = {
+		targetStatus: async () => drifted(),
+		captureCorrectionPlan: async () => {
+			captures += 1;
+			// The provider echoes the frozen target it was invoked with.
+			return { schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-correction-plan", lineageId, targetIdentity: frozenTarget, state: "correction_required", storeRevision: SHA };
+		},
+	} as unknown as NativeReviewCli;
+	const { controller, capture } = reviewRuntime(native, new CandidateViewRegistry());
+	const context = reviewContext(process.cwd());
+	const listed = await controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const captured = await capture.execute("", { lineageId, collectBinding: bindingOf(listed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((captured.details as { outcome?: string }).outcome, "native-last-event-closure");
+	assert.equal((captured.details as { mutation_outcome?: string }).mutation_outcome === "none", false);
+	assert.equal(captures, 1);
+
+	// A target that is neither the frozen authority target nor the live one stays refused.
+	const foreign = correctionPlanInput(lineageId);
+	(foreign.arguments as { name: string; value: string; token?: string }[])[1] = { name: "target", value: `sha256:${"d".repeat(64)}`, token: `--target=sha256:${"d".repeat(64)}` };
+	const foreignNative = {
+		targetStatus: async () => ({ ...status(lineageId, [foreign], "correction_required"), authorityTargetIdentity: frozenTarget }),
+		captureCorrectionPlan: async () => { throw new Error("must not capture"); },
+	} as unknown as NativeReviewCli;
+	const runtime = reviewRuntime(foreignNative, new CandidateViewRegistry());
+	const foreignListed = await runtime.controller.execute("", { operation: "status", lineageId }, undefined, undefined, context);
+	const refused = await runtime.capture.execute("", { lineageId, collectBinding: bindingOf(foreignListed.details as Record<string, unknown>), correctionLines: 1 }, undefined, undefined, context);
+	assert.equal((refused.details as { outcome?: string }).outcome, "capture-binding-rejected");
+});
+
+test("request context survives unrelated untracked selection and its START continuation", async (t) => {
+ const { cwd, eligible, initial, target } = untrackedStopFixture(t);
+ const retained = new Map(); const starts: Array<Record<string, unknown>> = [];
+ const context = join(cwd, "spec.md"); writeFileSync(context, "Requested behavior");
+ const native = { targetStatus: async (request: Record<string, unknown>) => "intendedUntrackedSelection" in request ? target : initial,
+  start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "context-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
+ } as unknown as NativeReviewCli;
+ const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
+ const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) });
+ assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
+ const selected = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
+ assert.equal(starts.length, 1, JSON.stringify(selected));
+ assert.equal(starts[0].requestContextPath, context);
+});
+
+test("request context preserves unrelated non-start native stops", async (t) => {
+ const cwd = repository(t); writeFileSync(join(cwd, "spec.md"), "Requested behavior"); const target = startStatus(cwd);
+ target.action = "stop"; target.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated" };
+ const native = { targetStatus: async () => target } as unknown as NativeReviewCli;
+ const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) }, cwd, native);
+ assert.notEqual(result.reason, "request-context-requires-fresh-review");
+ assert.equal(result.result, target.raw);
+});
+
+test("request context remains host-bound through the consent registry", async (t) => {
+ const cwd = repository(t), registry = new PendingReviewConsentRegistry(), session = Symbol("intent-consent");
+ writeFileSync(join(cwd, "spec.md"), "Requested behavior");
+ const consent = decodeReviewConsentV3(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/consent-v3.captured.json"), "utf8")));
+ const answers: Array<Record<string, unknown>> = [];
+ const native = { targetStatus: async () => startStatus(cwd), start: async () => { throw new NativeReviewConsentRequiredError(consent, join(cwd, "spec.md")); },
+  answerConsent: async (request: Record<string, unknown>) => { answers.push(request); return { kind: "declined", targetIdentity: consent.targetIdentity, projection: consent.projection, riskLevel: consent.riskLevel, changedFiles: 1, changedLines: 1, consent: "declined_this_candidate", raw: {} }; }
+ } as unknown as NativeReviewCli;
+ const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, new Map(), registry, session);
+ const pending = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "spec.md" }) });
+ assert.equal(pending.outcome, "native-review-consent-required");
+ await run({ operation: "answer-consent", input: JSON.stringify({ consentBinding: pending.consent_binding, answer: "declined" }) });
+ assert.equal(answers.length, 1);
+ assert.equal(answers[0].requestContextPath, join(cwd, "spec.md"));
+});
+
+test("request context rechecks sensitive aliases before selection and consent continuations", async (t) => {
+ for (const phase of ["selection", "consent"]) {
+  const { cwd, eligible, initial } = untrackedStopFixture(t);
+  fs.mkdirSync(join(cwd, "docs")); writeFileSync(join(cwd, "docs", "request.md"), "allowed fixture");
+  const retained = new Map(), registry = new PendingReviewConsentRegistry(), session = Symbol(phase);
+  const consent = decodeReviewConsentV3(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/consent-v3.captured.json"), "utf8")));
+  let queries = 0, answers = 0;
+  const native = { targetStatus: async () => { queries++; return phase === "selection" ? initial : startStatus(cwd); },
+   start: async () => { throw new NativeReviewConsentRequiredError(consent, join(cwd, "docs", "request.md")); },
+   answerConsent: async () => { answers++; throw new Error("sensitive alias must not be forwarded"); }
+  } as unknown as NativeReviewCli;
+  const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained, registry, session);
+  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", requestContextPath: "docs/request.md" }) });
+  fs.renameSync(join(cwd, "docs"), join(cwd, "prior-docs")); fs.mkdirSync(join(cwd, "secrets")); writeFileSync(join(cwd, "secrets", "request.md"), "private fixture");
+  fs.symlinkSync(join(cwd, "secrets"), join(cwd, "docs"), process.platform === "win32" ? "junction" : "dir");
+  const before = queries;
+  const result = await run(phase === "selection" ? { operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] } : { operation: "answer-consent", input: JSON.stringify({ consentBinding: stopped.consent_binding, answer: "granted" }) });
+  assert.equal(result.reason, "request-context-sensitive-path", phase); assert.equal(queries, before); assert.equal(answers, 0);
+ }
 });

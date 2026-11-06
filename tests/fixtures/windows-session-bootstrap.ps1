@@ -34,10 +34,14 @@ try {
 		exit 0
 	}
 	if ($Mode -eq 'add-extra-ace') {
-		$acl = Get-Acl -LiteralPath $Path
+		# Mutate only the DACL. Persisting owner/group from a private helper record
+		# can require unrelated privileges, which this test does not enable.
+		$isDirectory = [IO.Directory]::Exists($Path)
+		$sections = [Security.AccessControl.AccessControlSections]::Access
+		$acl = if ($isDirectory) { [IO.Directory]::GetAccessControl($Path, $sections) } else { [IO.File]::GetAccessControl($Path, $sections) }
 		$authenticatedUsers = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::AuthenticatedUserSid, $null)
 		$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($authenticatedUsers, [Security.AccessControl.FileSystemRights]::ReadAndExecute, [Security.AccessControl.AccessControlType]::Allow))
-		Set-Acl -LiteralPath $Path -AclObject $acl
+		if ($isDirectory) { [IO.Directory]::SetAccessControl($Path, $acl) } else { [IO.File]::SetAccessControl($Path, $acl) }
 		Write-Result @{ ok = $true; changed = $true }
 		exit 0
 	}

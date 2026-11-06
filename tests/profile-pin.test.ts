@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -24,7 +25,7 @@ import {
 	writeProfilePinSync,
 } from "../lib/agent-profile-pin.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
-import type { WorktreeIdentity } from "../lib/session-worktree-registry.ts";
+import { clearSessionWorktreeMemo, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 
 // Per-repository agent-model profile pins: two layers holding only a profile name,
 // resolved at launch against the global profiles store. These tests never touch
@@ -367,4 +368,30 @@ test("normalizeProfilePin accepts only a value-level pin this version writes", (
 	assert.equal(normalizeProfilePin({ kind: "other", version: PROFILE_PIN_VERSION, profile: "deep-work" }), undefined);
 	assert.equal(normalizeProfilePin({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile: "bad name" }), undefined);
 	assert.equal(normalizeProfilePin("deep-work"), undefined);
+});
+
+test("repeated profile pin status reads share a single Git resolution through the memoized resolver (#2922)", (t) => {
+	const repo = join(root, "memoized-status-reads");
+	mkdirSync(repo, { recursive: true });
+	execFileSync("git", ["init", "--quiet", repo]);
+	clearSessionWorktreeMemo();
+
+	let spawns = 0;
+	const original = childProcess.execFileSync;
+	childProcess.execFileSync = ((...args: Parameters<typeof original>) => {
+		if (args[0] === "git") spawns++;
+		return original(...args);
+	}) as typeof original;
+	syncBuiltinESMExports();
+	t.after(() => {
+		childProcess.execFileSync = original;
+		syncBuiltinESMExports();
+	});
+
+	const first = readProfilePinStatus(repo);
+	assert.ok(first);
+	for (let i = 0; i < 5; i++) {
+		assert.deepEqual(readProfilePinStatus(repo), first);
+	}
+	assert.equal(spawns, 2, "repeated status reads must not spawn additional git rev-parse children");
 });

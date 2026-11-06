@@ -126,4 +126,3 @@ interaction_required: <include only when status is interaction_required>
 Use `skill_resolution: paths-injected` only when the parent injected exact skill paths and every path was successfully read before repository work. Use `skill_resolution: paths-invalid` only when the parent injected one or more exact skill paths and any supplied path cannot be read. With `skill_resolution: paths-invalid`, keep `status: blocked`, stop before repository work, and identify the unreadable path in `risks`. Use `skill_resolution: none` only when no skill paths were injected. Never report a fallback registry or path value.
 
 Report `partial` or `blocked` honestly. A clean handoff is more valuable than pretending the task is complete.
-

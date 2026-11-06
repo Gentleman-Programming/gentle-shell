@@ -29,4 +29,3 @@ Map relevant files, symbols, relationships, and uncertainty within the parent-pr
 - Do not use review lenses. RDD review remains independent and parent-owned.
 
 Return a compressed handoff of at most ~2k tokens: `path:line` or source-URL/passage evidence, observed relationships, and remaining uncertainty. Never claim evidence you did not observe.
-

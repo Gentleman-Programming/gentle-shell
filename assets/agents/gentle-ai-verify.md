@@ -47,4 +47,3 @@ Probe on your first launch; never wait for further authorization. Create a fresh
 - Do not use review lenses. RDD review remains independent and parent-owned.
 
 Return a compressed evidence handoff of at most ~2k tokens: exact commands run, observed results, `path:line` evidence, the verdict per spec item, blockers, and anything left unverified; the probe regression tests follow it. Never claim a command ran or a check passed without observed output.
-

@@ -362,7 +362,7 @@ export function unmatchedProfileKeys(
 }
 
 // Live routing targets without agent definition files; keep local to avoid a runtime import cycle.
-const RESERVED_ROUTING_KEYS = new Set(["review-refuter", "review-validator", "orchestrator"]);
+const RESERVED_ROUTING_KEYS = new Set([...PROVIDER_REVIEW_ROLES, "orchestrator"]);
 
 /** Removable keys exclude reserved targets, exact matches, and likely typos in the caller's full agent list. */
 export function staleRoutingKeys(

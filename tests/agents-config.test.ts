@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import {
 	AGENT_MODE,
+	PROVIDER_REVIEW_ROLES,
 	THINKING_LEVEL,
 	agentDirectories,
 	discoverAgents,
@@ -314,6 +315,13 @@ test("staleRoutingKeys protects reserved routing targets without discovered defi
 		assert.deepEqual(staleRoutingKeys(config, agents), ["abandoned"]);
 		assert.deepEqual(config, before);
 	}
+});
+
+test("staleRoutingKeys excludes every provider review role without discovered agents", () => {
+	const config = Object.fromEntries(PROVIDER_REVIEW_ROLES.map((role) => [role, { model: "provider/model" }]));
+	const before = structuredClone(config);
+	assert.deepEqual(staleRoutingKeys(config, []), []);
+	assert.deepEqual(config, before);
 });
 
 test("staleRoutingKeys protects provider review roles supplied by the caller", () => {

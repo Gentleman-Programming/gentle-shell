@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { __testing } from "../extensions/gentle-ai.ts";
 
 // gentle-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
@@ -18,6 +19,18 @@ import { __testing } from "../extensions/gentle-ai.ts";
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
 const verify = read("assets/agents/gentle-ai-verify.md");
 const verification = read("assets/orchestrator-verification.md");
+let scratch: string;
+let previousConfigHome: string | undefined;
+before(() => {
+	scratch = mkdtempSync(join(tmpdir(), "gentle-verify-first-"));
+	previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+});
+after(() => {
+	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (scratch) rmSync(scratch, { recursive: true, force: true });
+});
 
 function containsAll(text: string, clauses: readonly string[], label: string): void {
 	for (const clause of clauses) assert.ok(text.includes(clause), `${label} is missing: ${clause}`);
@@ -48,6 +61,25 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 		"Do not keep repairing helpers",
 		"Auxiliary tooling defects remain subject to the existing correction bound",
 	], "parent setup");
+});
+
+test("S2-S3: setup recovery references the always-on bounded policy", () => {
+	containsAll(verification, [
+		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
+		"Do not automatically relaunch the verifier for the same missing prerequisite",
+	], "parent setup recovery");
+});
+
+test("S3: scratch preparation establishes capacity and a complete payload before copying", () => {
+	containsAll(verify, [
+		"Before isolated setup, establish the required payload, available dependencies, and scratch capacity, including space and inodes when relevant.",
+		"A smaller copy is permitted only when it includes all source, test/build files, baseline material, and dependencies needed for every authorized probe.",
+		"If a prerequisite cannot be established, report it as missing instead of blindly copying or omitting required inputs",
+		"If setup fails before probes, preserve the failed attempt and report zero tests run",
+		"never `git worktree`, `git stash`, or a symlink into the workspace",
+		"No network, no installs, no writes outside the scratch directory",
+		"under the system temp directory, never inside the workspace",
+	], "scratch isolation remains required");
 });
 
 test("S5: documentation identifies the instruction as policy rather than runtime enforcement", () => {
@@ -179,7 +211,7 @@ test("T17b: inline-write preparation is distinct from discovery", () => {
 
 test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {
 	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+		const prompt = __testing.buildGentlePrompt(persona, scratch, ["read"]);
 		const step = prompt.split("\n").find((line) => line.startsWith("2. **Explore.**"));
 		assert.ok(step, "ODD step 2 Explore is missing");
 		containsAll(step, [

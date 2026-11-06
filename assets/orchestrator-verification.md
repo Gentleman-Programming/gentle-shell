@@ -23,7 +23,7 @@ For Task Size high-risk work when RDD is on or unknown, assess with `"escalate":
 
 ## Verifier preparation failure
 
-If one isolated setup attempt fails, stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks as a concrete blocker and unverified checks. Do not keep repairing helpers. Do not automatically relaunch the verifier for the same missing prerequisite. Distinguish setup or infrastructure failure from genuine code findings. Auxiliary tooling defects remain subject to the existing correction bound; setup failure does not reset it. Keep consent.
+If setup fails, stop with one **Needs your decision** result identifying the missing prerequisite and exact unrun checks as unverified. Do not keep repairing helpers. Do not automatically relaunch the verifier for the same missing prerequisite. Distinguish setup or infrastructure failure from genuine code findings. Auxiliary tooling defects remain subject to the existing correction bound. Keep consent. Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.
 
 ## Verification proportionality
 

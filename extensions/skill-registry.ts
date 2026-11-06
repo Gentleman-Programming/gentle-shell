@@ -369,8 +369,17 @@ function toResolvedEntry(skill: ResolvedSkill, cwd: string): SkillEntry | undefi
 	};
 }
 
-function mergeResolvedWithLoose(resolved: SkillEntry[], loose: SkillEntry[], cwd: string): SkillEntry[] {
+function mergeResolvedWithLoose(
+	resolved: SkillEntry[],
+	loose: SkillEntry[],
+	cwd: string,
+	suppressedPaths: readonly string[] = [],
+): SkillEntry[] {
 	const resolvedPaths = new Set(resolved.map((entry) => comparablePath(entry.path)));
+	// Every runtime-resolved path was filtered by Pi's own rules, so a skill Pi
+	// hides (disableModelInvocation or an excluded name) must never come back
+	// as an active row through a loose root that still holds its SKILL.md.
+	for (const path of suppressedPaths) resolvedPaths.add(comparablePath(path));
 	const filteredLoose = loose.filter((entry) => !resolvedPaths.has(comparablePath(entry.path)));
 	return dedupeBySkillName([...resolved, ...filteredLoose], cwd);
 }
@@ -646,7 +655,12 @@ async function regenerateRegistry(
 		const entry = toResolvedEntry(skill, cwd);
 		if (entry) resolvedEntries.push(entry);
 	}
-	const deduped = mergeResolvedWithLoose(resolvedEntries, entries, cwd);
+	const deduped = mergeResolvedWithLoose(
+		resolvedEntries,
+		entries,
+		cwd,
+		resolved.map((skill) => skill.filePath),
+	);
 	const sources = existingDirs.map((d) => {
 		const rel = relative(cwd, d);
 		return rel.startsWith("..") ? d : rel || ".";
@@ -884,7 +898,8 @@ export default function (pi: ExtensionAPI) {
 				const ignoreWarning = await ensureAtlIgnored(cwd);
 				if (ignoreWarning) notifyWarning(ignoreWarning);
 				const quarantinedLegacy = await quarantineLegacyProjectRegistry(cwd, notifyWarning);
-				const result = await regenerateRegistry(cwd, quarantinedLegacy);
+				// A capture that already arrived is newer authority than this scan.
+				const result = await regenerateRegistry(cwd, quarantinedLegacy, lastResolvedSkills);
 				if (result.warning) notifyWarning(result.warning);
 				if (result.regenerated && ctx.hasUI) {
 					ctx.ui.notify(
@@ -903,7 +918,7 @@ export default function (pi: ExtensionAPI) {
 						if (generation !== startupGeneration) return;
 						void (async () => {
 							try {
-								const result = await regenerateRegistry(cwd, true);
+								const result = await regenerateRegistry(cwd, true, lastResolvedSkills);
 								if (result.warning) notifyWarning(result.warning);
 							} catch (error) {
 								notifyWarning(`Skill registry refresh failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -945,6 +960,9 @@ export default function (pi: ExtensionAPI) {
 		const skills = event.systemPromptOptions?.skills;
 		if (!Array.isArray(skills) || !skills.every(isResolvedSkill)) return;
 		try {
+			// The startup scan this session scheduled must land before this newer
+			// capture, so an older loose-only scan never overwrites runtime authority.
+			await pendingStartups.get(ctx.cwd);
 			const result = await applyResolvedSkillsUpdate(ctx.cwd, skills);
 			if (result.regenerated && ctx.hasUI) {
 				ctx.ui.notify(

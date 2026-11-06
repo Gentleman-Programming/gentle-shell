@@ -725,6 +725,42 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 	}
 });
 
+test("regenerateRegistry never re-indexes a filtered Pi skill from a loose root", async (t) => {
+	// A Pi-managed loose root (.pi/skills) still holds the SKILL.md of a skill
+	// Pi filtered out at runtime; the loose scan must not resurrect it as an
+	// active registry row.
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-suppressed-"));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	const disabledPath = join(cwd, ".pi", "skills", "runtime-hidden", "SKILL.md");
+	const livePath = join(cwd, ".pi", "skills", "loose-live", "SKILL.md");
+	for (const [path, name, description] of [
+		[disabledPath, "runtime-hidden", "Hidden by runtime disablement."],
+		[livePath, "loose-live", "Loose live skill."],
+	] as const) {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `---\nname: ${name}\ndescription: ${description}\n---\n`);
+	}
+
+	const result = await __testing.regenerateRegistry(cwd, true, [
+		{
+			name: "runtime-hidden",
+			description: "Hidden by runtime disablement.",
+			filePath: disabledPath,
+			disableModelInvocation: true,
+		},
+	] satisfies ResolvedSkill[], true);
+
+	assert.equal(result.regenerated, true);
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(livePath)), "the loose scan still indexes live skills");
+	assert.doesNotMatch(
+		registry,
+		new RegExp(escapeRegExp(disabledPath)),
+		"a skill Pi resolved and filtered must never come back through the loose scan",
+	);
+	assert.doesNotMatch(registry, /Hidden by runtime disablement/);
+});
+
 test("renderRegistry emits the pi-resolved authority bullet only when resolved entries exist", () => {
 	const cwd = join(tmpdir(), `gentle-pi-render-resolved-${Date.now()}`);
 	const entry = { name: "docs", path: join(cwd, "skills", "docs", "SKILL.md"), description: "Docs." };
@@ -1071,6 +1107,55 @@ test("before_agent_start handler wires pi-resolved skills into the registry", as
 			"non-array skills payload must not write a registry",
 		);
 	}
+});
+
+test("startup regeneration keeps the resolved set captured before it settles", async (t) => {
+	// Startup regeneration is scheduled by session_start and lands later; a
+	// capture that already arrived is newer authority and must survive it.
+	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-"));
+	const packageRoot = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-pkg-"));
+	t.after(() => {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(packageRoot, { recursive: true, force: true });
+	});
+	const loosePath = join(cwd, "skills", "loose", "SKILL.md");
+	mkdirSync(dirname(loosePath), { recursive: true });
+	writeFileSync(loosePath, "---\nname: loose\ndescription: Loose project skill.\n---\n");
+	const resolvedPath = join(packageRoot, "skills", "runtime-authority", "SKILL.md");
+
+	const { pi, handlers } = fakeSkillRegistryPi();
+	skillRegistryExtension(pi);
+	const capture = handlers.get("before_agent_start")?.[0];
+	const start = handlers.get("session_start")?.[0];
+	assert.ok(capture, "default export must register a before_agent_start handler");
+	assert.ok(start, "default export must register a session_start handler");
+	const ctx = { cwd, hasUI: false };
+
+	await capture(
+		{
+			systemPromptOptions: {
+				skills: [
+					{
+						name: "runtime-authority",
+						description: "Trigger: runtime authority. Captured before startup settles.",
+						filePath: resolvedPath,
+						sourceInfo: { scope: "project", origin: "package" },
+					},
+				],
+			},
+		},
+		ctx,
+	);
+	await start(undefined, ctx);
+	await __testing.startupSettled();
+
+	const registry = readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8");
+	assert.match(registry, new RegExp(escapeRegExp(resolvedPath)), "startup regeneration must not drop captured runtime authority");
+	assert.match(registry, new RegExp(escapeRegExp(loosePath)));
+	assert.match(
+		registry,
+		/Pi-resolved runtime authority \(before_agent_start\.systemPromptOptions\.skills\): 1 skill\(s\)/,
+	);
 });
 
 test("manual /skill-registry:refresh keeps the captured resolved set", async () => {

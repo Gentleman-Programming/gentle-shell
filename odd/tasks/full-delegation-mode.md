@@ -78,3 +78,7 @@ Rewrote S5 only. Two defects fixed: the chip carried a ranking nobody asked for 
 
 **L14** (panel final state, after two user corrections): the chip lives on the Orchestrator row only, has no mouse region, and its form table carries `{text, mode}` with **no tone field** — a single `ORCHESTRATOR_MODE_CHIP_TONE = "status"` renders both modes alike, so a per-mode ranking is not expressible rather than merely avoided. The symmetric ladder is `◎ organic` / `◎ org` / `◎` and `⚡ full delegation` / `⚡ full` / `⚡`, with the fallback chain yielding first. `ORCHESTRATOR_MODE_EXPLAINER` (`◎ inline · ⚡ writer · w switches`) is appended to the existing cursor-bound description slot only while the Orchestrator row is focused, is identical for both modes, and drops before it can wrap.
 
+**L15** (user correction, verbatim): "cambia el rayo por otra cosa"
+
+`⚡` out of both source and tests, `⇄` in. The bolt is the same hierarchy as the tone had, in another channel: lightning means fast/power in every UI convention, so it read as the better mode. `⇄` states a handoff — work goes out to a writer and comes back — which is exactly what the mode does, and it stays distinct from the fallback arrow `↪` that lives on the same row. Rungs and the explainer keep their symmetry: `◎ organic` / `⇄ full delegation`, and `◎ inline · ⇄ writer · w switches`.
+

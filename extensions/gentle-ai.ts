@@ -3876,11 +3876,11 @@ const ROUTING_TABLE_BUTTONS: Record<RoutingTableButton, string> = {
  * reintroduce a per-mode ranking through this table.
  */
 const ORCHESTRATOR_MODE_CHIP_FORMS: Array<{ text: string; mode: OrchestratorMode }> = [
-	{ text: "  ⚡ full delegation", mode: "full-delegation" },
+	{ text: "  ⇄ full delegation", mode: "full-delegation" },
 	{ text: "  ◎ organic", mode: "organic" },
-	{ text: "  ⚡ full", mode: "full-delegation" },
+	{ text: "  ⇄ full", mode: "full-delegation" },
 	{ text: "  ◎ org", mode: "organic" },
-	{ text: "  ⚡", mode: "full-delegation" },
+	{ text: "  ⇄", mode: "full-delegation" },
 	{ text: "  ◎", mode: "organic" },
 ];
 /** One tone for every mode form: the modes are peers, never ranked. */
@@ -3892,7 +3892,7 @@ const ORCHESTRATOR_MODE_CHIP_TONE: PanelTone = "status";
  * case. Sized to fit beside the scope sentence at 100 columns (35 chars of
  * budget on the fixtures' titles); it drops before it displaces the sentence.
  */
-const ORCHESTRATOR_MODE_EXPLAINER = "◎ inline · ⚡ writer · w switches";
+const ORCHESTRATOR_MODE_EXPLAINER = "◎ inline · ⇄ writer · w switches";
 
 /**
  * `/gentle:profiles` — one screen, one table, profiles as

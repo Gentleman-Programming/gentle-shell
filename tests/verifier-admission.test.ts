@@ -170,3 +170,34 @@ test("S6: the Verification rule and the reference docs point at the runtime admi
 	assert.ok(writer >= 0 && verifier > writer, "the verifier admission is documented right after the writer admission");
 	assert.match(docs.slice(verifier, docs.indexOf("\n\n", verifier)), /`gentle-ai-verify` launch is admitted only when[^]*`Risk: item N`[^]*context backstop/);
 });
+
+// gentle-shell#2478: the strict placement grammar is unchanged by the diagnostics wording — a declaration after
+// `; ` or `,` blocks, a line-start and a sentence-start declaration admit. Covers S2, S5.
+test("S2/S5: placement grammar admits line/sentence starts and blocks other separators", (t) => {
+	const root = workspace(false);
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const verdict = (task: string) => rejectUnriskedVerifierLaunch({ agent: "gentle-ai-verify", task }, { root, contextUsage: quiet })?.block === true;
+	assert.equal(verdict("Independent verification, read-only repository; Risk: item 2 (authorization tokens)."), true, "`; ` is not a declaration start");
+	assert.equal(verdict("Verification of the parser, Risk: item 2 (reason)."), true, "`,` is not a declaration start");
+	assert.equal(verdict("Risk: item 2 (authorization tokens)\nVerify."), false, "line start admits");
+	assert.equal(verdict("- Risk: item 2\nVerify."), false, "list marker admits");
+	assert.equal(verdict("Deployed on top of ebf3f35. Risk: item 1 (migration)"), false, "sentence start admits");
+	assert.equal(verdict("Risk: none\nVerify."), true, "`Risk: none` blocks");
+	assert.equal(verdict("Spec: odd/tasks/missing.md"), true, "a missing feature document does not admit");
+});
+
+// gentle-shell#2478 S2-S4: the docs section states the strict grammar, the assessment≠admission split, and that the
+// post-denial disposition is launch-scoped with no gate-level retry. Covers S2, S3, S4.
+test("S2/S3/S4: delegated-verification documents placement, assessment≠admission and post-denial disposition", () => {
+	const docs = readFileSync(new URL("../docs/delegated-verification.md", import.meta.url), "utf8");
+	const section = docs.split("## Verifier launch admission and post-denial disposition")[1]?.split("\n## ")[0] ?? "";
+	assert.match(section, /The declaration grammar is strict: `Risk: item N \(reason\)` must start a line/);
+	assert.match(section, /after another separator such as `; ` or `,` inside a sentence is not recognized/);
+	assert.match(section, /Keep the risk evidence tied to the actual change; never add a Risk line only to gain admission\./);
+	assert.match(section, /Assessment and admission are separate gates/);
+	assert.match(section, /does not receive the assessment result/);
+	assert.match(section, /no gate-level disposition exists for the same launch: do not retry it/);
+	assert.match(section, /The rejection is launch-scoped, not feature-scoped/);
+	assert.match(section, /requires the user's explicit decision in a new prompt/);
+	assert.match(section, /Inline tests, the writer's self-verification, and a user's visual approval never replace the missing independent verification/);
+});
